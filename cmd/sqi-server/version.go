@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
 	"github.com/uberware/sqi/internal/version"
 )
 
@@ -18,7 +19,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version and build metadata",
 	Long:  `Print the sqi-server version, git commit, build date, and Go runtime version.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		fmt.Printf("sqi-server %s\n", version.Version)
 		fmt.Printf("  commit:  %s\n", version.Commit)
 		fmt.Printf("  built:   %s\n", version.BuildDate)

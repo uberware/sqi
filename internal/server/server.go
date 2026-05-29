@@ -83,7 +83,7 @@ func New(cfg Config, logger *slog.Logger) *Server {
 	}
 }
 
-// Run starts all server components and blocks until ctx is cancelled (typically
+// Run starts all server components and blocks until ctx is canceled (typically
 // by a SIGINT or SIGTERM delivered via [signal.NotifyContext]). It then
 // initiates a graceful shutdown and returns once all components have stopped or
 // [ShutdownTimeout] is exceeded.
@@ -91,7 +91,8 @@ func New(cfg Config, logger *slog.Logger) *Server {
 // A nil return value means the server started and shut down without errors.
 // Startup failures return immediately with a non-nil error.
 func (s *Server) Run(ctx context.Context) error {
-	s.logger.Info("sqi-server starting",
+	s.logger.InfoContext(
+		ctx, "sqi-server starting",
 		slog.String("http_addr", s.cfg.HTTPAddr),
 		slog.String("nats_addr", s.cfg.NATSAddr),
 		slog.String("sqlite_path", s.cfg.SQLitePath),
@@ -101,37 +102,37 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("startup failed: %w", err)
 	}
 
-	s.logger.Info("sqi-server ready — waiting for signal")
+	s.logger.InfoContext(ctx, "sqi-server ready — waiting for signal")
 
-	// Block until the calling context is cancelled.
+	// Block until the calling context is canceled.
 	<-ctx.Done()
 
-	s.logger.Info("shutdown signal received, stopping components")
+	s.logger.InfoContext(ctx, "shutdown signal received, stopping components")
 	return s.shutdown()
 }
 
 // start brings up all components in dependency order.
 // Each block is a stub that will be replaced as the corresponding tasks land.
-func (s *Server) start(_ context.Context) error {
+func (s *Server) start(ctx context.Context) error {
 	// ── Store (SQLite) ─────────────────────────────────────────────────────
 	// TODO(tasks 25–32): open store, run pending migrations.
-	s.logger.Debug("store: not yet started (tasks 25–32)")
+	s.logger.DebugContext(ctx, "store: not yet started (tasks 25–32)")
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// TODO(tasks 33–39): embed and start NATS, configure JetStream streams.
-	s.logger.Debug("bus: not yet started (tasks 33–39)")
+	s.logger.DebugContext(ctx, "bus: not yet started (tasks 33–39)")
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// TODO(tasks 46–55): start assignment loop, heartbeat sweep.
-	s.logger.Debug("scheduler: not yet started (tasks 46–55)")
+	s.logger.DebugContext(ctx, "scheduler: not yet started (tasks 46–55)")
 
 	// ── HTTP server (REST + WebSocket + embedded UI) ───────────────────────
 	// TODO(tasks 66–88): bind listener, register routes, serve.
-	s.logger.Debug("http: not yet started (tasks 66–88)")
+	s.logger.DebugContext(ctx, "http: not yet started (tasks 66–88)")
 
 	// ── mDNS responder ────────────────────────────────────────────────────
 	// TODO(tasks 89–90): advertise _sqi._tcp on the local network.
-	s.logger.Debug("discovery: not yet started (tasks 89–90)")
+	s.logger.DebugContext(ctx, "discovery: not yet started (tasks 89–90)")
 
 	return nil
 }
@@ -166,7 +167,7 @@ func (s *Server) shutdown() error {
 	}
 
 	if len(errs) == 0 {
-		s.logger.Info("sqi-server stopped cleanly")
+		s.logger.InfoContext(ctx, "sqi-server stopped cleanly")
 		return nil
 	}
 

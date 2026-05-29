@@ -3,15 +3,17 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/pressly/goose/v3"
 	"github.com/spf13/cobra"
-	"github.com/uberware/sqi/internal/store/migrations"
-
 	_ "modernc.org/sqlite" // register "sqlite" driver
+
+	"github.com/uberware/sqi/internal/store/migrations"
 )
 
 // migrateDBPath is the SQLite file path used by all migrate subcommands.
@@ -32,7 +34,7 @@ Subcommands:
 The --db flag (or SQI_SQLITE_PATH env var) controls which SQLite file is
 operated on. It defaults to the same path the server uses ("sqi.db" in the
 working directory), so running "migrate up" before "serve" is the standard
-deployment initialisation step.`,
+deployment initialization step.`,
 	// No RunE — bare "migrate" prints usage.
 }
 
@@ -40,7 +42,7 @@ var migrateUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Apply all pending migrations",
 	Long:  `Apply every migration that has not yet been run against the target database.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		db, err := openMigrateDB(migrateDBPath)
 		if err != nil {
 			return err
@@ -58,7 +60,7 @@ var migrateDownCmd = &cobra.Command{
 	Use:   "down",
 	Short: "Roll back the last applied migration",
 	Long:  `Roll back exactly one migration — the most recently applied one.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		db, err := openMigrateDB(migrateDBPath)
 		if err != nil {
 			return err
@@ -76,7 +78,7 @@ var migrateStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show applied and pending migrations",
 	Long:  `List every migration file with its current state: applied (✓) or pending (○).`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		db, err := openMigrateDB(migrateDBPath)
 		if err != nil {
 			return err
@@ -105,7 +107,7 @@ func init() {
 // foreign-key enforcement, and wires goose to use the embedded migration FS.
 func openMigrateDB(path string) (*sql.DB, error) {
 	if path == "" {
-		return nil, fmt.Errorf("database path is empty; use --db or set SQI_SQLITE_PATH")
+		return nil, errors.New("database path is empty; use --db or set SQI_SQLITE_PATH")
 	}
 
 	db, err := sql.Open("sqlite", path)
@@ -120,7 +122,7 @@ func openMigrateDB(path string) (*sql.DB, error) {
 		"PRAGMA busy_timeout=5000",
 	}
 	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
+		if _, err := db.ExecContext(context.Background(), p); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("set pragma %q: %w", p, err)
 		}

@@ -7,8 +7,9 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/uberware/sqi/internal/server"
 	"gopkg.in/yaml.v3"
+
+	"github.com/uberware/sqi/internal/server"
 )
 
 // configCmd groups configuration-related subcommands.
@@ -44,7 +45,7 @@ func init() {
 // effectiveConfig is the printable representation of the merged sqi-server
 // configuration. Its shape intentionally mirrors what internal/config.Config
 // will define in tasks 16–19; at that point this struct is replaced by
-// marshalling the loaded config directly.
+// marshaling the loaded config directly.
 //
 // YAML tags match the keys that will appear in sqi-server.yaml so that the
 // output of "config print" is a valid config file skeleton.
@@ -77,9 +78,9 @@ type effectiveStoreConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
 }
 
-func runConfigPrint(cmd *cobra.Command, _ []string) error {
+func runConfigPrint(_ *cobra.Command, _ []string) error {
 	// TODO(tasks 16–19): replace this block with a real layered load via
-	// internal/config, which will honour the config file, SQI_* env vars,
+	// internal/config, which will honor the config file, SQI_* env vars,
 	// and all CLI flags.
 	srv := server.DefaultConfig()
 

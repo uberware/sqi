@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+
 	"github.com/uberware/sqi/internal/server"
 )
 
@@ -25,9 +26,9 @@ for active HTTP requests to complete, and flushing the state store.`,
 	RunE: runServe,
 }
 
-func runServe(cmd *cobra.Command, _ []string) error {
+func runServe(_ *cobra.Command, _ []string) error {
 	// ── Logger ────────────────────────────────────────────────────────────────
-	// TODO(tasks 20–21): replace with internal/log setup that honours
+	// TODO(tasks 20–21): replace with internal/log setup that honors
 	// --log-level and --log-format from persistentFlags.
 	logLevel := slog.LevelInfo
 	if persistentFlags.LogLevel == "debug" {
@@ -55,7 +56,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// process if shutdown stalls.
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
-		os.Interrupt,   // SIGINT  (Ctrl-C)
+		os.Interrupt,    // SIGINT  (Ctrl-C)
 		syscall.SIGTERM, // sent by systemd / Docker / Kubernetes
 	)
 	defer stop()
@@ -63,7 +64,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// ── Run ───────────────────────────────────────────────────────────────────
 	srv := server.New(cfg, logger)
 	if err := srv.Run(ctx); err != nil {
-		logger.Error("sqi-server exited with error", slog.Any("error", err))
+		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
 		return err
 	}
 	return nil
