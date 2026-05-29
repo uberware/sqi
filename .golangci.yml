@@ -79,7 +79,6 @@ linters:
     # cyclop: generous threshold while the codebase is young; tighten later
     cyclop:
       max-complexity: 15
-      skip-tests: true
 
     nestif:
       min-complexity: 6
