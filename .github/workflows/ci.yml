@@ -78,7 +78,7 @@ jobs:
       # instructions. fail_ci_if_error is false so a Codecov outage does not
       # break the build.
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.out
