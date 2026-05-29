@@ -1,0 +1,102 @@
+name: CI
+
+# Runs on every push to main and on every pull request targeting main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# If a new push arrives on the same branch while a run is in progress,
+# cancel the older run. Prevents wasted minutes on stale commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions — principle of least privilege.
+# Individual jobs can elevate if needed (none currently do).
+permissions:
+  contents: read
+
+jobs:
+  # ── Primary CI job ───────────────────────────────────────────────────────────
+  # Runs build → vet → lint → test (race + coverage) → upload coverage.
+  # All steps are sequential; failure in any step stops the job.
+  test:
+    name: Build, lint, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # Reads the Go and toolchain versions from go.mod automatically.
+          # Module download cache and build cache are enabled by default in v6.
+          go-version-file: go.mod
+
+      # Verifies that the on-disk module cache matches go.sum exactly.
+      # Catches tampered or corrupted dependencies before they can affect the build.
+      - name: Verify module integrity
+        run: go mod verify
+
+      - name: Build
+        run: make build
+
+      - name: go vet
+        run: make vet
+
+      # Uses the official golangci-lint GitHub Action, which handles binary
+      # download, caching, and version resolution automatically.
+      # Configuration is read from .golangci.yml at the repo root.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          args: --timeout=5m
+
+      # Run the full test suite with the race detector enabled.
+      # Produces coverage.out for the Codecov upload step below.
+      # Note: we call go test directly here rather than `make test-cover`
+      # to avoid the local coverage-minimum threshold check, which is
+      # only appropriate for local enforcement once the codebase has tests.
+      - name: Test (race detector + coverage)
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      # Uploads coverage.out to Codecov. Requires the CODECOV_TOKEN secret
+      # to be configured in the repository — see docs/development.md for setup
+      # instructions. fail_ci_if_error is false so a Codecov outage does not
+      # break the build.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+  # ── Cross-compilation matrix ─────────────────────────────────────────────────
+  # Verifies that the binary compiles cleanly for all target platforms.
+  # Runs only after the test job passes (needs: test).
+  # fail-fast: false means a failure on one platform does not cancel the others,
+  # giving a complete picture of which targets are broken.
+  cross-compile:
+    name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Compile
+        run: GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...

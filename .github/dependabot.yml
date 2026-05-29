@@ -1,0 +1,69 @@
+version: 2
+
+updates:
+  # ── Go modules ───────────────────────────────────────────────────────────────
+  # Opens PRs to bump go.mod / go.sum dependencies.
+  # Weekly on Monday keeps the dependency graph current without daily noise.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/New_York
+    commit-message:
+      # Follows Conventional Commits so the CHANGELOG generator picks them up.
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - go
+    open-pull-requests-limit: 5
+    # Group all non-major Go bumps into a single PR to reduce noise.
+    # Major version bumps open individually so they get deliberate review.
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
+  # Opens PRs to bump action versions in .github/workflows/*.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/New_York
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - github-actions
+    open-pull-requests-limit: 5
+
+  # ── npm (web UI) ──────────────────────────────────────────────────────────────
+  # Silently skipped until web/package.json exists; will activate automatically
+  # once the TypeScript/React web UI work begins.
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/New_York
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - javascript
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
