@@ -2,8 +2,12 @@
 
 // Command sqi-server is the sqi distributed task management server.
 //
-// Full implementation is tracked in phase1-sqi-server-tasks.md, section 2
-// (CLI and Configuration, tasks 11–19).
+// It runs the scheduler, REST API, WebSocket gateway, embedded NATS JetStream
+// broker, and embedded web UI in a single binary.
+//
+// Run "sqi-server --help" for usage.
 package main
 
-func main() {}
+func main() {
+	exitOnErr(Execute())
+}
