@@ -1,0 +1,68 @@
+# ─── Go ───────────────────────────────────────────────────────────────────────
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.txt
+coverage.html
+cpu.prof
+mem.prof
+
+# Go workspace (go work)
+go.work
+go.work.sum
+
+# ─── Build artefacts ──────────────────────────────────────────────────────────
+/web/dist/
+/web/.vite/
+
+# goreleaser
+/dist/
+
+# ─── Node / TypeScript ────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+*.tsbuildinfo
+
+# ─── Runtime data ─────────────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+/nats-data/
+/data/
+
+# ─── Secrets and local config ─────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# ─── Editor / OS ──────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ─── Tooling ──────────────────────────────────────────────────────────────────
+.golangci-cache/
+.task/

@@ -1,0 +1,57 @@
+# ─── Default: normalize line endings to LF in the repo ───────────────────────
+* text=auto eol=lf
+
+# ─── Go ───────────────────────────────────────────────────────────────────────
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# ─── TypeScript / JavaScript ──────────────────────────────────────────────────
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+
+# ─── Web / Config ─────────────────────────────────────────────────────────────
+*.html text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+
+# ─── Docs / Scripts ───────────────────────────────────────────────────────────
+*.md text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+
+# ─── Windows scripts keep CRLF (required by cmd.exe) ─────────────────────────
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# ─── Binary — never diff or mangle ───────────────────────────────────────────
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg text eol=lf
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.psd binary
+*.ai binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
+*.db binary
+*.sqlite binary
+
+# ─── Diff drivers ─────────────────────────────────────────────────────────────
+*.go diff=golang
