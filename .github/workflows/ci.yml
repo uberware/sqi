@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # allows manual triggering from the GitHub Actions UI
 
 # If a new push arrives on the same branch while a run is in progress,
 # cancel the older run. Prevents wasted minutes on stale commits.
@@ -35,6 +36,15 @@ jobs:
           # Reads the Go and toolchain versions from go.mod automatically.
           # Module download cache and build cache are enabled by default in v6.
           go-version-file: go.mod
+
+      # Ensure go.mod (and go.sum once dependencies exist) are tidy, then check
+      # that nothing changed. Fails the build if a developer forgot to commit
+      # the result of go mod tidy.
+      - name: Tidy module
+        run: go mod tidy
+
+      - name: Check go.mod is committed tidy
+        run: git diff --exit-code go.mod go.sum
 
       # Verifies that the on-disk module cache matches go.sum exactly.
       # Catches tampered or corrupted dependencies before they can affect the build.
