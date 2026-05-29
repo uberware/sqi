@@ -1,0 +1,220 @@
+# golangci-lint configuration for sqi
+# Docs: https://golangci-lint.run/docs/configuration/
+# Config schema version (only valid value is "2")
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+
+# ── Linters ───────────────────────────────────────────────────────────────────
+linters:
+  # Start from nothing; every enabled linter is an explicit choice.
+  default: none
+  enable:
+    # ── Correctness / bugs ───────────────────────────────────────────────────
+    - errcheck           # unchecked errors
+    - staticcheck        # SA* checks + style
+    - govet              # go vet
+    - ineffassign        # assignments that are never used
+    - unused             # unused code (vars, funcs, types)
+    - bodyclose          # HTTP response body must be closed
+    - nilerr             # returning nil after nil-check on err
+    - nilnesserr         # improved nil-vs-error detection
+    - errorlint          # correct error wrapping and comparisons
+    - durationcheck      # time.Duration arithmetic mistakes
+    - makezero           # make([]T, n) with non-zero n passed to append
+    - reassign           # unexpected reassignment of package-level vars
+    - copyloopvar        # loop variable capture (pre-range-over-func)
+    - fatcontext         # context.WithValue inside tight loops
+    - noctx              # http.NewRequest without a context
+    - sqlclosecheck      # sql.Rows / sql.Stmt not closed
+    - rowserrcheck       # sql.Rows.Err() must be checked
+    - forcetypeassert    # unchecked type assertions (x.(T))
+    - embeddedstructfieldcheck  # embedded struct field access issues
+    - gochecksumtype     # exhaustiveness of sum-type switches
+    - recvcheck          # consistent receiver types on methods
+
+    # ── Security ─────────────────────────────────────────────────────────────
+    - gosec              # security anti-patterns (G### codes)
+
+    # ── Style / quality ───────────────────────────────────────────────────────
+    - revive             # opinionated style; superset of golint
+    - misspell           # spelling errors in source and comments
+    - godot              # comments should end with a period
+    - nolintlint         # //nolint directives must be specific and used
+    - gocritic           # style & performance suggestions
+    - unconvert          # unnecessary type conversions
+    - predeclared        # shadowing of predeclared identifiers
+    - usestdlibvars      # use stdlib constants instead of magic strings
+    - perfsprint         # prefer strconv / string concat over fmt.Sprintf
+    - mirror             # suggest symmetric stdlib alternatives
+    - intrange           # use integer range in for loops (Go 1.22+)
+    - exptostd           # suggest stdlib over golang.org/x/exp
+    - modernize          # suggest modern Go idioms
+    - errname            # error type naming conventions (ErrFoo / FooError)
+    - goprintffuncname   # printf-like func names must end in f
+    - nosprintfhostport  # don't use Sprintf to construct host:port strings
+    - dupword            # duplicate words in comments / strings
+    - gocheckcompilerdirectives  # valid //go: build/generate directives
+    - musttag            # structs that require json/yaml tags have them
+    - importas           # consistent import aliases across the codebase
+
+    # ── Complexity (permissive thresholds for early dev) ─────────────────────
+    - cyclop             # cyclomatic complexity per function
+    - nestif             # deeply nested if chains
+
+    # ── Logging ───────────────────────────────────────────────────────────────
+    - sloglint           # slog key-value pair correctness
+    - loggercheck        # zap/logr/slog key-value pair correctness
+    - zerologlint        # zerolog anti-patterns
+
+    # ── Testing ───────────────────────────────────────────────────────────────
+    - testifylint        # testify assertion correctness
+    - usetesting         # prefer t.TempDir, t.Setenv, etc.
+
+  settings:
+    # cyclop: generous threshold while the codebase is young; tighten later
+    cyclop:
+      max-complexity: 15
+      skip-tests: true
+
+    nestif:
+      min-complexity: 6
+
+    # revive: replaces golint; keep it informative, not pedantic
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck  # allow sqi.SQI if needed
+        - name: var-naming
+        - name: unused-parameter
+        - name: empty-block
+        - name: unused-receiver
+        - name: superfluous-else
+
+    # errcheck: ignore common patterns that are safe to discard
+    errcheck:
+      check-type-assertions: true   # catch unchecked x.(T)
+      check-blank: true
+
+    # gosec: suppress a few low-signal rules
+    gosec:
+      excludes:
+        - G104  # errors unhandled — errcheck covers this already
+        - G304  # file inclusion via variable — legitimate in CLI tools
+        - G306  # file permissions — context-dependent
+
+    # gocritic: opt into additional check groups
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - hugeParam         # false-positive noise; we use pointers where it matters
+        - rangeValCopy      # same
+
+    # godot: top-level comments only; don't enforce on inline //nolint etc.
+    godot:
+      scope: declarations
+      capital: false
+
+    # sloglint: enforce key-value pair discipline
+    sloglint:
+      no-mixed-args: true
+      kv-only: false
+      attr-only: false
+      context: "all"
+      static-msg: false
+      no-global: "all"
+
+    # nolintlint: require that every //nolint has a justification
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    # misspell: British → American English
+    misspell:
+      locale: US
+
+    # testifylint: full suite of checks
+    testifylint:
+      enable-all: true
+
+  exclusions:
+    generated: strict   # honour //go:generate / DO NOT EDIT headers
+    warn-unused: true   # warn if an exclusion rule is never triggered
+
+    presets:
+      - std-error-handling    # suppress fmt.Fprintf / io.WriteString ignored returns
+      - common-false-positives
+
+    rules:
+      # Tests get a lighter touch: no security or complexity checks.
+      - path: _test\.go
+        linters:
+          - gosec
+          - cyclop
+          - nestif
+          - funlen
+          - gocritic
+
+      # Generated proto / mock files: suppress everything except correctness.
+      - path: "(mock_|_mock\\.go|_gen\\.go|\\.pb\\.go)"
+        linters:
+          - revive
+          - gocritic
+          - errcheck
+          - staticcheck
+          - unused
+
+      # Migration files contain raw SQL; suppress sql-related lint.
+      - path: "internal/store/migrations"
+        linters:
+          - gocritic
+
+      # Suppress "weak crypto" in test helpers that deliberately use md5/sha1.
+      - path: _test\.go
+        text: "weak cryptographic primitive"
+        linters:
+          - gosec
+
+      # Long go:generate lines are fine.
+      - source: "^//go:generate "
+        linters:
+          - lll
+
+# ── Formatters ────────────────────────────────────────────────────────────────
+# gofumpt and goimports are formatters in golangci-lint v2, not linters.
+# Running `golangci-lint fmt` (or `make fmt`) invokes them.
+formatters:
+  enable:
+    - gofumpt    # stricter gofmt; enforces blank-line rules
+    - goimports  # organises import groups (stdlib / external / internal)
+
+  settings:
+    goimports:
+      # Keep sqi's own packages in a separate import group.
+      local-prefixes:
+        - github.com/uberware/sqi
+
+  exclusions:
+    generated: strict
+    warn-unused: true
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output:
+  formats:
+    text:
+      print-linter-name: true
+      print-issued-lines: true
+      colors: true
+  sort-order:
+    - linter
+    - file
+  show-stats: true

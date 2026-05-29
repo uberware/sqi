@@ -1,0 +1,101 @@
+# lefthook — Git hook runner for sqi
+# Docs: https://lefthook.dev/configuration/
+#
+# Install hooks into .git/hooks/ by running:
+#   make hooks
+# or directly:
+#   lefthook install
+#
+# Install lefthook itself:
+#   go install github.com/evilmartians/lefthook@latest
+#
+# To bypass hooks for a single commit (e.g. a WIP commit):
+#   git commit --no-verify
+#
+# Developer-local overrides (not committed) live in lefthook-local.yml.
+# Example use: disable the slow golangci-lint step locally while keeping
+# formatting and vet checks active.
+
+min_version: "1.6.0"
+assert_lefthook_installed: true
+
+# ── pre-commit ────────────────────────────────────────────────────────────────
+# Runs on every `git commit`. Steps are ordered by priority and piped —
+# if formatting fails, lint will not run (avoids noisy output on partial fixes).
+
+pre-commit:
+  piped: true  # stop the chain on first failure
+
+  commands:
+    # Step 1 — format staged Go files with gofumpt and re-stage the result.
+    # gofumpt is a stricter superset of gofmt.
+    # Install: go install mvdan.cc/gofumpt@latest
+    gofumpt:
+      priority: 1
+      glob: "*.go"
+      run: gofumpt -l -w {staged_files}
+      stage_fixed: true
+      fail_text: "gofumpt failed — is it installed? (go install mvdan.cc/gofumpt@latest)"
+
+    # Step 2 — organise imports with goimports and re-stage.
+    # Keeps stdlib / external / internal groups separate.
+    # Install: go install golang.org/x/tools/cmd/goimports@latest
+    goimports:
+      priority: 2
+      glob: "*.go"
+      run: goimports -local github.com/uberware/sqi -l -w {staged_files}
+      stage_fixed: true
+      fail_text: "goimports failed — is it installed? (go install golang.org/x/tools/cmd/goimports@latest)"
+
+    # Step 3 — go vet across the whole module.
+    # Fast; catches common correctness issues that don't require the full
+    # linter suite.
+    go-vet:
+      priority: 3
+      glob: "*.go"
+      run: go vet ./...
+      fail_text: "go vet found issues — run 'make vet' for details"
+
+    # Step 4 — golangci-lint with auto-fix enabled.
+    # Slower than vet (~5–30 s depending on codebase size). Skip it locally
+    # by adding the following to lefthook-local.yml:
+    #
+    #   pre-commit:
+    #     commands:
+    #       golangci-lint:
+    #         skip: true
+    #
+    golangci-lint:
+      priority: 4
+      glob: "*.go"
+      run: golangci-lint run --fix ./...
+      stage_fixed: true
+      fail_text: "golangci-lint found issues — run 'make lint-fix' to apply fixes"
+
+# ── commit-msg ────────────────────────────────────────────────────────────────
+# Enforces Conventional Commits format so the CHANGELOG can be generated
+# automatically (task 94). Merge commits and fixups are exempt.
+#
+# Valid format:  type(optional-scope): description
+# Valid types:   feat fix docs style refactor test chore build ci perf revert
+# Examples:
+#   feat(scheduler): add license-pool admission check
+#   fix: correct heartbeat timeout calculation
+#   chore: bump golangci-lint to v1.60
+
+commit-msg:
+  commands:
+    conventional-commits:
+      # {1} is the path to the file containing the commit message.
+      # grep exits 0 if the pattern matches, non-zero otherwise.
+      run: >
+        grep -qE
+        "^(feat|fix|docs|style|refactor|test|chore|build|ci|perf|revert)(\(.+\))?(!)?: .{1,}"
+        {1}
+        || (grep -qE "^(Merge|fixup!|squash!)" {1})
+      fail_text: |
+        Commit message does not follow Conventional Commits.
+        Expected:  type(scope)?: short description
+        Example:   feat(scheduler): add license-pool admission check
+        Types:     feat fix docs style refactor test chore build ci perf revert
+        Docs:      https://www.conventionalcommits.org
