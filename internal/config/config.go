@@ -73,6 +73,14 @@ type StoreConfig struct {
 	// Created at startup if it does not exist.
 	// Env: SQI_STORE_SQLITE_PATH
 	SQLitePath string `yaml:"sqlite_path"`
+
+	// CheckpointInterval is how often the background goroutine runs a WAL
+	// checkpoint (PRAGMA wal_checkpoint(TRUNCATE)) to fold committed WAL frames
+	// back into the main database file and keep the WAL from growing unboundedly.
+	// Must be > 0. Set to a large value (e.g. "24h") to effectively disable
+	// periodic checkpointing (a final checkpoint always runs on shutdown).
+	// Env: SQI_STORE_CHECKPOINT_INTERVAL
+	CheckpointInterval time.Duration `yaml:"checkpoint_interval"`
 }
 
 // LogConfig controls structured log output.
@@ -135,7 +143,8 @@ func DefaultConfig() Config {
 			MaxStoreMB: 1024,
 		},
 		Store: StoreConfig{
-			SQLitePath: "sqi.db",
+			SQLitePath:         "sqi.db",
+			CheckpointInterval: 5 * time.Minute,
 		},
 		Log: LogConfig{
 			Level:  "info",

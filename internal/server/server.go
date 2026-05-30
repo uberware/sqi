@@ -61,6 +61,10 @@ type Config struct {
 	// SQLitePath is the path to the SQLite database file used in simple mode.
 	// It is created at startup if it does not exist.
 	SQLitePath string // default "sqi.db"
+
+	// CheckpointInterval is how often the background WAL checkpointer runs.
+	// See internal/config.StoreConfig.CheckpointInterval for semantics.
+	CheckpointInterval time.Duration // default 5m
 }
 
 // DefaultConfig returns a [Config] with sensible development defaults.
@@ -68,10 +72,11 @@ type Config struct {
 // variables (tasks 16–19).
 func DefaultConfig() Config {
 	return Config{
-		HTTPAddr:    "0.0.0.0:8080",
-		NATSAddr:    "127.0.0.1:4222",
-		NATSDataDir: "data/nats",
-		SQLitePath:  "sqi.db",
+		HTTPAddr:           "0.0.0.0:8080",
+		NATSAddr:           "127.0.0.1:4222",
+		NATSDataDir:        "data/nats",
+		SQLitePath:         "sqi.db",
+		CheckpointInterval: 5 * time.Minute,
 	}
 }
 
@@ -163,6 +168,15 @@ func (s *Server) start(ctx context.Context) error {
 
 	// Register SQLite as a readiness dependency so /readyz reflects its health.
 	s.health.Register("sqlite", health.CheckerFunc(st.Ping))
+
+	// Start the background WAL checkpointer. It exits when ctx is canceled,
+	// running one final checkpoint before returning so the WAL is fully flushed
+	// before store.Close is called in shutdown.
+	st.StartCheckpointer(ctx, s.cfg.CheckpointInterval, s.logger)
+	s.logger.InfoContext(
+		ctx, "store: wal checkpointer started",
+		slog.Duration("interval", s.cfg.CheckpointInterval),
+	)
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// TODO(tasks 33–39): embed and start NATS, configure JetStream streams.

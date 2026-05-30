@@ -99,7 +99,8 @@ type fileConfig struct {
 	} `yaml:"nats"`
 
 	Store *struct {
-		SQLitePath *string `yaml:"sqlite_path"`
+		SQLitePath         *string `yaml:"sqlite_path"`
+		CheckpointInterval *string `yaml:"checkpoint_interval"`
 	} `yaml:"store"`
 
 	Log *struct {
@@ -205,6 +206,11 @@ func mergeStoreFile(cfg *Config, fc fileConfig) {
 	if fc.Store.SQLitePath != nil {
 		cfg.Store.SQLitePath = *fc.Store.SQLitePath
 	}
+	if fc.Store.CheckpointInterval != nil {
+		if d, err := time.ParseDuration(*fc.Store.CheckpointInterval); err == nil {
+			cfg.Store.CheckpointInterval = d
+		}
+	}
 }
 
 func mergeLogFile(cfg *Config, fc fileConfig) {
@@ -261,6 +267,7 @@ func applyEnv(cfg *Config) {
 	setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB")
 
 	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
+	setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL")
 
 	setString(&cfg.Log.Level, "SQI_LOG_LEVEL")
 	setString(&cfg.Log.Format, "SQI_LOG_FORMAT")

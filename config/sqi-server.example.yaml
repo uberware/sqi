@@ -56,6 +56,16 @@ store:
   # Type: string   Env: SQI_STORE_SQLITE_PATH
   sqlite_path: "sqi.db"
 
+  # How often the background WAL checkpointer runs PRAGMA wal_checkpoint(TRUNCATE)
+  # to fold committed WAL frames back into the main database file and truncate
+  # the WAL. Without periodic checkpointing the WAL grows unboundedly under
+  # write load. A final checkpoint always runs on clean shutdown regardless of
+  # this interval. Set to a large value (e.g. "24h") to disable periodic
+  # checkpointing while keeping the shutdown checkpoint.
+  # Must be > 0.
+  # Type: duration   Env: SQI_STORE_CHECKPOINT_INTERVAL
+  checkpoint_interval: "5m"
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 log:
   # Minimum log level to emit.

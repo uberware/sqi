@@ -85,13 +85,23 @@ func validateNATS(cfg NATSConfig) []ValidationError {
 }
 
 func validateStore(cfg StoreConfig) []ValidationError {
+	var errs []ValidationError
 	if cfg.SQLitePath == "" {
-		return []ValidationError{{
+		errs = append(errs, ValidationError{
 			Field:   "store.sqlite_path",
 			Message: "must not be empty; set SQI_STORE_SQLITE_PATH or store.sqlite_path in the config file",
-		}}
+		})
 	}
-	return nil
+	if cfg.CheckpointInterval <= 0 {
+		errs = append(errs, ValidationError{
+			Field: "store.checkpoint_interval",
+			Message: fmt.Sprintf(
+				"must be > 0, got %s; set SQI_STORE_CHECKPOINT_INTERVAL or store.checkpoint_interval",
+				cfg.CheckpointInterval,
+			),
+		})
+	}
+	return errs
 }
 
 func validateLog(cfg LogConfig) []ValidationError {
