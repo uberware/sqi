@@ -1,0 +1,103 @@
+# sqi-server configuration
+#
+# Copy this file to one of the default search locations and customise as needed:
+#
+#   ./config/sqi-server.yaml          (next to the binary — recommended for dev)
+#   ~/.sqi/sqi-server.yaml            (user-level override)
+#   /etc/sqi/sqi-server.yaml          (system-wide installation)
+#
+# Or pass an explicit path:
+#   sqi-server serve --config /path/to/sqi-server.yaml
+#
+# Override order (highest wins):
+#   built-in defaults → this file → SQI_* environment variables → CLI flags
+#
+# Duration values use Go duration syntax: 30s, 1m30s, 500ms, 2h, etc.
+
+# ── HTTP ──────────────────────────────────────────────────────────────────────
+http:
+  # TCP address the REST API and WebSocket gateway listen on.
+  # Use "127.0.0.1:8080" to restrict to loopback only.
+  # Type: string   Env: SQI_HTTP_ADDR   Flag: --http-addr
+  addr: "0.0.0.0:8080"
+
+# ── NATS JetStream (embedded broker) ─────────────────────────────────────────
+nats:
+  # TCP address the embedded NATS server binds to.
+  # Defaults to loopback — sqi-server communicates with NATS in-process.
+  # Change this only if you need to expose NATS to worker nodes directly
+  # (not recommended; prefer the sqi worker protocol over the REST/WS API).
+  # Type: string   Env: SQI_NATS_ADDR
+  addr: "127.0.0.1:4222"
+
+  # Directory used by JetStream for file-backed stream persistence.
+  # Created at startup if it does not exist. Relative paths are resolved
+  # from the working directory at the time sqi-server starts.
+  # Type: string   Env: SQI_NATS_DATA_DIR
+  data_dir: "data/nats"
+
+  # Maximum disk space JetStream may use, in megabytes.
+  # When the limit is reached, older messages are evicted per stream policy.
+  # Type: int   Env: SQI_NATS_MAX_STORE_MB
+  max_store_mb: 1024
+
+# ── SQLite state store ────────────────────────────────────────────────────────
+store:
+  # Path to the SQLite database file. Created at startup if it does not exist.
+  # For production, use an absolute path on a local SSD.
+  # Type: string   Env: SQI_STORE_SQLITE_PATH
+  sqlite_path: "sqi.db"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+log:
+  # Minimum log level to emit.
+  # Accepted: debug | info | warn | error
+  # Type: string   Env: SQI_LOG_LEVEL   Flag: --log-level
+  level: "info"
+
+  # Log output format.
+  # "json" is recommended for production (structured, machine-parseable).
+  # "text" is friendlier for interactive development.
+  # Accepted: json | text
+  # Type: string   Env: SQI_LOG_FORMAT   Flag: --log-format
+  format: "json"
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+# Controls the task assignment loop. These settings are consumed by the
+# scheduler component (tasks 46–55); they are accepted and validated now so
+# that config files written today remain valid once the scheduler lands.
+scheduler:
+  # Duration after which a worker that has not sent a heartbeat is declared
+  # offline. Its in-flight tasks are reclaimed and re-queued for assignment.
+  # Must be > 0. For high-latency networks, increase to 60s or more.
+  # Type: duration   Env: SQI_SCHEDULER_HEARTBEAT_TIMEOUT
+  heartbeat_timeout: "30s"
+
+  # How often the assignment loop wakes to match ready tasks to idle workers.
+  # Lower values reduce assignment latency at the cost of more CPU. Most farms
+  # work well at the default; reduce to 100ms only for sub-second task bursts.
+  # Must be > 0.
+  # Type: duration   Env: SQI_SCHEDULER_TICK_INTERVAL
+  tick_interval: "500ms"
+
+  # Maximum number of tasks that can be simultaneously assigned to a single
+  # worker. The default of 1 is appropriate for rendering workloads that
+  # saturate CPU/GPU. Increase for lightweight tasks that benefit from
+  # in-process concurrency on the worker side.
+  # Must be ≥ 1.
+  # Type: int   Env: SQI_SCHEDULER_MAX_TASKS_PER_WORKER
+  max_tasks_per_worker: 1
+
+# ── mDNS service discovery ────────────────────────────────────────────────────
+discovery:
+  # When true, sqi-server broadcasts a _sqi._tcp mDNS record so that workers
+  # and the sqi CLI can discover it automatically on the local network without
+  # manual address configuration.
+  # Disable in environments that prohibit multicast (e.g. most cloud VPCs).
+  # Type: bool   Env: SQI_DISCOVERY_ENABLED
+  enabled: true
+
+  # The mDNS service instance name advertised on the network.
+  # Each sqi-server on the same subnet should use a distinct name.
+  # Type: string   Env: SQI_DISCOVERY_INSTANCE_NAME
+  instance_name: "sqi-server"

@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/uberware/sqi/internal/config"
 )
 
 // rootCmd is the top-level sqi-server command. It does not run any logic
@@ -57,6 +59,22 @@ func init() {
 		migrateCmd,
 		configCmd,
 	)
+}
+
+// persistentFlagOverrides returns a [config.FlagOverrides] populated only from
+// flags the user explicitly set on the command line. Flags that were not
+// provided keep their zero value so they do not shadow env-var or config-file
+// values in the lower layers.
+func persistentFlagOverrides() config.FlagOverrides {
+	pf := rootCmd.PersistentFlags()
+	var ov config.FlagOverrides
+	if pf.Changed("log-level") {
+		ov.LogLevel = persistentFlags.LogLevel
+	}
+	if pf.Changed("log-format") {
+		ov.LogFormat = persistentFlags.LogFormat
+	}
+	return ov
 }
 
 // Execute runs the root command and returns any error. main() calls this and

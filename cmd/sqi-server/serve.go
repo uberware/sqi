@@ -4,15 +4,23 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/server"
 )
+
+// serveFlags holds values for flags specific to the serve subcommand.
+var serveFlags struct {
+	HTTPAddr string
+}
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -26,28 +34,56 @@ for active HTTP requests to complete, and flushing the state store.`,
 	RunE: runServe,
 }
 
-func runServe(_ *cobra.Command, _ []string) error {
+func init() {
+	serveCmd.Flags().StringVar(
+		&serveFlags.HTTPAddr,
+		"http-addr", "",
+		"HTTP listen address (overrides config file and SQI_HTTP_ADDR)",
+	)
+}
+
+func runServe(cmd *cobra.Command, _ []string) error {
+	// ── Configuration ─────────────────────────────────────────────────────────
+	overrides := persistentFlagOverrides()
+	if cmd.Flags().Changed("http-addr") {
+		overrides.HTTPAddr = serveFlags.HTTPAddr
+	}
+	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if errs := config.Validate(cfg); len(errs) > 0 {
+		var b strings.Builder
+		for _, e := range errs {
+			fmt.Fprintf(&b, "  %s\n", e)
+		}
+		return fmt.Errorf("%d configuration error(s):\n%s", len(errs), b.String())
+	}
+
 	// ── Logger ────────────────────────────────────────────────────────────────
-	// TODO(tasks 20–21): replace with internal/log setup that honors
-	// --log-level and --log-format from persistentFlags.
-	logLevel := slog.LevelInfo
-	if persistentFlags.LogLevel == "debug" {
+	// TODO(tasks 20–21): replace with internal/log setup for structured logging
+	// with request middleware. For now, wire up slog directly from config.
+	var logLevel slog.Level
+	switch strings.ToLower(cfg.Log.Level) {
+	case "debug":
 		logLevel = slog.LevelDebug
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
 	}
 
 	var handler slog.Handler
 	opts := &slog.HandlerOptions{Level: logLevel}
-	if persistentFlags.LogFormat == "text" {
+	if strings.EqualFold(cfg.Log.Format, "text") {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	} else {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	}
 	logger := slog.New(handler)
-
-	// ── Configuration ─────────────────────────────────────────────────────────
-	// TODO(tasks 16–19): load from layered config (defaults → file → SQI_* env
-	// vars → CLI flags) via internal/config, using persistentFlags.ConfigFile.
-	cfg := server.DefaultConfig()
 
 	// ── Signal context ────────────────────────────────────────────────────────
 	// signal.NotifyContext cancels ctx on the first SIGINT or SIGTERM, which
@@ -62,7 +98,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 	defer stop()
 
 	// ── Run ───────────────────────────────────────────────────────────────────
-	srv := server.New(cfg, logger)
+	srv := server.New(server.Config{
+		HTTPAddr:    cfg.HTTP.Addr,
+		NATSAddr:    cfg.NATS.Addr,
+		NATSDataDir: cfg.NATS.DataDir,
+		SQLitePath:  cfg.Store.SQLitePath,
+	}, logger)
 	if err := srv.Run(ctx); err != nil {
 		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
 		return err
