@@ -6,7 +6,7 @@
 //
 // Components are added to [Server] as their implementing tasks land:
 //   - store (SQLite):          tasks 25–32 ✓
-//   - bus (NATS JetStream):    tasks 33–39 ✓ (tasks 33–35 done)
+//   - bus (NATS JetStream):    tasks 33–39 ✓
 //   - scheduler:               tasks 46–55
 //   - httpServer (REST+WS+UI): tasks 66–88
 //   - discovery (mDNS):        tasks 89–90
@@ -104,8 +104,9 @@ type Server struct {
 	obsServer *http.Server
 
 	// Component fields are added here as their tasks land.
-	store  store.Store // tasks 25–32 ✓
-	broker *bus.Broker // tasks 33–39 ✓ (33–35 done; 36–39 pending)
+	store     store.Store // tasks 25–32 ✓
+	broker    *bus.Broker // tasks 33–39 ✓
+	busClient *bus.Client // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
 	// scheduler *scheduler.Scheduler   // tasks 46–55
 	// discovery *discovery.Responder   // tasks 89–90
 }
@@ -186,7 +187,7 @@ func (s *Server) start(ctx context.Context) error {
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// Tasks 33–35: embed NATS server, enable JetStream, provision streams.
-	// Tasks 36–39 (pending): typed client wrapper, consumers, reconnect, drain.
+	// Tasks 36–39: typed client wrapper, consumers, reconnect, drain.
 	broker := bus.New(bus.BrokerConfig{
 		Addr:       s.cfg.NATSAddr,
 		DataDir:    s.cfg.NATSDataDir,
@@ -199,6 +200,16 @@ func (s *Server) start(ctx context.Context) error {
 
 	// Register NATS as a readiness dependency so GET /readyz reflects its health.
 	s.health.Register("nats", health.CheckerFunc(broker.Check))
+
+	// Dial the embedded broker with a typed client.  All server components
+	// (scheduler, worker-protocol handlers, etc.) will receive this client
+	// rather than importing the raw nats package directly.
+	busClient, err := broker.NewClient()
+	if err != nil {
+		return fmt.Errorf("start bus client: %w", err)
+	}
+	s.busClient = busClient
+	s.logger.InfoContext(ctx, "bus: typed client connected")
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// TODO(tasks 46–55): start assignment loop, heartbeat sweep.
@@ -280,8 +291,14 @@ func (s *Server) shutdown() error {
 	// TODO(tasks 46–55): signal scheduler to stop; wait for goroutines.
 
 	// ── Message bus ───────────────────────────────────────────────────────
-	// Tasks 33–35: shut down embedded NATS server.
-	// TODO(tasks 36–39): drain in-flight consumers before calling Shutdown.
+	// Tasks 36–39: drain the typed client first — stops push consumers,
+	// waits for in-flight handlers, and flushes pending publish-acks — then
+	// shut down the embedded NATS server.
+	if s.busClient != nil {
+		if err := s.busClient.Drain(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("bus client drain: %w", err))
+		}
+	}
 	if s.broker != nil {
 		s.broker.Shutdown()
 	}
