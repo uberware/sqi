@@ -5,7 +5,7 @@
 // responder in the correct dependency order.
 //
 // Components are added to [Server] as their implementing tasks land:
-//   - store (SQLite):          tasks 25–32
+//   - store (SQLite):          tasks 25–32 ✓ (tasks 25–29 done)
 //   - bus (NATS JetStream):    tasks 33–39
 //   - scheduler:               tasks 46–55
 //   - httpServer (REST+WS+UI): tasks 66–88
@@ -25,6 +25,8 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 // ShutdownTimeout is the maximum time [Server.Run] waits for all components
@@ -91,7 +93,7 @@ type Server struct {
 	obsServer *http.Server
 
 	// Component fields are added here as their tasks land.
-	// store     *store.Store           // tasks 25–32
+	store store.Store // tasks 25–32 (sqlite backend wired in task 29)
 	// bus       *bus.Client            // tasks 33–39
 	// scheduler *scheduler.Scheduler   // tasks 46–55
 	// discovery *discovery.Responder   // tasks 89–90
@@ -152,8 +154,15 @@ func (s *Server) Run(ctx context.Context) error {
 // Each block is a stub that will be replaced as the corresponding tasks land.
 func (s *Server) start(ctx context.Context) error {
 	// ── Store (SQLite) ─────────────────────────────────────────────────────
-	// TODO(tasks 25–32): open store, run pending migrations.
-	s.logger.DebugContext(ctx, "store: not yet started (tasks 25–32)")
+	st, err := sqlite.Open(ctx, s.cfg.SQLitePath, sqlite.DefaultOptions())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	s.store = st
+	s.logger.InfoContext(ctx, "store: sqlite open", slog.String("path", s.cfg.SQLitePath))
+
+	// Register SQLite as a readiness dependency so /readyz reflects its health.
+	s.health.Register("sqlite", health.CheckerFunc(st.Ping))
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// TODO(tasks 33–39): embed and start NATS, configure JetStream streams.
@@ -242,7 +251,11 @@ func (s *Server) shutdown() error {
 	// TODO(tasks 33–39): drain in-flight NATS messages, shutdown server.
 
 	// ── Store ─────────────────────────────────────────────────────────────
-	// TODO(tasks 25–32): flush WAL checkpoint, close SQLite connection.
+	if s.store != nil {
+		if err := s.store.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("store close: %w", err))
+		}
+	}
 
 	if ctx.Err() != nil {
 		errs = append(errs, fmt.Errorf("graceful shutdown timed out after %s", ShutdownTimeout))
