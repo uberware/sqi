@@ -85,6 +85,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		HTTPAddr:           cfg.HTTP.Addr,
 		NATSAddr:           cfg.NATS.Addr,
 		NATSDataDir:        cfg.NATS.DataDir,
+		NATSMaxStoreMB:     cfg.NATS.MaxStoreMB,
 		SQLitePath:         cfg.Store.SQLitePath,
 		EnablePprof:        cfg.HTTP.EnablePprof,
 		CheckpointInterval: cfg.Store.CheckpointInterval,

@@ -5,8 +5,8 @@
 // responder in the correct dependency order.
 //
 // Components are added to [Server] as their implementing tasks land:
-//   - store (SQLite):          tasks 25–32 ✓ (tasks 25–29 done)
-//   - bus (NATS JetStream):    tasks 33–39
+//   - store (SQLite):          tasks 25–32 ✓
+//   - bus (NATS JetStream):    tasks 33–39 ✓ (tasks 33–35 done)
 //   - scheduler:               tasks 46–55
 //   - httpServer (REST+WS+UI): tasks 66–88
 //   - discovery (mDNS):        tasks 89–90
@@ -22,6 +22,7 @@ import (
 
 	httppprof "net/http/pprof"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
@@ -58,6 +59,10 @@ type Config struct {
 	// storage. It is created at startup if it does not exist.
 	NATSDataDir string // default "data/nats"
 
+	// NATSMaxStoreMB is the maximum disk space JetStream may use, in
+	// megabytes.  0 means unlimited (not recommended for production).
+	NATSMaxStoreMB int // default 1024
+
 	// SQLitePath is the path to the SQLite database file used in simple mode.
 	// It is created at startup if it does not exist.
 	SQLitePath string // default "sqi.db"
@@ -75,6 +80,7 @@ func DefaultConfig() Config {
 		HTTPAddr:           "0.0.0.0:8080",
 		NATSAddr:           "127.0.0.1:4222",
 		NATSDataDir:        "data/nats",
+		NATSMaxStoreMB:     1024,
 		SQLitePath:         "sqi.db",
 		CheckpointInterval: 5 * time.Minute,
 	}
@@ -98,8 +104,8 @@ type Server struct {
 	obsServer *http.Server
 
 	// Component fields are added here as their tasks land.
-	store store.Store // tasks 25–32 (sqlite backend wired in task 29)
-	// bus       *bus.Client            // tasks 33–39
+	store  store.Store // tasks 25–32 ✓
+	broker *bus.Broker // tasks 33–39 ✓ (33–35 done; 36–39 pending)
 	// scheduler *scheduler.Scheduler   // tasks 46–55
 	// discovery *discovery.Responder   // tasks 89–90
 }
@@ -179,8 +185,20 @@ func (s *Server) start(ctx context.Context) error {
 	)
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
-	// TODO(tasks 33–39): embed and start NATS, configure JetStream streams.
-	s.logger.DebugContext(ctx, "bus: not yet started (tasks 33–39)")
+	// Tasks 33–35: embed NATS server, enable JetStream, provision streams.
+	// Tasks 36–39 (pending): typed client wrapper, consumers, reconnect, drain.
+	broker := bus.New(bus.BrokerConfig{
+		Addr:       s.cfg.NATSAddr,
+		DataDir:    s.cfg.NATSDataDir,
+		MaxStoreMB: s.cfg.NATSMaxStoreMB,
+	}, s.logger)
+	if err := broker.Start(ctx); err != nil {
+		return fmt.Errorf("start bus: %w", err)
+	}
+	s.broker = broker
+
+	// Register NATS as a readiness dependency so GET /readyz reflects its health.
+	s.health.Register("nats", health.CheckerFunc(broker.Check))
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// TODO(tasks 46–55): start assignment loop, heartbeat sweep.
@@ -262,7 +280,11 @@ func (s *Server) shutdown() error {
 	// TODO(tasks 46–55): signal scheduler to stop; wait for goroutines.
 
 	// ── Message bus ───────────────────────────────────────────────────────
-	// TODO(tasks 33–39): drain in-flight NATS messages, shutdown server.
+	// Tasks 33–35: shut down embedded NATS server.
+	// TODO(tasks 36–39): drain in-flight consumers before calling Shutdown.
+	if s.broker != nil {
+		s.broker.Shutdown()
+	}
 
 	// ── Store ─────────────────────────────────────────────────────────────
 	if s.store != nil {
