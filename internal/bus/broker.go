@@ -186,3 +186,17 @@ func (b *Broker) ClientURL() string {
 	}
 	return b.ns.ClientURL()
 }
+
+// NewClient dials the embedded NATS server and returns a connected [Client]
+// configured for automatic reconnection.  It must be called after [Broker.Start]
+// returns successfully.
+//
+// The returned Client should be shared across goroutines; create one per server
+// component (or one shared instance for the whole server) rather than dialing
+// repeatedly.
+func (b *Broker) NewClient() (*Client, error) {
+	if b.ns == nil {
+		return nil, errors.New("bus: broker not started")
+	}
+	return NewClient(b.ns.ClientURL(), b.logger)
+}
