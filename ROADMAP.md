@@ -106,7 +106,7 @@ A **product** describes a class of work in terms of user-friendly parameters and
 - **Task**: Atomic unit of work — one process on one worker
 - **Session**: Ephemeral runtime environment in which tasks run, with setup/teardown hooks
 
-Sessions enable efficiency: expensive setup (launching a container, downloading assets) is paid once per Session rather than once per task. A failed or cancelled task terminates its Session — environments are exited cleanly and the working directory is removed — which keeps worker state predictable.
+Sessions enable efficiency: expensive setup (launching a container, downloading assets) is paid once per Session rather than once per task. A failed or canceled task terminates its Session — environments are exited cleanly and the working directory is removed — which keeps worker state predictable.
 
 ---
 

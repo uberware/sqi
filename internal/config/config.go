@@ -41,6 +41,12 @@ type HTTPConfig struct {
 	// Addr is the TCP address the HTTP server listens on.
 	// Env: SQI_HTTP_ADDR
 	Addr string `yaml:"addr"`
+
+	// EnablePprof exposes the Go runtime profiling endpoints at /debug/pprof/
+	// when true. Profiling data is sensitive; never enable this on a server
+	// accessible to untrusted networks. Disabled by default.
+	// Env: SQI_HTTP_ENABLE_PPROF
+	EnablePprof bool `yaml:"enable_pprof"`
 }
 
 // NATSConfig controls the embedded NATS JetStream broker.

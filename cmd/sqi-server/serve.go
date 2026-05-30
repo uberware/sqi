@@ -86,6 +86,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		NATSAddr:    cfg.NATS.Addr,
 		NATSDataDir: cfg.NATS.DataDir,
 		SQLitePath:  cfg.Store.SQLitePath,
+		EnablePprof: cfg.HTTP.EnablePprof,
 	}, logger)
 	if err := srv.Run(ctx); err != nil {
 		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))

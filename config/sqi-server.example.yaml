@@ -21,6 +21,14 @@ http:
   # Type: string   Env: SQI_HTTP_ADDR   Flag: --http-addr
   addr: "0.0.0.0:8080"
 
+  # Expose Go runtime profiling endpoints at /debug/pprof/.
+  # Profiling data reveals memory layout, goroutine stacks, and CPU hotspots —
+  # never enable this on a server accessible to untrusted networks.
+  # Enable temporarily on a loopback-only instance for performance diagnosis.
+  # Default: false
+  # Type: bool   Env: SQI_HTTP_ENABLE_PPROF
+  enable_pprof: false
+
 # ── NATS JetStream (embedded broker) ─────────────────────────────────────────
 nats:
   # TCP address the embedded NATS server binds to.

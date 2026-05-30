@@ -17,7 +17,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
+
+	httppprof "net/http/pprof"
+
+	"github.com/uberware/sqi/internal/health"
+	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/middleware"
 )
 
 // ShutdownTimeout is the maximum time [Server.Run] waits for all components
@@ -34,6 +41,11 @@ const ShutdownTimeout = 30 * time.Second
 type Config struct {
 	// HTTPAddr is the TCP address the REST + WebSocket server listens on.
 	HTTPAddr string // default "0.0.0.0:8080"
+
+	// EnablePprof registers the Go runtime profiling endpoints at
+	// /debug/pprof/ when true. Should never be enabled on servers accessible
+	// to untrusted networks. Default false.
+	EnablePprof bool
 
 	// NATSAddr is the TCP address the embedded NATS server listens on.
 	// It defaults to loopback so external clients cannot reach it directly;
@@ -64,23 +76,48 @@ func DefaultConfig() Config {
 // Server coordinates the startup and shutdown of all sqi-server components.
 // It is created by [New] and driven by [Run].
 type Server struct {
-	cfg    Config
-	logger *slog.Logger
+	cfg     Config
+	logger  *slog.Logger
+	metrics *metrics.Metrics
+	health  *health.Registry
+
+	// obsServer is a minimal net/http.Server that serves /metrics (task 22),
+	// /healthz and /readyz (task 23), and pprof endpoints (task 24) on
+	// cfg.HTTPAddr until the full chi router is introduced in task 66.
+	//
+	// TODO(task 66): replace obsServer with the chi-based REST + WebSocket
+	// server; the /metrics, /healthz, /readyz, and /debug/pprof routes will
+	// be registered on that router instead.
+	obsServer *http.Server
 
 	// Component fields are added here as their tasks land.
 	// store     *store.Store           // tasks 25–32
 	// bus       *bus.Client            // tasks 33–39
 	// scheduler *scheduler.Scheduler   // tasks 46–55
-	// http      *http.Server           // tasks 66–88
 	// discovery *discovery.Responder   // tasks 89–90
 }
 
 // New creates a [Server] with the given configuration and logger.
 func New(cfg Config, logger *slog.Logger) *Server {
 	return &Server{
-		cfg:    cfg,
-		logger: logger,
+		cfg:     cfg,
+		logger:  logger,
+		metrics: metrics.New(),
+		health:  health.NewRegistry(),
 	}
+}
+
+// Metrics returns the [*metrics.Metrics] instance owned by this server.
+// Other components (scheduler, bus, store) use it to record observations.
+func (s *Server) Metrics() *metrics.Metrics {
+	return s.metrics
+}
+
+// Health returns the [*health.Registry] owned by this server. Components
+// (store, bus) call Health().Register(...) during startup to participate in
+// readiness gating via GET /readyz.
+func (s *Server) Health() *health.Registry {
+	return s.health
 }
 
 // Run starts all server components and blocks until ctx is canceled (typically
@@ -126,9 +163,50 @@ func (s *Server) start(ctx context.Context) error {
 	// TODO(tasks 46–55): start assignment loop, heartbeat sweep.
 	s.logger.DebugContext(ctx, "scheduler: not yet started (tasks 46–55)")
 
-	// ── HTTP server (REST + WebSocket + embedded UI) ───────────────────────
-	// TODO(tasks 66–88): bind listener, register routes, serve.
-	s.logger.DebugContext(ctx, "http: not yet started (tasks 66–88)")
+	// ── Observability HTTP server ─────────────────────────────────────────
+	// Serves /metrics (task 22), /healthz + /readyz (task 23), and pprof
+	// (task 24). Replaced by the full chi router in task 66.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", s.metrics.Handler())
+	mux.Handle("/healthz", s.health.LivenessHandler())
+	mux.Handle("/readyz", s.health.ReadinessHandler())
+
+	if s.cfg.EnablePprof {
+		s.logger.WarnContext(
+			ctx, "pprof: profiling endpoints enabled — do not expose to untrusted networks",
+			slog.String("prefix", "/debug/pprof/"),
+		)
+		mux.HandleFunc("/debug/pprof/", httppprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", httppprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", httppprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", httppprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", httppprof.Trace)
+		mux.Handle("/debug/pprof/goroutine", httppprof.Handler("goroutine"))
+		mux.Handle("/debug/pprof/heap", httppprof.Handler("heap"))
+		mux.Handle("/debug/pprof/allocs", httppprof.Handler("allocs"))
+		mux.Handle("/debug/pprof/block", httppprof.Handler("block"))
+		mux.Handle("/debug/pprof/mutex", httppprof.Handler("mutex"))
+		mux.Handle("/debug/pprof/threadcreate", httppprof.Handler("threadcreate"))
+	}
+
+	// Apply logging and metrics middleware so requests to /metrics are
+	// themselves tracked and logged.
+	var handler http.Handler = mux
+	handler = middleware.RequestMetrics(s.metrics)(handler)
+	handler = middleware.RequestLogger(s.logger)(handler)
+
+	s.obsServer = &http.Server{
+		Addr:              s.cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		s.logger.InfoContext(ctx, "http: listening", slog.String("addr", s.cfg.HTTPAddr))
+		if err := s.obsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
+		}
+	}()
 
 	// ── mDNS responder ────────────────────────────────────────────────────
 	// TODO(tasks 89–90): advertise _sqi._tcp on the local network.
@@ -151,7 +229,11 @@ func (s *Server) shutdown() error {
 	// TODO(tasks 89–90): unregister mDNS service.
 
 	// ── HTTP server ───────────────────────────────────────────────────────
-	// TODO(tasks 66–88): httpServer.Shutdown(ctx) — drains active connections.
+	if s.obsServer != nil {
+		if err := s.obsServer.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("http shutdown: %w", err))
+		}
+	}
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// TODO(tasks 46–55): signal scheduler to stop; wait for goroutines.

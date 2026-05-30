@@ -88,7 +88,8 @@ func Load(filePath string, flags FlagOverrides) (Config, error) {
 // zero value, applying only the fields that are present in the file.
 type fileConfig struct {
 	HTTP *struct {
-		Addr *string `yaml:"addr"`
+		Addr        *string `yaml:"addr"`
+		EnablePprof *bool   `yaml:"enable_pprof"`
 	} `yaml:"http"`
 
 	NATS *struct {
@@ -177,6 +178,9 @@ func mergeHTTPFile(cfg *Config, fc fileConfig) {
 	if fc.HTTP.Addr != nil {
 		cfg.HTTP.Addr = *fc.HTTP.Addr
 	}
+	if fc.HTTP.EnablePprof != nil {
+		cfg.HTTP.EnablePprof = *fc.HTTP.EnablePprof
+	}
 }
 
 func mergeNATSFile(cfg *Config, fc fileConfig) {
@@ -250,6 +254,7 @@ func mergeDiscoveryFile(cfg *Config, fc fileConfig) {
 
 func applyEnv(cfg *Config) {
 	setString(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
+	setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF")
 
 	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
 	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
