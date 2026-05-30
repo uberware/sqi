@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/uberware/sqi/internal/config"
+	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/server"
 )
 
@@ -62,28 +63,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Logger ────────────────────────────────────────────────────────────────
-	// TODO(tasks 20–21): replace with internal/log setup for structured logging
-	// with request middleware. For now, wire up slog directly from config.
-	var logLevel slog.Level
-	switch strings.ToLower(cfg.Log.Level) {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
+	logger, err := sqilog.New(cfg.Log.Level, cfg.Log.Format, os.Stderr)
+	if err != nil {
+		return fmt.Errorf("init logger: %w", err)
 	}
-
-	var handler slog.Handler
-	opts := &slog.HandlerOptions{Level: logLevel}
-	if strings.EqualFold(cfg.Log.Format, "text") {
-		handler = slog.NewTextHandler(os.Stderr, opts)
-	} else {
-		handler = slog.NewJSONHandler(os.Stderr, opts)
-	}
-	logger := slog.New(handler)
 
 	// ── Signal context ────────────────────────────────────────────────────────
 	// signal.NotifyContext cancels ctx on the first SIGINT or SIGTERM, which
