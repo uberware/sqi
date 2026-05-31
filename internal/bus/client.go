@@ -117,6 +117,15 @@ func (c *Client) PublishWorkerRegister(ctx context.Context, data []byte) error {
 	return c.publish(ctx, SubjectWorkerRegister, data)
 }
 
+// PublishTaskCancel publishes a task-cancellation signal to the
+// task.cancel.<taskID> subject (task 54).  The scheduler calls this for each
+// task that was actively assigned or running at the time a job is canceled.
+// The worker holding the task consumes this message and interrupts the running
+// process without waiting for the next heartbeat timeout.
+func (c *Client) PublishTaskCancel(ctx context.Context, taskID string, data []byte) error {
+	return c.publish(ctx, TaskCancelSubject(taskID), data)
+}
+
 // publish is the shared JetStream publish path.  Using jetstream.Publish
 // (rather than nats.Conn.Publish) ensures the message is durably written to
 // the stream and the server receives an ack before the call returns.

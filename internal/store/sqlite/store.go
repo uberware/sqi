@@ -104,14 +104,17 @@ type Store struct {
 	stmtReleaseCheckout         *sql.Stmt
 	stmtActiveCheckoutCount     *sql.Stmt
 	stmtReleaseAttemptCheckouts *sql.Stmt
+	stmtReleaseJobCheckouts     *sql.Stmt
 
 	// ── workers ──────────────────────────────────────────────────────────
-	stmtUpsertWorker          *sql.Stmt
-	stmtGetWorker             *sql.Stmt
-	stmtUpdateWorker          *sql.Stmt
-	stmtUpdateWorkerStatus    *sql.Stmt
-	stmtUpdateWorkerHeartbeat *sql.Stmt
-	stmtListStaleWorkers      *sql.Stmt
+	stmtUpsertWorker             *sql.Stmt
+	stmtGetWorker                *sql.Stmt
+	stmtUpdateWorker             *sql.Stmt
+	stmtUpdateWorkerStatus       *sql.Stmt
+	stmtUpdateWorkerHeartbeat    *sql.Stmt
+	stmtListStaleWorkers         *sql.Stmt
+	stmtCountIdleWorkers         *sql.Stmt
+	stmtCountIdleWorkersAllFarms *sql.Stmt
 
 	// ── jobs ─────────────────────────────────────────────────────────────
 	stmtInsertJob       *sql.Stmt
@@ -134,12 +137,16 @@ type Store struct {
 	stmtReclaimWorkerTasks      *sql.Stmt
 	stmtCountActiveTasksInQueue *sql.Stmt
 	stmtCountActiveTasksInFarm  *sql.Stmt
+	stmtCountReadyTasksByQueue  *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
-	stmtInsertAttempt *sql.Stmt
-	stmtGetAttempt    *sql.Stmt
-	stmtListAttempts  *sql.Stmt
-	stmtUpdateAttempt *sql.Stmt
+	stmtInsertAttempt           *sql.Stmt
+	stmtGetAttempt              *sql.Stmt
+	stmtLatestAttempt           *sql.Stmt
+	stmtListAttempts            *sql.Stmt
+	stmtUpdateAttempt           *sql.Stmt
+	stmtTerminateWorkerAttempts *sql.Stmt
+	stmtCancelJobAttempts       *sql.Stmt
 
 	// ── audit_log ────────────────────────────────────────────────────────
 	stmtInsertAudit *sql.Stmt
@@ -321,6 +328,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtReleaseAttemptCheckouts, err = s.prepare(ctx, sqlReleaseAttemptCheckouts); err != nil {
 		return err
 	}
+	if s.stmtReleaseJobCheckouts, err = s.prepare(ctx, sqlReleaseJobCheckouts); err != nil {
+		return err
+	}
 
 	// ── workers ───────────────────────────────────────────────────────────
 	if s.stmtUpsertWorker, err = s.prepare(ctx, sqlUpsertWorker); err != nil {
@@ -339,6 +349,12 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtListStaleWorkers, err = s.prepare(ctx, sqlListStaleWorkers); err != nil {
+		return err
+	}
+	if s.stmtCountIdleWorkers, err = s.prepare(ctx, sqlCountIdleWorkers); err != nil {
+		return err
+	}
+	if s.stmtCountIdleWorkersAllFarms, err = s.prepare(ctx, sqlCountIdleWorkersAllFarms); err != nil {
 		return err
 	}
 
@@ -395,6 +411,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtCountActiveTasksInFarm, err = s.prepare(ctx, sqlCountActiveTasksInFarm); err != nil {
 		return err
 	}
+	if s.stmtCountReadyTasksByQueue, err = s.prepare(ctx, sqlCountReadyTasksByQueue); err != nil {
+		return err
+	}
 
 	// ── task_attempts ─────────────────────────────────────────────────────
 	if s.stmtInsertAttempt, err = s.prepare(ctx, sqlInsertAttempt); err != nil {
@@ -403,10 +422,19 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtGetAttempt, err = s.prepare(ctx, sqlGetAttempt); err != nil {
 		return err
 	}
+	if s.stmtLatestAttempt, err = s.prepare(ctx, sqlLatestAttempt); err != nil {
+		return err
+	}
 	if s.stmtListAttempts, err = s.prepare(ctx, sqlListAttempts); err != nil {
 		return err
 	}
 	if s.stmtUpdateAttempt, err = s.prepare(ctx, sqlUpdateAttempt); err != nil {
+		return err
+	}
+	if s.stmtTerminateWorkerAttempts, err = s.prepare(ctx, sqlTerminateWorkerAttempts); err != nil {
+		return err
+	}
+	if s.stmtCancelJobAttempts, err = s.prepare(ctx, sqlCancelJobAttempts); err != nil {
 		return err
 	}
 

@@ -122,6 +122,20 @@ WHERE pool_id = ? AND released_at IS NULL`
 UPDATE license_checkouts
 SET released_at = ?
 WHERE task_attempt_id = ? AND released_at IS NULL`
+
+	// Releases all active checkouts held by any attempt belonging to the given
+	// job (task 54). Used during job cancellation to free all license slots in
+	// a single UPDATE rather than iterating through individual attempts.
+	sqlReleaseJobCheckouts = `
+UPDATE license_checkouts
+SET    released_at = ?
+WHERE  released_at IS NULL
+  AND  task_attempt_id IN (
+         SELECT ta.id
+         FROM   task_attempts ta
+         JOIN   tasks          t  ON ta.task_id = t.id
+         WHERE  t.job_id = ?
+       )`
 )
 
 // CreateCheckout implements [store.LicenseCheckoutStore].
@@ -214,6 +228,16 @@ func (s *Store) TryClaimLicenseSlots(
 // ReleaseAttemptCheckouts implements [store.LicenseCheckoutStore].
 func (s *Store) ReleaseAttemptCheckouts(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error) {
 	res, err := s.stmtReleaseAttemptCheckouts.ExecContext(ctx, timeToText(releasedAt), taskAttemptID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// ReleaseJobCheckouts implements [store.LicenseCheckoutStore].
+func (s *Store) ReleaseJobCheckouts(ctx context.Context, jobID string, releasedAt time.Time) (int, error) {
+	res, err := s.stmtReleaseJobCheckouts.ExecContext(ctx, timeToText(releasedAt), jobID)
 	if err != nil {
 		return 0, mapErr(err)
 	}

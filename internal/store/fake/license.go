@@ -214,3 +214,40 @@ func (s *Store) ReleaseAttemptCheckouts(_ context.Context, taskAttemptID string,
 	}
 	return n, nil
 }
+
+// ReleaseJobCheckouts sets ReleasedAt on every active checkout held by any
+// attempt for tasks belonging to the given job. Returns the number released.
+func (s *Store) ReleaseJobCheckouts(_ context.Context, jobID string, releasedAt time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build the set of task IDs for the job.
+	jobTasks := make(map[string]struct{})
+	for _, t := range s.tasks {
+		if t.JobID == jobID {
+			jobTasks[t.ID] = struct{}{}
+		}
+	}
+
+	// Build the set of attempt IDs for those tasks.
+	jobAttempts := make(map[string]struct{})
+	for _, a := range s.taskAttempts {
+		if _, ok := jobTasks[a.TaskID]; ok {
+			jobAttempts[a.ID] = struct{}{}
+		}
+	}
+
+	n := 0
+	for id, co := range s.licenseCheckouts {
+		if co.ReleasedAt != nil {
+			continue
+		}
+		if _, ok := jobAttempts[co.TaskAttemptID]; !ok {
+			continue
+		}
+		co.ReleasedAt = &releasedAt
+		s.licenseCheckouts[id] = co
+		n++
+	}
+	return n, nil
+}

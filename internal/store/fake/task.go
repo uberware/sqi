@@ -236,6 +236,56 @@ func (s *Store) CountActiveTasksInFarm(_ context.Context, farmID string) (int, e
 	return n, nil
 }
 
+// CancelJobTasks transitions all non-terminal tasks for the given job to
+// [store.TaskStatusCanceled] and returns those that were in
+// [store.TaskStatusAssigned] or [store.TaskStatusRunning] at call time.
+func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time) ([]store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var active []store.Task
+	for id, task := range s.tasks {
+		if task.JobID != jobID {
+			continue
+		}
+		switch task.Status {
+		case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
+			// Already terminal; leave unchanged.
+			continue
+		}
+		// Capture assigned/running tasks before clearing the worker reference.
+		if task.Status == store.TaskStatusAssigned || task.Status == store.TaskStatusRunning {
+			active = append(active, task)
+		}
+		task.Status = store.TaskStatusCanceled
+		task.AssignedWorkerID = ""
+		task.AssignedAt = nil
+		task.UpdatedAt = now
+		s.tasks[id] = task
+	}
+	return active, nil
+}
+
+// CountReadyTasksByQueue returns the number of tasks in [store.TaskStatusReady]
+// state for each queue in the given farm, keyed by queue ID.
+func (s *Store) CountReadyTasksByQueue(_ context.Context, farmID string) (map[string]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	counts := make(map[string]int)
+	for _, t := range s.tasks {
+		if t.Status != store.TaskStatusReady {
+			continue
+		}
+		job, ok := s.jobs[t.JobID]
+		if !ok || job.FarmID != farmID {
+			continue
+		}
+		counts[job.QueueID]++
+	}
+	return counts, nil
+}
+
 // isReadyInFarm reports whether t is eligible for assignment: status Ready,
 // job belongs to farmID, and the job's queue is not paused.
 func isReadyInFarm(t store.Task, farmID string, jobs map[string]store.Job, queuePaused map[string]bool) bool {

@@ -117,4 +117,13 @@ type LicenseCheckoutStore interface {
 	// Returns the number of checkouts released (0 is not an error when the
 	// attempt held no licenses).
 	ReleaseAttemptCheckouts(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error)
+
+	// ReleaseJobCheckouts sets ReleasedAt on every active checkout for any task
+	// attempt belonging to a task in the given job (task 54). Called during job
+	// cancellation to free all license slots held by that job in a single
+	// operation, rather than iterating through individual attempts.
+	//
+	// Returns the number of checkouts released (0 is not an error when the job
+	// held no licenses).
+	ReleaseJobCheckouts(ctx context.Context, jobID string, releasedAt time.Time) (int, error)
 }

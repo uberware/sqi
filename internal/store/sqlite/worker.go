@@ -58,6 +58,29 @@ UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?`
 
 	sqlListStaleWorkers = `SELECT ` + workerCols + `
 FROM workers WHERE status = 'online' AND last_heartbeat_at < ?`
+
+	// Online workers with no active (assigned or running) task (task 55).
+	// An empty farmID is handled in Go by choosing the appropriate variant.
+	sqlCountIdleWorkers = `
+SELECT COUNT(*)
+FROM   workers w
+WHERE  w.farm_id = ?
+  AND  w.status  = 'online'
+  AND  NOT EXISTS (
+         SELECT 1 FROM tasks t
+         WHERE  t.assigned_worker_id = w.id
+           AND  t.status IN ('assigned', 'running')
+       )`
+
+	sqlCountIdleWorkersAllFarms = `
+SELECT COUNT(*)
+FROM   workers w
+WHERE  w.status = 'online'
+  AND  NOT EXISTS (
+         SELECT 1 FROM tasks t
+         WHERE  t.assigned_worker_id = w.id
+           AND  t.status IN ('assigned', 'running')
+       )`
 )
 
 func scanWorker(row scanner) (store.Worker, error) {
@@ -262,4 +285,19 @@ func (s *Store) ListStaleWorkers(ctx context.Context, before time.Time) ([]store
 		workers = append(workers, w)
 	}
 	return workers, rows.Err()
+}
+
+// CountIdleWorkers implements [store.WorkerStore].
+// When farmID is empty all farms are counted.
+func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error) {
+	var (
+		n   int
+		err error
+	)
+	if farmID == "" {
+		err = s.stmtCountIdleWorkersAllFarms.QueryRowContext(ctx).Scan(&n)
+	} else {
+		err = s.stmtCountIdleWorkers.QueryRowContext(ctx, farmID).Scan(&n)
+	}
+	return n, mapErr(err)
 }

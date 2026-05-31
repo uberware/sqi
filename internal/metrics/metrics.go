@@ -10,8 +10,9 @@
 // Many of the metric families defined here are stubs whose values are set to
 // zero until the corresponding component lands:
 //
-//   - [Metrics.SchedulerQueueDepth], [Metrics.SchedulerTasksTotal] — populated
-//     by the scheduler in tasks 46–55.
+//   - [Metrics.SchedulerQueueDepth], [Metrics.SchedulerTasksTotal],
+//     [Metrics.SchedulerAssignmentDuration], [Metrics.SchedulerIdleWorkers] —
+//     populated by the scheduler in tasks 46–55.
 //   - [Metrics.WorkersTotal] — populated by the worker registry in task 47.
 //   - [Metrics.NATSPublishedTotal], [Metrics.NATSConsumedTotal] — populated by
 //     the typed NATS client wrapper in task 36.
@@ -55,6 +56,21 @@ type Metrics struct {
 	// terminal status (succeeded, failed, canceled). Incremented by the
 	// scheduler (tasks 46–55).
 	SchedulerTasksTotal *prometheus.CounterVec
+
+	// SchedulerAssignmentDuration records the wall-clock time spent in a
+	// single call to tryAssign, labeled by result:
+	//   - "assigned"  — a worker was found and the task was dispatched.
+	//   - "deferred"  — no eligible worker or policy blocked; task stays ready.
+	//   - "error"     — an unexpected error aborted the attempt.
+	//
+	// Populated by the scheduler assignment loop (task 55).
+	SchedulerAssignmentDuration *prometheus.HistogramVec
+
+	// SchedulerIdleWorkers is the current count of online workers that have no
+	// task in 'assigned' or 'running' state, partitioned by farm ID.
+	// Updated by the scheduler after each worker-registry or sweep event
+	// (task 55).
+	SchedulerIdleWorkers *prometheus.GaugeVec
 
 	// ── Workers ───────────────────────────────────────────────────────────────
 
@@ -136,6 +152,27 @@ func New() *Metrics {
 			[]string{"queue", "status"},
 		),
 
+		SchedulerAssignmentDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "assignment_duration_seconds",
+				Help:      "Wall-clock time for a single task-assignment attempt, partitioned by result (assigned, deferred, error).",
+				Buckets:   prometheus.DefBuckets,
+			},
+			[]string{"result"},
+		),
+
+		SchedulerIdleWorkers: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "idle_workers",
+				Help:      "Current number of online workers with no active (assigned or running) task, partitioned by farm ID.",
+			},
+			[]string{"farm"},
+		),
+
 		WorkersTotal: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "sqi",
@@ -183,6 +220,8 @@ func New() *Metrics {
 		m.HTTPRequestDuration,
 		m.SchedulerQueueDepth,
 		m.SchedulerTasksTotal,
+		m.SchedulerAssignmentDuration,
+		m.SchedulerIdleWorkers,
 		m.WorkersTotal,
 		m.NATSPublishedTotal,
 		m.NATSConsumedTotal,

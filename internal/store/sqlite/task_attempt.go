@@ -10,6 +10,33 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
+// LatestTaskAttempt implements [store.TaskAttemptStore].
+func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.TaskAttempt, error) {
+	row := s.stmtLatestAttempt.QueryRowContext(ctx, taskID)
+	out, err := scanAttempt(row)
+	return out, mapErr(err)
+}
+
+// TerminateWorkerAttempts implements [store.TaskAttemptStore].
+func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
+	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), workerID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// CancelJobAttempts implements [store.TaskAttemptStore].
+func (s *Store) CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error) {
+	res, err := s.stmtCancelJobAttempts.ExecContext(ctx, timeToText(endedAt), jobID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 const attemptCols = `
 	id, task_id, worker_id, session_id, attempt_number, status,
 	exit_code, started_at, ended_at, created_at`
@@ -24,6 +51,11 @@ RETURNING ` + attemptCols
 
 	sqlGetAttempt = `SELECT ` + attemptCols + ` FROM task_attempts WHERE id = ?`
 
+	sqlLatestAttempt = `SELECT ` + attemptCols + `
+FROM task_attempts WHERE task_id = ?
+ORDER BY attempt_number DESC
+LIMIT 1`
+
 	sqlListAttempts = `SELECT ` + attemptCols + `
 FROM task_attempts WHERE task_id = ?
 ORDER BY attempt_number ASC`
@@ -33,6 +65,28 @@ UPDATE task_attempts
 SET status = ?, exit_code = ?, ended_at = ?
 WHERE id = ?
 RETURNING ` + attemptCols
+
+	// sqlTerminateWorkerAttempts closes out all running attempts for tasks
+	// currently assigned to the given worker. Must be called before
+	// ReclaimWorkerTasks so that assigned_worker_id is still set on the tasks.
+	sqlTerminateWorkerAttempts = `
+UPDATE task_attempts
+SET status = ?, ended_at = ?
+WHERE status = 'running'
+  AND task_id IN (
+    SELECT id FROM tasks
+    WHERE assigned_worker_id = ?
+      AND status IN ('assigned', 'running')
+  )`
+
+	// sqlCancelJobAttempts closes out all running attempts for tasks belonging
+	// to the given job (task 54). Should be called before CancelJobTasks so
+	// that task_attempts.ended_at is recorded before the task rows are updated.
+	sqlCancelJobAttempts = `
+UPDATE task_attempts
+SET    status = 'canceled', ended_at = ?
+WHERE  status = 'running'
+  AND  task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
 )
 
 func scanAttempt(row scanner) (store.TaskAttempt, error) {

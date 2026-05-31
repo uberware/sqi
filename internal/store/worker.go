@@ -109,6 +109,13 @@ type WorkerStore interface {
 	// before and whose status is [WorkerStatusOnline]. Used by the heartbeat
 	// timeout sweep (task 48) to find workers to mark offline.
 	ListStaleWorkers(ctx context.Context, before time.Time) ([]Worker, error)
+
+	// CountIdleWorkers returns the number of online workers in the given farm
+	// that have no task currently in [TaskStatusAssigned] or
+	// [TaskStatusRunning] state. An empty farmID matches all farms.
+	// Used by the scheduler to update the [SchedulerIdleWorkers] Prometheus
+	// gauge (task 55).
+	CountIdleWorkers(ctx context.Context, farmID string) (int, error)
 }
 
 // ListWorkersOptions filters and orders [WorkerStore.ListWorkers] results.

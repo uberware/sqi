@@ -37,6 +37,31 @@
 // after a worker is selected and a provisional [store.TaskAttempt] is created.
 // If the claim fails because the pool is saturated the assignment is rolled
 // back and the task remains ready for the next dispatch tick.
+//
+// Task 53 adds full retry management. [createAttemptAndClaimLicenses] now calls
+// [store.TaskAttemptStore.LatestTaskAttempt] to determine the correct
+// AttemptNumber for each new attempt (1 for a fresh task, N+1 on retry).
+// The heartbeat sweep calls [store.TaskAttemptStore.TerminateWorkerAttempts]
+// before reclaiming tasks from an offline worker so that every attempt has a
+// closed EndedAt and a terminal status.
+//
+// Task 54 adds explicit cancellation propagation.  [CancelJob] and [CancelTask]
+// are the server-side entry points called by the REST layer.  Both methods
+// close running attempts, transition tasks to [store.TaskStatusCanceled],
+// publish task.cancel.<taskID> NATS signals to assigned workers via
+// [bus.Client.PublishTaskCancel], and release held license slots.  The cancel
+// logic lives in cancellation.go; the SQI_CANCEL JetStream stream definition
+// and [bus.Client.PublishTaskCancel] method live in the bus package.
+//
+// Task 55 adds scheduler instrumentation wired into the Prometheus metrics
+// defined in [metrics.Metrics]:
+//   - [metrics.Metrics.SchedulerQueueDepth] — updated each dispatch tick via
+//     [store.TaskStore.CountReadyTasksByQueue], partitioned by queue ID.
+//   - [metrics.Metrics.SchedulerAssignmentDuration] — histogram observed in the
+//     assignment worker pool, partitioned by result (assigned/deferred/error).
+//   - [metrics.Metrics.SchedulerIdleWorkers] — updated each dispatch tick and
+//     after any worker-status event via [store.WorkerStore.CountIdleWorkers],
+//     partitioned by farm ID.
 package scheduler
 
 import (
@@ -230,6 +255,8 @@ func (s *Scheduler) runDispatchLoop(ctx context.Context) {
 }
 
 // dispatchBatch fetches ready tasks and fans them out to the assignment workers.
+// It also refreshes the per-queue depth and idle-worker gauges on every tick so
+// Prometheus always reflects current farm state (task 55).
 func (s *Scheduler) dispatchBatch(ctx context.Context) {
 	tasks, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, s.cfg.AssignBatchSize)
 	if err != nil {
@@ -238,6 +265,13 @@ func (s *Scheduler) dispatchBatch(ctx context.Context) {
 		}
 		return
 	}
+
+	// Refresh instrumentation gauges regardless of whether there are tasks to
+	// dispatch.  Errors are non-fatal — stale gauge values are preferable to a
+	// crash.
+	s.refreshQueueDepthGauge(ctx)
+	s.refreshIdleWorkerGauge(ctx)
+
 	if len(tasks) == 0 {
 		return
 	}
@@ -269,14 +303,15 @@ func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := s.tryAssign(ctx, task); err != nil {
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, errNoWorkerAvailable) {
-				s.logger.WarnContext(
-					ctx, "scheduler: assignment failed",
-					slog.String("task_id", task.ID),
-					slog.Any("error", err),
-				)
-			}
+		start := time.Now()
+		err := s.tryAssign(ctx, task)
+		s.observeAssignment(err, time.Since(start))
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errNoWorkerAvailable) {
+			s.logger.WarnContext(
+				ctx, "scheduler: assignment failed",
+				slog.String("task_id", task.ID),
+				slog.Any("error", err),
+			)
 		}
 	}
 	s.logger.DebugContext(ctx, "scheduler: assignment worker stopped", slog.Int("worker_id", id))
@@ -392,13 +427,20 @@ func (s *Scheduler) createAttemptAndClaimLicenses(
 	now time.Time,
 ) (store.TaskAttempt, error) {
 	// The attempt record must exist before license checkouts can be created
-	// (FK constraint). Task 53 adds full retry management; here we create
-	// attempt #1 at assignment time with AttemptStatusRunning.
+	// (FK constraint). Determine the next AttemptNumber from the latest existing
+	// attempt so that retries are numbered correctly (1 for a fresh task, N+1
+	// on each subsequent retry).
+	nextNum, err := s.nextAttemptNumber(ctx, task.ID)
+	if err != nil {
+		s.revertTaskToReady(ctx, task.ID, "attempt number lookup error")
+		return store.TaskAttempt{}, fmt.Errorf("next attempt number for task %s: %w", task.ID, err)
+	}
+
 	attempt, err := s.store.CreateTaskAttempt(ctx, store.TaskAttempt{
 		ID:            uuid.NewString(),
 		TaskID:        task.ID,
 		WorkerID:      worker.ID,
-		AttemptNumber: 1,
+		AttemptNumber: nextNum,
 		Status:        store.AttemptStatusRunning,
 		StartedAt:     now,
 		CreatedAt:     now,
@@ -441,6 +483,20 @@ func (s *Scheduler) revertTaskToReady(ctx context.Context, taskID, reason string
 			slog.Any("error", err),
 		)
 	}
+}
+
+// nextAttemptNumber returns the AttemptNumber to use for a new [store.TaskAttempt]
+// on the given task. It is 1 for a task with no prior attempts, and
+// latest.AttemptNumber+1 on each retry.
+func (s *Scheduler) nextAttemptNumber(ctx context.Context, taskID string) (int, error) {
+	latest, err := s.store.LatestTaskAttempt(ctx, taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return latest.AttemptNumber + 1, nil
 }
 
 // buildLicenseClaims converts the step's license pool requirements into
@@ -855,6 +911,27 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			continue
 		}
 
+		// Close out any running attempt records before the task assignment is
+		// cleared by ReclaimWorkerTasks. The subquery in TerminateWorkerAttempts
+		// joins on assigned_worker_id, which is still set at this point.
+		now := time.Now().UTC()
+		nAttempts, err := s.store.TerminateWorkerAttempts(ctx, w.ID, store.AttemptStatusFailed, now)
+		if err != nil {
+			s.logger.WarnContext(
+				ctx, "scheduler: terminate worker attempts failed",
+				slog.String("worker_id", w.ID),
+				slog.Any("error", err),
+			)
+			// Non-fatal: continue to reclaim tasks so the farm keeps running.
+		} else if nAttempts > 0 {
+			s.logger.InfoContext(
+				ctx, "scheduler: closed running attempts for offline worker",
+				slog.String("worker_id", w.ID),
+				slog.String("hostname", w.Hostname),
+				slog.Int("attempts_closed", nAttempts),
+			)
+		}
+
 		// Reclaim tasks that were assigned to or running on the now-offline worker.
 		n, err := s.store.ReclaimWorkerTasks(ctx, w.ID)
 		switch {
@@ -910,6 +987,62 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 		}
 		s.metrics.WorkersTotal.WithLabelValues(string(status)).Set(float64(page.Total))
 	}
+}
+
+// ── Task 55: instrumentation helpers ─────────────────────────────────────────
+
+// observeAssignment records a single assignment attempt's outcome and duration
+// in the SchedulerAssignmentDuration Prometheus histogram.
+//
+// result labels:
+//   - "assigned"  — tryAssign succeeded (task dispatched to a worker).
+//   - "deferred"  — no eligible worker or policy blocked; task stays ready.
+//   - "error"     — an unexpected error aborted the attempt.
+func (s *Scheduler) observeAssignment(err error, dur time.Duration) {
+	result := "assigned"
+	switch {
+	case errors.Is(err, errNoWorkerAvailable):
+		result = "deferred"
+	case err != nil:
+		result = "error"
+	}
+	s.metrics.SchedulerAssignmentDuration.WithLabelValues(result).Observe(dur.Seconds())
+}
+
+// refreshQueueDepthGauge queries the store for the current number of ready
+// tasks per queue in the scheduler's farm and updates the
+// SchedulerQueueDepth Prometheus gauge.
+//
+// Called on every dispatch tick so the gauge stays current.  Errors are
+// logged at WARN level and do not abort the dispatch loop.
+func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
+	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: refresh queue depth gauge failed", slog.Any("error", err))
+		}
+		return
+	}
+	for queueID, n := range counts {
+		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
+	}
+}
+
+// refreshIdleWorkerGauge queries the store for the count of online workers
+// in the scheduler's farm that have no active task, and updates the
+// SchedulerIdleWorkers Prometheus gauge.
+//
+// Called on every dispatch tick and after any worker-status change event.
+// Errors are logged at WARN level and do not abort the caller.
+func (s *Scheduler) refreshIdleWorkerGauge(ctx context.Context) {
+	n, err := s.store.CountIdleWorkers(ctx, s.cfg.FarmID)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: refresh idle worker gauge failed", slog.Any("error", err))
+		}
+		return
+	}
+	s.metrics.SchedulerIdleWorkers.WithLabelValues(s.cfg.FarmID).Set(float64(n))
 }
 
 // ── NATS ack/nak helpers ──────────────────────────────────────────────────────

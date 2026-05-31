@@ -111,6 +111,26 @@ type TaskStore interface {
 	// [TaskStatusRunning] state. Used by the scheduler's per-farm policy gate
 	// (task 51).
 	CountActiveTasksInFarm(ctx context.Context, farmID string) (int, error)
+
+	// CountReadyTasksByQueue returns the number of tasks in [TaskStatusReady]
+	// state for each queue within the given farm, keyed by queue ID.
+	// Queues with no ready tasks are omitted from the map.
+	// Used by the scheduler to update the [SchedulerQueueDepth] Prometheus
+	// gauge (task 55).
+	CountReadyTasksByQueue(ctx context.Context, farmID string) (map[string]int, error)
+
+	// CancelJobTasks transitions all non-terminal tasks for the given job to
+	// [TaskStatusCanceled], clearing AssignedWorkerID and AssignedAt on each,
+	// and returns the subset that were in [TaskStatusAssigned] or
+	// [TaskStatusRunning] at the time of the call (with their AssignedWorkerID
+	// intact) so the caller can publish NATS cancel signals to the appropriate
+	// workers (task 54).
+	//
+	// The SELECT and UPDATE run inside a single database transaction so no
+	// concurrent assignment can race between observation and cancellation.
+	// Tasks already in a terminal state (succeeded, failed, canceled) are not
+	// modified.
+	CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]Task, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

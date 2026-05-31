@@ -33,6 +33,12 @@ const (
 	// WorkQueuePolicy ensures the server processes each registration and
 	// heartbeat ping exactly once.
 	StreamWorker = "SQI_WORKER"
+
+	// StreamCancel captures task-cancellation signals published by the server
+	// to assigned workers (task 54).  WorkQueuePolicy ensures each signal is
+	// delivered exactly once; MaxAge of 5 min matches StreamWork so stale
+	// signals for already-completed tasks are discarded automatically.
+	StreamCancel = "SQI_CANCEL"
 )
 
 // streamDefs returns the canonical JetStream stream configurations for
@@ -114,6 +120,27 @@ func streamDefs() []jetstream.StreamConfig {
 			Retention:   jetstream.WorkQueuePolicy,
 			Storage:     jetstream.FileStorage,
 			MaxAge:      2 * time.Minute,
+			Discard:     jetstream.DiscardOld,
+			Replicas:    1,
+		},
+		{
+			// SQI_CANCEL — task.cancel.<taskID>
+			//
+			// The scheduler publishes one message per canceled task (task 54).
+			// The worker assigned to that task consumes the message and interrupts
+			// its running process.  WorkQueuePolicy ensures at-most-once delivery
+			// so the same signal is never re-sent to a different worker.
+			//
+			// MaxAge of 5 min: a worker that has not consumed the cancel signal
+			// within this window has either already completed the task (in which
+			// case the signal is irrelevant) or gone offline (in which case the
+			// heartbeat sweep will reclaim it).
+			Name:        StreamCancel,
+			Description: "Task-cancellation signals delivered to assigned workers.",
+			Subjects:    []string{SubjectTaskCancelPrefix + ".>"},
+			Retention:   jetstream.WorkQueuePolicy,
+			Storage:     jetstream.FileStorage,
+			MaxAge:      5 * time.Minute,
 			Discard:     jetstream.DiscardOld,
 			Replicas:    1,
 		},

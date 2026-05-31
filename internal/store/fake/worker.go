@@ -137,6 +137,36 @@ func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.W
 	return workers, nil
 }
 
+// CountIdleWorkers returns the number of online workers in the given farm that
+// have no task in [store.TaskStatusAssigned] or [store.TaskStatusRunning] state.
+// When farmID is empty all farms are counted.
+func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build the set of worker IDs that have an active task.
+	busy := make(map[string]struct{})
+	for _, t := range s.tasks {
+		if t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning {
+			busy[t.AssignedWorkerID] = struct{}{}
+		}
+	}
+
+	var count int
+	for _, w := range s.workers {
+		if w.Status != store.WorkerStatusOnline {
+			continue
+		}
+		if farmID != "" && w.FarmID != farmID {
+			continue
+		}
+		if _, isBusy := busy[w.ID]; !isBusy {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // filterWorker reports whether w matches all non-zero filter fields in opts.
 func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	if opts.FarmID != "" && w.FarmID != opts.FarmID {

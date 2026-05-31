@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -76,6 +77,25 @@ FROM   tasks t
 JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.farm_id = ?
   AND  t.status IN ('assigned', 'running')`
+
+	// Per-queue count of tasks in 'ready' state for a given farm (task 55).
+	// Used to populate the sqi_scheduler_queue_depth Prometheus gauge.
+	sqlCountReadyTasksByQueue = `
+SELECT j.queue_id, COUNT(*)
+FROM   tasks t
+JOIN   jobs  j ON t.job_id = j.id
+WHERE  t.status  = 'ready'
+  AND  j.farm_id = ?
+GROUP BY j.queue_id`
+
+	// Cancels all non-terminal tasks for a job and returns the number of rows
+	// updated (task 54). The caller first SELECTs active tasks within the same
+	// transaction to capture worker IDs before this UPDATE clears them.
+	sqlCancelJobTasks = `
+UPDATE tasks
+SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+WHERE  job_id = ?
+  AND  status IN ('pending', 'ready', 'assigned', 'running')`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -263,4 +283,81 @@ func (s *Store) CountActiveTasksInFarm(ctx context.Context, farmID string) (int,
 	var n int
 	err := s.stmtCountActiveTasksInFarm.QueryRowContext(ctx, farmID).Scan(&n)
 	return n, mapErr(err)
+}
+
+// CountReadyTasksByQueue implements [store.TaskStore].
+// Returns a map of queue ID → ready-task count for the given farm.
+// Queues with zero ready tasks are omitted.
+func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string) (map[string]int, error) {
+	rows, err := s.stmtCountReadyTasksByQueue.QueryContext(ctx, farmID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var queueID string
+		var n int
+		if err := rows.Scan(&queueID, &n); err != nil {
+			return nil, err
+		}
+		counts[queueID] = n
+	}
+	return counts, rows.Err()
+}
+
+// CancelJobTasks implements [store.TaskStore].
+//
+// The SELECT and UPDATE execute inside a single SQLite transaction so no
+// concurrent scheduler tick can assign a task between observation and
+// cancellation.  The rows cursor is closed inside a helper closure before the
+// UPDATE runs, which avoids any potential cursor/write contention on the
+// single-connection pool.
+func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]store.Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: begin tx for cancel job tasks: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+
+	// Capture tasks that are currently assigned or running so the scheduler can
+	// publish cancel signals to their workers.  We read into a slice before the
+	// UPDATE so the cursor is closed by the time we write.
+	active, err := func() ([]store.Task, error) {
+		rows, queryErr := tx.QueryContext(ctx, `
+SELECT id, job_id, step_id, name, parameters, status,
+       assigned_worker_id, assigned_at, created_at, updated_at
+FROM   tasks
+WHERE  job_id = ?
+  AND  status IN ('assigned', 'running')`, jobID)
+		if queryErr != nil {
+			return nil, fmt.Errorf("sqlite: select active tasks for job %s: %w", jobID, mapErr(queryErr))
+		}
+		defer rows.Close()
+
+		var tasks []store.Task
+		for rows.Next() {
+			t, scanErr := scanTask(rows)
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			tasks = append(tasks, t)
+		}
+		return tasks, rows.Err()
+	}()
+	if err != nil {
+		return nil, err
+	}
+
+	// Transition all non-terminal tasks to canceled, clearing the worker
+	// assignment so stale heartbeat messages cannot re-assign them.
+	if _, err = tx.ExecContext(ctx, sqlCancelJobTasks, timeToText(now), jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: cancel tasks for job %s: %w", jobID, mapErr(err))
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sqlite: commit cancel job tasks: %w", err)
+	}
+	return active, nil
 }

@@ -34,6 +34,12 @@ const (
 	// Full subject: SubjectTaskLogsPrefix + "." + taskID.
 	SubjectTaskLogsPrefix = "task.logs"
 
+	// SubjectTaskCancelPrefix is the prefix for task-cancellation subjects.
+	// Full subject: SubjectTaskCancelPrefix + "." + taskID.
+	// The server publishes to this subject; the worker assigned to the task
+	// consumes it and interrupts the running process.
+	SubjectTaskCancelPrefix = "task.cancel"
+
 	// SubjectWorkerHeartbeat is the subject workers publish liveness pings to.
 	SubjectWorkerHeartbeat = "worker.heartbeat"
 
@@ -58,4 +64,10 @@ func TaskStatusSubject(jobID string) string {
 // belonging to the given task.
 func TaskLogsSubject(taskID string) string {
 	return SubjectTaskLogsPrefix + "." + taskID
+}
+
+// TaskCancelSubject returns the full NATS subject for a task-cancellation
+// signal targeting the worker that holds the given task.
+func TaskCancelSubject(taskID string) string {
+	return SubjectTaskCancelPrefix + "." + taskID
 }

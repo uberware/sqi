@@ -51,6 +51,11 @@ type TaskAttemptStore interface {
 	// GetTaskAttempt returns the attempt with the given ID, or [ErrNotFound].
 	GetTaskAttempt(ctx context.Context, id string) (TaskAttempt, error)
 
+	// LatestTaskAttempt returns the attempt with the highest AttemptNumber for
+	// the given task, or [ErrNotFound] if no attempts exist yet. Used by the
+	// scheduler to determine the correct AttemptNumber when creating a retry.
+	LatestTaskAttempt(ctx context.Context, taskID string) (TaskAttempt, error)
+
 	// ListTaskAttempts returns all attempts for the given task, ordered by
 	// AttemptNumber ascending.
 	ListTaskAttempts(ctx context.Context, taskID string) ([]TaskAttempt, error)
@@ -58,4 +63,18 @@ type TaskAttemptStore interface {
 	// UpdateTaskAttempt replaces the mutable fields of an existing attempt
 	// (Status, ExitCode, EndedAt). Returns [ErrNotFound] if it does not exist.
 	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
+
+	// TerminateWorkerAttempts marks all running [TaskAttempt] records for tasks
+	// currently assigned to workerID as the given terminal status with the
+	// supplied end time. Called by the heartbeat sweep before reclaiming tasks
+	// from an offline worker so that each attempt has a closed EndedAt.
+	// Returns the number of attempts updated.
+	TerminateWorkerAttempts(ctx context.Context, workerID string, status AttemptStatus, endedAt time.Time) (int, error)
+
+	// CancelJobAttempts marks all running [TaskAttempt] records for tasks
+	// belonging to the given job as [AttemptStatusCanceled] with the supplied
+	// end time (task 54). Should be called before [TaskStore.CancelJobTasks] so
+	// that attempts are closed while the tasks still carry their assigned worker.
+	// Returns the number of attempts updated.
+	CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error)
 }
