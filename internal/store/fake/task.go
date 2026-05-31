@@ -198,6 +198,44 @@ func cmpTask(a, b store.Task, field store.TaskSortField, dir store.SortDir) int 
 	return n
 }
 
+// CountActiveTasksInQueue returns the number of tasks in 'assigned' or
+// 'running' state whose job belongs to queueID.
+func (s *Store) CountActiveTasksInQueue(_ context.Context, queueID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+	for _, t := range s.tasks {
+		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
+			continue
+		}
+		job, ok := s.jobs[t.JobID]
+		if ok && job.QueueID == queueID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountActiveTasksInFarm returns the number of tasks in 'assigned' or
+// 'running' state whose job belongs to farmID.
+func (s *Store) CountActiveTasksInFarm(_ context.Context, farmID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+	for _, t := range s.tasks {
+		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
+			continue
+		}
+		job, ok := s.jobs[t.JobID]
+		if ok && job.FarmID == farmID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // isReadyInFarm reports whether t is eligible for assignment: status Ready,
 // job belongs to farmID, and the job's queue is not paused.
 func isReadyInFarm(t store.Task, farmID string, jobs map[string]store.Job, queuePaused map[string]bool) bool {

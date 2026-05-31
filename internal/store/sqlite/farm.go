@@ -11,23 +11,23 @@ import (
 
 const (
 	sqlInsertFarm = `
-INSERT INTO farms (id, name, description, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, name, description, created_at, updated_at`
+INSERT INTO farms (id, name, description, max_concurrent_tasks, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, name, description, max_concurrent_tasks, created_at, updated_at`
 
 	sqlGetFarm = `
-SELECT id, name, description, created_at, updated_at
+SELECT id, name, description, max_concurrent_tasks, created_at, updated_at
 FROM farms WHERE id = ?`
 
 	sqlListFarms = `
-SELECT id, name, description, created_at, updated_at
+SELECT id, name, description, max_concurrent_tasks, created_at, updated_at
 FROM farms ORDER BY name`
 
 	sqlUpdateFarm = `
 UPDATE farms
-SET name = ?, description = ?, updated_at = ?
+SET name = ?, description = ?, max_concurrent_tasks = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, name, description, created_at, updated_at`
+RETURNING id, name, description, max_concurrent_tasks, created_at, updated_at`
 
 	sqlDeleteFarm = `DELETE FROM farms WHERE id = ?`
 )
@@ -35,7 +35,7 @@ RETURNING id, name, description, created_at, updated_at`
 func scanFarm(row scanner) (store.Farm, error) {
 	var f store.Farm
 	var createdAt, updatedAt string
-	if err := row.Scan(&f.ID, &f.Name, &f.Description, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&f.ID, &f.Name, &f.Description, &f.MaxConcurrentTasks, &createdAt, &updatedAt); err != nil {
 		return store.Farm{}, err
 	}
 	f.CreatedAt = mustTime(createdAt)
@@ -47,7 +47,7 @@ func scanFarm(row scanner) (store.Farm, error) {
 func (s *Store) CreateFarm(ctx context.Context, farm store.Farm) (store.Farm, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertFarm.QueryRowContext(ctx,
-		farm.ID, farm.Name, farm.Description, now, now)
+		farm.ID, farm.Name, farm.Description, farm.MaxConcurrentTasks, now, now)
 	out, err := scanFarm(row)
 	return out, mapErr(err)
 }
@@ -82,7 +82,7 @@ func (s *Store) ListFarms(ctx context.Context) ([]store.Farm, error) {
 func (s *Store) UpdateFarm(ctx context.Context, farm store.Farm) (store.Farm, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateFarm.QueryRowContext(ctx,
-		farm.Name, farm.Description, now, farm.ID)
+		farm.Name, farm.Description, farm.MaxConcurrentTasks, now, farm.ID)
 	out, err := scanFarm(row)
 	return out, mapErr(err)
 }

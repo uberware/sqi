@@ -4,6 +4,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -115,6 +116,12 @@ UPDATE license_checkouts SET released_at = ? WHERE id = ?`
 	sqlActiveCheckoutCount = `
 SELECT COUNT(*) FROM license_checkouts
 WHERE pool_id = ? AND released_at IS NULL`
+
+	// Releases all active checkouts for a given task attempt (task 52).
+	sqlReleaseAttemptCheckouts = `
+UPDATE license_checkouts
+SET released_at = ?
+WHERE task_attempt_id = ? AND released_at IS NULL`
 )
 
 // CreateCheckout implements [store.LicenseCheckoutStore].
@@ -144,4 +151,72 @@ func (s *Store) ActiveCheckoutCount(ctx context.Context, poolID string) (int, er
 	var n int
 	err := s.stmtActiveCheckoutCount.QueryRowContext(ctx, poolID).Scan(&n)
 	return n, mapErr(err)
+}
+
+// TryClaimLicenseSlots implements [store.LicenseCheckoutStore].
+//
+// It opens a transaction, counts active checkouts for each pool in claims, and
+// either inserts all checkout rows (all pools have capacity) or rolls back and
+// returns [store.ErrLicenseAtCapacity] (at least one pool is saturated).
+//
+// The transaction is serialized by the single-connection pool (SetMaxOpenConns(1))
+// so no other goroutine can modify checkout counts between the count check and
+// the inserts.
+func (s *Store) TryClaimLicenseSlots(
+	ctx context.Context,
+	taskAttemptID string,
+	claims []store.LicensePoolClaim,
+	checkedOutAt time.Time,
+) error {
+	if len(claims) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: begin tx for license claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+
+	checkedOutAtText := timeToText(checkedOutAt)
+
+	for _, c := range claims {
+		if c.MaxConcurrent <= 0 {
+			// Pool is configured as unlimited; skip count check.
+			continue
+		}
+		var active int
+		row := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM license_checkouts WHERE pool_id = ? AND released_at IS NULL`,
+			c.PoolID)
+		if err = row.Scan(&active); err != nil {
+			return fmt.Errorf("sqlite: count active checkouts for pool %q: %w", c.PoolName, mapErr(err))
+		}
+		if active >= c.MaxConcurrent {
+			return store.ErrLicenseAtCapacity
+		}
+	}
+
+	// All pools have capacity — insert the checkout rows.
+	for _, c := range claims {
+		if _, err = tx.ExecContext(
+			ctx,
+			`INSERT INTO license_checkouts (id, pool_id, task_attempt_id, checked_out_at, released_at) VALUES (?, ?, ?, ?, NULL)`,
+			c.CheckoutID, c.PoolID, taskAttemptID, checkedOutAtText,
+		); err != nil {
+			return fmt.Errorf("sqlite: insert checkout for pool %q: %w", c.PoolName, mapErr(err))
+		}
+	}
+
+	return tx.Commit()
+}
+
+// ReleaseAttemptCheckouts implements [store.LicenseCheckoutStore].
+func (s *Store) ReleaseAttemptCheckouts(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error) {
+	res, err := s.stmtReleaseAttemptCheckouts.ExecContext(ctx, timeToText(releasedAt), taskAttemptID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }

@@ -154,3 +154,63 @@ func (s *Store) ActiveCheckoutCount(_ context.Context, poolID string) (int, erro
 	}
 	return count, nil
 }
+
+// TryClaimLicenseSlots atomically checks pool capacity and creates checkout
+// records for each claim. The fake implementation holds the mutex for the
+// duration of the check-and-insert, mirroring the transactional semantics of
+// the SQLite implementation.
+func (s *Store) TryClaimLicenseSlots(
+	_ context.Context,
+	taskAttemptID string,
+	claims []store.LicensePoolClaim,
+	checkedOutAt time.Time,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check capacity for every pool before inserting anything.
+	for _, c := range claims {
+		if c.MaxConcurrent <= 0 {
+			continue // unlimited
+		}
+		active := 0
+		for _, co := range s.licenseCheckouts {
+			if co.PoolID == c.PoolID && co.ReleasedAt == nil {
+				active++
+			}
+		}
+		if active >= c.MaxConcurrent {
+			return store.ErrLicenseAtCapacity
+		}
+	}
+
+	// All pools have capacity — insert the checkout records.
+	for _, c := range claims {
+		co := store.LicenseCheckout{
+			ID:            c.CheckoutID,
+			PoolID:        c.PoolID,
+			TaskAttemptID: taskAttemptID,
+			CheckedOutAt:  checkedOutAt,
+			ReleasedAt:    nil,
+		}
+		s.licenseCheckouts[co.ID] = co
+	}
+	return nil
+}
+
+// ReleaseAttemptCheckouts sets ReleasedAt on every active checkout for the
+// given taskAttemptID and returns the number of checkouts released.
+func (s *Store) ReleaseAttemptCheckouts(_ context.Context, taskAttemptID string, releasedAt time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+	for id, co := range s.licenseCheckouts {
+		if co.TaskAttemptID == taskAttemptID && co.ReleasedAt == nil {
+			co.ReleasedAt = &releasedAt
+			s.licenseCheckouts[id] = co
+			n++
+		}
+	}
+	return n, nil
+}

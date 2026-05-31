@@ -32,16 +32,26 @@ UPDATE tasks
 SET assigned_worker_id = ?, assigned_at = ?, status = 'assigned', updated_at = ?
 WHERE id = ?`
 
-	// Joins to jobs and queues to apply priority ordering and skip paused queues.
+	// Joins to jobs, queues, and steps to apply the full selection ordering:
+	//   1. j.priority DESC        — highest-priority jobs first
+	//   2. j.created_at ASC       — earlier-submitted jobs win ties
+	//   3. s.step_order ASC       — within a job, earlier steps run first
+	//   4. t.created_at ASC       — stable tiebreaker within a step
+	//
+	// All task columns are fully qualified (t.) to avoid ambiguity now that
+	// the steps join introduces columns with overlapping names (name, status,
+	// created_at, updated_at, job_id).
 	sqlListReadyTasks = `
-SELECT t.` + taskCols + `
-FROM tasks t
-JOIN jobs  j ON t.job_id    = j.id
-JOIN queues q ON j.queue_id = q.id
-WHERE t.status = 'ready'
-  AND j.farm_id = ?
-  AND q.paused  = 0
-ORDER BY j.priority DESC, t.created_at ASC
+SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
+       t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at
+FROM   tasks  t
+JOIN   jobs   j ON t.job_id   = j.id
+JOIN   queues q ON j.queue_id = q.id
+JOIN   steps  s ON t.step_id  = s.id
+WHERE  t.status  = 'ready'
+  AND  j.farm_id = ?
+  AND  q.paused  = 0
+ORDER BY j.priority DESC, j.created_at ASC, s.step_order ASC, t.created_at ASC
 LIMIT ?`
 
 	sqlReclaimWorkerTasks = `
@@ -49,6 +59,23 @@ UPDATE tasks
 SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
+
+	// Counts tasks in 'assigned' or 'running' state for per-queue policy (task 51).
+	// Joins to jobs so we can filter by queue_id.
+	sqlCountActiveTasksInQueue = `
+SELECT COUNT(*)
+FROM   tasks t
+JOIN   jobs  j ON t.job_id = j.id
+WHERE  j.queue_id = ?
+  AND  t.status IN ('assigned', 'running')`
+
+	// Counts tasks in 'assigned' or 'running' state for per-farm policy (task 51).
+	sqlCountActiveTasksInFarm = `
+SELECT COUNT(*)
+FROM   tasks t
+JOIN   jobs  j ON t.job_id = j.id
+WHERE  j.farm_id = ?
+  AND  t.status IN ('assigned', 'running')`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -222,4 +249,18 @@ func (s *Store) ListReadyTasks(ctx context.Context, farmID string, limit int) ([
 		tasks = append(tasks, t)
 	}
 	return tasks, rows.Err()
+}
+
+// CountActiveTasksInQueue implements [store.TaskStore].
+func (s *Store) CountActiveTasksInQueue(ctx context.Context, queueID string) (int, error) {
+	var n int
+	err := s.stmtCountActiveTasksInQueue.QueryRowContext(ctx, queueID).Scan(&n)
+	return n, mapErr(err)
+}
+
+// CountActiveTasksInFarm implements [store.TaskStore].
+func (s *Store) CountActiveTasksInFarm(ctx context.Context, farmID string) (int, error) {
+	var n int
+	err := s.stmtCountActiveTasksInFarm.QueryRowContext(ctx, farmID).Scan(&n)
+	return n, mapErr(err)
 }

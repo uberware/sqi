@@ -9,12 +9,20 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-const stepCols = `id, job_id, name, depends_on, step_order, status, created_at, updated_at`
+// stepCols lists every column returned by step queries.
+// host_requirements is stored as a JSON object (see [store.StepHostRequirements]).
+// compute_location is a plain TEXT mirror of the computelocation attribute for
+// SQL-level pre-filtering in the scheduler assignment loop (task 50).
+const stepCols = `
+	id, job_id, name, depends_on, step_order, status,
+	host_requirements, compute_location, created_at, updated_at`
 
 const (
 	sqlInsertStep = `
-INSERT INTO steps (id, job_id, name, depends_on, step_order, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO steps (
+	id, job_id, name, depends_on, step_order, status,
+	host_requirements, compute_location, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + stepCols
 
 	sqlGetStep = `SELECT ` + stepCols + ` FROM steps WHERE id = ?`
@@ -29,11 +37,13 @@ UPDATE steps SET status = ?, updated_at = ? WHERE id = ?`
 
 func scanStep(row scanner) (store.Step, error) {
 	var step store.Step
-	var dependsOnJSON, status, createdAt, updatedAt string
+	var dependsOnJSON, hostReqJSON, status, createdAt, updatedAt string
 
 	if err := row.Scan(
 		&step.ID, &step.JobID, &step.Name, &dependsOnJSON,
-		&step.StepOrder, &status, &createdAt, &updatedAt,
+		&step.StepOrder, &status,
+		&hostReqJSON, &step.ComputeLocation,
+		&createdAt, &updatedAt,
 	); err != nil {
 		return store.Step{}, err
 	}
@@ -48,6 +58,13 @@ func scanStep(row scanner) (store.Step, error) {
 	}
 	step.DependsOn = deps
 
+	// host_requirements is stored as JSON; "null" → nil pointer.
+	hr, err := unmarshalJSON(hostReqJSON, (*store.StepHostRequirements)(nil))
+	if err != nil {
+		return store.Step{}, err
+	}
+	step.HostRequirements = hr
+
 	return step, nil
 }
 
@@ -57,10 +74,18 @@ func (s *Store) CreateStep(ctx context.Context, step store.Step) (store.Step, er
 	if err != nil {
 		return store.Step{}, err
 	}
+	// Serialize host_requirements; nil pointer marshals to "null" which matches
+	// the column default and is correctly round-tripped by unmarshalJSON.
+	hostReqJSON, err := marshalJSON(step.HostRequirements)
+	if err != nil {
+		return store.Step{}, err
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertStep.QueryRowContext(ctx,
 		step.ID, step.JobID, step.Name, dependsOnJSON,
-		step.StepOrder, string(step.Status), now, now)
+		step.StepOrder, string(step.Status),
+		hostReqJSON, step.ComputeLocation,
+		now, now)
 	out, err := scanStep(row)
 	return out, mapErr(err)
 }

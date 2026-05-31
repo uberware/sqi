@@ -147,15 +147,19 @@ func (s *Submitter) Submit(
 			stepStatus = store.StepStatusPending
 		}
 
+		hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
+
 		step := store.Step{
-			ID:        uuid.NewString(),
-			JobID:     job.ID,
-			Name:      stepTmpl.Name,
-			DependsOn: dependsOn,
-			StepOrder: i,
-			Status:    stepStatus,
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:               uuid.NewString(),
+			JobID:            job.ID,
+			Name:             stepTmpl.Name,
+			DependsOn:        dependsOn,
+			StepOrder:        i,
+			Status:           stepStatus,
+			HostRequirements: hostReqs,
+			ComputeLocation:  computeLoc,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		}
 
 		step, err = s.st.CreateStep(ctx, step)
@@ -206,6 +210,62 @@ func (s *Submitter) Submit(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Host-requirements conversion ──────────────────────────────────────────────
+
+// licensePoolPrefix is the amount-requirement name prefix that signals a
+// license pool capacity requirement in the OpenJD hostRequirements block.
+// The pool name follows the prefix, e.g. "amount.worker.licensepool.arnold".
+const licensePoolPrefix = "amount.worker.licensepool."
+
+// computeLocationAttr is the attribute name used to declare a compute-location
+// affinity in the OpenJD hostRequirements block.
+const computeLocationAttr = "attr.worker.computelocation"
+
+// toStoreHostRequirements converts an OpenJD [HostRequirements] value into the
+// scheduler-friendly [store.StepHostRequirements] representation. It also
+// extracts the compute-location affinity (if present) as a plain string for
+// SQL-level pre-filtering.
+//
+// Returns (nil, "") when hr is nil, indicating no requirements.
+func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirements, computeLoc string) {
+	if hr == nil {
+		return nil, ""
+	}
+
+	shr := &store.StepHostRequirements{}
+
+	for _, a := range hr.Amounts {
+		if poolName, ok := strings.CutPrefix(a.Name, licensePoolPrefix); ok && poolName != "" {
+			shr.LicensePools = append(shr.LicensePools, poolName)
+		}
+		shr.Amounts = append(shr.Amounts, store.StepAmountRequirement{
+			Name: a.Name,
+			Min:  a.Min,
+			Max:  a.Max,
+		})
+	}
+
+	for _, a := range hr.Attributes {
+		// Extract compute-location from the well-known attribute, if present,
+		// and mirror it as a plain string for SQL pre-filtering.
+		if a.Name == computeLocationAttr {
+			switch {
+			case len(a.AnyOf) == 1:
+				computeLoc = a.AnyOf[0]
+			case len(a.AllOf) == 1:
+				computeLoc = a.AllOf[0]
+			}
+		}
+		shr.Attributes = append(shr.Attributes, store.StepAttributeRequirement{
+			Name:  a.Name,
+			AnyOf: a.AnyOf,
+			AllOf: a.AllOf,
+		})
+	}
+
+	return shr, computeLoc
+}
 
 // buildTaskName constructs a human-readable name for one task instance.
 //

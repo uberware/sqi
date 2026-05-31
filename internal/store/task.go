@@ -85,9 +85,13 @@ type TaskStore interface {
 	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
-	// belong to non-paused queues within the given farm, ordered by job
-	// priority descending then CreatedAt ascending. Used by the scheduler's
-	// assignment loop (task 46).
+	// belong to non-paused queues within the given farm, ordered by:
+	//   1. job priority descending (higher values first),
+	//   2. job submission time ascending (earlier jobs win ties),
+	//   3. step order ascending (earlier steps in a job run before later ones),
+	//   4. task creation time ascending (stable tiebreaker within a step).
+	//
+	// Used by the scheduler's assignment loop (tasks 46, 49).
 	ListReadyTasks(ctx context.Context, farmID string, limit int) ([]Task, error)
 
 	// ReclaimWorkerTasks resets all tasks assigned to workerID that are still
@@ -96,6 +100,17 @@ type TaskStore interface {
 	// timeout sweep (task 48) after a worker is marked offline.
 	// Returns the number of tasks reclaimed.
 	ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error)
+
+	// CountActiveTasksInQueue returns the number of tasks for the given queue
+	// that are currently in [TaskStatusAssigned] or [TaskStatusRunning] state.
+	// Used by the scheduler's per-queue policy gate (task 51).
+	CountActiveTasksInQueue(ctx context.Context, queueID string) (int, error)
+
+	// CountActiveTasksInFarm returns the number of tasks across all queues in
+	// the given farm that are currently in [TaskStatusAssigned] or
+	// [TaskStatusRunning] state. Used by the scheduler's per-farm policy gate
+	// (task 51).
+	CountActiveTasksInFarm(ctx context.Context, farmID string) (int, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

@@ -11,11 +11,12 @@ import (
 // has one farm, but large facilities may define multiple to represent distinct
 // infrastructure pools, studios, or departments.
 type Farm struct {
-	ID          string
-	Name        string
-	Description string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID                 string
+	Name               string
+	Description        string
+	MaxConcurrentTasks int // 0 = unlimited; task 51 farm-level policy
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // FarmStore is the persistence interface for [Farm] records.

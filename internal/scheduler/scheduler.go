@@ -23,11 +23,20 @@
 //     and calls [store.TaskStore.ReclaimWorkerTasks] to return their
 //     in-flight tasks to the ready queue.
 //
-// Tasks 49–52 extend the assignment loop with capability matching, policy
-// evaluation, compute-location affinity, and license gating.  The loop
-// skeleton here is intentionally simple: it picks the first available online
-// worker for each ready task so that the end-to-end path can be exercised
-// before the full matching logic lands.
+// Task 49 introduced full priority ordering into the ready-task query
+// ([store.TaskStore.ListReadyTasks]): tasks arrive pre-sorted by job priority,
+// job submission time, step order, and task creation time.
+//
+// Task 50 added capability-tag matching, compute-location affinity, and
+// queue/farm assignment filtering via [WorkerEligible].
+//
+// Task 51 added per-queue and per-farm maximum concurrent task limits evaluated
+// inside [policyGate] before any worker is selected.
+//
+// Task 52 added atomic license-slot claiming ([store.LicenseCheckoutStore.TryClaimLicenseSlots])
+// after a worker is selected and a provisional [store.TaskAttempt] is created.
+// If the claim fails because the pool is saturated the assignment is rolled
+// back and the task remains ready for the next dispatch tick.
 package scheduler
 
 import (
@@ -39,6 +48,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
@@ -247,10 +257,11 @@ func (s *Scheduler) dispatchBatch(ctx context.Context) {
 // runAssignWorker pulls tasks from taskCh and attempts to assign each one to
 // an available online worker.
 //
-// NOTE: This is the simplified skeleton for tasks 46–48. Tasks 49–52 add
-// capability matching, compute-location affinity, license gating, and queue
-// policy evaluation. For now the loop picks the first online worker that is
-// not currently assigned a task.
+// Tasks arrive pre-sorted by [store.TaskStore.ListReadyTasks]: highest job
+// priority first, then earlier job submission time, then lower step order,
+// then task creation time (task 49). [tryAssign] applies capability-tag
+// matching and compute-location affinity (task 50), queue/farm concurrency
+// policy (task 51), and atomic license claiming (task 52).
 func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 	s.logger.DebugContext(ctx, "scheduler: assignment worker started", slog.Int("worker_id", id))
 
@@ -276,20 +287,52 @@ func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 // the next dispatch tick.
 var errNoWorkerAvailable = errors.New("no worker available")
 
-// tryAssign selects an online worker for task, updates the store, and
-// publishes the assignment to NATS. It is intentionally simple: tasks 49–52
-// replace the worker selection with full capability matching.
+// tryAssign selects an eligible online worker for task using full capability
+// matching (task 50), policy gates (task 51), and atomic license claiming
+// (task 52), then updates the store and publishes the assignment to NATS.
 func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
-	// Derive the farm from the task's job. We need the queue to determine the
-	// NATS subject. Fetch the task's job to get its queue.
 	job, err := s.store.GetJob(ctx, task.JobID)
 	if err != nil {
 		return fmt.Errorf("get job %s: %w", task.JobID, err)
 	}
 
-	// Find an online worker — simple first-available selection (tasks 49–52
-	// will add full capability matching here).
-	worker, err := s.pickWorker(ctx, job.FarmID, job.QueueID)
+	step, err := s.store.GetStep(ctx, task.StepID)
+	if err != nil {
+		return fmt.Errorf("get step %s: %w", task.StepID, err)
+	}
+
+	// ── Task 51: queue and farm policy gate ───────────────────────────────
+	queue, err := s.store.GetQueue(ctx, job.QueueID)
+	if err != nil {
+		return fmt.Errorf("get queue %s: %w", job.QueueID, err)
+	}
+	farm, err := s.store.GetFarm(ctx, job.FarmID)
+	if err != nil {
+		return fmt.Errorf("get farm %s: %w", job.FarmID, err)
+	}
+
+	if err := policyGate(ctx, s.store, job, queue, farm); err != nil {
+		if errors.Is(err, errPolicyBlocked) {
+			s.logger.DebugContext(
+				ctx, "scheduler: assignment deferred by policy",
+				slog.String("task_id", task.ID),
+				slog.String("queue_id", job.QueueID),
+				slog.String("farm_id", job.FarmID),
+				slog.String("reason", err.Error()),
+			)
+			return errNoWorkerAvailable // silent; retry on next tick
+		}
+		return err
+	}
+
+	// Build the license pool context needed by the matcher (task 50 pre-check).
+	pools, activeCounts, err := s.buildLicenseContext(ctx, step)
+	if err != nil {
+		return fmt.Errorf("build license context for step %s: %w", step.ID, err)
+	}
+
+	// Find the first eligible online worker using capability matching.
+	worker, err := s.pickWorker(ctx, job, step, pools, activeCounts)
 	if err != nil {
 		return err // includes errNoWorkerAvailable
 	}
@@ -297,6 +340,12 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 	now := time.Now().UTC()
 	if err := s.store.AssignTask(ctx, task.ID, worker.ID, now); err != nil {
 		return fmt.Errorf("assign task %s to worker %s: %w", task.ID, worker.ID, err)
+	}
+
+	// ── Task 52: provisional attempt + atomic license claim ───────────────
+	attempt, err := s.createAttemptAndClaimLicenses(ctx, task, worker, step, pools, now)
+	if err != nil {
+		return err // already reverted task status inside helper
 	}
 
 	// Publish the assignment to NATS so the worker can pull it.
@@ -322,41 +371,204 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 		slog.String("task_id", task.ID),
 		slog.String("worker_id", worker.ID),
 		slog.String("queue_id", job.QueueID),
+		slog.String("attempt_id", attempt.ID),
 	)
 	return nil
 }
 
-// pickWorker returns the first online worker in the farm/queue. Tasks 49–52
-// will replace this with full capability-tag, compute-location, and license
-// matching.
-func (s *Scheduler) pickWorker(ctx context.Context, farmID, queueID string) (store.Worker, error) {
+// createAttemptAndClaimLicenses creates a provisional [store.TaskAttempt] for
+// the assignment and atomically claims any required license slots (task 52).
+//
+// If either operation fails the task's status is reverted to
+// [store.TaskStatusReady] so it is re-queued on the next dispatch tick.
+// [errNoWorkerAvailable] is returned when a license pool is at capacity so
+// the caller skips logging a warning.
+func (s *Scheduler) createAttemptAndClaimLicenses(
+	ctx context.Context,
+	task store.Task,
+	worker store.Worker,
+	step store.Step,
+	pools map[string]store.LicensePool,
+	now time.Time,
+) (store.TaskAttempt, error) {
+	// The attempt record must exist before license checkouts can be created
+	// (FK constraint). Task 53 adds full retry management; here we create
+	// attempt #1 at assignment time with AttemptStatusRunning.
+	attempt, err := s.store.CreateTaskAttempt(ctx, store.TaskAttempt{
+		ID:            uuid.NewString(),
+		TaskID:        task.ID,
+		WorkerID:      worker.ID,
+		AttemptNumber: 1,
+		Status:        store.AttemptStatusRunning,
+		StartedAt:     now,
+		CreatedAt:     now,
+	})
+	if err != nil {
+		s.revertTaskToReady(ctx, task.ID, "attempt creation error")
+		return store.TaskAttempt{}, fmt.Errorf("create task attempt for task %s: %w", task.ID, err)
+	}
+
+	// Re-check pool availability and create checkout rows inside a single DB
+	// transaction so no concurrent assignment can over-subscribe a pool.
+	claims := buildLicenseClaims(step, pools)
+	if len(claims) == 0 {
+		return attempt, nil
+	}
+
+	if err := s.store.TryClaimLicenseSlots(ctx, attempt.ID, claims, now); err != nil {
+		s.revertTaskToReady(ctx, task.ID, "license claim error")
+		if errors.Is(err, store.ErrLicenseAtCapacity) {
+			s.logger.DebugContext(
+				ctx, "scheduler: license pool at capacity — deferring assignment",
+				slog.String("task_id", task.ID),
+				slog.String("attempt_id", attempt.ID),
+			)
+			return store.TaskAttempt{}, errNoWorkerAvailable
+		}
+		return store.TaskAttempt{}, fmt.Errorf("claim license slots for attempt %s: %w", attempt.ID, err)
+	}
+	return attempt, nil
+}
+
+// revertTaskToReady resets a task's status back to ready after a failed
+// assignment step. Logs a warning if the revert itself fails.
+func (s *Scheduler) revertTaskToReady(ctx context.Context, taskID, reason string) {
+	if err := s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusReady); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: revert task assignment failed",
+			slog.String("task_id", taskID),
+			slog.String("during", reason),
+			slog.Any("error", err),
+		)
+	}
+}
+
+// buildLicenseClaims converts the step's license pool requirements into
+// [store.LicensePoolClaim] values ready for [store.LicenseCheckoutStore.TryClaimLicenseSlots].
+// Each claim gets a fresh UUID as its checkout ID.
+// Pools not found in the pools map are skipped (the matcher already rejected
+// workers when the pool was missing, so this path is unreachable in practice).
+func buildLicenseClaims(step store.Step, pools map[string]store.LicensePool) []store.LicensePoolClaim {
+	if step.HostRequirements == nil || len(step.HostRequirements.LicensePools) == 0 {
+		return nil
+	}
+	claims := make([]store.LicensePoolClaim, 0, len(step.HostRequirements.LicensePools))
+	for _, name := range step.HostRequirements.LicensePools {
+		pool, ok := pools[name]
+		if !ok {
+			continue
+		}
+		claims = append(claims, store.LicensePoolClaim{
+			CheckoutID:    uuid.NewString(),
+			PoolID:        pool.ID,
+			PoolName:      pool.Name,
+			MaxConcurrent: pool.MaxConcurrent,
+		})
+	}
+	return claims
+}
+
+// buildLicenseContext fetches all configured license pools and the current
+// active checkout count for each pool required by step.
+// Both return values are safe to pass to [WorkerEligible] when step has no
+// license requirements.
+func (s *Scheduler) buildLicenseContext(
+	ctx context.Context,
+	step store.Step,
+) (pools map[string]store.LicensePool, activeCounts map[string]int, err error) {
+	pools = make(map[string]store.LicensePool)
+	activeCounts = make(map[string]int)
+
+	if step.HostRequirements == nil || len(step.HostRequirements.LicensePools) == 0 {
+		return pools, activeCounts, nil
+	}
+
+	// Fetch all pools once and key them by name.
+	allPools, err := s.store.ListLicensePools(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list license pools: %w", err)
+	}
+	for _, p := range allPools {
+		pools[p.Name] = p
+	}
+
+	// Fetch active checkout count only for pools the step actually requires.
+	for _, name := range step.HostRequirements.LicensePools {
+		pool, ok := pools[name]
+		if !ok {
+			// Pool not found; leave activeCounts[name] as zero so the matcher
+			// rejects due to missing pool (capacity = 0).
+			continue
+		}
+		count, err := s.store.ActiveCheckoutCount(ctx, pool.ID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("active checkout count for pool %q: %w", name, err)
+		}
+		activeCounts[name] = count
+	}
+
+	return pools, activeCounts, nil
+}
+
+// matchCandidateLimit is the maximum number of online workers fetched per
+// assignment attempt. Large enough to find an eligible worker in most farms
+// without loading the entire worker table.
+const matchCandidateLimit = 50
+
+// pickWorker returns the first online worker in job's farm that passes
+// [WorkerEligible] checks for the given step and license pool state.
+//
+// Filtering strategy:
+//   - SQL-level pre-filter: farm, status=online, optional compute-location.
+//   - Go-level post-filter: queue affinity, capability tags, license pools.
+//
+// If no eligible worker is found within [matchCandidateLimit] candidates,
+// [errNoWorkerAvailable] is returned and the task remains ready for the next
+// dispatch tick.
+func (s *Scheduler) pickWorker(
+	ctx context.Context,
+	job store.Job,
+	step store.Step,
+	pools map[string]store.LicensePool,
+	activeCounts map[string]int,
+) (store.Worker, error) {
 	opts := store.ListWorkersOptions{
-		FarmID:  farmID,
-		QueueID: queueID,
-		Status:  store.WorkerStatusOnline,
+		FarmID: job.FarmID,
+		Status: store.WorkerStatusOnline,
 		Pagination: store.Pagination{
-			Limit:  1,
+			Limit:  matchCandidateLimit,
 			Offset: 0,
 		},
 	}
+
+	// Apply SQL-level compute-location pre-filter when the step requires one.
+	// This narrows the candidate set cheaply before in-memory matching.
+	if step.ComputeLocation != "" {
+		opts.ComputeLocation = step.ComputeLocation
+	}
+
 	opts.Pagination.Validate() //nolint:errcheck // Validate only clamps values; it never returns a non-nil error
 
 	page, err := s.store.ListWorkers(ctx, opts)
 	if err != nil {
 		return store.Worker{}, fmt.Errorf("list workers: %w", err)
 	}
-	if len(page.Items) == 0 {
-		// Try without queue affinity — accept any online worker in the farm.
-		opts.QueueID = ""
-		page, err = s.store.ListWorkers(ctx, opts)
-		if err != nil {
-			return store.Worker{}, fmt.Errorf("list workers (no queue filter): %w", err)
+
+	for _, w := range page.Items {
+		reason, eligible := WorkerEligibleWithReason(w, job, step, pools, activeCounts)
+		if eligible {
+			return w, nil
 		}
-		if len(page.Items) == 0 {
-			return store.Worker{}, errNoWorkerAvailable
-		}
+		s.logger.DebugContext(
+			ctx, "scheduler: worker ineligible",
+			slog.String("worker_id", w.ID),
+			slog.String("hostname", w.Hostname),
+			slog.String("task_step_id", step.ID),
+			slog.String("reason", reason),
+		)
 	}
-	return page.Items[0], nil
+
+	return store.Worker{}, errNoWorkerAvailable
 }
 
 // assignPayload is the JSON message published to work.assign.<queueID>.
@@ -383,6 +595,36 @@ func buildAssignPayload(task store.Task, worker store.Worker) ([]byte, error) {
 		AssignedAt: time.Now().UTC(),
 	}
 	return json.Marshal(p)
+}
+
+// ── Task 52: license release ──────────────────────────────────────────────────
+
+// ReleaseTaskLicenses releases all active license checkouts for the given task
+// attempt. It is called when a task attempt transitions to a terminal state
+// (succeeded, failed, or canceled), freeing the license slots for other tasks.
+//
+// This method is safe to call with an empty attemptID — it returns nil without
+// querying the store. It is idempotent: releasing an already-released checkout
+// is a no-op in the underlying SQL.
+//
+// Task 56–59 (worker wire protocol) will call this method when terminal task
+// status messages arrive from workers.
+func (s *Scheduler) ReleaseTaskLicenses(ctx context.Context, attemptID string) error {
+	if attemptID == "" {
+		return nil
+	}
+	n, err := s.store.ReleaseAttemptCheckouts(ctx, attemptID, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("release licenses for attempt %s: %w", attemptID, err)
+	}
+	if n > 0 {
+		s.logger.DebugContext(
+			ctx, "scheduler: released license checkouts",
+			slog.String("attempt_id", attemptID),
+			slog.Int("count", n),
+		)
+	}
+	return nil
 }
 
 // ── Task 47: worker NATS consumer ─────────────────────────────────────────────

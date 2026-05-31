@@ -100,9 +100,10 @@ type Store struct {
 	stmtDeletePool *sql.Stmt
 
 	// ── license_checkouts ────────────────────────────────────────────────
-	stmtInsertCheckout      *sql.Stmt
-	stmtReleaseCheckout     *sql.Stmt
-	stmtActiveCheckoutCount *sql.Stmt
+	stmtInsertCheckout          *sql.Stmt
+	stmtReleaseCheckout         *sql.Stmt
+	stmtActiveCheckoutCount     *sql.Stmt
+	stmtReleaseAttemptCheckouts *sql.Stmt
 
 	// ── workers ──────────────────────────────────────────────────────────
 	stmtUpsertWorker          *sql.Stmt
@@ -125,12 +126,14 @@ type Store struct {
 	stmtUpdateStepStatus *sql.Stmt
 
 	// ── tasks ────────────────────────────────────────────────────────────
-	stmtInsertTask         *sql.Stmt
-	stmtGetTask            *sql.Stmt
-	stmtUpdateTaskStatus   *sql.Stmt
-	stmtAssignTask         *sql.Stmt
-	stmtListReadyTasks     *sql.Stmt
-	stmtReclaimWorkerTasks *sql.Stmt
+	stmtInsertTask              *sql.Stmt
+	stmtGetTask                 *sql.Stmt
+	stmtUpdateTaskStatus        *sql.Stmt
+	stmtAssignTask              *sql.Stmt
+	stmtListReadyTasks          *sql.Stmt
+	stmtReclaimWorkerTasks      *sql.Stmt
+	stmtCountActiveTasksInQueue *sql.Stmt
+	stmtCountActiveTasksInFarm  *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
 	stmtInsertAttempt *sql.Stmt
@@ -315,6 +318,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtActiveCheckoutCount, err = s.prepare(ctx, sqlActiveCheckoutCount); err != nil {
 		return err
 	}
+	if s.stmtReleaseAttemptCheckouts, err = s.prepare(ctx, sqlReleaseAttemptCheckouts); err != nil {
+		return err
+	}
 
 	// ── workers ───────────────────────────────────────────────────────────
 	if s.stmtUpsertWorker, err = s.prepare(ctx, sqlUpsertWorker); err != nil {
@@ -381,6 +387,12 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtReclaimWorkerTasks, err = s.prepare(ctx, sqlReclaimWorkerTasks); err != nil {
+		return err
+	}
+	if s.stmtCountActiveTasksInQueue, err = s.prepare(ctx, sqlCountActiveTasksInQueue); err != nil {
+		return err
+	}
+	if s.stmtCountActiveTasksInFarm, err = s.prepare(ctx, sqlCountActiveTasksInFarm); err != nil {
 		return err
 	}
 

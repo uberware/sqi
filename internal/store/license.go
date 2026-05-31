@@ -4,8 +4,29 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrLicenseAtCapacity is returned by [LicenseCheckoutStore.TryClaimLicenseSlots]
+// when one or more required license pools are saturated (active checkouts have
+// reached MaxConcurrent). The task should remain ready for reassignment on the
+// next scheduler tick.
+var ErrLicenseAtCapacity = errors.New("store: license pool at capacity")
+
+// LicensePoolClaim describes a single license pool slot to be claimed
+// atomically by [LicenseCheckoutStore.TryClaimLicenseSlots].
+type LicensePoolClaim struct {
+	// CheckoutID is a caller-supplied UUID for the checkout row to be created.
+	CheckoutID string
+	// PoolID is the [LicensePool] to claim from.
+	PoolID string
+	// PoolName is used in error messages and debug logging only.
+	PoolName string
+	// MaxConcurrent is the pool's current limit. The implementation uses this
+	// value inside the transaction to avoid a second pool lookup.
+	MaxConcurrent int
+}
 
 // LicensePool represents a tracked pool of concurrent software licenses.
 // sqi enforces concurrency limits itself by counting active [LicenseCheckout]
@@ -74,4 +95,26 @@ type LicenseCheckoutStore interface {
 	// where ReleasedAt IS NULL. Used by the scheduler's admission check before
 	// assigning a task that requires the pool.
 	ActiveCheckoutCount(ctx context.Context, poolID string) (int, error)
+
+	// TryClaimLicenseSlots atomically verifies that every pool in claims has
+	// remaining capacity and, if so, inserts a [LicenseCheckout] row for each.
+	// The operation runs inside a single database transaction so the
+	// count-check and insert are indivisible.
+	//
+	// Returns [ErrLicenseAtCapacity] if any pool is saturated; no rows are
+	// inserted in that case. Returns [ErrConflict] if any checkout ID or
+	// (task_attempt_id, pool_id) pair already exists.
+	//
+	// taskAttemptID must reference an existing [TaskAttempt] row. checkedOutAt
+	// is the timestamp recorded on each new checkout.
+	TryClaimLicenseSlots(ctx context.Context, taskAttemptID string, claims []LicensePoolClaim, checkedOutAt time.Time) error
+
+	// ReleaseAttemptCheckouts sets ReleasedAt on every active checkout
+	// (released_at IS NULL) for the given taskAttemptID. Called when a task
+	// attempt reaches a terminal state so the license slots are freed for
+	// reassignment.
+	//
+	// Returns the number of checkouts released (0 is not an error when the
+	// attempt held no licenses).
+	ReleaseAttemptCheckouts(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error)
 }

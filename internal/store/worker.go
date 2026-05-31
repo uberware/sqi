@@ -22,11 +22,21 @@ const (
 )
 
 // GPUInfo describes the GPU(s) available on a worker host.
+//
+// Phase 1 assumes a homogeneous GPU configuration: all GPUs on the host are
+// the same model with the same VRAM. VRAMMb is the per-device VRAM capacity;
+// Count is the number of identical devices. Mixed-GPU workers (e.g. a render
+// card alongside a display adapter) are not modeled — workers with
+// heterogeneous GPUs should report the lowest common VRAM to avoid
+// over-scheduling. A []GPUDevice slice should replace this struct when
+// heterogeneous per-device tracking is required.
 type GPUInfo struct {
 	Vendor string `json:"vendor,omitempty"`
 	Model  string `json:"model,omitempty"`
-	VRAMMb int    `json:"vram_mb,omitempty"`
-	Count  int    `json:"count,omitempty"`
+	// VRAMMb is the VRAM capacity of each GPU device in mebibytes.
+	// All devices are assumed to be identical (see type-level note above).
+	VRAMMb int `json:"vram_mb,omitempty"`
+	Count  int `json:"count,omitempty"`
 }
 
 // Worker represents a registered sqi-worker agent. Workers self-report their
