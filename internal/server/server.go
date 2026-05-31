@@ -7,7 +7,7 @@
 // Components are added to [Server] as their implementing tasks land:
 //   - store (SQLite):          tasks 25–32 ✓
 //   - bus (NATS JetStream):    tasks 33–39 ✓
-//   - scheduler:               tasks 46–55
+//   - scheduler:               tasks 46–55 ✓ (46–48 done)
 //   - httpServer (REST+WS+UI): tasks 66–88
 //   - discovery (mDNS):        tasks 89–90
 package server
@@ -26,6 +26,7 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
@@ -70,6 +71,10 @@ type Config struct {
 	// CheckpointInterval is how often the background WAL checkpointer runs.
 	// See internal/config.StoreConfig.CheckpointInterval for semantics.
 	CheckpointInterval time.Duration // default 5m
+
+	// Scheduler holds tuning parameters for the assignment loop, worker
+	// registry, and heartbeat sweep. Zero values use scheduler.DefaultConfig().
+	Scheduler scheduler.Config
 }
 
 // DefaultConfig returns a [Config] with sensible development defaults.
@@ -83,6 +88,7 @@ func DefaultConfig() Config {
 		NATSMaxStoreMB:     1024,
 		SQLitePath:         "sqi.db",
 		CheckpointInterval: 5 * time.Minute,
+		Scheduler:          scheduler.DefaultConfig(),
 	}
 }
 
@@ -104,10 +110,10 @@ type Server struct {
 	obsServer *http.Server
 
 	// Component fields are added here as their tasks land.
-	store     store.Store // tasks 25–32 ✓
-	broker    *bus.Broker // tasks 33–39 ✓
-	busClient *bus.Client // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
-	// scheduler *scheduler.Scheduler   // tasks 46–55
+	store     store.Store          // tasks 25–32 ✓
+	broker    *bus.Broker          // tasks 33–39 ✓
+	busClient *bus.Client          // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
+	sched     *scheduler.Scheduler // tasks 46–55 ✓ (46–48 done)
 	// discovery *discovery.Responder   // tasks 89–90
 }
 
@@ -212,8 +218,15 @@ func (s *Server) start(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "bus: typed client connected")
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
-	// TODO(tasks 46–55): start assignment loop, heartbeat sweep.
-	s.logger.DebugContext(ctx, "scheduler: not yet started (tasks 46–55)")
+	// Tasks 46–48: assignment loop goroutine pool, worker registry (NATS
+	// consumer), and heartbeat timeout sweep.
+	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger)
+	go func() {
+		if err := s.sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
+		}
+	}()
+	s.logger.InfoContext(ctx, "scheduler: started")
 
 	// ── Observability HTTP server ─────────────────────────────────────────
 	// Serves /metrics (task 22), /healthz + /readyz (task 23), and pprof
@@ -288,7 +301,12 @@ func (s *Server) shutdown() error {
 	}
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
-	// TODO(tasks 46–55): signal scheduler to stop; wait for goroutines.
+	// Signal the scheduler to stop. Its goroutines exit when their context is
+	// canceled; the bus client drain below ensures any in-flight NATS messages
+	// are processed before the connection closes.
+	if s.sched != nil {
+		s.sched.Stop()
+	}
 
 	// ── Message bus ───────────────────────────────────────────────────────
 	// Tasks 36–39: drain the typed client first — stops push consumers,

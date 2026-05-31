@@ -43,6 +43,12 @@ WHERE t.status = 'ready'
   AND q.paused  = 0
 ORDER BY j.priority DESC, t.created_at ASC
 LIMIT ?`
+
+	sqlReclaimWorkerTasks = `
+UPDATE tasks
+SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+WHERE assigned_worker_id = ?
+  AND status IN ('assigned', 'running')`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -186,6 +192,17 @@ func (s *Store) AssignTask(ctx context.Context, id, workerID string, assignedAt 
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// ReclaimWorkerTasks implements [store.TaskStore].
+func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error) {
+	now := timeToText(time.Now().UTC())
+	res, err := s.stmtReclaimWorkerTasks.ExecContext(ctx, now, workerID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // ListReadyTasks implements [store.TaskStore].

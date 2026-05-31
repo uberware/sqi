@@ -125,11 +125,12 @@ type Store struct {
 	stmtUpdateStepStatus *sql.Stmt
 
 	// ── tasks ────────────────────────────────────────────────────────────
-	stmtInsertTask       *sql.Stmt
-	stmtGetTask          *sql.Stmt
-	stmtUpdateTaskStatus *sql.Stmt
-	stmtAssignTask       *sql.Stmt
-	stmtListReadyTasks   *sql.Stmt
+	stmtInsertTask         *sql.Stmt
+	stmtGetTask            *sql.Stmt
+	stmtUpdateTaskStatus   *sql.Stmt
+	stmtAssignTask         *sql.Stmt
+	stmtListReadyTasks     *sql.Stmt
+	stmtReclaimWorkerTasks *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
 	stmtInsertAttempt *sql.Stmt
@@ -377,6 +378,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtListReadyTasks, err = s.prepare(ctx, sqlListReadyTasks); err != nil {
+		return err
+	}
+	if s.stmtReclaimWorkerTasks, err = s.prepare(ctx, sqlReclaimWorkerTasks); err != nil {
 		return err
 	}
 

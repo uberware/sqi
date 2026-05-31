@@ -94,6 +94,31 @@ func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt ti
 	return nil
 }
 
+// ReclaimWorkerTasks resets assigned/running tasks for the given worker back
+// to [store.TaskStatusReady] and returns the count of tasks reclaimed.
+func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var count int
+	for id, task := range s.tasks {
+		if task.AssignedWorkerID != workerID {
+			continue
+		}
+		if task.Status != store.TaskStatusAssigned && task.Status != store.TaskStatusRunning {
+			continue
+		}
+		task.Status = store.TaskStatusReady
+		task.AssignedWorkerID = ""
+		task.AssignedAt = nil
+		task.UpdatedAt = now
+		s.tasks[id] = task
+		count++
+	}
+	return count, nil
+}
+
 // ListReadyTasks returns up to limit tasks in [store.TaskStatusReady] that
 // belong to non-paused queues within the given farm, ordered by job priority
 // descending then CreatedAt ascending.
