@@ -1,0 +1,297 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package openjd
+
+// SpecVersion is the only specification version accepted by this package.
+const SpecVersion = "jobtemplate-2023-09"
+
+// ─── Top-level template ──────────────────────────────────────────────────────
+
+// JobTemplate is the root document of an OpenJD submission.
+type JobTemplate struct {
+	// SpecificationVersion must equal [SpecVersion].
+	SpecificationVersion string
+
+	// Name is the human-readable job name.  Required; may contain format-string
+	// references such as "Render {{Param.SceneName}}".
+	Name string
+
+	// Description is an optional free-form description (no functional effect).
+	Description string
+
+	// Extensions is the optional list of named OpenJD feature extensions to
+	// enable (e.g. "feature-bundle-1").
+	Extensions []string
+
+	// ParameterDefinitions declares the job-level parameters that submitters
+	// must or may provide.  Parameter names must be unique.
+	ParameterDefinitions []JobParameter
+
+	// JobEnvironments are environments that wrap every session in this job.
+	// They are entered in order and exited in reverse order.
+	JobEnvironments []Environment
+
+	// Steps is the ordered list of step definitions.  At least one step is
+	// required.
+	Steps []StepTemplate
+}
+
+// ─── Job parameters ──────────────────────────────────────────────────────────
+
+// JobParamType is the discriminator for a [JobParameter].
+type JobParamType string
+
+const (
+	// JobParamTypeInt is a 64-bit integer parameter.
+	JobParamTypeInt JobParamType = "INT"
+	// JobParamTypeFloat is a decimal (float64) parameter.
+	JobParamTypeFloat JobParamType = "FLOAT"
+	// JobParamTypeString is an arbitrary UTF-8 string parameter.
+	JobParamTypeString JobParamType = "STRING"
+	// JobParamTypePath is a filesystem or S3 path parameter.
+	JobParamTypePath JobParamType = "PATH"
+)
+
+// JobParameter is one entry in [JobTemplate.ParameterDefinitions].
+type JobParameter struct {
+	// Name is the parameter identifier; must match [A-Za-z_][A-Za-z0-9_]*.
+	Name string
+	// Type discriminates INT / FLOAT / STRING / PATH.
+	Type JobParamType
+	// Description is optional documentation shown in UI elements.
+	Description string
+	// Default is the value used when the submitter does not provide one.
+	// Stored as a string regardless of Type to avoid lossy conversion.
+	// Nil means no default (parameter is required).
+	Default *string
+	// AllowedValues, when non-nil, enumerates the only acceptable values.
+	AllowedValues []string
+	// MinValue / MaxValue constrain INT and FLOAT parameters.
+	// Stored as strings for lossless round-tripping.
+	MinValue *string
+	MaxValue *string
+	// MinLength / MaxLength constrain STRING and PATH parameters.
+	MinLength *int
+	MaxLength *int
+}
+
+// ─── Environments ────────────────────────────────────────────────────────────
+
+// Environment is an OpenJD environment block used at the job or step level.
+// Environments are entered once per session and exited in reverse order.
+type Environment struct {
+	// Name is unique within its containing list.
+	Name string
+	// Description is optional documentation.
+	Description string
+	// Script defines the onEnter and onExit actions.
+	Script *EnvironmentScript
+	// Variables are environment variables set for all actions in the session.
+	Variables map[string]string
+}
+
+// EnvironmentScript holds the runnable actions for an [Environment].
+type EnvironmentScript struct {
+	// EmbeddedFiles are plain-text files materialized before actions run.
+	EmbeddedFiles []EmbeddedFile
+	// Actions holds the onEnter and onExit lifecycle hooks.
+	Actions EnvironmentActions
+}
+
+// EnvironmentActions are the lifecycle hooks for an [Environment].
+// At least one of OnEnter or OnExit must be non-nil.
+type EnvironmentActions struct {
+	OnEnter *Action
+	OnExit  *Action
+}
+
+// ─── Steps ────────────────────────────────────────────────────────────────────
+
+// StepTemplate defines one step within a [JobTemplate].
+type StepTemplate struct {
+	// Name identifies this step; must be unique within the job.
+	Name string
+	// Description is optional documentation.
+	Description string
+	// Script is the executable definition of the step's tasks.
+	Script *StepScript
+	// StepEnvironments are per-step environments entered after job environments.
+	StepEnvironments []Environment
+	// ParameterSpace defines the task parameter combinations for this step.
+	// Nil means the step produces exactly one task with no parameters.
+	ParameterSpace *StepParameterSpace
+	// HostRequirements declares the host capabilities required by this step.
+	HostRequirements *HostRequirements
+	// Dependencies lists the steps that must complete before this one starts.
+	Dependencies []StepDependency
+}
+
+// StepScript is the executable definition attached to a [StepTemplate].
+type StepScript struct {
+	// EmbeddedFiles are plain-text files written to disk before each action.
+	EmbeddedFiles []EmbeddedFile
+	// Actions holds the task lifecycle hooks.
+	Actions StepActions
+}
+
+// StepActions holds the lifecycle actions for tasks of a step.
+type StepActions struct {
+	// OnRun is executed once per task.
+	OnRun Action
+}
+
+// StepDependency names a step that must reach [store.StepStatusCompleted]
+// before this step's tasks may be scheduled.
+type StepDependency struct {
+	// DependsOn is the name of the prerequisite step.
+	DependsOn string
+}
+
+// ─── Host requirements ────────────────────────────────────────────────────────
+
+// HostRequirements declares the worker capabilities required by a step.
+type HostRequirements struct {
+	// Amounts are quantifiable requirements such as CPUs, RAM, or licenses.
+	Amounts []AmountRequirement
+	// Attributes are categorical requirements such as OS or CPU architecture.
+	Attributes []AttributeRequirement
+}
+
+// AmountRequirement is a single quantifiable host capability requirement.
+type AmountRequirement struct {
+	// Name is the capability name (e.g. "amount.worker.vcpu").
+	Name string
+	// Min and Max bound the acceptable range.  Nil means no bound.
+	// Stored as strings for lossless round-tripping of int and float values.
+	Min *string
+	Max *string
+}
+
+// AttributeRequirement is a categorical host capability requirement.
+type AttributeRequirement struct {
+	// Name is the capability name (e.g. "attr.worker.os.family").
+	Name string
+	// AnyOf requires the host attribute to match at least one value.
+	AnyOf []string
+	// AllOf requires the host attribute to match all listed values.
+	AllOf []string
+}
+
+// ─── Parameter space ─────────────────────────────────────────────────────────
+
+// StepParameterSpace defines the multidimensional task parameter space for a
+// step.  Expanding it via [ExpandParameterSpace] yields one [TaskParams] per
+// task.
+type StepParameterSpace struct {
+	// TaskParameterDefinitions declares all task parameters.  1–16 entries.
+	TaskParameterDefinitions []TaskParamDefinition
+	// Combination is an optional expression that controls how parameter ranges
+	// are combined.  Identifiers connected with * form a Cartesian product;
+	// identifiers grouped in parentheses (A,B,C) are zipped (association).
+	// When nil, all parameters are joined with *.
+	Combination *string
+}
+
+// TaskParamType is the discriminator for a [TaskParamDefinition].
+type TaskParamType string
+
+const (
+	// TaskParamTypeInt is an integer task parameter.
+	TaskParamTypeInt TaskParamType = "INT"
+	// TaskParamTypeFloat is a float task parameter.
+	TaskParamTypeFloat TaskParamType = "FLOAT"
+	// TaskParamTypeString is a string task parameter.
+	TaskParamTypeString TaskParamType = "STRING"
+	// TaskParamTypePath is a path task parameter.
+	TaskParamTypePath TaskParamType = "PATH"
+	// TaskParamTypeChunkInt is a chunked integer task parameter that groups
+	// multiple frame values into a single task.
+	TaskParamTypeChunkInt TaskParamType = "CHUNK[INT]"
+)
+
+// TaskParamDefinition is one parameter declaration in a [StepParameterSpace].
+type TaskParamDefinition struct {
+	// Name is the parameter identifier.
+	Name string
+	// Type discriminates INT / FLOAT / STRING / PATH / CHUNK[INT].
+	Type TaskParamType
+	// RangeExpr holds the raw range string for INT and CHUNK[INT] parameters
+	// when the template uses range expression syntax (e.g. "1-100:2").
+	// Exactly one of RangeExpr or RangeList is set for each definition.
+	RangeExpr *string
+	// RangeList holds the explicit value list for all other types, and also for
+	// INT/CHUNK[INT] when the template provides an array of values.
+	RangeList []string
+	// Chunks is non-nil only for CHUNK[INT] parameters.
+	Chunks *TaskChunks
+}
+
+// TaskChunks configures chunked task grouping for a CHUNK[INT] parameter.
+type TaskChunks struct {
+	// DefaultTaskCount is the number of INT values to group per task.
+	DefaultTaskCount int
+	// TargetRuntimeSeconds, when > 0, enables adaptive chunking.
+	TargetRuntimeSeconds *int
+	// RangeConstraint is "CONTIGUOUS" (default) or "NONCONTIGUOUS".
+	RangeConstraint string
+}
+
+// ─── Embedded files ───────────────────────────────────────────────────────────
+
+// EmbeddedFile is a plain-text file embedded directly in the job template.
+// The worker materializes it to the session working directory before running
+// the associated actions.
+type EmbeddedFile struct {
+	// Name is the identifier used to reference this file.
+	Name string
+	// Filename is the on-disk name; if empty the worker generates one.
+	Filename string
+	// Data is the file content (may contain format-string references).
+	Data string
+	// Runnable, when true, sets the file's execute permission.
+	Runnable bool
+	// EndOfLine is "AUTO", "LF", or "CRLF".  Empty means "AUTO".
+	EndOfLine string
+}
+
+// ─── Actions ─────────────────────────────────────────────────────────────────
+
+// Action is an executable command run as part of a step or environment script.
+type Action struct {
+	// Command is the executable (may be a format string).
+	Command string
+	// Args is the optional argument list (each entry may be a format string).
+	Args []string
+	// TimeoutSeconds, when > 0, limits how long the action may run.
+	TimeoutSeconds int
+	// Cancelation describes how to stop a running action.
+	Cancelation *CancelationMethod
+}
+
+// CancelationMode is the cancelation strategy for an [Action].
+type CancelationMode string
+
+const (
+	// CancelModeTerminate sends SIGKILL / TerminateProcess immediately.
+	CancelModeTerminate CancelationMode = "TERMINATE"
+	// CancelModeNotifyThenTerminate sends SIGTERM first, then SIGKILL after
+	// NotifyPeriodSeconds.
+	CancelModeNotifyThenTerminate CancelationMode = "NOTIFY_THEN_TERMINATE"
+)
+
+// CancelationMethod configures how a running [Action] is canceled.
+type CancelationMethod struct {
+	// Mode selects the cancelation strategy.
+	Mode CancelationMode
+	// NotifyPeriodSeconds is the delay between SIGTERM and SIGKILL when Mode is
+	// [CancelModeNotifyThenTerminate].  0 means use the spec default (120s for
+	// onRun actions, 30s for others).
+	NotifyPeriodSeconds int
+}
+
+// ─── Expanded task parameters ─────────────────────────────────────────────────
+
+// TaskParams is one materialized row from a step's parameter-space expansion.
+// Keys are parameter names; values are their string representations.
+// An empty map means the step has no parameters (produces a single task).
+type TaskParams map[string]string
