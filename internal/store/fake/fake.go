@@ -22,6 +22,7 @@ type Store struct {
 	steps            map[string]store.Step
 	tasks            map[string]store.Task
 	taskAttempts     map[string]store.TaskAttempt
+	taskLogs         []store.TaskLog
 	auditEntries     []store.AuditEntry
 }
 
@@ -40,6 +41,7 @@ func New() *Store {
 		steps:            make(map[string]store.Step),
 		tasks:            make(map[string]store.Task),
 		taskAttempts:     make(map[string]store.TaskAttempt),
+		taskLogs:         make([]store.TaskLog, 0),
 		auditEntries:     make([]store.AuditEntry, 0),
 	}
 }
@@ -65,5 +67,6 @@ func (s *Store) Reset() {
 	s.steps = make(map[string]store.Step)
 	s.tasks = make(map[string]store.Task)
 	s.taskAttempts = make(map[string]store.TaskAttempt)
+	s.taskLogs = make([]store.TaskLog, 0)
 	s.auditEntries = make([]store.AuditEntry, 0)
 }

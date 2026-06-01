@@ -148,6 +148,10 @@ type Store struct {
 	stmtTerminateWorkerAttempts *sql.Stmt
 	stmtCancelJobAttempts       *sql.Stmt
 
+	// ── task_logs ────────────────────────────────────────────────────────
+	stmtInsertTaskLog *sql.Stmt
+	stmtListTaskLogs  *sql.Stmt
+
 	// ── audit_log ────────────────────────────────────────────────────────
 	stmtInsertAudit *sql.Stmt
 }
@@ -435,6 +439,14 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtCancelJobAttempts, err = s.prepare(ctx, sqlCancelJobAttempts); err != nil {
+		return err
+	}
+
+	// ── task_logs ─────────────────────────────────────────────────────────
+	if s.stmtInsertTaskLog, err = s.prepare(ctx, sqlInsertTaskLog); err != nil {
+		return err
+	}
+	if s.stmtListTaskLogs, err = s.prepare(ctx, sqlListTaskLogs); err != nil {
 		return err
 	}
 

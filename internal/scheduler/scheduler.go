@@ -62,6 +62,29 @@
 //   - [metrics.Metrics.SchedulerIdleWorkers] — updated each dispatch tick and
 //     after any worker-status event via [store.WorkerStore.CountIdleWorkers],
 //     partitioned by farm ID.
+//
+// Task 56 introduced the [worker/protocol] package with versioned JSON message
+// types for all worker wire-protocol messages: [protocol.RegisterMsg],
+// [protocol.HeartbeatMsg], [protocol.AssignMsg], [protocol.TaskStatusMsg], and
+// [protocol.LogChunkMsg].
+//
+// Task 57 wires in a server-side push-consumer for the SQI_TASK JetStream
+// stream (task.status.<job> subjects).  [handleTaskStatusMessage] decodes each
+// [protocol.TaskStatusMsg], updates the task/attempt in the store, releases
+// held license slots, and drives step/job completion logic including
+// [openjd.ResolveDependencies] for multi-step jobs.
+//
+// Task 58 replaces the minimal stub buildAssignPayload with a full
+// [protocol.AssignMsg] that re-parses the job's raw OpenJD template to extract
+// the matching step's OnRun action, embedded files, and ordered environments
+// (job environments first, step environments second, per the OpenJD spec).
+// The path map field is present but empty in Phase 1 (tasks 60–62 implement
+// storage location CRUD and resolved-mode path translation).
+//
+// Task 59 adds structured log ingestion.  [handleLogChunk] consumes
+// task.logs.<task> messages from the SQI_LOGS stream and persists each chunk
+// as a [store.TaskLog] row with the worker-assigned sequence number (SeqNum)
+// and the NATS stream sequence (NATSSeq) used as the log-tail pagination cursor.
 package scheduler
 
 import (
@@ -194,6 +217,25 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return fmt.Errorf("scheduler: start worker consumer: %w", err)
 	}
 	s.logger.InfoContext(ctx, "scheduler: worker consumer started")
+
+	// ── Task 57: task-status NATS consumer ────────────────────────────────
+	// A JetStream push-consumer on SQI_TASK delivers task.status.<job>
+	// messages from workers. handleTaskStatusMessage updates the store,
+	// closes attempt records, releases license slots, and drives step/job
+	// completion.
+	if err := s.startTaskStatusConsumer(ctx); err != nil {
+		return fmt.Errorf("scheduler: start task-status consumer: %w", err)
+	}
+	s.logger.InfoContext(ctx, "scheduler: task-status consumer started")
+
+	// ── Task 59: task-logs NATS consumer ──────────────────────────────────
+	// A JetStream push-consumer on SQI_LOGS delivers task.logs.<task>
+	// messages from workers. handleLogChunk persists each chunk to the
+	// task_logs table with NATS sequence as the pagination cursor.
+	if err := s.startTaskLogsConsumer(ctx); err != nil {
+		return fmt.Errorf("scheduler: start task-logs consumer: %w", err)
+	}
+	s.logger.InfoContext(ctx, "scheduler: task-logs consumer started")
 
 	// ── Task 46: assignment worker pool ───────────────────────────────────
 	for i := range s.cfg.AssignWorkers {
@@ -384,7 +426,9 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 	}
 
 	// Publish the assignment to NATS so the worker can pull it.
-	payload, err := buildAssignPayload(task, worker)
+	// buildAssignPayload (task 58) includes the full step execution spec so
+	// the worker does not need to make additional API calls.
+	payload, err := buildAssignPayload(task, worker, job, step, attempt.ID)
 	if err != nil {
 		return fmt.Errorf("build assign payload: %w", err)
 	}
@@ -627,31 +671,7 @@ func (s *Scheduler) pickWorker(
 	return store.Worker{}, errNoWorkerAvailable
 }
 
-// assignPayload is the JSON message published to work.assign.<queueID>.
-// Task 56 will introduce a fully versioned protocol; this interim format
-// carries the minimum information a worker needs to begin execution.
-type assignPayload struct {
-	TaskID     string            `json:"task_id"`
-	JobID      string            `json:"job_id"`
-	StepID     string            `json:"step_id"`
-	TaskName   string            `json:"task_name"`
-	Parameters map[string]string `json:"parameters"`
-	WorkerID   string            `json:"worker_id"`
-	AssignedAt time.Time         `json:"assigned_at"`
-}
-
-func buildAssignPayload(task store.Task, worker store.Worker) ([]byte, error) {
-	p := assignPayload{
-		TaskID:     task.ID,
-		JobID:      task.JobID,
-		StepID:     task.StepID,
-		TaskName:   task.Name,
-		Parameters: task.Parameters,
-		WorkerID:   worker.ID,
-		AssignedAt: time.Now().UTC(),
-	}
-	return json.Marshal(p)
-}
+// buildAssignPayload is implemented in assign.go (task 58).
 
 // ── Task 52: license release ──────────────────────────────────────────────────
 

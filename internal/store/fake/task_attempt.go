@@ -142,7 +142,7 @@ func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.
 }
 
 // UpdateTaskAttempt replaces the mutable fields of an existing attempt
-// (Status, ExitCode, EndedAt).
+// (Status, ExitCode, EndedAt, and SessionID if non-empty).
 func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,6 +155,11 @@ func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) 
 	existing.Status = attempt.Status
 	existing.ExitCode = attempt.ExitCode
 	existing.EndedAt = attempt.EndedAt
+	// Only overwrite SessionID when the caller provides a non-empty value,
+	// matching the COALESCE(NULLIF(?, ''), session_id) behavior in SQLite.
+	if attempt.SessionID != "" {
+		existing.SessionID = attempt.SessionID
+	}
 	s.taskAttempts[attempt.ID] = existing
 	return existing, nil
 }

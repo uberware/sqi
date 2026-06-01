@@ -62,7 +62,10 @@ ORDER BY attempt_number ASC`
 
 	sqlUpdateAttempt = `
 UPDATE task_attempts
-SET status = ?, exit_code = ?, ended_at = ?
+SET status    = ?,
+    exit_code = ?,
+    ended_at  = ?,
+    session_id = COALESCE(NULLIF(?, ''), session_id)
 WHERE id = ?
 RETURNING ` + attemptCols
 
@@ -161,13 +164,18 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 }
 
 // UpdateTaskAttempt implements [store.TaskAttemptStore].
+// If attempt.SessionID is non-empty it is written to the record; an empty
+// value is treated as "no change" via COALESCE so callers that do not have
+// a session ID (e.g. the cancellation path) do not overwrite an existing one.
 func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	var exitCode sql.NullInt64
 	if attempt.ExitCode != nil {
 		exitCode = sql.NullInt64{Int64: int64(*attempt.ExitCode), Valid: true}
 	}
 	row := s.stmtUpdateAttempt.QueryRowContext(ctx,
-		string(attempt.Status), exitCode, nullTimeToText(attempt.EndedAt), attempt.ID)
+		string(attempt.Status), exitCode, nullTimeToText(attempt.EndedAt),
+		attempt.SessionID, // COALESCE(NULLIF(?, ''), session_id)
+		attempt.ID)
 	out, err := scanAttempt(row)
 	return out, mapErr(err)
 }

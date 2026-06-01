@@ -54,6 +54,7 @@ type Store interface {
 	StepStore
 	TaskStore
 	TaskAttemptStore
+	TaskLogStore
 	AuditStore
 	io.Closer
 }

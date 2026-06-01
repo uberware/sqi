@@ -113,7 +113,7 @@ type Server struct {
 	store     store.Store          // tasks 25–32 ✓
 	broker    *bus.Broker          // tasks 33–39 ✓
 	busClient *bus.Client          // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
-	sched     *scheduler.Scheduler // tasks 46–55 ✓ (46–48 done)
+	sched     *scheduler.Scheduler // tasks 46–59 ✓
 	// discovery *discovery.Responder   // tasks 89–90
 }
 
