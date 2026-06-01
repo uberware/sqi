@@ -3,10 +3,12 @@
 
 # ── Variables ────────────────────────────────────────────────────────────────
 
-MODULE       := github.com/uberware/sqi
-BINARY       := sqi-server
-CMD_DIR      := ./cmd/sqi-server
-BUILD_DIR    := ./bin
+MODULE              := github.com/uberware/sqi
+BINARY              := sqi-server
+CMD_DIR             := ./cmd/sqi-server
+WORKER_BINARY       := sqi-worker
+WORKER_CMD_DIR      := ./cmd/sqi-worker
+BUILD_DIR           := ./bin
 
 # Version embedding — use git tag if available, fall back to "dev"
 VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -46,29 +48,47 @@ help: ## Show this help
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 .PHONY: build
-build: ## Build sqi-server binary into ./bin/
+build: build-server build-worker ## Build both sqi-server and sqi-worker into ./bin/
+
+.PHONY: build-server
+build-server: ## Build sqi-server binary into ./bin/
 	@mkdir -p $(BUILD_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) $(CMD_DIR)
 
-.PHONY: build-all
-build-all: ## Cross-compile for linux/darwin/windows × amd64/arm64
+.PHONY: build-worker
+build-worker: ## Build sqi-worker binary into ./bin/
 	@mkdir -p $(BUILD_DIR)
-	@for os in linux darwin windows; do \
-	  for arch in amd64 arm64; do \
-	    ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
-	    echo "Building $$os/$$arch..."; \
-	    GOOS=$$os GOARCH=$$arch go build \
-	      -ldflags "$(LDFLAGS)" \
-	      -o $(BUILD_DIR)/$(BINARY)-$$os-$$arch$$ext \
-	      $(CMD_DIR); \
+	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(WORKER_BINARY) $(WORKER_CMD_DIR)
+
+.PHONY: build-all
+build-all: ## Cross-compile both binaries for linux/darwin/windows × amd64/arm64
+	@mkdir -p $(BUILD_DIR)
+	@for bin_name in $(BINARY) $(WORKER_BINARY); do \
+	  cmd_dir="./cmd/$$bin_name"; \
+	  for os in linux darwin windows; do \
+	    for arch in amd64 arm64; do \
+	      ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
+	      echo "Building $$bin_name $$os/$$arch..."; \
+	      GOOS=$$os GOARCH=$$arch go build \
+	        -ldflags "$(LDFLAGS)" \
+	        -o $(BUILD_DIR)/$$bin_name-$$os-$$arch$$ext \
+	        $$cmd_dir; \
+	    done; \
 	  done; \
 	done
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 .PHONY: run
-run: build ## Build then run sqi-server with default config
+run: run-server ## Build then run sqi-server (alias for run-server)
+
+.PHONY: run-server
+run-server: build-server ## Build then run sqi-server with default config
 	$(BUILD_DIR)/$(BINARY) serve
+
+.PHONY: run-worker
+run-worker: build-worker ## Build then run sqi-worker with default config
+	$(BUILD_DIR)/$(WORKER_BINARY) start
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
