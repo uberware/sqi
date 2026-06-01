@@ -5,18 +5,17 @@ package scheduler
 // Task 58: task-assignment publishing that respects per-worker pull semantics
 // and includes the full task payload (resolved command, env, path map).
 //
-// buildAssignPayload (previously a minimal stub in scheduler.go) now:
+// buildAssignPayload now:
 //
 //  1. Parses job.RawTemplate to extract the matching StepTemplate by name.
 //  2. Builds a protocol.AssignMsg with the step's OnRun action, embedded files,
 //     and ordered environments (job environments first, then step environments).
 //  3. Attaches the job-level parameters as JobParameters so the worker can
 //     resolve {{Param.*}} format strings.
-//  4. Populates PathMap with path-mapping rules derived from the server's named
-//     storage location configuration for the worker's compute location.
-//     In Phase 1 (before tasks 60–62 implement storage location CRUD) the
-//     PathMap is always empty; the field is included so workers can begin
-//     reading it without a protocol change later.
+//  4. Populates PathMap with path-mapping rules (openjd mode) generated from
+//     all registered storage locations for the worker's compute location.
+//  5. Resolves loc:// URI references in command args, env vars, and task
+//     parameters to concrete local paths (resolved mode, task 65).
 //
 // Pull semantics:
 // Workers pull assignments from their per-queue durable JetStream pull consumer
@@ -26,6 +25,7 @@ package scheduler
 // This is enforced by using WorkQueuePolicy on the SQI_WORK JetStream stream.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -40,17 +40,21 @@ import (
 //
 // It receives the store-level task, worker, job, and step records.  It also
 // receives the attemptID so the worker can correlate status reports and log
-// chunks back to the correct attempt.
+// chunks back to the correct attempt, and the storage location store used to
+// build the path map and resolve loc:// URIs.
 //
 // An error is returned if the raw OpenJD template cannot be re-parsed (which
 // should not happen in production since the template was validated at submission
-// time) or if the named step cannot be found in the template.
+// time), if the named step cannot be found in the template, or if a loc://
+// reference cannot be resolved.
 func buildAssignPayload(
+	ctx context.Context,
 	task store.Task,
 	worker store.Worker,
 	job store.Job,
 	step store.Step,
 	attemptID string,
+	locStore store.StorageLocationStore,
 ) ([]byte, error) {
 	// ── Parse the raw OpenJD template ─────────────────────────────────────
 	format := openjd.FormatYAML
@@ -111,13 +115,27 @@ func buildAssignPayload(
 	}
 	msg.Environments = envs
 
-	// ── PathMap ────────────────────────────────────────────────────────────
-	// Phase 1: named storage location CRUD (tasks 60–62) is not yet
-	// implemented, so the path map is always empty.  Workers that support
-	// the OpenJD path-mapping file will see no entries and treat all paths
-	// as already resolved — which is correct for deployments without named
-	// storage locations.
-	msg.PathMap = buildPathMap(worker.ComputeLocation)
+	// ── Fetch all storage locations once ──────────────────────────────────
+	allLocs, err := locStore.ListStorageLocations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("build assign payload: list storage locations: %w", err)
+	}
+
+	// ── PathMap (openjd mode) ──────────────────────────────────────────────
+	// Build source→destination path-mapping rules for the worker's compute
+	// location.  Workers write these to the OpenJD assetreferences.json file
+	// in the session working directory so that applications with native OpenJD
+	// path-mapping support can translate paths themselves.
+	msg.PathMap = buildPathMap(allLocs, worker.ComputeLocation)
+
+	// ── Resolved-mode path translation (task 65) ───────────────────────────
+	// Replace any loc:// URI references in the command, args, task parameters,
+	// and environment variables with concrete local paths for this worker.
+	// This ensures workers with no OpenJD path-mapping support see only
+	// concrete paths.
+	if err := resolveLocURIsInMsg(&msg, allLocs, worker.ComputeLocation); err != nil {
+		return nil, fmt.Errorf("build assign payload: resolve loc:// URIs: %w", err)
+	}
 
 	return json.Marshal(msg)
 }
@@ -202,11 +220,152 @@ func convertEnvironment(e openjd.Environment) protocol.AssignEnvironment {
 	return ae
 }
 
-// buildPathMap returns the ordered list of path-mapping rules for the given
-// compute location.  In Phase 1 this always returns nil; tasks 60–62 will
-// replace this stub with a real lookup against the storage_locations table.
-func buildPathMap(_ string) []protocol.PathMapRule {
-	// TODO(tasks 60–62): query storage_locations for roots matching
-	// computeLocation and convert them to PathMapRule entries.
+// buildPathMap builds the ordered list of OpenJD path-mapping rules from all
+// registered storage locations for the given compute location.
+//
+// For each location that has both a "default" root and a compute-location-
+// specific root (and the two differ), a rule is emitted that maps the default
+// root to the compute-location-specific root.  This allows workers on
+// non-default compute locations to translate canonical paths transparently.
+//
+// Locations that only have a "default" root are omitted — their canonical
+// paths are already correct and no translation is needed.
+func buildPathMap(locs []store.StorageLocation, computeLocation string) []protocol.PathMapRule {
+	var rules []protocol.PathMapRule
+	for _, loc := range locs {
+		defaultRoot, hasDefault := loc.Roots["default"]
+		if !hasDefault || defaultRoot == "" {
+			continue
+		}
+
+		// Find the compute-location-specific root.
+		destRoot := defaultRoot
+		if computeLocation != "" {
+			if r, ok := loc.Roots[computeLocation]; ok && r != "" {
+				destRoot = r
+			}
+		}
+
+		// Only emit a rule when translation is actually needed.
+		if destRoot == defaultRoot {
+			continue
+		}
+
+		rules = append(rules, protocol.PathMapRule{
+			SourcePathFormat: defaultRoot,
+			DestinationPath:  destRoot,
+		})
+	}
+	return rules
+}
+
+// resolveLocURIsInMsg rewrites all loc:// URI references inside msg in-place.
+// It covers the OnRun action command/args, all environment variables and
+// embedded-file data in every AssignEnvironment, and all task parameter values.
+func resolveLocURIsInMsg(
+	msg *protocol.AssignMsg,
+	locs []store.StorageLocation,
+	computeLocation string,
+) error {
+	// Build a quick lookup map by location name.
+	locMap := make(map[string]store.StorageLocation, len(locs))
+	for _, loc := range locs {
+		locMap[loc.Name] = loc
+	}
+
+	resolve := func(name, relPath string) (string, error) {
+		loc, ok := locMap[name]
+		if !ok {
+			return "", fmt.Errorf("storage location %q not found", name)
+		}
+		root, err := openjd.ResolveRoot(name, loc.Roots, computeLocation)
+		if err != nil {
+			return "", err
+		}
+		return openjd.JoinPath(root, relPath), nil
+	}
+
+	// Resolve task parameters.
+	for k, v := range msg.Parameters {
+		resolved, err := openjd.ResolveLocURIs(v, resolve)
+		if err != nil {
+			return fmt.Errorf("parameter %q: %w", k, err)
+		}
+		msg.Parameters[k] = resolved
+	}
+
+	// Resolve OnRun action.
+	if msg.OnRun != nil {
+		if err := resolveAction(msg.OnRun, resolve); err != nil {
+			return fmt.Errorf("onRun: %w", err)
+		}
+	}
+
+	// Resolve embedded files (step-level).
+	for i := range msg.EmbeddedFiles {
+		resolved, err := openjd.ResolveLocURIs(msg.EmbeddedFiles[i].Data, resolve)
+		if err != nil {
+			return fmt.Errorf("embedded file %q: %w", msg.EmbeddedFiles[i].Name, err)
+		}
+		msg.EmbeddedFiles[i].Data = resolved
+	}
+
+	// Resolve environments.
+	for i := range msg.Environments {
+		if err := resolveEnvironment(&msg.Environments[i], resolve); err != nil {
+			return fmt.Errorf("environment %q: %w", msg.Environments[i].Name, err)
+		}
+	}
+
+	return nil
+}
+
+// resolveAction rewrites loc:// URIs in an action's command and args.
+func resolveAction(a *protocol.Action, resolve func(string, string) (string, error)) error {
+	if a == nil {
+		return nil
+	}
+	cmd, err := openjd.ResolveLocURIs(a.Command, resolve)
+	if err != nil {
+		return fmt.Errorf("command: %w", err)
+	}
+	a.Command = cmd
+
+	for i, arg := range a.Args {
+		resolved, err := openjd.ResolveLocURIs(arg, resolve)
+		if err != nil {
+			return fmt.Errorf("arg[%d]: %w", i, err)
+		}
+		a.Args[i] = resolved
+	}
+	return nil
+}
+
+// resolveEnvironment rewrites loc:// URIs in an environment's variables,
+// embedded files, and lifecycle actions.
+func resolveEnvironment(
+	e *protocol.AssignEnvironment,
+	resolve func(string, string) (string, error),
+) error {
+	for k, v := range e.Variables {
+		resolved, err := openjd.ResolveLocURIs(v, resolve)
+		if err != nil {
+			return fmt.Errorf("variable %q: %w", k, err)
+		}
+		e.Variables[k] = resolved
+	}
+	for i := range e.EmbeddedFiles {
+		resolved, err := openjd.ResolveLocURIs(e.EmbeddedFiles[i].Data, resolve)
+		if err != nil {
+			return fmt.Errorf("embedded file %q: %w", e.EmbeddedFiles[i].Name, err)
+		}
+		e.EmbeddedFiles[i].Data = resolved
+	}
+	if err := resolveAction(e.OnEnter, resolve); err != nil {
+		return fmt.Errorf("onEnter: %w", err)
+	}
+	if err := resolveAction(e.OnExit, resolve); err != nil {
+		return fmt.Errorf("onExit: %w", err)
+	}
 	return nil
 }

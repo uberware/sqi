@@ -428,7 +428,7 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 	// Publish the assignment to NATS so the worker can pull it.
 	// buildAssignPayload (task 58) includes the full step execution spec so
 	// the worker does not need to make additional API calls.
-	payload, err := buildAssignPayload(task, worker, job, step, attempt.ID)
+	payload, err := buildAssignPayload(ctx, task, worker, job, step, attempt.ID, s.store)
 	if err != nil {
 		return fmt.Errorf("build assign payload: %w", err)
 	}

@@ -1083,6 +1083,124 @@ func TestJob_ListJobs_Pagination(t *testing.T) {
 	}
 }
 
+// ── StorageLocation CRUD ──────────────────────────────────────────────────────
+
+func TestStorageLocation_CRUD(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	loc := store.StorageLocation{
+		ID:          "sl1",
+		Name:        "nas_shows",
+		Type:        store.StorageLocationTypeFilesystem,
+		Description: "Main NAS shows volume",
+		Roots: map[string]string{
+			"default":         "/mnt/nas/shows",
+			"windows_workers": `Z:\shows`,
+		},
+	}
+
+	created, err := s.CreateStorageLocation(ctx, loc)
+	if err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+	if created.ID != "sl1" || created.Name != "nas_shows" {
+		t.Errorf("created: got %+v", created)
+	}
+	if created.Roots["default"] != "/mnt/nas/shows" {
+		t.Errorf("Roots[default]: got %q", created.Roots["default"])
+	}
+
+	// GetStorageLocation
+	got, err := s.GetStorageLocation(ctx, "sl1")
+	if err != nil {
+		t.Fatalf("GetStorageLocation: %v", err)
+	}
+	if got.Name != "nas_shows" {
+		t.Errorf("Name: got %q", got.Name)
+	}
+
+	// GetStorageLocationByName
+	byName, err := s.GetStorageLocationByName(ctx, "nas_shows")
+	if err != nil {
+		t.Fatalf("GetStorageLocationByName: %v", err)
+	}
+	if byName.ID != "sl1" {
+		t.Errorf("byName.ID: got %q", byName.ID)
+	}
+
+	// GetStorageLocation not found
+	_, err = s.GetStorageLocation(ctx, "missing")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("missing ID: want ErrNotFound, got %v", err)
+	}
+
+	// Conflict on duplicate name
+	dup := loc
+	dup.ID = "sl2"
+	_, err = s.CreateStorageLocation(ctx, dup)
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("duplicate name: want ErrConflict, got %v", err)
+	}
+
+	// ListStorageLocations
+	loc2 := store.StorageLocation{
+		ID:    "sl2",
+		Name:  "s3_output",
+		Type:  store.StorageLocationTypeS3,
+		Roots: map[string]string{"default": "s3://bucket/output"},
+	}
+	if _, err := s.CreateStorageLocation(ctx, loc2); err != nil {
+		t.Fatalf("CreateStorageLocation loc2: %v", err)
+	}
+	locs, err := s.ListStorageLocations(ctx)
+	if err != nil {
+		t.Fatalf("ListStorageLocations: %v", err)
+	}
+	if len(locs) != 2 {
+		t.Fatalf("ListStorageLocations: got %d, want 2", len(locs))
+	}
+	// Ordered by name: nas_shows < s3_output
+	if locs[0].Name != "nas_shows" || locs[1].Name != "s3_output" {
+		t.Errorf("order: %v, %v", locs[0].Name, locs[1].Name)
+	}
+
+	// UpdateStorageLocation
+	updated, err := s.UpdateStorageLocation(ctx, store.StorageLocation{
+		ID:   "sl1",
+		Name: "nas_shows",
+		Type: store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{
+			"default":         "/mnt/nas/shows",
+			"windows_workers": `Z:\shows`,
+			"cloud_aws":       "s3://studio-bucket/shows",
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateStorageLocation: %v", err)
+	}
+	if updated.Roots["cloud_aws"] != "s3://studio-bucket/shows" {
+		t.Errorf("updated cloud_aws root: got %q", updated.Roots["cloud_aws"])
+	}
+	if updated.UpdatedAt.Before(updated.CreatedAt) {
+		t.Errorf("UpdatedAt should be >= CreatedAt")
+	}
+
+	// DeleteStorageLocation
+	if err := s.DeleteStorageLocation(ctx, "sl1"); err != nil {
+		t.Fatalf("DeleteStorageLocation: %v", err)
+	}
+	_, err = s.GetStorageLocation(ctx, "sl1")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("after delete: want ErrNotFound, got %v", err)
+	}
+
+	// Delete not found
+	if err := s.DeleteStorageLocation(ctx, "sl1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	}
+}
+
 // ── ListWorkers filter ────────────────────────────────────────────────────────
 
 func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {

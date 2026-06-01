@@ -93,7 +93,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Run ───────────────────────────────────────────────────────────────────
 	// TODO(phase1): instantiate and run the worker agent once implemented.
 	// For now, block until shutdown signal so the CLI is testable end-to-end.
-	logger.InfoContext(ctx, "sqi-worker starting",
+	logger.InfoContext(
+		ctx, "sqi-worker starting",
 		slog.String("worker_name", cfg.Worker.Name),
 		slog.String("data_dir", cfg.Worker.DataDir),
 		slog.Int("max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks),
@@ -101,7 +102,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	<-ctx.Done()
 
-	logger.InfoContext(context.Background(), "sqi-worker shutting down",
+	logger.InfoContext(
+		context.Background(), "sqi-worker shutting down",
 		slog.String("reason", ctx.Err().Error()),
 	)
 	return nil

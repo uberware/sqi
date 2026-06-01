@@ -17,17 +17,22 @@ import (
 // ── Submitter ─────────────────────────────────────────────────────────────────
 
 // Submitter handles the full OpenJD submission pipeline: parse, validate,
-// expand the parameter space, and persist the normalized job/step/task rows
-// alongside the verbatim raw template.
+// expand the parameter space, persist the normalized job/step/task rows
+// alongside the verbatim raw template, and enforce storage-location coverage
+// (task 66).
 //
 // Create one with [NewSubmitter] and reuse it across requests.
 type Submitter struct {
-	st store.Store
+	st    store.Store
+	locSt store.StorageLocationStore
 }
 
-// NewSubmitter returns a [Submitter] backed by st.
+// NewSubmitter returns a [Submitter] backed by st.  The store must implement
+// [store.StorageLocationStore] (which [store.Store] always does) so that
+// named-location references in submitted templates can be validated at
+// submission time.
 func NewSubmitter(st store.Store) *Submitter {
-	return &Submitter{st: st}
+	return &Submitter{st: st, locSt: st}
 }
 
 // ── SubmitOptions ─────────────────────────────────────────────────────────────
@@ -100,6 +105,11 @@ func (s *Submitter) Submit(
 	// ── 2. Validate ───────────────────────────────────────────────────────
 	if errs := Validate(tmpl); len(errs) > 0 {
 		return nil, fmt.Errorf("openjd: submit: validation: %w", errs)
+	}
+
+	// ── 2b. Validate named storage location coverage (task 66) ────────────
+	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
+		return nil, fmt.Errorf("openjd: submit: storage location validation: %w", err)
 	}
 
 	// ── 3. Resolve priority default ───────────────────────────────────────
@@ -207,6 +217,137 @@ func (s *Submitter) Submit(
 	}
 
 	return result, nil
+}
+
+// ── Storage location validation (task 66) ────────────────────────────────────
+
+// locRootCache maps location name → its roots map (or an error if not found).
+type locRootCache map[string]locRootEntry
+
+type locRootEntry struct {
+	roots map[string]string
+	err   error
+}
+
+// validateStorageLocations checks that every named storage location referenced
+// via a "loc://" URI in the template:
+//
+//  1. Exists in the registry.
+//  2. Has a root for every compute location a referencing step could run on,
+//     or at minimum a "default" root when no affinity is declared.
+//
+// All problems are accumulated and returned as a single error.
+func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTemplate) error {
+	allNames := ExtractTemplateLocRefs(tmpl)
+	if len(allNames) == 0 {
+		return nil
+	}
+
+	cache := s.buildLocRootCache(ctx, allNames)
+
+	var errs []string
+	errs = append(errs, s.validateStepLocRefs(tmpl.Steps, cache)...)
+	errs = append(errs, unreportedCacheErrors(cache, errs)...)
+
+	if len(errs) == 0 {
+		return nil
+	}
+	sort.Strings(errs)
+	return fmt.Errorf("%s", strings.Join(errs, "; "))
+}
+
+// buildLocRootCache fetches each referenced location once and returns a cache.
+func (s *Submitter) buildLocRootCache(ctx context.Context, names []string) locRootCache {
+	cache := make(locRootCache, len(names))
+	for _, name := range names {
+		loc, err := s.locSt.GetStorageLocationByName(ctx, name)
+		if err != nil {
+			cache[name] = locRootEntry{err: fmt.Errorf("location %q not found in registry", name)}
+		} else {
+			cache[name] = locRootEntry{roots: loc.Roots}
+		}
+	}
+	return cache
+}
+
+// validateStepLocRefs checks root coverage for each step that references
+// named storage locations.
+func (*Submitter) validateStepLocRefs(steps []StepTemplate, cache locRootCache) []string {
+	var errs []string
+	for i, st := range steps {
+		stepNames := ExtractStepLocRefs(st)
+		if len(stepNames) == 0 {
+			continue
+		}
+		_, computeLoc := toStoreHostRequirements(st.HostRequirements)
+		for _, name := range stepNames {
+			errs = append(errs, checkLocRootCoverage(i, name, computeLoc, cache)...)
+		}
+	}
+	return errs
+}
+
+// checkLocRootCoverage returns any coverage error for a single location
+// reference within a step.
+func checkLocRootCoverage(stepIdx int, name, computeLoc string, cache locRootCache) []string {
+	entry := cache[name]
+	if entry.err != nil {
+		return []string{fmt.Sprintf("/steps/%d: %v", stepIdx, entry.err)}
+	}
+	if msg := missingRootMsg(name, computeLoc, entry.roots); msg != "" {
+		return []string{fmt.Sprintf("/steps/%d: %s", stepIdx, msg)}
+	}
+	return nil
+}
+
+// missingRootMsg returns a non-empty string when roots lacks coverage for
+// computeLoc, or an empty string when coverage is adequate.
+func missingRootMsg(name, computeLoc string, roots map[string]string) string {
+	_, hasDefault := roots["default"]
+	if computeLoc != "" {
+		if _, hasSpecific := roots[computeLoc]; hasSpecific {
+			return "" // compute-location-specific root present — OK
+		}
+		if hasDefault {
+			return "" // falls back to default — OK
+		}
+		return fmt.Sprintf(
+			"storage location %q has no root for compute location %q and no default root",
+			name, computeLoc,
+		)
+	}
+	// No affinity declared — a default root is required.
+	if hasDefault {
+		return ""
+	}
+	return fmt.Sprintf(
+		"storage location %q has no default root (required when no compute location affinity is declared)",
+		name,
+	)
+}
+
+// unreportedCacheErrors returns errors for locations that failed lookup but
+// were not already mentioned in the accumulated error list (e.g. locations
+// referenced only in job-level parameters or environments, not in any step).
+func unreportedCacheErrors(cache locRootCache, existing []string) []string {
+	var errs []string
+	for name, entry := range cache {
+		if entry.err == nil {
+			continue
+		}
+		quoted := fmt.Sprintf("%q", name)
+		reported := false
+		for _, msg := range existing {
+			if strings.Contains(msg, quoted) {
+				reported = true
+				break
+			}
+		}
+		if !reported {
+			errs = append(errs, entry.err.Error())
+		}
+	}
+	return errs
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
