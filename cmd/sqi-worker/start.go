@@ -15,9 +15,12 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/uberware/sqi/internal/health"
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
+	"github.com/uberware/sqi/internal/worker/obs"
 )
 
 // startFlags holds values for flags specific to the start subcommand.
@@ -98,6 +101,20 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	defer stop()
 
+	// ── Observability (metrics, health, pprof) ────────────────────────────────
+	m := workmetrics.New()
+	h := health.NewRegistry()
+	// TODO(task 20): register NATS connection as a readiness check once wired.
+
+	obsServer := obs.New(
+		cfg.Metrics.Addr,
+		cfg.Metrics.EnablePprof,
+		logger,
+		m,
+		h,
+	)
+	go obsServer.Run(ctx)
+
 	// ── Run ───────────────────────────────────────────────────────────────────
 	// TODO(phase1): instantiate and run the worker agent once implemented.
 	// For now, block until shutdown signal so the CLI is testable end-to-end.
@@ -107,6 +124,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.String("worker_name", cfg.Worker.Name),
 		slog.String("data_dir", cfg.Worker.DataDir),
 		slog.Int("max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks),
+		slog.String("metrics_addr", cfg.Metrics.Addr),
 	)
 
 	<-ctx.Done()
@@ -115,6 +133,10 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		context.Background(), "sqi-worker shutting down",
 		slog.String("reason", ctx.Err().Error()),
 	)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
+	defer cancel()
+	obsServer.Shutdown(shutdownCtx)
 	return nil
 }
 
