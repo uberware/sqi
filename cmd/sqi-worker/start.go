@@ -82,6 +82,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return runDryRun(cfg)
 	}
 
+	// ── Worker ID ─────────────────────────────────────────────────────────────
+	workerID, err := workerconfig.LoadOrCreateWorkerID(cfg.Worker.DataDir)
+	if err != nil {
+		return fmt.Errorf("load worker id: %w", err)
+	}
+
 	// ── Signal context ────────────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
@@ -95,6 +101,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// For now, block until shutdown signal so the CLI is testable end-to-end.
 	logger.InfoContext(
 		ctx, "sqi-worker starting",
+		slog.String("worker_id", workerID),
 		slog.String("worker_name", cfg.Worker.Name),
 		slog.String("data_dir", cfg.Worker.DataDir),
 		slog.Int("max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks),
