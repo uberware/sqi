@@ -77,7 +77,9 @@ Both modes run the same software. The difference is configuration.
 
 `sqi` is in early development. The immediate focus is the working core: scheduler, pull-based workers, OpenJD job execution, basic web UI, and the product/preset system. Authentication, distributed deployment, cloud worker support, and the community preset library follow.
 
-This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — open an issue or start a discussion.
+This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose). 
+
+See [ROADMAP.md](ROADMAP.md) for more information about the design and implementation plan.
 
 ---
 
@@ -87,7 +89,7 @@ Contributions are welcome at all stages — code, preset definitions, documentat
 
 The community preset library in particular benefits from people who know their tools well. If you have a working submission setup for a DCC or tool and want to share it as a `sqi` preset, that's a valuable contribution that doesn't require any Go or server-side knowledge.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines (coming soon).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
