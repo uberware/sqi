@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -15,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	sqilog "github.com/uberware/sqi/internal/log"
+	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
@@ -116,18 +118,77 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// runDryRun prints the effective configuration and what would be registered,
-// then exits without connecting to the server.
+// runDryRun prints the effective configuration and the capabilities that would
+// be registered with sqi-server, then exits without connecting.
 func runDryRun(cfg workerconfig.WorkerConfig) error {
-	fmt.Fprintln(os.Stdout, "# sqi-worker dry-run: effective configuration")
-	fmt.Fprintln(os.Stdout, "# (no server connection will be made)")
-	fmt.Fprintln(os.Stdout)
+	w := os.Stdout
 
+	fmt.Fprintln(w, "# sqi-worker dry-run")
+	fmt.Fprintln(w, "# No server connection will be made.")
+	fmt.Fprintln(w)
+
+	// ── Effective configuration ───────────────────────────────────────────────
+	fmt.Fprintln(w, "## Effective configuration")
+	fmt.Fprintln(w)
 	out, err := yaml.Marshal(&cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	fmt.Fprint(os.Stdout, string(out))
+	fmt.Fprint(w, string(out))
+
+	// ── Detected capabilities ─────────────────────────────────────────────────
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## Detected capabilities")
+	fmt.Fprintln(w)
+
+	caps := capabilities.Detect(nil)
+	caps.MergeManualTags(cfg.Worker.CapabilityTags)
+
+	fmt.Fprintf(w, "os:          %s\n", caps.OS)
+	if caps.OSVersion != "" {
+		fmt.Fprintf(w, "os_version:  %s\n", caps.OSVersion)
+	}
+	fmt.Fprintf(w, "cpu_count:   %d\n", caps.CPUCount)
+	fmt.Fprintf(w, "ram_mb:      %d\n", caps.RAMMb)
+	if caps.GPU.Count > 0 {
+		fmt.Fprintf(w, "gpu_count:   %d\n", caps.GPU.Count)
+		fmt.Fprintf(w, "gpu_vendor:  %s\n", caps.GPU.Vendor)
+		fmt.Fprintf(w, "gpu_model:   %s\n", caps.GPU.Model)
+		fmt.Fprintf(w, "gpu_vram_mb: %d\n", caps.GPU.VRAMMb)
+	} else {
+		fmt.Fprintln(w, "gpu:         none detected")
+	}
+
+	if len(caps.Tags) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "tags:")
+		keys := make([]string, 0, len(caps.Tags))
+		for k := range caps.Tags {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if v := caps.Tags[k]; v != "" {
+				fmt.Fprintf(w, "  %s: %s\n", k, v)
+			} else {
+				fmt.Fprintf(w, "  %s\n", k)
+			}
+		}
+	}
+
+	// ── Registration summary ──────────────────────────────────────────────────
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## Would register as")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  name:                 %s\n", cfg.Worker.Name)
+	fmt.Fprintf(w, "  compute_location:     %s\n", cfg.Worker.ComputeLocation)
+	fmt.Fprintf(w, "  max_concurrent_tasks: %d\n", cfg.Worker.MaxConcurrentTasks)
+	if cfg.NATS.URL != "" {
+		fmt.Fprintf(w, "  server_nats_url:      %s\n", cfg.NATS.URL)
+	} else {
+		fmt.Fprintln(w, "  server_nats_url:      (auto-discover via mDNS)")
+	}
+
 	return nil
 }
 

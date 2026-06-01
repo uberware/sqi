@@ -1,0 +1,184 @@
+# sqi-worker configuration
+#
+# Copy this file to one of the default search locations and customise as needed:
+#
+#   ./config/sqi-worker.yaml          (next to the binary — recommended for dev)
+#   ~/.sqi/sqi-worker.yaml            (user-level override)
+#   /etc/sqi/sqi-worker.yaml          (system-wide installation)
+#
+# Or pass an explicit path:
+#   sqi-worker start --config /path/to/sqi-worker.yaml
+#
+# Override order (highest wins):
+#   built-in defaults → this file → SQI_WORKER_* environment variables → CLI flags
+#
+# Duration values use Go duration syntax: 30s, 1m30s, 500ms, 2h, etc.
+#
+# Validate configuration without connecting to the server:
+#   sqi-worker start --dry-run
+
+# ── NATS connection ───────────────────────────────────────────────────────────
+# The worker connects to the NATS instance embedded in sqi-server. Either set
+# nats.url explicitly or enable discovery.enable_mdns to locate the server
+# automatically on the local network. Both may not be empty at the same time.
+nats:
+  # URL of the remote NATS server embedded in sqi-server.
+  # Required when discovery.enable_mdns is false.
+  # Example: "nats://sqi-server.local:4222"
+  # Type: string   Env: SQI_WORKER_NATS_URL
+  url: ""
+
+  # Path to the client TLS certificate (PEM-encoded). Leave empty to disable
+  # mutual TLS. Required only when the server demands client certificates.
+  # Type: string   Env: SQI_WORKER_NATS_TLS_CERT_FILE
+  tls_cert_file: ""
+
+  # Path to the client TLS private key (PEM-encoded). Must be set together with
+  # tls_cert_file.
+  # Type: string   Env: SQI_WORKER_NATS_TLS_KEY_FILE
+  tls_key_file: ""
+
+  # Path to the CA certificate used to verify the server's TLS certificate
+  # (PEM-encoded). Leave empty to use the system CA pool.
+  # Type: string   Env: SQI_WORKER_NATS_TLS_CA_FILE
+  tls_ca_file: ""
+
+  # Skip TLS certificate verification. For development environments only.
+  # Never set this to true in production — it defeats the purpose of TLS.
+  # Type: bool   Env: SQI_WORKER_NATS_INSECURE_SKIP_VERIFY
+  insecure_skip_verify: false
+
+  # Maximum number of reconnection attempts before giving up.
+  # -1 means retry indefinitely (recommended for long-running workers).
+  # Reconnect attempts use exponential backoff with jitter starting at
+  # reconnect_wait, so a storm of worker restarts does not overload the server.
+  # Type: int   Env: SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS
+  max_reconnect_attempts: -1
+
+  # Base wait duration between reconnection attempts. Actual wait uses
+  # exponential backoff with jitter; this is the floor of that range.
+  # Type: duration   Env: SQI_WORKER_NATS_RECONNECT_WAIT
+  reconnect_wait: "2s"
+
+# ── Worker identity and runtime behavior ─────────────────────────────────────
+worker:
+  # Human-readable name for this worker shown in the sqi-server web UI and logs.
+  # Defaults to the machine hostname. Use a descriptive name on farms with many
+  # workers of the same type, e.g. "render-gpu-01".
+  # Type: string   Env: SQI_WORKER_NAME
+  name: ""  # defaults to os.Hostname()
+
+  # Directory used to persist the worker ID file (worker.id) and session
+  # working directories. Created automatically on first start.
+  # The worker ID file ensures the server can correlate this worker across
+  # restarts. Do not delete worker.id unless you intend to re-register as a
+  # new worker.
+  # Type: string   Env: SQI_WORKER_DATA_DIR
+  data_dir: "~/.sqi/worker"  # Linux/macOS default; %APPDATA%\sqi\worker on Windows
+
+  # Named compute location (storage location name as configured in sqi-server)
+  # where this worker's filesystem lives. Used for resolved-mode path mapping:
+  # the server substitutes named storage locations in job definitions with the
+  # concrete paths valid on this worker's host.
+  # Leave empty if you are not using named storage locations.
+  # Type: string   Env: SQI_WORKER_COMPUTE_LOCATION
+  compute_location: ""
+
+  # Maximum number of tasks this worker will execute simultaneously. Set to the
+  # number of parallel render slots on this host — typically 1 for GPU rendering
+  # or the logical CPU count ÷ cores-per-task for CPU rendering.
+  # Must be ≥ 1.
+  # Type: int   Env: SQI_WORKER_MAX_CONCURRENT_TASKS
+  max_concurrent_tasks: 4
+
+  # Arbitrary capability tags merged with auto-detected capabilities at
+  # registration time. Use these to annotate software or hardware features that
+  # the auto-detector cannot discover, such as installed DCC versions, licensed
+  # plugins, or storage tier labels.
+  # Auto-detected tags (always included): os, os_version, cpu_count, ram_mb,
+  # gpu_vendor, gpu_model, gpu_vram_mb (when GPU is present).
+  # Tags listed here overwrite an auto-detected tag with the same key.
+  # Type: []string   Env: SQI_WORKER_CAPABILITY_TAGS (comma-separated)
+  capability_tags: []
+  # Examples:
+  #   capability_tags:
+  #     - maya-2025
+  #     - arnold-7
+  #     - gpu
+  #     - highram
+
+  # How often the worker publishes a heartbeat message to sqi-server. The server
+  # uses heartbeat gaps to detect stale workers; this value should be shorter
+  # than the server's scheduler.heartbeat_timeout (default 30s). At the default
+  # of 15s the server receives two heartbeats per timeout window.
+  # Must be > 0.
+  # Type: duration   Env: SQI_WORKER_HEARTBEAT_INTERVAL
+  heartbeat_interval: "15s"
+
+  # Maximum time the worker waits for in-flight tasks to finish after receiving
+  # SIGINT or SIGTERM before force-killing them. Tasks that do not complete
+  # within this window receive SIGTERM then SIGKILL and are reported as failed.
+  # Must be > 0.
+  # Type: duration   Env: SQI_WORKER_SHUTDOWN_GRACE_PERIOD
+  shutdown_grace_period: "30s"
+
+  # Allow the worker to run as the root user on Linux and macOS. Disabled by
+  # default because executing render processes as root is a security risk (see
+  # sqi.md §18, open question 2). Enable only when running inside a container
+  # where root is expected, or when you understand and accept the risk.
+  # Type: bool   Env: SQI_WORKER_ALLOW_ROOT
+  allow_root: false
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+log:
+  # Minimum log level to emit.
+  # Accepted: debug | info | warn | error
+  # Use "debug" during initial deployment to verify registration and task flow.
+  # Type: string   Env: SQI_WORKER_LOG_LEVEL   Flag: --log-level
+  level: "info"
+
+  # Log output format.
+  # "json" is recommended for production (structured, machine-parseable by log
+  # aggregators such as Loki, Splunk, or Datadog).
+  # "text" is friendlier for interactive terminal use and local development.
+  # Accepted: json | text
+  # Type: string   Env: SQI_WORKER_LOG_FORMAT   Flag: --log-format
+  format: "json"
+
+# ── Local HTTP server (health probes and metrics) ─────────────────────────────
+# The worker exposes a small HTTP server on loopback for container orchestration
+# health probes (/healthz, /readyz) and Prometheus metrics (/metrics). This
+# server is not exposed to the network by default and does not require
+# authentication.
+metrics:
+  # TCP address the local HTTP server listens on.
+  # Change only if port 9091 is in use on this host. Use "0.0.0.0:9091" to
+  # expose the endpoints to Prometheus scrapers on the network (ensure the port
+  # is firewalled appropriately).
+  # Type: string   Env: SQI_WORKER_METRICS_ADDR
+  addr: "127.0.0.1:9091"
+
+  # Expose Go runtime profiling endpoints at /debug/pprof/.
+  # Profiling data reveals memory layout, goroutine stacks, and CPU hotspots —
+  # enable temporarily for performance diagnosis, never in long-term production.
+  # Type: bool   Env: SQI_WORKER_METRICS_ENABLE_PPROF
+  enable_pprof: false
+
+# ── mDNS server discovery ─────────────────────────────────────────────────────
+# When discovery is enabled and nats.url is empty, the worker browses for
+# _sqi._tcp mDNS advertisements on the local network. The first discovered
+# server's NATS address is used as the connection target. mDNS requires
+# multicast, which is available on most LANs but not on cloud VPCs or
+# cross-subnet networks.
+discovery:
+  # Enable mDNS-based sqi-server auto-discovery. When true and nats.url is
+  # empty, the worker browses for "_sqi._tcp" services. Disable on networks
+  # that prohibit multicast and always set nats.url explicitly instead.
+  # Type: bool   Env: SQI_WORKER_DISCOVERY_ENABLE_MDNS
+  enable_mdns: true
+
+  # Maximum time to wait for an mDNS discovery result before giving up.
+  # Increase if the server is slow to respond on a congested network.
+  # Only relevant when enable_mdns is true.
+  # Type: duration   Env: SQI_WORKER_DISCOVERY_MDNS_TIMEOUT
+  mdns_timeout: "5s"
