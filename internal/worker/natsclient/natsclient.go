@@ -81,7 +81,8 @@ func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logg
 		return nil, nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
 	}
 
-	logger.InfoContext(ctx, "natsclient: connected",
+	logger.InfoContext(
+		ctx, "natsclient: connected",
 		slog.String("url", nc.ConnectedUrl()),
 		slog.String("server_id", nc.ConnectedServerId()),
 	)
@@ -141,7 +142,8 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			logger.InfoContext(ctx, "natsclient: reconnected",
+			logger.InfoContext(
+				ctx, "natsclient: reconnected",
 				slog.String("url", nc.ConnectedUrl()),
 				slog.String("server_id", nc.ConnectedServerId()),
 			)

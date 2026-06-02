@@ -63,6 +63,12 @@
 //     after any worker-status event via [store.WorkerStore.CountIdleWorkers],
 //     partitioned by farm ID.
 //
+// Task 68 adds license-pool observability. [refreshLicenseCheckoutGauge] calls
+// [store.LicensePoolStore.ListLicensePools] and [store.LicenseCheckoutStore.ActiveCheckoutCount]
+// for each pool on every dispatch tick, updating
+// [metrics.Metrics.LicenseActiveCheckouts] so Prometheus reflects current
+// checkout usage per pool.
+//
 // Task 56 introduced the [worker/protocol] package with versioned JSON message
 // types for all worker wire-protocol messages: [protocol.RegisterMsg],
 // [protocol.HeartbeatMsg], [protocol.AssignMsg], [protocol.TaskStatusMsg], and
@@ -313,6 +319,7 @@ func (s *Scheduler) dispatchBatch(ctx context.Context) {
 	// crash.
 	s.refreshQueueDepthGauge(ctx)
 	s.refreshIdleWorkerGauge(ctx)
+	s.refreshLicenseCheckoutGauge(ctx)
 
 	if len(tasks) == 0 {
 		return
@@ -1045,6 +1052,38 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	}
 	for queueID, n := range counts {
 		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
+	}
+}
+
+// refreshLicenseCheckoutGauge queries the store for all configured license
+// pools and the active checkout count for each, then updates the
+// LicenseActiveCheckouts Prometheus gauge (task 68).
+//
+// Called on every dispatch tick. Errors are non-fatal — a stale gauge is
+// preferable to aborting the assignment loop.
+func (s *Scheduler) refreshLicenseCheckoutGauge(ctx context.Context) {
+	pools, err := s.store.ListLicensePools(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: refresh license checkout gauge: list pools failed", slog.Any("error", err))
+		}
+		return
+	}
+
+	for _, pool := range pools {
+		n, err := s.store.ActiveCheckoutCount(ctx, pool.ID)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(
+					ctx, "scheduler: refresh license checkout gauge: count failed",
+					slog.String("pool_id", pool.ID),
+					slog.String("pool_name", pool.Name),
+					slog.Any("error", err),
+				)
+			}
+			continue
+		}
+		s.metrics.LicenseActiveCheckouts.WithLabelValues(pool.Name).Set(float64(n))
 	}
 }
 

@@ -95,6 +95,13 @@ type Metrics struct {
 	// by operation name (e.g. "job.insert", "task.list"). Observed by the store
 	// implementation (task 29).
 	DBQueryDuration *prometheus.HistogramVec
+
+	// ── License pools ─────────────────────────────────────────────────────────
+
+	// LicenseActiveCheckouts is the current number of active (unreleased)
+	// license checkouts for each named pool. Updated by the scheduler on every
+	// dispatch tick (task 68).
+	LicenseActiveCheckouts *prometheus.GaugeVec
 }
 
 // New creates a [*Metrics] and registers all metric families — plus the
@@ -213,6 +220,16 @@ func New() *Metrics {
 			},
 			[]string{"operation"},
 		),
+
+		LicenseActiveCheckouts: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sqi",
+				Subsystem: "licenses",
+				Name:      "active_checkouts",
+				Help:      "Current number of active (unreleased) license checkouts per pool name.",
+			},
+			[]string{"pool"},
+		),
 	}
 
 	reg.MustRegister(
@@ -226,6 +243,7 @@ func New() *Metrics {
 		m.NATSPublishedTotal,
 		m.NATSConsumedTotal,
 		m.DBQueryDuration,
+		m.LicenseActiveCheckouts,
 	)
 
 	return m
