@@ -8,8 +8,8 @@
 //   - store (SQLite):          tasks 25–32 ✓
 //   - bus (NATS JetStream):    tasks 33–39 ✓
 //   - scheduler:               tasks 46–55 ✓ (46–48 done)
-//   - httpServer (REST+WS+UI): tasks 66–88
-//   - discovery (mDNS):        tasks 89–90
+//   - httpServer (chi router): task 70 ✓ — REST+WS+UI routes added tasks 71–95
+//   - discovery (mDNS):        tasks 96–97
 package server
 
 import (
@@ -20,12 +20,10 @@ import (
 	"net/http"
 	"time"
 
-	httppprof "net/http/pprof"
-
+	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
-	"github.com/uberware/sqi/internal/middleware"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
@@ -45,6 +43,12 @@ const ShutdownTimeout = 30 * time.Second
 type Config struct {
 	// HTTPAddr is the TCP address the REST + WebSocket server listens on.
 	HTTPAddr string // default "0.0.0.0:8080"
+
+	// CORSOrigins is the list of origins that the CORS middleware permits.
+	// Use ["*"] to allow all origins (suitable for local / dev deployments).
+	// An empty slice is treated as ["*"]. Tighten this for production
+	// deployments once the web UI's origin is known.
+	CORSOrigins []string // default ["*"]
 
 	// EnablePprof registers the Go runtime profiling endpoints at
 	// /debug/pprof/ when true. Should never be enabled on servers accessible
@@ -100,21 +104,17 @@ type Server struct {
 	metrics *metrics.Metrics
 	health  *health.Registry
 
-	// obsServer is a minimal net/http.Server that serves /metrics (task 22),
-	// /healthz and /readyz (task 23), and pprof endpoints (task 24) on
-	// cfg.HTTPAddr until the full chi router is introduced in task 66.
-	//
-	// TODO(task 66): replace obsServer with the chi-based REST + WebSocket
-	// server; the /metrics, /healthz, /readyz, and /debug/pprof routes will
-	// be registered on that router instead.
-	obsServer *http.Server
+	// httpServer is the chi-based HTTP server that handles the full REST API,
+	// WebSocket connections, embedded web UI, and observability routes
+	// (/metrics, /healthz, /readyz, /debug/pprof). Introduced in task 70.
+	httpServer *http.Server
 
 	// Component fields are added here as their tasks land.
 	store     store.Store          // tasks 25–32 ✓
 	broker    *bus.Broker          // tasks 33–39 ✓
 	busClient *bus.Client          // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
 	sched     *scheduler.Scheduler // tasks 46–59 ✓
-	// discovery *discovery.Responder   // tasks 89–90
+	// discovery *discovery.Responder   // tasks 96–97
 }
 
 // New creates a [Server] with the given configuration and logger.
@@ -228,54 +228,31 @@ func (s *Server) start(ctx context.Context) error {
 	}()
 	s.logger.InfoContext(ctx, "scheduler: started")
 
-	// ── Observability HTTP server ─────────────────────────────────────────
-	// Serves /metrics (task 22), /healthz + /readyz (task 23), and pprof
-	// (task 24). Replaced by the full chi router in task 66.
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", s.metrics.Handler())
-	mux.Handle("/healthz", s.health.LivenessHandler())
-	mux.Handle("/readyz", s.health.ReadinessHandler())
+	// ── HTTP server (chi router) ──────────────────────────────────────────
+	// Task 70: chi router with standard middleware mounts all routes.
+	// REST API routes (tasks 71–86) and WebSocket (tasks 87–92) are added
+	// to the /api/v1 sub-router in subsequent tasks.
+	router := api.NewRouter(api.Config{
+		CORSOrigins: s.cfg.CORSOrigins,
+		EnablePprof: s.cfg.EnablePprof,
+	}, s.logger, s.metrics, s.health)
 
-	if s.cfg.EnablePprof {
-		s.logger.WarnContext(
-			ctx, "pprof: profiling endpoints enabled — do not expose to untrusted networks",
-			slog.String("prefix", "/debug/pprof/"),
-		)
-		mux.HandleFunc("/debug/pprof/", httppprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", httppprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", httppprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", httppprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", httppprof.Trace)
-		mux.Handle("/debug/pprof/goroutine", httppprof.Handler("goroutine"))
-		mux.Handle("/debug/pprof/heap", httppprof.Handler("heap"))
-		mux.Handle("/debug/pprof/allocs", httppprof.Handler("allocs"))
-		mux.Handle("/debug/pprof/block", httppprof.Handler("block"))
-		mux.Handle("/debug/pprof/mutex", httppprof.Handler("mutex"))
-		mux.Handle("/debug/pprof/threadcreate", httppprof.Handler("threadcreate"))
-	}
-
-	// Apply logging and metrics middleware so requests to /metrics are
-	// themselves tracked and logged.
-	var handler http.Handler = mux
-	handler = middleware.RequestMetrics(s.metrics)(handler)
-	handler = middleware.RequestLogger(s.logger)(handler)
-
-	s.obsServer = &http.Server{
+	s.httpServer = &http.Server{
 		Addr:              s.cfg.HTTPAddr,
-		Handler:           handler,
+		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
 		s.logger.InfoContext(ctx, "http: listening", slog.String("addr", s.cfg.HTTPAddr))
-		if err := s.obsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
 		}
 	}()
 
 	// ── mDNS responder ────────────────────────────────────────────────────
-	// TODO(tasks 89–90): advertise _sqi._tcp on the local network.
-	s.logger.DebugContext(ctx, "discovery: not yet started (tasks 89–90)")
+	// TODO(tasks 96–97): advertise _sqi._tcp on the local network.
+	s.logger.DebugContext(ctx, "discovery: not yet started (tasks 96–97)")
 
 	return nil
 }
@@ -291,11 +268,11 @@ func (s *Server) shutdown() error {
 	// Stop in reverse startup order.
 
 	// ── mDNS responder ────────────────────────────────────────────────────
-	// TODO(tasks 89–90): unregister mDNS service.
+	// TODO(tasks 96–97): unregister mDNS service.
 
 	// ── HTTP server ───────────────────────────────────────────────────────
-	if s.obsServer != nil {
-		if err := s.obsServer.Shutdown(ctx); err != nil {
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("http shutdown: %w", err))
 		}
 	}
