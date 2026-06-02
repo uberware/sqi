@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,12 +21,14 @@ import (
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
+	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
 )
 
 // startFlags holds values for flags specific to the start subcommand.
 var startFlags struct {
-	DryRun bool
+	DryRun                 bool
+	NATSInsecureSkipVerify bool
 }
 
 var startCmd = &cobra.Command{
@@ -54,6 +57,11 @@ func init() {
 		"dry-run", false,
 		"resolve configuration, detect capabilities, and print what would be registered — then exit without connecting",
 	)
+	startCmd.Flags().BoolVar(
+		&startFlags.NATSInsecureSkipVerify,
+		"nats-insecure-skip-verify", false,
+		"disable TLS certificate verification for the NATS connection (development only)",
+	)
 }
 
 func runStart(cmd *cobra.Command, _ []string) error {
@@ -61,6 +69,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	overrides := flagOverrides()
 	if cmd.Flags().Changed("dry-run") {
 		overrides.DryRun = startFlags.DryRun
+	}
+	if cmd.Flags().Changed("nats-insecure-skip-verify") {
+		overrides.NATSInsecureSkipVerify = startFlags.NATSInsecureSkipVerify
 	}
 
 	cfg, err := workerconfig.Load(persistentFlags.ConfigFile, overrides)
@@ -101,10 +112,44 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	defer stop()
 
+	// ── NATS connection (tasks 20–22) ─────────────────────────────────────────
+	nc, err := natsclient.Connect(ctx, cfg.NATS, logger)
+	if err != nil {
+		return fmt.Errorf("nats connect: %w", err)
+	}
+	// Drain the NATS connection on exit. nc.Drain() is async — it signals
+	// the connection to flush and close; we give it the shutdown grace period
+	// before giving up and force-closing.
+	defer func() {
+		done := make(chan struct{})
+		go func() {
+			if err := nc.Drain(); err != nil {
+				logger.WarnContext(context.Background(), "natsclient: drain error", slog.Any("error", err))
+			}
+			close(done)
+		}()
+		drainCtx, cancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
+		defer cancel()
+		select {
+		case <-done:
+		case <-drainCtx.Done():
+			logger.WarnContext(drainCtx, "natsclient: drain timed out — closing immediately")
+			nc.Close()
+		}
+	}()
+
 	// ── Observability (metrics, health, pprof) ────────────────────────────────
 	m := workmetrics.New()
 	h := health.NewRegistry()
-	// TODO(task 20): register NATS connection as a readiness check once wired.
+
+	// Register the NATS connection as a readiness check: /readyz returns 503
+	// while the connection is not in a connected state.
+	h.Register("nats", health.CheckerFunc(func(_ context.Context) error {
+		if !nc.IsConnected() {
+			return errors.New("nats connection is not connected")
+		}
+		return nil
+	}))
 
 	obsServer := obs.New(
 		cfg.Metrics.Addr,
@@ -115,9 +160,6 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	go obsServer.Run(ctx)
 
-	// ── Run ───────────────────────────────────────────────────────────────────
-	// TODO(phase1): instantiate and run the worker agent once implemented.
-	// For now, block until shutdown signal so the CLI is testable end-to-end.
 	logger.InfoContext(
 		ctx, "sqi-worker starting",
 		slog.String("worker_id", workerID),
@@ -125,6 +167,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.String("data_dir", cfg.Worker.DataDir),
 		slog.Int("max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks),
 		slog.String("metrics_addr", cfg.Metrics.Addr),
+		slog.String("nats_url", nc.ConnectedUrl()),
 	)
 
 	<-ctx.Done()

@@ -173,6 +173,9 @@ type FlagOverrides struct {
 	LogFormat string
 	// DryRun, when true, makes the start command print resolved config and exit.
 	DryRun bool
+	// NATSInsecureSkipVerify overrides NATS.InsecureSkipVerify when true.
+	// Corresponds to --nats-insecure-skip-verify on the start subcommand.
+	NATSInsecureSkipVerify bool
 }
 
 // Default returns a WorkerConfig populated with built-in defaults.
@@ -247,6 +250,9 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 	}
 	if flags.LogFormat != "" {
 		cfg.Log.Format = flags.LogFormat
+	}
+	if flags.NATSInsecureSkipVerify {
+		cfg.NATS.InsecureSkipVerify = true
 	}
 
 	return cfg, nil
