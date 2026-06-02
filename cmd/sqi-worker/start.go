@@ -112,29 +112,41 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	defer stop()
 
-	// ── NATS connection (tasks 20–22) ─────────────────────────────────────────
-	nc, err := natsclient.Connect(ctx, cfg.NATS, logger)
+	// ── NATS connection (tasks 20–24) ─────────────────────────────────────────
+	//
+	// Connect failure at boot is fatal (task 24). closedCh is closed by the
+	// NATS ClosedHandler when the connection permanently closes so we can
+	// detect unexpected disconnects after the initial handshake.
+	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, logger)
 	if err != nil {
+		// Boot-time connect failure is a fatal error (task 24).
 		return fmt.Errorf("nats connect: %w", err)
 	}
-	// Drain the NATS connection on exit. nc.Drain() is async — it signals
-	// the connection to flush and close; we give it the shutdown grace period
-	// before giving up and force-closing.
-	defer func() {
-		done := make(chan struct{})
-		go func() {
-			if err := nc.Drain(); err != nil {
-				logger.WarnContext(context.Background(), "natsclient: drain error", slog.Any("error", err))
-			}
-			close(done)
-		}()
-		drainCtx, cancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
-		defer cancel()
+	// Drain in-flight subscriptions and flush pending publishes on exit (task 23).
+	// natsclient.Drain blocks until complete or the shutdown grace period expires,
+	// at which point it force-closes the connection.
+	defer natsclient.Drain(nc, cfg.Worker.ShutdownGracePeriod, logger)
+
+	// Watch for unexpected permanent NATS closure after initial connect (task 24).
+	//
+	// If NATS exhausts MaxReconnectAttempts and permanently closes while the
+	// worker is running, initiate a graceful worker shutdown so that in-flight
+	// tasks are flushed and the server receives departure messages rather than
+	// waiting for heartbeat timeout.
+	//
+	// When MaxReconnectAttempts is -1 (unlimited) this goroutine exits only
+	// via ctx.Done() (normal shutdown path), since the connection will never
+	// permanently close on its own.
+	go func() {
 		select {
-		case <-done:
-		case <-drainCtx.Done():
-			logger.WarnContext(drainCtx, "natsclient: drain timed out — closing immediately")
-			nc.Close()
+		case <-ctx.Done():
+			// Normal shutdown initiated by signal — NATS closure expected.
+		case <-natsClosed:
+			// NATS permanently closed outside of a planned shutdown. Cancel
+			// the signal context to trigger the worker shutdown sequence.
+			logger.ErrorContext(context.Background(),
+				"natsclient: connection permanently closed — initiating worker shutdown")
+			stop()
 		}
 	}()
 

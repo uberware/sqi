@@ -15,11 +15,11 @@
 //
 // Typical usage:
 //
-//	nc, err := natsclient.Connect(ctx, cfg.NATS, logger)
+//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, logger)
 //	if err != nil {
 //	    return fmt.Errorf("nats connect: %w", err)
 //	}
-//	defer nc.Drain()
+//	defer natsclient.Drain(nc, gracePeriod, logger)
 package natsclient
 
 import (
@@ -50,7 +50,7 @@ const (
 )
 
 // Connect dials the NATS server described by cfg and returns a connected
-// *nats.Conn. The connection is configured for:
+// *nats.Conn and a lifecycle channel. The connection is configured for:
 //
 //   - MaxReconnects from cfg.MaxReconnectAttempts (-1 = unlimited).
 //   - Exponential backoff starting at cfg.ReconnectWait, doubling each attempt,
@@ -62,16 +62,23 @@ const (
 // A connection failure at dial time is returned as an error. After the initial
 // connection is established, reconnect failures are handled internally with
 // backoff until the configured max attempts are exhausted, at which point the
-// connection transitions to a closed state.
-func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger) (*nats.Conn, error) {
-	opts, err := buildOptions(ctx, cfg, logger)
+// connection transitions to a closed state and the returned closedCh is closed.
+//
+// Callers should select on closedCh to detect permanent disconnects that occur
+// outside of a planned shutdown sequence (task 24).
+func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
+	// closedCh is closed by the ClosedHandler callback when the NATS connection
+	// permanently closes (MaxReconnects exhausted or explicit nc.Close() call).
+	closedCh := make(chan struct{})
+
+	opts, err := buildOptions(ctx, cfg, logger, closedCh)
 	if err != nil {
-		return nil, fmt.Errorf("natsclient: build options: %w", err)
+		return nil, nil, fmt.Errorf("natsclient: build options: %w", err)
 	}
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
+		return nil, nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
 	}
 
 	logger.InfoContext(ctx, "natsclient: connected",
@@ -79,11 +86,40 @@ func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logg
 		slog.String("server_id", nc.ConnectedServerId()),
 	)
 
-	return nc, nil
+	return nc, closedCh, nil
+}
+
+// Drain gracefully closes nc by draining in-flight subscriptions and flushing
+// any pending publishes before closing the connection. It blocks until the
+// drain completes or gracePeriod elapses. If the grace period expires first,
+// the connection is force-closed via [nats.Conn.Close].
+//
+// Drain is idempotent with respect to an already-closed connection: errors
+// from draining a closed connection are silently ignored.
+func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
+	bg := context.Background()
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		if err := nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+			logger.WarnContext(bg, "natsclient: drain error", slog.Any("error", err))
+		}
+	}()
+
+	select {
+	case <-done:
+		logger.InfoContext(bg, "natsclient: connection drained")
+	case <-time.After(gracePeriod):
+		logger.WarnContext(bg, "natsclient: drain timed out — force closing connection")
+		nc.Close()
+	}
 }
 
 // buildOptions assembles the nats.Option slice from WorkerNATSConfig.
-func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger) ([]nats.Option, error) {
+// closedCh is closed by the ClosedHandler when the connection permanently
+// closes so callers can detect unexpected disconnects (task 24).
+func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger, closedCh chan struct{}) ([]nats.Option, error) {
 	opts := []nats.Option{
 		nats.MaxReconnects(cfg.MaxReconnectAttempts),
 
@@ -110,8 +146,13 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 				slog.String("server_id", nc.ConnectedServerId()),
 			)
 		}),
+		// ClosedHandler fires when the connection transitions to the CLOSED
+		// state: either MaxReconnects was exhausted or the connection was
+		// explicitly closed. Closing closedCh signals any goroutine that is
+		// watching for unexpected permanent disconnects (task 24).
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			logger.InfoContext(ctx, "natsclient: connection closed")
+			close(closedCh)
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			logger.ErrorContext(ctx, "natsclient: async error", slog.Any("error", err))
