@@ -5,14 +5,14 @@
 //
 // # Router layout
 //
-//	GET  /healthz               — liveness probe  (task 23)
-//	GET  /readyz                — readiness probe  (task 23)
-//	GET  /metrics               — Prometheus scrape endpoint (task 22)
-//	GET  /debug/pprof/*         — Go runtime profiling (task 24, gated by config)
-//	/api/v1/*                   — REST API (tasks 71–86)
-//	/api/v1/ws                  — WebSocket upgrade (tasks 87–92)
-//	GET  /api/v1/openapi.yaml   — served OpenAPI spec (task 83)
-//	/*                          — embedded SPA + static assets (tasks 93–95)
+//	GET  /healthz                      — liveness probe  (task 23)
+//	GET  /readyz                       — readiness probe  (task 23)
+//	GET  /metrics                      — Prometheus scrape endpoint (task 22)
+//	GET  /debug/pprof/*                — Go runtime profiling (task 24, gated by config)
+//	/api/v1/*                          — REST API (tasks 71–86)
+//	/api/v1/ws                         — WebSocket upgrade (tasks 87–92)
+//	GET  /api/v1/openapi.yaml          — served OpenAPI spec (task 83)
+//	/*                                 — embedded SPA + static assets (tasks 93–95)
 //
 // # Middleware stack (outermost → innermost)
 //
@@ -163,6 +163,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 
 	// ── REST API (tasks 71–86) ────────────────────────────────────────────────
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
+	tasks := newTaskHandler(deps.Store, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
@@ -172,14 +173,16 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Patch("/jobs/{id}", jobs.patchJob)   // task 74
 		api.Delete("/jobs/{id}", jobs.cancelJob) // task 75
 
-		// TODO(task 76): GET  /api/v1/jobs/{id}/tasks, GET /api/v1/tasks/{id}
-		// TODO(task 77): GET  /api/v1/tasks/{id}/logs
-		// TODO(task 78): POST /api/v1/tasks/{id}/retry
+		// ── Task endpoints (tasks 76–78) ──────────────────────────────────
+		api.Get("/jobs/{id}/tasks", tasks.listJobTasks) // task 76
+		api.Get("/tasks/{id}", tasks.getTask)           // task 76
+		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)  // task 77
+		api.Post("/tasks/{id}/retry", tasks.retryTask)  // task 78
 		// TODO(task 79): GET  /api/v1/workers, GET /api/v1/workers/{id}
 		// TODO(task 80): POST /api/v1/workers/{id}/disable|enable
 		// TODO(task 81): CRUD /api/v1/farms|queues|storage-locations|license-pools
 		// TODO(task 83): GET  /api/v1/openapi.yaml
-		// TODO(task 87): /api/v1/ws — WebSocket upgrade
+		// TODO(task 87): /api/v1/ws  — WebSocket upgrade
 	})
 
 	// ── Embedded web UI (tasks 93–95) ────────────────────────────────────────
