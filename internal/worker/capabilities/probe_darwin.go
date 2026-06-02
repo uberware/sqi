@@ -7,6 +7,8 @@ package capabilities
 import (
 	"encoding/binary"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // OSVersion queries the kern.osproductversion sysctl, which returns the
@@ -42,10 +44,13 @@ func darwinOSVersion() string {
 func darwinRAMMb() int {
 	// hw.memsize is an 8-byte little-endian uint64 on all Apple silicon and
 	// Intel Mac hardware.
-	raw, err := syscall.SysctlRaw("hw.memsize")
+	raw, err := unix.SysctlRaw("hw.memsize")
 	if err != nil || len(raw) < 8 {
 		return 0
 	}
-	bytes := uint64(binary.LittleEndian.Uint64(raw))
-	return int(bytes / (1024 * 1024))
+	mb := binary.LittleEndian.Uint64(raw) / (1024 * 1024)
+	if mb > uint64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	return int(mb)
 }
