@@ -41,6 +41,9 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
+	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/scheduler"
+	"github.com/uberware/sqi/internal/store"
 )
 
 // Config holds HTTP-layer configuration for [NewRouter].
@@ -55,12 +58,30 @@ type Config struct {
 	EnablePprof bool
 }
 
+// Deps holds the application-layer dependencies injected into the REST
+// handlers. All fields are required; a nil field will cause a panic when the
+// corresponding endpoint is first called.
+type Deps struct {
+	// Store provides access to all persistent state (jobs, tasks, workers, …).
+	Store store.Store
+
+	// Submitter handles the full OpenJD parse → validate → persist pipeline
+	// used by POST /api/v1/jobs (task 71).
+	Submitter *openjd.Submitter
+
+	// Scheduler is the running scheduler instance. It is called by
+	// DELETE /api/v1/jobs/{id} (task 75) to propagate cancellation to workers
+	// and by future task/retry endpoints.
+	Scheduler *scheduler.Scheduler
+}
+
 // NewRouter builds and returns the chi router that serves the full sqi-server
 // HTTP surface. The returned router is ready to be handed to http.Server.
 //
 // Route groups for the REST API (/api/v1/*) and WebSocket (/api/v1/ws) are
-// registered as stub mounts initially and filled in by tasks 71–92.
-func NewRouter(cfg Config, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) chi.Router {
+// populated incrementally as each task is completed. Pass a [Deps] value with
+// all application-layer dependencies for the currently implemented handlers.
+func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) chi.Router {
 	origins := cfg.CORSOrigins
 	if len(origins) == 0 {
 		origins = []string{"*"}
@@ -141,14 +162,16 @@ func NewRouter(cfg Config, logger *slog.Logger, m *metrics.Metrics, hr *health.R
 	}
 
 	// ── REST API (tasks 71–86) ────────────────────────────────────────────────
-	// Sub-router is mounted now so the middleware chain is in place. Route
-	// registrations are added task-by-task in subsequent PRs.
-	r.Route("/api/v1", func(_ chi.Router) {
-		// TODO(task 71): POST /api/v1/jobs
-		// TODO(task 72): GET  /api/v1/jobs
-		// TODO(task 73): GET  /api/v1/jobs/{id}
-		// TODO(task 74): PATCH /api/v1/jobs/{id}
-		// TODO(task 75): DELETE /api/v1/jobs/{id}
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
+
+	r.Route("/api/v1", func(api chi.Router) {
+		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
+		api.Post("/jobs", jobs.submitJob)        // task 71
+		api.Get("/jobs", jobs.listJobs)          // task 72
+		api.Get("/jobs/{id}", jobs.getJob)       // task 73
+		api.Patch("/jobs/{id}", jobs.patchJob)   // task 74
+		api.Delete("/jobs/{id}", jobs.cancelJob) // task 75
+
 		// TODO(task 76): GET  /api/v1/jobs/{id}/tasks, GET /api/v1/tasks/{id}
 		// TODO(task 77): GET  /api/v1/tasks/{id}/logs
 		// TODO(task 78): POST /api/v1/tasks/{id}/retry

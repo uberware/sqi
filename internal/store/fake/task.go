@@ -299,6 +299,21 @@ func isReadyInFarm(t store.Task, farmID string, jobs map[string]store.Job, queue
 	return !queuePaused[job.QueueID]
 }
 
+// CountTasksByJob returns the number of tasks for the given job keyed by status.
+// Statuses with zero tasks are omitted from the returned map.
+func (s *Store) CountTasksByJob(_ context.Context, jobID string) (map[store.TaskStatus]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	counts := make(map[store.TaskStatus]int)
+	for _, t := range s.tasks {
+		if t.JobID == jobID {
+			counts[t.Status]++
+		}
+	}
+	return counts, nil
+}
+
 // cmpReadyTask orders tasks by job priority descending, then CreatedAt ascending.
 func cmpReadyTask(a, b store.Task, jobPriority map[string]int) int {
 	if n := cmp.Compare(jobPriority[b.JobID], jobPriority[a.JobID]); n != 0 {

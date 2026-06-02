@@ -131,6 +131,12 @@ type TaskStore interface {
 	// Tasks already in a terminal state (succeeded, failed, canceled) are not
 	// modified.
 	CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]Task, error)
+
+	// CountTasksByJob returns the number of tasks for the given job keyed by
+	// status. Statuses with zero tasks are omitted from the returned map.
+	// Used by the REST layer to include aggregate task counts in job responses
+	// (task 73).
+	CountTasksByJob(ctx context.Context, jobID string) (map[TaskStatus]int, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

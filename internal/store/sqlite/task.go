@@ -88,6 +88,14 @@ WHERE  t.status  = 'ready'
   AND  j.farm_id = ?
 GROUP BY j.queue_id`
 
+	// Counts tasks for a given job grouped by status (task 73).
+	// Used by the REST layer to include aggregate task counts in job detail responses.
+	sqlCountTasksByJob = `
+SELECT status, COUNT(*)
+FROM   tasks
+WHERE  job_id = ?
+GROUP BY status`
+
 	// Cancels all non-terminal tasks for a job and returns the number of rows
 	// updated (task 54). The caller first SELECTs active tasks within the same
 	// transaction to capture worker IDs before this UPDATE clears them.
@@ -360,4 +368,26 @@ WHERE  job_id = ?
 		return nil, fmt.Errorf("sqlite: commit cancel job tasks: %w", err)
 	}
 	return active, nil
+}
+
+// CountTasksByJob implements [store.TaskStore].
+// Returns the number of tasks for the given job keyed by status.
+// Statuses with zero tasks are omitted from the returned map.
+func (s *Store) CountTasksByJob(ctx context.Context, jobID string) (map[store.TaskStatus]int, error) {
+	rows, err := s.stmtCountTasksByJob.QueryContext(ctx, jobID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	counts := make(map[store.TaskStatus]int)
+	for rows.Next() {
+		var status store.TaskStatus
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
 }

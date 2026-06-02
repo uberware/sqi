@@ -24,6 +24,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
@@ -230,12 +231,21 @@ func (s *Server) start(ctx context.Context) error {
 
 	// ── HTTP server (chi router) ──────────────────────────────────────────
 	// Task 70: chi router with standard middleware mounts all routes.
-	// REST API routes (tasks 71–86) and WebSocket (tasks 87–92) are added
-	// to the /api/v1 sub-router in subsequent tasks.
-	router := api.NewRouter(api.Config{
-		CORSOrigins: s.cfg.CORSOrigins,
-		EnablePprof: s.cfg.EnablePprof,
-	}, s.logger, s.metrics, s.health)
+	// Task 71–75: job REST endpoints are now registered via api.Deps.
+	router := api.NewRouter(
+		api.Config{
+			CORSOrigins: s.cfg.CORSOrigins,
+			EnablePprof: s.cfg.EnablePprof,
+		},
+		api.Deps{
+			Store:     s.store,
+			Submitter: openjd.NewSubmitter(s.store),
+			Scheduler: s.sched,
+		},
+		s.logger,
+		s.metrics,
+		s.health,
+	)
 
 	s.httpServer = &http.Server{
 		Addr:              s.cfg.HTTPAddr,

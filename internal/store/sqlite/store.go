@@ -138,6 +138,7 @@ type Store struct {
 	stmtCountActiveTasksInQueue *sql.Stmt
 	stmtCountActiveTasksInFarm  *sql.Stmt
 	stmtCountReadyTasksByQueue  *sql.Stmt
+	stmtCountTasksByJob         *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
 	stmtInsertAttempt           *sql.Stmt
@@ -416,6 +417,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtCountReadyTasksByQueue, err = s.prepare(ctx, sqlCountReadyTasksByQueue); err != nil {
+		return err
+	}
+	if s.stmtCountTasksByJob, err = s.prepare(ctx, sqlCountTasksByJob); err != nil {
 		return err
 	}
 
