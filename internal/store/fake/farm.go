@@ -61,9 +61,10 @@ func (s *Store) ListFarms(_ context.Context) ([]store.Farm, error) {
 	return farms, nil
 }
 
-// UpdateFarm replaces the mutable fields (Name, Description) of an existing
-// farm and updates UpdatedAt. Returns [store.ErrNotFound] if the farm does
-// not exist, or [store.ErrConflict] if the new name is already taken.
+// UpdateFarm replaces the mutable fields (Name, Description,
+// MaxConcurrentTasks) of an existing farm and updates UpdatedAt.
+// Returns [store.ErrNotFound] if the farm does not exist, or
+// [store.ErrConflict] if the new name is already taken.
 func (s *Store) UpdateFarm(_ context.Context, farm store.Farm) (store.Farm, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

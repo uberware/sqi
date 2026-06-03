@@ -1,0 +1,508 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package api
+
+// Unit tests for the task-81 CRUD handlers: farms, queues, storage-locations,
+// and license-pools. Each test spins up a chi router with the fake in-memory
+// store so the database is never touched.
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
+)
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+func newTestLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
+
+// jsonBody serializes v and returns a *bytes.Buffer suitable for an HTTP body.
+func jsonBody(t *testing.T, v any) *bytes.Buffer {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("jsonBody: %v", err)
+	}
+	return bytes.NewBuffer(b)
+}
+
+// newReq is a test helper that creates an HTTP request carrying the test
+// context (satisfying the noctx linter).
+func newReq(t *testing.T, method, target string, body io.Reader) *http.Request {
+	t.Helper()
+	return httptest.NewRequestWithContext(t.Context(), method, target, body)
+}
+
+// mustListFarms retrieves all farms from the fake store, fataling on error.
+func mustListFarms(t *testing.T, st *fake.Store) []store.Farm {
+	t.Helper()
+	farms, err := st.ListFarms(t.Context())
+	if err != nil {
+		t.Fatalf("ListFarms: %v", err)
+	}
+	return farms
+}
+
+// ── Farm tests ────────────────────────────────────────────────────────────────
+
+func TestFarmCRUD(t *testing.T) {
+	st := fake.New()
+	logger := newTestLogger()
+	h := newFarmHandler(st, logger)
+
+	r := chi.NewRouter()
+	r.Post("/farms", h.createFarm)
+	r.Get("/farms", h.listFarms)
+	r.Get("/farms/{id}", h.getFarm)
+	r.Put("/farms/{id}", h.updateFarm)
+	r.Delete("/farms/{id}", h.deleteFarm)
+
+	// ── POST /farms — success ─────────────────────────────────────────────────
+	t.Run("create farm", func(t *testing.T) {
+		body := jsonBody(t, createFarmRequest{Name: "alpha", Description: "first farm", MaxConcurrentTasks: 10})
+		req := newReq(t, http.MethodPost, "/farms", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp farmResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Name != "alpha" {
+			t.Errorf("name = %q, want %q", resp.Name, "alpha")
+		}
+		if resp.MaxConcurrentTasks != 10 {
+			t.Errorf("max_concurrent_tasks = %d, want 10", resp.MaxConcurrentTasks)
+		}
+		if resp.ID == "" {
+			t.Error("id must not be empty")
+		}
+	})
+
+	// ── POST /farms — missing name ────────────────────────────────────────────
+	t.Run("create farm missing name", func(t *testing.T) {
+		body := jsonBody(t, createFarmRequest{Description: "no name"})
+		req := newReq(t, http.MethodPost, "/farms", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rr.Code)
+		}
+	})
+
+	// ── POST /farms — duplicate name ──────────────────────────────────────────
+	t.Run("create farm duplicate name", func(t *testing.T) {
+		body := jsonBody(t, createFarmRequest{Name: "alpha"})
+		req := newReq(t, http.MethodPost, "/farms", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", rr.Code)
+		}
+	})
+
+	// ── GET /farms — list ─────────────────────────────────────────────────────
+	t.Run("list farms", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/farms", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+		var resp []farmResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp) != 1 {
+			t.Errorf("expected 1 farm, got %d", len(resp))
+		}
+	})
+
+	// ── GET /farms/{id} — found ───────────────────────────────────────────────
+	t.Run("get farm found", func(t *testing.T) {
+		id := mustListFarms(t, st)[0].ID
+		req := newReq(t, http.MethodGet, "/farms/"+id, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+	})
+
+	// ── GET /farms/{id} — not found ───────────────────────────────────────────
+	t.Run("get farm not found", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/farms/does-not-exist", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+
+	// ── PUT /farms/{id} — success ─────────────────────────────────────────────
+	t.Run("update farm", func(t *testing.T) {
+		id := mustListFarms(t, st)[0].ID
+		body := jsonBody(t, updateFarmRequest{Name: "alpha-updated", MaxConcurrentTasks: 20})
+		req := newReq(t, http.MethodPut, "/farms/"+id, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp farmResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Name != "alpha-updated" {
+			t.Errorf("name = %q, want %q", resp.Name, "alpha-updated")
+		}
+		if resp.MaxConcurrentTasks != 20 {
+			t.Errorf("max_concurrent_tasks = %d, want 20", resp.MaxConcurrentTasks)
+		}
+	})
+
+	// ── DELETE /farms/{id} — success ─────────────────────────────────────────
+	t.Run("delete farm", func(t *testing.T) {
+		id := mustListFarms(t, st)[0].ID
+		req := newReq(t, http.MethodDelete, "/farms/"+id, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", rr.Code)
+		}
+		// Confirm it's gone.
+		req2 := newReq(t, http.MethodGet, "/farms/"+id, nil)
+		rr2 := httptest.NewRecorder()
+		r.ServeHTTP(rr2, req2)
+		if rr2.Code != http.StatusNotFound {
+			t.Errorf("expected 404 after delete, got %d", rr2.Code)
+		}
+	})
+}
+
+// ── Queue tests ───────────────────────────────────────────────────────────────
+
+func TestQueueCRUD(t *testing.T) {
+	st := fake.New()
+	logger := newTestLogger()
+
+	// Pre-seed a farm so queue creation can reference it.
+	farm, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-1", Name: "farm-one"})
+	if err != nil {
+		t.Fatalf("pre-seed farm: %v", err)
+	}
+
+	h := newQueueHandler(st, logger)
+
+	r := chi.NewRouter()
+	r.Post("/queues", h.createQueue)
+	r.Get("/queues", h.listQueues)
+	r.Get("/queues/{id}", h.getQueue)
+	r.Put("/queues/{id}", h.updateQueue)
+	r.Delete("/queues/{id}", h.deleteQueue)
+
+	var createdID string
+
+	// ── POST — success ────────────────────────────────────────────────────────
+	t.Run("create queue", func(t *testing.T) {
+		body := jsonBody(t, createQueueRequest{FarmID: farm.ID, Name: "render", Priority: 5, MaxConcurrentTasks: 4})
+		req := newReq(t, http.MethodPost, "/queues", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp queueResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		createdID = resp.ID
+	})
+
+	// ── POST — bad farm_id ────────────────────────────────────────────────────
+	t.Run("create queue bad farm", func(t *testing.T) {
+		body := jsonBody(t, createQueueRequest{FarmID: "no-such-farm", Name: "x"})
+		req := newReq(t, http.MethodPost, "/queues", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rr.Code)
+		}
+	})
+
+	// ── PUT — farm validation ─────────────────────────────────────────────────
+	t.Run("update queue validates farm", func(t *testing.T) {
+		body := jsonBody(t, updateQueueRequest{FarmID: "ghost-farm", Name: "render"})
+		req := newReq(t, http.MethodPut, "/queues/"+createdID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for unknown farm_id, got %d", rr.Code)
+		}
+	})
+
+	// ── PUT — success ─────────────────────────────────────────────────────────
+	t.Run("update queue success", func(t *testing.T) {
+		body := jsonBody(t, updateQueueRequest{FarmID: farm.ID, Name: "render-hd", Priority: 10})
+		req := newReq(t, http.MethodPut, "/queues/"+createdID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	// ── GET list ──────────────────────────────────────────────────────────────
+	t.Run("list queues", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/queues?farm_id="+farm.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+		var resp queueListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Total < 1 {
+			t.Errorf("expected at least 1 queue, total=%d", resp.Total)
+		}
+	})
+
+	// ── DELETE ────────────────────────────────────────────────────────────────
+	t.Run("delete queue", func(t *testing.T) {
+		req := newReq(t, http.MethodDelete, "/queues/"+createdID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", rr.Code)
+		}
+	})
+}
+
+// ── Storage-location tests ────────────────────────────────────────────────────
+
+func TestStorageLocationCRUD(t *testing.T) {
+	st := fake.New()
+	logger := newTestLogger()
+	h := newStorageLocationHandler(st, logger)
+
+	r := chi.NewRouter()
+	r.Post("/storage-locations", h.createStorageLocation)
+	r.Get("/storage-locations", h.listStorageLocations)
+	r.Get("/storage-locations/{id}", h.getStorageLocation)
+	r.Put("/storage-locations/{id}", h.updateStorageLocation)
+	r.Delete("/storage-locations/{id}", h.deleteStorageLocation)
+
+	var createdID string
+
+	// ── POST — success ────────────────────────────────────────────────────────
+	t.Run("create storage location", func(t *testing.T) {
+		body := jsonBody(t, createStorageLocationRequest{
+			Name:  "nas_shows",
+			Type:  "filesystem",
+			Roots: map[string]string{"default": "/mnt/nas/shows"},
+		})
+		req := newReq(t, http.MethodPost, "/storage-locations", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp storageLocationResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		createdID = resp.ID
+		if resp.Roots["default"] != "/mnt/nas/shows" {
+			t.Errorf("roots mismatch: %v", resp.Roots)
+		}
+	})
+
+	// ── POST — invalid type ───────────────────────────────────────────────────
+	t.Run("create storage location invalid type", func(t *testing.T) {
+		body := jsonBody(t, createStorageLocationRequest{Name: "x", Type: "nfs"})
+		req := newReq(t, http.MethodPost, "/storage-locations", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid type, got %d", rr.Code)
+		}
+	})
+
+	// ── GET — not found ───────────────────────────────────────────────────────
+	t.Run("get storage location not found", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/storage-locations/nope", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+
+	// ── PUT — success ─────────────────────────────────────────────────────────
+	t.Run("update storage location", func(t *testing.T) {
+		body := jsonBody(t, updateStorageLocationRequest{
+			Name:  "nas_shows",
+			Type:  "s3",
+			Roots: map[string]string{"default": "s3://bucket/shows"},
+		})
+		req := newReq(t, http.MethodPut, "/storage-locations/"+createdID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	// ── DELETE ────────────────────────────────────────────────────────────────
+	t.Run("delete storage location", func(t *testing.T) {
+		req := newReq(t, http.MethodDelete, "/storage-locations/"+createdID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", rr.Code)
+		}
+	})
+}
+
+// ── License-pool tests ────────────────────────────────────────────────────────
+
+func TestLicensePoolCRUD(t *testing.T) {
+	st := fake.New()
+	logger := newTestLogger()
+	h := newLicensePoolHandler(st, logger)
+
+	r := chi.NewRouter()
+	r.Post("/license-pools", h.createLicensePool)
+	r.Get("/license-pools", h.listLicensePools)
+	r.Get("/license-pools/{id}", h.getLicensePool)
+	r.Put("/license-pools/{id}", h.updateLicensePool)
+	r.Delete("/license-pools/{id}", h.deleteLicensePool)
+
+	var createdID string
+
+	// ── POST — success ────────────────────────────────────────────────────────
+	t.Run("create license pool", func(t *testing.T) {
+		body := jsonBody(t, createLicensePoolRequest{
+			Name:          "arnold_render",
+			Product:       "Arnold Renderer",
+			ServerHint:    "10.0.0.50:5053",
+			MaxConcurrent: 20,
+		})
+		req := newReq(t, http.MethodPost, "/license-pools", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp licensePoolResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		createdID = resp.ID
+		if resp.MaxConcurrent != 20 {
+			t.Errorf("max_concurrent = %d, want 20", resp.MaxConcurrent)
+		}
+	})
+
+	// ── POST — max_concurrent validation ─────────────────────────────────────
+	t.Run("create license pool zero max_concurrent", func(t *testing.T) {
+		body := jsonBody(t, createLicensePoolRequest{Name: "x", Product: "y", MaxConcurrent: 0})
+		req := newReq(t, http.MethodPost, "/license-pools", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for MaxConcurrent=0, got %d", rr.Code)
+		}
+	})
+
+	// ── POST — duplicate name ─────────────────────────────────────────────────
+	t.Run("create license pool duplicate", func(t *testing.T) {
+		body := jsonBody(t, createLicensePoolRequest{Name: "arnold_render", Product: "Arnold Renderer", MaxConcurrent: 5})
+		req := newReq(t, http.MethodPost, "/license-pools", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", rr.Code)
+		}
+	})
+
+	// ── GET list ──────────────────────────────────────────────────────────────
+	t.Run("list license pools", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/license-pools", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+		var resp []licensePoolResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp) < 1 {
+			t.Errorf("expected at least 1 pool, got %d", len(resp))
+		}
+	})
+
+	// ── PUT — success ─────────────────────────────────────────────────────────
+	t.Run("update license pool", func(t *testing.T) {
+		body := jsonBody(t, updateLicensePoolRequest{
+			Name:          "arnold_render",
+			Product:       "Arnold Renderer",
+			MaxConcurrent: 30,
+		})
+		req := newReq(t, http.MethodPut, "/license-pools/"+createdID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	// ── DELETE ────────────────────────────────────────────────────────────────
+	t.Run("delete license pool", func(t *testing.T) {
+		req := newReq(t, http.MethodDelete, "/license-pools/"+createdID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", rr.Code)
+		}
+		// Confirm gone.
+		req2 := newReq(t, http.MethodGet, "/license-pools/"+createdID, nil)
+		rr2 := httptest.NewRecorder()
+		r.ServeHTTP(rr2, req2)
+		if rr2.Code != http.StatusNotFound {
+			t.Errorf("expected 404 after delete, got %d", rr2.Code)
+		}
+	})
+}

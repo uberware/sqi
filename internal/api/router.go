@@ -165,6 +165,10 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
 	tasks := newTaskHandler(deps.Store, logger)
 	workers := newWorkerHandler(deps.Store, logger)
+	farms := newFarmHandler(deps.Store, logger)
+	queues := newQueueHandler(deps.Store, logger)
+	storageLocs := newStorageLocationHandler(deps.Store, logger)
+	licensePools := newLicensePoolHandler(deps.Store, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
@@ -186,7 +190,34 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Post("/workers/{id}/disable", workers.disableWorker) // task 80
 		api.Post("/workers/{id}/enable", workers.enableWorker)   // task 80
 
-		// TODO(task 81): CRUD /api/v1/farms|queues|storage-locations|license-pools
+		// ── Farm endpoints (task 81) ──────────────────────────────────────
+		api.Post("/farms", farms.createFarm)
+		api.Get("/farms", farms.listFarms)
+		api.Get("/farms/{id}", farms.getFarm)
+		api.Put("/farms/{id}", farms.updateFarm)
+		api.Delete("/farms/{id}", farms.deleteFarm)
+
+		// ── Queue endpoints (task 81) ─────────────────────────────────────
+		api.Post("/queues", queues.createQueue)
+		api.Get("/queues", queues.listQueues)
+		api.Get("/queues/{id}", queues.getQueue)
+		api.Put("/queues/{id}", queues.updateQueue)
+		api.Delete("/queues/{id}", queues.deleteQueue)
+
+		// ── Storage-location endpoints (task 81) ──────────────────────────
+		api.Post("/storage-locations", storageLocs.createStorageLocation)
+		api.Get("/storage-locations", storageLocs.listStorageLocations)
+		api.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
+		api.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
+		api.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
+
+		// ── License-pool endpoints (task 81) ──────────────────────────────
+		api.Post("/license-pools", licensePools.createLicensePool)
+		api.Get("/license-pools", licensePools.listLicensePools)
+		api.Get("/license-pools/{id}", licensePools.getLicensePool)
+		api.Put("/license-pools/{id}", licensePools.updateLicensePool)
+		api.Delete("/license-pools/{id}", licensePools.deleteLicensePool)
+
 		// TODO(task 83): GET  /api/v1/openapi.yaml
 		// TODO(task 87): /api/v1/ws  — WebSocket upgrade
 	})

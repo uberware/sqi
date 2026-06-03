@@ -32,9 +32,10 @@ type FarmStore interface {
 	// ListFarms returns all farms ordered by name.
 	ListFarms(ctx context.Context) ([]Farm, error)
 
-	// UpdateFarm replaces the mutable fields (Name, Description) of an
-	// existing farm and updates UpdatedAt. Returns [ErrNotFound] if the farm
-	// does not exist, or [ErrConflict] if the new name is already taken.
+	// UpdateFarm replaces the mutable fields (Name, Description,
+	// MaxConcurrentTasks) of an existing farm and updates UpdatedAt.
+	// Returns [ErrNotFound] if the farm does not exist, or [ErrConflict]
+	// if the new name is already taken.
 	UpdateFarm(ctx context.Context, farm Farm) (Farm, error)
 
 	// DeleteFarm removes a farm by ID. Returns [ErrNotFound] if it does not
