@@ -45,6 +45,7 @@ const ProtocolVersion = "1"
 // self-describing.
 const (
 	TypeRegister   = "register"    // worker → server
+	TypeDeregister = "deregister"  // worker → server
 	TypeHeartbeat  = "heartbeat"   // worker → server
 	TypeAssign     = "assign"      // server → worker
 	TypeTaskStatus = "task_status" // worker → server
@@ -97,6 +98,13 @@ type RegisterMsg struct {
 	// GPUInfo describes GPU(s) installed on the worker host.
 	GPUInfo GPUInfo `json:"gpu_info"`
 
+	// MaxConcurrentTasks is the maximum number of tasks this worker will
+	// execute simultaneously. Advertised to the server for informational
+	// purposes and future server-side admission control. In Phase 1 the server
+	// does not persist or enforce this value; the worker enforces it locally
+	// via a semaphore in the pull loop.
+	MaxConcurrentTasks int `json:"max_concurrent_tasks,omitempty"`
+
 	// Tags holds arbitrary key/value capability tags the worker self-reports.
 	Tags map[string]string `json:"tags,omitempty"`
 }
@@ -110,6 +118,29 @@ type GPUInfo struct {
 	// VRAMMb is the VRAM capacity of each GPU in mebibytes.
 	VRAMMb int `json:"vram_mb,omitempty"`
 	Count  int `json:"count,omitempty"`
+}
+
+// ── DeregisterMsg ─────────────────────────────────────────────────────────────
+
+// DeregisterMsg is the JSON payload workers publish to worker.deregister on
+// graceful shutdown. The server marks the worker offline immediately upon
+// receipt, rather than waiting for the heartbeat timeout sweep.
+//
+// Workers SHOULD publish this as the last action before closing the NATS
+// connection so that the server's task scheduler stops dispatching new
+// assignments to this worker immediately.
+type DeregisterMsg struct {
+	// Version must equal [ProtocolVersion].
+	Version string `json:"version"`
+	// Type must equal [TypeDeregister].
+	Type string `json:"type"`
+
+	// WorkerID identifies the departing worker.
+	WorkerID string `json:"worker_id"`
+
+	// Reason is an optional human-readable explanation for the departure
+	// (e.g. "graceful shutdown", "maintenance").
+	Reason string `json:"reason,omitempty"`
 }
 
 // ── HeartbeatMsg ─────────────────────────────────────────────────────────────

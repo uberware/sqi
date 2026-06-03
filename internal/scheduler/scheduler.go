@@ -724,6 +724,8 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 		s.handleWorkerRegister(ctx, msg)
 	case bus.SubjectWorkerHeartbeat:
 		s.handleWorkerHeartbeat(ctx, msg)
+	case bus.SubjectWorkerDeregister:
+		s.handleWorkerDeregister(ctx, msg)
 	default:
 		s.logger.WarnContext(
 			ctx, "scheduler: unexpected worker subject",
@@ -831,6 +833,63 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		slog.String("hostname", m.Hostname),
 		slog.String("os", m.OS),
 		slog.String("farm_id", m.FarmID),
+	)
+	s.refreshWorkerGauge(ctx)
+	s.ackMsg(ctx, msg)
+}
+
+// handleWorkerDeregister processes a worker.deregister message published by a
+// worker on graceful shutdown. It marks the worker offline immediately so the
+// scheduler stops dispatching new assignments to it rather than waiting for
+// the heartbeat-timeout sweep (task 27).
+func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg) {
+	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
+	// fields the server needs without importing the worker protocol package.
+	var m struct {
+		WorkerID string `json:"worker_id"`
+		Reason   string `json:"reason,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: malformed worker.deregister message",
+			slog.Any("error", err),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+	if m.WorkerID == "" {
+		s.logger.WarnContext(ctx, "scheduler: worker.deregister missing worker_id")
+		s.ackMsg(ctx, msg)
+		return
+	}
+
+	if err := s.store.UpdateWorkerStatus(ctx, m.WorkerID, store.WorkerStatusOffline); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Worker was never registered or already removed — benign race
+			// (e.g., deregister arrived before the registration was processed,
+			// or the server restarted between registration and shutdown).
+			s.logger.WarnContext(
+				ctx, "scheduler: deregister for unknown worker — ignoring",
+				slog.String("worker_id", m.WorkerID),
+			)
+		} else {
+			s.logger.ErrorContext(
+				ctx, "scheduler: mark worker offline on deregister failed",
+				slog.String("worker_id", m.WorkerID),
+				slog.Any("error", err),
+			)
+		}
+		// ack in all error cases — nacking would redeliver but neither a
+		// not-found nor a store error is likely to resolve on retry, and
+		// wedging the consumer would block all subsequent worker messages.
+		s.ackMsg(ctx, msg)
+		return
+	}
+
+	s.logger.InfoContext(
+		ctx, "scheduler: worker deregistered",
+		slog.String("worker_id", m.WorkerID),
+		slog.String("reason", m.Reason),
 	)
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)

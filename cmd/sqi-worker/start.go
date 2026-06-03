@@ -23,6 +23,7 @@ import (
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
+	"github.com/uberware/sqi/internal/worker/registration"
 )
 
 // startFlags holds values for flags specific to the start subcommand.
@@ -172,6 +173,29 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	go obsServer.Run(ctx)
 
+	// ── Capabilities ──────────────────────────────────────────────────────────
+	caps := capabilities.Detect(nil)
+	caps.MergeManualTags(cfg.Worker.CapabilityTags)
+
+	// ── Registration (tasks 25–29) ────────────────────────────────────────────
+	//
+	// Build the registrar with the merged capability set. Register() is called
+	// once at boot; SetupReconnectHook() ensures the registration is re-sent
+	// on any subsequent NATS reconnect so the server always has a live record.
+	reg := registration.New(nc, workerID, cfg.Worker, caps, logger)
+
+	// Wire re-registration into the NATS reconnect callback (task 28).
+	// This replaces the reconnect logging that was previously in natsclient;
+	// the new handler logs the reconnect and re-registers in one step.
+	reg.SetupReconnectHook(ctx)
+
+	// Publish the initial registration (tasks 25–26).
+	// A boot-time registration failure is fatal: the server cannot assign
+	// tasks to a worker it has no record of.
+	if err := reg.Register(ctx); err != nil {
+		return fmt.Errorf("worker registration: %w", err)
+	}
+
 	logger.InfoContext(
 		ctx, "sqi-worker starting",
 		slog.String("worker_id", workerID),
@@ -180,6 +204,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.Int("max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks),
 		slog.String("metrics_addr", cfg.Metrics.Addr),
 		slog.String("nats_url", nc.ConnectedUrl()),
+		slog.String("os", caps.OS),
+		slog.Int("cpu_count", caps.CPUCount),
+		slog.Int("ram_mb", caps.RAMMb),
 	)
 
 	<-ctx.Done()
@@ -188,6 +215,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		context.Background(), "sqi-worker shutting down",
 		slog.String("reason", ctx.Err().Error()),
 	)
+
+	// ── Deregistration (task 27) ──────────────────────────────────────────────
+	//
+	// Publish a departure message before draining the NATS connection so the
+	// server marks this worker offline immediately rather than waiting for the
+	// heartbeat-timeout sweep. Drain (deferred above) flushes remaining
+	// publishes after this returns.
+	reg.Deregister("graceful shutdown")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
 	defer cancel()

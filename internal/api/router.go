@@ -164,6 +164,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	// ── REST API (tasks 71–86) ────────────────────────────────────────────────
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
 	tasks := newTaskHandler(deps.Store, logger)
+	workers := newWorkerHandler(deps.Store, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
@@ -178,8 +179,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/tasks/{id}", tasks.getTask)           // task 76
 		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)  // task 77
 		api.Post("/tasks/{id}/retry", tasks.retryTask)  // task 78
-		// TODO(task 79): GET  /api/v1/workers, GET /api/v1/workers/{id}
-		// TODO(task 80): POST /api/v1/workers/{id}/disable|enable
+
+		// ── Worker endpoints (tasks 79–80) ───────────────────────────────
+		api.Get("/workers", workers.listWorkers)                 // task 79
+		api.Get("/workers/{id}", workers.getWorker)              // task 79
+		api.Post("/workers/{id}/disable", workers.disableWorker) // task 80
+		api.Post("/workers/{id}/enable", workers.enableWorker)   // task 80
+
 		// TODO(task 81): CRUD /api/v1/farms|queues|storage-locations|license-pools
 		// TODO(task 83): GET  /api/v1/openapi.yaml
 		// TODO(task 87): /api/v1/ws  — WebSocket upgrade
