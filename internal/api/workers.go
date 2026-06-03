@@ -134,7 +134,7 @@ func (h *workerHandler) listWorkers(w http.ResponseWriter, r *http.Request) {
 	page, err := h.store.ListWorkers(ctx, opts)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "workers: list failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list workers")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list workers")
 		return
 	}
 
@@ -162,11 +162,11 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 	wk, err := h.store.GetWorker(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "worker not found")
+			writeProblem(w, r, http.StatusNotFound, "worker not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "workers: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve worker")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve worker")
 		return
 	}
 
@@ -239,12 +239,12 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 
 	if _, err := h.store.GetWorker(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "worker not found")
+			writeProblem(w, r, http.StatusNotFound, "worker not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "workers: get for status update failed",
 			slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve worker")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve worker")
 		return
 	}
 
@@ -253,7 +253,7 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 			slog.String("id", id),
 			slog.String("target_status", string(target)),
 			slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to update worker status")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update worker status")
 		return
 	}
 

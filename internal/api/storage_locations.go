@@ -72,16 +72,16 @@ func (h *storageLocationHandler) createStorageLocation(w http.ResponseWriter, r 
 
 	var req createStorageLocationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 	if !isValidStorageLocationType(req.Type) {
-		writeError(w, http.StatusBadRequest, `type must be "filesystem" or "s3"`)
+		writeProblem(w, r, http.StatusBadRequest, `type must be "filesystem" or "s3"`)
 		return
 	}
 
@@ -99,11 +99,11 @@ func (h *storageLocationHandler) createStorageLocation(w http.ResponseWriter, r 
 	created, err := h.store.CreateStorageLocation(ctx, loc)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a storage location with that name already exists")
+			writeProblem(w, r, http.StatusConflict, "a storage location with that name already exists")
 			return
 		}
 		h.logger.ErrorContext(ctx, "storage-locations: create failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to create storage location")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to create storage location")
 		return
 	}
 
@@ -118,7 +118,7 @@ func (h *storageLocationHandler) listStorageLocations(w http.ResponseWriter, r *
 	locs, err := h.store.ListStorageLocations(ctx)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "storage-locations: list failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list storage locations")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list storage locations")
 		return
 	}
 
@@ -139,11 +139,11 @@ func (h *storageLocationHandler) getStorageLocation(w http.ResponseWriter, r *ht
 	loc, err := h.store.GetStorageLocation(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "storage location not found")
+			writeProblem(w, r, http.StatusNotFound, "storage location not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "storage-locations: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve storage location")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve storage location")
 		return
 	}
 
@@ -158,16 +158,16 @@ func (h *storageLocationHandler) updateStorageLocation(w http.ResponseWriter, r 
 
 	var req updateStorageLocationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 	if !isValidStorageLocationType(req.Type) {
-		writeError(w, http.StatusBadRequest, `type must be "filesystem" or "s3"`)
+		writeProblem(w, r, http.StatusBadRequest, `type must be "filesystem" or "s3"`)
 		return
 	}
 
@@ -182,15 +182,15 @@ func (h *storageLocationHandler) updateStorageLocation(w http.ResponseWriter, r 
 	updated, err := h.store.UpdateStorageLocation(ctx, loc)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "storage location not found")
+			writeProblem(w, r, http.StatusNotFound, "storage location not found")
 			return
 		}
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a storage location with that name already exists")
+			writeProblem(w, r, http.StatusConflict, "a storage location with that name already exists")
 			return
 		}
 		h.logger.ErrorContext(ctx, "storage-locations: update failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to update storage location")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update storage location")
 		return
 	}
 
@@ -205,11 +205,11 @@ func (h *storageLocationHandler) deleteStorageLocation(w http.ResponseWriter, r 
 
 	if err := h.store.DeleteStorageLocation(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "storage location not found")
+			writeProblem(w, r, http.StatusNotFound, "storage location not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "storage-locations: delete failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to delete storage location")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to delete storage location")
 		return
 	}
 

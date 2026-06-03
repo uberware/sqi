@@ -86,27 +86,27 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 
 	var req createQueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.FarmID == "" {
-		writeError(w, http.StatusBadRequest, "farm_id is required")
+		writeProblem(w, r, http.StatusBadRequest, "farm_id is required")
 		return
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusBadRequest, "farm not found")
+			writeProblem(w, r, http.StatusBadRequest, "farm not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: farm lookup failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to validate farm")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to validate farm")
 		return
 	}
 
@@ -126,11 +126,11 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 	created, err := h.store.CreateQueue(ctx, queue)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a queue with that name already exists in this farm")
+			writeProblem(w, r, http.StatusConflict, "a queue with that name already exists in this farm")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: create failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to create queue")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to create queue")
 		return
 	}
 
@@ -178,7 +178,7 @@ func (h *queueHandler) listQueues(w http.ResponseWriter, r *http.Request) {
 	page, err := h.store.ListQueues(ctx, opts)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "queues: list failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list queues")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list queues")
 		return
 	}
 
@@ -204,11 +204,11 @@ func (h *queueHandler) getQueue(w http.ResponseWriter, r *http.Request) {
 	queue, err := h.store.GetQueue(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "queue not found")
+			writeProblem(w, r, http.StatusNotFound, "queue not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve queue")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve queue")
 		return
 	}
 
@@ -223,27 +223,27 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 
 	var req updateQueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.FarmID == "" {
-		writeError(w, http.StatusBadRequest, "farm_id is required")
+		writeProblem(w, r, http.StatusBadRequest, "farm_id is required")
 		return
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusBadRequest, "farm not found")
+			writeProblem(w, r, http.StatusBadRequest, "farm not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: farm lookup failed on update", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to validate farm")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to validate farm")
 		return
 	}
 
@@ -260,15 +260,15 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.store.UpdateQueue(ctx, queue)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "queue not found")
+			writeProblem(w, r, http.StatusNotFound, "queue not found")
 			return
 		}
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a queue with that name already exists in this farm")
+			writeProblem(w, r, http.StatusConflict, "a queue with that name already exists in this farm")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: update failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to update queue")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update queue")
 		return
 	}
 
@@ -283,11 +283,11 @@ func (h *queueHandler) deleteQueue(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.store.DeleteQueue(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "queue not found")
+			writeProblem(w, r, http.StatusNotFound, "queue not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: delete failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to delete queue")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to delete queue")
 		return
 	}
 

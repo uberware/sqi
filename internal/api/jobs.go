@@ -142,13 +142,13 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	farmID := r.URL.Query().Get("farm_id")
 	queueID := r.URL.Query().Get("queue_id")
 	if farmID == "" || queueID == "" {
-		writeError(w, http.StatusBadRequest, "missing required query parameters: farm_id, queue_id")
+		writeProblem(w, r, http.StatusBadRequest, "missing required query parameters: farm_id, queue_id")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
 		return
 	}
 
@@ -174,7 +174,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Distinguish parse/validation errors (client fault) from storage errors.
 		if isSubmitValidationError(err) {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			writeProblem(w, r, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
 		h.logger.ErrorContext(
@@ -184,7 +184,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 			slog.String("format", string(format)),
 			slog.Any("error", err),
 		)
-		writeError(w, http.StatusInternalServerError, "failed to create job")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to create job")
 		return
 	}
 
@@ -228,7 +228,7 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	page, err := h.store.ListJobs(ctx, opts)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "jobs: list failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list jobs")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list jobs")
 		return
 	}
 
@@ -255,25 +255,25 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 	job, err := h.store.GetJob(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
+			writeProblem(w, r, http.StatusNotFound, "job not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "jobs: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
 
 	steps, err := h.store.ListSteps(ctx, id)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "jobs: list steps failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve job steps")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job steps")
 		return
 	}
 
 	taskCounts, err := h.store.CountTasksByJob(ctx, id)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "jobs: count tasks failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve task counts")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task counts")
 		return
 	}
 
@@ -301,7 +301,7 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 
 	var req patchJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
@@ -312,7 +312,7 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isTerminalJob(job.Status) {
-		writeError(w, http.StatusConflict, "job is in a terminal state and cannot be modified")
+		writeProblem(w, r, http.StatusConflict, "job is in a terminal state and cannot be modified")
 		return
 	}
 
@@ -327,7 +327,7 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 		job.QueueID = req.QueueID
 	}
 
-	newStatus, ok := h.resolveAction(w, job.Status, req.Action)
+	newStatus, ok := h.resolveAction(w, r, job.Status, req.Action)
 	if !ok {
 		return
 	}
@@ -363,7 +363,7 @@ func (h *jobHandler) validateQueueMove(w http.ResponseWriter, r *http.Request, q
 		return true
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusBadRequest, "target queue_id does not exist")
+		writeProblem(w, r, http.StatusBadRequest, "target queue_id does not exist")
 		return false
 	}
 	h.logger.ErrorContext(
@@ -371,7 +371,7 @@ func (h *jobHandler) validateQueueMove(w http.ResponseWriter, r *http.Request, q
 		slog.String("queue_id", queueID),
 		slog.Any("error", err),
 	)
-	writeError(w, http.StatusInternalServerError, "failed to validate queue")
+	writeProblem(w, r, http.StatusInternalServerError, "failed to validate queue")
 	return false
 }
 
@@ -380,26 +380,27 @@ func (h *jobHandler) validateQueueMove(w http.ResponseWriter, r *http.Request, q
 // status is invalid. An empty action is valid and returns ("", true).
 func (*jobHandler) resolveAction(
 	w http.ResponseWriter,
+	r *http.Request,
 	current store.JobStatus,
 	action string,
 ) (store.JobStatus, bool) {
 	switch action {
 	case "pause":
 		if current != store.JobStatusRunning && current != store.JobStatusPending {
-			writeError(w, http.StatusConflict, "job cannot be paused in its current state")
+			writeProblem(w, r, http.StatusConflict, "job cannot be paused in its current state")
 			return "", false
 		}
 		return store.JobStatusPaused, true
 	case "resume":
 		if current != store.JobStatusPaused {
-			writeError(w, http.StatusConflict, "only paused jobs can be resumed")
+			writeProblem(w, r, http.StatusConflict, "only paused jobs can be resumed")
 			return "", false
 		}
 		return store.JobStatusPending, true
 	case "":
 		return "", true
 	default:
-		writeError(w, http.StatusBadRequest, `action must be "pause" or "resume"`)
+		writeProblem(w, r, http.StatusBadRequest, `action must be "pause" or "resume"`)
 		return "", false
 	}
 }
@@ -420,7 +421,7 @@ func (h *jobHandler) applyStatusChange(
 			slog.String("status", string(newStatus)),
 			slog.Any("error", err),
 		)
-		writeError(w, http.StatusInternalServerError, "failed to update job status")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update job status")
 		return job, err
 	}
 	job.Status = newStatus
@@ -431,11 +432,11 @@ func (h *jobHandler) applyStatusChange(
 // It logs unexpected errors. id is included in log output for diagnostics.
 func handleStoreError(w http.ResponseWriter, r *http.Request, err error, logger *slog.Logger, msg, id string) {
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeProblem(w, r, http.StatusNotFound, "job not found")
 		return
 	}
 	logger.ErrorContext(r.Context(), msg, slog.String("id", id), slog.Any("error", err))
-	writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+	writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
 }
 
 // ── DELETE /api/v1/jobs/{id} ──────────────────────────────────────────────────
@@ -449,24 +450,24 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 	_, err := h.store.GetJob(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
+			writeProblem(w, r, http.StatusNotFound, "job not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "jobs: cancel get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
 
 	// CancelJob handles task cancellation and NATS signal dispatch (task 54).
 	if err = h.sched.CancelJob(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: cancel scheduler failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to cancel job tasks")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to cancel job tasks")
 		return
 	}
 
 	if err = h.store.UpdateJobStatus(ctx, id, store.JobStatusCanceled); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: cancel status update failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to update job status")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update job status")
 		return
 	}
 
@@ -608,24 +609,4 @@ func isSubmitValidationError(err error) bool {
 		strings.HasPrefix(msg, "openjd: submit: storage location")
 }
 
-// ── JSON response helpers ─────────────────────────────────────────────────────
-
-// apiError is the standard error envelope returned by all endpoints.
-type apiError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// writeJSON serializes v to w with the given HTTP status code.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(v) //nolint:errcheck // client disconnect is non-fatal
-}
-
-// writeError writes a JSON error envelope with the given status code.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, apiError{Code: status, Message: message})
-}
+// writeProblem, writeJSON, and the problemDetail type are defined in errors.go.

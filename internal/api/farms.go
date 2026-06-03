@@ -69,12 +69,12 @@ func (h *farmHandler) createFarm(w http.ResponseWriter, r *http.Request) {
 
 	var req createFarmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 
@@ -91,11 +91,11 @@ func (h *farmHandler) createFarm(w http.ResponseWriter, r *http.Request) {
 	created, err := h.store.CreateFarm(ctx, farm)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a farm with that name already exists")
+			writeProblem(w, r, http.StatusConflict, "a farm with that name already exists")
 			return
 		}
 		h.logger.ErrorContext(ctx, "farms: create failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to create farm")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to create farm")
 		return
 	}
 
@@ -110,7 +110,7 @@ func (h *farmHandler) listFarms(w http.ResponseWriter, r *http.Request) {
 	farms, err := h.store.ListFarms(ctx)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "farms: list failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list farms")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list farms")
 		return
 	}
 
@@ -131,11 +131,11 @@ func (h *farmHandler) getFarm(w http.ResponseWriter, r *http.Request) {
 	farm, err := h.store.GetFarm(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "farm not found")
+			writeProblem(w, r, http.StatusNotFound, "farm not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "farms: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve farm")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve farm")
 		return
 	}
 
@@ -150,12 +150,12 @@ func (h *farmHandler) updateFarm(w http.ResponseWriter, r *http.Request) {
 
 	var req updateFarmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 
@@ -169,15 +169,15 @@ func (h *farmHandler) updateFarm(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.store.UpdateFarm(ctx, farm)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "farm not found")
+			writeProblem(w, r, http.StatusNotFound, "farm not found")
 			return
 		}
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a farm with that name already exists")
+			writeProblem(w, r, http.StatusConflict, "a farm with that name already exists")
 			return
 		}
 		h.logger.ErrorContext(ctx, "farms: update failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to update farm")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update farm")
 		return
 	}
 
@@ -192,11 +192,11 @@ func (h *farmHandler) deleteFarm(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.store.DeleteFarm(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "farm not found")
+			writeProblem(w, r, http.StatusNotFound, "farm not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "farms: delete failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to delete farm")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to delete farm")
 		return
 	}
 

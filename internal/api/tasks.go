@@ -102,11 +102,11 @@ func (h *taskHandler) listJobTasks(w http.ResponseWriter, r *http.Request) {
 	// Verify the job exists so we can return 404 rather than an empty list.
 	if _, err := h.store.GetJob(ctx, jobID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
+			writeProblem(w, r, http.StatusNotFound, "job not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "tasks: get job failed", slog.String("job_id", jobID), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
 
@@ -129,7 +129,7 @@ func (h *taskHandler) listJobTasks(w http.ResponseWriter, r *http.Request) {
 	page, err := h.store.ListTasks(ctx, opts)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "tasks: list failed", slog.String("job_id", jobID), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list tasks")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list tasks")
 		return
 	}
 
@@ -156,11 +156,11 @@ func (h *taskHandler) getTask(w http.ResponseWriter, r *http.Request) {
 	task, err := h.store.GetTask(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "task not found")
+			writeProblem(w, r, http.StatusNotFound, "task not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "tasks: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve task")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task")
 		return
 	}
 
@@ -191,11 +191,11 @@ func (h *taskHandler) getTaskLogs(w http.ResponseWriter, r *http.Request) {
 	// Verify the task exists.
 	if _, err := h.store.GetTask(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "task not found")
+			writeProblem(w, r, http.StatusNotFound, "task not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "tasks: get task for logs failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve task")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task")
 		return
 	}
 
@@ -220,7 +220,7 @@ func (h *taskHandler) getTaskLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.logger.ErrorContext(ctx, "tasks: latest attempt failed", slog.String("task_id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve task attempt")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task attempt")
 		return
 	}
 
@@ -232,7 +232,7 @@ func (h *taskHandler) getTaskLogs(w http.ResponseWriter, r *http.Request) {
 	logs, err := h.store.ListTaskLogs(ctx, attempt.ID, afterNATSSeq, limit)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "tasks: list logs failed", slog.String("task_id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve task logs")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task logs")
 		return
 	}
 
@@ -261,7 +261,7 @@ func (h *taskHandler) streamTaskLogs(w http.ResponseWriter, r *http.Request, tas
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported by this server")
+		writeProblem(w, r, http.StatusInternalServerError, "streaming not supported by this server")
 		return
 	}
 
@@ -352,23 +352,23 @@ func (h *taskHandler) retryTask(w http.ResponseWriter, r *http.Request) {
 	task, err := h.store.GetTask(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "task not found")
+			writeProblem(w, r, http.StatusNotFound, "task not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "tasks: retry get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve task")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task")
 		return
 	}
 
 	if task.Status != store.TaskStatusFailed && task.Status != store.TaskStatusCanceled {
-		writeError(w, http.StatusConflict,
+		writeProblem(w, r, http.StatusConflict,
 			fmt.Sprintf("task cannot be retried in status %q; only failed or canceled tasks are eligible", task.Status))
 		return
 	}
 
 	if err = h.store.UpdateTaskStatus(ctx, id, store.TaskStatusReady); err != nil {
 		h.logger.ErrorContext(ctx, "tasks: retry status update failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to queue task retry")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to queue task retry")
 		return
 	}
 

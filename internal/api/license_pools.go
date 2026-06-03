@@ -72,20 +72,20 @@ func (h *licensePoolHandler) createLicensePool(w http.ResponseWriter, r *http.Re
 
 	var req createLicensePoolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 	if req.Product == "" {
-		writeError(w, http.StatusBadRequest, "product is required")
+		writeProblem(w, r, http.StatusBadRequest, "product is required")
 		return
 	}
 	if req.MaxConcurrent <= 0 {
-		writeError(w, http.StatusBadRequest, "max_concurrent must be greater than zero")
+		writeProblem(w, r, http.StatusBadRequest, "max_concurrent must be greater than zero")
 		return
 	}
 
@@ -103,11 +103,11 @@ func (h *licensePoolHandler) createLicensePool(w http.ResponseWriter, r *http.Re
 	created, err := h.store.CreateLicensePool(ctx, pool)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a license pool with that name already exists")
+			writeProblem(w, r, http.StatusConflict, "a license pool with that name already exists")
 			return
 		}
 		h.logger.ErrorContext(ctx, "license-pools: create failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to create license pool")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to create license pool")
 		return
 	}
 
@@ -122,7 +122,7 @@ func (h *licensePoolHandler) listLicensePools(w http.ResponseWriter, r *http.Req
 	pools, err := h.store.ListLicensePools(ctx)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "license-pools: list failed", slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to list license pools")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list license pools")
 		return
 	}
 
@@ -143,11 +143,11 @@ func (h *licensePoolHandler) getLicensePool(w http.ResponseWriter, r *http.Reque
 	pool, err := h.store.GetLicensePool(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "license pool not found")
+			writeProblem(w, r, http.StatusNotFound, "license pool not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "license-pools: get failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to retrieve license pool")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve license pool")
 		return
 	}
 
@@ -162,20 +162,20 @@ func (h *licensePoolHandler) updateLicensePool(w http.ResponseWriter, r *http.Re
 
 	var req updateLicensePoolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
 	if req.Product == "" {
-		writeError(w, http.StatusBadRequest, "product is required")
+		writeProblem(w, r, http.StatusBadRequest, "product is required")
 		return
 	}
 	if req.MaxConcurrent <= 0 {
-		writeError(w, http.StatusBadRequest, "max_concurrent must be greater than zero")
+		writeProblem(w, r, http.StatusBadRequest, "max_concurrent must be greater than zero")
 		return
 	}
 
@@ -190,15 +190,15 @@ func (h *licensePoolHandler) updateLicensePool(w http.ResponseWriter, r *http.Re
 	updated, err := h.store.UpdateLicensePool(ctx, pool)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "license pool not found")
+			writeProblem(w, r, http.StatusNotFound, "license pool not found")
 			return
 		}
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a license pool with that name already exists")
+			writeProblem(w, r, http.StatusConflict, "a license pool with that name already exists")
 			return
 		}
 		h.logger.ErrorContext(ctx, "license-pools: update failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to update license pool")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update license pool")
 		return
 	}
 
@@ -213,11 +213,11 @@ func (h *licensePoolHandler) deleteLicensePool(w http.ResponseWriter, r *http.Re
 
 	if err := h.store.DeleteLicensePool(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "license pool not found")
+			writeProblem(w, r, http.StatusNotFound, "license pool not found")
 			return
 		}
 		h.logger.ErrorContext(ctx, "license-pools: delete failed", slog.String("id", id), slog.Any("error", err))
-		writeError(w, http.StatusInternalServerError, "failed to delete license pool")
+		writeProblem(w, r, http.StatusInternalServerError, "failed to delete license pool")
 		return
 	}
 
