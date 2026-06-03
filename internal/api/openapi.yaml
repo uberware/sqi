@@ -1,0 +1,1652 @@
+openapi: "3.1.0"
+
+info:
+  title: sqi-server API
+  description: |
+    REST API for the sqi distributed task management server.
+
+    All error responses use the RFC 7807 problem-details format
+    (`application/problem+json`).  Clients should branch on `Content-Type`
+    rather than status code alone to detect error bodies.
+  version: "0.1.0"
+  license:
+    name: AGPL-3.0-only
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+
+servers:
+  - url: /api/v1
+    description: Current server
+
+tags:
+  - name: jobs
+    description: OpenJD job submission and management
+  - name: tasks
+    description: Task-level introspection, logs, and retries
+  - name: workers
+    description: Worker registry and administrative controls
+  - name: farms
+    description: Farm configuration (CRUD)
+  - name: queues
+    description: Queue configuration (CRUD)
+  - name: storage-locations
+    description: Named storage-location configuration (CRUD)
+  - name: license-pools
+    description: License-pool configuration (CRUD)
+
+# ── Reusable components ───────────────────────────────────────────────────────
+
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Resource UUID
+
+    limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+      description: Maximum number of items to return (1–1000).
+
+    offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Zero-based item offset for pagination.
+
+    sortDir:
+      name: sort_dir
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+      description: Sort direction.
+
+  schemas:
+    # ── RFC 7807 problem details ──────────────────────────────────────────────
+    ProblemDetail:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          example: "about:blank"
+        title:
+          type: string
+          example: Not Found
+        status:
+          type: integer
+          example: 404
+        detail:
+          type: string
+          example: job not found
+        instance:
+          type: string
+          description: Request-ID that identifies this specific occurrence.
+          example: a1b2c3d4e5f60708
+
+    # ── Jobs ─────────────────────────────────────────────────────────────────
+    Job:
+      type: object
+      required:
+        - id
+        - farm_id
+        - queue_id
+        - name
+        - owner
+        - submitter
+        - priority
+        - status
+        - template_format
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          example: 018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345
+        farm_id:
+          type: string
+        queue_id:
+          type: string
+        name:
+          type: string
+          example: Arnold Render — shot_0010
+        owner:
+          type: string
+          example: alice
+        submitter:
+          type: string
+          example: deadline-bridge
+        priority:
+          type: integer
+          minimum: 1
+          example: 50
+        status:
+          type: string
+          enum: [pending, paused, running, completed, failed, canceled]
+        project:
+          type: string
+          example: my-film
+        template_format:
+          type: string
+          enum: [yaml, json]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Step:
+      type: object
+      required: [id, name, step_order, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        step_order:
+          type: integer
+        status:
+          type: string
+          enum: [pending, running, completed, failed, canceled]
+        depends_on:
+          type: array
+          items:
+            type: string
+          description: IDs of steps that must complete before this one becomes ready.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskCounts:
+      type: object
+      required:
+        - total
+        - pending
+        - ready
+        - assigned
+        - running
+        - succeeded
+        - failed
+        - canceled
+      properties:
+        total:
+          type: integer
+        pending:
+          type: integer
+        ready:
+          type: integer
+        assigned:
+          type: integer
+        running:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        canceled:
+          type: integer
+
+    JobDetail:
+      allOf:
+        - $ref: "#/components/schemas/Job"
+        - type: object
+          required: [steps, task_counts]
+          properties:
+            steps:
+              type: array
+              items:
+                $ref: "#/components/schemas/Step"
+            task_counts:
+              $ref: "#/components/schemas/TaskCounts"
+
+    JobList:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    PatchJobRequest:
+      type: object
+      properties:
+        priority:
+          type: integer
+          minimum: 1
+          description: New job priority. Values ≤ 0 are ignored.
+        queue_id:
+          type: string
+          description: Move the job to this queue.
+        action:
+          type: string
+          enum: [pause, resume]
+          description: pause or resume the job.
+
+    # ── Tasks ─────────────────────────────────────────────────────────────────
+    Task:
+      type: object
+      required:
+        - id
+        - job_id
+        - step_id
+        - name
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        job_id:
+          type: string
+        step_id:
+          type: string
+        name:
+          type: string
+        parameters:
+          type: object
+          additionalProperties:
+            type: string
+          description: Resolved OpenJD parameter values for this task.
+        status:
+          type: string
+          enum: [pending, ready, assigned, running, succeeded, failed, canceled]
+        assigned_worker_id:
+          type: string
+        assigned_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskList:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    TaskLog:
+      type: object
+      required: [id, task_id, attempt_id, seq_num, nats_seq, stream, data, at, received_at]
+      properties:
+        id:
+          type: string
+        task_id:
+          type: string
+        attempt_id:
+          type: string
+        seq_num:
+          type: integer
+          format: int64
+          description: Monotonic sequence number within the attempt.
+        nats_seq:
+          type: integer
+          format: int64
+          description: NATS JetStream sequence; use as `after_nats_seq` cursor.
+        stream:
+          type: string
+          enum: [stdout, stderr]
+        data:
+          type: string
+          description: Raw log text for this chunk.
+        at:
+          type: string
+          format: date-time
+          description: Timestamp assigned by the worker.
+        received_at:
+          type: string
+          format: date-time
+          description: Timestamp when the server persisted this chunk.
+
+    TaskLogsResponse:
+      type: object
+      required: [items, after_nats_seq, limit]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskLog"
+        after_nats_seq:
+          type: integer
+          format: int64
+          description: Echo of the `after_nats_seq` query parameter used for this page.
+        limit:
+          type: integer
+
+    RetryResponse:
+      type: object
+      required: [task_id, status]
+      properties:
+        task_id:
+          type: string
+        status:
+          type: string
+          example: ready
+
+    # ── Workers ───────────────────────────────────────────────────────────────
+    GPUInfo:
+      type: object
+      properties:
+        vendor:
+          type: string
+        model:
+          type: string
+        vram_mb:
+          type: integer
+        count:
+          type: integer
+
+    Worker:
+      type: object
+      required: [id, farm_id, hostname, gpu, status, registered_at, updated_at]
+      properties:
+        id:
+          type: string
+        farm_id:
+          type: string
+        queue_id:
+          type: string
+        hostname:
+          type: string
+        ip_address:
+          type: string
+        compute_location:
+          type: string
+          description: Named compute location (e.g. "on-prem", "aws-us-east-1").
+        os:
+          type: string
+        os_version:
+          type: string
+        cpu_count:
+          type: integer
+        ram_mb:
+          type: integer
+        gpu:
+          $ref: "#/components/schemas/GPUInfo"
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: Arbitrary capability tags used for task matching.
+        status:
+          type: string
+          enum: [online, offline, disabled]
+        last_heartbeat_at:
+          type: string
+          format: date-time
+          nullable: true
+        registered_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CurrentTask:
+      type: object
+      required: [id, job_id, name, status]
+      properties:
+        id:
+          type: string
+        job_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [assigned, running]
+        assigned_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    WorkerDetail:
+      allOf:
+        - $ref: "#/components/schemas/Worker"
+        - type: object
+          properties:
+            current_task:
+              $ref: "#/components/schemas/CurrentTask"
+              nullable: true
+
+    WorkerList:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Worker"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    WorkerActionResponse:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, disabled]
+
+    # ── Farms ─────────────────────────────────────────────────────────────────
+    Farm:
+      type: object
+      required: [id, name, max_concurrent_tasks, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        max_concurrent_tasks:
+          type: integer
+          minimum: 0
+          description: 0 means unlimited.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateFarmRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        max_concurrent_tasks:
+          type: integer
+          minimum: 0
+          default: 0
+
+    UpdateFarmRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        max_concurrent_tasks:
+          type: integer
+          minimum: 0
+          default: 0
+
+    # ── Queues ────────────────────────────────────────────────────────────────
+    Queue:
+      type: object
+      required:
+        - id
+        - farm_id
+        - name
+        - priority
+        - max_concurrent_tasks
+        - paused
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        farm_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+          description: Higher value = higher scheduling priority within the farm.
+        max_concurrent_tasks:
+          type: integer
+          minimum: 0
+          description: 0 means unlimited.
+        paused:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateQueueRequest:
+      type: object
+      required: [farm_id, name]
+      properties:
+        farm_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+          default: 0
+        max_concurrent_tasks:
+          type: integer
+          minimum: 0
+          default: 0
+        paused:
+          type: boolean
+          default: false
+
+    UpdateQueueRequest:
+      type: object
+      required: [farm_id, name]
+      properties:
+        farm_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+          default: 0
+        max_concurrent_tasks:
+          type: integer
+          minimum: 0
+          default: 0
+        paused:
+          type: boolean
+          default: false
+
+    QueueList:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Queue"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # ── Storage locations ─────────────────────────────────────────────────────
+    StorageLocation:
+      type: object
+      required: [id, name, type, roots, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [filesystem, s3]
+        description:
+          type: string
+        roots:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Map of compute-location name → absolute root path for that location.
+            Example: `{"on-prem": "/mnt/farm", "aws-us-east-1": "s3://bucket/root"}`
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateStorageLocationRequest:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [filesystem, s3]
+        description:
+          type: string
+        roots:
+          type: object
+          additionalProperties:
+            type: string
+
+    UpdateStorageLocationRequest:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [filesystem, s3]
+        description:
+          type: string
+        roots:
+          type: object
+          additionalProperties:
+            type: string
+
+    # ── License pools ─────────────────────────────────────────────────────────
+    LicensePool:
+      type: object
+      required: [id, name, product, max_concurrent, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        product:
+          type: string
+          description: Product identifier (e.g. "arnold", "nuke", "vray").
+        server_hint:
+          type: string
+          description: Optional license server address hint (informational only).
+        max_concurrent:
+          type: integer
+          minimum: 1
+          description: Maximum tasks that may hold a checkout from this pool simultaneously.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateLicensePoolRequest:
+      type: object
+      required: [name, product, max_concurrent]
+      properties:
+        name:
+          type: string
+        product:
+          type: string
+        server_hint:
+          type: string
+        max_concurrent:
+          type: integer
+          minimum: 1
+
+    UpdateLicensePoolRequest:
+      type: object
+      required: [name, product, max_concurrent]
+      properties:
+        name:
+          type: string
+        product:
+          type: string
+        server_hint:
+          type: string
+        max_concurrent:
+          type: integer
+          minimum: 1
+
+  responses:
+    BadRequest:
+      description: Bad request — missing or invalid parameters.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    NotFound:
+      description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    Conflict:
+      description: Conflict — unique constraint violated or invalid state transition.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    UnprocessableEntity:
+      description: Unprocessable entity — OpenJD template parse or validation failure.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    InternalServerError:
+      description: Internal server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Jobs ───────────────────────────────────────────────────────────────────
+
+  /jobs:
+    post:
+      operationId: submitJob
+      summary: Submit an OpenJD job
+      tags: [jobs]
+      description: |
+        Accepts a raw OpenJD v2025-09 template in YAML or JSON, validates it,
+        expands the parameter space into concrete tasks, and persists the job.
+
+        The `Content-Type` header selects the template format:
+        - `application/yaml`, `application/x-yaml`, `text/yaml` → YAML
+        - anything else (or absent) → JSON
+
+        `farm_id` and `queue_id` are required query parameters.
+      parameters:
+        - name: farm_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Farm to submit the job into.
+        - name: queue_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Queue to submit the job into.
+        - name: owner
+          in: query
+          schema:
+            type: string
+          description: Human-readable owner label.
+        - name: submitter
+          in: query
+          schema:
+            type: string
+          description: System or tool that submitted the job.
+        - name: priority
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+          description: Job scheduling priority (higher = sooner).
+        - name: project
+          in: query
+          schema:
+            type: string
+          description: Arbitrary project label for filtering.
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema:
+              type: string
+              description: OpenJD v2025-09 job template in YAML.
+          application/json:
+            schema:
+              type: object
+              description: OpenJD v2025-09 job template in JSON.
+      responses:
+        "201":
+          description: Job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listJobs
+      summary: List jobs
+      tags: [jobs]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, paused, running, completed, failed, canceled]
+          description: Filter by job status.
+        - name: owner
+          in: query
+          schema:
+            type: string
+          description: Filter by owner.
+        - name: queue_id
+          in: query
+          schema:
+            type: string
+          description: Filter by queue.
+        - name: project
+          in: query
+          schema:
+            type: string
+          description: Filter by project label.
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, priority, status, updated_at, name]
+            default: created_at
+          description: Field to sort results by.
+        - $ref: "#/components/parameters/sortDir"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "200":
+          description: Paginated list of jobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobList"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /jobs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getJob
+      summary: Get a job
+      tags: [jobs]
+      description: Returns the job with its steps and aggregate task-status counts.
+      responses:
+        "200":
+          description: Job detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    patch:
+      operationId: patchJob
+      summary: Patch a job
+      tags: [jobs]
+      description: |
+        Partial update.  Supported mutations:
+        - Change `priority` (must be ≥ 1).
+        - Move to a different `queue_id`.
+        - `action`: `"pause"` or `"resume"`.
+
+        Only non-null fields in the request body are applied.
+        Terminal jobs (completed, failed, canceled) cannot be modified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchJobRequest"
+      responses:
+        "200":
+          description: Updated job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: cancelJob
+      summary: Cancel a job
+      tags: [jobs]
+      description: |
+        Cancels the job and propagates the cancellation signal to any workers
+        currently executing tasks that belong to it.
+      responses:
+        "204":
+          description: Job canceled.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /jobs/{id}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: listJobTasks
+      summary: List tasks for a job
+      tags: [tasks]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, ready, assigned, running, succeeded, failed, canceled]
+          description: Filter by task status.
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, status, updated_at, name]
+            default: created_at
+        - $ref: "#/components/parameters/sortDir"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "200":
+          description: Paginated list of tasks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Tasks ──────────────────────────────────────────────────────────────────
+
+  /tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getTask
+      summary: Get a task
+      tags: [tasks]
+      responses:
+        "200":
+          description: Task detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tasks/{id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getTaskLogs
+      summary: Get task logs
+      tags: [tasks]
+      description: |
+        Returns log chunks for the latest attempt of the given task.
+
+        **Offset-based pagination**: pass the `nats_seq` of the last received
+        item as `after_nats_seq` on successive calls to walk forward without
+        repeating chunks.
+
+        **Tail streaming**: when `tail=true` the response uses chunked transfer
+        encoding (`Content-Type: application/x-ndjson`).  Each flushed line is a
+        newline-delimited JSON `TaskLog` object.  Streaming stops when the task
+        reaches a terminal state and all buffered chunks have been delivered, or
+        when the client disconnects.
+
+        When no attempt exists yet an empty result is returned (rather than 404)
+        so pollers do not need to handle that case specially.
+      parameters:
+        - name: after_nats_seq
+          in: query
+          schema:
+            type: integer
+            format: int64
+            default: 0
+          description: Return chunks with `nats_seq` greater than this value.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          description: Maximum chunks per page (1–1000).
+        - name: tail
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: When true, stream chunks using newline-delimited JSON.
+      responses:
+        "200":
+          description: |
+            Log chunks.  When `tail=false` the body is a `TaskLogsResponse`
+            JSON object.  When `tail=true` the body is a stream of
+            newline-delimited `TaskLog` JSON objects
+            (`Content-Type: application/x-ndjson`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskLogsResponse"
+            application/x-ndjson:
+              schema:
+                $ref: "#/components/schemas/TaskLog"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tasks/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: retryTask
+      summary: Retry a task
+      tags: [tasks]
+      description: |
+        Resets a failed or canceled task to `ready` so the scheduler can
+        pick it up on the next dispatch cycle.
+
+        Only tasks in `failed` or `canceled` state may be retried; all other
+        states are rejected with 409 Conflict.
+      responses:
+        "202":
+          description: Task queued for retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Workers ────────────────────────────────────────────────────────────────
+
+  /workers:
+    get:
+      operationId: listWorkers
+      summary: List workers
+      tags: [workers]
+      parameters:
+        - name: farm_id
+          in: query
+          schema:
+            type: string
+        - name: queue_id
+          in: query
+          schema:
+            type: string
+        - name: compute_location
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [online, offline, disabled]
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [hostname, status, registered_at, last_heartbeat_at]
+            default: hostname
+        - $ref: "#/components/parameters/sortDir"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "200":
+          description: Paginated list of workers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerList"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /workers/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getWorker
+      summary: Get a worker
+      tags: [workers]
+      description: Returns worker detail including capabilities and the task currently being executed, if any.
+      responses:
+        "200":
+          description: Worker detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /workers/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: disableWorker
+      summary: Disable a worker
+      tags: [workers]
+      description: |
+        Administratively pauses the worker so it receives no new task
+        assignments.  Workers already in `disabled` state are accepted
+        idempotently.
+      responses:
+        "200":
+          description: Worker status after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerActionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /workers/{id}/enable:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: enableWorker
+      summary: Enable a worker
+      tags: [workers]
+      description: |
+        Re-enables a disabled worker.  Online or offline workers are accepted
+        idempotently; their status is returned unchanged.
+      responses:
+        "200":
+          description: Worker status after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerActionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Farms ──────────────────────────────────────────────────────────────────
+
+  /farms:
+    post:
+      operationId: createFarm
+      summary: Create a farm
+      tags: [farms]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFarmRequest"
+      responses:
+        "201":
+          description: Farm created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Farm"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listFarms
+      summary: List all farms
+      tags: [farms]
+      responses:
+        "200":
+          description: Array of farms.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Farm"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /farms/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getFarm
+      summary: Get a farm
+      tags: [farms]
+      responses:
+        "200":
+          description: Farm.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Farm"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateFarm
+      summary: Update a farm
+      tags: [farms]
+      description: Full replacement of mutable fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateFarmRequest"
+      responses:
+        "200":
+          description: Updated farm.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Farm"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteFarm
+      summary: Delete a farm
+      tags: [farms]
+      responses:
+        "204":
+          description: Farm deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Queues ─────────────────────────────────────────────────────────────────
+
+  /queues:
+    post:
+      operationId: createQueue
+      summary: Create a queue
+      tags: [queues]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateQueueRequest"
+      responses:
+        "201":
+          description: Queue created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Queue"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listQueues
+      summary: List queues
+      tags: [queues]
+      parameters:
+        - name: farm_id
+          in: query
+          schema:
+            type: string
+          description: Filter by farm.
+        - name: paused
+          in: query
+          schema:
+            type: boolean
+          description: Filter by paused state.
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [name, priority, created_at]
+            default: name
+        - $ref: "#/components/parameters/sortDir"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "200":
+          description: Paginated list of queues.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueList"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /queues/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getQueue
+      summary: Get a queue
+      tags: [queues]
+      responses:
+        "200":
+          description: Queue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Queue"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateQueue
+      summary: Update a queue
+      tags: [queues]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateQueueRequest"
+      responses:
+        "200":
+          description: Updated queue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Queue"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteQueue
+      summary: Delete a queue
+      tags: [queues]
+      responses:
+        "204":
+          description: Queue deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Storage locations ──────────────────────────────────────────────────────
+
+  /storage-locations:
+    post:
+      operationId: createStorageLocation
+      summary: Create a storage location
+      tags: [storage-locations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStorageLocationRequest"
+      responses:
+        "201":
+          description: Storage location created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listStorageLocations
+      summary: List all storage locations
+      tags: [storage-locations]
+      responses:
+        "200":
+          description: Array of storage locations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StorageLocation"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage-locations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getStorageLocation
+      summary: Get a storage location
+      tags: [storage-locations]
+      responses:
+        "200":
+          description: Storage location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateStorageLocation
+      summary: Update a storage location
+      tags: [storage-locations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateStorageLocationRequest"
+      responses:
+        "200":
+          description: Updated storage location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLocation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteStorageLocation
+      summary: Delete a storage location
+      tags: [storage-locations]
+      responses:
+        "204":
+          description: Storage location deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── License pools ──────────────────────────────────────────────────────────
+
+  /license-pools:
+    post:
+      operationId: createLicensePool
+      summary: Create a license pool
+      tags: [license-pools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLicensePoolRequest"
+      responses:
+        "201":
+          description: License pool created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicensePool"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listLicensePools
+      summary: List all license pools
+      tags: [license-pools]
+      responses:
+        "200":
+          description: Array of license pools.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LicensePool"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /license-pools/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getLicensePool
+      summary: Get a license pool
+      tags: [license-pools]
+      responses:
+        "200":
+          description: License pool.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicensePool"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateLicensePool
+      summary: Update a license pool
+      tags: [license-pools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLicensePoolRequest"
+      responses:
+        "200":
+          description: Updated license pool.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicensePool"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteLicensePool
+      summary: Delete a license pool
+      tags: [license-pools]
+      responses:
+        "204":
+          description: License pool deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"

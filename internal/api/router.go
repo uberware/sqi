@@ -11,7 +11,7 @@
 //	GET  /debug/pprof/*                — Go runtime profiling (task 24, gated by config)
 //	/api/v1/*                          — REST API (tasks 71–86)
 //	/api/v1/ws                         — WebSocket upgrade (tasks 87–92)
-//	GET  /api/v1/openapi.yaml          — served OpenAPI spec (task 83)
+//	GET  /api/v1/openapi.yaml          — OpenAPI 3.1 spec (task 83)
 //	/*                                 — embedded SPA + static assets (tasks 93–95)
 //
 // # Middleware stack (outermost → innermost)
@@ -218,7 +218,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Put("/license-pools/{id}", licensePools.updateLicensePool)
 		api.Delete("/license-pools/{id}", licensePools.deleteLicensePool)
 
-		// TODO(task 83): GET  /api/v1/openapi.yaml
+		// OpenAPI spec (task 83).
+		api.Get("/openapi.yaml", serveOpenAPISpec)
+
 		// TODO(task 87): /api/v1/ws  — WebSocket upgrade
 	})
 
