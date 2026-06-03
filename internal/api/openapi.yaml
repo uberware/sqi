@@ -1650,3 +1650,103 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  # ── WebSocket ───────────────────────────────────────────────────────────────
+
+  /ws:
+    get:
+      operationId: openWebSocket
+      summary: Open a WebSocket connection for real-time updates
+      tags: [websocket]
+      description: |
+        Upgrades the HTTP connection to a WebSocket (RFC 6455) for bidirectional
+        real-time communication.  All frames are JSON text; binary frames are
+        rejected.
+
+        ## Message envelope
+
+        Every message in both directions is a JSON object with the following
+        top-level fields:
+
+        | Field     | Type   | Description |
+        |-----------|--------|-------------|
+        | `type`    | string | Message discriminator (see types below) |
+        | `subject` | string | Resource identifier (omitted for ping/pong/ack/error) |
+        | `payload` | object | Type-specific payload (omitted when not needed) |
+        | `seq`     | number | Monotonic sequence number (see notes) |
+
+        ## Client → Server message types
+
+        | `type`        | Description |
+        |---------------|-------------|
+        | `subscribe`   | Request push events for `subject`. Payload: `{ "since_seq": N }` |
+        | `unsubscribe` | Cancel subscription for `subject`. No payload. |
+        | `ping`        | Keep-alive. Server replies with `pong`. No payload; `seq` is 0. |
+
+        ## Server → Client message types
+
+        | `type`   | Description |
+        |----------|-------------|
+        | `push`   | Event for a subscribed subject. `seq` is the per-connection push counter. |
+        | `ack`    | Acknowledges a client message. Payload: `{ "client_seq": N, "error": "" }`. |
+        | `error`  | Protocol-level error. Payload: `{ "code": "...", "message": "..." }`. |
+        | `pong`   | Reply to `ping`. No payload; `seq` is 0. |
+
+        ## Sequence numbers and resumable subscriptions
+
+        Server push messages carry a `seq` that increments monotonically per
+        connection starting at 1.  On reconnect, send `since_seq` in the
+        `subscribe` payload to replay any buffered events with `seq > since_seq`.
+        A `since_seq` of 0 (default) requests only live events.
+
+        ## Subject formats
+
+        | Subject pattern            | Events streamed |
+        |----------------------------|-----------------|
+        | `jobs`                     | Aggregate job summary changes |
+        | `jobs/{job_id}/tasks`      | Task-level updates for the given job |
+        | `workers`                  | Worker status changes |
+        | `tasks/{task_id}/logs`     | Log chunks for the given task attempt |
+
+        ## Phase 1 note
+
+        Authentication is not required in Phase 1. The `Authorization` header
+        hook is present but not enforced. This will change in Phase 3.
+      parameters:
+        - name: Upgrade
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [websocket]
+          description: Must be `websocket` to trigger the HTTP → WebSocket upgrade.
+        - name: Connection
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Must include `Upgrade`.
+        - name: Sec-WebSocket-Key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Base64-encoded random 16-byte nonce from the client.
+        - name: Sec-WebSocket-Version
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: ["13"]
+          description: WebSocket protocol version. Must be `13`.
+      responses:
+        "101":
+          description: |
+            Switching Protocols — the connection has been upgraded to WebSocket.
+            Subsequent communication uses the WebSocket framing protocol.
+        "400":
+          description: Bad request — missing or invalid upgrade headers.
+        "401":
+          description: Unauthorized — invalid or missing credentials (Phase 3+).
+        "500":
+          $ref: "#/components/responses/InternalServerError"

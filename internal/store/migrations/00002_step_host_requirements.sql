@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 -- Add host_requirements and compute_location to the steps table.
 --
--- host_requirements: JSON-serialised store.StepHostRequirements, populated at
+-- host_requirements: JSON-serialized store.StepHostRequirements, populated at
 -- job submission time from the OpenJD step's hostRequirements block.
 -- Used by the scheduler's capability-matching logic (task 50).
 --

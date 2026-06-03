@@ -10,7 +10,7 @@
 //	GET  /metrics                      — Prometheus scrape endpoint (task 22)
 //	GET  /debug/pprof/*                — Go runtime profiling (task 24, gated by config)
 //	/api/v1/*                          — REST API (tasks 71–86)
-//	/api/v1/ws                         — WebSocket upgrade (tasks 87–92)
+//	GET  /api/v1/ws                    — WebSocket upgrade (task 87; subscriptions in tasks 89–91)
 //	GET  /api/v1/openapi.yaml          — OpenAPI 3.1 spec (task 83)
 //	/*                                 — embedded SPA + static assets (tasks 93–95)
 //
@@ -231,7 +231,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// OpenAPI spec (task 83).
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
-		// TODO(task 87): /api/v1/ws  — WebSocket upgrade
+		// WebSocket upgrade (tasks 87–92).
+		ws := newWSHandler(logger)
+		api.Get("/ws", ws.ServeHTTP)
 	})
 
 	// ── Embedded web UI (tasks 93–95) ────────────────────────────────────────
