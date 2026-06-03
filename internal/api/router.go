@@ -24,6 +24,12 @@
 //  5. middleware.RequestLogger  — structured slog request logging (task 21)
 //  6. middleware.RequestMetrics — Prometheus HTTP metrics (task 22)
 //
+// # /api/v1 sub-router middleware
+//
+//  7. middleware.APIVersion("1") — sets X-API-Version: 1 on every API response
+//     (task 84). To mark individual endpoints as deprecated wrap their handler
+//     with middleware.Deprecated (also task 84).
+//
 // Note: the structured-logging and metrics middleware from task 21/22 are
 // mounted here instead of the now-removed obsServer so every HTTP and
 // WebSocket request continues to be logged and counted.
@@ -110,6 +116,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		},
 		ExposedHeaders: []string{
 			"X-Request-ID",
+			"X-API-Version",
 		},
 		// Credentials (cookies / Authorization header) are only relevant once
 		// auth is introduced in Phase 3. Set to false until then.
@@ -171,6 +178,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	licensePools := newLicensePoolHandler(deps.Store, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
+		// 7. Versioning header — X-API-Version: 1 on every response (task 84).
+		api.Use(middleware.APIVersion("1"))
+
 		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
 		api.Post("/jobs", jobs.submitJob)        // task 71
 		api.Get("/jobs", jobs.listJobs)          // task 72
