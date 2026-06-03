@@ -13,6 +13,7 @@
 //	task.logs.<task>       — worker → server: log chunk ingestion
 //	worker.heartbeat       — worker → server: periodic liveness pings
 //	worker.register        — worker → server: capability advertisement
+//	worker.deregister      — worker → server: graceful departure notification
 //
 // The leaf token (<queue>, <job>, <task>) is the opaque string identifier of
 // the corresponding entity in the SQLite store.  Callers build full subject
@@ -46,6 +47,12 @@ const (
 	// SubjectWorkerRegister is the subject workers publish registration
 	// messages to when they first connect or reconnect.
 	SubjectWorkerRegister = "worker.register"
+
+	// SubjectWorkerDeregister is the subject workers publish to on graceful
+	// shutdown so the server can mark the worker offline immediately rather
+	// than waiting for heartbeat timeout. The server handler for this subject
+	// calls [store.WorkerStore.UpdateWorkerStatus] with WorkerStatusOffline.
+	SubjectWorkerDeregister = "worker.deregister"
 )
 
 // WorkAssignSubject returns the full NATS subject for task-assignment messages

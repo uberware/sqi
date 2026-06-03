@@ -104,19 +104,22 @@ func streamDefs() []jetstream.StreamConfig {
 			Replicas:    1,
 		},
 		{
-			// SQI_WORKER — worker.heartbeat, worker.register
+			// SQI_WORKER — worker.register, worker.heartbeat, worker.deregister
 			//
-			// Workers publish registration payloads on connect and heartbeat pings
-			// on a configurable interval.  The server's worker consumer processes
-			// each message to update the worker table in SQLite.
+			// Workers publish registration payloads on connect and reconnect,
+			// heartbeat pings on a configurable interval, and a departure message
+			// on graceful shutdown. The server's worker consumer processes each
+			// message to update the worker table in SQLite.
 			// WorkQueuePolicy ensures no duplicate processing.
 			//
 			// MaxAge of 2 min: heartbeats older than that are stale by definition
 			// (the scheduler's heartbeat-timeout sweep fires at ~30 s intervals)
 			// and should be discarded rather than processed out of order.
+			// Deregister messages also expire quickly — they have no retry value
+			// once processed.
 			Name:        StreamWorker,
 			Description: "Worker registration and heartbeat messages.",
-			Subjects:    []string{SubjectWorkerRegister, SubjectWorkerHeartbeat},
+			Subjects:    []string{SubjectWorkerRegister, SubjectWorkerHeartbeat, SubjectWorkerDeregister},
 			Retention:   jetstream.WorkQueuePolicy,
 			Storage:     jetstream.FileStorage,
 			MaxAge:      2 * time.Minute,

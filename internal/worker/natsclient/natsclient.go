@@ -141,13 +141,13 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 				logger.InfoContext(ctx, "natsclient: disconnected cleanly")
 			}
 		}),
-		nats.ReconnectHandler(func(nc *nats.Conn) {
-			logger.InfoContext(
-				ctx, "natsclient: reconnected",
-				slog.String("url", nc.ConnectedUrl()),
-				slog.String("server_id", nc.ConnectedServerId()),
-			)
-		}),
+		// ReconnectHandler is intentionally omitted here. The worker's
+		// registration package installs its own reconnect callback via
+		// nc.SetReconnectHandler after the connection is established, which
+		// logs the reconnect and re-publishes the registration message in one
+		// step. Installing a handler here would be overwritten before any
+		// reconnect can occur and would never fire.
+		//
 		// ClosedHandler fires when the connection transitions to the CLOSED
 		// state: either MaxReconnects was exhausted or the connection was
 		// explicitly closed. Closing closedCh signals any goroutine that is
