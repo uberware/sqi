@@ -13,6 +13,7 @@ package api
 //	DELETE /api/v1/jobs/{id}         — cancel job (task 75)
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,15 +26,20 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/openjd"
-	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 )
+
+// jobCanceler is the subset of [scheduler.Scheduler] used by the job handler.
+// Keeping it as an interface makes the handler testable without a live NATS instance.
+type jobCanceler interface {
+	CancelJob(ctx context.Context, jobID string) error
+}
 
 // jobHandler handles all job-related REST endpoints.
 type jobHandler struct {
 	store     store.Store
 	submitter *openjd.Submitter
-	sched     *scheduler.Scheduler
+	sched     jobCanceler
 	logger    *slog.Logger
 }
 
@@ -115,7 +121,7 @@ type patchJobRequest struct {
 func newJobHandler(
 	st store.Store,
 	sub *openjd.Submitter,
-	sched *scheduler.Scheduler,
+	sched jobCanceler,
 	logger *slog.Logger,
 ) *jobHandler {
 	return &jobHandler{

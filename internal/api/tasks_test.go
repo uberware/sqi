@@ -1,0 +1,396 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package api
+
+// Unit tests for the task REST handlers — task 85.
+//
+// Route coverage:
+//   GET  /api/v1/jobs/{id}/tasks   — listJobTasks
+//   GET  /api/v1/tasks/{id}        — getTask
+//   GET  /api/v1/tasks/{id}/logs   — getTaskLogs (non-streaming path)
+//   POST /api/v1/tasks/{id}/retry  — retryTask
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
+)
+
+// ── router helper ─────────────────────────────────────────────────────────────
+
+func newTaskRouter(st store.Store) chi.Router {
+	h := newTaskHandler(st, newTestLogger())
+	r := chi.NewRouter()
+	r.Get("/api/v1/jobs/{id}/tasks", h.listJobTasks)
+	r.Get("/api/v1/tasks/{id}", h.getTask)
+	r.Get("/api/v1/tasks/{id}/logs", h.getTaskLogs)
+	r.Post("/api/v1/tasks/{id}/retry", h.retryTask)
+	return r
+}
+
+// ── seed helpers ──────────────────────────────────────────────────────────────
+
+// seedTask inserts a minimal job + task into st, returning both.
+func seedTask(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (store.Job, store.Task) {
+	t.Helper()
+	ctx := t.Context()
+
+	now := time.Now()
+	job := store.Job{
+		ID:             uuid.NewString(),
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "job-for-task-test",
+		Priority:       50,
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	j, err := st.CreateJob(ctx, job)
+	if err != nil {
+		t.Fatalf("seedTask: CreateJob: %v", err)
+	}
+
+	step := store.Step{
+		ID:        uuid.NewString(),
+		JobID:     j.ID,
+		Name:      "Step1",
+		StepOrder: 0,
+		Status:    store.StepStatusRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	s, err := st.CreateStep(ctx, step)
+	if err != nil {
+		t.Fatalf("seedTask: CreateStep: %v", err)
+	}
+
+	task := store.Task{
+		ID:        uuid.NewString(),
+		JobID:     j.ID,
+		StepID:    s.ID,
+		Name:      "task-0",
+		Status:    taskStatus,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	tk, err := st.CreateTask(ctx, task)
+	if err != nil {
+		t.Fatalf("seedTask: CreateTask: %v", err)
+	}
+
+	return j, tk
+}
+
+// ── GET /api/v1/jobs/{id}/tasks ───────────────────────────────────────────────
+
+func TestListJobTasks(t *testing.T) {
+	t.Run("returns tasks for existing job", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		j, tk := seedTask(t, st, store.TaskStatusReady)
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+j.ID+"/tasks", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Total != 1 {
+			t.Errorf("total = %d, want 1", resp.Total)
+		}
+		if len(resp.Items) != 1 {
+			t.Fatalf("items len = %d, want 1", len(resp.Items))
+		}
+		if resp.Items[0].ID != tk.ID {
+			t.Errorf("task id = %q, want %q", resp.Items[0].ID, tk.ID)
+		}
+	})
+
+	t.Run("unknown job id returns 404", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/no-such-job/tasks", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+
+	t.Run("filter by status", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		j, _ := seedTask(t, st, store.TaskStatusFailed)
+
+		// Only failed tasks should appear.
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+j.ID+"/tasks?status=failed", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+		var resp taskListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		for _, item := range resp.Items {
+			if item.Status != "failed" {
+				t.Errorf("unexpected status %q in failed filter", item.Status)
+			}
+		}
+	})
+
+	t.Run("pagination parameters respected", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		j, _ := seedTask(t, st, store.TaskStatusReady)
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+j.ID+"/tasks?limit=1&offset=0", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+		var resp taskListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Limit != 1 {
+			t.Errorf("limit = %d, want 1", resp.Limit)
+		}
+	})
+}
+
+// ── GET /api/v1/tasks/{id} ────────────────────────────────────────────────────
+
+func TestGetTask(t *testing.T) {
+	t.Run("returns task for existing id", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.ID != tk.ID {
+			t.Errorf("id = %q, want %q", resp.ID, tk.ID)
+		}
+		if resp.Status != "running" {
+			t.Errorf("status = %q, want running", resp.Status)
+		}
+	})
+
+	t.Run("unknown task id returns 404", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/ghost", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+}
+
+// ── GET /api/v1/tasks/{id}/logs ───────────────────────────────────────────────
+
+func TestGetTaskLogs(t *testing.T) {
+	t.Run("task with no attempt returns empty log list", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusReady)
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/logs", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskLogsResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Items) != 0 {
+			t.Errorf("expected empty log list, got %d items", len(resp.Items))
+		}
+	})
+
+	t.Run("unknown task id returns 404", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/ghost/logs", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+
+	t.Run("returns log chunks from latest attempt", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		ctx := t.Context()
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+
+		// Insert a task attempt and two log chunks.
+		now := time.Now()
+		attempt := store.TaskAttempt{
+			ID:            uuid.NewString(),
+			TaskID:        tk.ID,
+			AttemptNumber: 1,
+			Status:        store.AttemptStatusRunning,
+			StartedAt:     now,
+			CreatedAt:     now,
+		}
+		attempt, err := st.CreateTaskAttempt(ctx, attempt)
+		if err != nil {
+			t.Fatalf("CreateTaskAttempt: %v", err)
+		}
+
+		for i, msg := range []string{"line one", "line two"} {
+			_, err := st.CreateTaskLog(ctx, store.TaskLog{
+				ID:         uuid.NewString(),
+				TaskID:     tk.ID,
+				AttemptID:  attempt.ID,
+				SeqNum:     int64(i + 1),
+				NATSSeq:    int64(i + 1),
+				Stream:     store.LogStreamStdout,
+				Data:       msg,
+				At:         now,
+				ReceivedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTaskLog: %v", err)
+			}
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/logs", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskLogsResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Items) != 2 {
+			t.Errorf("expected 2 log items, got %d", len(resp.Items))
+		}
+		if resp.Items[0].Data != "line one" {
+			t.Errorf("items[0].data = %q, want %q", resp.Items[0].Data, "line one")
+		}
+	})
+}
+
+// ── POST /api/v1/tasks/{id}/retry ─────────────────────────────────────────────
+
+func TestRetryTask(t *testing.T) {
+	t.Run("failed task is reset to ready", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp retryResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "ready" {
+			t.Errorf("status = %q, want ready", resp.Status)
+		}
+		if resp.TaskID != tk.ID {
+			t.Errorf("task_id = %q, want %q", resp.TaskID, tk.ID)
+		}
+		// Verify store was updated.
+		stored, err := st.GetTask(t.Context(), tk.ID)
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		if stored.Status != store.TaskStatusReady {
+			t.Errorf("stored status = %q, want ready", stored.Status)
+		}
+	})
+
+	t.Run("canceled task is reset to ready", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusCanceled)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	t.Run("running task returns 409", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409 for running task, got %d", rr.Code)
+		}
+	})
+
+	t.Run("succeeded task returns 409", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusSucceeded)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409 for succeeded task, got %d", rr.Code)
+		}
+	})
+
+	t.Run("unknown task id returns 404", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/ghost/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+}
