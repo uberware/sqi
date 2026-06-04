@@ -9,7 +9,7 @@
 //   - bus (NATS JetStream):    tasks 33–39 ✓
 //   - scheduler:               tasks 46–55 ✓ (46–48 done)
 //   - httpServer (chi router): task 70 ✓ — REST+WS+UI routes added tasks 71–95
-//   - discovery (mDNS):        tasks 96–97
+//   - discovery (mDNS):        tasks 96–97 ✓
 package server
 
 import (
@@ -22,6 +22,7 @@ import (
 
 	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
@@ -81,6 +82,16 @@ type Config struct {
 	// Scheduler holds tuning parameters for the assignment loop, worker
 	// registry, and heartbeat sweep. Zero values use scheduler.DefaultConfig().
 	Scheduler scheduler.Config
+
+	// DiscoveryEnabled controls whether the mDNS responder advertises this
+	// server on the local network. Disable in environments that forbid
+	// multicast (most cloud VPCs). Default true.
+	DiscoveryEnabled bool
+
+	// DiscoveryInstanceName is the mDNS service instance name advertised on
+	// the network. Each server on the same subnet should use a distinct name.
+	// Default "sqi-server".
+	DiscoveryInstanceName string
 }
 
 // DefaultConfig returns a [Config] with sensible development defaults.
@@ -88,13 +99,15 @@ type Config struct {
 // variables (tasks 16–19).
 func DefaultConfig() Config {
 	return Config{
-		HTTPAddr:           "0.0.0.0:8080",
-		NATSAddr:           "127.0.0.1:4222",
-		NATSDataDir:        "data/nats",
-		NATSMaxStoreMB:     1024,
-		SQLitePath:         "sqi.db",
-		CheckpointInterval: 5 * time.Minute,
-		Scheduler:          scheduler.DefaultConfig(),
+		HTTPAddr:              "0.0.0.0:8080",
+		NATSAddr:              "127.0.0.1:4222",
+		NATSDataDir:           "data/nats",
+		NATSMaxStoreMB:        1024,
+		SQLitePath:            "sqi.db",
+		CheckpointInterval:    5 * time.Minute,
+		Scheduler:             scheduler.DefaultConfig(),
+		DiscoveryEnabled:      true,
+		DiscoveryInstanceName: "sqi-server",
 	}
 }
 
@@ -117,7 +130,7 @@ type Server struct {
 	busClient *bus.Client          // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
 	sched     *scheduler.Scheduler // tasks 46–59 ✓
 	wsHub     *ws.Hub              // tasks 89–91 ✓ — WebSocket fan-out hub
-	// discovery *discovery.Responder   // tasks 96–97
+	discovery *discovery.Responder // tasks 96–97 ✓ — mDNS advertisement
 }
 
 // New creates a [Server] with the given configuration and logger.
@@ -272,8 +285,23 @@ func (s *Server) start(ctx context.Context) error {
 	}()
 
 	// ── mDNS responder ────────────────────────────────────────────────────
-	// TODO(tasks 96–97): advertise _sqi._tcp on the local network.
-	s.logger.DebugContext(ctx, "discovery: not yet started (tasks 96–97)")
+	// Tasks 96–97: advertise _sqi._tcp on the local network so workers and the
+	// sqi CLI can discover this server without manual address configuration.
+	// Advertisement is gated on DiscoveryEnabled (task 97) for environments
+	// that forbid multicast.
+	resp, err := discovery.New(discovery.Config{
+		Enabled:      s.cfg.DiscoveryEnabled,
+		InstanceName: s.cfg.DiscoveryInstanceName,
+		HTTPAddr:     s.cfg.HTTPAddr,
+		NATSAddr:     s.cfg.NATSAddr,
+	}, s.logger)
+	if err != nil {
+		return fmt.Errorf("init discovery: %w", err)
+	}
+	if err := resp.Start(ctx); err != nil {
+		return fmt.Errorf("start discovery: %w", err)
+	}
+	s.discovery = resp
 
 	return nil
 }
@@ -289,7 +317,11 @@ func (s *Server) shutdown() error {
 	// Stop in reverse startup order.
 
 	// ── mDNS responder ────────────────────────────────────────────────────
-	// TODO(tasks 96–97): unregister mDNS service.
+	// Stop advertising first so browsers see the goodbye packets and drop the
+	// service promptly, rather than waiting for the record to expire.
+	if s.discovery != nil {
+		s.discovery.Shutdown()
+	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
 	if s.httpServer != nil {

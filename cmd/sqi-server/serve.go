@@ -82,13 +82,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// ── Run ───────────────────────────────────────────────────────────────────
 	srv := server.New(server.Config{
-		HTTPAddr:           cfg.HTTP.Addr,
-		NATSAddr:           cfg.NATS.Addr,
-		NATSDataDir:        cfg.NATS.DataDir,
-		NATSMaxStoreMB:     cfg.NATS.MaxStoreMB,
-		SQLitePath:         cfg.Store.SQLitePath,
-		EnablePprof:        cfg.HTTP.EnablePprof,
-		CheckpointInterval: cfg.Store.CheckpointInterval,
+		HTTPAddr:              cfg.HTTP.Addr,
+		NATSAddr:              cfg.NATS.Addr,
+		NATSDataDir:           cfg.NATS.DataDir,
+		NATSMaxStoreMB:        cfg.NATS.MaxStoreMB,
+		SQLitePath:            cfg.Store.SQLitePath,
+		EnablePprof:           cfg.HTTP.EnablePprof,
+		CheckpointInterval:    cfg.Store.CheckpointInterval,
+		DiscoveryEnabled:      cfg.Discovery.Enabled,
+		DiscoveryInstanceName: cfg.Discovery.InstanceName,
 	}, logger)
 	if err := srv.Run(ctx); err != nil {
 		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
