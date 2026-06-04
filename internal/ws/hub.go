@@ -272,7 +272,8 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 			select {
 			case c.sendCh <- env:
 			default:
-				h.logger.WarnContext(context.Background(),
+				h.logger.WarnContext(
+					context.Background(),
 					"ws: hub: replay dropped (slow client)",
 					slog.String("client_id", clientID),
 					slog.String("subject", subject),
@@ -282,7 +283,8 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 		}
 	}
 
-	h.logger.DebugContext(context.Background(),
+	h.logger.DebugContext(
+		context.Background(),
 		"ws: hub: subscribed",
 		slog.String("client_id", clientID),
 		slog.String("subject", subject),
@@ -423,7 +425,8 @@ func (h *Hub) fanout(subject string, env Envelope) {
 		select {
 		case c.sendCh <- env:
 		default:
-			h.logger.WarnContext(context.Background(),
+			h.logger.WarnContext(
+				context.Background(),
 				"ws: hub: push dropped (slow client)",
 				slog.String("client_id", c.id),
 				slog.String("subject", subject),
