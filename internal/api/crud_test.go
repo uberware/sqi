@@ -24,7 +24,7 @@ import (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestLogger() *slog.Logger {
-	return slog.New(`slog.DiscardHandler`)
+	return slog.New(slog.DiscardHandler)
 }
 
 // jsonBody serializes v and returns a *bytes.Buffer suitable for an HTTP body.
