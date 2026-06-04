@@ -21,14 +21,14 @@
 //
 // # Sequence numbers
 //
-//   - Server push messages carry a seq that increments monotonically across the
-//     lifetime of a single WebSocket connection (per-connection counter, not
-//     global). Clients may use seq to detect gaps after reconnecting by passing
-//     since_seq on their next subscription request (task 91).
+//   - Server TypePush messages carry a per-subject monotonically increasing
+//     sequence number assigned by the Hub (tasks 89–91).  The sequence is
+//     global across connections so clients can store the last received Seq
+//     and pass it as since_seq when reconnecting to replay missed events.
 //   - Client messages carry a seq chosen by the client. The server echoes it in
 //     the corresponding [TypeAck] response so the client can correlate replies.
 //   - seq is 0 for messages where sequence tracking is not meaningful (e.g.
-//     [TypePing] / [TypePong]).
+//     [TypePing] / [TypePong], [TypeAck], [TypeError]).
 package ws
 
 import "encoding/json"
@@ -116,14 +116,18 @@ type Envelope struct {
 
 	// Seq is the monotonically increasing sequence number.
 	//
-	//   Server pushes: per-connection counter, incremented on every TypePush
-	//   sent to this client. Starts at 1. Clients use this with since_seq on
-	//   reconnect (task 91).
+	//   TypePush (server → client): a per-subject hub-level counter assigned by
+	//   [Hub]. Starts at 1 and increases globally (not per-connection) so
+	//   clients can pass the last received Seq as since_seq when reconnecting.
 	//
-	//   Client messages: a client-chosen counter echoed back in TypeAck so the
-	//   client can correlate responses.
+	//   TypeAck (server → client): 0; the acknowledged client seq is carried in
+	//   [AckPayload.ClientSeq] instead.
 	//
-	//   TypePing / TypePong: always 0.
+	//   Client messages (TypeSubscribe, TypeUnsubscribe): a client-chosen
+	//   counter echoed back in the corresponding TypeAck so the client can
+	//   correlate responses.
+	//
+	//   TypePing / TypePong / TypeError: always 0.
 	Seq uint64 `json:"seq"`
 }
 

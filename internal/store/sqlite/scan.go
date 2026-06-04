@@ -80,7 +80,7 @@ func marshalJSON(v any) (string, error) {
 	return string(b), nil
 }
 
-// unmarshalJSON deserialises a JSON string from a SQLite TEXT column into a
+// unmarshalJSON deserializes a JSON string from a SQLite TEXT column into a
 // value of type T. Returns def if s is empty or "null".
 func unmarshalJSON[T any](s string, def T) (T, error) {
 	if s == "" || s == "null" {

@@ -108,6 +108,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // DefaultConfig returns a [Config] with conservative production-safe defaults.
@@ -154,11 +155,12 @@ type Config struct {
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
 // Create it with [New] and drive it with [Run].
 type Scheduler struct {
-	cfg     Config
-	store   store.Store
-	bus     *bus.Client
-	metrics *metrics.Metrics
-	logger  *slog.Logger
+	cfg      Config
+	store    store.Store
+	bus      *bus.Client
+	metrics  *metrics.Metrics
+	logger   *slog.Logger
+	notifier ws.Notifier // pushes live events to WebSocket clients (tasks 89–91)
 
 	// taskCh carries ready tasks from the dispatch goroutine to the assignment
 	// worker pool. Sized to AssignBatchSize so a full batch can be queued
@@ -173,7 +175,12 @@ type Scheduler struct {
 }
 
 // New creates a Scheduler. Call [Run] to start its goroutines.
-func New(cfg Config, st store.Store, busClient *bus.Client, m *metrics.Metrics, logger *slog.Logger) *Scheduler {
+//
+// notifier receives live-event notifications after each state change so the
+// WebSocket hub can fan them out to subscribed clients (tasks 89–91). Pass
+// [ws.NoopNotifier] (or nil — treated as NoopNotifier) when no WebSocket hub
+// is wired.
+func New(cfg Config, st store.Store, busClient *bus.Client, m *metrics.Metrics, logger *slog.Logger, notifier ws.Notifier) *Scheduler {
 	if cfg.AssignBatchSize <= 0 {
 		cfg.AssignBatchSize = DefaultConfig().AssignBatchSize
 	}
@@ -189,13 +196,18 @@ func New(cfg Config, st store.Store, busClient *bus.Client, m *metrics.Metrics, 
 	if cfg.HeartbeatSweepInterval <= 0 {
 		cfg.HeartbeatSweepInterval = DefaultConfig().HeartbeatSweepInterval
 	}
+	n := notifier
+	if n == nil {
+		n = ws.NoopNotifier{}
+	}
 	return &Scheduler{
-		cfg:     cfg,
-		store:   st,
-		bus:     busClient,
-		metrics: m,
-		logger:  logger,
-		taskCh:  make(chan store.Task, cfg.AssignBatchSize),
+		cfg:      cfg,
+		store:    st,
+		bus:      busClient,
+		metrics:  m,
+		logger:   logger,
+		notifier: n,
+		taskCh:   make(chan store.Task, cfg.AssignBatchSize),
 	}
 }
 
@@ -834,6 +846,12 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		slog.String("os", m.OS),
 		slog.String("farm_id", m.FarmID),
 	)
+	s.notifier.NotifyWorker(ws.WorkerEvent{
+		WorkerID: m.WorkerID,
+		Hostname: m.Hostname,
+		FarmID:   m.FarmID,
+		Status:   string(store.WorkerStatusOnline),
+	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
 }
@@ -891,6 +909,10 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		slog.String("worker_id", m.WorkerID),
 		slog.String("reason", m.Reason),
 	)
+	s.notifier.NotifyWorker(ws.WorkerEvent{
+		WorkerID: m.WorkerID,
+		Status:   string(store.WorkerStatusOffline),
+	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
 }
@@ -996,6 +1018,12 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			)
 			continue
 		}
+		s.notifier.NotifyWorker(ws.WorkerEvent{
+			WorkerID: w.ID,
+			Hostname: w.Hostname,
+			FarmID:   w.FarmID,
+			Status:   string(store.WorkerStatusOffline),
+		})
 
 		// Close out any running attempt records before the task assignment is
 		// cleared by ReclaimWorkerTasks. The subquery in TerminateWorkerAttempts

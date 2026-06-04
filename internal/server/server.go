@@ -28,6 +28,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // ShutdownTimeout is the maximum time [Server.Run] waits for all components
@@ -115,6 +116,7 @@ type Server struct {
 	broker    *bus.Broker          // tasks 33–39 ✓
 	busClient *bus.Client          // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
 	sched     *scheduler.Scheduler // tasks 46–59 ✓
+	wsHub     *ws.Hub              // tasks 89–91 ✓ — WebSocket fan-out hub
 	// discovery *discovery.Responder   // tasks 96–97
 }
 
@@ -218,10 +220,18 @@ func (s *Server) start(ctx context.Context) error {
 	s.busClient = busClient
 	s.logger.InfoContext(ctx, "bus: typed client connected")
 
+	// ── WebSocket hub (tasks 89–91) ────────────────────────────────────────
+	// The hub bridges scheduler events to subscribed WebSocket clients.
+	// It is created before the scheduler so it can be passed as the notifier.
+	s.wsHub = ws.NewHub(s.logger)
+	s.logger.InfoContext(ctx, "ws: hub created")
+
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// Tasks 46–48: assignment loop goroutine pool, worker registry (NATS
 	// consumer), and heartbeat timeout sweep.
-	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger)
+	// The hub is passed as the notifier (tasks 89–91) so live events are
+	// pushed to subscribed WebSocket clients after each state change.
+	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger, s.wsHub)
 	go func() {
 		if err := s.sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
@@ -241,6 +251,7 @@ func (s *Server) start(ctx context.Context) error {
 			Store:     s.store,
 			Submitter: openjd.NewSubmitter(s.store),
 			Scheduler: s.sched,
+			Hub:       s.wsHub,
 		},
 		s.logger,
 		s.metrics,

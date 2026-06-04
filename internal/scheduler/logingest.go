@@ -35,6 +35,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // startTaskLogsConsumer creates the server-side JetStream push consumer for
@@ -110,6 +111,17 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 		s.nakMsg(ctx, msg)
 		return
 	}
+
+	// Notify WebSocket hub so clients subscribed to "tasks/{taskID}/logs"
+	// receive the chunk in real time.
+	s.notifier.NotifyLog(ws.LogEvent{
+		TaskID:    m.TaskID,
+		AttemptID: m.AttemptID,
+		SeqNum:    m.SeqNum,
+		Stream:    m.Stream,
+		Data:      m.Data,
+		At:        at,
+	})
 
 	s.ackMsg(ctx, msg)
 }

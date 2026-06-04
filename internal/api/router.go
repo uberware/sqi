@@ -50,6 +50,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // Config holds HTTP-layer configuration for [NewRouter].
@@ -79,6 +80,12 @@ type Deps struct {
 	// DELETE /api/v1/jobs/{id} (task 75) to propagate cancellation to workers
 	// and by future task/retry endpoints.
 	Scheduler *scheduler.Scheduler
+
+	// Hub is the WebSocket fan-out hub used by the /api/v1/ws handler
+	// (tasks 89–91). May be nil in tests that do not exercise WebSocket push;
+	// the handler degrades gracefully by accepting subscriptions without
+	// delivering any pushes.
+	Hub *ws.Hub
 }
 
 // NewRouter builds and returns the chi router that serves the full sqi-server
@@ -232,8 +239,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
 		// WebSocket upgrade (tasks 87–92).
-		ws := newWSHandler(logger)
-		api.Get("/ws", ws.ServeHTTP)
+		wsH := newWSHandler(logger, deps.Hub)
+		api.Get("/ws", wsH.ServeHTTP)
 	})
 
 	// ── Embedded web UI (tasks 93–95) ────────────────────────────────────────

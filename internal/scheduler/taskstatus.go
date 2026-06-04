@@ -42,6 +42,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // startTaskStatusConsumer creates the server-side JetStream push consumer for
@@ -171,6 +172,19 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 		slog.String("attempt_id", m.AttemptID),
 		slog.String("session_id", m.SessionID),
 	)
+
+	// Notify WebSocket hub. GetTask is a cheap primary-key lookup; if it fails
+	// we skip the notification rather than aborting the status update.
+	if task, err := s.store.GetTask(ctx, m.TaskID); err == nil {
+		s.notifier.NotifyTask(ws.TaskEvent{
+			JobID:     task.JobID,
+			TaskID:    task.ID,
+			Name:      task.Name,
+			Status:    string(store.TaskStatusRunning),
+			WorkerID:  attempt.WorkerID,
+			UpdatedAt: time.Now().UTC(),
+		})
+	}
 	return nil
 }
 
@@ -227,6 +241,16 @@ func (s *Scheduler) handleTaskTerminal(
 	if err != nil {
 		return err
 	}
+
+	// Notify WebSocket hub of the terminal status change.
+	s.notifier.NotifyTask(ws.TaskEvent{
+		JobID:     task.JobID,
+		TaskID:    task.ID,
+		Name:      task.Name,
+		Status:    string(taskStatus),
+		WorkerID:  attempt.WorkerID,
+		UpdatedAt: time.Now().UTC(),
+	})
 
 	return s.checkStepCompletion(ctx, task.StepID, task.JobID)
 }
@@ -364,6 +388,13 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 		slog.String("job_id", jobID),
 		slog.String("status", string(newJobStatus)),
 	)
+
+	// Notify WebSocket hub of the job completion event.
+	s.notifier.NotifyJob(ws.JobEvent{
+		JobID:     jobID,
+		Status:    string(newJobStatus),
+		UpdatedAt: time.Now().UTC(),
+	})
 	return nil
 }
 
