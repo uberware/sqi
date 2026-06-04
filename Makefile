@@ -163,11 +163,11 @@ docs: ## Serve Go package docs locally via pkgsite
 
 .PHONY: release
 release: ## Build a release with goreleaser (install: https://goreleaser.com)
-	goreleaser release --clean
+	GOVERSION=$(GO_VERSION) goreleaser release --clean
 
 .PHONY: release-snapshot
 release-snapshot: ## Build a local snapshot release (no publish, no git tag required)
-	goreleaser release --snapshot --clean
+	GOVERSION=$(GO_VERSION) goreleaser release --snapshot --clean
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 

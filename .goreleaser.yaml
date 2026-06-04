@@ -1,0 +1,183 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# goreleaser v2 configuration for sqi.
+#
+# Produces cross-compiled binaries for linux, darwin, and windows on amd64 and
+# arm64.  Version metadata is injected at link time via -ldflags so that
+# `sqi-server version` and `sqi-worker version` print the exact tag, commit,
+# build date, and Go toolchain version for every release artifact.
+#
+# Usage:
+#   goreleaser release --clean            # full release against the current tag
+#   goreleaser release --snapshot --clean # local snapshot without a git tag
+#
+# CI sets GITHUB_TOKEN (or GORELEASER_TOKEN) for GitHub release publishing.
+# The Makefile `release` and `release-snapshot` targets wrap these two commands.
+
+version: 2
+
+project_name: sqi
+
+# ── Pre-build hooks ───────────────────────────────────────────────────────────
+
+before:
+  hooks:
+    - go mod download
+    - go mod verify
+
+# ── Builds ───────────────────────────────────────────────────────────────────
+#
+# CGO_ENABLED=0: modernc.org/sqlite is a pure-Go SQLite implementation —
+# no C toolchain is needed for any target platform.
+#
+# ldflags mirror the Makefile LDFLAGS block.  GoVersion is not a goreleaser
+# built-in; it is read from the GOVERSION env var exported by the release
+# targets in the Makefile (e.g., GOVERSION=$(go version | awk '{print $3}')).
+
+builds:
+  - id: sqi-server
+    binary: sqi-server
+    main: ./cmd/sqi-server
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/uberware/sqi/internal/version.Version={{ .Tag }}
+      - -X github.com/uberware/sqi/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/uberware/sqi/internal/version.BuildDate={{ .Date }}
+      - -X github.com/uberware/sqi/internal/version.GoVersion={{ .Env.GOVERSION }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: sqi-worker
+    binary: sqi-worker
+    main: ./cmd/sqi-worker
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/uberware/sqi/internal/version.Version={{ .Tag }}
+      - -X github.com/uberware/sqi/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/uberware/sqi/internal/version.BuildDate={{ .Date }}
+      - -X github.com/uberware/sqi/internal/version.GoVersion={{ .Env.GOVERSION }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+# ── Archives ─────────────────────────────────────────────────────────────────
+#
+# Both binaries are bundled into a single archive per platform so a single
+# download provides the full sqi toolchain.  Linux and macOS use .tar.gz;
+# Windows uses .zip.
+#
+# Naming convention: sqi_Linux_x86_64.tar.gz, sqi_Darwin_arm64.tar.gz, etc.
+
+archives:
+  - id: sqi
+    builds:
+      - sqi-server
+      - sqi-worker
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os | title }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+
+# ── Checksums ────────────────────────────────────────────────────────────────
+#
+# SHA-256 digest file covering all release artifacts.
+# task 101 adds cosign artifact signing on top of this.
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# ── Changelog ────────────────────────────────────────────────────────────────
+#
+# Lightweight Conventional-Commits grouping for the GitHub release body.
+# task 101 generates a persistent CHANGELOG.md file from this same history.
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: Features
+      regexp: "^.*feat(\\(\\w+\\))?!?:.+$"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^.*fix(\\(\\w+\\))?!?:.+$"
+      order: 1
+    - title: Performance
+      regexp: "^.*perf(\\(\\w+\\))?!?:.+$"
+      order: 2
+    - title: Other Changes
+      order: 999
+
+# ── Docker images ────────────────────────────────────────────────────────────
+#
+# Builds a linux/amd64 image for sqi-server and pushes it to GHCR.
+# The pre-built binary from the builds section above is copied into the image
+# context by goreleaser; Dockerfile.goreleaser expects it at the root.
+#
+# Tags published per release:
+#   ghcr.io/uberware/sqi/sqi-server:<full-tag>   e.g. v0.1.0-alpha
+#   ghcr.io/uberware/sqi/sqi-server:v<major>     e.g. v0
+#
+# The :latest tag is published separately on every push to main by the
+# docker-latest job in .github/workflows/ci.yml using the standalone
+# multi-stage Dockerfile at deploy/docker/Dockerfile.
+
+dockers:
+  - id: sqi-server-amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - sqi-server
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}"
+      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}"
+    dockerfile: deploy/docker/Dockerfile.goreleaser
+    use: buildx
+    push: true
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+
+# ── Release ──────────────────────────────────────────────────────────────────
+#
+# GitHub release settings.  Owner/repo are auto-detected from the git remote;
+# no hard-coded values here to avoid drift when the repo is forked or renamed.
+# `prerelease: auto` marks any tag containing a pre-release identifier
+# (e.g., v0.1.0-alpha) as a GitHub pre-release automatically.
+
+release:
+  draft: false
+  prerelease: auto
+  # task 100: SBOM generation and cosign signing extend this release block

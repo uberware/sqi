@@ -1,0 +1,38 @@
+# Build outputs
+dist/
+out/
+coverage.out
+*.test
+
+# Go tooling caches
+.cache/
+
+# Version control
+.git/
+.github/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Node / web build
+web/node_modules/
+web/.next/
+
+# Documentation
+docs/
+*.md
+
+# Test fixtures (large corpora not needed for the binary build)
+test/
+
+# Scripts
+scripts/
+
+# Snapshot / release artifacts
+*.tar.gz
+*.zip
+checksums.txt

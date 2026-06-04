@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Goreleaser-specific Dockerfile for sqi-server.
+#
+# Goreleaser builds the binary for the target platform before invoking Docker,
+# then copies it into the image context at the path below. This Dockerfile
+# therefore has no builder stage — it only packages the pre-built artifact.
+#
+# Do not use this file with plain `docker build`. Use deploy/docker/Dockerfile
+# instead for standalone local builds.
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# OCI image annotations are supplied via --label flags in .goreleaser.yaml so
+# that version, commit, and build-date values are set correctly per release.
+# The static labels below do not vary between releases.
+LABEL org.opencontainers.image.title="sqi-server" \
+      org.opencontainers.image.description="sqi distributed task management server" \
+      org.opencontainers.image.url="https://github.com/uberware/sqi" \
+      org.opencontainers.image.source="https://github.com/uberware/sqi" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+
+# Goreleaser places the binary in the Docker build context root.
+# --chown matches the nonroot UID/GID (65532) used by distroless:nonroot.
+COPY --chown=65532:65532 sqi-server /usr/local/bin/sqi-server
+
+# sqi-server listens on 8080 by default (configurable via SQI_HTTP_ADDR).
+EXPOSE 8080
+
+# NATS embedded broker listens on 4222 by default.
+EXPOSE 4222
+
+ENTRYPOINT ["/usr/local/bin/sqi-server"]
+CMD ["serve"]

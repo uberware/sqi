@@ -84,6 +84,58 @@ jobs:
           files: ./coverage.out
           fail_ci_if_error: false
 
+  # ── Docker latest ────────────────────────────────────────────────────────────
+  # Builds and pushes ghcr.io/uberware/sqi/sqi-server:latest on every push to
+  # main. Uses the standalone multi-stage Dockerfile so the image is built from
+  # source without needing goreleaser. Runs only after the test job passes.
+  docker-latest:
+    name: Publish :latest to GHCR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Export GOVERSION
+        run: echo "GOVERSION=$(go version | awk '{print $3}')" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push :latest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/uberware/sqi/sqi-server:latest
+          build-args: |
+            VERSION=main
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            GOVERSION=${{ env.GOVERSION }}
+          # Reuse the GitHub Actions cache between runs to speed up builds.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # ── Cross-compilation matrix ─────────────────────────────────────────────────
   # Verifies that the binary compiles cleanly for all target platforms.
   # Runs only after the test job passes (needs: test).
