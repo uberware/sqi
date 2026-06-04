@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# cliff.toml — git-cliff configuration for CHANGELOG.md generation.
+#
+# Parses Conventional Commits and produces a Markdown CHANGELOG grouped by
+# release tag.  Run manually:
+#   git cliff --output CHANGELOG.md
+# Or via the Makefile `changelog` target (if defined).
+# The release workflow calls git-cliff automatically before goreleaser.
+
+[changelog]
+# Header rendered once at the top of CHANGELOG.md.
+header = """
+# Changelog
+
+All notable changes to sqi are documented here.
+Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
+[Keep a Changelog](https://keepachangelog.com/) conventions.
+
+"""
+
+# Template for each release section (Tera / Jinja2-style).
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{{ commit.message | upper_first }}\
+{% if commit.breaking %} ⚠️ BREAKING{% endif %} \
+([{{ commit.id | truncate(length=7, end="") }}]({{ commit.id }}))
+{%- endfor %}
+{% endfor %}\n
+"""
+
+# Strip trailing whitespace from the generated body.
+trim = true
+
+# Footer appended after the last release section.
+footer = ""
+
+[git]
+# Only include commits reachable from the current tag (exclude merge commits
+# unless they carry a Conventional Commit message).
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+
+# Rewrite rules applied to commit messages before rendering.
+commit_preprocessors = [
+  # Strip leading/trailing whitespace.
+  { pattern = "\\s+$", replace = "" },
+  # Expand GitHub issue/PR shorthand to full URLs.
+  { pattern = "\\(#([0-9]+)\\)", replace = "([#${1}](https://github.com/uberware/sqi/issues/${1}))" },
+]
+
+# Map Conventional Commit types to CHANGELOG groups.
+commit_parsers = [
+  { message = "^feat",     group = "Features"          },
+  { message = "^fix",      group = "Bug Fixes"         },
+  { message = "^perf",     group = "Performance"       },
+  { message = "^refactor", group = "Refactoring"       },
+  { message = "^build",    group = "Build"             },
+  { message = "^ci",       group = "CI"                },
+  { message = "^docs",     group = "Documentation"     },
+  { message = "^test",     group = "Testing"           },
+  { message = "^chore",    group = "Chores", skip = true },
+  { message = "^release",  skip = true                 },
+  { message = "Merge pull request", skip = true        },
+  { message = "Merge branch",       skip = true        },
+]
+
+# Protect against commits that don't match any parser (log a warning, don't fail).
+filter_commits = false
+
+# Tags matching this pattern are treated as version boundaries.
+tag_pattern = "v[0-9].*"
+
+# Ignore pre-release tags when generating the "previous" range for a full CHANGELOG.
+# Set to false so alpha/beta releases appear in the changelog.
+skip_tags = ""
+
+# Sort order within each release section.
+sort_commits = "oldest"

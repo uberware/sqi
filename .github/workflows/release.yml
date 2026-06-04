@@ -2,7 +2,8 @@ name: Release
 
 # Triggered when a version tag is pushed (e.g., v0.1.0, v0.1.0-alpha).
 # Runs goreleaser to produce cross-compiled binaries, archives, checksums,
-# a GitHub release, and a versioned Docker image pushed to GHCR.
+# SBOMs, cosign signatures, a CHANGELOG.md, a GitHub release, and a versioned
+# Docker image pushed to GHCR.
 on:
   push:
     tags:
@@ -19,6 +20,7 @@ concurrency:
 permissions:
   contents: write    # create GitHub release and upload assets
   packages: write    # push image to ghcr.io
+  id-token: write    # obtain OIDC token for keyless cosign signing
 
 jobs:
   goreleaser:
@@ -27,13 +29,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
-          # Full history is required for goreleaser's changelog generation.
+          # Full history is required for goreleaser's changelog generation
+          # and for git-cliff to produce a complete CHANGELOG.md.
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
@@ -48,6 +51,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Install cosign for keyless artifact and image signing.
+      # Keyless mode uses the GitHub Actions OIDC token (id-token: write above).
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Install syft for SBOM generation.
+      # goreleaser calls syft automatically when it finds it in PATH.
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # Install git-cliff for CHANGELOG.md generation from Conventional Commits.
+      - name: Install git-cliff
+        uses: kenji-miyake/setup-git-cliff@v2
+
+      # Generate CHANGELOG.md covering all tags up to and including this one.
+      # The file is written to the working tree so goreleaser can bundle it
+      # into release archives (see .goreleaser.yaml archives.files).
+      # Fail loudly if git-cliff produces an empty file (e.g., malformed tag).
+      - name: Generate CHANGELOG.md
+        run: |
+          git cliff --output CHANGELOG.md
+          [ -s CHANGELOG.md ] || { echo "ERROR: git-cliff produced an empty CHANGELOG.md"; exit 1; }
+        env:
+          # Allows git-cliff to resolve GitHub commit URLs in the body.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # Export the Go toolchain version so goreleaser can embed it via ldflags.
       - name: Export GOVERSION
         run: echo "GOVERSION=$(go version | awk '{print $3}')" >> "$GITHUB_ENV"
@@ -60,3 +89,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOVERSION: ${{ env.GOVERSION }}
+          # Required by cosign keyless signing inside goreleaser's signs block.
+          COSIGN_YES: "true"
