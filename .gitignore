@@ -18,7 +18,11 @@ go.work
 go.work.sum
 
 # ─── Build artefacts ──────────────────────────────────────────────────────────
-/web/dist/
+# The web UI build output is ignored, except the Phase 1 placeholder index.html,
+# which must be tracked so //go:embed in package web has a file to embed in a
+# fresh checkout / CI build. The full front-end build overwrites it later.
+/web/dist/*
+!/web/dist/index.html
 /web/.vite/
 
 # goreleaser

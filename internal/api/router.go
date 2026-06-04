@@ -50,6 +50,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/ui"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -244,7 +245,21 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	})
 
 	// ── Embedded web UI (tasks 93–95) ────────────────────────────────────────
-	// TODO(task 93): serve embedded web/dist at "/" with SPA fallback.
+	// Mounted as the root catch-all, so it only handles paths the API and
+	// observability routes above did not claim. The handler serves embedded
+	// assets and falls back to the SPA shell for client-side routes under /ui/*.
+	if uiHandler, err := ui.NewHandler(logger); err != nil {
+		// A failure here means the embedded asset tree is malformed — a
+		// build-time problem. Degrade gracefully: log and leave the UI
+		// unmounted so the REST API and WebSocket remain fully functional.
+		logger.ErrorContext(
+			context.Background(),
+			"ui: embedded assets unavailable, web UI disabled",
+			slog.Any("error", err),
+		)
+	} else {
+		r.Handle("/*", uiHandler)
+	}
 
 	return r
 }

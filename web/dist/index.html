@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>sqi-server</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1a1a1a;
+        --muted: #666;
+        --bg: #fafafa;
+        --card: #fff;
+        --border: #e2e2e2;
+        --accent: #2563eb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e6e6e6;
+          --muted: #9a9a9a;
+          --bg: #121212;
+          --card: #1c1c1c;
+          --border: #2c2c2c;
+          --accent: #60a5fa;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        font-family:
+          system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+          sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        line-height: 1.5;
+      }
+      main {
+        width: 100%;
+        max-width: 38rem;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 2rem 2.25rem 2.25rem;
+      }
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.6rem;
+        letter-spacing: -0.01em;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 999px;
+        padding: 0.1rem 0.6rem;
+        margin-bottom: 1rem;
+      }
+      p {
+        margin: 0 0 1.25rem;
+        color: var(--muted);
+      }
+      h2 {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin: 1.5rem 0 0.5rem;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.5rem;
+      }
+      a {
+        display: flex;
+        align-items: baseline;
+        gap: 0.6rem;
+        text-decoration: none;
+        color: var(--fg);
+        padding: 0.6rem 0.8rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      a:hover {
+        border-color: var(--accent);
+      }
+      a code {
+        color: var(--accent);
+        font-size: 0.85rem;
+      }
+      a span {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      footer {
+        margin-top: 1.75rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="tag">Phase 1 · placeholder</span>
+      <h1>sqi-server</h1>
+      <p>
+        The server is running. The full web UI has not shipped yet — until it
+        does, this page links to the API specification and operational
+        endpoints exposed by the binary.
+      </p>
+
+      <h2>API</h2>
+      <ul>
+        <li>
+          <a href="/api/v1/openapi.yaml">
+            <code>/api/v1/openapi.yaml</code>
+            <span>OpenAPI 3.1 specification</span>
+          </a>
+        </li>
+        <li>
+          <a href="/api/v1/jobs">
+            <code>/api/v1/jobs</code>
+            <span>Jobs collection</span>
+          </a>
+        </li>
+        <li>
+          <a href="/api/v1/workers">
+            <code>/api/v1/workers</code>
+            <span>Registered workers</span>
+          </a>
+        </li>
+      </ul>
+
+      <h2>Health &amp; metrics</h2>
+      <ul>
+        <li>
+          <a href="/healthz">
+            <code>/healthz</code>
+            <span>Liveness probe</span>
+          </a>
+        </li>
+        <li>
+          <a href="/readyz">
+            <code>/readyz</code>
+            <span>Readiness probe (SQLite + NATS)</span>
+          </a>
+        </li>
+        <li>
+          <a href="/metrics">
+            <code>/metrics</code>
+            <span>Prometheus metrics</span>
+          </a>
+        </li>
+      </ul>
+
+      <footer>sqi · AGPL-3.0-only · github.com/uberware/sqi</footer>
+    </main>
+  </body>
+</html>
