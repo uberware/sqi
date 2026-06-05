@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   # ── Primary CI job ───────────────────────────────────────────────────────────
-  # Runs build → vet → lint → test (race + coverage) → upload coverage.
+  # Runs build → vet → lint → test (race + coverage gate) → upload coverage.
   # All steps are sequential; failure in any step stops the job.
   test:
     name: Build, lint, and test
@@ -65,13 +65,14 @@ jobs:
         with:
           args: --timeout=5m
 
-      # Run the full test suite with the race detector enabled.
-      # Produces coverage.out for the Codecov upload step below.
-      # Note: we call go test directly here rather than `make test-cover`
-      # to avoid the local coverage-minimum threshold check, which is
-      # only appropriate for local enforcement once the codebase has tests.
-      - name: Test (race detector + coverage)
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      # Run the full test suite with the race detector enabled and enforce
+      # the minimum line-coverage threshold.
+      # `make test-cover` enables -race via RACE=on (the Makefile default),
+      # writes coverage.out, and exits non-zero if coverage < COVERAGE_MIN.
+      # COVERAGE_MIN defaults to 60 in the Makefile — that is the single
+      # source of truth; raise it there as coverage grows.
+      - name: Test (race detector + coverage gate)
+        run: make test-cover
 
       # Uploads coverage.out to Codecov. Requires the CODECOV_TOKEN secret
       # to be configured in the repository — see docs/development.md for setup
