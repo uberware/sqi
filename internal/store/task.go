@@ -145,8 +145,9 @@ type ListTasksOptions struct {
 	// Filters
 	JobID    string
 	StepID   string
-	Status   TaskStatus // empty = all statuses
-	WorkerID string     // filter by assigned worker
+	Status   TaskStatus   // empty = all statuses (mutually exclusive with Statuses)
+	Statuses []TaskStatus // IN-filter; takes precedence over Status when non-empty
+	WorkerID string       // filter by assigned worker
 
 	// Ordering — zero values use TaskSortByCreatedAt / SortAsc.
 	SortBy  TaskSortField

@@ -169,7 +169,12 @@ func filterTask(t store.Task, opts store.ListTasksOptions) bool {
 	if opts.StepID != "" && t.StepID != opts.StepID {
 		return false
 	}
-	if opts.Status != "" && t.Status != opts.Status {
+	if len(opts.Statuses) > 0 {
+		matched := slices.Contains(opts.Statuses, t.Status)
+		if !matched {
+			return false
+		}
+	} else if opts.Status != "" && t.Status != opts.Status {
 		return false
 	}
 	if opts.WorkerID != "" && t.AssignedWorkerID != opts.WorkerID {

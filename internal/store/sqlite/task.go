@@ -185,7 +185,18 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 		where += ` AND step_id = ?`
 		args = append(args, opts.StepID)
 	}
-	if opts.Status != "" {
+	if len(opts.Statuses) > 0 {
+		// Build a parameterised IN clause: status IN (?, ?, …)
+		placeholders := make([]byte, 0, 2*len(opts.Statuses)-1)
+		for i, s := range opts.Statuses {
+			if i > 0 {
+				placeholders = append(placeholders, ',')
+			}
+			placeholders = append(placeholders, '?')
+			args = append(args, string(s))
+		}
+		where += ` AND status IN (` + string(placeholders) + `)`
+	} else if opts.Status != "" {
 		where += ` AND status = ?`
 		args = append(args, string(opts.Status))
 	}

@@ -179,7 +179,11 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 	// ListTasks is reused here; a small overhead but avoids adding a new Store
 	// method for a single-row lookup that only fires on the detail path.
 	taskPage, err := h.store.ListTasks(ctx, store.ListTasksOptions{
-		WorkerID:   id,
+		WorkerID: id,
+		Statuses: []store.TaskStatus{
+			store.TaskStatusAssigned,
+			store.TaskStatusRunning,
+		},
 		Pagination: store.Pagination{Limit: 1, Offset: 0},
 	})
 	if err != nil {
@@ -188,14 +192,12 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal: return the worker without current-task rather than 500.
 	} else if len(taskPage.Items) > 0 {
 		t := taskPage.Items[0]
-		if t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning {
-			resp.CurrentTask = &currentTaskResponse{
-				ID:         t.ID,
-				JobID:      t.JobID,
-				Name:       t.Name,
-				Status:     string(t.Status),
-				AssignedAt: t.AssignedAt,
-			}
+		resp.CurrentTask = &currentTaskResponse{
+			ID:         t.ID,
+			JobID:      t.JobID,
+			Name:       t.Name,
+			Status:     string(t.Status),
+			AssignedAt: t.AssignedAt,
 		}
 	}
 
