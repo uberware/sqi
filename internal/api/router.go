@@ -64,6 +64,11 @@ type Config struct {
 	// EnablePprof registers Go runtime profiling endpoints at /debug/pprof/
 	// when true. Must never be enabled on servers exposed to untrusted networks.
 	EnablePprof bool
+
+	// DisableRateLimit turns off per-IP rate limiting when true.
+	// Use in tests and benchmarks where the loopback address would cause all
+	// concurrent requests to share one bucket and trigger 429s.
+	DisableRateLimit bool
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -188,6 +193,17 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	r.Route("/api/v1", func(api chi.Router) {
 		// 7. Versioning header — X-API-Version: 1 on every response (task 84).
 		api.Use(middleware.APIVersion("1"))
+
+		// 8. Per-IP token-bucket rate limiting (Phase 1; no auth yet).
+		//    20 req/s sustained, burst of 40.  Replace with auth-aware
+		//    per-client limits when Phase 3 auth lands.
+		//    Disabled via cfg.DisableRateLimit (tests/benchmarks).
+		if !cfg.DisableRateLimit {
+			api.Use(middleware.RateLimit(middleware.RateLimitConfig{
+				RequestsPerSecond: 20,
+				Burst:             40,
+			}, logger))
+		}
 
 		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
 		api.Post("/jobs", jobs.submitJob)        // task 71

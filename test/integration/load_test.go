@@ -133,6 +133,7 @@ func startLoadServer(tb testing.TB) *testServer {
 			HeartbeatSweepInterval: 30 * time.Second,
 		},
 		DiscoveryEnabled: false,
+		DisableRateLimit: true,
 	}
 
 	logger := slog.New(slog.DiscardHandler)

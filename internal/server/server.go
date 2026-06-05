@@ -92,6 +92,10 @@ type Config struct {
 	// the network. Each server on the same subnet should use a distinct name.
 	// Default "sqi-server".
 	DiscoveryInstanceName string
+
+	// DisableRateLimit turns off per-IP API rate limiting. Only set this in
+	// tests and benchmarks; never in production.
+	DisableRateLimit bool
 }
 
 // DefaultConfig returns a [Config] with sensible development defaults.
@@ -257,8 +261,9 @@ func (s *Server) start(ctx context.Context) error {
 	// Task 71–75: job REST endpoints are now registered via api.Deps.
 	router := api.NewRouter(
 		api.Config{
-			CORSOrigins: s.cfg.CORSOrigins,
-			EnablePprof: s.cfg.EnablePprof,
+			CORSOrigins:      s.cfg.CORSOrigins,
+			EnablePprof:      s.cfg.EnablePprof,
+			DisableRateLimit: s.cfg.DisableRateLimit,
 		},
 		api.Deps{
 			Store:     s.store,
