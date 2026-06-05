@@ -96,6 +96,16 @@ type JobStore interface {
 	// is set to the current time. Terminal statuses set CompletedAt.
 	// Returns [ErrNotFound] if the job does not exist.
 	UpdateJobStatus(ctx context.Context, id string, status JobStatus) error
+
+	// CancelJobStatus transitions a job to [JobStatusCanceled] only when the
+	// job is not already in a terminal state, preventing a race where a
+	// concurrent scheduler transition to completed/failed would be overwritten.
+	//
+	//   - Non-terminal job → canceled, returns nil.
+	//   - Already canceled → no-op, returns nil (idempotent).
+	//   - Already completed or failed → returns [ErrConflict].
+	//   - Job not found → returns [ErrNotFound].
+	CancelJobStatus(ctx context.Context, id string) error
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

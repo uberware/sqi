@@ -41,6 +41,18 @@ SET status      = ?,
 	completed_at = ?,
 	updated_at  = ?
 WHERE id = ?`
+
+	// sqlCancelJobStatus transitions a job to 'canceled' only when it is not
+	// already in a terminal state.  Zero rows affected means the job was either
+	// not found or already terminal; the caller distinguishes these two cases by
+	// following up with a GetJob when rows == 0.
+	sqlCancelJobStatus = `
+UPDATE jobs
+SET status       = 'canceled',
+	completed_at = ?,
+	updated_at   = ?
+WHERE id = ?
+  AND status NOT IN ('completed', 'failed', 'canceled')`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -209,4 +221,39 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id string, status store.Job
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// CancelJobStatus implements [store.JobStore].
+//
+// It issues a conditional UPDATE that only fires when the job is not already
+// in a terminal state. When zero rows are affected the job is either missing
+// or already terminal; a follow-up GetJob disambiguates:
+//   - not found → [store.ErrNotFound]
+//   - already canceled → nil (idempotent)
+//   - completed or failed → [store.ErrConflict]
+func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
+	now := time.Now().UTC()
+	nowText := timeToText(now)
+
+	res, err := s.db.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // successfully transitioned to canceled
+	}
+
+	// Zero rows: job was not found or was already terminal.
+	job, err := s.GetJob(ctx, id)
+	if err != nil {
+		return err // propagates ErrNotFound
+	}
+	if job.Status == store.JobStatusCanceled {
+		return nil // already canceled — idempotent
+	}
+	return store.ErrConflict // completed or failed — cannot cancel
 }

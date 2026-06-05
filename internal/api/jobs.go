@@ -453,7 +453,7 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
-	_, err := h.store.GetJob(ctx, id)
+	job, err := h.store.GetJob(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "job not found")
@@ -464,6 +464,18 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fast-path: already canceled → idempotent 204; completed/failed → 409.
+	// This check also runs inside CancelJobStatus (atomic SQL guard), so a
+	// concurrent transition that races past here is still safe.
+	switch job.Status {
+	case store.JobStatusCanceled:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case store.JobStatusCompleted, store.JobStatusFailed:
+		writeProblem(w, r, http.StatusConflict, "job has already completed and cannot be canceled")
+		return
+	}
+
 	// CancelJob handles task cancellation and NATS signal dispatch (task 54).
 	if err = h.sched.CancelJob(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: cancel scheduler failed", slog.String("id", id), slog.Any("error", err))
@@ -471,7 +483,16 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = h.store.UpdateJobStatus(ctx, id, store.JobStatusCanceled); err != nil {
+	// CancelJobStatus uses a conditional UPDATE (WHERE status NOT IN terminal
+	// states) so a concurrent scheduler transition that completed the job
+	// between the GetJob check above and this call is not overwritten.
+	if err = h.store.CancelJobStatus(ctx, id); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			// Job reached a terminal state (completed/failed) concurrently.
+			// Tasks were already canceled above; treat as a conflict.
+			writeProblem(w, r, http.StatusConflict, "job completed before cancellation could be applied")
+			return
+		}
 		h.logger.ErrorContext(ctx, "jobs: cancel status update failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update job status")
 		return

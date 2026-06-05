@@ -101,6 +101,32 @@ func (s *Store) UpdateJobStatus(_ context.Context, id string, status store.JobSt
 	return nil
 }
 
+// CancelJobStatus implements [store.JobStore].
+// Transitions the job to canceled unless it is already completed or failed.
+func (s *Store) CancelJobStatus(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+
+	switch job.Status {
+	case store.JobStatusCanceled:
+		return nil // idempotent
+	case store.JobStatusCompleted, store.JobStatusFailed:
+		return store.ErrConflict
+	}
+
+	now := time.Now()
+	job.Status = store.JobStatusCanceled
+	job.CompletedAt = &now
+	job.UpdatedAt = now
+	s.jobs[id] = job
+	return nil
+}
+
 // filterJob reports whether j matches all non-zero filter fields in opts.
 func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 	if opts.FarmID != "" && j.FarmID != opts.FarmID {
