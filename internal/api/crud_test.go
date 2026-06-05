@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -42,6 +43,12 @@ func jsonBody(t *testing.T, v any) *bytes.Buffer {
 func newReq(t *testing.T, method, target string, body io.Reader) *http.Request {
 	t.Helper()
 	return httptest.NewRequestWithContext(t.Context(), method, target, body)
+}
+
+// badJSON returns an io.Reader with syntactically invalid JSON, useful for
+// testing that handlers reject malformed request bodies.
+func badJSON() io.Reader {
+	return strings.NewReader("{bad json}")
 }
 
 // mustListFarms retrieves all farms from the fake store, fataling on error.
