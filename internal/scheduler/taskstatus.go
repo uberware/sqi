@@ -34,6 +34,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -56,7 +57,7 @@ func (s *Scheduler) startTaskStatusConsumer(ctx context.Context) error {
 // handleTaskStatusMessage is the JetStream message handler for
 // task.status.<job> messages published by workers.
 func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
-	ctx := context.Background()
+	ctx := s.ctx
 
 	var m protocol.TaskStatusMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
@@ -275,6 +276,21 @@ func (s *Scheduler) checkStepCompletion(ctx context.Context, stepID, jobID strin
 	})
 	if err != nil {
 		return err
+	}
+
+	// Guard against silent truncation: if the step has more tasks than a single
+	// MaxLimit page can return, the completion check would only see the first
+	// MaxLimit tasks and might incorrectly mark a step complete while others are
+	// still pending.  Return an error rather than silently computing a wrong result.
+	if page.Total > store.MaxLimit {
+		s.logger.WarnContext(
+			ctx, "scheduler: checkStepCompletion: step exceeds MaxLimit — skipping to avoid incorrect completion",
+			slog.String("step_id", stepID),
+			slog.Int("total", page.Total),
+			slog.Int("max_limit", store.MaxLimit),
+		)
+		return fmt.Errorf("step %q has %d tasks, exceeding MaxLimit (%d): pagination required for correct completion check",
+			stepID, page.Total, store.MaxLimit)
 	}
 
 	allDone := true

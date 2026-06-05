@@ -49,7 +49,7 @@ func (s *Scheduler) startTaskLogsConsumer(ctx context.Context) error {
 // handleLogChunk is the JetStream message handler for task.logs.<task> messages
 // published by workers.
 func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
-	ctx := context.Background()
+	ctx := s.ctx
 
 	var m protocol.LogChunkMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {

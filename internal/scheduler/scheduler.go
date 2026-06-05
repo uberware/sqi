@@ -170,6 +170,11 @@ type Scheduler struct {
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
 
+	// ctx is the lifecycle context for the scheduler; set during [Run] and used
+	// by NATS message-handler callbacks that cannot receive a context parameter.
+	// After Run returns ctx is canceled.
+	ctx context.Context
+
 	// cancel is called to stop all internal goroutines; set during [Run].
 	cancel context.CancelFunc
 }
@@ -208,6 +213,10 @@ func New(cfg Config, st store.Store, busClient *bus.Client, m *metrics.Metrics, 
 		logger:   logger,
 		notifier: n,
 		taskCh:   make(chan store.Task, cfg.AssignBatchSize),
+		// ctx is overwritten with the derived cancellable context in Run.
+		// The background fallback ensures NATS callbacks can't nil-panic if
+		// somehow invoked before Run (e.g. in a partial test setup).
+		ctx: context.Background(),
 	}
 }
 
@@ -216,6 +225,7 @@ func New(cfg Config, st store.Store, busClient *bus.Client, m *metrics.Metrics, 
 func (s *Scheduler) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
+	s.ctx = ctx
 	defer cancel()
 
 	s.logger.InfoContext(
@@ -728,7 +738,7 @@ func (s *Scheduler) ReleaseTaskLicenses(ctx context.Context, attemptID string) e
 // worker.register and worker.heartbeat subjects (both flow through the
 // SQI_WORKER stream and its single durable consumer).
 func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
-	ctx := context.Background()
+	ctx := s.ctx
 	subject := msg.Subject()
 
 	switch subject {
