@@ -628,12 +628,13 @@ func parseIntQuery(s string, fallback int) int {
 // ── Validation helpers ────────────────────────────────────────────────────────
 
 // isSubmitValidationError returns true for errors originating from the OpenJD
-// parser or validator, signaling that a 422 rather than a 500 is appropriate.
+// parser, validator, or storage-location checker, signaling that a 422 rather
+// than a 500 is appropriate.  It uses [errors.As] against the sentinel
+// [openjd.SubmitValidationError] type so the check is robust to message
+// refactors, wrapped errors, and new error paths.
 func isSubmitValidationError(err error) bool {
-	msg := err.Error()
-	return strings.HasPrefix(msg, "openjd: submit: parse") ||
-		strings.HasPrefix(msg, "openjd: submit: validation") ||
-		strings.HasPrefix(msg, "openjd: submit: storage location")
+	var ve *openjd.SubmitValidationError
+	return errors.As(err, &ve)
 }
 
 // writeProblem, writeJSON, and the problemDetail type are defined in errors.go.

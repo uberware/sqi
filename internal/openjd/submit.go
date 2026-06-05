@@ -99,17 +99,17 @@ func (s *Submitter) Submit(
 
 	tmpl, err := Parse([]byte(rawTemplate), parseFormat)
 	if err != nil {
-		return nil, fmt.Errorf("openjd: submit: parse: %w", err)
+		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
 	if errs := Validate(tmpl); len(errs) > 0 {
-		return nil, fmt.Errorf("openjd: submit: validation: %w", errs)
+		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
 	}
 
 	// ── 2b. Validate named storage location coverage (task 66) ────────────
 	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
-		return nil, fmt.Errorf("openjd: submit: storage location validation: %w", err)
+		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
 	}
 
 	// ── 3. Resolve priority default ───────────────────────────────────────
@@ -188,7 +188,9 @@ func (s *Submitter) Submit(
 		// ── 6. Expand parameter space ──────────────────────────────────────
 		taskParamList, err := ExpandParameterSpace(stepTmpl.ParameterSpace)
 		if err != nil {
-			return nil, fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err)
+			return nil, &SubmitValidationError{
+				Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),
+			}
 		}
 
 		// ── 7. Create one Task row per parameter combination ───────────────
