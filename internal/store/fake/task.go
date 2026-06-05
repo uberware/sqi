@@ -126,17 +126,18 @@ func (s *Store) ListReadyTasks(_ context.Context, farmID string, limit int) ([]s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Build lookups: queue paused state and job priority for this farm.
+	// Build lookups: queue paused state and job priority.
+	// farmID = "" means "all farms".
 	queuePaused := make(map[string]bool)
 	for _, q := range s.queues {
-		if q.FarmID == farmID {
+		if farmID == "" || q.FarmID == farmID {
 			queuePaused[q.ID] = q.Paused
 		}
 	}
 
 	jobPriority := make(map[string]int)
 	for _, j := range s.jobs {
-		if j.FarmID == farmID {
+		if farmID == "" || j.FarmID == farmID {
 			jobPriority[j.ID] = j.Priority
 		}
 	}
@@ -287,13 +288,17 @@ func (s *Store) CountReadyTasksByQueue(_ context.Context, farmID string) (map[st
 }
 
 // isReadyInFarm reports whether t is eligible for assignment: status Ready,
-// job belongs to farmID, and the job's queue is not paused.
+// job belongs to farmID (or farmID is "" meaning all farms), and the job's
+// queue is not paused.
 func isReadyInFarm(t store.Task, farmID string, jobs map[string]store.Job, queuePaused map[string]bool) bool {
 	if t.Status != store.TaskStatusReady {
 		return false
 	}
 	job, ok := jobs[t.JobID]
-	if !ok || job.FarmID != farmID {
+	if !ok {
+		return false
+	}
+	if farmID != "" && job.FarmID != farmID {
 		return false
 	}
 	return !queuePaused[job.QueueID]

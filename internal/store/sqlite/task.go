@@ -42,6 +42,10 @@ WHERE id = ?`
 	// All task columns are fully qualified (t.) to avoid ambiguity now that
 	// the steps join introduces columns with overlapping names (name, status,
 	// created_at, updated_at, job_id).
+	// sqlListReadyTasks fetches tasks eligible for assignment.
+	// farmID = '' means "all farms" (used when the scheduler manages every farm).
+	// Two bind parameters are required for farmID: one for the empty check and
+	// one for the value filter.
 	sqlListReadyTasks = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
        t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at
@@ -50,7 +54,7 @@ JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 JOIN   steps  s ON t.step_id  = s.id
 WHERE  t.status  = 'ready'
-  AND  j.farm_id = ?
+  AND  (? = '' OR j.farm_id = ?)
   AND  q.paused  = 0
 ORDER BY j.priority DESC, j.created_at ASC, s.step_order ASC, t.created_at ASC
 LIMIT ?`
@@ -80,12 +84,13 @@ WHERE  j.farm_id = ?
 
 	// Per-queue count of tasks in 'ready' state for a given farm (task 55).
 	// Used to populate the sqi_scheduler_queue_depth Prometheus gauge.
+	// farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
 SELECT j.queue_id, COUNT(*)
 FROM   tasks t
 JOIN   jobs  j ON t.job_id = j.id
 WHERE  t.status  = 'ready'
-  AND  j.farm_id = ?
+  AND  (? = '' OR j.farm_id = ?)
 GROUP BY j.queue_id`
 
 	// Counts tasks for a given job grouped by status (task 73).
@@ -262,7 +267,7 @@ func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, e
 
 // ListReadyTasks implements [store.TaskStore].
 func (s *Store) ListReadyTasks(ctx context.Context, farmID string, limit int) ([]store.Task, error) {
-	rows, err := s.stmtListReadyTasks.QueryContext(ctx, farmID, limit)
+	rows, err := s.stmtListReadyTasks.QueryContext(ctx, farmID, farmID, limit)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -297,7 +302,7 @@ func (s *Store) CountActiveTasksInFarm(ctx context.Context, farmID string) (int,
 // Returns a map of queue ID → ready-task count for the given farm.
 // Queues with zero ready tasks are omitted.
 func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string) (map[string]int, error) {
-	rows, err := s.stmtCountReadyTasksByQueue.QueryContext(ctx, farmID)
+	rows, err := s.stmtCountReadyTasksByQueue.QueryContext(ctx, farmID, farmID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
