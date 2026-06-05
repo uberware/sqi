@@ -55,7 +55,9 @@ func (s *Store) ListJobs(_ context.Context, opts store.ListJobsOptions) (store.P
 	return applyPage(jobs, opts.Pagination), nil
 }
 
-// UpdateJob replaces the mutable fields of an existing job and updates UpdatedAt.
+// UpdateJob replaces only the mutable user-settable fields of an existing job.
+// status, started_at, and completed_at are preserved from the stored record
+// to match the sqlite implementation which excludes those columns.
 func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,6 +67,11 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 		return store.Job{}, store.ErrNotFound
 	}
 
+	// Preserve lifecycle fields — these are owned by UpdateJobStatus /
+	// CancelJobStatus, not by UpdateJob.
+	job.Status = existing.Status
+	job.StartedAt = existing.StartedAt
+	job.CompletedAt = existing.CompletedAt
 	job.CreatedAt = existing.CreatedAt
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job

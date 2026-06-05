@@ -87,8 +87,15 @@ type JobStore interface {
 	// ensure sensible defaults are applied.
 	ListJobs(ctx context.Context, opts ListJobsOptions) (Page[Job], error)
 
-	// UpdateJob replaces the mutable fields of an existing job and updates
-	// UpdatedAt. Returns [ErrNotFound] if the job does not exist.
+	// UpdateJob replaces the mutable user-settable fields of an existing job
+	// (farm_id, queue_id, name, owner, submitter, priority, project,
+	// raw_template, template_format) and updates UpdatedAt.
+	//
+	// status, started_at, and completed_at are lifecycle columns and are
+	// intentionally excluded — use [UpdateJobStatus] or [CancelJobStatus]
+	// for those. The returned Job reflects the current DB state of all columns.
+	//
+	// Returns [ErrNotFound] if the job does not exist.
 	UpdateJob(ctx context.Context, job Job) (Job, error)
 
 	// UpdateJobStatus transitions a job to a new status and updates UpdatedAt.

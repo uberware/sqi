@@ -24,11 +24,16 @@ RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
 
+	// sqlUpdateJob updates only the mutable user-settable fields of a job.
+	// status, started_at, and completed_at are lifecycle columns managed
+	// exclusively by UpdateJobStatus / CancelJobStatus and are intentionally
+	// excluded here — writing them via UpdateJob would race with concurrent
+	// scheduler status transitions.
 	sqlUpdateJob = `
 UPDATE jobs
 SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
-	status = ?, project = ?, raw_template = ?, template_format = ?,
-	updated_at = ?, started_at = ?, completed_at = ?
+	project = ?, raw_template = ?, template_format = ?,
+	updated_at = ?
 WHERE id = ?
 RETURNING ` + jobCols
 
@@ -186,12 +191,16 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 }
 
 // UpdateJob implements [store.JobStore].
+// Only mutable user-settable fields are written (farm_id, queue_id, name,
+// owner, submitter, priority, project, raw_template, template_format).
+// status, started_at, and completed_at are never touched here; use
+// UpdateJobStatus or CancelJobStatus for those.
 func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateJob.QueryRowContext(ctx,
 		job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter, job.Priority,
-		string(job.Status), job.Project, job.RawTemplate, string(job.TemplateFormat),
-		now, nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt), job.ID)
+		job.Project, job.RawTemplate, string(job.TemplateFormat),
+		now, job.ID)
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }
