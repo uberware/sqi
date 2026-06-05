@@ -77,9 +77,11 @@ func sanitizeConsumerToken(s string) string {
 //     scheduler's heartbeat sweep (task 48) reclaims the task and re-publishes
 //     a fresh assignment, so an exhausted consumer entry never causes permanent
 //     loss.
-//   - DeliverNewPolicy — only deliver messages published after the consumer
-//     was created.  Stale assignments must not wake up a late-starting worker;
-//     the scheduler will reassign as needed.
+//   - DeliverAllPolicy — required by NATS WorkQueuePolicy streams; DeliverNew
+//     is rejected with error code 10101.  Stale assignments are prevented
+//     naturally: messages are removed from the stream once acknowledged, and
+//     the scheduler's heartbeat sweep reclaims and re-publishes any that were
+//     never acked.
 func (c *Client) EnsureWorkConsumer(ctx context.Context, queueID string) (jetstream.Consumer, error) {
 	cfg := jetstream.ConsumerConfig{
 		Durable:       workConsumerName(queueID),
@@ -87,7 +89,7 @@ func (c *Client) EnsureWorkConsumer(ctx context.Context, queueID string) (jetstr
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       30 * time.Second,
 		MaxDeliver:    5,
-		DeliverPolicy: jetstream.DeliverNewPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
 		Description:   "Work-assignment pull consumer for queue " + queueID,
 	}
 
