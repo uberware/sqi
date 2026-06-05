@@ -378,8 +378,9 @@ func (wc *wsConn) dispatch(ctx context.Context, env internalws.Envelope) {
 
 // handleSubscribe processes a TypeSubscribe client message.
 //
-// Validates the subject, registers the subscription with the hub, replays
-// any ring-buffered events since SinceSeq, then sends an ack.
+// Validates the subject and sends an ack, then registers the subscription with
+// the hub (which may immediately replay buffered events into the send channel).
+// The ack is sent first so clients always receive it before any replayed pushes.
 func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) {
 	if env.Subject == "" {
 		wc.sendAck(ctx, env.Seq, "subject is required")
@@ -400,9 +401,26 @@ func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) 
 		return
 	}
 
-	if err := wc.hub.Subscribe(wc.id, env.Subject, payload.SinceSeq); err != nil {
+	// Validate subject before acking by doing a dry-run subscribe check.
+	// Subscribe itself is the registration; we must send the ack first so that
+	// replayed pushes (enqueued by hub.Subscribe into the send channel) arrive
+	// after the ack, not before it.
+	if err := wc.hub.Subscribe(wc.id, env.Subject, 0); err != nil {
 		wc.sendAck(ctx, env.Seq, err.Error())
 		return
+	}
+
+	wc.sendAck(ctx, env.Seq, "")
+
+	// Re-subscribe with the actual SinceSeq to trigger replay.  The second
+	// call is a no-op for the subscription itself (idempotent) and only queues
+	// the replayed events after the ack has been written.  Subject validity was
+	// already confirmed by the first Subscribe above, so an error here would be
+	// unexpected; log it rather than silently discarding.
+	if payload.SinceSeq > 0 {
+		if err := wc.hub.Subscribe(wc.id, env.Subject, payload.SinceSeq); err != nil {
+			wc.logger.WarnContext(ctx, "ws: replay re-subscribe failed", slog.Any("error", err))
+		}
 	}
 
 	wc.logger.DebugContext(
@@ -410,7 +428,6 @@ func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) 
 		slog.String("subject", env.Subject),
 		slog.Uint64("since_seq", payload.SinceSeq),
 	)
-	wc.sendAck(ctx, env.Seq, "")
 }
 
 // handleUnsubscribe processes a TypeUnsubscribe client message.

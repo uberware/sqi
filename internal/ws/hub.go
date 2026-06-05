@@ -320,35 +320,42 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 		now = time.Now().UTC()
 	}
 
-	// Job-summary push (SubjectJobs).
-	if env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
-		JobID:     e.JobID,
-		Status:    e.Status,
-		UpdatedAt: now,
-	}); err == nil {
-		h.fanout(SubjectJobs, env)
-	} else {
-		h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
+	// Job-summary push (SubjectJobs) — skip marshal when no subscribers.
+	if h.hasSubscribers(SubjectJobs) {
+		if env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
+			JobID:     e.JobID,
+			Status:    e.Status,
+			UpdatedAt: now,
+		}); err == nil {
+			h.fanout(SubjectJobs, env)
+		} else {
+			h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
+		}
 	}
 
-	// Per-job task-update push.
+	// Per-job task-update push — skip marshal when no subscribers.
 	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, e.JobID)
-	if env, err := buildEnvelope(taskSubject, TaskUpdatePush{
-		JobID:     e.JobID,
-		TaskID:    e.TaskID,
-		Name:      e.Name,
-		Status:    e.Status,
-		WorkerID:  e.WorkerID,
-		UpdatedAt: now,
-	}); err == nil {
-		h.fanout(taskSubject, env)
-	} else {
-		h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask tasks envelope", slog.Any("error", err))
+	if h.hasSubscribers(taskSubject) {
+		if env, err := buildEnvelope(taskSubject, TaskUpdatePush{
+			JobID:     e.JobID,
+			TaskID:    e.TaskID,
+			Name:      e.Name,
+			Status:    e.Status,
+			WorkerID:  e.WorkerID,
+			UpdatedAt: now,
+		}); err == nil {
+			h.fanout(taskSubject, env)
+		} else {
+			h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask tasks envelope", slog.Any("error", err))
+		}
 	}
 }
 
 // NotifyWorker fans a worker-status change to all SubjectWorkers subscribers.
 func (h *Hub) NotifyWorker(e WorkerEvent) {
+	if !h.hasSubscribers(SubjectWorkers) {
+		return
+	}
 	env, err := buildEnvelope(SubjectWorkers, WorkerStatusPush(e))
 	if err != nil {
 		h.logger.WarnContext(context.Background(), "ws: hub: NotifyWorker envelope", slog.Any("error", err))
@@ -364,6 +371,9 @@ func (h *Hub) NotifyLog(e LogEvent) {
 		at = time.Now().UTC()
 	}
 	logSubject := fmt.Sprintf(SubjectTaskLogsFmt, e.TaskID)
+	if !h.hasSubscribers(logSubject) {
+		return
+	}
 	env, err := buildEnvelope(logSubject, TaskLogPush{
 		TaskID:    e.TaskID,
 		AttemptID: e.AttemptID,
@@ -381,6 +391,9 @@ func (h *Hub) NotifyLog(e LogEvent) {
 
 // NotifyJob fans a job-status change to all SubjectJobs subscribers.
 func (h *Hub) NotifyJob(e JobEvent) {
+	if !h.hasSubscribers(SubjectJobs) {
+		return
+	}
 	now := e.UpdatedAt
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -401,6 +414,16 @@ func (h *Hub) NotifyJob(e JobEvent) {
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────
+
+// hasSubscribers reports whether subject currently has at least one subscribed
+// client.  Used by Notify* methods to skip JSON marshaling when there is nobody
+// to deliver to.
+func (h *Hub) hasSubscribers(subject string) bool {
+	h.mu.RLock()
+	n := len(h.subs[subject])
+	h.mu.RUnlock()
+	return n > 0
+}
 
 // fanout assigns a hub-level seq to env, stores it in the subject's ring
 // buffer, and delivers a copy to each subscribed client.  Clients whose send
