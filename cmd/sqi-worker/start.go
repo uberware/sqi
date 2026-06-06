@@ -23,6 +23,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
+	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
@@ -87,6 +88,15 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Dry-run ───────────────────────────────────────────────────────────────
 	if startFlags.DryRun {
 		return runDryRun(cfg)
+	}
+
+	// ── Root-user check (task 57) ─────────────────────────────────────────────
+	//
+	// Refuse to run as root on Linux/macOS unless allow_root is explicitly set,
+	// because executing render processes as root is a security risk per
+	// sqi.md §18 (open question 2).  The check is a no-op on Windows.
+	if err := executor.CheckRootUser(cfg.Worker.AllowRoot, logger); err != nil {
+		return err
 	}
 
 	// ── Worker ID ─────────────────────────────────────────────────────────────
@@ -208,12 +218,40 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("worker registration: %w", err)
 	}
 
+	// ── Session manager (tasks 43–48) ─────────────────────────────────────────
+	//
+	// The session Manager creates isolated working directories and manages
+	// environment setup/teardown for each task execution.
+	//
+	// keepFailedSessions retains working directories for failed sessions so
+	// operators can inspect partial outputs (SQI_WORKER_KEEP_FAILED_SESSIONS).
+	sessionMgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
+
+	// ── Task executor (tasks 49–58) ───────────────────────────────────────────
+	//
+	// The Executor starts OS processes for assigned tasks and reports their
+	// status back to sqi-server via NATS.  It implements pull.TaskDispatcher,
+	// pull.StateSource, and heartbeat.StateSource, replacing the no-op stubs
+	// that were used during earlier tasks.
+	exec := executor.New(
+		nc,
+		sessionMgr,
+		m,
+		nil, // outputHandler: nil uses LogOutput (log streaming added in tasks 64–69)
+		executor.Config{
+			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
+			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
+			AllowRoot:          cfg.Worker.AllowRoot,
+		},
+		logger,
+	)
+
 	// ── Heartbeat (tasks 30–33) ───────────────────────────────────────────────
 	//
 	// The heartbeat Publisher ticks on cfg.Worker.HeartbeatInterval and
 	// publishes liveness + runtime-state messages to worker.heartbeat.
-	// A NoopStateSource is used here until the executor (task 49+) is wired
-	// in; replace it with the executor's StateSource once available.
+	// The executor is wired in as the StateSource so each heartbeat carries
+	// the current active-task count, active task IDs, and last-assignment time.
 	//
 	// The Publisher also runs an internal watchdog goroutine that polls NATS
 	// connection status and triggers re-registration when a reconnect is
@@ -223,27 +261,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		workerID,
 		cfg.Worker.MaxConcurrentTasks,
 		cfg.Worker.HeartbeatInterval,
-		heartbeat.NoopStateSource{},
+		exec, // executor implements heartbeat.StateSource
 		reg,
 		logger,
 	)
 	go hbPublisher.Run(ctx)
 
-	// ── Session manager (tasks 43–48) ─────────────────────────────────────────
-	//
-	// The session Manager creates isolated working directories and manages
-	// environment setup/teardown for each task execution. It is passed to the
-	// executor (task 49+) which calls Manager.Create when a task is assigned
-	// and Manager.Cleanup when the task completes, fails, or is canceled.
-	//
-	// keepFailedSessions is controlled by the --keep-failed-sessions config
-	// option (SQI_WORKER_KEEP_FAILED_SESSIONS) and retains working directories
-	// for failed sessions so operators can inspect partial outputs.
-	_ = session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
-	// TODO(task 49): pass sessionMgr to the executor once it is implemented.
-
 	// ── Work assignment pull loop (tasks 38–42) ───────────────────────────────
-	puller, err := newPuller(nc, cfg, logger)
+	puller, err := newPuller(nc, cfg, exec, exec, logger)
 	if err != nil {
 		return err
 	}
@@ -388,7 +413,13 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 // newPuller creates a JetStream context from nc and returns a configured
 // [pull.Puller]. Extracted from [runStart] to keep that function's cyclomatic
 // complexity within the project limit.
-func newPuller(nc *nats.Conn, cfg workerconfig.WorkerConfig, logger *slog.Logger) (*pull.Puller, error) {
+func newPuller(
+	nc *nats.Conn,
+	cfg workerconfig.WorkerConfig,
+	state pull.StateSource,
+	dispatcher pull.TaskDispatcher,
+	logger *slog.Logger,
+) (*pull.Puller, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("worker: jetstream context: %w", err)
@@ -402,8 +433,8 @@ func newPuller(nc *nats.Conn, cfg workerconfig.WorkerConfig, logger *slog.Logger
 			IdleBackoff:        cfg.Worker.PullIdleBackoff,
 			NackDelay:          cfg.Worker.PullNackDelay,
 		},
-		pull.NoopStateSource{}, // replaced by executor in tasks 49+
-		pull.NoopDispatcher{},  // replaced by executor in tasks 49+
+		state,
+		dispatcher,
 		logger,
 	), nil
 }

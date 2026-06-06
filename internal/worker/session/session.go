@@ -447,14 +447,16 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 	waitErr := cmd.Wait()
 
 	if len(stdoutBytes) > 0 {
-		logger.DebugContext(ctx,
+		logger.DebugContext(
+			ctx,
 			"session: env action stdout",
 			slog.String("command", action.Command),
 			slog.String("output", string(stdoutBytes)),
 		)
 	}
 	if len(stderrBytes) > 0 {
-		logger.DebugContext(ctx,
+		logger.DebugContext(
+			ctx,
 			"session: env action stderr",
 			slog.String("command", action.Command),
 			slog.String("output", string(stderrBytes)),
