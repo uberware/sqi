@@ -29,6 +29,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/obs"
 	"github.com/uberware/sqi/internal/worker/pull"
 	"github.com/uberware/sqi/internal/worker/registration"
+	"github.com/uberware/sqi/internal/worker/session"
 )
 
 // startFlags holds values for flags specific to the start subcommand.
@@ -227,6 +228,19 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		logger,
 	)
 	go hbPublisher.Run(ctx)
+
+	// ── Session manager (tasks 43–48) ─────────────────────────────────────────
+	//
+	// The session Manager creates isolated working directories and manages
+	// environment setup/teardown for each task execution. It is passed to the
+	// executor (task 49+) which calls Manager.Create when a task is assigned
+	// and Manager.Cleanup when the task completes, fails, or is canceled.
+	//
+	// keepFailedSessions is controlled by the --keep-failed-sessions config
+	// option (SQI_WORKER_KEEP_FAILED_SESSIONS) and retains working directories
+	// for failed sessions so operators can inspect partial outputs.
+	_ = session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
+	// TODO(task 49): pass sessionMgr to the executor once it is implemented.
 
 	// ── Work assignment pull loop (tasks 38–42) ───────────────────────────────
 	puller, err := newPuller(nc, cfg, logger)

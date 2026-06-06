@@ -129,6 +129,13 @@ worker:
   # Type: bool   Env: SQI_WORKER_ALLOW_ROOT
   allow_root: false
 
+  # Retain a session's working directory after a failed session (task cancellation,
+  # non-zero task exit code, or environment setup error). Useful for post-mortem
+  # inspection of partial outputs and environment state on a specific worker.
+  # Disable in production to avoid filling the data directory on busy workers.
+  # Type: bool   Env: SQI_WORKER_KEEP_FAILED_SESSIONS
+  keep_failed_sessions: false
+
   # Restrict this worker to serving specific queue IDs. When empty (the
   # default) the worker accepts assignments from all queues via a wildcard
   # JetStream consumer. Set this on heterogeneous farms where some workers

@@ -126,6 +126,14 @@ type WorkerSettings struct {
 	// Env: SQI_WORKER_ALLOW_ROOT
 	AllowRoot bool `yaml:"allow_root"`
 
+	// KeepFailedSessions retains a session's working directory after the
+	// session ends in failure (task cancellation, non-zero exit code, or
+	// environment setup error). Useful for post-mortem inspection of partial
+	// outputs and environment state. Disabled by default to avoid filling the
+	// data directory on busy workers.
+	// Env: SQI_WORKER_KEEP_FAILED_SESSIONS
+	KeepFailedSessions bool `yaml:"keep_failed_sessions"`
+
 	// QueueIDs restricts this worker to serving the listed queue IDs. An empty
 	// list means the worker accepts assignments from all queues via a wildcard
 	// JetStream consumer.  Set this when running a heterogeneous farm where
@@ -397,6 +405,9 @@ func applyWorkerEnv(c *WorkerSettings) {
 	}
 	if v := os.Getenv("SQI_WORKER_ALLOW_ROOT"); v != "" {
 		c.AllowRoot = parseBoolEnv(v)
+	}
+	if v := os.Getenv("SQI_WORKER_KEEP_FAILED_SESSIONS"); v != "" {
+		c.KeepFailedSessions = parseBoolEnv(v)
 	}
 	applyWorkerPullEnv(c)
 }
