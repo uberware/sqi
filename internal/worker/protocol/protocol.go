@@ -149,6 +149,11 @@ type DeregisterMsg struct {
 // regular interval.  The server uses these to track worker liveness; workers
 // that stop sending heartbeats are marked offline by the heartbeat sweep after
 // [scheduler.Config.WorkerTimeout] elapses.
+//
+// Beyond the liveness signal, each heartbeat carries enough runtime state for
+// the server to detect stale assignments without additional store queries:
+// active task IDs, counts, and the last time this worker received an
+// assignment.
 type HeartbeatMsg struct {
 	// Version must equal [ProtocolVersion].
 	Version string `json:"version"`
@@ -161,6 +166,34 @@ type HeartbeatMsg struct {
 	// At is the worker's local timestamp when the heartbeat was composed.
 	// If zero or absent, the server substitutes its own clock.
 	At time.Time `json:"at"`
+
+	// ActiveTaskCount is the number of task processes currently running on
+	// this worker at the moment the heartbeat was composed.
+	ActiveTaskCount int `json:"active_task_count"`
+
+	// MaxConcurrentTasks is the worker's configured concurrency ceiling.
+	// Included so the server can compute available capacity without a separate
+	// registration lookup.
+	MaxConcurrentTasks int `json:"max_concurrent_tasks"`
+
+	// ActiveTaskIDs is the list of task IDs currently executing on this
+	// worker. The server uses this to detect assignments that are no longer
+	// present on the worker (e.g. due to a worker crash and restart) so it
+	// can mark them failed rather than waiting for a timeout.
+	// Empty when no tasks are running.
+	ActiveTaskIDs []string `json:"active_task_ids,omitempty"`
+
+	// UptimeSeconds is the number of seconds the worker process has been
+	// running since it started. Useful for diagnosing workers that are
+	// restarting frequently.
+	UptimeSeconds float64 `json:"uptime_seconds"`
+
+	// LastAssignmentAt is the worker's local timestamp of the most recent
+	// task assignment it received. Nil when the worker has not yet executed
+	// any task in this process lifetime. The server uses this to distinguish
+	// idle-but-healthy workers from workers that have stopped pulling
+	// assignments.
+	LastAssignmentAt *time.Time `json:"last_assignment_at,omitempty"`
 }
 
 // ── AssignMsg ─────────────────────────────────────────────────────────────────

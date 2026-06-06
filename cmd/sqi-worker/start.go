@@ -20,6 +20,7 @@ import (
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/heartbeat"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
@@ -195,6 +196,27 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err := reg.Register(ctx); err != nil {
 		return fmt.Errorf("worker registration: %w", err)
 	}
+
+	// ── Heartbeat (tasks 30–33) ───────────────────────────────────────────────
+	//
+	// The heartbeat Publisher ticks on cfg.Worker.HeartbeatInterval and
+	// publishes liveness + runtime-state messages to worker.heartbeat.
+	// A NoopStateSource is used here until the executor (task 49+) is wired
+	// in; replace it with the executor's StateSource once available.
+	//
+	// The Publisher also runs an internal watchdog goroutine that polls NATS
+	// connection status and triggers re-registration when a reconnect is
+	// detected, complementing the reconnect callback installed above.
+	hbPublisher := heartbeat.New(
+		nc,
+		workerID,
+		cfg.Worker.MaxConcurrentTasks,
+		cfg.Worker.HeartbeatInterval,
+		heartbeat.NoopStateSource{},
+		reg,
+		logger,
+	)
+	go hbPublisher.Run(ctx)
 
 	logger.InfoContext(
 		ctx, "sqi-worker starting",

@@ -39,6 +39,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync/atomic"
+	"time"
 
 	nats "github.com/nats-io/nats.go"
 
@@ -56,6 +58,11 @@ type Registrar struct {
 	cfg      workerconfig.WorkerSettings
 	caps     capabilities.Capabilities
 	logger   *slog.Logger
+
+	// lastRegisteredAt records the Unix nanosecond timestamp of the most
+	// recent successful Register call. Stored atomically so the heartbeat
+	// watchdog can read it without a mutex.
+	lastRegisteredAt atomic.Int64
 }
 
 // New creates a Registrar. caps should already have manual tags merged in
@@ -117,6 +124,11 @@ func (r *Registrar) Register(ctx context.Context) error {
 	if err := r.nc.Publish(bus.SubjectWorkerRegister, data); err != nil {
 		return fmt.Errorf("registration: publish to %s: %w", bus.SubjectWorkerRegister, err)
 	}
+
+	// Record successful registration time so the heartbeat watchdog can
+	// determine whether it needs to re-register after a reconnect (i.e.,
+	// whether the reconnect callback already handled it).
+	r.lastRegisteredAt.Store(time.Now().UnixNano())
 
 	r.logger.InfoContext(
 		ctx, "registration: worker registered",
@@ -198,6 +210,18 @@ func (r *Registrar) SetupReconnectHook(_ context.Context) {
 			)
 		}
 	})
+}
+
+// LastRegisteredAt returns the time of the most recent successful Register
+// call, or the zero time if Register has never succeeded in this process
+// lifetime. Safe for concurrent use; the heartbeat watchdog uses this to
+// determine whether it needs to re-register after a reconnect.
+func (r *Registrar) LastRegisteredAt() time.Time {
+	ns := r.lastRegisteredAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // Capabilities returns the merged capability set stored at construction time.
