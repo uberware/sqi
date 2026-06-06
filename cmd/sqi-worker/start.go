@@ -20,6 +20,7 @@ import (
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
@@ -113,6 +114,28 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		syscall.SIGTERM, // sent by systemd / Docker
 	)
 	defer stop()
+
+	// ── Server discovery (tasks 34–37) ───────────────────────────────────────
+	//
+	// Resolve the NATS URL before dialing. If an explicit URL is configured
+	// it is used as-is (mDNS bypassed, task 36). Otherwise mDNS is browsed
+	// for "_sqi._tcp" services on the local network (tasks 34–35). If mDNS is
+	// disabled and no explicit URL is set, discovery.ResolveNATSURL returns a
+	// clear error that is surfaced to the operator (task 37).
+	natsURL, err := workerdiscovery.ResolveNATSURL(
+		ctx,
+		cfg.NATS.URL,
+		cfg.Discovery.EnableMDNS,
+		cfg.Discovery.MDNSTimeout,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("server discovery: %w", err)
+	}
+
+	// Overwrite NATS.URL with the resolved address so natsclient.Connect and
+	// all downstream log statements use the concrete URL.
+	cfg.NATS.URL = natsURL
 
 	// ── NATS connection (tasks 20–24) ─────────────────────────────────────────
 	//
