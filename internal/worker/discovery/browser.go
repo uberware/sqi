@@ -112,7 +112,15 @@ func Browse(ctx context.Context, timeout time.Duration, logger *slog.Logger) (Re
 		select {
 		case entry, ok := <-entries:
 			if !ok {
-				// Channel closed — browse ended with no result.
+				// Channel closed — browse ended. When the caller's context was
+				// canceled, zeroconf closes the entries channel as part of its
+				// own cleanup, so both this case and browseCtx.Done() become
+				// ready simultaneously. Prefer the caller's cancellation error
+				// so callers can detect context.Canceled / context.DeadlineExceeded
+				// rather than the internal ErrDiscoveryTimeout sentinel.
+				if ctx.Err() != nil {
+					return Result{}, ctx.Err()
+				}
 				return Result{}, ErrDiscoveryTimeout
 			}
 			result, err := entryToResult(entry)
