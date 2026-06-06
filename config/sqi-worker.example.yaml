@@ -129,6 +129,39 @@ worker:
   # Type: bool   Env: SQI_WORKER_ALLOW_ROOT
   allow_root: false
 
+  # Restrict this worker to serving specific queue IDs. When empty (the
+  # default) the worker accepts assignments from all queues via a wildcard
+  # JetStream consumer. Set this on heterogeneous farms where some workers
+  # specialise in a subset of queues, e.g. separate GPU and CPU queues.
+  #
+  # IMPORTANT: Do not mix wildcard (empty queue_ids) and per-queue workers on
+  # the same SQI_WORK JetStream stream — both consumer types would race on
+  # overlapping messages. Choose one strategy for your farm.
+  #
+  # Type: []string   Env: SQI_WORKER_QUEUE_IDS (comma-separated)
+  queue_ids: []
+  # Examples:
+  #   queue_ids:
+  #     - gpu-renders
+  #     - cpu-preview
+
+  # Wait duration between pull attempts when the work queue is empty. Prevents
+  # tight polling loops on idle queues. Resets to zero immediately when a task
+  # is received. Increase if many idle workers are generating NATS traffic;
+  # decrease if you need lower task start latency on bursty queues.
+  # Must be > 0.
+  # Type: duration   Env: SQI_WORKER_PULL_IDLE_BACKOFF
+  pull_idle_backoff: "2s"
+
+  # Redelivery delay applied to an assignment when pre-execution validation
+  # fails (e.g., compute location mismatch, protocol version incompatibility).
+  # The delay gives other workers a window to claim the assignment before NATS
+  # redelivers it to this worker. Set higher if transient failures are frequent
+  # and you want to reduce retry churn.
+  # Must be > 0.
+  # Type: duration   Env: SQI_WORKER_PULL_NACK_DELAY
+  pull_nack_delay: "5s"
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 log:
   # Minimum log level to emit.

@@ -125,6 +125,27 @@ type WorkerSettings struct {
 	// security risk (sqi.md §18).
 	// Env: SQI_WORKER_ALLOW_ROOT
 	AllowRoot bool `yaml:"allow_root"`
+
+	// QueueIDs restricts this worker to serving the listed queue IDs. An empty
+	// list means the worker accepts assignments from all queues via a wildcard
+	// JetStream consumer.  Set this when running a heterogeneous farm where
+	// some workers specialise in a subset of queues.
+	// Env: SQI_WORKER_QUEUE_IDS (comma-separated)
+	QueueIDs []string `yaml:"queue_ids"`
+
+	// PullIdleBackoff is the wait duration between pull attempts when the
+	// work queue is empty (task 42). Prevents tight polling on idle queues.
+	// Resets to zero immediately when a task is received.
+	// Default: 2s
+	// Env: SQI_WORKER_PULL_IDLE_BACKOFF
+	PullIdleBackoff time.Duration `yaml:"pull_idle_backoff"`
+
+	// PullNackDelay is the redelivery delay applied to an assignment when
+	// pre-execution validation fails (task 40). The delay gives other workers
+	// a chance to pick it up before NATS redelivers to this one.
+	// Default: 5s
+	// Env: SQI_WORKER_PULL_NACK_DELAY
+	PullNackDelay time.Duration `yaml:"pull_nack_delay"`
 }
 
 // LogConfig controls structured logging output.
@@ -195,6 +216,8 @@ func Default() WorkerConfig {
 			MaxConcurrentTasks:  4,
 			HeartbeatInterval:   15 * time.Second,
 			ShutdownGracePeriod: 30 * time.Second,
+			PullIdleBackoff:     2 * time.Second,
+			PullNackDelay:       5 * time.Second,
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -375,6 +398,25 @@ func applyWorkerEnv(c *WorkerSettings) {
 	if v := os.Getenv("SQI_WORKER_ALLOW_ROOT"); v != "" {
 		c.AllowRoot = parseBoolEnv(v)
 	}
+	applyWorkerPullEnv(c)
+}
+
+// applyWorkerPullEnv overlays pull-loop env vars onto c. Split from
+// applyWorkerEnv to keep each function under the cyclomatic-complexity limit.
+func applyWorkerPullEnv(c *WorkerSettings) {
+	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
+		c.QueueIDs = splitTags(v)
+	}
+	if v := os.Getenv("SQI_WORKER_PULL_IDLE_BACKOFF"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.PullIdleBackoff = d
+		}
+	}
+	if v := os.Getenv("SQI_WORKER_PULL_NACK_DELAY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.PullNackDelay = d
+		}
+	}
 }
 
 func applyLogEnv(c *LogConfig) {
@@ -461,6 +503,19 @@ func Validate(cfg WorkerConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field:   "worker.shutdown_grace_period",
 			Message: "must be a positive duration",
+		})
+	}
+
+	if cfg.Worker.PullIdleBackoff < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "worker.pull_idle_backoff",
+			Message: "must be a non-negative duration (0 uses the built-in default of 2s)",
+		})
+	}
+	if cfg.Worker.PullNackDelay < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "worker.pull_nack_delay",
+			Message: "must be a non-negative duration (0 uses the built-in default of 5s)",
 		})
 	}
 

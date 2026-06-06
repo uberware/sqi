@@ -228,6 +228,15 @@ type AssignMsg struct {
 	// AssignedAt is the server-side time the assignment was created.
 	AssignedAt time.Time `json:"assigned_at"`
 
+	// ComputeLocation is the compute-location name the server targeted when
+	// building this assignment's path map. Workers compare this against their
+	// own configured compute location and nack the message if they differ,
+	// ensuring a reassigned worker (after a config change without restart) does
+	// not execute a task with path mappings intended for a different location.
+	// Empty means the server sent no location constraint (e.g., when no path
+	// map was generated).
+	ComputeLocation string `json:"compute_location,omitempty"`
+
 	// ── Parameter space ───────────────────────────────────────────────────
 
 	// Parameters are the resolved task parameter values for this specific task,

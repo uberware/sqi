@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -25,6 +27,7 @@ import (
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
+	"github.com/uberware/sqi/internal/worker/pull"
 	"github.com/uberware/sqi/internal/worker/registration"
 )
 
@@ -69,25 +72,9 @@ func init() {
 
 func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Configuration ─────────────────────────────────────────────────────────
-	overrides := flagOverrides()
-	if cmd.Flags().Changed("dry-run") {
-		overrides.DryRun = startFlags.DryRun
-	}
-	if cmd.Flags().Changed("nats-insecure-skip-verify") {
-		overrides.NATSInsecureSkipVerify = startFlags.NATSInsecureSkipVerify
-	}
-
-	cfg, err := workerconfig.Load(persistentFlags.ConfigFile, overrides)
+	cfg, err := loadAndValidateConfig(cmd)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	if errs := workerconfig.Validate(cfg); len(errs) > 0 {
-		var b strings.Builder
-		for _, e := range errs {
-			fmt.Fprintf(&b, "  %s\n", e)
-		}
-		return fmt.Errorf("%d configuration error(s):\n%s", len(errs), b.String())
+		return err
 	}
 
 	// ── Logger ────────────────────────────────────────────────────────────────
@@ -241,6 +228,13 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	go hbPublisher.Run(ctx)
 
+	// ── Work assignment pull loop (tasks 38–42) ───────────────────────────────
+	puller, err := newPuller(nc, cfg, logger)
+	if err != nil {
+		return err
+	}
+	go puller.Run(ctx)
+
 	logger.InfoContext(
 		ctx, "sqi-worker starting",
 		slog.String("worker_id", workerID),
@@ -273,6 +267,34 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
+}
+
+// loadAndValidateConfig resolves CLI flag overrides, loads the layered
+// configuration, and runs validation — returning a ready-to-use [WorkerConfig]
+// or an error with an actionable message. Extracted from [runStart] to keep
+// that function's cyclomatic complexity within the project limit.
+func loadAndValidateConfig(cmd *cobra.Command) (workerconfig.WorkerConfig, error) {
+	overrides := flagOverrides()
+	if cmd.Flags().Changed("dry-run") {
+		overrides.DryRun = startFlags.DryRun
+	}
+	if cmd.Flags().Changed("nats-insecure-skip-verify") {
+		overrides.NATSInsecureSkipVerify = startFlags.NATSInsecureSkipVerify
+	}
+
+	cfg, err := workerconfig.Load(persistentFlags.ConfigFile, overrides)
+	if err != nil {
+		return workerconfig.WorkerConfig{}, fmt.Errorf("load config: %w", err)
+	}
+
+	if errs := workerconfig.Validate(cfg); len(errs) > 0 {
+		var b strings.Builder
+		for _, e := range errs {
+			fmt.Fprintf(&b, "  %s\n", e)
+		}
+		return workerconfig.WorkerConfig{}, fmt.Errorf("%d configuration error(s):\n%s", len(errs), b.String())
+	}
+	return cfg, nil
 }
 
 // runDryRun prints the effective configuration and the capabilities that would
@@ -347,6 +369,29 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	}
 
 	return nil
+}
+
+// newPuller creates a JetStream context from nc and returns a configured
+// [pull.Puller]. Extracted from [runStart] to keep that function's cyclomatic
+// complexity within the project limit.
+func newPuller(nc *nats.Conn, cfg workerconfig.WorkerConfig, logger *slog.Logger) (*pull.Puller, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("worker: jetstream context: %w", err)
+	}
+	return pull.New(
+		js,
+		pull.Config{
+			QueueIDs:           cfg.Worker.QueueIDs,
+			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
+			ComputeLocation:    cfg.Worker.ComputeLocation,
+			IdleBackoff:        cfg.Worker.PullIdleBackoff,
+			NackDelay:          cfg.Worker.PullNackDelay,
+		},
+		pull.NoopStateSource{}, // replaced by executor in tasks 49+
+		pull.NoopDispatcher{},  // replaced by executor in tasks 49+
+		logger,
+	), nil
 }
 
 // flagOverrides returns a [workerconfig.FlagOverrides] populated only from
