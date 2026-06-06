@@ -152,12 +152,22 @@ type Config struct {
 	HeartbeatSweepInterval time.Duration
 }
 
+// busClient is the subset of [bus.Client] used by the Scheduler. Defined as
+// an interface so unit tests can inject a stub without a real NATS broker.
+type busClient interface {
+	ConsumeWorker(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
+	ConsumeTaskStatus(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
+	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
+	PublishWorkAssign(ctx context.Context, queueID string, data []byte) error
+	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
+}
+
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
 // Create it with [New] and drive it with [Run].
 type Scheduler struct {
 	cfg      Config
 	store    store.Store
-	bus      *bus.Client
+	bus      busClient
 	metrics  *metrics.Metrics
 	logger   *slog.Logger
 	notifier ws.Notifier // pushes live events to WebSocket clients (tasks 89–91)
@@ -185,7 +195,7 @@ type Scheduler struct {
 // WebSocket hub can fan them out to subscribed clients (tasks 89–91). Pass
 // [ws.NoopNotifier] (or nil — treated as NoopNotifier) when no WebSocket hub
 // is wired.
-func New(cfg Config, st store.Store, busClient *bus.Client, m *metrics.Metrics, logger *slog.Logger, notifier ws.Notifier) *Scheduler {
+func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, logger *slog.Logger, notifier ws.Notifier) *Scheduler {
 	if cfg.AssignBatchSize <= 0 {
 		cfg.AssignBatchSize = DefaultConfig().AssignBatchSize
 	}

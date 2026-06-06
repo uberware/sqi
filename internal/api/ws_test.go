@@ -544,3 +544,43 @@ func TestWSHandler_Subscribe_MalformedPayload_ReturnsError(t *testing.T) {
 		t.Fatal("expected non-empty Error for subscribe with malformed payload JSON")
 	}
 }
+
+func TestWSHandler_Subscribe_TaskLogs_PushDelivered(t *testing.T) {
+	// Subscribing to "tasks/{id}/logs" (SubjectTaskLogsFmt) and receiving a
+	// NotifyLog event covers the log-channel fan-out path in ws.go.
+	hub := internalws.NewHub(newTestLogger())
+	srv := newWSTestServer(t, hub)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn := dialTestWS(t, srv)
+	const taskID = "task-log-test"
+	logSubject := fmt.Sprintf(internalws.SubjectTaskLogsFmt, taskID)
+
+	wsWrite(t, ctx, conn, internalws.Envelope{
+		Type:    internalws.TypeSubscribe,
+		Subject: logSubject,
+		Seq:     1,
+	})
+	mustAck(t, ctx, conn, 1)
+
+	hub.NotifyLog(internalws.LogEvent{
+		TaskID:    taskID,
+		AttemptID: "attempt-1",
+		SeqNum:    7,
+		Stream:    "stdout",
+		Data:      "hello from worker",
+	})
+
+	env := wsRead(t, ctx, conn)
+	if env.Type != internalws.TypePush {
+		t.Fatalf("expected TypePush for log event, got %q", env.Type)
+	}
+	if env.Subject != logSubject {
+		t.Fatalf("expected subject %q, got %q", logSubject, env.Subject)
+	}
+	if env.Seq == 0 {
+		t.Error("push envelope must have a non-zero Seq")
+	}
+}

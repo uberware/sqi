@@ -31,11 +31,8 @@ else
 endif
 
 COVERAGE_OUT := coverage.out
-# Current coverage is ~40%.  Start the CI gate at 35 to establish a floor
-# and avoid flapping on minor test changes.  Raise in 5-point increments as
-# new test suites land (integration tests in task 111 should push this well
-# above 60).
-COVERAGE_MIN ?= 35
+# Raise in 5-point increments as new test suites land
+COVERAGE_MIN ?= 60
 
 # ── Default ───────────────────────────────────────────────────────────────────
 
