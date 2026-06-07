@@ -1,0 +1,719 @@
+# sqi-worker Configuration Reference
+
+`sqi-worker` is configured through four layers applied in order, with later
+layers overriding earlier ones:
+
+1. **Built-in defaults** — sensible values for local development.
+2. **Config file** — YAML or JSON; searched in `./config/sqi-worker.yaml`,
+   `~/.sqi/sqi-worker.yaml`, and `/etc/sqi/sqi-worker.yaml` by default. Pass
+   an explicit path with `--config /path/to/file`.
+3. **Environment variables** — prefixed `SQI_WORKER_`, e.g.
+   `SQI_WORKER_NATS_URL`.
+4. **CLI flags** — highest priority; available on the `start` subcommand.
+
+Print the effective merged configuration at any time with:
+
+```sh
+sqi-worker config print
+```
+
+Validate configuration without connecting to the server:
+
+```sh
+sqi-worker start --dry-run
+```
+
+A fully commented example file is at
+[`config/sqi-worker.example.yaml`](../config/sqi-worker.example.yaml).
+
+Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
+
+---
+
+## `nats` — Remote NATS connection
+
+### `nats.url`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (empty — use mDNS discovery) |
+| **Env var** | `SQI_WORKER_NATS_URL` |
+
+URL of the NATS server embedded in `sqi-server`. Required when
+`discovery.enable_mdns` is `false`. Must not be empty unless mDNS discovery
+is enabled. Example: `nats://sqi-server.local:4222`.
+
+```yaml
+nats:
+  url: "nats://sqi-server.example.com:4222"
+```
+
+---
+
+### `nats.tls_cert_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (disabled) |
+| **Env var** | `SQI_WORKER_NATS_TLS_CERT_FILE` |
+
+Path to the client TLS certificate (PEM-encoded). Required for mutual TLS
+when the server demands client certificates. Must be set together with
+`nats.tls_key_file`.
+
+```yaml
+nats:
+  tls_cert_file: "/etc/sqi/client.crt"
+  tls_key_file:  "/etc/sqi/client.key"
+```
+
+---
+
+### `nats.tls_key_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (disabled) |
+| **Env var** | `SQI_WORKER_NATS_TLS_KEY_FILE` |
+
+Path to the client TLS private key (PEM-encoded). Must be set together with
+`nats.tls_cert_file`.
+
+---
+
+### `nats.tls_ca_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (use system CA pool) |
+| **Env var** | `SQI_WORKER_NATS_TLS_CA_FILE` |
+
+Path to the CA certificate used to verify the NATS server's TLS certificate
+(PEM-encoded). Leave empty to use the system certificate pool.
+
+```yaml
+nats:
+  tls_ca_file: "/etc/sqi/ca.crt"
+```
+
+---
+
+### `nats.insecure_skip_verify`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` |
+| **CLI flag** | `--nats-insecure-skip-verify` |
+
+Skip TLS certificate verification. **Never set this to `true` in production**
+— it defeats the purpose of TLS. Use only in development environments where a
+self-signed certificate is acceptable.
+
+---
+
+### `nats.max_reconnect_attempts`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `-1` (retry indefinitely) |
+| **Env var** | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` |
+
+Maximum number of reconnection attempts before giving up and exiting. `-1`
+means retry indefinitely — the recommended setting for long-running workers.
+Reconnect attempts use exponential backoff with jitter starting at
+`nats.reconnect_wait`.
+
+```yaml
+nats:
+  max_reconnect_attempts: -1
+```
+
+---
+
+### `nats.reconnect_wait`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"2s"` |
+| **Env var** | `SQI_WORKER_NATS_RECONNECT_WAIT` |
+
+Base wait duration between reconnection attempts. The actual delay uses
+exponential backoff with ±20% jitter; this is the floor of that range. Must
+be `> 0`.
+
+```yaml
+nats:
+  reconnect_wait: "2s"
+```
+
+---
+
+## `worker` — Identity and runtime behavior
+
+### `worker.name`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `os.Hostname()` |
+| **Env var** | `SQI_WORKER_NAME` |
+
+Human-readable label for this worker shown in the `sqi-server` web UI and
+logs. Defaults to the machine hostname. Use a descriptive name on farms with
+many workers of the same type, e.g. `render-gpu-01`.
+
+```yaml
+worker:
+  name: "render-gpu-01"
+```
+
+---
+
+### `worker.farm_id`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (no farm) |
+| **Env var** | `SQI_WORKER_FARM_ID` |
+
+Farm this worker belongs to. Must match the `farm_id` of the jobs you want
+this worker to execute. When empty, the worker registers without a farm
+affiliation and may receive assignments from any farm that does not enforce
+farm-specific worker matching.
+
+```yaml
+worker:
+  farm_id: "studio-a"
+```
+
+---
+
+### `worker.data_dir`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) |
+| **Env var** | `SQI_WORKER_DATA_DIR` |
+
+Directory used to persist the worker ID file (`worker.id`) and session
+working directories. Created automatically on first start.
+
+The worker ID file ensures the server can correlate this worker across
+restarts. Do not delete `worker.id` unless you intend to re-register as a new
+worker. For production, use an absolute path on a fast local SSD.
+
+```yaml
+worker:
+  data_dir: "/var/lib/sqi-worker"
+```
+
+---
+
+### `worker.compute_location`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (none) |
+| **Env var** | `SQI_WORKER_COMPUTE_LOCATION` |
+
+Named compute location matching a storage location configured in
+`sqi-server`. Used for resolved-mode path mapping: the server substitutes
+named storage locations in job definitions with the concrete paths valid on
+this worker's host. Leave empty if you are not using named storage locations.
+
+```yaml
+worker:
+  compute_location: "nas-studio-a"
+```
+
+---
+
+### `worker.max_concurrent_tasks`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `4` |
+| **Env var** | `SQI_WORKER_MAX_CONCURRENT_TASKS` |
+
+Maximum number of tasks this worker will execute simultaneously. Set to the
+number of parallel render slots on this host — typically `1` for GPU
+rendering or the logical CPU count ÷ cores-per-task for CPU rendering. Must
+be `≥ 1`.
+
+```yaml
+worker:
+  max_concurrent_tasks: 1
+```
+
+---
+
+### `worker.capability_tags`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` (empty) |
+| **Env var** | `SQI_WORKER_CAPABILITY_TAGS` (comma-separated) |
+
+Arbitrary capability tags merged with auto-detected capabilities at
+registration time. Use these to annotate software or hardware features that
+the auto-detector cannot discover. Tags listed here overwrite any
+auto-detected tag with the same key.
+
+```yaml
+worker:
+  capability_tags:
+    - maya-2025
+    - arnold-7
+    - gpu
+    - highram
+```
+
+```sh
+SQI_WORKER_CAPABILITY_TAGS=maya-2025,arnold-7,gpu sqi-worker start
+```
+
+See [`docs/worker-capabilities.md`](worker-capabilities.md) for the full
+reference including auto-detected tags.
+
+---
+
+### `worker.heartbeat_interval`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"15s"` |
+| **Env var** | `SQI_WORKER_HEARTBEAT_INTERVAL` |
+
+How often the worker publishes a heartbeat message to `sqi-server`. The
+server uses heartbeat gaps to detect stale workers — this value should be
+shorter than the server's `scheduler.heartbeat_timeout` (default 30 s). At
+the default of 15 s the server receives two heartbeats per timeout window.
+Must be `> 0`.
+
+```yaml
+worker:
+  heartbeat_interval: "15s"
+```
+
+---
+
+### `worker.shutdown_grace_period`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"30s"` |
+| **Env var** | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` |
+
+Maximum time the worker waits for in-flight tasks to finish after receiving
+SIGINT or SIGTERM before force-killing them. Tasks that do not complete within
+this window receive SIGTERM then SIGKILL and are reported as `failed`. Set
+this to match your longest expected task duration on rolling-restart workers.
+Must be `> 0`.
+
+```yaml
+worker:
+  shutdown_grace_period: "5m"
+```
+
+---
+
+### `worker.allow_root`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_ALLOW_ROOT` |
+
+Allow the worker to run as the root user on Linux and macOS. Disabled by
+default because executing render processes as root is a security risk. Enable
+only when running inside a container where root is expected (e.g., as the
+container's only user), or when you understand and accept the risk.
+
+```yaml
+worker:
+  allow_root: false
+```
+
+---
+
+### `worker.keep_failed_sessions`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_KEEP_FAILED_SESSIONS` |
+
+Retain a session's working directory after a failed session (task
+cancellation, non-zero exit code, or environment setup error). Useful for
+post-mortem inspection of partial outputs and environment state on a specific
+worker. Disable in production to avoid filling the data directory on busy
+workers.
+
+```yaml
+worker:
+  keep_failed_sessions: false
+```
+
+---
+
+### `worker.queue_ids`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` (all queues via wildcard consumer) |
+| **Env var** | `SQI_WORKER_QUEUE_IDS` (comma-separated) |
+
+Restrict this worker to serving specific queue IDs. When empty (the default),
+the worker accepts assignments from all queues via a wildcard JetStream
+consumer. Set this on heterogeneous farms where some workers specialise in a
+subset of queues.
+
+**Important:** Do not mix wildcard (empty `queue_ids`) and per-queue workers
+on the same SQI_WORK JetStream stream — both consumer types would race on
+overlapping messages. Choose one strategy for your farm.
+
+```yaml
+worker:
+  queue_ids:
+    - gpu-renders
+    - cpu-preview
+```
+
+---
+
+### `worker.pull_idle_backoff`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"2s"` |
+| **Env var** | `SQI_WORKER_PULL_IDLE_BACKOFF` |
+
+Wait duration between pull attempts when the work queue is empty. Prevents
+tight polling on idle queues. Resets to zero immediately when a task is
+received. Increase if many idle workers are generating NATS traffic; decrease
+for lower task start latency on bursty queues. Must be `≥ 0`.
+
+```yaml
+worker:
+  pull_idle_backoff: "2s"
+```
+
+---
+
+### `worker.pull_nack_delay`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"5s"` |
+| **Env var** | `SQI_WORKER_PULL_NACK_DELAY` |
+
+Redelivery delay applied to an assignment when pre-execution validation fails
+(e.g., compute location mismatch). The delay gives other workers a window to
+claim the assignment before NATS redelivers it to this worker. Must be `≥ 0`.
+
+```yaml
+worker:
+  pull_nack_delay: "5s"
+```
+
+---
+
+## `log` — Structured logging
+
+### `log.level`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"info"` |
+| **Accepted values** | `debug`, `info`, `warn`, `error` |
+| **Env var** | `SQI_WORKER_LOG_LEVEL` |
+| **CLI flag** | `--log-level` |
+
+Minimum log level to emit. Use `debug` during initial deployment to verify
+registration and task flow. Switch to `info` or `warn` in production.
+
+```yaml
+log:
+  level: "info"
+```
+
+---
+
+### `log.format`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"json"` |
+| **Accepted values** | `json`, `text` |
+| **Env var** | `SQI_WORKER_LOG_FORMAT` |
+| **CLI flag** | `--log-format` |
+
+Log output format. `json` is structured and machine-parseable — use it in
+production so log aggregators (Loki, Datadog, Splunk, etc.) can index fields.
+`text` is human-readable with aligned columns — use it during local
+development.
+
+```yaml
+log:
+  format: "json"
+```
+
+---
+
+## `metrics` — Local HTTP server
+
+The worker exposes a small HTTP server on loopback for container orchestration
+health probes and Prometheus metrics. This server is not exposed to the
+network by default.
+
+| Path | Purpose |
+|---|---|
+| `/healthz` | Liveness probe — always returns 200 when the process is running |
+| `/readyz` | Readiness probe — returns 503 when the NATS connection is not connected |
+| `/metrics` | Prometheus metrics endpoint |
+| `/debug/pprof/` | Go profiling endpoints (only when `metrics.enable_pprof: true`) |
+
+### `metrics.addr`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"127.0.0.1:9091"` |
+| **Env var** | `SQI_WORKER_METRICS_ADDR` |
+
+TCP address the local HTTP server listens on. Use `0.0.0.0:9091` to expose
+the endpoints to Prometheus scrapers on the network (ensure the port is
+firewalled appropriately).
+
+```yaml
+metrics:
+  addr: "127.0.0.1:9091"
+```
+
+---
+
+### `metrics.enable_pprof`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_METRICS_ENABLE_PPROF` |
+
+Expose Go runtime profiling endpoints at `/debug/pprof/`. Profiling data
+reveals memory layout, goroutine stacks, and CPU hotspots — enable
+temporarily for performance diagnosis, never in long-term production.
+
+```yaml
+metrics:
+  enable_pprof: false
+```
+
+---
+
+## `discovery` — mDNS server auto-discovery
+
+### `discovery.enable_mdns`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` |
+
+Enable mDNS-based `sqi-server` auto-discovery. When `true` and `nats.url` is
+empty, the worker browses for `_sqi._tcp` services on the local network.
+Disable on networks that prohibit multicast — most cloud VPCs, VLANs, and
+container networks.
+
+```yaml
+discovery:
+  enable_mdns: true
+```
+
+---
+
+### `discovery.mdns_timeout`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"5s"` |
+| **Env var** | `SQI_WORKER_DISCOVERY_MDNS_TIMEOUT` |
+
+Maximum time to wait for an mDNS discovery result before giving up. Increase
+if the server is slow to respond on a congested network. Only relevant when
+`discovery.enable_mdns` is `true`.
+
+```yaml
+discovery:
+  mdns_timeout: "5s"
+```
+
+---
+
+## `log_streamer` — Log chunk publisher
+
+Controls how task process stdout/stderr is batched and streamed to
+`sqi-server` via NATS JetStream. Tune these values to balance NATS message
+overhead against how live the web UI log viewer feels.
+
+### `log_streamer.max_lines_per_chunk`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `50` |
+| **Env var** | `SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK` |
+
+Maximum number of output lines batched into a single NATS message. A flush is
+triggered immediately when the buffer reaches this count. Increase for very
+verbose processes to reduce per-message overhead; decrease for better
+granularity when watching live log output.
+
+```yaml
+log_streamer:
+  max_lines_per_chunk: 50
+```
+
+---
+
+### `log_streamer.max_bytes_per_chunk`
+
+| | |
+|---|---|
+| **Type** | `int` (bytes) |
+| **Default** | `16384` (16 KB) |
+| **Env var** | `SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK` |
+
+Maximum total byte count of line content in a single NATS message. A flush is
+triggered when the accumulated bytes reach this limit after adding a line.
+Guards against a single very long line producing an oversized message.
+
+```yaml
+log_streamer:
+  max_bytes_per_chunk: 16384
+```
+
+---
+
+### `log_streamer.flush_interval`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"500ms"` |
+| **Env var** | `SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL` |
+
+Maximum time a line may sit in the buffer before being flushed regardless of
+the chunk size thresholds. Smaller values make the web UI log viewer feel
+more live at the cost of more frequent small NATS publishes on slowly printing
+processes.
+
+```yaml
+log_streamer:
+  flush_interval: "500ms"
+```
+
+---
+
+## Quick reference table
+
+| Key | Type | Default | Env var | CLI flag |
+|---|---|---|---|---|
+| `nats.url` | string | `""` | `SQI_WORKER_NATS_URL` | — |
+| `nats.tls_cert_file` | string | `""` | `SQI_WORKER_NATS_TLS_CERT_FILE` | — |
+| `nats.tls_key_file` | string | `""` | `SQI_WORKER_NATS_TLS_KEY_FILE` | — |
+| `nats.tls_ca_file` | string | `""` | `SQI_WORKER_NATS_TLS_CA_FILE` | — |
+| `nats.insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` | `--nats-insecure-skip-verify` |
+| `nats.max_reconnect_attempts` | int | `-1` | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` | — |
+| `nats.reconnect_wait` | duration | `2s` | `SQI_WORKER_NATS_RECONNECT_WAIT` | — |
+| `worker.name` | string | hostname | `SQI_WORKER_NAME` | — |
+| `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
+| `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) | `SQI_WORKER_DATA_DIR` | — |
+| `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — |
+| `worker.max_concurrent_tasks` | int | `4` | `SQI_WORKER_MAX_CONCURRENT_TASKS` | — |
+| `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — |
+| `worker.heartbeat_interval` | duration | `15s` | `SQI_WORKER_HEARTBEAT_INTERVAL` | — |
+| `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — |
+| `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — |
+| `worker.keep_failed_sessions` | bool | `false` | `SQI_WORKER_KEEP_FAILED_SESSIONS` | — |
+| `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
+| `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — |
+| `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — |
+| `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
+| `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |
+| `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |
+| `metrics.enable_pprof` | bool | `false` | `SQI_WORKER_METRICS_ENABLE_PPROF` | — |
+| `discovery.enable_mdns` | bool | `true` | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` | — |
+| `discovery.mdns_timeout` | duration | `5s` | `SQI_WORKER_DISCOVERY_MDNS_TIMEOUT` | — |
+| `log_streamer.max_lines_per_chunk` | int | `50` | `SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK` | — |
+| `log_streamer.max_bytes_per_chunk` | int | `16384` | `SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK` | — |
+| `log_streamer.flush_interval` | duration | `500ms` | `SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL` | — |
+
+---
+
+## Worked example: GPU render farm node
+
+A node in a GPU render farm running Houdini 20.5 with a single NVIDIA GPU:
+
+```yaml
+# /etc/sqi/sqi-worker.yaml
+
+nats:
+  url: "nats://render-server.studio.local:4222"
+
+discovery:
+  enable_mdns: false
+
+worker:
+  name: "gpu-node-04"
+  farm_id: "studio-main"
+  data_dir: "/var/lib/sqi-worker"
+  compute_location: "nas-studio"
+  max_concurrent_tasks: 1      # GPU renders saturate the card; one at a time
+  capability_tags:
+    - houdini-20.5
+    - karma-renderer
+    - gpu
+  heartbeat_interval: "15s"
+  shutdown_grace_period: "10m" # Houdini frames can take several minutes
+
+log:
+  level: "info"
+  format: "json"
+
+metrics:
+  addr: "0.0.0.0:9091"        # expose to Prometheus scraper
+```
+
+---
+
+## See also
+
+- [`config/sqi-worker.example.yaml`](../config/sqi-worker.example.yaml) — Fully commented example with every option.
+- [`docs/worker-capabilities.md`](worker-capabilities.md) — Auto-detected capability tags and how to override them.
+- [`docs/worker-deployment.md`](worker-deployment.md) — systemd, launchd, and Windows service installation.
+- [`docs/configuration.md`](configuration.md) — `sqi-server` configuration reference.

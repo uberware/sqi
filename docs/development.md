@@ -1,7 +1,8 @@
-# sqi-server Development Guide
+# sqi Development Guide
 
 This document covers local setup, the test and lint workflow, code layout
-conventions, and a step-by-step walkthrough for adding a new REST endpoint.
+conventions, a step-by-step walkthrough for adding a new REST endpoint, and
+guides for extending the worker.
 
 ---
 
@@ -372,3 +373,212 @@ is on your `$PATH`:
 ```sh
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```
+
+---
+
+## sqi-worker development
+
+### Running a worker locally against a dev server
+
+Start `sqi-server` in one terminal:
+
+```sh
+make run
+# or: ./bin/sqi-server serve
+```
+
+The server exposes NATS on `127.0.0.1:4222` by default. In a second terminal,
+start the worker pointing at it with debug logging:
+
+```sh
+SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 \
+SQI_WORKER_DISCOVERY_ENABLE_MDNS=false \
+SQI_WORKER_LOG_FORMAT=text \
+SQI_WORKER_LOG_LEVEL=debug \
+  ./bin/sqi-worker start
+```
+
+The worker logs its worker ID, connected NATS URL, and detected capabilities at
+startup. It will appear under **Workers** in the web UI at
+`http://localhost:8080` within a few seconds.
+
+To validate configuration without connecting:
+
+```sh
+SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 \
+  ./bin/sqi-worker start --dry-run
+```
+
+To run both components together in a single shell session:
+
+```sh
+# Terminal 1
+make run
+
+# Terminal 2
+make build && \
+SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 \
+SQI_WORKER_DISCOVERY_ENABLE_MDNS=false \
+SQI_WORKER_LOG_FORMAT=text \
+  ./bin/sqi-worker start
+```
+
+Worker tests:
+
+```sh
+# Unit tests for all worker packages
+go test -race ./internal/worker/...
+
+# Specific package
+go test -race ./internal/worker/executor/...
+
+# Integration test: boots a full server + worker binary
+make test-integration
+```
+
+---
+
+### Writing a new executor type
+
+The task executor lives in `internal/worker/executor`. It is wired into the
+pull loop via the `pull.TaskDispatcher` interface and into the heartbeat
+publisher via `heartbeat.StateSource`. To change *how* tasks execute, you
+implement a new type that satisfies these interfaces.
+
+**The relevant interfaces** (defined in `internal/worker/pull/pull.go` and
+`internal/worker/heartbeat/heartbeat.go`):
+
+```go
+// pull.TaskDispatcher — called by the pull loop for each incoming assignment.
+type TaskDispatcher interface {
+    Dispatch(ctx context.Context, msg *protocol.AssignMsg) error
+}
+
+// heartbeat.StateSource — queried by the heartbeat publisher on each tick.
+type StateSource interface {
+    ActiveTaskCount() int
+    ActiveTaskIDs() []string
+    LastAssignmentAt() *time.Time
+}
+```
+
+**Steps to add a new executor type:**
+
+1. **Create the executor package** — add a new file or sub-package under
+   `internal/worker/executor/`, e.g.
+   `internal/worker/executor/container/container.go`.
+
+2. **Implement the interfaces** — your type must implement at minimum
+   `pull.TaskDispatcher` and `heartbeat.StateSource`. It also needs to
+   implement `cancel.TaskCanceler` if you want NATS-driven cancellation:
+
+   ```go
+   // cancel.TaskCanceler
+   type TaskCanceler interface {
+       Cancel(taskID string) bool
+   }
+   ```
+
+3. **Publish status messages** — inject `*status.Publisher` and call
+   `Running`, `Terminal`, and (on shutdown) `ShutdownFailed`. Match the
+   existing executor's publish points:
+   - `Running` immediately after the workload starts.
+   - `Terminal` ("succeeded", "failed", "canceled") after it exits.
+
+4. **Wire it in `cmd/sqi-worker/start.go`** — replace the `executor.New(...)`
+   call with your constructor. Wire the same `statusPub`, `sessionMgr`,
+   `metrics`, and `logPub` dependencies.
+
+5. **Add unit tests** — create `executor_test.go` asserting at minimum:
+   - Dispatch returns an error when at capacity.
+   - Status messages are published for success and failure.
+   - `DrainAndShutdown` (or equivalent) blocks until all goroutines exit.
+
+The existing bare-metal executor (`internal/worker/executor/`) is the
+canonical reference implementation.
+
+---
+
+### Adding a new capability tag to auto-detection
+
+Auto-detected tags are produced by the `internal/worker/capabilities` package.
+Detection is abstracted behind the `Probe` interface, with platform-specific
+implementations in `probe_linux.go`, `probe_darwin.go`, `probe_windows.go`,
+and `probe_other.go`.
+
+**Steps to add a new auto-detected tag:**
+
+1. **Add a method to the `Probe` interface** in
+   `internal/worker/capabilities/capabilities.go`:
+
+   ```go
+   type Probe interface {
+       OS() string
+       OSVersion() string
+       CPUCount() int
+       RAMMb() int
+       GPUInfo() GPUInfo
+       // Add your new method:
+       IsNVLink() bool
+   }
+   ```
+
+2. **Implement it on `*defaultProbe` in the appropriate platform file(s):**
+
+   - If the detection works identically on all platforms (e.g., a `runtime`
+     package call), add a single implementation in `probe_default.go`.
+   - If it is platform-specific, add the real implementation in the relevant
+     file and a `false`/zero stub in the others:
+
+   ```go
+   // probe_linux.go
+   func (*defaultProbe) IsNVLink() bool { return linuxIsNVLink() }
+
+   // probe_darwin.go, probe_windows.go, probe_other.go
+   func (*defaultProbe) IsNVLink() bool { return false }
+   ```
+
+3. **Consume the result in `Detect`** in `capabilities.go`. If the tag is a
+   simple presence flag, add it to `c.Tags`:
+
+   ```go
+   func Detect(p Probe) Capabilities {
+       // ... existing fields ...
+       if p.IsNVLink() {
+           c.Tags["nvlink"] = ""
+       }
+       return c
+   }
+   ```
+
+   For a key=value tag:
+
+   ```go
+   if v := p.SomeString(); v != "" {
+       c.Tags["some_key"] = v
+   }
+   ```
+
+4. **Update the test probe** in `detect_test.go` — add the new method to the
+   `fakeProbe` struct used in table-driven tests:
+
+   ```go
+   type fakeProbe struct {
+       // ... existing fields ...
+       isNVLink bool
+   }
+   func (f fakeProbe) IsNVLink() bool { return f.isNVLink }
+   ```
+
+   Add table rows covering the `true` and `false` cases.
+
+5. **Document the new tag** in
+   [`docs/worker-capabilities.md`](worker-capabilities.md) under the
+   "Auto-detected tags" section.
+
+6. **Run and format:**
+
+   ```sh
+   go test -race ./internal/worker/capabilities/...
+   make fmt && make lint
+   ```
