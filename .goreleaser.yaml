@@ -141,17 +141,20 @@ changelog:
 
 # ── Docker images ────────────────────────────────────────────────────────────
 #
-# Builds a linux/amd64 image for sqi-server and pushes it to GHCR.
-# The pre-built binary from the builds section above is copied into the image
-# context by goreleaser; Dockerfile.goreleaser expects it at the root.
+# Builds linux/amd64 images for sqi-server and sqi-worker and pushes them
+# to GHCR.  The pre-built binaries from the builds section above are copied
+# into each image context by goreleaser; the respective Dockerfile.goreleaser
+# files expect them at the context root.
 #
 # Tags published per release:
 #   ghcr.io/uberware/sqi/sqi-server:<full-tag>   e.g. v0.1.0-alpha
 #   ghcr.io/uberware/sqi/sqi-server:v<major>     e.g. v0
+#   ghcr.io/uberware/sqi/sqi-worker:<full-tag>
+#   ghcr.io/uberware/sqi/sqi-worker:v<major>
 #
 # The :latest tag is published separately on every push to main by the
 # docker-latest job in .github/workflows/ci.yml using the standalone
-# multi-stage Dockerfile at deploy/docker/Dockerfile.
+# multi-stage Dockerfiles.
 
 dockers:
   - id: sqi-server-amd64
@@ -163,6 +166,23 @@ dockers:
       - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}"
       - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}"
     dockerfile: deploy/docker/Dockerfile.goreleaser
+    use: buildx
+    push: true
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+
+  - id: sqi-worker-amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - sqi-worker
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}"
+      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}"
+    dockerfile: deploy/docker/worker/Dockerfile.goreleaser
     use: buildx
     push: true
     build_flag_templates:

@@ -96,6 +96,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     permissions:
+      contents: read  # required by actions/checkout
       packages: write
 
     steps:
@@ -120,7 +121,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push :latest
+      - name: Build and push sqi-server :latest
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -131,11 +132,28 @@ jobs:
           build-args: |
             VERSION=main
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
             GOVERSION=${{ env.GOVERSION }}
-          # Reuse the GitHub Actions cache between runs to speed up builds.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped cache key prevents docker-latest and smoke-test from
+          # overwriting each other's binary layer (they differ on VERSION arg).
+          cache-from: type=gha,scope=docker-latest
+          cache-to: type=gha,scope=docker-latest,mode=max
+
+      - name: Build and push sqi-worker :latest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/worker/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/uberware/sqi/sqi-worker:latest
+          build-args: |
+            VERSION=main
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+            GOVERSION=${{ env.GOVERSION }}
+          cache-from: type=gha,scope=docker-latest
+          cache-to: type=gha,scope=docker-latest,mode=max
 
   # ── Cross-compilation matrix ─────────────────────────────────────────────────
   # Verifies that the binary compiles cleanly for all target platforms.
@@ -162,4 +180,105 @@ jobs:
           go-version-file: go.mod
 
       - name: Compile
-        run: GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-worker/...
+
+  # ── Docker smoke test ────────────────────────────────────────────────────────
+  # Builds both Docker images from source (no registry push) and runs them
+  # together via docker-compose.smoke.yml to verify that the worker registers
+  # successfully with the server.  Runs on every push to main after the primary
+  # test job passes; also runs on pull requests as a pre-merge gate.
+  smoke-test:
+    name: Docker smoke test (server + worker)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Export GOVERSION
+        run: echo "GOVERSION=$(go version | awk '{print $3}')" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build images locally (load: true) so they are available to docker compose
+      # without a registry push.  A separate cache scope ("smoke-test") avoids
+      # clobbering docker-latest's cache; both jobs run in parallel and differ
+      # on the VERSION build arg, so they produce different binary layer hashes.
+      - name: Build sqi-server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: false
+          load: true
+          tags: ghcr.io/uberware/sqi/sqi-server:latest
+          build-args: |
+            VERSION=smoke
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.pull_request.head.repo.updated_at || github.event.repository.updated_at }}
+            GOVERSION=${{ env.GOVERSION }}
+          cache-from: type=gha,scope=smoke-test
+          cache-to: type=gha,scope=smoke-test,mode=max
+
+      - name: Build sqi-worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/worker/Dockerfile
+          push: false
+          load: true
+          tags: ghcr.io/uberware/sqi/sqi-worker:latest
+          build-args: |
+            VERSION=smoke
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.pull_request.head.repo.updated_at || github.event.repository.updated_at }}
+            GOVERSION=${{ env.GOVERSION }}
+          cache-from: type=gha,scope=smoke-test
+          cache-to: type=gha,scope=smoke-test,mode=max
+
+      - name: Start smoke stack
+        run: docker compose -f deploy/docker-compose.smoke.yml up -d
+
+      - name: Wait for sqi-server to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              echo "sqi-server is ready"
+              exit 0
+            fi
+            echo "Waiting for sqi-server... ($i/30)"
+            sleep 2
+          done
+          echo "ERROR: sqi-server did not become ready within 60 s"
+          docker compose -f deploy/docker-compose.smoke.yml logs sqi-server
+          exit 1
+
+      - name: Wait for sqi-worker to register
+        run: |
+          for i in $(seq 1 30); do
+            total=$(curl -sf http://localhost:8080/api/v1/workers \
+              | python3 -c "import sys, json; print(json.load(sys.stdin).get('total', 0))" \
+              2>/dev/null || echo "0")
+            if [ "$total" -ge 1 ]; then
+              echo "sqi-worker registered (total=$total)"
+              exit 0
+            fi
+            echo "Waiting for worker... ($i/30)"
+            sleep 2
+          done
+          echo "ERROR: no sqi-worker registered within 60 s"
+          docker compose -f deploy/docker-compose.smoke.yml logs
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/docker-compose.smoke.yml down -v

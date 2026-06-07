@@ -119,6 +119,13 @@ type WorkerSettings struct {
 	// Env: SQI_WORKER_NAME
 	Name string `yaml:"name"`
 
+	// FarmID is the farm this worker belongs to. Workers must be registered
+	// to the same farm as the jobs they process. When empty, the worker
+	// registers without a farm and will not receive assignments from farms
+	// that require farm-specific worker matching.
+	// Env: SQI_WORKER_FARM_ID
+	FarmID string `yaml:"farm_id"`
+
 	// DataDir is the directory used to persist the worker ID file and
 	// session working directories.
 	// Env: SQI_WORKER_DATA_DIR
@@ -415,6 +422,9 @@ func applyNATSEnv(c *NATSConfig) {
 func applyWorkerEnv(c *WorkerSettings) {
 	if v := os.Getenv("SQI_WORKER_NAME"); v != "" {
 		c.Name = v
+	}
+	if v := os.Getenv("SQI_WORKER_FARM_ID"); v != "" {
+		c.FarmID = v
 	}
 	if v := os.Getenv("SQI_WORKER_DATA_DIR"); v != "" {
 		c.DataDir = v

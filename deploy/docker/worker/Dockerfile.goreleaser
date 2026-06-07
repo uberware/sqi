@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Goreleaser-specific Dockerfile for sqi-worker.
+# Alpine-based (per sqi.md §9.3).
+#
+# Goreleaser builds the binary for the target platform before invoking Docker,
+# then copies it into the image context at the path below. This Dockerfile
+# therefore has no builder stage — it only packages the pre-built artifact.
+#
+# Do not use this file with plain `docker build`. Use deploy/docker/worker/Dockerfile
+# instead for standalone local builds.
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+
+# Create a non-root user for running the worker process.
+RUN addgroup -S sqiworker && adduser -S sqiworker -G sqiworker
+
+# OCI image annotations are supplied via --label flags in .goreleaser.yaml so
+# that version, commit, and build-date values are set correctly per release.
+# The static labels below do not vary between releases.
+LABEL org.opencontainers.image.title="sqi-worker" \
+      org.opencontainers.image.description="sqi distributed task worker agent" \
+      org.opencontainers.image.url="https://github.com/uberware/sqi" \
+      org.opencontainers.image.source="https://github.com/uberware/sqi" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+
+# Goreleaser places the binary in the Docker build context root.
+COPY --chown=sqiworker:sqiworker sqi-worker /usr/local/bin/sqi-worker
+
+# Data directory for worker ID persistence and session working directories.
+RUN mkdir -p /var/lib/sqi-worker && chown sqiworker:sqiworker /var/lib/sqi-worker
+
+USER sqiworker
+
+# Metrics / health-probe port (Prometheus + /healthz, /readyz).
+EXPOSE 9091
+
+ENTRYPOINT ["/usr/local/bin/sqi-worker"]
+CMD ["start"]

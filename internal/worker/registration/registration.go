@@ -95,10 +95,20 @@ func (r *Registrar) Register(ctx context.Context) error {
 	}
 	ip := outboundIP()
 
+	// QueueID is set only when the worker is restricted to exactly one queue.
+	// A wildcard worker (no queue_ids) or a multi-queue worker leaves it empty
+	// so the scheduler treats it as "accepts all queues".
+	var queueID string
+	if len(r.cfg.QueueIDs) == 1 {
+		queueID = r.cfg.QueueIDs[0]
+	}
+
 	msg := protocol.RegisterMsg{
 		Version:         protocol.ProtocolVersion,
 		Type:            protocol.TypeRegister,
 		WorkerID:        r.workerID,
+		FarmID:          r.cfg.FarmID,
+		QueueID:         queueID,
 		Hostname:        hostname,
 		IPAddress:       ip,
 		ComputeLocation: r.cfg.ComputeLocation,
@@ -133,6 +143,8 @@ func (r *Registrar) Register(ctx context.Context) error {
 	r.logger.InfoContext(
 		ctx, "registration: worker registered",
 		slog.String("worker_id", r.workerID),
+		slog.String("farm_id", r.cfg.FarmID),
+		slog.String("queue_id", queueID),
 		slog.String("hostname", hostname),
 		slog.String("compute_location", r.cfg.ComputeLocation),
 		slog.String("os", r.caps.OS),
