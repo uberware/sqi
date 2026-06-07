@@ -159,6 +159,24 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// ── Execute process ───────────────────────────────────────────────────────
 	result := e.execProcess(ctx, msg, sess, run, lookup)
 
+	// ── Flush buffered log output (task 68) ───────────────────────────────────
+	// If the OutputHandler implements LogFlusher, drain all remaining buffered
+	// log lines before publishing the terminal status.  This guarantees the
+	// server receives complete output before the task transitions to a terminal
+	// state.  Use context.Background() so the flush completes even if ctx is
+	// already canceled (e.g., during worker shutdown).
+	if flusher, ok := e.outputHandler.(LogFlusher); ok {
+		if err := flusher.FlushLogs(context.Background(), msg.TaskID, msg.AttemptID); err != nil {
+			e.logger.WarnContext(
+				ctx, "executor: log flush failed before terminal status",
+				slog.String("task_id", msg.TaskID),
+				slog.String("attempt_id", msg.AttemptID),
+				slog.String("session_id", sess.ID),
+				slog.Any("error", err),
+			)
+		}
+	}
+
 	// ── Publish terminal status and update metrics ────────────────────────────
 	switch {
 	case result.Err != nil && !result.TimedOut && !result.Canceled:

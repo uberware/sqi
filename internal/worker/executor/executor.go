@@ -64,6 +64,22 @@ type OutputHandler interface {
 	HandleLine(ctx context.Context, taskID, attemptID, sessionID, stream, line string)
 }
 
+// LogFlusher is an optional interface that an [OutputHandler] may implement
+// to flush remaining buffered log output for a specific task attempt before
+// the terminal status message is published (task 68).
+//
+// If the configured OutputHandler also implements LogFlusher, the executor
+// calls FlushLogs immediately after the task process exits and before
+// publishing the terminal "succeeded", "failed", or "canceled" status.
+// This guarantees complete log delivery to the server before the task
+// transitions to a terminal state.
+type LogFlusher interface {
+	// FlushLogs drains all remaining buffered lines for the given
+	// (taskID, attemptID) pair and blocks until the drain is complete.
+	// It is idempotent: calling it multiple times is safe.
+	FlushLogs(ctx context.Context, taskID, attemptID string) error
+}
+
 // DiscardOutput is an [OutputHandler] that silently drops every line.
 // Use it in tests or when output logging is intentionally disabled.
 type DiscardOutput struct{}

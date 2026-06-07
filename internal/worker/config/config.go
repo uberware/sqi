@@ -44,6 +44,37 @@ type WorkerConfig struct {
 
 	// Discovery controls mDNS-based server auto-discovery.
 	Discovery DiscoveryConfig `yaml:"discovery"`
+
+	// LogStreamer controls the log-chunk publisher that batches task process
+	// output and streams it to sqi-server via NATS (tasks 64–69).
+	LogStreamer LogStreamerConfig `yaml:"log_streamer"`
+}
+
+// LogStreamerConfig controls the log-chunk publisher that streams task
+// process stdout/stderr to sqi-server.
+type LogStreamerConfig struct {
+	// MaxLinesPerChunk is the maximum number of output lines batched into a
+	// single NATS message.  A flush is triggered immediately when the buffer
+	// reaches this count.  Increase for verbose processes; decrease for more
+	// granular live log updates.
+	// Default: 50
+	// Env: SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK
+	MaxLinesPerChunk int `yaml:"max_lines_per_chunk"`
+
+	// MaxBytesPerChunk is the maximum total byte count of line content in a
+	// single NATS message.  A flush is triggered when the accumulated bytes
+	// reach this limit after adding a line.
+	// Default: 16384 (16 KB)
+	// Env: SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK
+	MaxBytesPerChunk int `yaml:"max_bytes_per_chunk"`
+
+	// FlushInterval is the maximum time a line may sit in the buffer before
+	// being flushed by the background goroutine regardless of chunk thresholds.
+	// Smaller values make the web UI log viewer feel more live at the cost of
+	// more frequent small NATS publishes.
+	// Default: 500ms
+	// Env: SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL
+	FlushInterval time.Duration `yaml:"flush_interval"`
 }
 
 // NATSConfig is the connection configuration for the remote NATS server.
@@ -238,6 +269,11 @@ func Default() WorkerConfig {
 			EnableMDNS:  true,
 			MDNSTimeout: 5 * time.Second,
 		},
+		LogStreamer: LogStreamerConfig{
+			MaxLinesPerChunk: 50,
+			MaxBytesPerChunk: 16 * 1024,
+			FlushInterval:    500 * time.Millisecond,
+		},
 	}
 }
 
@@ -345,6 +381,7 @@ func applyEnv(cfg *WorkerConfig) {
 	applyLogEnv(&cfg.Log)
 	applyMetricsEnv(&cfg.Metrics)
 	applyDiscoveryEnv(&cfg.Discovery)
+	applyLogStreamerEnv(&cfg.LogStreamer)
 }
 
 func applyNATSEnv(c *NATSConfig) {
@@ -459,6 +496,24 @@ func applyDiscoveryEnv(c *DiscoveryConfig) {
 	}
 }
 
+func applyLogStreamerEnv(c *LogStreamerConfig) {
+	if v := os.Getenv("SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxLinesPerChunk = n
+		}
+	}
+	if v := os.Getenv("SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxBytesPerChunk = n
+		}
+	}
+	if v := os.Getenv("SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.FlushInterval = d
+		}
+	}
+}
+
 // splitTags splits a comma-separated tag list, trimming whitespace.
 func splitTags(s string) []string {
 	parts := strings.Split(s, ",")
@@ -548,5 +603,32 @@ func Validate(cfg WorkerConfig) []ValidationError {
 		})
 	}
 
+	errs = append(errs, validateLogStreamer(cfg.LogStreamer)...)
+	return errs
+}
+
+// validateLogStreamer validates the LogStreamerConfig fields.
+// Zero values are self-corrected by logstreamer.Config.applyDefaults, so only
+// explicitly negative values (almost certainly typos) are rejected here.
+func validateLogStreamer(c LogStreamerConfig) []ValidationError {
+	var errs []ValidationError
+	if c.MaxLinesPerChunk < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log_streamer.max_lines_per_chunk",
+			Message: "must not be negative (use 0 to accept the built-in default of 50)",
+		})
+	}
+	if c.MaxBytesPerChunk < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log_streamer.max_bytes_per_chunk",
+			Message: "must not be negative (use 0 to accept the built-in default of 16384)",
+		})
+	}
+	if c.FlushInterval < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log_streamer.flush_interval",
+			Message: "must not be negative (use 0 to accept the built-in default of 500ms)",
+		})
+	}
 	return errs
 }

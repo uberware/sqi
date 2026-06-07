@@ -25,6 +25,7 @@ import (
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
+	"github.com/uberware/sqi/internal/worker/logstreamer"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
@@ -227,6 +228,21 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// operators can inspect partial outputs (SQI_WORKER_KEEP_FAILED_SESSIONS).
 	sessionMgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
 
+	// ── Log chunk publisher (tasks 64–69) ────────────────────────────────────
+	//
+	// The logstreamer Publisher buffers task process output lines and batches
+	// them into LogChunkMsg messages published to NATS JetStream.  It
+	// implements executor.OutputHandler and executor.LogFlusher so the executor
+	// can flush remaining logs before publishing the terminal task status.
+	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
+	// fields.  If a field is added to one, it must be added to both and mapped
+	// here.
+	logPub := logstreamer.New(nc, logstreamer.Config{
+		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
+		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
+		FlushInterval:    cfg.LogStreamer.FlushInterval,
+	}, logger)
+
 	// ── Task executor (tasks 49–58) ───────────────────────────────────────────
 	//
 	// The Executor starts OS processes for assigned tasks and reports their
@@ -237,7 +253,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		nc,
 		sessionMgr,
 		m,
-		nil, // outputHandler: nil uses LogOutput (log streaming added in tasks 64–69)
+		logPub, // log streaming via logstreamer.Publisher (tasks 64–69)
 		executor.Config{
 			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
 			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window

@@ -222,3 +222,29 @@ discovery:
   # Only relevant when enable_mdns is true.
   # Type: duration   Env: SQI_WORKER_DISCOVERY_MDNS_TIMEOUT
   mdns_timeout: "5s"
+
+# ── Log chunk publisher ───────────────────────────────────────────────────────
+# Controls how task process stdout/stderr is batched and streamed to sqi-server
+# via NATS JetStream (tasks 64–69).  Tune these values to balance NATS message
+# overhead against how live the web UI log viewer feels.
+log_streamer:
+  # Maximum number of output lines batched into a single NATS message.
+  # A flush is triggered immediately when the buffer reaches this count.
+  # Increase for very verbose processes to reduce per-message overhead;
+  # decrease for better granularity when watching live log output.
+  # Type: int   Env: SQI_WORKER_LOG_STREAMER_MAX_LINES_PER_CHUNK
+  max_lines_per_chunk: 50
+
+  # Maximum total byte count of line content in a single NATS message.
+  # A flush is triggered when the accumulated bytes meet or exceed this limit
+  # after adding a line.  Guards against a single very long line producing an
+  # oversized message.
+  # Type: int   Env: SQI_WORKER_LOG_STREAMER_MAX_BYTES_PER_CHUNK
+  max_bytes_per_chunk: 16384
+
+  # Maximum time a line may sit in the buffer before being flushed by the
+  # background goroutine regardless of the chunk size thresholds above.
+  # Smaller values make the web UI log viewer feel more live at the cost of
+  # more frequent small NATS publishes on slowly printing processes.
+  # Type: duration   Env: SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL
+  flush_interval: "500ms"
