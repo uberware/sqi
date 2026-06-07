@@ -71,14 +71,23 @@ func (r processResult) duration() time.Duration {
 // runTask is launched by [Executor.Dispatch] and runs independently until the
 // task terminates.
 func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun) {
+	// Signal the WaitGroup when this goroutine exits so DrainAndShutdown can
+	// block until all goroutines have published their terminal statuses (tasks
+	// 86–87).  Registered first so it runs last in LIFO order — after all
+	// other cleanup defers have completed.
+	defer e.wg.Done()
+
 	// failed controls the keepFailedSessions behavior in Cleanup.
 	failed := false
 
-	// Per-task derived context so openjd_fail can terminate this specific task
-	// without canceling the worker-wide context.  taskCancel is registered with
-	// the TaskLifecycleHook (if present) and called when an openjd_fail
-	// directive is seen.
-	taskCtx, taskCancel := context.WithCancel(ctx)
+	// Per-task derived context for execution control.  Derived from e.execCtx
+	// (not from the worker's signal ctx) so the task goroutine survives
+	// SIGINT/SIGTERM and is only killed when DrainAndShutdown cancels execCtx
+	// after the shutdown grace period expires (task 86).
+	//
+	// openjd_fail and per-task server cancels call taskCancel directly, which
+	// only cancels this specific task without touching other tasks or execCtx.
+	taskCtx, taskCancel := context.WithCancel(e.execCtx)
 	defer taskCancel()
 
 	// Wire the per-task cancel into the OpenJD interceptor, if wired in.
@@ -92,14 +101,17 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// called before this goroutine reached here.
 	e.applyCancelFunc(run, taskCancel)
 
-	// LIFO defers — execution order (first to last):
-	//   1. cancel subscription Deregister (registered last, runs first)
-	//   2. removeActiveTask             (releases the semaphore slot)
-	//   3. sessionMgr.Cleanup           (environment teardown, working dir removal)
-	//   4. hook.Deregister / taskCancel (registered earliest, run last)
+	// LIFO defers — registration order (first→last) and execution order (last→first):
+	//   Registered 1st → runs last:  wg.Done
+	//   Registered 2nd → runs 4th:   taskCancel
+	//   Registered 3rd → runs 3rd:   hook.Deregister (if hook is wired)
+	//   Registered 4th → runs 2nd:   sessionMgr.Cleanup
+	//   Registered 5th → runs 1st:   removeActiveTask
+	//   Registered 6th → runs 0th:   registerCancelSubscription cleanup
 	//
-	// Deregistering the cancel subscription before removeActiveTask ensures no
-	// cancel signal can arrive after the task is gone from activeTasks.
+	// Deregistering the cancel subscription first ensures no cancel signal can
+	// arrive after the task is gone from activeTasks.  wg.Done runs last so
+	// DrainAndShutdown.wg.Wait() returns only after all cleanup is complete.
 	defer func() { e.sessionMgr.Cleanup(context.Background(), sess, failed) }()
 	defer e.removeActiveTask(run.taskID)
 	// Register per-task cancel subscription; cleanup Deregisters when the task
@@ -113,9 +125,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("task_id", msg.TaskID),
 			slog.String("attempt_id", msg.AttemptID),
 		)
-		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
+		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
 		zero := 0
-		e.statusPub.Terminal(ctx, msg, sess.ID, "succeeded", &zero, "", nil, time.Now())
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "succeeded", &zero, "", nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
 		return
 	}
@@ -127,9 +139,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("task_id", msg.TaskID),
 		)
 		failed = true
-		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
+		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
 		minusOne := -1
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &minusOne,
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &minusOne,
 			"task has an empty command", nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		return
@@ -155,9 +167,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Any("error", err),
 		)
 		failed = true
-		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
+		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
 		minusOne := -1
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &minusOne, err.Error(), nil, time.Now())
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &minusOne, err.Error(), nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		return
 	}
@@ -175,9 +187,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Any("error", writeErr),
 		)
 		failed = true
-		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
+		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
 		minusOne := -1
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &minusOne, writeErr.Error(), nil, time.Now())
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &minusOne, writeErr.Error(), nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		return
 	}
@@ -228,18 +240,18 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, openjdFailReason, lp, result.EndedAt)
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, openjdFailReason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
 	case result.Canceled:
-		// Task was killed due to context cancellation.  If the worker context
-		// (ctx) is done, this is a worker shutdown: publish "failed" with reason
-		// "worker_shutdown" per task 78.  Otherwise it is a per-task server
-		// cancel (task 80 path): publish "canceled".
+		// Task was killed due to context cancellation.  If DrainAndShutdown set
+		// shuttingDown before canceling execCtx, this is a worker force-shutdown:
+		// publish "failed"/"worker_shutdown" (task 78/87).  Otherwise it is a
+		// per-task server cancel (task 80 path): publish "canceled".
 		failed = true
-		if ctx.Err() != nil {
-			// Worker shutdown path (task 78).
+		if e.shuttingDown.Load() {
+			// Worker force-shutdown path (tasks 78, 87).
 			e.logger.InfoContext(
 				ctx, "executor: task failed (worker shutdown)",
 				slog.String("task_id", msg.TaskID),
@@ -280,7 +292,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("timeout_seconds", msg.OnRun.TimeoutSeconds),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -299,7 +311,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("session_id", sess.ID),
 			slog.Any("error", result.Err),
 		)
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -317,7 +329,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -332,7 +344,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.statusPub.Terminal(ctx, msg, sess.ID, "succeeded", &zero, "", lp, result.EndedAt)
+		e.statusPub.Terminal(context.Background(), msg, sess.ID, "succeeded", &zero, "", lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
 		e.m.ExecDuration.WithLabelValues("succeeded").Observe(result.duration().Seconds())
 	}
@@ -384,7 +396,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// server a well-formed running→failed transition rather than an orphaned
 	// "failed" with no preceding "running" (task 77).
 	// lastProgress is nil here because the process has not yet emitted any output.
-	e.statusPub.Running(ctx, msg, sess.ID, nil, startedAt)
+	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
 
 	if err := cmd.Start(); err != nil {
 		return processResult{

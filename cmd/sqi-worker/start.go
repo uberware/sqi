@@ -110,12 +110,21 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Signal context ────────────────────────────────────────────────────────
+	//
+	// shutdownSig captures the actual OS signal so task 88 can log the trigger
+	// name ("interrupt" vs "terminated") rather than the generic ctx.Err()
+	// string.  signal.NotifyContext registers for the same signals and cancels
+	// ctx; both registrations receive the same delivery.
+	shutdownSig := make(chan os.Signal, 1)
+	signal.Notify(shutdownSig, os.Interrupt, syscall.SIGTERM)
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,    // SIGINT  (Ctrl-C)
 		syscall.SIGTERM, // sent by systemd / Docker
 	)
 	defer stop()
+	defer signal.Stop(shutdownSig)
 
 	// ── Server discovery (tasks 34–37) ───────────────────────────────────────
 	//
@@ -336,20 +345,41 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	<-ctx.Done()
 
+	// ── Task 88: log shutdown trigger ─────────────────────────────────────────
+	//
+	// Determine the signal that triggered shutdown for operators reading logs.
+	// NATS-driven shutdowns (permanent connection loss) won't populate sigName;
+	// they fall back to the ctx.Err() message.
+	var sigName string
+	select {
+	case sig := <-shutdownSig:
+		sigName = sig.String()
+	default:
+		sigName = ctx.Err().Error()
+	}
 	logger.InfoContext(
-		context.Background(), "sqi-worker shutting down",
-		slog.String("reason", ctx.Err().Error()),
+		context.Background(), "sqi-worker shutdown triggered",
+		slog.String("trigger", sigName),
+		slog.Int("active_tasks", exec.ActiveTaskCount()),
+		slog.Duration("grace_period", cfg.Worker.ShutdownGracePeriod),
 	)
 
-	// ── Shutdown status flush (task 78) ──────────────────────────────────────
+	// ── Tasks 86–87: drain in-flight tasks with grace period ──────────────────
 	//
-	// Publish "failed"/"worker_shutdown" for every task still tracked in the
-	// executor's active-tasks map before draining the NATS connection.  This
-	// ensures the server learns about task failures immediately rather than
-	// waiting for the heartbeat-timeout sweep to fire.  Task goroutines that
-	// exit after this point will also publish their own terminal statuses; the
-	// server handles duplicate terminal statuses gracefully.
-	exec.FlushShutdownStatuses()
+	// Stop accepting new assignments immediately (the pull loop already stopped
+	// when ctx was canceled, task 86).  Allow in-flight tasks to run to
+	// completion for up to ShutdownGracePeriod; force-kill any that remain
+	// after the deadline (task 87).  DrainAndShutdown blocks until all task
+	// goroutines have published their terminal statuses, guaranteeing the
+	// server receives complete status information before NATS drains (task 78).
+	completed, killed := exec.DrainAndShutdown(cfg.Worker.ShutdownGracePeriod)
+
+	// ── Task 88: log shutdown outcome ─────────────────────────────────────────
+	logger.InfoContext(
+		context.Background(), "sqi-worker shutdown complete",
+		slog.Int("tasks_completed_cleanly", completed),
+		slog.Int("tasks_force_terminated", killed),
+	)
 
 	// ── Deregistration (task 27) ──────────────────────────────────────────────
 	//

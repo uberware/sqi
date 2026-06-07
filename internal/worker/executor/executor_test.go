@@ -408,10 +408,14 @@ func TestExecutor_Dispatch_timeout(t *testing.T) {
 	}
 }
 
-// TestExecutor_Dispatch_contextCancel verifies that canceling the worker
-// context while a task is running kills the process and publishes a "failed"
-// status with reason "worker_shutdown" (task 78).
-func TestExecutor_Dispatch_contextCancel(t *testing.T) {
+// TestExecutor_DrainAndShutdown_workerShutdown verifies that DrainAndShutdown
+// with a zero grace period force-kills in-flight tasks and causes them to
+// publish a "failed"/"worker_shutdown" terminal status (tasks 78, 87).
+//
+// Prior to tasks 86–87, the equivalent test canceled the worker context
+// directly; the new design decouples task execution from the signal context so
+// that tasks survive SIGINT/SIGTERM and are only killed by DrainAndShutdown.
+func TestExecutor_DrainAndShutdown_workerShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
@@ -419,23 +423,139 @@ func TestExecutor_Dispatch_contextCancel(t *testing.T) {
 	exec, nc, _ := newTestExecutor(t, 1, nil)
 
 	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := exec.Dispatch(ctx, msg); err != nil {
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Give the subprocess time to start before canceling the worker context.
-	time.Sleep(200 * time.Millisecond)
-	cancel()
+	// Wait for the subprocess to start (running status).
+	waitForStatus(t, nc, 1, 5*time.Second)
 
-	waitForStatus(t, nc, 2, 10*time.Second)
+	// DrainAndShutdown(0): zero grace period → force-kill immediately.
+	completed, killed := exec.DrainAndShutdown(0)
+	if killed != 1 {
+		t.Errorf("DrainAndShutdown killed = %d; want 1", killed)
+	}
+	if completed != 0 {
+		t.Errorf("DrainAndShutdown completed = %d; want 0", completed)
+	}
 
+	// DrainAndShutdown blocks until all goroutines exit; terminal status is
+	// already published.
 	last := nc.lastStatus()
 	if last.Status != "failed" {
 		t.Errorf("terminal status = %q; want %q (worker shutdown)", last.Status, "failed")
 	}
 	if last.Message != "worker_shutdown" {
 		t.Errorf("Message = %q; want %q", last.Message, "worker_shutdown")
+	}
+}
+
+// TestExecutor_DrainAndShutdown_allComplete verifies that when all tasks
+// complete within the grace period, DrainAndShutdown returns the correct
+// completed count with zero killed (task 86).
+func TestExecutor_DrainAndShutdown_allComplete(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 2, nil)
+
+	// Both tasks exit immediately.
+	for i := range 2 {
+		m := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+		m.TaskID = fmt.Sprintf("drain-task-%d", i)
+		m.AttemptID = fmt.Sprintf("drain-attempt-%d", i)
+		if err := exec.Dispatch(context.Background(), m); err != nil {
+			t.Fatalf("Dispatch task %d: %v", i, err)
+		}
+	}
+
+	// Grace period long enough for both fast tasks to complete.
+	completed, killed := exec.DrainAndShutdown(10 * time.Second)
+
+	if killed != 0 {
+		t.Errorf("killed = %d; want 0 (all tasks should complete within grace period)", killed)
+	}
+	if completed != 2 {
+		t.Errorf("completed = %d; want 2", completed)
+	}
+
+	// Both tasks should have published succeeded status.
+	_ = nc
+}
+
+// TestExecutor_DrainAndShutdown_mixed verifies that tasks completing within the
+// grace period are counted as completed and tasks still running after the grace
+// period are counted as killed and publish "failed"/"worker_shutdown" (task 87).
+//
+// Both tasks are dispatched and confirmed started before DrainAndShutdown is
+// called so that both are in the initial snapshot.  The "medium" task sleeps
+// 300 ms — long enough to still be running when the drain starts, but short
+// enough to complete within the 2 s grace period.  The slow task sleeps 60 s
+// and is force-killed after the grace period.
+func TestExecutor_DrainAndShutdown_mixed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	// Two concurrent slots.
+	exec, nc, _ := newTestExecutor(t, 2, nil)
+
+	// Medium task: sleeps 300 ms → completes naturally during the 2 s grace period.
+	medMsg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "300ms"})
+	medMsg.TaskID = "mixed-med-task"
+	medMsg.AttemptID = "mixed-med-attempt"
+	if err := exec.Dispatch(context.Background(), medMsg); err != nil {
+		t.Fatalf("Dispatch medium task: %v", err)
+	}
+
+	// Slow task: sleeps 60 s → force-killed after grace period.
+	slowMsg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "60s"})
+	slowMsg.TaskID = "mixed-slow-task"
+	slowMsg.AttemptID = "mixed-slow-attempt"
+	if err := exec.Dispatch(context.Background(), slowMsg); err != nil {
+		t.Fatalf("Dispatch slow task: %v", err)
+	}
+
+	// Wait for both "running" statuses so both processes are started and both
+	// tasks are in activeTasks before DrainAndShutdown captures the initial count.
+	waitForStatus(t, nc, 2, 5*time.Second)
+	if n := exec.ActiveTaskCount(); n != 2 {
+		t.Fatalf("ActiveTaskCount = %d after running; want 2", n)
+	}
+
+	// Grace period: 2 s (long enough for the 300 ms task, not for the 60 s task).
+	completed, killed := exec.DrainAndShutdown(2 * time.Second)
+
+	if killed != 1 {
+		t.Errorf("killed = %d; want 1 (the slow task)", killed)
+	}
+	if completed != 1 {
+		t.Errorf("completed = %d; want 1 (the medium task)", completed)
+	}
+
+	// The slow task must have published "failed"/"worker_shutdown".
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	var slowTerminal *protocol.TaskStatusMsg
+	for _, m := range nc.msgs {
+		var sm protocol.TaskStatusMsg
+		if err := json.Unmarshal(m.data, &sm); err != nil || sm.Type != protocol.TypeTaskStatus {
+			continue
+		}
+		if sm.TaskID == slowMsg.TaskID && sm.Status != "running" {
+			cp := sm
+			slowTerminal = &cp
+		}
+	}
+	if slowTerminal == nil {
+		t.Fatal("no terminal status found for the slow (force-killed) task")
+	}
+	if slowTerminal.Status != "failed" {
+		t.Errorf("slow task terminal status = %q; want %q", slowTerminal.Status, "failed")
+	}
+	if slowTerminal.Message != "worker_shutdown" {
+		t.Errorf("slow task Message = %q; want %q", slowTerminal.Message, "worker_shutdown")
 	}
 }
 
@@ -483,15 +603,15 @@ func TestExecutor_Dispatch_atCapacity(t *testing.T) {
 
 	exec, _, _ := newTestExecutor(t, 1, nil) // max 1 concurrent task
 
-	// Use a cancellable context so the sleeping goroutine is terminated when
-	// the test ends, preventing goroutine leaks and temp-dir races.
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	// DrainAndShutdown(0) at cleanup ensures the sleeping goroutine is
+	// terminated when the test ends, preventing goroutine leaks and temp-dir
+	// races.  ctx cancel no longer kills task goroutines (tasks 86–87).
+	t.Cleanup(func() { exec.DrainAndShutdown(0) })
 
 	// Dispatch a long-running task to fill the single slot.
 	fillMsg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "60s"})
 	fillMsg.TaskID = "fill-task"
-	if err := exec.Dispatch(ctx, fillMsg); err != nil {
+	if err := exec.Dispatch(context.Background(), fillMsg); err != nil {
 		t.Fatalf("first Dispatch: %v", err)
 	}
 
@@ -501,7 +621,7 @@ func TestExecutor_Dispatch_atCapacity(t *testing.T) {
 	// Second dispatch should be rejected while the first task is running.
 	overMsg := makeAssign("stdout", map[string]string{"SQI_TEST_OUTPUT": "should not run"})
 	overMsg.TaskID = "over-capacity-task"
-	if err := exec.Dispatch(ctx, overMsg); err == nil {
+	if err := exec.Dispatch(context.Background(), overMsg); err == nil {
 		t.Error("expected error when dispatching over capacity; got nil")
 	}
 }
@@ -640,10 +760,13 @@ func TestExecutor_FlushShutdownStatuses(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	// Use a cancellable context so the sleeping goroutine is cleaned up.
-	ctx := t.Context()
-
 	exec, nc, _ := newTestExecutor(t, 2, nil)
+	// Ensure sleeping subprocesses are force-killed when the test ends.
+	// DrainAndShutdown(0) waits until all goroutines exit before returning,
+	// preventing goroutine leaks and temp-dir races.
+	t.Cleanup(func() { exec.DrainAndShutdown(0) })
+
+	ctx := context.Background()
 
 	// Dispatch two long-running tasks to fill the active-tasks map.
 	for i := range 2 {

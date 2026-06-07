@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/uberware/sqi/internal/worker/metrics"
@@ -230,6 +231,24 @@ type Executor struct {
 	// subscribe to per-task cancel NATS messages (task 80).
 	// Protected by mu; set via SetCancelRegistrar before any Dispatch calls.
 	cancelReg CancelRegistrar
+
+	// execCtx / execCancel control the lifetime of all task goroutines (tasks
+	// 86–87).  Task goroutines derive their taskCtx from execCtx rather than
+	// from the worker's signal context, so they survive a SIGINT/SIGTERM and
+	// are only killed when DrainAndShutdown explicitly cancels execCtx after
+	// the shutdown grace period expires.
+	execCtx    context.Context
+	execCancel context.CancelFunc
+
+	// shuttingDown is set to true immediately before execCancel() is called in
+	// DrainAndShutdown.  runTask checks this flag in the result.Canceled branch
+	// to distinguish a force-shutdown kill (publish "failed"/"worker_shutdown")
+	// from a normal per-task server cancel (publish "canceled").
+	shuttingDown atomic.Bool
+
+	// wg tracks active task goroutines so DrainAndShutdown can block until all
+	// have published their terminal statuses and exited (tasks 86–87).
+	wg sync.WaitGroup
 }
 
 // New creates a ready-to-use Executor.
@@ -267,6 +286,8 @@ func New(
 		sem <- struct{}{}
 	}
 
+	execCtx, execCancel := context.WithCancel(context.Background())
+
 	return &Executor{
 		statusPub:     statusPub,
 		sessionMgr:    sessionMgr,
@@ -276,6 +297,8 @@ func New(
 		cfg:           cfg,
 		sem:           sem,
 		activeTasks:   make(map[string]*taskRun),
+		execCtx:       execCtx,
+		execCancel:    execCancel,
 	}
 }
 
@@ -312,12 +335,16 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 		jobID:     msg.JobID,
 	}
 
+	// wg.Add(1) before addActiveTask closes the TOCTOU window: if DrainAndShutdown
+	// polls activeTasks and sees this task, the WaitGroup counter is already ≥1,
+	// so wg.Wait() will not return prematurely (tasks 86–87).
+	e.wg.Add(1)
 	e.addActiveTask(run)
 
-	// Launch the task goroutine.  ctx propagates the worker shutdown signal;
-	// the goroutine sends SIGTERM (then SIGKILL) to the child process and
-	// publishes a terminal status before exiting.
-	go e.runTask(ctx, msg, sess, run) //nolint:gosec // G118: ctx is request-scoped; context.Background() inside runTask is intentional for cleanup operations that must complete after shutdown
+	// Launch the task goroutine.  ctx is the worker's signal context used only
+	// for log call context; task execution is gated on e.execCtx, which
+	// DrainAndShutdown cancels after the shutdown grace period (tasks 86–87).
+	go e.runTask(ctx, msg, sess, run) //nolint:gosec // G118: ctx used only for logging; e.execCtx governs task lifetime
 
 	return nil
 }
@@ -472,6 +499,74 @@ func (e *Executor) Cancel(taskID string) bool {
 	run.cancelRequested = true
 	e.mu.Unlock()
 	return true
+}
+
+// DrainAndShutdown implements the worker graceful-shutdown sequence (tasks
+// 86–87).
+//
+// It first waits up to gracePeriod for all in-flight tasks to complete
+// naturally.  If tasks are still running when the grace period expires, it
+// sets the shuttingDown flag (so goroutines publish "failed"/"worker_shutdown"
+// rather than "canceled") and cancels the shared execCtx, triggering
+// SIGTERM → SIGKILL escalation in each runTask goroutine.  It then blocks
+// until all goroutines have published their terminal statuses and exited.
+//
+// Returns (completed, killed): the number of tasks that finished naturally
+// during the grace period vs the number that were force-terminated.
+//
+// A gracePeriod of zero skips the wait phase and force-kills immediately.
+func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, killed int) {
+	e.mu.Lock()
+	initial := len(e.activeTasks)
+	e.mu.Unlock()
+
+	if initial == 0 {
+		return 0, 0
+	}
+
+	if gracePeriod > 0 {
+		// Poll until all tasks complete naturally or the grace period expires.
+		timer := time.NewTimer(gracePeriod)
+		defer timer.Stop()
+		poll := time.NewTicker(50 * time.Millisecond)
+		defer poll.Stop()
+
+	drainLoop:
+		for {
+			select {
+			case <-timer.C:
+				break drainLoop
+			case <-poll.C:
+				e.mu.Lock()
+				remaining := len(e.activeTasks)
+				e.mu.Unlock()
+				if remaining == 0 {
+					// All tasks completed naturally within the grace period.
+					e.wg.Wait()
+					return initial, 0
+				}
+			}
+		}
+	}
+
+	// Grace period expired (or gracePeriod == 0): snapshot the survivors, set
+	// the shutdown flag, and cancel all task execution contexts.
+	e.mu.Lock()
+	killedIDs := make([]string, 0, len(e.activeTasks))
+	for taskID := range e.activeTasks {
+		killedIDs = append(killedIDs, taskID)
+	}
+	e.mu.Unlock()
+
+	killed = len(killedIDs)
+	completed = initial - killed
+
+	e.shuttingDown.Store(true)
+	e.execCancel() // cancels all task execution contexts → SIGTERM → SIGKILL
+
+	// Block until every goroutine has published its terminal status and exited.
+	e.wg.Wait()
+	return
 }
 
 // FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
