@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 )
@@ -108,8 +109,55 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		return
 	}
 
+	// ── Validate and parse path map (task 59 / 62) ────────────────────────────
+	// Parse validates that every PathMapRule has a non-empty DestinationPath.
+	// If any named location is unresolvable, we abort immediately and publish
+	// a failed status so the server does not wait for heartbeat timeout.
+	//
+	// Pre-execution failures below intentionally publish a "running" status
+	// immediately before the terminal "failed", consistent with the nil-action
+	// and empty-command branches above and with the execProcess convention
+	// ("Publish running status before Start so the server records the attempt").
+	// Every attempt must have a running→terminal transition for the server's
+	// state machine; the running status is not a claim that a process exists.
+	lookup, err := pathmap.Parse(msg.PathMap)
+	if err != nil {
+		e.logger.ErrorContext(
+			ctx, "executor: unresolvable path map — failing task",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.Any("error", err),
+		)
+		failed = true
+		e.publishStatus(ctx, runningStatus(msg, sess.ID, time.Now()))
+		minusOne := -1
+		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &minusOne, err.Error(), time.Now()))
+		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		return
+	}
+
+	// ── Write OpenJD path mapping file (task 61) ──────────────────────────────
+	// Written before execProcess so the launched process (and any future
+	// environment setup or teardown actions) can read it from the session
+	// working directory.  An empty PathMap produces no file (no-op).
+	if writeErr := pathmap.WritePathMappingFile(sess.WorkDir, msg.PathMap); writeErr != nil {
+		e.logger.ErrorContext(
+			ctx, "executor: failed to write path_mapping.json — failing task",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.String("work_dir", sess.WorkDir),
+			slog.Any("error", writeErr),
+		)
+		failed = true
+		e.publishStatus(ctx, runningStatus(msg, sess.ID, time.Now()))
+		minusOne := -1
+		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &minusOne, writeErr.Error(), time.Now()))
+		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		return
+	}
+
 	// ── Execute process ───────────────────────────────────────────────────────
-	result := e.execProcess(ctx, msg, sess, run)
+	result := e.execProcess(ctx, msg, sess, run, lookup)
 
 	// ── Publish terminal status and update metrics ────────────────────────────
 	switch {
@@ -204,10 +252,15 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 // waits for it to exit (or timeout/cancel).  It returns only after the process
 // has exited and all output has been consumed.
 //
+// lookup contains the resolved-mode path map parsed by the caller; it is
+// applied to the OnRun command and args before the process is started (task 60).
+//
 // Callers must check [processResult.Err] for start/wait failures and
 // [processResult.TimedOut] / [processResult.Canceled] for forced termination.
-func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun) processResult {
-	action := msg.OnRun
+func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup) processResult {
+	// Task 60: apply resolved-mode path substitution to the command and args
+	// so the launched process sees only concrete filesystem paths.
+	action := lookup.ApplyToAction(msg.OnRun)
 
 	// Task 50: build process environment.
 	// Task 51: set working directory to the session working directory.
