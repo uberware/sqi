@@ -85,18 +85,19 @@ WHERE  w.status = 'online'
 
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
-	var queueID, lastHeartbeat sql.NullString
+	var farmID, queueID, lastHeartbeat sql.NullString
 	var gpuJSON, tagsJSON, status string
 	var registeredAt, updatedAt string
 
 	if err := row.Scan(
-		&w.ID, &w.FarmID, &queueID, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
+		&w.ID, &farmID, &queueID, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt,
 	); err != nil {
 		return store.Worker{}, err
 	}
 
+	w.FarmID = farmID.String
 	w.QueueID = queueID.String
 	w.Status = store.WorkerStatus(status)
 	w.LastHeartbeatAt = nullTextToTime(lastHeartbeat)
@@ -128,7 +129,7 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 		return nil, err
 	}
 	return []any{
-		w.ID, w.FarmID, nullString(w.QueueID), w.Hostname, w.IPAddress, w.ComputeLocation,
+		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Hostname, w.IPAddress, w.ComputeLocation,
 		w.OS, w.OSVersion, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now,
 	}, nil
@@ -241,7 +242,7 @@ func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Wo
 	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateWorker.QueryRowContext(ctx,
-		worker.FarmID, nullString(worker.QueueID), worker.Hostname, worker.IPAddress,
+		nullString(worker.FarmID), nullString(worker.QueueID), worker.Hostname, worker.IPAddress,
 		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.CPUCount, worker.RAMMb,
 		gpuJSON, tagsJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
 		now, worker.ID)
