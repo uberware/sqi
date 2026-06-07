@@ -74,6 +74,19 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// failed controls the keepFailedSessions behavior in Cleanup.
 	failed := false
 
+	// Per-task derived context so openjd_fail can terminate this specific task
+	// without canceling the worker-wide context.  taskCancel is registered with
+	// the TaskLifecycleHook (if present) and called when an openjd_fail
+	// directive is seen.
+	taskCtx, taskCancel := context.WithCancel(ctx)
+	defer taskCancel()
+
+	// Wire the per-task cancel into the OpenJD interceptor, if wired in.
+	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
+		hook.RegisterTask(msg.AttemptID, msg.TaskID, msg.JobID, sess.ID, taskCancel)
+		defer hook.Deregister(msg.AttemptID)
+	}
+
 	// LIFO: removeActiveTask runs first (releases the semaphore slot so the
 	// pull loop can fetch another assignment while session cleanup is still in
 	// progress), then Cleanup runs.
@@ -157,7 +170,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	}
 
 	// ── Execute process ───────────────────────────────────────────────────────
-	result := e.execProcess(ctx, msg, sess, run, lookup)
+	result := e.execProcess(taskCtx, msg, sess, run, lookup)
 
 	// ── Flush buffered log output (task 68) ───────────────────────────────────
 	// If the OutputHandler implements LogFlusher, drain all remaining buffered
@@ -177,21 +190,42 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		}
 	}
 
+	// ── Retrieve openjd_fail reason (task 72) ────────────────────────────────
+	// Must be called inline (before deferred Deregister runs) so the stored
+	// reason is available for the terminal status switch below.
+	// Both the reason and the bool are kept: openjdFailed=true when openjd_fail
+	// was seen, even if the emitted reason text was empty.
+	var openjdFailReason string
+	var openjdFailed bool
+	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
+		openjdFailReason, openjdFailed = hook.TakeFailReason(msg.AttemptID)
+	}
+
 	// ── Publish terminal status and update metrics ────────────────────────────
+	// Cases are ordered so that openjdFailed and the worker-shutdown paths take
+	// priority.  result.Err (unexpected start/wait failure) is checked after
+	// Canceled and TimedOut because makeResult only sets Err for non-ExitError
+	// failures, which cannot co-occur with timeout or cancellation.
 	switch {
-	case result.Err != nil && !result.TimedOut && !result.Canceled:
-		// Process failed to start or produced an unexpected wait error.
+	case openjdFailed:
+		// The task self-reported failure via openjd_fail.  The process was
+		// terminated via taskCancel (SIGTERM → SIGKILL); treat the terminal
+		// state as "failed" with the process-supplied reason rather than
+		// "canceled" so the server records the correct outcome.
+		// openjdFailReason may be an empty string when the process emitted
+		// "openjd_fail:" with no accompanying text.
 		failed = true
 		exitCode := result.ExitCode
-		reason := fmt.Sprintf("process error: %v", result.Err)
-		e.logger.ErrorContext(
-			ctx, "executor: task process error",
+		e.logger.WarnContext(
+			ctx, "executor: task failed (openjd_fail)",
 			slog.String("task_id", msg.TaskID),
 			slog.String("attempt_id", msg.AttemptID),
 			slog.String("session_id", sess.ID),
-			slog.Any("error", result.Err),
+			slog.String("reason", openjdFailReason),
+			slog.Int("pid", result.PID),
+			slog.Duration("duration", result.duration()),
 		)
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &exitCode, reason, result.EndedAt))
+		e.publishStatus(context.Background(), terminalStatus(msg, sess.ID, "failed", &exitCode, openjdFailReason, result.EndedAt))
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -224,6 +258,25 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Int("timeout_seconds", msg.OnRun.TimeoutSeconds),
 			slog.Duration("duration", result.duration()),
+		)
+		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &exitCode, reason, result.EndedAt))
+		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+
+	case result.Err != nil:
+		// Process failed to start or produced an unexpected wait error.
+		// Checked after Canceled/TimedOut because makeResult only sets Err
+		// for non-ExitError failures — SIGTERM/SIGKILL termination returns an
+		// ExitError, so Err is nil in those paths.
+		failed = true
+		exitCode := result.ExitCode
+		reason := fmt.Sprintf("process error: %v", result.Err)
+		e.logger.ErrorContext(
+			ctx, "executor: task process error",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.String("session_id", sess.ID),
+			slog.Any("error", result.Err),
 		)
 		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &exitCode, reason, result.EndedAt))
 		e.m.TasksTotal.WithLabelValues("failed").Inc()

@@ -80,6 +80,34 @@ type LogFlusher interface {
 	FlushLogs(ctx context.Context, taskID, attemptID string) error
 }
 
+// TaskLifecycleHook is an optional interface that an [OutputHandler] may
+// implement to participate in the per-task execution lifecycle.
+//
+// The executor calls [RegisterTask] before starting each task process and
+// [Deregister] after the task completes, giving the handler a per-task cancel
+// function it can call when an OpenJD fail directive is seen.  After the process
+// exits, the executor calls [TakeFailReason] to retrieve any stored failure
+// reason before publishing the terminal status message.
+//
+// The OpenJD interceptor (internal/worker/openjd) implements this interface so
+// that openjd_fail directives can terminate a specific task without canceling
+// the worker-wide context.
+type TaskLifecycleHook interface {
+	// RegisterTask associates task metadata and a cancel function with
+	// attemptID.  The cancel function is called when an openjd_fail directive
+	// is seen, triggering per-task SIGTERM → SIGKILL escalation.
+	RegisterTask(attemptID, taskID, jobID, sessionID string, cancel context.CancelFunc)
+
+	// Deregister removes the per-task state for attemptID.  Safe to call
+	// multiple times.
+	Deregister(attemptID string)
+
+	// TakeFailReason returns the failure reason stored by an openjd_fail
+	// directive for attemptID and true if one is present.  Returns ("", false)
+	// if no openjd_fail was seen.
+	TakeFailReason(attemptID string) (string, bool)
+}
+
 // DiscardOutput is an [OutputHandler] that silently drops every line.
 // Use it in tests or when output logging is intentionally disabled.
 type DiscardOutput struct{}
