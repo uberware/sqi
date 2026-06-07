@@ -87,7 +87,7 @@ func setup(t *testing.T) (*openjd.Interceptor, *mockDownstream, *mockNATS, conte
 	downstream := &mockDownstream{}
 	nc := &mockNATS{}
 	logger := discardLogger()
-	i := openjd.New(downstream, nc, logger)
+	i := openjd.New(downstream, nc, "test-worker", logger)
 
 	ctx := context.Background()
 	cancelCtx, cancel := context.WithCancel(ctx)
@@ -156,7 +156,7 @@ func TestProgressInvalidValueIgnored(t *testing.T) {
 		t.Run(line, func(t *testing.T) {
 			downstream := &mockDownstream{}
 			nc := &mockNATS{}
-			i := openjd.New(downstream, nc, discardLogger())
+			i := openjd.New(downstream, nc, "", discardLogger())
 			i.RegisterTask("a", "t", "j", "s", func() {})
 			i.HandleLine(context.Background(), "t", "a", "s", "stdout", line)
 			if got := downstream.snapshot(); len(got) != 0 {
@@ -269,7 +269,7 @@ func TestFailDirectiveOnlyFirstTriggers(t *testing.T) {
 	cancelCount := 0
 	downstream := &mockDownstream{}
 	nc := &mockNATS{}
-	i := openjd.New(downstream, nc, discardLogger())
+	i := openjd.New(downstream, nc, "", discardLogger())
 	i.RegisterTask("a", "t", "j", "s", func() { cancelCount++ })
 
 	i.HandleLine(context.Background(), "t", "a", "s", "stdout", "openjd_fail: first reason")
@@ -290,7 +290,7 @@ func TestFailDirectiveOnlyFirstTriggers(t *testing.T) {
 func TestFailDirectiveEmptyReason(t *testing.T) {
 	downstream := &mockDownstream{}
 	nc := &mockNATS{}
-	i := openjd.New(downstream, nc, discardLogger())
+	i := openjd.New(downstream, nc, "", discardLogger())
 	i.RegisterTask("a", "t", "j", "s", func() {})
 
 	i.HandleLine(context.Background(), "t", "a", "s", "stdout", "openjd_fail:")
@@ -433,7 +433,7 @@ func TestDeregisterClearsState(t *testing.T) {
 func TestUnregisteredAttemptPassThroughNonDirective(t *testing.T) {
 	downstream := &mockDownstream{}
 	nc := &mockNATS{}
-	i := openjd.New(downstream, nc, discardLogger())
+	i := openjd.New(downstream, nc, "", discardLogger())
 	// No RegisterTask call.
 
 	i.HandleLine(context.Background(), "t", "unregistered", "s", "stdout", "hello world")
@@ -469,7 +469,7 @@ func TestConcurrentHandleLine(t *testing.T) {
 	t.Parallel()
 	downstream := &mockDownstream{}
 	nc := &mockNATS{}
-	i := openjd.New(downstream, nc, discardLogger())
+	i := openjd.New(downstream, nc, "", discardLogger())
 
 	const N = 50
 	// Register N attempts so concurrent goroutines don't contend on a single

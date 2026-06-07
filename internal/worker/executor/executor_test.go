@@ -20,6 +20,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // ── Subprocess dispatcher ─────────────────────────────────────────────────────
@@ -170,7 +171,8 @@ func newTestExecutor(t *testing.T, maxConcurrent int, capture *captureOutput) (*
 	if capture != nil {
 		oh = capture
 	}
-	exec := executor.New(nc, mgr, m, oh, cfg, logger)
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	exec := executor.New(statusPub, mgr, m, oh, cfg, logger)
 	return exec, nc, tmpDir
 }
 
@@ -381,8 +383,9 @@ func TestExecutor_Dispatch_timeout(t *testing.T) {
 	}
 }
 
-// TestExecutor_Dispatch_contextCancel verifies that canceling the context
-// while a task is running kills the process and publishes a "canceled" status.
+// TestExecutor_Dispatch_contextCancel verifies that canceling the worker
+// context while a task is running kills the process and publishes a "failed"
+// status with reason "worker_shutdown" (task 78).
 func TestExecutor_Dispatch_contextCancel(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -396,15 +399,18 @@ func TestExecutor_Dispatch_contextCancel(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Give the subprocess time to start before canceling.
+	// Give the subprocess time to start before canceling the worker context.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 
 	waitForStatus(t, nc, 2, 10*time.Second)
 
 	last := nc.lastStatus()
-	if last.Status != "canceled" {
-		t.Errorf("terminal status = %q; want %q", last.Status, "canceled")
+	if last.Status != "failed" {
+		t.Errorf("terminal status = %q; want %q (worker shutdown)", last.Status, "failed")
+	}
+	if last.Message != "worker_shutdown" {
+		t.Errorf("Message = %q; want %q", last.Message, "worker_shutdown")
 	}
 }
 
@@ -569,5 +575,95 @@ func TestExecutor_LastAssignmentAt(t *testing.T) {
 	}
 	if at.Before(before) {
 		t.Errorf("LastAssignmentAt (%v) is before dispatch time (%v)", at, before)
+	}
+}
+
+// TestExecutor_Dispatch_workerID verifies that every published status message
+// carries the worker_id injected via the status publisher (task 76).
+func TestExecutor_Dispatch_workerID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil)
+
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	for _, m := range nc.msgs {
+		var sm protocol.TaskStatusMsg
+		if err := json.Unmarshal(m.data, &sm); err != nil || sm.Type != protocol.TypeTaskStatus {
+			continue
+		}
+		if sm.WorkerID != "test-worker" {
+			t.Errorf("status %q has WorkerID = %q; want %q", sm.Status, sm.WorkerID, "test-worker")
+		}
+	}
+}
+
+// TestExecutor_FlushShutdownStatuses verifies that FlushShutdownStatuses
+// publishes "failed"/"worker_shutdown" for all active tasks (task 78).
+func TestExecutor_FlushShutdownStatuses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	// Use a cancellable context so the sleeping goroutine is cleaned up.
+	ctx := t.Context()
+
+	exec, nc, _ := newTestExecutor(t, 2, nil)
+
+	// Dispatch two long-running tasks to fill the active-tasks map.
+	for i := range 2 {
+		m := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "60s"})
+		m.TaskID = fmt.Sprintf("flush-task-%d", i)
+		m.AttemptID = fmt.Sprintf("flush-attempt-%d", i)
+		if err := exec.Dispatch(ctx, m); err != nil {
+			t.Fatalf("Dispatch task %d: %v", i, err)
+		}
+	}
+
+	// Wait for both "running" status messages before calling flush.
+	waitForStatus(t, nc, 2, 5*time.Second)
+
+	// Record how many messages exist before flush.
+	nc.mu.Lock()
+	beforeCount := len(nc.msgs)
+	nc.mu.Unlock()
+
+	// Flush shutdown statuses.
+	exec.FlushShutdownStatuses()
+
+	// FlushShutdownStatuses is synchronous; check immediately.
+	nc.mu.Lock()
+	afterCount := len(nc.msgs)
+	msgs := make([]stubMsg, len(nc.msgs))
+	copy(msgs, nc.msgs)
+	nc.mu.Unlock()
+
+	added := afterCount - beforeCount
+	if added != 2 {
+		t.Fatalf("expected 2 additional messages from FlushShutdownStatuses, got %d", added)
+	}
+
+	// Verify the new messages are "failed"/"worker_shutdown".
+	for _, m := range msgs[beforeCount:] {
+		var sm protocol.TaskStatusMsg
+		if err := json.Unmarshal(m.data, &sm); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if sm.Status != "failed" {
+			t.Errorf("FlushShutdownStatuses message Status = %q; want %q", sm.Status, "failed")
+		}
+		if sm.Message != "worker_shutdown" {
+			t.Errorf("FlushShutdownStatuses message Message = %q; want %q", sm.Message, "worker_shutdown")
+		}
 	}
 }

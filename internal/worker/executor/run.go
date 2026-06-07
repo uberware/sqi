@@ -100,9 +100,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("task_id", msg.TaskID),
 			slog.String("attempt_id", msg.AttemptID),
 		)
-		e.publishStatus(ctx, runningStatus(msg, sess.ID, time.Now()))
+		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
 		zero := 0
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "succeeded", &zero, "", time.Now()))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "succeeded", &zero, "", nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
 		return
 	}
@@ -114,10 +114,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("task_id", msg.TaskID),
 		)
 		failed = true
-		e.publishStatus(ctx, runningStatus(msg, sess.ID, time.Now()))
+		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
 		minusOne := -1
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &minusOne,
-			"task has an empty command", time.Now()))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &minusOne,
+			"task has an empty command", nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		return
 	}
@@ -142,9 +142,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Any("error", err),
 		)
 		failed = true
-		e.publishStatus(ctx, runningStatus(msg, sess.ID, time.Now()))
+		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
 		minusOne := -1
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &minusOne, err.Error(), time.Now()))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &minusOne, err.Error(), nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		return
 	}
@@ -162,9 +162,9 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Any("error", writeErr),
 		)
 		failed = true
-		e.publishStatus(ctx, runningStatus(msg, sess.ID, time.Now()))
+		e.statusPub.Running(ctx, msg, sess.ID, nil, time.Now())
 		minusOne := -1
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &minusOne, writeErr.Error(), time.Now()))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &minusOne, writeErr.Error(), nil, time.Now())
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		return
 	}
@@ -173,22 +173,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	result := e.execProcess(taskCtx, msg, sess, run, lookup)
 
 	// ── Flush buffered log output (task 68) ───────────────────────────────────
-	// If the OutputHandler implements LogFlusher, drain all remaining buffered
-	// log lines before publishing the terminal status.  This guarantees the
-	// server receives complete output before the task transitions to a terminal
-	// state.  Use context.Background() so the flush completes even if ctx is
-	// already canceled (e.g., during worker shutdown).
-	if flusher, ok := e.outputHandler.(LogFlusher); ok {
-		if err := flusher.FlushLogs(context.Background(), msg.TaskID, msg.AttemptID); err != nil {
-			e.logger.WarnContext(
-				ctx, "executor: log flush failed before terminal status",
-				slog.String("task_id", msg.TaskID),
-				slog.String("attempt_id", msg.AttemptID),
-				slog.String("session_id", sess.ID),
-				slog.Any("error", err),
-			)
-		}
-	}
+	e.flushTaskLogs(ctx, msg, sess.ID)
 
 	// ── Retrieve openjd_fail reason (task 72) ────────────────────────────────
 	// Must be called inline (before deferred Deregister runs) so the stored
@@ -200,6 +185,11 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
 		openjdFailReason, openjdFailed = hook.TakeFailReason(msg.AttemptID)
 	}
+
+	// ── Snapshot last-known progress (task 76) ────────────────────────────────
+	// Must be called before deferred Deregister removes the attempt state from
+	// the openjd interceptor.
+	lp := e.lastProgress(msg.AttemptID)
 
 	// ── Publish terminal status and update metrics ────────────────────────────
 	// Cases are ordered so that openjdFailed and the worker-shutdown paths take
@@ -225,25 +215,43 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.publishStatus(context.Background(), terminalStatus(msg, sess.ID, "failed", &exitCode, openjdFailReason, result.EndedAt))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, openjdFailReason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
 	case result.Canceled:
-		// Worker shutdown canceled the task.
+		// Task was killed due to context cancellation.  If the worker context
+		// (ctx) is done, this is a worker shutdown: publish "failed" with reason
+		// "worker_shutdown" per task 78.  Otherwise it is a per-task server
+		// cancel (task 80 path): publish "canceled".
 		failed = true
-		e.logger.InfoContext(
-			ctx, "executor: task canceled (worker shutdown)",
-			slog.String("task_id", msg.TaskID),
-			slog.String("attempt_id", msg.AttemptID),
-			slog.String("session_id", sess.ID),
-			slog.Int("pid", result.PID),
-			slog.Duration("duration", result.duration()),
-		)
-		// ctx may already be done; use background context for the final publish.
-		e.publishStatus(context.Background(), terminalStatus(msg, sess.ID, "canceled", nil, "worker shutdown", result.EndedAt))
-		e.m.TasksTotal.WithLabelValues("canceled").Inc()
-		e.m.ExecDuration.WithLabelValues("canceled").Observe(result.duration().Seconds())
+		if ctx.Err() != nil {
+			// Worker shutdown path (task 78).
+			e.logger.InfoContext(
+				ctx, "executor: task failed (worker shutdown)",
+				slog.String("task_id", msg.TaskID),
+				slog.String("attempt_id", msg.AttemptID),
+				slog.String("session_id", sess.ID),
+				slog.Int("pid", result.PID),
+				slog.Duration("duration", result.duration()),
+			)
+			e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", nil, "worker_shutdown", lp, result.EndedAt)
+			e.m.TasksTotal.WithLabelValues("failed").Inc()
+			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+		} else {
+			// Per-task server cancel (task 80 path).
+			e.logger.InfoContext(
+				ctx, "executor: task canceled",
+				slog.String("task_id", msg.TaskID),
+				slog.String("attempt_id", msg.AttemptID),
+				slog.String("session_id", sess.ID),
+				slog.Int("pid", result.PID),
+				slog.Duration("duration", result.duration()),
+			)
+			e.statusPub.Terminal(context.Background(), msg, sess.ID, "canceled", nil, "", lp, result.EndedAt)
+			e.m.TasksTotal.WithLabelValues("canceled").Inc()
+			e.m.ExecDuration.WithLabelValues("canceled").Observe(result.duration().Seconds())
+		}
 
 	case result.TimedOut:
 		// Per-task timeout exceeded.
@@ -259,7 +267,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("timeout_seconds", msg.OnRun.TimeoutSeconds),
 			slog.Duration("duration", result.duration()),
 		)
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &exitCode, reason, result.EndedAt))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -278,7 +286,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("session_id", sess.ID),
 			slog.Any("error", result.Err),
 		)
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &exitCode, reason, result.EndedAt))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -296,7 +304,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "failed", &exitCode, reason, result.EndedAt))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "failed", &exitCode, reason, lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("failed").Inc()
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
@@ -311,7 +319,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.Int("pid", result.PID),
 			slog.Duration("duration", result.duration()),
 		)
-		e.publishStatus(ctx, terminalStatus(msg, sess.ID, "succeeded", &zero, "", result.EndedAt))
+		e.statusPub.Terminal(ctx, msg, sess.ID, "succeeded", &zero, "", lp, result.EndedAt)
 		e.m.TasksTotal.WithLabelValues("succeeded").Inc()
 		e.m.ExecDuration.WithLabelValues("succeeded").Observe(result.duration().Seconds())
 	}
@@ -362,7 +370,8 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// the caller will publish a terminal "failed" immediately after, giving the
 	// server a well-formed running→failed transition rather than an orphaned
 	// "failed" with no preceding "running" (task 77).
-	e.publishStatus(ctx, runningStatus(msg, sess.ID, startedAt))
+	// lastProgress is nil here because the process has not yet emitted any output.
+	e.statusPub.Running(ctx, msg, sess.ID, nil, startedAt)
 
 	if err := cmd.Start(); err != nil {
 		return processResult{
@@ -558,6 +567,26 @@ func makeResult(waitErr error, pid int, startedAt time.Time, timedOut, canceled 
 		Err:       unexpectedErr,
 		TimedOut:  timedOut,
 		Canceled:  canceled,
+	}
+}
+
+// flushTaskLogs calls FlushLogs on the OutputHandler if it implements
+// [LogFlusher], draining buffered lines before the terminal status is
+// published (task 68).  Uses context.Background() so the flush completes
+// even when ctx is already canceled (e.g., during worker shutdown).
+func (e *Executor) flushTaskLogs(ctx context.Context, msg *protocol.AssignMsg, sessionID string) {
+	flusher, ok := e.outputHandler.(LogFlusher)
+	if !ok {
+		return
+	}
+	if err := flusher.FlushLogs(context.Background(), msg.TaskID, msg.AttemptID); err != nil {
+		e.logger.WarnContext(
+			ctx, "executor: log flush failed before terminal status",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.String("session_id", sessionID),
+			slog.Any("error", err),
+		)
 	}
 }
 

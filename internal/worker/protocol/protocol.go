@@ -393,6 +393,16 @@ type TaskStatusMsg struct {
 	// is used.
 	At time.Time `json:"at"`
 
+	// WorkerID is the ID of the worker that executed (or is executing) this task.
+	// Included so the server can correlate status messages with the worker record
+	// without a separate store lookup.
+	WorkerID string `json:"worker_id,omitempty"`
+
+	// LastProgress is the most-recent openjd_progress value (0–100) seen before
+	// this status event, or null if no progress directive was emitted by the
+	// task process up to this point.
+	LastProgress *int `json:"last_progress,omitempty"`
+
 	// Message is an optional human-readable description of the status — useful
 	// for failure detail or progress annotations surfaced in the UI.
 	Message string `json:"message,omitempty"`

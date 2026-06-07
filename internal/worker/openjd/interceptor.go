@@ -94,6 +94,7 @@ type attemptState struct {
 type Interceptor struct {
 	downstream outputHandler
 	nc         natsPublisher
+	workerID   string
 	logger     *slog.Logger
 
 	mu       sync.Mutex
@@ -104,10 +105,13 @@ type Interceptor struct {
 //
 // downstream receives all non-directive stdout lines and all stderr lines.
 // nc is used to publish openjd_status messages to the task.status NATS subject.
-func New(downstream outputHandler, nc natsPublisher, logger *slog.Logger) *Interceptor {
+// workerID is embedded in every status message published by the interceptor
+// (task 76).
+func New(downstream outputHandler, nc natsPublisher, workerID string, logger *slog.Logger) *Interceptor {
 	return &Interceptor{
 		downstream: downstream,
 		nc:         nc,
+		workerID:   workerID,
 		logger:     logger,
 		attempts:   make(map[string]*attemptState),
 	}
@@ -185,6 +189,23 @@ func (i *Interceptor) LastProgress(attemptID string) *int {
 	return &v
 }
 
+// FlushLogs forwards a flush request to the downstream handler if it implements
+// the optional FlushLogs method.  This allows the executor to call FlushLogs on
+// the Interceptor (which it holds as the configured OutputHandler) and have the
+// call reach the logstreamer that wraps underneath.
+//
+// A local interface is used instead of importing executor.LogFlusher to avoid a
+// circular dependency between the openjd and executor packages.
+func (i *Interceptor) FlushLogs(ctx context.Context, taskID, attemptID string) error {
+	type logFlusher interface {
+		FlushLogs(ctx context.Context, taskID, attemptID string) error
+	}
+	if lf, ok := i.downstream.(logFlusher); ok {
+		return lf.FlushLogs(ctx, taskID, attemptID)
+	}
+	return nil
+}
+
 // ── executor.OutputHandler ────────────────────────────────────────────────────
 
 // HandleLine intercepts recognized OpenJD directive lines from stdout and
@@ -258,6 +279,10 @@ func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string
 // handleStatus parses an openjd_status directive and publishes an intermediate
 // "running" status update to the task.status NATS subject (task 71).
 //
+// The published message includes worker_id (task 76) and the current
+// last_progress value so the UI can display both the live status text and the
+// progress bar simultaneously.
+//
 // Format: "openjd_status: <text>".
 func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) {
 	text := strings.TrimSpace(strings.TrimPrefix(line, prefixStatus))
@@ -269,16 +294,28 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 		return
 	}
 
+	// Snapshot progress under the per-attempt lock so we don't race with
+	// handleProgress on the same attempt.
+	st.mu.Lock()
+	var lastProgress *int
+	if st.progress != nil {
+		v := *st.progress
+		lastProgress = &v
+	}
+	st.mu.Unlock()
+
 	msg := protocol.TaskStatusMsg{
-		Version:   protocol.ProtocolVersion,
-		Type:      protocol.TypeTaskStatus,
-		TaskID:    st.taskID,
-		AttemptID: attemptID,
-		JobID:     st.jobID,
-		Status:    "running",
-		SessionID: st.sessionID,
-		At:        time.Now(),
-		Message:   text,
+		Version:      protocol.ProtocolVersion,
+		Type:         protocol.TypeTaskStatus,
+		TaskID:       st.taskID,
+		AttemptID:    attemptID,
+		JobID:        st.jobID,
+		Status:       "running",
+		SessionID:    st.sessionID,
+		WorkerID:     i.workerID,
+		LastProgress: lastProgress,
+		At:           time.Now(),
+		Message:      text,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -289,6 +326,9 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 		)
 		return
 	}
+	// Intermediate openjd_status publishes are best-effort: they are live UI
+	// updates, not terminal state transitions, so a single transient failure is
+	// logged and dropped rather than retried (unlike the status.Publisher path).
 	if err := i.nc.Publish(bus.TaskStatusSubject(st.jobID), data); err != nil {
 		i.logger.WarnContext(
 			ctx, "openjd: publish status update failed",

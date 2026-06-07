@@ -29,9 +29,11 @@ import (
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
+	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/pull"
 	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/session"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // startFlags holds values for flags specific to the start subcommand.
@@ -243,6 +245,23 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		FlushInterval:    cfg.LogStreamer.FlushInterval,
 	}, logger)
 
+	// ── OpenJD progress/status/fail interceptor (tasks 70–74) ────────────────
+	//
+	// The OpenJD interceptor wraps the log publisher and intercepts recognized
+	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
+	// before forwarding everything else downstream.  It implements
+	// executor.TaskLifecycleHook (for openjd_fail→cancel integration) and
+	// provides LastProgress() for last_progress injection into status messages
+	// (task 76).
+	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
+
+	// ── Task status publisher (tasks 75–79) ───────────────────────────────────
+	//
+	// The status Publisher is responsible for all task state-transition messages
+	// (running, succeeded, failed, canceled) with worker_id and last_progress
+	// fields, and retry-with-backoff on transient NATS publish failures.
+	statusPub := status.New(nc, status.Config{WorkerID: workerID}, logger)
+
 	// ── Task executor (tasks 49–58) ───────────────────────────────────────────
 	//
 	// The Executor starts OS processes for assigned tasks and reports their
@@ -250,10 +269,10 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// pull.StateSource, and heartbeat.StateSource, replacing the no-op stubs
 	// that were used during earlier tasks.
 	exec := executor.New(
-		nc,
+		statusPub,
 		sessionMgr,
 		m,
-		logPub, // log streaming via logstreamer.Publisher (tasks 64–69)
+		openjdInterceptor, // openjd_progress/status/fail interception + log streaming (tasks 64–74)
 		executor.Config{
 			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
 			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
@@ -309,6 +328,16 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		context.Background(), "sqi-worker shutting down",
 		slog.String("reason", ctx.Err().Error()),
 	)
+
+	// ── Shutdown status flush (task 78) ──────────────────────────────────────
+	//
+	// Publish "failed"/"worker_shutdown" for every task still tracked in the
+	// executor's active-tasks map before draining the NATS connection.  This
+	// ensures the server learns about task failures immediately rather than
+	// waiting for the heartbeat-timeout sweep to fire.  Task goroutines that
+	// exit after this point will also publish their own terminal statuses; the
+	// server handles duplicate terminal statuses gracefully.
+	exec.FlushShutdownStatuses()
 
 	// ── Deregistration (task 27) ──────────────────────────────────────────────
 	//

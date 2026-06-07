@@ -38,16 +38,15 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
+	"github.com/uberware/sqi/internal/worker/status"
 )
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
@@ -134,13 +133,6 @@ func (l LogOutput) HandleLine(ctx context.Context, taskID, attemptID, sessionID,
 	)
 }
 
-// natsPublisher is the subset of [*nats.Conn] used by Executor for
-// publishing status messages.  Defined as an interface so unit tests can
-// inject a stub without requiring a live NATS server.
-type natsPublisher interface {
-	Publish(subj string, data []byte) error
-}
-
 // ── Config ────────────────────────────────────────────────────────────────────
 
 // Config holds the tunable parameters for an [Executor].
@@ -187,7 +179,7 @@ type taskRun struct {
 // publisher.  Call [CheckRootUser] before creating an Executor to verify the
 // process is not running as root.
 type Executor struct {
-	nc            natsPublisher
+	statusPub     *status.Publisher
 	sessionMgr    *session.Manager
 	m             *metrics.Metrics
 	outputHandler OutputHandler
@@ -206,13 +198,16 @@ type Executor struct {
 
 // New creates a ready-to-use Executor.
 //
+// statusPub is the typed status publisher used for all task-status messages;
+// it must not be nil.
+//
 // outputHandler may be nil; if so [LogOutput] is used to forward process
 // output to the structured logger.
 //
 // cfg.KillGracePeriod defaults to 10 s if zero or negative.
 // cfg.MaxConcurrentTasks is clamped to a minimum of 1.
 func New(
-	nc natsPublisher,
+	statusPub *status.Publisher,
 	sessionMgr *session.Manager,
 	m *metrics.Metrics,
 	outputHandler OutputHandler,
@@ -237,7 +232,7 @@ func New(
 	}
 
 	return &Executor{
-		nc:            nc,
+		statusPub:     statusPub,
 		sessionMgr:    sessionMgr,
 		m:             m,
 		outputHandler: outputHandler,
@@ -346,66 +341,55 @@ func (e *Executor) removeActiveTask(taskID string) {
 	e.sem <- struct{}{} // release slot (task 56)
 }
 
-// publishStatus encodes msg as JSON and publishes it to task.status.<job>.
-// Errors are logged as warnings; the caller proceeds regardless — status loss
-// is preferable to blocking the task lifecycle.
-func (e *Executor) publishStatus(ctx context.Context, msg protocol.TaskStatusMsg) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		e.logger.WarnContext(
-			ctx, "executor: marshal status message failed",
-			slog.String("task_id", msg.TaskID),
-			slog.String("status", msg.Status),
-			slog.Any("error", err),
-		)
+// lastProgress returns the most-recently seen openjd_progress value for
+// attemptID, or nil if the output handler does not implement progress
+// tracking or no progress directive has been seen yet.
+//
+// It uses an anonymous interface check so the executor package does not need
+// to import openjd.
+func (e *Executor) lastProgress(attemptID string) *int {
+	type progressReader interface {
+		LastProgress(string) *int
+	}
+	if pr, ok := e.outputHandler.(progressReader); ok {
+		return pr.LastProgress(attemptID)
+	}
+	return nil
+}
+
+// FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
+// every task currently in the active-tasks map (task 78).
+//
+// This must be called before draining the NATS connection during worker
+// shutdown so the server learns about task failures immediately rather than
+// waiting for the heartbeat-timeout sweep.  Each task goroutine will also
+// publish its own terminal status as it exits; the server must handle
+// duplicate terminal statuses gracefully (accept the first, ignore subsequent).
+//
+// The total flush is bounded by a 5-second deadline so that a saturated NATS
+// connection does not stall the shutdown sequence indefinitely.
+func (e *Executor) FlushShutdownStatuses() {
+	e.mu.Lock()
+	tasks := make([]status.ShutdownTask, 0, len(e.activeTasks))
+	for _, run := range e.activeTasks {
+		tasks = append(tasks, status.ShutdownTask{
+			TaskID:    run.taskID,
+			AttemptID: run.attemptID,
+			JobID:     run.jobID,
+			SessionID: run.sessionID,
+		})
+	}
+	e.mu.Unlock()
+
+	if len(tasks) == 0 {
 		return
 	}
-	subj := bus.TaskStatusSubject(msg.JobID)
-	if err := e.nc.Publish(subj, data); err != nil {
-		e.logger.WarnContext(
-			ctx, "executor: publish status message failed",
-			slog.String("task_id", msg.TaskID),
-			slog.String("status", msg.Status),
-			slog.String("subject", subj),
-			slog.Any("error", err),
-		)
-	}
-}
-
-// runningStatus returns a TaskStatusMsg with Status = "running".
-func runningStatus(msg *protocol.AssignMsg, sessionID string, at time.Time) protocol.TaskStatusMsg {
-	return protocol.TaskStatusMsg{
-		Version:   protocol.ProtocolVersion,
-		Type:      protocol.TypeTaskStatus,
-		TaskID:    msg.TaskID,
-		AttemptID: msg.AttemptID,
-		JobID:     msg.JobID,
-		Status:    "running",
-		SessionID: sessionID,
-		At:        at,
-	}
-}
-
-// terminalStatus returns a TaskStatusMsg for a terminal state
-// (succeeded / failed / canceled).  exitCode may be nil for "canceled" states
-// where no meaningful exit code is available.
-func terminalStatus(
-	msg *protocol.AssignMsg,
-	sessionID, status string,
-	exitCode *int,
-	failureReason string,
-	at time.Time,
-) protocol.TaskStatusMsg {
-	return protocol.TaskStatusMsg{
-		Version:   protocol.ProtocolVersion,
-		Type:      protocol.TypeTaskStatus,
-		TaskID:    msg.TaskID,
-		AttemptID: msg.AttemptID,
-		JobID:     msg.JobID,
-		Status:    status,
-		SessionID: sessionID,
-		At:        at,
-		Message:   failureReason,
-		ExitCode:  exitCode,
-	}
+	e.logger.InfoContext(
+		context.Background(),
+		"executor: publishing worker_shutdown status for in-flight tasks",
+		slog.Int("count", len(tasks)),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	e.statusPub.ShutdownFailed(ctx, tasks)
 }
