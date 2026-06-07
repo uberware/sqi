@@ -20,6 +20,7 @@ import (
 
 	"github.com/uberware/sqi/internal/health"
 	sqilog "github.com/uberware/sqi/internal/log"
+	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
@@ -281,6 +282,17 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		logger,
 	)
 
+	// ── Task cancel subscriber (tasks 80–85) ─────────────────────────────────
+	//
+	// The cancel Handler subscribes to task.cancel.<taskID> for each task the
+	// executor dispatches.  When the server publishes a cancel signal the handler
+	// calls exec.Cancel(taskID), which triggers SIGTERM → SIGKILL escalation in
+	// the task's goroutine.  The handler is wired into the executor via
+	// SetCancelRegistrar before the pull loop starts so every dispatched task has
+	// its cancel subscription in place.
+	cancelHandler := cancel.New(nc, exec, logger)
+	exec.SetCancelRegistrar(cancelHandler)
+
 	// ── Heartbeat (tasks 30–33) ───────────────────────────────────────────────
 	//
 	// The heartbeat Publisher ticks on cfg.Worker.HeartbeatInterval and
@@ -347,8 +359,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// publishes after this returns.
 	reg.Deregister("graceful shutdown")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Worker.ShutdownGracePeriod)
+	defer shutdownCancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
 }

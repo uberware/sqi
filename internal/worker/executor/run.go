@@ -87,11 +87,24 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		defer hook.Deregister(msg.AttemptID)
 	}
 
-	// LIFO: removeActiveTask runs first (releases the semaphore slot so the
-	// pull loop can fetch another assignment while session cleanup is still in
-	// progress), then Cleanup runs.
+	// ── Store cancel function (task 80) ───────────────────────────────────────
+	// applyCancelFunc stores taskCancel and fires it immediately if Cancel() was
+	// called before this goroutine reached here.
+	e.applyCancelFunc(run, taskCancel)
+
+	// LIFO defers — execution order (first to last):
+	//   1. cancel subscription Deregister (registered last, runs first)
+	//   2. removeActiveTask             (releases the semaphore slot)
+	//   3. sessionMgr.Cleanup           (environment teardown, working dir removal)
+	//   4. hook.Deregister / taskCancel (registered earliest, run last)
+	//
+	// Deregistering the cancel subscription before removeActiveTask ensures no
+	// cancel signal can arrive after the task is gone from activeTasks.
 	defer func() { e.sessionMgr.Cleanup(context.Background(), sess, failed) }()
 	defer e.removeActiveTask(run.taskID)
+	// Register per-task cancel subscription; cleanup Deregisters when the task
+	// exits (runs before removeActiveTask in LIFO order).
+	defer e.registerCancelSubscription(ctx, msg.TaskID)()
 
 	// ── Nil-action guard ──────────────────────────────────────────────────────
 	if msg.OnRun == nil {

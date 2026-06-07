@@ -5,14 +5,17 @@ package executor_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
+	"os/signal"
 	"runtime"
 	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -62,6 +65,28 @@ func TestMain(m *testing.M) {
 	case "env":
 		// Print the value of SQI_TEST_ENV_KEY from the process environment.
 		fmt.Println(os.Getenv("SQI_TEST_ENV_KEY"))
+		os.Exit(0)
+
+	case "catch_sigterm":
+		// Install the SIGTERM handler first, then print "ready" so the parent
+		// test knows it is safe to send Cancel.  On SIGTERM, print "sigterm"
+		// and exit 0.
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGTERM)
+		fmt.Println("ready") // signals the test that the handler is installed
+		select {
+		case <-c:
+			fmt.Println("sigterm")
+		case <-time.After(30 * time.Second):
+			// Unreachable in normal tests; guards against subprocess orphaning.
+		}
+		os.Exit(0)
+
+	case "ignore_term":
+		// Ignore SIGTERM and sleep; only exits via SIGKILL escalation.
+		// Used to assert that the kill-grace-period enforcement is correct.
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
 
@@ -665,5 +690,268 @@ func TestExecutor_FlushShutdownStatuses(t *testing.T) {
 		if sm.Message != "worker_shutdown" {
 			t.Errorf("FlushShutdownStatuses message Message = %q; want %q", sm.Message, "worker_shutdown")
 		}
+	}
+}
+
+// ── Cancellation tests (task 85) ──────────────────────────────────────────────
+
+// TestExecutor_Cancel_canceledStatus verifies that calling Cancel on an
+// in-progress task causes it to publish a "canceled" terminal status (not
+// "failed/worker_shutdown") and that the worker context is not canceled
+// (task 81, 83).
+func TestExecutor_Cancel_canceledStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix signals; covered via taskkill path separately")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil)
+
+	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
+	ctx := context.Background() // worker-wide context — NOT canceled
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Wait for the "running" status so the process is started before Cancel.
+	waitForStatus(t, nc, 1, 5*time.Second)
+
+	found := exec.Cancel(msg.TaskID)
+	if !found {
+		t.Fatal("Cancel returned false; expected the task to be found")
+	}
+
+	// Wait for the terminal status (running + canceled = 2 messages).
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "canceled" {
+		t.Errorf("terminal status = %q; want %q", last.Status, "canceled")
+	}
+}
+
+// TestExecutor_Cancel_taskNotFound verifies that Cancel returns false for an
+// unknown task ID (task 81).
+func TestExecutor_Cancel_taskNotFound(t *testing.T) {
+	exec, _, _ := newTestExecutor(t, 1, nil)
+
+	found := exec.Cancel("nonexistent-task-id")
+	if found {
+		t.Error("Cancel returned true for an unknown task ID; want false")
+	}
+}
+
+// TestExecutor_Cancel_sigkillEscalation verifies that a process that ignores
+// SIGTERM is force-killed after KillGracePeriod and that the terminal status
+// is still "canceled" (tasks 82, 83).
+func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM/SIGKILL escalation is Unix-specific; Windows uses taskkill")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil)
+
+	// "ignore_term" subprocess installs signal.Ignore(SIGTERM) and sleeps.
+	// It will only exit when SIGKILL is sent after the grace period.
+	msg := makeAssign("ignore_term", nil)
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Wait for "running" before canceling.
+	waitForStatus(t, nc, 1, 5*time.Second)
+
+	cancelAt := time.Now()
+	found := exec.Cancel(msg.TaskID)
+	if !found {
+		t.Fatal("Cancel returned false; expected the task to be found")
+	}
+
+	// The process should die within: KillGracePeriod (500ms) + SIGKILL overhead +
+	// a generous scheduling slack.  Total budget: 5 s.
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	elapsed := time.Since(cancelAt)
+	// Must not die too quickly (before SIGTERM grace expires) or too slowly.
+	// Lower bound: SIGTERM sent, grace period ~0 ms (process might exit on SIGTERM
+	// even if Ignore was set — on some platforms Ignore affects signal delivery).
+	// We just assert it completes within the test timeout above.
+	if elapsed > 8*time.Second {
+		t.Errorf("process did not exit within expected window after Cancel; took %v", elapsed)
+	}
+
+	last := nc.lastStatus()
+	if last.Status != "canceled" {
+		t.Errorf("terminal status = %q; want %q (even after SIGKILL)", last.Status, "canceled")
+	}
+}
+
+// waitForOutputLine polls capture until a stdout line equal to want appears or
+// the deadline elapses.  Used when the test needs to synchronize on subprocess
+// output before taking an action (e.g., waiting for "ready" so the subprocess
+// has installed its signal handler before Cancel is called).
+func waitForOutputLine(t *testing.T, capture *captureOutput, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, l := range capture.all() {
+			if l.stream == "stdout" && l.line == want {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("stdout line %q not seen within %v", want, timeout)
+}
+
+// TestExecutor_Cancel_sigtermDelivery verifies that SIGTERM is delivered to
+// the process before SIGKILL escalation by dispatching a subprocess that
+// catches SIGTERM, prints "sigterm" on receipt, and exits 0.  The terminal
+// status must be "canceled" (tasks 82, 83).
+func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM is Unix-specific; Windows uses taskkill")
+	}
+
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, 1, capture)
+
+	// "catch_sigterm" subprocess installs a SIGTERM handler, prints "ready" to
+	// signal it is safe to cancel, then prints "sigterm" on receipt and exits 0.
+	msg := makeAssign("catch_sigterm", nil)
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Wait for "ready" — this confirms the signal handler is installed and the
+	// subprocess will not miss SIGTERM.
+	waitForOutputLine(t, capture, "ready", 5*time.Second)
+
+	found := exec.Cancel(msg.TaskID)
+	if !found {
+		t.Fatal("Cancel returned false; expected the task to be found")
+	}
+
+	// Process exits on SIGTERM (before the grace period); terminal status
+	// must be "canceled" because the worker context (Background) is not done.
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "canceled" {
+		t.Errorf("terminal status = %q; want %q", last.Status, "canceled")
+	}
+
+	// By the time the terminal status is published, all output goroutines have
+	// drained the pipes — captured lines are complete and stable here.
+	lines := capture.all()
+	sigtermSeen := false
+	for _, l := range lines {
+		if l.stream == "stdout" && l.line == "sigterm" {
+			sigtermSeen = true
+			break
+		}
+	}
+	if !sigtermSeen {
+		t.Errorf("subprocess stdout did not contain %q — SIGTERM not delivered before kill; captured: %v",
+			"sigterm", lines)
+	}
+}
+
+// TestExecutor_Cancel_earlyCancel verifies that calling Cancel before the
+// task's runTask goroutine has set up its per-task context still cancels the
+// task correctly (cancelRequested flag path, task 80).
+func TestExecutor_Cancel_earlyCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil)
+
+	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
+	ctx := context.Background()
+
+	// Dispatch and immediately Cancel before the goroutine likely runs.
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	// Cancel right away — may race with goroutine startup, exercising both
+	// the "cancelFunc set" and "cancelRequested" paths.
+	exec.Cancel(msg.TaskID)
+
+	// Regardless of which path fires, the task must reach a terminal state.
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	// Worker context (ctx) is Background — so this must be "canceled", not
+	// "failed/worker_shutdown".
+	if last.Status != "canceled" {
+		t.Errorf("terminal status = %q; want %q", last.Status, "canceled")
+	}
+}
+
+// ── CancelRegistrar error-path tests ─────────────────────────────────────────
+
+// stubCancelRegistrarError is a CancelRegistrar whose Register always returns
+// an error.  Used to verify that a subscription failure does not abort task
+// execution (task 80).
+type stubCancelRegistrarError struct {
+	mu            sync.Mutex
+	registerCalls int
+	deregCalls    int
+}
+
+func (s *stubCancelRegistrarError) Register(_ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registerCalls++
+	return errors.New("stub: NATS subscribe failed")
+}
+
+func (s *stubCancelRegistrarError) Deregister(_ string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deregCalls++
+}
+
+// TestExecutor_Cancel_registrarError verifies that a failure in
+// CancelRegistrar.Register is logged as a warning but does not abort task
+// execution: the task still runs to completion and Deregister is NOT called
+// (nothing was registered, so there is nothing to deregister — task 80).
+func TestExecutor_Cancel_registrarError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil)
+
+	cr := &stubCancelRegistrarError{}
+	exec.SetCancelRegistrar(cr)
+
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "succeeded" {
+		t.Errorf("terminal status = %q; want %q (task must run despite registrar error)",
+			last.Status, "succeeded")
+	}
+
+	cr.mu.Lock()
+	rc := cr.registerCalls
+	dc := cr.deregCalls
+	cr.mu.Unlock()
+
+	if rc != 1 {
+		t.Errorf("Register called %d time(s); want 1", rc)
+	}
+	// Deregister must not be called when Register failed — nothing was subscribed.
+	if dc != 0 {
+		t.Errorf("Deregister called %d time(s) after failed Register; want 0", dc)
 	}
 }

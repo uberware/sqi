@@ -50,6 +50,11 @@ const (
 	TypeAssign     = "assign"      // server → worker
 	TypeTaskStatus = "task_status" // worker → server
 	TypeLogChunk   = "log_chunk"   // worker → server
+	// TypeTaskCancel is defined here for protocol documentation and symmetry
+	// with the other message-type constants.  TaskCancelMsg does not embed a
+	// Version/Type envelope — the NATS subject (task.cancel.<taskID>) provides
+	// routing — so this constant is not referenced by worker receive code.
+	TypeTaskCancel = "task_cancel" // server → worker
 )
 
 // ── RegisterMsg ───────────────────────────────────────────────────────────────
@@ -448,4 +453,27 @@ type LogChunkMsg struct {
 	// multiple lines per chunk; lines are not stripped or normalized by the
 	// server.
 	Data string `json:"data"`
+}
+
+// ── TaskCancelMsg ─────────────────────────────────────────────────────────────
+
+// TaskCancelMsg is the JSON payload the server publishes to
+// task.cancel.<taskID> when a running task must be interrupted (task 80).
+//
+// The worker's cancel handler reads this message and calls Cancel on the
+// matching in-progress task, triggering SIGTERM → SIGKILL escalation.
+//
+// Note: this message has no Version/Type envelope — the NATS subject
+// (task.cancel.<taskID>) provides sufficient routing.  The struct matches
+// the scheduler's internal cancelPayload wire format.
+type TaskCancelMsg struct {
+	// TaskID is the task to cancel, redundant with the NATS subject but
+	// included for log attribution.
+	TaskID string `json:"task_id"`
+
+	// JobID is the job the task belongs to, for log attribution.
+	JobID string `json:"job_id"`
+
+	// CanceledAt is the server-side timestamp of the cancellation request.
+	CanceledAt time.Time `json:"canceled_at"`
 }
