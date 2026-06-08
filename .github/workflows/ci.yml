@@ -82,7 +82,7 @@ jobs:
       # instructions. fail_ci_if_error is false so a Codecov outage does not
       # break the build.
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.out
@@ -139,7 +139,7 @@ jobs:
       # tracked separately from Go (flags: web).  Mirrors the Go upload step.
       # fail_ci_if_error: false so a Codecov outage does not break the build.
       - name: Upload web coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: web/coverage/coverage-final.json
