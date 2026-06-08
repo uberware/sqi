@@ -1,0 +1,261 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// Domain types matching the sqi REST API wire format (JSON field names).
+// Keep in sync with the OpenAPI spec at GET /api/v1/openapi.yaml and with the
+// Go wire-format types in internal/api/*.go.
+
+// ── Status enums ──────────────────────────────────────────────────────────────
+
+export type JobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled'
+export type StepStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'canceled'
+export type TaskStatus =
+  | 'pending'
+  | 'ready'
+  | 'assigned'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'canceled'
+export type AttemptStatus = 'running' | 'succeeded' | 'failed' | 'canceled'
+export type WorkerStatus = 'online' | 'offline' | 'disabled'
+export type LogStream = 'stdout' | 'stderr'
+export type TemplateFormat = 'yaml' | 'json'
+export type StorageLocationType = 'filesystem' | 's3'
+
+// ── Pagination ────────────────────────────────────────────────────────────────
+
+/** Generic paginated list response returned by all list endpoints. */
+export interface ListResponse<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+}
+
+// ── Job ───────────────────────────────────────────────────────────────────────
+
+/** Wire shape returned by GET /api/v1/jobs and POST /api/v1/jobs. */
+export interface Job {
+  id: string
+  farm_id: string
+  queue_id: string
+  name: string
+  owner: string
+  submitter: string
+  priority: number
+  status: JobStatus
+  project?: string
+  template_format: TemplateFormat
+  created_at: string
+  updated_at: string
+  started_at?: string
+  completed_at?: string
+}
+
+/** Per-status task count summary embedded in {@link JobDetail}. */
+export interface TaskCounts {
+  total: number
+  pending: number
+  ready: number
+  assigned: number
+  running: number
+  succeeded: number
+  failed: number
+  canceled: number
+}
+
+/** Wire shape returned by GET /api/v1/jobs/{id}. */
+export interface JobDetail extends Job {
+  steps: Step[]
+  task_counts: TaskCounts
+}
+
+// ── Step ──────────────────────────────────────────────────────────────────────
+
+/** Wire shape for a step within a job detail response. */
+export interface Step {
+  id: string
+  name: string
+  step_order: number
+  status: StepStatus
+  depends_on?: string[]
+  created_at: string
+  updated_at: string
+}
+
+// ── Task ──────────────────────────────────────────────────────────────────────
+
+/** Wire shape returned by GET /api/v1/tasks/{id} and task list endpoints. */
+export interface Task {
+  id: string
+  job_id: string
+  step_id: string
+  name: string
+  parameters?: Record<string, string>
+  status: TaskStatus
+  assigned_worker_id?: string
+  assigned_at?: string
+  created_at: string
+  updated_at: string
+}
+
+/** Wire shape returned by POST /api/v1/tasks/{id}/retry. */
+export interface RetryResponse {
+  task_id: string
+  status: TaskStatus
+}
+
+// ── Task log ──────────────────────────────────────────────────────────────────
+
+/** Wire shape for a single log chunk. */
+export interface TaskLog {
+  id: string
+  task_id: string
+  attempt_id: string
+  seq_num: number
+  nats_seq: number
+  stream: LogStream
+  data: string
+  at: string
+  received_at: string
+}
+
+/** Wire shape returned by GET /api/v1/tasks/{id}/logs (non-streaming). */
+export interface TaskLogsResponse {
+  items: TaskLog[]
+  after_nats_seq: number
+  limit: number
+}
+
+// ── Task attempt ──────────────────────────────────────────────────────────────
+
+/** Wire shape for a single task execution attempt. */
+export interface TaskAttempt {
+  id: string
+  task_id: string
+  worker_id: string
+  session_id: string
+  attempt_number: number
+  status: AttemptStatus
+  exit_code?: number
+  started_at: string
+  ended_at?: string
+  created_at: string
+}
+
+// ── Worker ────────────────────────────────────────────────────────────────────
+
+/** GPU capability info reported by a worker. */
+export interface GPUInfo {
+  vendor?: string
+  model?: string
+  vram_mb?: number
+  count?: number
+}
+
+/** Wire shape returned by GET /api/v1/workers and worker list endpoint. */
+export interface Worker {
+  id: string
+  farm_id: string
+  queue_id?: string
+  hostname: string
+  ip_address?: string
+  compute_location?: string
+  os?: string
+  os_version?: string
+  cpu_count?: number
+  ram_mb?: number
+  gpu: GPUInfo
+  tags?: Record<string, string>
+  status: WorkerStatus
+  last_heartbeat_at?: string
+  registered_at: string
+  updated_at: string
+}
+
+/** Minimal current-task info embedded in {@link WorkerDetail}. */
+export interface CurrentTask {
+  id: string
+  job_id: string
+  name: string
+  status: TaskStatus
+  assigned_at?: string
+}
+
+/** Wire shape returned by GET /api/v1/workers/{id}. */
+export interface WorkerDetail extends Worker {
+  current_task?: CurrentTask
+}
+
+/** Wire shape returned by POST /api/v1/workers/{id}/disable|enable. */
+export interface WorkerActionResponse {
+  id: string
+  status: WorkerStatus
+}
+
+// ── Farm ──────────────────────────────────────────────────────────────────────
+
+/** Wire shape returned by farm endpoints. */
+export interface Farm {
+  id: string
+  name: string
+  description?: string
+  max_concurrent_tasks: number
+  created_at: string
+  updated_at: string
+}
+
+// ── Queue ─────────────────────────────────────────────────────────────────────
+
+/** Wire shape returned by queue endpoints. */
+export interface Queue {
+  id: string
+  farm_id: string
+  name: string
+  description?: string
+  priority: number
+  max_concurrent_tasks: number
+  paused: boolean
+  created_at: string
+  updated_at: string
+}
+
+// ── Storage location ──────────────────────────────────────────────────────────
+
+/** Wire shape returned by storage location endpoints. */
+export interface StorageLocation {
+  id: string
+  name: string
+  type: StorageLocationType
+  description?: string
+  roots?: Record<string, string>
+  created_at: string
+  updated_at: string
+}
+
+// ── License pool ──────────────────────────────────────────────────────────────
+
+/** Wire shape returned by license pool endpoints. */
+export interface LicensePool {
+  id: string
+  name: string
+  product: string
+  server_hint?: string
+  max_concurrent: number
+  created_at: string
+  updated_at: string
+}
+
+// ── Job submission ────────────────────────────────────────────────────────────
+
+/** Input for the submitJob mutation. */
+export interface SubmitJobInput {
+  farmId: string
+  queueId: string
+  template: string
+  format: TemplateFormat
+  owner?: string
+  submitter?: string
+  priority?: number
+  project?: string
+}
