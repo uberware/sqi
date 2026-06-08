@@ -39,7 +39,15 @@ export default defineConfig({
       include: ['src/**/*.{ts,tsx}'],
       // Exclude entry point, test files themselves (they inflate coverage),
       // type-declaration files, test infrastructure, and macOS sidecar files.
-      exclude: ['src/main.tsx', 'src/test/**', '**/*.{test,spec}.{ts,tsx}', '**/*.d.ts', '**/._*'],
+      exclude: [
+        'src/main.tsx',
+        'src/api/types.ts',
+        'src/ws/types.ts',
+        'src/test/**',
+        '**/*.{test,spec}.{ts,tsx}',
+        '**/*.d.ts',
+        '**/._*',
+      ],
       thresholds: {
         lines: 60,
         functions: 60,
