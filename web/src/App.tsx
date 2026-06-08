@@ -2,6 +2,7 @@ import styles from './App.module.css'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ConnectionStatusBadge from '@/components/ConnectionStatusBadge'
 import Sidebar from '@/components/layout/Sidebar'
+import AppRoutes from '@/routes'
 
 export default function App() {
   return (
@@ -13,7 +14,7 @@ export default function App() {
         </header>
         <main className={styles.main}>
           <ErrorBoundary>
-            {/* Route outlet — populated in task 32 when React Router is added */}
+            <AppRoutes />
           </ErrorBoundary>
         </main>
       </div>

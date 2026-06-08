@@ -1,18 +1,21 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+import { NavLink } from 'react-router-dom'
 import styles from './Sidebar.module.css'
 
 interface NavItem {
   label: string
-  href: string
+  to: string
 }
 
 const PHASE1_NAV: NavItem[] = [
-  { label: 'Dashboard', href: '/' },
-  { label: 'Jobs', href: '/jobs' },
-  { label: 'Workers', href: '/workers' },
-  { label: 'Submit', href: '/submit' },
+  { label: 'Dashboard', to: '/' },
+  { label: 'Jobs', to: '/jobs' },
+  { label: 'Workers', to: '/workers' },
+  { label: 'Submit', to: '/submit' },
 ]
 
-// Labels only — hrefs are inert until routing is wired in task 32
+// Labels only — hrefs are inert stubs for deferred Phase 2+ views
 const DEFERRED_LABELS = ['Presets', 'Products', 'Storage', 'License Pools', 'Settings']
 
 export default function Sidebar() {
@@ -24,10 +27,18 @@ export default function Sidebar() {
 
       <ul className={styles.navSection} role="list">
         {PHASE1_NAV.map((item) => (
-          <li key={item.href}>
-            <a href={item.href} className={styles.navLink}>
+          <li key={item.to}>
+            <NavLink
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) =>
+                [styles.navLink, isActive && styles.activeLink]
+                  .filter((c): c is string => Boolean(c))
+                  .join(' ')
+              }
+            >
               {item.label}
-            </a>
+            </NavLink>
           </li>
         ))}
       </ul>
