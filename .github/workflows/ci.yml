@@ -60,10 +60,13 @@ jobs:
       # Uses the official golangci-lint GitHub Action, which handles binary
       # download, caching, and version resolution automatically.
       # Configuration is read from .golangci.yml at the repo root.
+      # Explicit path patterns mirror the Makefile LINT_PKGS variable: they
+      # exclude web/node_modules/ (third-party JS packages that happen to
+      # contain Go code and are not part of the sqi codebase).
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          args: --timeout=5m
+          args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 
       # Run the full test suite with the race detector enabled and enforce
       # the minimum line-coverage threshold.

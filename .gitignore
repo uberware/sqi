@@ -18,18 +18,20 @@ go.work
 go.work.sum
 
 # ─── Build artefacts ──────────────────────────────────────────────────────────
-# The web UI build output is ignored, except the Phase 1 placeholder index.html,
-# which must be tracked so //go:embed in package web has a file to embed in a
-# fresh checkout / CI build. The full front-end build overwrites it later.
+# web/dist/index.html is tracked so that //go:embed in package web always has a
+# file to embed on a fresh checkout. CI must run `npm run build` in web/ before
+# `go build` so the full React bundle (assets/*) is present at embed time.
 /web/dist/*
 !/web/dist/index.html
 /web/.vite/
+/web/coverage/
 
 # goreleaser
 /dist/
 
 # ─── Node / TypeScript ────────────────────────────────────────────────────────
 node_modules/
+web/node_modules/
 .pnpm-store/
 .yarn/cache/
 .yarn/unplugged/

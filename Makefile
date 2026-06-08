@@ -2,6 +2,18 @@
 # Targets: build, test, lint, run, clean, release, docs
 
 # ── Variables ────────────────────────────────────────────────────────────────
+# npm places third-party JS packages in web/node_modules/. Some of those
+# packages contain Go source files (e.g. flatted) that are not part of the sqi
+# codebase. The three variables below exclude that directory from all Go tool
+# invocations so that linting, testing, and formatting never touch it.
+#
+# GO_PKGS: filtered package list used by test, vet, bench.
+# LINT_PKGS: explicit directory patterns for golangci-lint (no ./... recursion).
+# FMT_DIRS: explicit paths for gofumpt/goimports (web/embed.go is listed
+#   individually so ./web does not accidentally recurse into node_modules/).
+GO_PKGS   := $(shell go list ./... | grep -v '/node_modules/')
+LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
+FMT_DIRS  := ./cmd ./internal ./pkg ./test web/embed.go
 
 MODULE              := github.com/uberware/sqi
 BINARY              := sqi-server
@@ -95,11 +107,11 @@ run-worker: build-worker ## Build then run sqi-worker with default config
 
 .PHONY: test
 test: ## Run all tests (race detector on by default; override with RACE=off)
-	go test $(TEST_FLAGS) ./...
+	go test $(TEST_FLAGS) $(GO_PKGS)
 
 .PHONY: test-cover
 test-cover: ## Run tests and emit coverage report
-	go test $(TEST_FLAGS) -coverprofile=$(COVERAGE_OUT) -covermode=atomic ./...
+	go test $(TEST_FLAGS) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
 	go tool cover -func=$(COVERAGE_OUT) | tail -1
 	@cov=$$(go tool cover -func=$(COVERAGE_OUT) | tail -1 | awk '{print int($$3)}'); \
 	  echo "Coverage: $$cov% (minimum: $(COVERAGE_MIN)%)"; \
@@ -117,32 +129,37 @@ test-integration: ## Run integration tests (tagged 'integration')
 
 .PHONY: bench
 bench: ## Run benchmarks
-	go test -bench=. -benchmem ./...
+	go test -bench=. -benchmem $(GO_PKGS)
 
 # ── Lint and Vet ─────────────────────────────────────────────────────────────
 
 .PHONY: vet
 vet: ## Run go vet
-	go vet ./...
+	go vet $(GO_PKGS)
+
+# Lint targets use explicit path patterns rather than ./... so that third-party
+# Go code in web/node_modules/ (installed by npm) is not linted.
+# ./web (no trailing /...) targets only the web Go package (embed.go).
+LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 
 .PHONY: lint
 lint: ## Run golangci-lint (install: https://golangci-lint.run/usage/install/)
-	golangci-lint run ./...
+	golangci-lint run $(LINT_PKGS)
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint with --fix for auto-correctable issues
-	golangci-lint run --fix ./...
+	golangci-lint run --fix $(LINT_PKGS)
 
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 .PHONY: fmt
 fmt: ## Format code with gofumpt and goimports
-	gofumpt -l -w .
-	goimports -l -w .
+	gofumpt -l -w $(FMT_DIRS)
+	goimports -l -w $(FMT_DIRS)
 
 .PHONY: fmt-check
 fmt-check: ## Check formatting without modifying files (used in CI)
-	@unformatted=$$(gofumpt -l .); \
+	@unformatted=$$(gofumpt -l $(FMT_DIRS)); \
 	  if [ -n "$$unformatted" ]; then \
 	    echo "Unformatted files:"; echo "$$unformatted"; exit 1; \
 	  fi

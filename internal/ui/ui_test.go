@@ -3,8 +3,9 @@
 package ui
 
 // Unit tests for the embedded web UI handler. They run against the real
-// embedded bundle (package web), which in Phase 1 is the placeholder
-// index.html, so the tests also confirm the embed wiring is intact.
+// embedded bundle (package web) so the tests also confirm the embed wiring is
+// intact. The content checks verify the React app shell is present (id="root")
+// rather than depending on human-readable text that may change.
 
 import (
 	"bytes"
@@ -48,8 +49,8 @@ func TestServesShellAtRoot(t *testing.T) {
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
 		t.Errorf("GET /: Cache-Control = %q, want no-cache", cc)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "sqi-server") {
-		t.Errorf("GET /: body does not contain expected placeholder content")
+	if body := rec.Body.String(); !strings.Contains(body, `id="root"`) {
+		t.Errorf("GET /: body does not contain React app shell (id=root)")
 	}
 }
 
@@ -60,8 +61,8 @@ func TestServesConcreteAsset(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /index.html: status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if !strings.Contains(rec.Body.String(), "sqi-server") {
-		t.Errorf("GET /index.html: unexpected body")
+	if !strings.Contains(rec.Body.String(), `id="root"`) {
+		t.Errorf("GET /index.html: body does not contain React app shell (id=root)")
 	}
 }
 
@@ -72,8 +73,8 @@ func TestDotPathCleansToRootShell(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /.: status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if !strings.Contains(rec.Body.String(), "sqi-server") {
-		t.Errorf("GET /.: expected SPA shell body")
+	if !strings.Contains(rec.Body.String(), `id="root"`) {
+		t.Errorf("GET /.: expected SPA shell body (id=root)")
 	}
 }
 
@@ -93,8 +94,8 @@ func TestSPAFallbackUnderUIPrefix(t *testing.T) {
 			t.Errorf("GET %s: status = %d, want %d (SPA fallback)", target, rec.Code, http.StatusOK)
 			continue
 		}
-		if !strings.Contains(rec.Body.String(), "sqi-server") {
-			t.Errorf("GET %s: expected SPA shell body", target)
+		if !strings.Contains(rec.Body.String(), `id="root"`) {
+			t.Errorf("GET %s: expected SPA shell body (id=root)", target)
 		}
 	}
 }
