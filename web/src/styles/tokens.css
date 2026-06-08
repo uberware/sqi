@@ -1,0 +1,123 @@
+:root {
+  /* ---- Backgrounds ---- */
+  --color-bg: #f0f2f4;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f6f8fa;
+  --color-surface-overlay: rgba(255, 255, 255, 0.95);
+
+  /* ---- Sidebar ---- */
+  --color-sidebar-bg: #1a1d23;
+  --color-sidebar-hover: #252932;
+  --color-sidebar-active: #2e3440;
+  --color-sidebar-border: #2e3440;
+  --color-sidebar-text: #c9d1d9;
+  --color-sidebar-text-muted: #6e7681;
+  --color-sidebar-accent: #58a6ff;
+
+  /* ---- Text ---- */
+  --color-text-primary: #1f2328;
+  --color-text-secondary: #656d76;
+  --color-text-muted: #9198a1;
+  --color-text-inverse: #ffffff;
+  --color-text-link: #0969da;
+  --color-text-link-hover: #0550ae;
+
+  /* ---- Borders ---- */
+  --color-border: #d0d7de;
+  --color-border-subtle: #e8ecef;
+
+  /* ---- Accent / interactive ---- */
+  --color-accent: #0969da;
+  --color-accent-hover: #0550ae;
+  --color-accent-muted: #ddf4ff;
+
+  /* ---- Status: pending ---- */
+  --color-status-pending-bg: #f0f2f4;
+  --color-status-pending-text: #656d76;
+
+  /* ---- Status: ready ---- */
+  --color-status-ready-bg: #ddf4ff;
+  --color-status-ready-text: #0550ae;
+
+  /* ---- Status: assigned ---- */
+  --color-status-assigned-bg: #fff8c5;
+  --color-status-assigned-text: #7d4e00;
+
+  /* ---- Status: running (same blue as ready — both represent "active" states) ---- */
+  --color-status-running-bg: #ddf4ff;
+  --color-status-running-text: #0550ae;
+
+  /* ---- Status: succeeded ---- */
+  --color-status-succeeded-bg: #dafbe1;
+  --color-status-succeeded-text: #116329;
+
+  /* ---- Status: failed ---- */
+  --color-status-failed-bg: #ffebe9;
+  --color-status-failed-text: #82071e;
+
+  /* ---- Status: canceled ---- */
+  --color-status-canceled-bg: #f0f2f4;
+  --color-status-canceled-text: #656d76;
+
+  /* ---- Severity ---- */
+  --color-success: #2da44e;
+  --color-success-muted: #dafbe1;
+  --color-warning: #d29922;
+  --color-warning-muted: #fff8c5;
+  --color-error: #cf222e;
+  --color-error-muted: #ffebe9;
+  --color-info: #0969da;
+  --color-info-muted: #ddf4ff;
+
+  /* ---- Typography ---- */
+  --font-family-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-family-mono:
+    'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, Monaco, 'Courier New', monospace;
+
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-base: 0.875rem;
+  --font-size-lg: 1rem;
+  --font-size-xl: 1.125rem;
+  --font-size-2xl: 1.25rem;
+  --font-size-3xl: 1.5rem;
+  --font-size-4xl: 1.875rem;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* ---- Spacing (4 px base unit) ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* ---- Border radii ---- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ---- Shadows ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-xl: 0 8px 16px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.06);
+
+  /* ---- Layout ---- */
+  --sidebar-width: 220px;
+  --header-height: 48px;
+}
