@@ -10,6 +10,7 @@ import type { Farm, Job, JobDetail, ListResponse, Queue, Task, Worker, WorkerDet
 
 export type ListJobsParams = {
   status?: string
+  search?: string
   owner?: string
   queue_id?: string
   project?: string
@@ -80,6 +81,7 @@ export function fetchListJobs(params: ListJobsParams): Promise<ListResponse<Job>
   return apiFetch(
     `/jobs${buildQS({
       status: params.status,
+      search: params.search,
       owner: params.owner,
       queue_id: params.queue_id,
       project: params.project,

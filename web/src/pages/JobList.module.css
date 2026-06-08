@@ -1,0 +1,296 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-8);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-wrap: wrap;
+}
+
+/* ── Status filter pills ─────────────────────────────────────────────────────── */
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.filterPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 120ms,
+    color 120ms,
+    border-color 120ms;
+}
+
+.filterPill:hover {
+  background: var(--color-surface-raised);
+  border-color: var(--color-text-muted);
+}
+
+.filterPill--active {
+  background: var(--color-accent-muted);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.filterCount {
+  font-size: var(--font-size-xs);
+  opacity: 0.75;
+}
+
+/* ── Search ──────────────────────────────────────────────────────────────────── */
+
+.searchWrap {
+  position: relative;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.searchInput {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  width: 220px;
+  outline: none;
+  transition: border-color 120ms;
+}
+
+.searchInput:focus {
+  border-color: var(--color-accent);
+}
+
+/* ── Bulk action bar ─────────────────────────────────────────────────────────── */
+
+.bulkBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-8);
+  background: var(--color-accent-muted);
+  border-bottom: 1px solid var(--color-accent);
+  font-size: var(--font-size-sm);
+  color: var(--color-accent);
+}
+
+.bulkBarCount {
+  font-weight: var(--font-weight-medium);
+}
+
+.bulkCancelBtn {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-error);
+  background: transparent;
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.bulkCancelBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.bulkCancelBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Table wrapper ───────────────────────────────────────────────────────────── */
+
+.tableWrap {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  user-select: none;
+  z-index: 1;
+}
+
+.table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.table tbody tr {
+  background: var(--color-surface);
+  transition: background 80ms;
+}
+
+.table tbody tr:hover {
+  background: var(--color-surface-raised);
+}
+
+.table tbody tr.rowSelected {
+  background: var(--color-accent-muted);
+}
+
+/* ── Sortable headers ────────────────────────────────────────────────────────── */
+
+.sortableHeader {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sortableHeader:hover {
+  color: var(--color-text-primary);
+}
+
+.sortIcon {
+  font-size: var(--font-size-xs);
+  opacity: 0.6;
+}
+
+/* ── ID cell ─────────────────────────────────────────────────────────────────── */
+
+.idCell {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.idCell:hover .copyHint {
+  opacity: 1;
+}
+
+.copyHint {
+  opacity: 0;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  transition: opacity 100ms;
+}
+
+/* ── Progress bar ────────────────────────────────────────────────────────────── */
+
+.progressCell {
+  min-width: 120px;
+}
+
+.progressFrac {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-1);
+  white-space: nowrap;
+}
+
+.progressBar {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  transition: width 300ms;
+}
+
+/* ── Cancel button (per-row, visible on hover) ───────────────────────────────── */
+
+.cancelBtn {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error);
+  background: transparent;
+  color: var(--color-error);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 80ms,
+    background 80ms;
+}
+
+tr:hover .cancelBtn,
+tr.rowSelected .cancelBtn {
+  opacity: 1;
+}
+
+.cancelBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.cancelBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Empty / error / loading ─────────────────────────────────────────────────── */
+
+.emptyRow td {
+  text-align: center;
+  padding: var(--space-16) var(--space-8);
+  color: var(--color-text-muted);
+}
+
+.errorBanner {
+  padding: var(--space-4) var(--space-8);
+  background: var(--color-error-muted);
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--color-error);
+}
+
+/* ── Checkbox ────────────────────────────────────────────────────────────────── */
+
+.checkCell {
+  width: 36px;
+  padding-right: 0 !important;
+}

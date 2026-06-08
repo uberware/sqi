@@ -1,11 +1,478 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
+import StatusBadge from '@/components/StatusBadge'
+import { useListJobs } from '@/api/queries'
+import { useCancelJob } from '@/api/mutations'
+import { useJobListFilters } from '@/hooks/useJobListFilters'
+import { useDebounce } from '@/hooks/useDebounce'
+import type { Job, JobStatus } from '@/api/types'
+import type { JobSortField, SortDirection } from '@/hooks/useJobListFilters'
+import styles from './JobList.module.css'
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 50
+
+/** Job statuses that can still be canceled. */
+const CANCELABLE: ReadonlySet<JobStatus> = new Set(['pending', 'running', 'paused'])
+
+/** Status filter groups shown above the table. */
+const STATUS_FILTERS: { label: string; value: JobStatus | '' }[] = [
+  { label: 'All', value: '' },
+  { label: 'Running', value: 'running' },
+  { label: 'Pending', value: 'pending' },
+  { label: 'Paused', value: 'paused' },
+  { label: 'Completed', value: 'completed' },
+  { label: 'Failed', value: 'failed' },
+  { label: 'Canceled', value: 'canceled' },
+]
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function truncateId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id
+}
+
+function formatTime(iso: string | undefined): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function elapsedLabel(job: Job): string {
+  const start = job.started_at ? new Date(job.started_at).getTime() : null
+  const end = job.completed_at ? new Date(job.completed_at).getTime() : null
+  if (!start) return '—'
+  const ms = (end ?? Date.now()) - start
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+/**
+ * Renders a sortable column header button. The parent `<th>` must supply
+ * `aria-sort` — this component exposes `ariaSortValue` for that purpose.
+ */
+function SortableHeader({
+  field,
+  label,
+  sortField,
+  sortDir,
+  onSort,
+}: {
+  field: JobSortField
+  label: string
+  sortField: JobSortField
+  sortDir: SortDirection
+  onSort: (field: JobSortField, dir: SortDirection) => void
+}) {
+  const active = sortField === field
+  const nextDir: SortDirection = active && sortDir === 'asc' ? 'desc' : 'asc'
+  return (
+    <span
+      className={styles.sortableHeader}
+      onClick={() => onSort(field, nextDir)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSort(field, nextDir)
+        }
+      }}
+    >
+      {label}
+      <span className={styles.sortIcon} aria-hidden="true">
+        {active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+      </span>
+    </span>
+  )
+}
+
+function sortAriaValue(
+  field: JobSortField,
+  activeField: JobSortField,
+  dir: SortDirection,
+): 'ascending' | 'descending' | 'none' {
+  if (field !== activeField) return 'none'
+  return dir === 'asc' ? 'ascending' : 'descending'
+}
+
+function IdCell({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  const triggerCopy = useCallback(
+    (e: React.SyntheticEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      void navigator.clipboard.writeText(id).then(() => {
+        setCopied(true)
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setCopied(false), 1500)
+      })
+    },
+    [id],
+  )
+
+  return (
+    <span
+      className={styles.idCell}
+      onClick={triggerCopy}
+      title={`Click to copy: ${id}`}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') triggerCopy(e)
+      }}
+    >
+      {truncateId(id)}
+      <span className={styles.copyHint}>{copied ? '✓' : '⎘'}</span>
+    </span>
+  )
+}
+
+function ProgressCell({ job }: { job: Job }) {
+  const counts = job.task_counts
+  if (!counts) return <span>—</span>
+  const done = counts.succeeded + counts.failed + counts.canceled
+  const total = counts.total
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0
+  return (
+    <div className={styles.progressCell}>
+      <div className={styles.progressFrac}>
+        {done}/{total}
+      </div>
+      <div
+        className={styles.progressBar}
+        role="progressbar"
+        aria-label="Task progress"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div className={styles.progressFill} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function JobList() {
+  const filters = useJobListFilters()
+  const [inputSearch, setInputSearch] = useState(filters.search)
+  const debouncedSearch = useDebounce(inputSearch, 300)
+
+  // Sync debounced search value into URL params once it settles.
+  // Skip the initial mount run so that existing page= params are not discarded
+  // when the component first renders with a pre-set search value in the URL.
+  const didMountRef = useRef(false)
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true
+      return
+    }
+    filters.setSearch(debouncedSearch)
+    // filters.setSearch is stable (useCallback wrapping a stable setSearchParams)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch])
+
+  const queryParams: Parameters<typeof useListJobs>[0] = {
+    ...(filters.status ? { status: filters.status } : {}),
+    ...(debouncedSearch ? { search: debouncedSearch } : {}),
+    sort_by: filters.sortField,
+    sort_dir: filters.sortDir,
+    limit: PAGE_SIZE,
+    offset: (filters.page - 1) * PAGE_SIZE,
+  }
+
+  const { data, isLoading, isError, error } = useListJobs(queryParams)
+  const jobs = data?.items ?? []
+  const total = data?.total ?? 0
+
+  const cancelJob = useCancelJob()
+
+  // ── Selection state ───────────────────────────────────────────────────────
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
+
+  const cancelableJobs = jobs.filter((j) => CANCELABLE.has(j.status))
+  const cancelableIds = new Set(cancelableJobs.map((j) => j.id))
+  const selectedCancelable = [...selectedIds].filter((id) => cancelableIds.has(id))
+
+  const toggleRow = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleAll = useCallback(() => {
+    if (cancelableJobs.length === 0) return
+    const allSelected = cancelableJobs.every((j) => selectedIds.has(j.id))
+    setSelectedIds(allSelected ? new Set() : new Set(cancelableJobs.map((j) => j.id)))
+  }, [cancelableJobs, selectedIds])
+
+  // ── Per-row cancel ────────────────────────────────────────────────────────
+
+  const handleCancelRow = useCallback(
+    async (id: string) => {
+      setCancelingIds((prev) => new Set(prev).add(id))
+      try {
+        await cancelJob.mutateAsync(id)
+      } catch {
+        // Error is visible via cancelJob.isError / cancelJob.error below.
+        // Do not re-throw so bulk cancel continues past individual failures.
+      } finally {
+        setCancelingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [cancelJob],
+  )
+
+  // ── Bulk cancel ───────────────────────────────────────────────────────────
+
+  const handleBulkCancel = useCallback(async () => {
+    for (const id of selectedCancelable) {
+      await handleCancelRow(id)
+    }
+  }, [selectedCancelable, handleCancelRow])
+
+  // ── Sort handler ──────────────────────────────────────────────────────────
+
+  const { setSortFieldAndDir } = filters
+  const handleSort = useCallback(
+    (field: JobSortField, dir: SortDirection) => {
+      setSortFieldAndDir(field, dir)
+    },
+    [setSortFieldAndDir],
+  )
+
+  const allCancelableSelected =
+    cancelableJobs.length > 0 && cancelableJobs.every((j) => selectedIds.has(j.id))
+
   return (
-    <div>
-      <PageHeader title="Jobs" />
+    <div className={styles.page}>
+      <PageHeader title="Jobs" subtitle={isLoading ? 'Loading…' : `${total} jobs`} />
+
+      {/* Status filter bar (task 38) */}
+      <div className={styles.toolbar}>
+        <div className={styles.filterBar} role="toolbar" aria-label="Filter by status">
+          {STATUS_FILTERS.map(({ label, value }) => (
+            <button
+              key={value}
+              className={[
+                styles.filterPill,
+                filters.status === value ? styles['filterPill--active'] : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              onClick={() => filters.setStatus(value)}
+              aria-pressed={filters.status === value}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Search input (task 39) */}
+        <div className={styles.searchWrap}>
+          <input
+            className={styles.searchInput}
+            type="search"
+            placeholder="Search by name, ID, or owner…"
+            value={inputSearch}
+            onChange={(e) => setInputSearch(e.target.value)}
+            aria-label="Search jobs"
+          />
+        </div>
+      </div>
+
+      {/* Bulk action bar (task 42) */}
+      {selectedIds.size > 0 && (
+        <div className={styles.bulkBar}>
+          <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
+          <button
+            className={styles.bulkCancelBtn}
+            onClick={() => void handleBulkCancel()}
+            disabled={selectedCancelable.length === 0 || cancelJob.isPending}
+            type="button"
+          >
+            Cancel selected ({selectedCancelable.length})
+          </button>
+          <button
+            className={styles.filterPill}
+            onClick={() => setSelectedIds(new Set())}
+            type="button"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {isError && (
+        <div className={styles.errorBanner} role="alert">
+          Failed to load jobs: {error instanceof Error ? error.message : 'Unknown error'}
+        </div>
+      )}
+      {cancelJob.isError && (
+        <div className={styles.errorBanner} role="alert">
+          Cancel failed:{' '}
+          {cancelJob.error instanceof Error ? cancelJob.error.message : 'Unknown error'}
+        </div>
+      )}
+
+      {/* Job table (tasks 36, 40, 41, 42) */}
+      <div className={styles.tableWrap}>
+        <table className={styles.table} aria-label="Jobs">
+          <thead>
+            <tr>
+              <th className={styles.checkCell}>
+                <input
+                  type="checkbox"
+                  aria-label="Select all cancelable jobs"
+                  checked={allCancelableSelected}
+                  onChange={toggleAll}
+                  disabled={cancelableJobs.length === 0}
+                />
+              </th>
+              <th aria-sort={sortAriaValue('name', filters.sortField, filters.sortDir)}>
+                <SortableHeader
+                  field="name"
+                  label="Name"
+                  sortField={filters.sortField}
+                  sortDir={filters.sortDir}
+                  onSort={handleSort}
+                />
+              </th>
+              <th>ID</th>
+              <th>Owner</th>
+              <th>Queue</th>
+              <th aria-sort={sortAriaValue('status', filters.sortField, filters.sortDir)}>
+                <SortableHeader
+                  field="status"
+                  label="Status"
+                  sortField={filters.sortField}
+                  sortDir={filters.sortDir}
+                  onSort={handleSort}
+                />
+              </th>
+              <th aria-sort={sortAriaValue('priority', filters.sortField, filters.sortDir)}>
+                <SortableHeader
+                  field="priority"
+                  label="Priority"
+                  sortField={filters.sortField}
+                  sortDir={filters.sortDir}
+                  onSort={handleSort}
+                />
+              </th>
+              <th>Progress</th>
+              <th aria-sort={sortAriaValue('created_at', filters.sortField, filters.sortDir)}>
+                <SortableHeader
+                  field="created_at"
+                  label="Submitted"
+                  sortField={filters.sortField}
+                  sortDir={filters.sortDir}
+                  onSort={handleSort}
+                />
+              </th>
+              <th>Elapsed</th>
+              <th aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading && (
+              <tr className={styles.emptyRow}>
+                <td colSpan={11}>Loading…</td>
+              </tr>
+            )}
+            {!isLoading && jobs.length === 0 && (
+              <tr className={styles.emptyRow}>
+                <td colSpan={11}>No jobs found.</td>
+              </tr>
+            )}
+            {jobs.map((job) => {
+              const isSelected = selectedIds.has(job.id)
+              const isCanceling = cancelingIds.has(job.id)
+              const canCancel = CANCELABLE.has(job.status) && !isCanceling
+              return (
+                <tr key={job.id} className={isSelected ? styles.rowSelected : undefined}>
+                  <td className={styles.checkCell}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select job ${job.name}`}
+                      checked={isSelected}
+                      onChange={() => toggleRow(job.id)}
+                    />
+                  </td>
+                  <td>
+                    <Link to={`/jobs/${job.id}`}>{job.name}</Link>
+                  </td>
+                  <td>
+                    <IdCell id={job.id} />
+                  </td>
+                  <td>{job.owner}</td>
+                  <td>{job.queue_name ?? job.queue_id}</td>
+                  <td>
+                    <StatusBadge status={job.status} />
+                  </td>
+                  <td>{job.priority}</td>
+                  <td>
+                    <ProgressCell job={job} />
+                  </td>
+                  <td>{formatTime(job.created_at)}</td>
+                  <td>{elapsedLabel(job)}</td>
+                  <td>
+                    {canCancel && (
+                      <button
+                        className={styles.cancelBtn}
+                        onClick={() => void handleCancelRow(job.id)}
+                        disabled={isCanceling}
+                        type="button"
+                        aria-label={`Cancel job ${job.name}`}
+                      >
+                        {isCanceling ? '…' : 'Cancel'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

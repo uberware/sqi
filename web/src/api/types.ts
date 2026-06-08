@@ -39,6 +39,7 @@ export interface Job {
   id: string
   farm_id: string
   queue_id: string
+  queue_name?: string
   name: string
   owner: string
   submitter: string
@@ -46,6 +47,7 @@ export interface Job {
   status: JobStatus
   project?: string
   template_format: TemplateFormat
+  task_counts?: TaskCounts
   created_at: string
   updated_at: string
   started_at?: string

@@ -1,0 +1,51 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.pending {
+  background-color: var(--color-status-pending-bg);
+  color: var(--color-status-pending-text);
+}
+
+.ready {
+  background-color: var(--color-status-ready-bg);
+  color: var(--color-status-ready-text);
+}
+
+.assigned {
+  background-color: var(--color-status-assigned-bg);
+  color: var(--color-status-assigned-text);
+}
+
+.running {
+  background-color: var(--color-status-running-bg);
+  color: var(--color-status-running-text);
+}
+
+.succeeded,
+.completed {
+  background-color: var(--color-status-succeeded-bg);
+  color: var(--color-status-succeeded-text);
+}
+
+.failed {
+  background-color: var(--color-status-failed-bg);
+  color: var(--color-status-failed-text);
+}
+
+.canceled,
+.paused {
+  background-color: var(--color-status-canceled-bg);
+  color: var(--color-status-canceled-text);
+}
