@@ -1,0 +1,6 @@
+dist/
+node_modules/
+coverage/
+# macOS resource fork sidecar files
+._*
+**/._*

@@ -88,6 +88,64 @@ jobs:
           files: ./coverage.out
           fail_ci_if_error: false
 
+  # ── Web UI quality gates ─────────────────────────────────────────────────────
+  # Runs ESLint (--max-warnings 0), TypeScript type-check (tsc -b), and the
+  # Vitest test suite with coverage enforcement — all in parallel with the Go
+  # test job so neither blocks the other.
+  web-check:
+    name: Web UI lint, typecheck, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Read the required Node version from .nvmrc at the repo root.
+      # The engines field in web/package.json documents the same constraint.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      # Prettier — fail if any file would be reformatted.
+      - name: Check formatting (Prettier)
+        working-directory: web
+        run: npm run format:check
+
+      # ESLint — --max-warnings 0 makes every warning a build failure.
+      - name: Lint (ESLint)
+        working-directory: web
+        run: npm run lint
+
+      # tsc -b type-checks all project references (tsconfig.app.json +
+      # tsconfig.node.json) without emitting output.
+      - name: Type-check (tsc -b)
+        working-directory: web
+        run: npm run typecheck
+
+      # Vitest run with V8 coverage; exits non-zero if thresholds are not met.
+      # The threshold is defined in vite.config.ts (60 % — matches Go's minimum).
+      - name: Test with coverage gate (Vitest)
+        working-directory: web
+        run: npm run test:coverage
+
+      # Upload the JSON coverage report to Codecov so web coverage trends are
+      # tracked separately from Go (flags: web).  Mirrors the Go upload step.
+      # fail_ci_if_error: false so a Codecov outage does not break the build.
+      - name: Upload web coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/coverage-final.json
+          flags: web
+          fail_ci_if_error: false
+
   # ── Docker latest ────────────────────────────────────────────────────────────
   # Builds and pushes ghcr.io/uberware/sqi/sqi-server:latest on every push to
   # main. Uses the standalone multi-stage Dockerfile so the image is built from
@@ -95,7 +153,7 @@ jobs:
   docker-latest:
     name: Publish :latest to GHCR
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, web-check]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     permissions:
