@@ -2,11 +2,14 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
-import { useGetJob, useListTasks } from '@/api/queries'
+import { useGetJob, useListTasks, queryKeys } from '@/api/queries'
 import { useRetryTask } from '@/api/mutations'
-import type { JobDetail as JobDetailType, Step, Task, TaskStatus } from '@/api/types'
+import { useWebSocket } from '@/ws/context'
+import { isJobEvent, isTaskEvent } from '@/ws/events'
+import type { JobDetail as JobDetailType, Step, Task, TaskStatus, ListResponse } from '@/api/types'
 import styles from './JobDetail.module.css'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -47,6 +50,16 @@ function durationLabel(startIso: string | undefined, endIso: string | undefined)
 
 function isTerminalTask(status: TaskStatus): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'canceled'
+}
+
+/** Returns a human-readable age string for a past timestamp. */
+function formatAge(ts: number, now: number): string {
+  if (ts === 0) return '—'
+  const diff = now - ts
+  if (diff < 5000) return 'just now'
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  return new Date(ts).toLocaleTimeString()
 }
 
 // ── IdCell ────────────────────────────────────────────────────────────────────
@@ -374,9 +387,14 @@ export default function JobDetail() {
   const { id } = useParams<{ id: string }>()
   const jobId = id ?? ''
 
-  const { data: job, isLoading, isError, error } = useGetJob(jobId)
-  const { data: tasksPage, isLoading: tasksLoading } = useListTasks(jobId, { limit: 1000 })
+  const { data: job, isLoading, isError, error, dataUpdatedAt: jobUpdatedAt } = useGetJob(jobId)
+  const {
+    data: tasksPage,
+    isLoading: tasksLoading,
+    dataUpdatedAt: tasksUpdatedAt,
+  } = useListTasks(jobId, { limit: 1000 })
 
+  const queryClient = useQueryClient()
   const retryTask = useRetryTask()
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
   const [retryErrors, setRetryErrors] = useState<Map<string, string>>(new Map())
@@ -397,6 +415,88 @@ export default function JobDetail() {
     () => [...(job?.steps ?? [])].sort((a, b) => a.step_order - b.step_order),
     [job?.steps],
   )
+
+  // ── Task 58: WS-driven task-level updates ─────────────────────────────────
+
+  // Debounce job-detail invalidation so rapid task bursts only trigger one
+  // background re-fetch (which refreshes step statuses, job aggregate status, etc.)
+  const invalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(
+    () => () => {
+      if (invalidateTimerRef.current) clearTimeout(invalidateTimerRef.current)
+    },
+    [],
+  )
+
+  const scheduleDetailInvalidate = useCallback(() => {
+    if (invalidateTimerRef.current) clearTimeout(invalidateTimerRef.current)
+    invalidateTimerRef.current = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.detail(jobId) })
+      // Use a 3-element prefix — queryKeys.tasks.list(jobId) appends an
+      // undefined 4th element that partialDeepEqual treats as a mismatch
+      // against the active key's { limit: 1000 } params object.
+      void queryClient.invalidateQueries({ queryKey: ['tasks', 'list', jobId] })
+    }, 5_000)
+  }, [queryClient, jobId])
+
+  // Subscribe to per-job task updates.
+  useWebSocket(`jobs/${jobId}/tasks`, (payload) => {
+    if (!isTaskEvent(payload)) return
+
+    // Patch the task status in the tasks query cache immediately.
+    queryClient.setQueriesData<ListResponse<Task>>({ queryKey: queryKeys.tasks.all }, (old) => {
+      if (!old) return old
+      const idx = old.items.findIndex((t) => t.id === payload.task_id)
+      if (idx === -1) return old
+      const prev = old.items[idx]
+      if (!prev) return old
+      const newItems = [...old.items]
+      newItems[idx] = {
+        ...prev,
+        status: payload.status,
+        updated_at: payload.updated_at,
+        ...(payload.worker_id ? { assigned_worker_id: payload.worker_id } : {}),
+      }
+      return { ...old, items: newItems }
+    })
+
+    // Schedule a background sync to refresh step statuses and job aggregate status.
+    scheduleDetailInvalidate()
+  })
+
+  // Also subscribe to the "jobs" subject to capture job-level status changes
+  // (e.g. the job transitioning from running → completed).
+  useWebSocket('jobs', (payload) => {
+    if (!isJobEvent(payload) || payload.job_id !== jobId) return
+
+    queryClient.setQueriesData<JobDetailType>(
+      { queryKey: queryKeys.jobs.detail(jobId), exact: true },
+      (old) => {
+        if (!old) return old
+        return { ...old, status: payload.status, updated_at: payload.updated_at }
+      },
+    )
+  })
+
+  // ── Task 59: last-updated timestamp ──────────────────────────────────────
+
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const lastUpdated = Math.max(jobUpdatedAt, tasksUpdatedAt)
+
+  // ── Task 60: manual refresh ───────────────────────────────────────────────
+
+  const handleRefresh = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.detail(jobId) })
+    void queryClient.invalidateQueries({ queryKey: ['tasks', 'list', jobId] })
+  }, [queryClient, jobId])
+
+  // ── Retry ─────────────────────────────────────────────────────────────────
 
   const handleRetry = useCallback(
     async (taskId: string) => {
@@ -449,7 +549,24 @@ export default function JobDetail() {
       <PageHeader
         title={job.name}
         subtitle={`ID: ${truncateId(job.id)}`}
-        action={<StatusBadge status={job.status} />}
+        action={
+          <div className={styles.headerActions}>
+            <StatusBadge status={job.status} />
+            {lastUpdated > 0 && (
+              <span className={styles.lastUpdated} aria-live="polite">
+                Updated {formatAge(lastUpdated, now)}
+              </span>
+            )}
+            <button
+              className={styles.refreshBtn}
+              onClick={handleRefresh}
+              type="button"
+              aria-label="Refresh job data"
+            >
+              ↻ Refresh
+            </button>
+          </div>
+        }
       />
 
       <MetadataCard job={job} />

@@ -2,13 +2,16 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
-import { useListJobs } from '@/api/queries'
+import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
-import type { Job, JobStatus } from '@/api/types'
+import { useWebSocket } from '@/ws/context'
+import { isJobEvent, isTaskEvent } from '@/ws/events'
+import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
 import type { JobSortField, SortDirection } from '@/hooks/useJobListFilters'
 import styles from './JobList.module.css'
 
@@ -56,6 +59,16 @@ function elapsedLabel(job: Job): string {
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ${s % 60}s`
   return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+/** Returns a human-readable age string for a past timestamp. */
+function formatAge(ts: number, now: number): string {
+  if (ts === 0) return '—'
+  const diff = now - ts
+  if (diff < 5000) return 'just now'
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  return new Date(ts).toLocaleTimeString()
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -124,11 +137,17 @@ function IdCell({ id }: { id: string }) {
     (e: React.SyntheticEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      void navigator.clipboard.writeText(id).then(() => {
-        setCopied(true)
-        if (timerRef.current) clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setCopied(false), 1500)
-      })
+      void navigator.clipboard
+        .writeText(id)
+        .then(() => {
+          setCopied(true)
+          if (timerRef.current) clearTimeout(timerRef.current)
+          timerRef.current = setTimeout(() => setCopied(false), 1500)
+        })
+        .catch(() => {
+          // Clipboard write can fail in insecure contexts or when the document
+          // is not focused. Silently ignore.
+        })
     },
     [id],
   )
@@ -175,6 +194,21 @@ function ProgressCell({ job }: { job: Job }) {
   )
 }
 
+// ── Task-count delta helper ───────────────────────────────────────────────────
+
+function applyTaskStatusDelta(
+  counts: TaskCounts,
+  prevStatus: TaskStatus | undefined,
+  newStatus: TaskStatus,
+): TaskCounts {
+  const c = { ...counts }
+  if (prevStatus !== undefined) {
+    c[prevStatus] = Math.max(0, c[prevStatus] - 1)
+  }
+  c[newStatus] = c[newStatus] + 1
+  return c
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function JobList() {
@@ -205,11 +239,92 @@ export default function JobList() {
     offset: (filters.page - 1) * PAGE_SIZE,
   }
 
-  const { data, isLoading, isError, error } = useListJobs(queryParams)
+  const { data, isLoading, isError, error, dataUpdatedAt } = useListJobs(queryParams)
   const jobs = data?.items ?? []
   const total = data?.total ?? 0
 
+  const queryClient = useQueryClient()
   const cancelJob = useCancelJob()
+
+  // ── Task 57: WS-driven in-place updates ───────────────────────────────────
+
+  // Tracks the last-known status of each task so we can apply accurate count
+  // deltas when task events arrive.  Map is keyed by task_id.
+  const taskStatusRef = useRef(new Map<string, TaskStatus>())
+
+  // Debounce list invalidation so rapid task bursts only cause one background
+  // re-fetch.
+  const invalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const scheduleListInvalidate = useCallback(() => {
+    if (invalidateTimerRef.current) clearTimeout(invalidateTimerRef.current)
+    invalidateTimerRef.current = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    }, 5_000)
+  }, [queryClient])
+
+  useEffect(
+    () => () => {
+      if (invalidateTimerRef.current) clearTimeout(invalidateTimerRef.current)
+    },
+    [],
+  )
+
+  // WS subscription — updates job rows in-place without a full list re-fetch.
+  useWebSocket('jobs', (payload) => {
+    if (isJobEvent(payload)) {
+      // Patch this job's status immediately in every cached list page.
+      queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
+        if (!old) return old
+        const idx = old.items.findIndex((j) => j.id === payload.job_id)
+        if (idx === -1) return old
+        const newItems = [...old.items]
+        const prev = newItems[idx]
+        if (!prev) return old
+        newItems[idx] = { ...prev, status: payload.status, updated_at: payload.updated_at }
+        return { ...old, items: newItems }
+      })
+    } else if (isTaskEvent(payload)) {
+      // Apply a task-count delta to the parent job row.
+      const prevStatus = taskStatusRef.current.get(payload.task_id)
+      taskStatusRef.current.set(payload.task_id, payload.status)
+
+      if (prevStatus !== undefined) {
+        queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
+          if (!old) return old
+          const idx = old.items.findIndex((j) => j.id === payload.job_id)
+          if (idx === -1) return old
+          const job = old.items[idx]
+          if (!job?.task_counts) return old
+          const newItems = [...old.items]
+          newItems[idx] = {
+            ...job,
+            task_counts: applyTaskStatusDelta(job.task_counts, prevStatus, payload.status),
+          }
+          return { ...old, items: newItems }
+        })
+      }
+
+      // Schedule a background sync so task_counts stay accurate even when
+      // prevStatus is unknown (first event for a task) or we missed events.
+      scheduleListInvalidate()
+    }
+  })
+
+  // ── Task 59: last-updated timestamp ──────────────────────────────────────
+
+  // Tick every 30 s so the "X ago" label stays reasonably current.
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Task 60: manual refresh ───────────────────────────────────────────────
+
+  const handleRefresh = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+  }, [queryClient])
 
   // ── Selection state ───────────────────────────────────────────────────────
 
@@ -284,7 +399,27 @@ export default function JobList() {
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Jobs" subtitle={isLoading ? 'Loading…' : `${total} jobs`} />
+      <PageHeader
+        title="Jobs"
+        subtitle={isLoading ? 'Loading…' : `${total} jobs`}
+        action={
+          <div className={styles.headerActions}>
+            {dataUpdatedAt > 0 && (
+              <span className={styles.lastUpdated} aria-live="polite">
+                Updated {formatAge(dataUpdatedAt, now)}
+              </span>
+            )}
+            <button
+              className={styles.refreshBtn}
+              onClick={handleRefresh}
+              type="button"
+              aria-label="Refresh jobs"
+            >
+              ↻ Refresh
+            </button>
+          </div>
+        }
+      />
 
       {/* Status filter bar (task 38) */}
       <div className={styles.toolbar}>

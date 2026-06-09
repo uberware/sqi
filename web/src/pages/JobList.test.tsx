@@ -5,16 +5,68 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobList from './JobList'
+import { WebSocketProvider } from '@/ws/context'
 import type { Job, ListResponse } from '@/api/types'
+
+// ── Mock WebSocket ────────────────────────────────────────────────────────────
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = []
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+
+  readyState = MockWebSocket.CONNECTING
+  url: string
+  sentMessages: string[] = []
+
+  onopen: ((event: Event) => void) | null = null
+  onclose: ((event: CloseEvent) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  onmessage: ((event: MessageEvent) => void) | null = null
+
+  constructor(url: string) {
+    this.url = url
+    MockWebSocket.instances.push(this)
+  }
+
+  send(data: string): void {
+    this.sentMessages.push(data)
+  }
+
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED
+  }
+
+  simulateOpen(): void {
+    this.readyState = MockWebSocket.OPEN
+    this.onopen?.(new Event('open'))
+  }
+
+  simulateMessage(data: unknown): void {
+    const raw = typeof data === 'string' ? data : JSON.stringify(data)
+    this.onmessage?.(new MessageEvent('message', { data: raw }))
+  }
+}
+
+function wsInstance(i: number): MockWebSocket {
+  const ws = MockWebSocket.instances[i]
+  if (!ws) throw new Error(`No MockWebSocket at index ${i}`)
+  return ws
+}
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
+  MockWebSocket.instances = []
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  vi.stubGlobal('WebSocket', MockWebSocket)
   vi.useFakeTimers({ shouldAdvanceTime: true })
 })
 afterEach(() => {
@@ -64,7 +116,7 @@ function okJson(body: unknown): Response {
   })
 }
 
-// ── Test wrapper ──────────────────────────────────────────────────────────────
+// ── Test wrappers ─────────────────────────────────────────────────────────────
 
 function makeClient() {
   return new QueryClient({
@@ -72,11 +124,14 @@ function makeClient() {
   })
 }
 
+/** Standard wrapper — includes WebSocketProvider (using mock WS) for all tests. */
 function Wrapper({ children, route = '/jobs' }: { children: ReactNode; route?: string }) {
-  const client = makeClient()
+  const [client] = useState(makeClient)
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
+      <MemoryRouter initialEntries={[route]}>
+        <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   )
 }
@@ -369,6 +424,158 @@ describe('JobList', () => {
           .flat()
           .filter((u) => typeof u === 'string' && (u as string).includes('/jobs/'))
         expect(urls.length).toBeGreaterThanOrEqual(2)
+      })
+    })
+  })
+
+  // ── Task 57: WS job-list updates ─────────────────────────────────────────────
+
+  describe('websocket job-list updates (task 57)', () => {
+    it('updates the status badge when a JobEvent arrives for a visible job', async () => {
+      const job = makeJob({ id: 'job-ws-1', status: 'running', name: 'WS Job' })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+      // Allow background refetches
+      fetchMock.mockResolvedValue(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-ws-1',
+            status: 'completed',
+            updated_at: '2024-01-01T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() =>
+        expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0),
+      )
+    })
+
+    it('ignores JobEvents for jobs not in the current list', async () => {
+      const job = makeJob({ id: 'job-visible', status: 'running', name: 'Visible Job' })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+      fetchMock.mockResolvedValue(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Visible Job'))
+
+      // Event is for a different job — should not cause errors or state changes
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-not-in-list',
+            status: 'completed',
+            updated_at: '2024-01-01T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      // Visible job's badge should remain Running
+      expect(screen.getAllByLabelText('Status: Running').length).toBeGreaterThan(0)
+    })
+
+    it('updates task progress when a TaskEvent with a known previous status arrives', async () => {
+      const job = makeJob({
+        id: 'job-progress',
+        status: 'running',
+        task_counts: {
+          total: 5,
+          pending: 0,
+          ready: 0,
+          assigned: 0,
+          running: 2,
+          succeeded: 3,
+          failed: 0,
+          canceled: 0,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+      fetchMock.mockResolvedValue(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('3/5'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        // First event: seed the task status (running)
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-progress',
+            task_id: 'task-1',
+            status: 'running',
+            updated_at: '2024-01-01T10:05:00Z',
+          },
+          seq: 1,
+        })
+        // Second event: task transitions running → succeeded
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-progress',
+            task_id: 'task-1',
+            status: 'succeeded',
+            updated_at: '2024-01-01T10:06:00Z',
+          },
+          seq: 2,
+        })
+      })
+
+      // After the delta: succeeded goes from 3→4, running goes from 2→1, done = 4/5
+      await waitFor(() => expect(screen.getByText('4/5')).toBeInTheDocument())
+    })
+  })
+
+  // ── Task 59: last-updated timestamp ──────────────────────────────────────────
+
+  describe('last-updated timestamp (task 59)', () => {
+    it('shows a last-updated label after data loads', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText(/Updated/))
+      expect(screen.getByText(/Updated/)).toBeInTheDocument()
+    })
+  })
+
+  // ── Task 60: manual refresh ───────────────────────────────────────────────────
+
+  describe('manual refresh button (task 60)', () => {
+    it('renders a Refresh button', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('button', { name: 'Refresh jobs' }))
+      expect(screen.getByRole('button', { name: 'Refresh jobs' })).toBeInTheDocument()
+    })
+
+    it('clicking Refresh triggers a re-fetch of the jobs list', async () => {
+      fetchMock.mockResolvedValue(okJson(makeListResponse([])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByRole('button', { name: 'Refresh jobs' }))
+
+      const callsBefore = fetchMock.mock.calls.length
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh jobs' }))
+
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore)
       })
     })
   })

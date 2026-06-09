@@ -1,19 +1,71 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobDetail from './JobDetail'
+import { WebSocketProvider } from '@/ws/context'
 import type { JobDetail as JobDetailType, ListResponse, Task } from '@/api/types'
+
+// ── Mock WebSocket ────────────────────────────────────────────────────────────
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = []
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+
+  readyState = MockWebSocket.CONNECTING
+  url: string
+  sentMessages: string[] = []
+
+  onopen: ((event: Event) => void) | null = null
+  onclose: ((event: CloseEvent) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  onmessage: ((event: MessageEvent) => void) | null = null
+
+  constructor(url: string) {
+    this.url = url
+    MockWebSocket.instances.push(this)
+  }
+
+  send(data: string): void {
+    this.sentMessages.push(data)
+  }
+
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED
+  }
+
+  simulateOpen(): void {
+    this.readyState = MockWebSocket.OPEN
+    this.onopen?.(new Event('open'))
+  }
+
+  simulateMessage(data: unknown): void {
+    const raw = typeof data === 'string' ? data : JSON.stringify(data)
+    this.onmessage?.(new MessageEvent('message', { data: raw }))
+  }
+}
+
+function wsInstance(i: number): MockWebSocket {
+  const ws = MockWebSocket.instances[i]
+  if (!ws) throw new Error(`No MockWebSocket at index ${i}`)
+  return ws
+}
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
+  MockWebSocket.instances = []
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  vi.stubGlobal('WebSocket', MockWebSocket)
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -105,7 +157,7 @@ function problemJson(status: number, detail: string): Response {
   )
 }
 
-// ── Test wrapper ──────────────────────────────────────────────────────────────
+// ── Test wrappers ─────────────────────────────────────────────────────────────
 
 function makeClient() {
   return new QueryClient({
@@ -120,15 +172,17 @@ function Wrapper({
   children: ReactNode
   jobId?: string
 }) {
-  const client = makeClient()
+  const [client] = useState(makeClient)
   return (
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/jobs/${jobId}`]}>
-        <Routes>
-          <Route path="/jobs/:id" element={children} />
-          <Route path="/jobs/:id/tasks/:taskId/logs" element={<div>Log viewer</div>} />
-          <Route path="/workers/:id" element={<div>Worker detail</div>} />
-        </Routes>
+        <WebSocketProvider url="ws://test">
+          <Routes>
+            <Route path="/jobs/:id" element={children} />
+            <Route path="/jobs/:id/tasks/:taskId/logs" element={<div>Log viewer</div>} />
+            <Route path="/workers/:id" element={<div>Worker detail</div>} />
+          </Routes>
+        </WebSocketProvider>
       </MemoryRouter>
     </QueryClientProvider>
   )
@@ -559,6 +613,218 @@ describe('JobDetail', () => {
       // 3 total, 1 running, 1 succeeded, 1 failed
       expect(stepSection).toHaveTextContent('3')
       expect(stepSection).toHaveTextContent('1')
+    })
+  })
+
+  // ── Task 58: WS task-level updates ───────────────────────────────────────────
+
+  describe('websocket task-level updates (task 58)', () => {
+    it('updates task status badge in place when a TaskEvent arrives', async () => {
+      const task = makeTask({
+        id: 'task-ws-update',
+        status: 'running',
+        name: 'task.0',
+        job_id: 'job-aabbccdd-eeff',
+        step_id: 'step-1',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      // Background refetch after debounced invalidation
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 'task-ws-update',
+            status: 'succeeded',
+            updated_at: '2024-01-15T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() =>
+        expect(screen.getAllByLabelText('Status: Succeeded').length).toBeGreaterThan(0),
+      )
+    })
+
+    it('updates the job header status badge when a JobEvent arrives', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ status: 'running' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            status: 'completed',
+            updated_at: '2024-01-15T10:20:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() =>
+        expect(screen.getAllByLabelText('Status: Completed').length).toBeGreaterThan(0),
+      )
+    })
+
+    it('patches assigned_worker_id when a TaskEvent includes worker_id', async () => {
+      // No assigned_worker_id on initial load — the WS event should set it.
+      const task = makeTask({
+        id: 'task-ws-worker',
+        status: 'running',
+        name: 'task.0',
+        job_id: 'job-aabbccdd-eeff',
+        step_id: 'step-1',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 'task-ws-worker',
+            status: 'running',
+            worker_id: 'worker-newnode99',
+            updated_at: '2024-01-15T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(screen.getByText('worker-n')).toBeInTheDocument())
+    })
+
+    it('silently ignores a TaskEvent for an unknown task_id (idx === -1)', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Test Render Job'))
+
+      // Sending an event for a task not in the cache must not throw or corrupt state.
+      expect(() => {
+        act(() => {
+          wsInstance(0).simulateOpen()
+          wsInstance(0).simulateMessage({
+            type: 'push',
+            subject: 'jobs/job-aabbccdd-eeff/tasks',
+            payload: {
+              job_id: 'job-aabbccdd-eeff',
+              task_id: 'task-nonexistent',
+              status: 'succeeded',
+              updated_at: '2024-01-15T10:10:00Z',
+            },
+            seq: 1,
+          })
+        })
+      }).not.toThrow()
+
+      // DOM should be unchanged (no spurious rows or crash)
+      expect(screen.queryByText('task-none')).not.toBeInTheDocument()
+    })
+
+    it('ignores JobEvents for other jobs on the jobs subject', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ status: 'running' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs',
+          payload: {
+            job_id: 'some-other-job',
+            status: 'completed',
+            updated_at: '2024-01-15T10:20:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      // The current job's status should remain Running
+      expect(screen.getAllByLabelText('Status: Running').length).toBeGreaterThan(0)
+    })
+  })
+
+  // ── Task 59: last-updated timestamp ──────────────────────────────────────────
+
+  describe('last-updated timestamp (task 59)', () => {
+    it('shows a last-updated label after data loads', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText(/Updated/))
+      expect(screen.getByText(/Updated/)).toBeInTheDocument()
+    })
+  })
+
+  // ── Task 60: manual refresh ───────────────────────────────────────────────────
+
+  describe('manual refresh button (task 60)', () => {
+    it('renders a Refresh button after data loads', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('button', { name: 'Refresh job data' }))
+      expect(screen.getByRole('button', { name: 'Refresh job data' })).toBeInTheDocument()
+    })
+
+    it('clicking Refresh triggers a re-fetch of both job detail and task list', async () => {
+      const job = makeJob()
+      const tasks = makeTaskListResponse([])
+      // Initial load (job + tasks) + refetch responses after Refresh
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(tasks))
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(tasks))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByRole('button', { name: 'Refresh job data' }))
+
+      const callsBefore = fetchMock.mock.calls.length
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh job data' }))
+
+      // Both the job detail endpoint and the task list endpoint must be called.
+      await waitFor(() => {
+        const newUrls = fetchMock.mock.calls.slice(callsBefore).map((c) => c[0] as string)
+        const jobId = 'job-aabbccdd-eeff'
+        const hitJob = newUrls.some((u) => u.includes(`/jobs/${jobId}`) && !u.includes('/tasks'))
+        const hitTasks = newUrls.some((u) => u.includes(`/jobs/${jobId}/tasks`))
+        expect(hitJob).toBe(true)
+        expect(hitTasks).toBe(true)
+      })
     })
   })
 })
