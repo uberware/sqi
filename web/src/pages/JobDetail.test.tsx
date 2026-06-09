@@ -1,0 +1,564 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import type { ReactNode } from 'react'
+import JobDetail from './JobDetail'
+import type { JobDetail as JobDetailType, ListResponse, Task } from '@/api/types'
+
+// ── Mocks ─────────────────────────────────────────────────────────────────────
+
+const fetchMock = vi.fn<typeof fetch>()
+beforeEach(() => {
+  fetchMock.mockReset()
+  vi.stubGlobal('fetch', fetchMock)
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+
+function makeJob(overrides: Partial<JobDetailType> = {}): JobDetailType {
+  return {
+    id: 'job-aabbccdd-eeff',
+    farm_id: 'farm-1',
+    queue_id: 'queue-1',
+    queue_name: 'default',
+    name: 'Test Render Job',
+    owner: 'alice',
+    submitter: 'bob',
+    priority: 50,
+    status: 'running',
+    template_format: 'yaml',
+    task_counts: {
+      total: 3,
+      pending: 0,
+      ready: 0,
+      assigned: 0,
+      running: 1,
+      succeeded: 1,
+      failed: 1,
+      canceled: 0,
+    },
+    created_at: '2024-01-15T10:00:00Z',
+    updated_at: '2024-01-15T10:05:00Z',
+    started_at: '2024-01-15T10:01:00Z',
+    steps: [
+      {
+        id: 'step-1',
+        name: 'RenderFrames',
+        step_order: 0,
+        status: 'running',
+        created_at: '2024-01-15T10:00:00Z',
+        updated_at: '2024-01-15T10:01:00Z',
+      },
+      {
+        id: 'step-2',
+        name: 'ComposeVideo',
+        step_order: 1,
+        status: 'pending',
+        depends_on: ['RenderFrames'],
+        created_at: '2024-01-15T10:00:00Z',
+        updated_at: '2024-01-15T10:00:00Z',
+      },
+    ],
+    ...overrides,
+  }
+}
+
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: 'task-11223344-5566',
+    job_id: 'job-aabbccdd-eeff',
+    step_id: 'step-1',
+    name: 'task.0',
+    status: 'running',
+    created_at: '2024-01-15T10:01:00Z',
+    updated_at: '2024-01-15T10:03:00Z',
+    ...overrides,
+  }
+}
+
+function makeTaskListResponse(tasks: Task[]): ListResponse<Task> {
+  return { items: tasks, total: tasks.length, limit: 1000, offset: 0 }
+}
+
+function okJson(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function problemJson(status: number, detail: string): Response {
+  return new Response(
+    JSON.stringify({
+      type: 'about:blank',
+      title: 'Error',
+      status,
+      detail,
+    }),
+    { status, headers: { 'Content-Type': 'application/problem+json' } },
+  )
+}
+
+// ── Test wrapper ──────────────────────────────────────────────────────────────
+
+function makeClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+}
+
+function Wrapper({
+  children,
+  jobId = 'job-aabbccdd-eeff',
+}: {
+  children: ReactNode
+  jobId?: string
+}) {
+  const client = makeClient()
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[`/jobs/${jobId}`]}>
+        <Routes>
+          <Route path="/jobs/:id" element={children} />
+          <Route path="/jobs/:id/tasks/:taskId/logs" element={<div>Log viewer</div>} />
+          <Route path="/workers/:id" element={<div>Worker detail</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
+  )
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('JobDetail', () => {
+  describe('loading and error states', () => {
+    it('renders loading state while job is being fetched', () => {
+      // Never resolves — stays in loading state
+      fetchMock.mockReturnValue(new Promise(() => undefined))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(screen.getByText('Loading…')).toBeInTheDocument()
+    })
+
+    it('renders error banner when job fetch fails', async () => {
+      fetchMock.mockResolvedValueOnce(problemJson(404, 'job not found'))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('alert'))
+      expect(screen.getByRole('alert')).toHaveTextContent('Failed to load job')
+    })
+  })
+
+  describe('job metadata (task 44)', () => {
+    it('renders the job name in the page header', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ name: 'My Render Job' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('My Render Job'))
+      expect(screen.getByText('My Render Job')).toBeInTheDocument()
+    })
+
+    it('renders owner and submitter separately', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ owner: 'alice', submitter: 'bob' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('alice'))
+      expect(screen.getByText('alice')).toBeInTheDocument()
+      expect(screen.getByText('bob')).toBeInTheDocument()
+    })
+
+    it('renders the status badge in the header action slot', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ status: 'failed' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByLabelText('Status: Failed'))
+      const badges = screen.getAllByLabelText('Status: Failed')
+      expect(badges.length).toBeGreaterThan(0)
+    })
+
+    it('renders queue name', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ queue_name: 'vfx-queue' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('vfx-queue'))
+      expect(screen.getByText('vfx-queue')).toBeInTheDocument()
+    })
+
+    it('renders project tag when present', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ project: 'dragon-film' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('dragon-film'))
+      expect(screen.getByText('dragon-film')).toBeInTheDocument()
+    })
+
+    it('renders a truncated job ID in the metadata', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ id: 'abcdef1234567890' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByText('abcdef12'))
+      expect(screen.getAllByText('abcdef12').length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('step breakdown (task 45)', () => {
+    it('renders each step section with its name', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('RenderFrames'))
+      expect(screen.getByText('RenderFrames')).toBeInTheDocument()
+      expect(screen.getByText('ComposeVideo')).toBeInTheDocument()
+    })
+
+    it('renders the depends_on annotation for dependent steps', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText(/Depends on:/))
+      expect(screen.getByText(/Depends on:/)).toHaveTextContent('RenderFrames')
+    })
+
+    it('renders step status badge', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      // Multiple Running badges exist (job header, metadata, step) — any is sufficient
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+      expect(screen.getAllByLabelText('Status: Running').length).toBeGreaterThan(0)
+    })
+
+    it('renders steps in step_order (ascending)', async () => {
+      const job = makeJob({
+        steps: [
+          {
+            id: 'step-2',
+            name: 'SecondStep',
+            step_order: 1,
+            status: 'pending',
+            created_at: '',
+            updated_at: '',
+          },
+          {
+            id: 'step-1',
+            name: 'FirstStep',
+            step_order: 0,
+            status: 'running',
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('FirstStep'))
+
+      const sections = screen.getAllByRole('region')
+      const firstIdx = sections.findIndex((s) => s.getAttribute('aria-label') === 'Step: FirstStep')
+      const secondIdx = sections.findIndex(
+        (s) => s.getAttribute('aria-label') === 'Step: SecondStep',
+      )
+      expect(firstIdx).toBeLessThan(secondIdx)
+    })
+  })
+
+  describe('task table (task 46)', () => {
+    it('renders tasks within their parent step section', async () => {
+      const task = makeTask({ id: 'task-99887766', step_id: 'step-1', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('task-998'))
+      expect(screen.getByText('task-998')).toBeInTheDocument()
+    })
+
+    it('renders parameters collapsed by default showing key=value preview', async () => {
+      const task = makeTask({
+        parameters: { frame: '42', layer: 'beauty' },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText(/frame=42/))
+      expect(screen.getByText(/frame=42/)).toBeInTheDocument()
+    })
+
+    it('expands parameters on click', async () => {
+      const task = makeTask({
+        parameters: { frame: '42', layer: 'beauty', camera: 'main' },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByTitle('Click to expand parameters'))
+      fireEvent.click(screen.getByTitle('Click to expand parameters'))
+
+      // After expand all three keys should be visible
+      await waitFor(() => screen.getByText('frame'))
+      expect(screen.getByText('frame')).toBeInTheDocument()
+      expect(screen.getByText('layer')).toBeInTheDocument()
+      expect(screen.getByText('camera')).toBeInTheDocument()
+    })
+
+    it('renders worker link for assigned tasks', async () => {
+      const task = makeTask({ assigned_worker_id: 'worker-abcdef12' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('worker-a'))
+      const link = screen.getByText('worker-a').closest('a')
+      expect(link).toHaveAttribute('href', '/workers/worker-abcdef12')
+    })
+
+    it('shows dash for unassigned worker', async () => {
+      const task = makeTask({ status: 'pending' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('task-112'))
+      // Check that the worker column shows a dash (muted "—")
+      const taskTable = screen.getByRole('table', { name: /Tasks for step RenderFrames/ })
+      const rows = taskTable.querySelectorAll('tbody tr')
+      expect(rows[0]).toBeInTheDocument()
+    })
+  })
+
+  describe('retry button (task 47)', () => {
+    it('shows Retry button for failed tasks', async () => {
+      const task = makeTask({ status: 'failed', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.0'))
+      expect(screen.getByLabelText('Retry task task.0')).toBeInTheDocument()
+    })
+
+    it('shows Retry button for canceled tasks', async () => {
+      const task = makeTask({ status: 'canceled', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.0'))
+      expect(screen.getByLabelText('Retry task task.0')).toBeInTheDocument()
+    })
+
+    it('does not show Retry button for succeeded tasks', async () => {
+      const task = makeTask({ status: 'succeeded', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByText('Logs'))
+      expect(screen.queryByLabelText('Retry task task.0')).not.toBeInTheDocument()
+    })
+
+    it('does not show Retry button for running tasks', async () => {
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByText('Logs'))
+      expect(screen.queryByLabelText('Retry task task.0')).not.toBeInTheDocument()
+    })
+
+    it('calls the retryTask mutation when Retry is clicked', async () => {
+      const task = makeTask({ id: 'task-retryable', status: 'failed', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      // retryTask POST response
+      fetchMock.mockResolvedValueOnce(okJson({ task_id: 'task-retryable', status: 'ready' }))
+      // invalidation refetches
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.0'))
+      fireEvent.click(screen.getByLabelText('Retry task task.0'))
+
+      await waitFor(() => {
+        const urls = fetchMock.mock.calls.flat() as string[]
+        expect(urls.some((u) => typeof u === 'string' && u.includes('task-retryable'))).toBe(true)
+      })
+    })
+
+    it('shows pending status optimistically while retry is in flight', async () => {
+      const task = makeTask({ status: 'failed', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      // Slow retry — never resolves during this test
+      let resolveRetry!: (v: Response) => void
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveRetry = resolve
+          }),
+      )
+      // Catchall for any background refetches: keep the task visible
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.0'))
+      fireEvent.click(screen.getByLabelText('Retry task task.0'))
+
+      // While in-flight, the task row's status badge shows pending (optimistic update).
+      // There may also be a step with pending status, so use getAllByLabelText.
+      await waitFor(() => screen.getAllByLabelText('Status: Pending'))
+      expect(screen.getAllByLabelText('Status: Pending').length).toBeGreaterThan(0)
+
+      // Clean up by resolving the pending request
+      resolveRetry(okJson({ task_id: task.id, status: 'ready' }))
+    })
+
+    it('shows inline error and reverts status when retry fails', async () => {
+      const task = makeTask({ status: 'failed', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      // Retry returns 409 Conflict
+      fetchMock.mockResolvedValueOnce(problemJson(409, 'task cannot be retried'))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.0'))
+      fireEvent.click(screen.getByLabelText('Retry task task.0'))
+
+      await waitFor(() => screen.getByText(/Retry failed/))
+      expect(screen.getByText(/task cannot be retried/)).toBeInTheDocument()
+
+      // After failure, the original failed status should be restored
+      await waitFor(() => screen.getByLabelText('Status: Failed'))
+      expect(screen.getByLabelText('Status: Failed')).toBeInTheDocument()
+    })
+  })
+
+  describe('view logs link (task 48)', () => {
+    it('renders a Logs link on every task row', async () => {
+      const tasks = [
+        makeTask({ id: 'task-a1', status: 'running', name: 'task.0' }),
+        makeTask({ id: 'task-b2', status: 'succeeded', name: 'task.1' }),
+      ]
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse(tasks)))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByText('Logs'))
+      const logsLinks = screen.getAllByText('Logs')
+      expect(logsLinks).toHaveLength(2)
+    })
+
+    it('Logs link points to the correct route for each task', async () => {
+      const task = makeTask({ id: 'task-loglink99', name: 'task.0', status: 'succeeded' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ id: 'job-aabbccdd-eeff' })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('View logs for task task.0'))
+      const logsLink = screen.getByLabelText('View logs for task task.0')
+      expect(logsLink).toHaveAttribute('href', '/jobs/job-aabbccdd-eeff/tasks/task-loglink99/logs')
+    })
+  })
+
+  describe('edge cases', () => {
+    it('renders "No tasks for this step" when a step has no tasks', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByText('No tasks for this step.'))
+      // Both steps should show the empty message since no tasks were returned
+      expect(screen.getAllByText('No tasks for this step.').length).toBeGreaterThan(0)
+    })
+
+    it('renders "No steps found" when the job has no steps', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob({ steps: [] })))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('No steps found.'))
+      expect(screen.getByText('No steps found.')).toBeInTheDocument()
+    })
+
+    it('renders muted dash for task with no parameters', async () => {
+      const task = makeTask()
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('task-112'))
+      // The Parameters column should show a dash for tasks with no params
+      const taskTable = screen.getByRole('table', { name: /Tasks for step RenderFrames/ })
+      expect(taskTable).toBeInTheDocument()
+    })
+
+    it('renders step aggregate counts correctly', async () => {
+      const tasks = [
+        makeTask({ id: 't1', status: 'running' }),
+        makeTask({ id: 't2', status: 'succeeded' }),
+        makeTask({ id: 't3', status: 'failed' }),
+      ]
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse(tasks)))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('table', { name: /Tasks for step RenderFrames/ }))
+      const stepSection = screen.getByRole('region', { name: 'Step: RenderFrames' })
+      // 3 total, 1 running, 1 succeeded, 1 failed
+      expect(stepSection).toHaveTextContent('3')
+      expect(stepSection).toHaveTextContent('1')
+    })
+  })
+})
