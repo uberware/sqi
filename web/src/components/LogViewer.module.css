@@ -1,0 +1,282 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* ── Outer shell ──────────────────────────────────────────────────────────── */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+  border-radius: var(--radius-md);
+  border: 1px solid #30363d;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  color: #c9d1d9;
+  overflow: hidden;
+  min-height: 200px;
+}
+
+/* ── Controls bar ─────────────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  flex-shrink: 0;
+}
+
+.controlsLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.controlsRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.controlBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-sans);
+  border-radius: var(--radius-sm);
+  border: 1px solid #30363d;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+
+.controlBtnPrimary {
+  background: #21262d;
+  color: #c9d1d9;
+}
+
+.controlBtnPrimary:hover:not(:disabled) {
+  background: #30363d;
+  border-color: #8b949e;
+}
+
+.controlBtnActive {
+  background: #1f3244;
+  border-color: #388bfd;
+  color: #79c0ff;
+}
+
+.controlBtnActive:hover:not(:disabled) {
+  background: #1f3a55;
+}
+
+.controlBtnDanger {
+  background: #21262d;
+  color: #c9d1d9;
+}
+
+.controlBtnDanger:hover:not(:disabled) {
+  background: #30363d;
+}
+
+.controlBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.unreadBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  height: 20px;
+  background: #1f3244;
+  color: #79c0ff;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-sans);
+  white-space: nowrap;
+}
+
+.liveIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-sans);
+  color: #3fb950;
+}
+
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3fb950;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ── Scrollable log body ──────────────────────────────────────────────────── */
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: var(--space-2) 0;
+  min-height: 0; /* allow flex child to shrink */
+}
+
+/* ── Load more bar ────────────────────────────────────────────────────────── */
+
+.loadMore {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid #21262d;
+}
+
+.loadMoreBtn {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-sans);
+  color: #8b949e;
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.loadMoreBtn:hover:not(:disabled) {
+  color: #c9d1d9;
+  border-color: #8b949e;
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Empty / loading states ───────────────────────────────────────────────── */
+
+.empty {
+  padding: var(--space-8);
+  text-align: center;
+  color: #6e7681;
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-sm);
+}
+
+.errorMsg {
+  padding: var(--space-4);
+  color: #f85149;
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-sm);
+}
+
+/* ── Log line ─────────────────────────────────────────────────────────────── */
+
+.logLine {
+  display: flex;
+  align-items: flex-start;
+  min-height: 20px;
+  padding: 1px 0;
+  border-left: 3px solid transparent;
+}
+
+.logLine:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* stdout — no special tint (default) */
+.streamStdout {
+  border-left-color: transparent;
+}
+
+/* stderr — subtle amber left border */
+.streamStderr {
+  border-left-color: #d29922;
+  background: rgba(210, 153, 34, 0.04);
+}
+
+.streamStderr:hover {
+  background: rgba(210, 153, 34, 0.08);
+}
+
+/* ── Gutter (line numbers) ────────────────────────────────────────────────── */
+
+.lineCount {
+  color: #6e7681;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-sans);
+}
+
+.gutter {
+  flex-shrink: 0;
+  min-width: 4ch; /* auto-widens for line numbers ≥10 000 */
+  text-align: right;
+  padding: 0 var(--space-2);
+  color: #484f58;
+  user-select: none;
+  cursor: default;
+  white-space: nowrap;
+}
+
+/* ── Log text ─────────────────────────────────────────────────────────────── */
+
+.logText {
+  flex: 1;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+/* Ensure ANSI-generated spans don't break layout */
+.logText span {
+  display: inline;
+}
+
+/* ── Jump to bottom notice ────────────────────────────────────────────────── */
+
+.jumpBar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: #161b22;
+  border-top: 1px solid #30363d;
+  flex-shrink: 0;
+}
+
+.jumpBtn {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-sans);
+  color: #79c0ff;
+  background: #1f3244;
+  border: 1px solid #388bfd;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.jumpBtn:hover {
+  background: #1f3a55;
+}

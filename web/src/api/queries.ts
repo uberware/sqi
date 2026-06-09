@@ -2,7 +2,17 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
-import type { Farm, Job, JobDetail, ListResponse, Queue, Task, Worker, WorkerDetail } from './types'
+import type {
+  Farm,
+  Job,
+  JobDetail,
+  ListResponse,
+  Queue,
+  Task,
+  TaskLogsResponse,
+  Worker,
+  WorkerDetail,
+} from './types'
 
 // ── Query key factory ─────────────────────────────────────────────────────────
 // Keys are structured arrays enabling prefix-based invalidation.
@@ -207,4 +217,19 @@ export function useListQueues(farmId: string) {
     queryKey: queryKeys.queues.list(farmId),
     queryFn: () => fetchListQueues(farmId),
   })
+}
+
+export type FetchTaskLogsParams = {
+  taskId: string
+  afterNatsSeq?: number
+  limit?: number
+}
+
+export function fetchTaskLogs(params: FetchTaskLogsParams): Promise<TaskLogsResponse> {
+  return apiFetch(
+    `/tasks/${encodeURIComponent(params.taskId)}/logs${buildQS({
+      after_nats_seq: params.afterNatsSeq,
+      limit: params.limit,
+    })}`,
+  )
 }

@@ -1,0 +1,39 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--space-6);
+  gap: var(--space-4);
+  box-sizing: border-box;
+}
+
+.viewerWrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Force the log panel to fill the remaining viewport height */
+.viewerWrap > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.backLink {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-link);
+  text-decoration: none;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+  color: var(--color-text-link-hover);
+}
+
+.error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
