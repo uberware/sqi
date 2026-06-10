@@ -1,0 +1,284 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Disconnect banner ───────────────────────────────────────────────────────── */
+
+.disconnectBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-8);
+  background: var(--color-warning-muted);
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  border-bottom: 1px solid var(--color-warning);
+}
+
+.disconnectIcon {
+  font-size: var(--font-size-base);
+  flex-shrink: 0;
+}
+
+/* ── Scrollable content area ─────────────────────────────────────────────────── */
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* ── Card grid ───────────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-6);
+}
+
+@media (max-width: 760px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Card shell ──────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.cardHeaderLink {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-link);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cardHeaderLink:hover {
+  color: var(--color-text-link-hover);
+  text-decoration: underline;
+}
+
+.cardBody {
+  padding: var(--space-5);
+}
+
+/* ── Workers card ────────────────────────────────────────────────────────────── */
+
+.bigStatRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.bigNum {
+  font-size: var(--font-size-4xl);
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  color: var(--color-text-primary);
+}
+
+.bigDenominator {
+  font-size: var(--font-size-xl);
+  color: var(--color-text-secondary);
+}
+
+.capacityLine {
+  margin: 0 0 var(--space-4) 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.statBreakdown {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.statLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-raised);
+  text-decoration: none;
+  transition:
+    background 120ms,
+    border-color 120ms;
+}
+
+.statLink:hover {
+  background: var(--color-accent-muted);
+  border-color: var(--color-accent);
+}
+
+.statDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.statDot--online {
+  background: var(--color-success);
+}
+
+.statDot--offline {
+  background: var(--color-text-muted);
+}
+
+.statDot--disabled {
+  background: var(--color-warning);
+}
+
+.statCount {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.statLabel {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* ── Jobs card ───────────────────────────────────────────────────────────────── */
+
+.jobStatGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.jobStatItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-raised);
+  text-decoration: none;
+  transition:
+    background 120ms,
+    border-color 120ms;
+}
+
+.jobStatItem:hover {
+  background: var(--color-accent-muted);
+  border-color: var(--color-accent);
+}
+
+.jobStatCount {
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  color: var(--color-text-primary);
+}
+
+/* ── Recent failures widget ──────────────────────────────────────────────────── */
+
+.failuresBody {
+  padding: 0;
+}
+
+.emptyMessage {
+  margin: 0;
+  padding: var(--space-6) var(--space-5);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.errorMessage {
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+  background: var(--color-error-muted);
+  border-bottom: 1px solid var(--color-error);
+}
+
+.failureTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.failureTable th {
+  padding: var(--space-3) var(--space-5);
+  text-align: left;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-raised);
+}
+
+.failureTable td {
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+  vertical-align: middle;
+}
+
+.failureTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.failureTable tbody tr {
+  transition: background 80ms;
+}
+
+.failureTable tbody tr:hover {
+  background: var(--color-surface-raised);
+}
+
+.jobLink {
+  color: var(--color-text-link);
+  text-decoration: none;
+  font-weight: var(--font-weight-medium);
+}
+
+.jobLink:hover {
+  color: var(--color-text-link-hover);
+  text-decoration: underline;
+}
+
+.metaText {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
