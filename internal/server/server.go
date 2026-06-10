@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -283,7 +284,9 @@ func (s *Server) start(ctx context.Context) error {
 	}
 
 	go func() {
-		s.logger.InfoContext(ctx, "http: listening", slog.String("addr", s.cfg.HTTPAddr))
+		s.logger.InfoContext(ctx, "http: listening",
+			slog.String("addr", s.cfg.HTTPAddr),
+			slog.String("url", browseURL(s.cfg.HTTPAddr)))
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
 		}
@@ -309,6 +312,27 @@ func (s *Server) start(ctx context.Context) error {
 	s.discovery = resp
 
 	return nil
+}
+
+// browseURL turns a TCP bind address into a URL a human can paste into a
+// browser. A server binds to the wildcard host "0.0.0.0" (all IPv4 interfaces)
+// or "::" (all IPv6 interfaces), but those are not connectable addresses:
+// Chrome silently rewrites "0.0.0.0" to localhost, while Safari refuses it and
+// jumps to about:blank. To avoid that confusion we substitute "localhost" for
+// any wildcard or empty host, leaving an explicit host (e.g. "127.0.0.1" or a
+// LAN IP) untouched. The original bind address is still logged separately under
+// the "addr" key for operators.
+func browseURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Not in host:port form; surface it as-is rather than guessing.
+		return "http://" + addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // shutdown stops all running components in reverse dependency order within
