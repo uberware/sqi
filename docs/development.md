@@ -11,6 +11,7 @@ guides for extending the worker.
 | Tool | Purpose | Install |
 |---|---|---|
 | Go ≥ 1.23 (see `go.mod` for the pinned toolchain) | Build and test | [go.dev/dl](https://go.dev/dl/) |
+| Node.js ≥ 24 with npm ≥ 11 (see `.nvmrc` and `web/package.json` `engines`) | Build the web UI bundle embedded in `sqi-server` (`make build` runs it) | [nodejs.org](https://nodejs.org/) or `nvm use` |
 | `gofumpt` | Stricter formatter (superset of `gofmt`) | `go install mvdan.cc/gofumpt@latest` |
 | `goimports` | Import organiser | `go install golang.org/x/tools/cmd/goimports@latest` |
 | `golangci-lint` | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
@@ -54,8 +55,9 @@ Run `make` (no arguments) to see all available targets with descriptions.
 
 | Target | Description |
 |---|---|
-| `make build` | Build `sqi-server` and `sqi-worker` into `./bin/` |
-| `make build-server` | Build `sqi-server` only |
+| `make build` | Build `sqi-server` and `sqi-worker` into `./bin/` (builds the web UI first) |
+| `make build-server` | Build `sqi-server` only (builds the web UI first) |
+| `make build-web` | Build the web UI bundle into `web/dist/` (`npm ci` runs only when npm manifests change) |
 | `make run` | Build then run `sqi-server` with default config |
 | `make test` | Run all tests with the race detector enabled |
 | `make test-cover` | Run tests and print coverage; fails below 35% |

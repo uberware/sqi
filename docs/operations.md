@@ -42,7 +42,9 @@ docker run -d \
 
 ### Build from source
 
-Requirements: Go 1.23 or later (see `go.mod` for the pinned toolchain version).
+Requirements: Go 1.23 or later (see `go.mod` for the pinned toolchain version)
+and Node.js 24 or later with npm 11 or later (see `.nvmrc`), used to build the
+web UI bundle that is embedded into the `sqi-server` binary.
 
 ```sh
 git clone https://github.com/uberware/sqi.git

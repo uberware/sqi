@@ -63,8 +63,26 @@ help: ## Show this help
 .PHONY: build
 build: build-server build-worker ## Build both sqi-server and sqi-worker into ./bin/
 
+# The web bundle is a prerequisite of build-server (not just build) so the
+# embedded web/dist/ is rebuilt from current source on every server build,
+# including under `make -j` and via run-server.
+#
+# npm ci is the slow step (it wipes and reinstalls node_modules), so it is
+# gated on a stamp file keyed to the npm manifests and only re-runs when
+# dependencies change. The vite build itself is sub-second and always runs,
+# so web/dist/ always matches current source without make having to track
+# individual web source files. npm ci deletes the stamp along with
+# node_modules, so an interrupted install re-runs from scratch.
+web/node_modules/.make-stamp: web/package.json web/package-lock.json
+	cd web && npm ci
+	touch $@
+
+.PHONY: build-web
+build-web: web/node_modules/.make-stamp ## Build the web UI bundle (web/dist/) embedded by sqi-server
+	cd web && npm run build
+
 .PHONY: build-server
-build-server: ## Build sqi-server binary into ./bin/
+build-server: build-web ## Build sqi-server binary into ./bin/
 	@mkdir -p $(BUILD_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) $(CMD_DIR)
 
@@ -74,7 +92,7 @@ build-worker: ## Build sqi-worker binary into ./bin/
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(WORKER_BINARY) $(WORKER_CMD_DIR)
 
 .PHONY: build-all
-build-all: ## Cross-compile both binaries for linux/darwin/windows × amd64/arm64
+build-all: build-web ## Cross-compile both binaries for linux/darwin/windows × amd64/arm64
 	@mkdir -p $(BUILD_DIR)
 	@for bin_name in $(BINARY) $(WORKER_BINARY); do \
 	  cmd_dir="./cmd/$$bin_name"; \
@@ -207,6 +225,9 @@ docker-run: ## Run the sqi-server Docker image with default config
 .PHONY: clean
 clean: ## Remove build artifacts and coverage output
 	rm -rf $(BUILD_DIR) $(COVERAGE_OUT)
+# web/dist is intentionally not cleaned: web/dist/index.html is git-tracked so
+# //go:embed in web/embed.go always has a file (see .gitignore), and build-web
+# regenerates the bundle on every build anyway.
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
 

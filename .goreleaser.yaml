@@ -20,11 +20,19 @@ version: 2
 project_name: sqi
 
 # ── Pre-build hooks ───────────────────────────────────────────────────────────
+#
+# The web UI bundle must be built before the Go builds run so the server
+# binaries (and the Docker images derived from them) embed the
+# production-optimized web/dist/, not a stale or placeholder bundle.
+# goreleaser hooks have no working-directory option, so npm --prefix is used
+# to run inside web/ from the repository root.
 
 before:
   hooks:
     - go mod download
     - go mod verify
+    - npm --prefix web ci
+    - npm --prefix web run build
 
 # ── Builds ───────────────────────────────────────────────────────────────────
 #
