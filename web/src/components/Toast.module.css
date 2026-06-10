@@ -1,0 +1,87 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+.container {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: var(--color-surface);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.12),
+    0 2px 4px rgba(0, 0, 0, 0.06);
+  min-width: 280px;
+  max-width: 420px;
+  pointer-events: auto;
+  animation: slideIn 150ms ease-out;
+}
+
+.toast--success {
+  border-color: var(--color-status-succeeded-text);
+  background: var(--color-status-succeeded-bg);
+  color: var(--color-status-succeeded-text);
+}
+
+.toast--error {
+  border-color: var(--color-status-failed-text);
+  background: var(--color-status-failed-bg);
+  color: var(--color-status-failed-text);
+}
+
+.toast--info {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.message {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.closeBtn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: var(--font-size-lg);
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
+  border-radius: var(--radius-sm);
+  padding: 0;
+}
+
+.closeBtn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

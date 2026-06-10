@@ -149,8 +149,27 @@ export function fetchListFarms(): Promise<Farm[]> {
   return apiFetch('/farms')
 }
 
-export function fetchListQueues(farmId: string): Promise<ListResponse<Queue>> {
-  return apiFetch(`/queues${buildQS({ farm_id: farmId })}`)
+export function fetchListQueues(farmId: string, limit?: number): Promise<ListResponse<Queue>> {
+  return apiFetch(`/queues${buildQS({ farm_id: farmId, limit })}`)
+}
+
+// ── Combined farms + queues fetch ─────────────────────────────────────────────
+
+export type FarmWithQueues = {
+  farm: Farm
+  queues: Queue[]
+}
+
+export async function fetchFarmsWithQueues(): Promise<FarmWithQueues[]> {
+  const farms = await fetchListFarms()
+  // Request a high limit so the selector is never silently truncated — a
+  // partial queue list would prevent submitting to queues beyond the server's
+  // default page size.
+  return Promise.all(
+    farms.map((farm) =>
+      fetchListQueues(farm.id, 1000).then((res) => ({ farm, queues: res.items })),
+    ),
+  )
 }
 
 // ── Query hooks ───────────────────────────────────────────────────────────────
@@ -216,6 +235,14 @@ export function useListQueues(farmId: string) {
   return useQuery({
     queryKey: queryKeys.queues.list(farmId),
     queryFn: () => fetchListQueues(farmId),
+  })
+}
+
+/** Load all farms along with their queues in a single combined query. */
+export function useFarmsWithQueues() {
+  return useQuery({
+    queryKey: [...queryKeys.farms.all, 'with-queues'] as const,
+    queryFn: fetchFarmsWithQueues,
   })
 }
 
