@@ -7,6 +7,12 @@ import type { Job, RetryResponse, SubmitJobInput, WorkerActionResponse } from '.
 
 // ── Raw mutation fetch functions ──────────────────────────────────────────────
 
+/**
+ * Submit a raw OpenJD template via `POST /jobs`. The body content type is set
+ * from `input.format` (`application/yaml` or `application/json`); `farm_id`,
+ * `queue_id`, `owner`, `submitter`, `priority`, and `project` travel as query
+ * parameters.
+ */
 export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   const contentType = input.format === 'yaml' ? 'application/yaml' : 'application/json'
 
@@ -23,22 +29,26 @@ export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   })
 }
 
+/** Cancel a job via `DELETE /jobs/{id}`. Resolves on the server's 2xx/204. */
 export async function fetchCancelJob(id: string): Promise<void> {
   await apiFetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
+/** Retry a failed or canceled task via `POST /tasks/{id}/retry`. */
 export function fetchRetryTask(id: string): Promise<RetryResponse> {
   return apiFetch<RetryResponse>(`/tasks/${encodeURIComponent(id)}/retry`, {
     method: 'POST',
   })
 }
 
+/** Administratively disable a worker via `POST /workers/{id}/disable`. */
 export function fetchDisableWorker(id: string): Promise<WorkerActionResponse> {
   return apiFetch<WorkerActionResponse>(`/workers/${encodeURIComponent(id)}/disable`, {
     method: 'POST',
   })
 }
 
+/** Re-enable a disabled worker via `POST /workers/{id}/enable`. */
 export function fetchEnableWorker(id: string): Promise<WorkerActionResponse> {
   return apiFetch<WorkerActionResponse>(`/workers/${encodeURIComponent(id)}/enable`, {
     method: 'POST',

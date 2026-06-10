@@ -14,9 +14,15 @@ function isEnvelope(v: unknown): v is Envelope {
   return typeof obj['type'] === 'string' && typeof obj['seq'] === 'number'
 }
 
-// WebSocketClient manages a persistent WebSocket connection to /api/v1/ws.
-// It reconnects automatically with exponential backoff and dispatches incoming
-// push messages to registered subject handlers.
+/**
+ * Manages a persistent WebSocket connection to `/api/v1/ws`.
+ *
+ * Reconnects automatically with exponential backoff (capped at
+ * {@link MAX_DELAY_MS}, giving up after {@link MAX_ATTEMPTS}), re-subscribes all
+ * active subjects on reconnect, and dispatches incoming `push` messages to the
+ * handlers registered for their subject. Malformed or non-push frames are
+ * logged and discarded rather than thrown.
+ */
 export class WebSocketClient {
   private readonly url: string
   private ws: WebSocket | null = null
@@ -28,10 +34,12 @@ export class WebSocketClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
 
+  /** @param url - Absolute WebSocket URL to connect to, e.g. `wss://host/api/v1/ws`. */
   constructor(url: string) {
     this.url = url
   }
 
+  /** Open the connection (or reconnect from scratch), resetting backoff state. */
   connect(): void {
     this.stopped = false
     this.reconnectAttempt = 0
@@ -43,6 +51,7 @@ export class WebSocketClient {
     this._openSocket()
   }
 
+  /** Close the connection and stop reconnecting until {@link connect} is called again. */
   disconnect(): void {
     this.stopped = true
     this._clearTimer()
@@ -54,6 +63,10 @@ export class WebSocketClient {
     this._setState('disconnected')
   }
 
+  /**
+   * Register `handler` for pushes on `subject`. The first handler for a subject
+   * sends a `subscribe` frame to the server; later handlers attach locally.
+   */
   subscribe(subject: string, handler: MessageHandler): void {
     let set = this.handlers.get(subject)
     if (!set) {
@@ -64,6 +77,10 @@ export class WebSocketClient {
     set.add(handler)
   }
 
+  /**
+   * Remove a previously registered `handler`. When the last handler for a
+   * subject is removed, an `unsubscribe` frame is sent to the server.
+   */
   unsubscribe(subject: string, handler: MessageHandler): void {
     const set = this.handlers.get(subject)
     if (!set) return
@@ -74,10 +91,15 @@ export class WebSocketClient {
     }
   }
 
+  /** Return the current connection state. */
   getState(): ConnectionState {
     return this.state
   }
 
+  /**
+   * Subscribe to connection-state changes.
+   * @returns An unsubscribe function that detaches the listener.
+   */
   onStateChange(listener: (state: ConnectionState) => void): () => void {
     this.stateListeners.add(listener)
     return () => {

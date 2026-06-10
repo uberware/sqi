@@ -18,6 +18,7 @@ import type {
 // Keys are structured arrays enabling prefix-based invalidation.
 // Use queryKeys.jobs.all to invalidate every job query (list + detail).
 
+/** Query parameters accepted by {@link fetchListJobs} / {@link useListJobs}. */
 export type ListJobsParams = {
   status?: string
   search?: string
@@ -30,6 +31,7 @@ export type ListJobsParams = {
   offset?: number
 }
 
+/** Query parameters accepted by {@link fetchListTasks} / {@link useListTasks}. */
 export type ListTasksParams = {
   status?: string
   sort_by?: 'created_at' | 'status' | 'updated_at' | 'name'
@@ -38,6 +40,7 @@ export type ListTasksParams = {
   offset?: number
 }
 
+/** Query parameters accepted by {@link fetchListWorkers} / {@link useListWorkers}. */
 export type ListWorkersParams = {
   farm_id?: string
   queue_id?: string
@@ -49,6 +52,11 @@ export type ListWorkersParams = {
   offset?: number
 }
 
+/**
+ * Structured query keys for TanStack Query. Keys are arrays so related queries
+ * share a prefix; e.g. invalidating `queryKeys.jobs.all` matches every job
+ * query (both list and detail) by prefix.
+ */
 export const queryKeys = {
   jobs: {
     all: ['jobs'] as const,
@@ -87,6 +95,7 @@ function buildQS(params: Record<string, string | number | boolean | undefined>):
   return s ? `?${s}` : ''
 }
 
+/** Fetch a page of jobs from `GET /jobs`. Prefer {@link useListJobs} in components. */
 export function fetchListJobs(params: ListJobsParams): Promise<ListResponse<Job>> {
   return apiFetch(
     `/jobs${buildQS({
@@ -103,10 +112,12 @@ export function fetchListJobs(params: ListJobsParams): Promise<ListResponse<Job>
   )
 }
 
+/** Fetch one job (with steps and task counts) from `GET /jobs/{id}`. */
 export function fetchGetJob(id: string): Promise<JobDetail> {
   return apiFetch(`/jobs/${encodeURIComponent(id)}`)
 }
 
+/** Fetch a page of tasks for a job from `GET /jobs/{jobId}/tasks`. */
 export function fetchListTasks(
   jobId: string,
   params?: ListTasksParams,
@@ -122,10 +133,12 @@ export function fetchListTasks(
   )
 }
 
+/** Fetch one task from `GET /tasks/{id}`. */
 export function fetchGetTask(id: string): Promise<Task> {
   return apiFetch(`/tasks/${encodeURIComponent(id)}`)
 }
 
+/** Fetch a page of workers from `GET /workers`. */
 export function fetchListWorkers(params?: ListWorkersParams): Promise<ListResponse<Worker>> {
   return apiFetch(
     `/workers${buildQS({
@@ -141,25 +154,34 @@ export function fetchListWorkers(params?: ListWorkersParams): Promise<ListRespon
   )
 }
 
+/** Fetch one worker (with current task and capabilities) from `GET /workers/{id}`. */
 export function fetchGetWorker(id: string): Promise<WorkerDetail> {
   return apiFetch(`/workers/${encodeURIComponent(id)}`)
 }
 
+/** Fetch all farms from `GET /farms` (unordered, no pagination). */
 export function fetchListFarms(): Promise<Farm[]> {
   return apiFetch('/farms')
 }
 
+/** Fetch a page of queues belonging to a farm from `GET /queues?farm_id=…`. */
 export function fetchListQueues(farmId: string, limit?: number): Promise<ListResponse<Queue>> {
   return apiFetch(`/queues${buildQS({ farm_id: farmId, limit })}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
 
+/** A farm paired with its queues, as produced by {@link fetchFarmsWithQueues}. */
 export type FarmWithQueues = {
   farm: Farm
   queues: Queue[]
 }
 
+/**
+ * Fetch every farm together with its queues, for the submission-form target
+ * selector. Queues are requested with a high limit so the selector is never
+ * silently truncated.
+ */
 export async function fetchFarmsWithQueues(): Promise<FarmWithQueues[]> {
   const farms = await fetchListFarms()
   // Request a high limit so the selector is never silently truncated — a
@@ -246,12 +268,18 @@ export function useFarmsWithQueues() {
   })
 }
 
+/** Parameters for {@link fetchTaskLogs}. */
 export type FetchTaskLogsParams = {
   taskId: string
+  /** Return only chunks after this NATS stream sequence (offset-based paging). */
   afterNatsSeq?: number
   limit?: number
 }
 
+/**
+ * Fetch a page of stored log chunks for a task from
+ * `GET /tasks/{id}/logs`, using offset-based pagination on the NATS sequence.
+ */
 export function fetchTaskLogs(params: FetchTaskLogsParams): Promise<TaskLogsResponse> {
   return apiFetch(
     `/tasks/${encodeURIComponent(params.taskId)}/logs${buildQS({

@@ -3,10 +3,14 @@
 // Package web embeds the compiled web UI bundle into the sqi-server binary so
 // the single binary serves its own front-end with no external asset directory.
 //
-// The bundle lives under web/dist. In Phase 1 it contains only a minimal
-// placeholder index.html (see task 95); the full TypeScript/React build replaces
-// it later in the roadmap. Whatever files are present under web/dist at compile
-// time are baked into the binary by the //go:embed directive below.
+// The bundle lives under web/dist and is produced by the Vite build of the
+// TypeScript/React app under web/src (run via "make build-web", which
+// "make build"/"make build-server" invoke first). Whatever files are present
+// under web/dist at compile time are baked into the binary by the //go:embed
+// directive below. A single git-tracked placeholder web/dist/index.html keeps
+// the embed valid on a clean checkout before the first web build runs; a real
+// build overwrites it with the hashed production assets. See web/README.md and
+// docs/web-build.md for the build-and-embed flow.
 //
 // The embed declaration lives in this package — rather than in internal/ui —
 // because Go's embed directive can only reference files at or below the

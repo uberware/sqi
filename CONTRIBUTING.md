@@ -61,6 +61,70 @@ npm run dev
 (If you're new to open source, see [GitHub's guide to forking repositories](https://docs.github.com/en/get-started/quickstart/fork-a-repo).)
 
 
+### Web UI contributions
+
+The web UI (`web/`) is React + TypeScript + Vite, built into a bundle that is
+embedded in the `sqi-server` binary. Start with [`web/README.md`](web/README.md)
+for the layout and [`docs/web-development.md`](docs/web-development.md) for the
+dev-server workflow (run `sqi-server`, optionally a worker, then `npm run dev`
+with its API proxy).
+
+Before opening a PR, run the same gate CI does, from `web/`:
+
+```sh
+npm run format:check && npm run typecheck && npm run lint && npm run test:coverage
+```
+
+**Storybook.** The project does not ship Storybook yet. Components are developed
+and reviewed through their tests and the running app rather than an isolated
+component explorer. If Storybook is added later, document its `npm run storybook`
+entry point here.
+
+**Component testing approach.** Tests use [Vitest](https://vitest.dev/) with
+[React Testing Library](https://testing-library.com/) in a `jsdom` environment.
+Conventions:
+
+- Co-locate each test next to its subject as `Name.test.tsx` (or `.test.ts`).
+- Test behaviour through the rendered DOM the way a user experiences it — query
+  by role, label, and text; drive interaction with `@testing-library/user-event`;
+  assert with `@testing-library/jest-dom` matchers. Avoid asserting on internal
+  state or implementation details.
+- Mock at the network boundary (the `apiFetch`/query layer), not at the component
+  internals, so tests exercise real component wiring.
+- New components and hooks ship with tests; coverage is enforced against the
+  threshold in `web/vite.config.ts`. See the existing `DataTable.test.tsx`,
+  `StatusBadge.test.tsx`, and the `src/api` / `src/hooks` tests for the patterns.
+
+**API client pattern.** All server access goes through `src/api/` — never call
+`fetch` directly from a component.
+
+- `src/api/client.ts` exposes `apiFetch<T>`, which sets JSON headers, prefixes
+  `/api/v1`, and throws a typed `ApiError` (`{ status, title, detail, … }`) on
+  non-2xx responses. Surface `ApiError.detail` to users.
+- Read endpoints: add the wire type to `src/api/types.ts`, a raw fetch function
+  and query key to `src/api/queries.ts`, then a `useQuery` hook. Write endpoints:
+  add a `useMutation` hook in `src/api/mutations.ts` that invalidates the affected
+  query keys in `onSuccess`.
+- `src/api/types.ts` mirrors the REST wire format; keep it in sync with the
+  OpenAPI spec at `GET /api/v1/openapi.yaml` (the spec is authoritative when they
+  diverge). Live updates use the WebSocket layer in `src/ws/` via the
+  `useWebSocket` hook. Exported functions and types in `src/api/` and `src/ws/`
+  carry JSDoc — keep that up as you add to them.
+
+**Styling conventions.**
+
+- Use **CSS Modules** (`Component.module.css`) co-located with each component;
+  no global class names or inline style objects for layout.
+- Pull every color, spacing, radius, font, and shadow value from the design
+  tokens in `src/styles/tokens.css`. Do not hard-code colors — new pairings must
+  meet the contrast baseline in
+  [`docs/web-accessibility.md`](docs/web-accessibility.md).
+- Functional components and hooks only. Import with the `@/` path alias, not
+  relative `../../` chains.
+- Honour the accessibility baseline ([`docs/web-accessibility.md`](docs/web-accessibility.md)):
+  semantic HTML, keyboard-operable controls, and text alternatives for any
+  color-only or icon-only indicator.
+
 ### Community Preset Library
 
 The community preset library is the easiest way to contribute and benefits the whole community. Presets are YAML or JSON files defining how to run a specific tool — no programming required.

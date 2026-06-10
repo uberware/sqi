@@ -6,8 +6,11 @@
 
 // ── Status enums ──────────────────────────────────────────────────────────────
 
+/** Aggregate lifecycle status of a job. */
 export type JobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled'
+/** Aggregate status of a step within a job. */
 export type StepStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'canceled'
+/** Lifecycle status of an individual task. */
 export type TaskStatus =
   | 'pending'
   | 'ready'
@@ -16,10 +19,15 @@ export type TaskStatus =
   | 'succeeded'
   | 'failed'
   | 'canceled'
+/** Terminal/active status of a single task execution attempt. */
 export type AttemptStatus = 'running' | 'succeeded' | 'failed' | 'canceled'
+/** Connectivity/administrative status of a worker node. */
 export type WorkerStatus = 'online' | 'offline' | 'disabled'
+/** Output stream a log chunk came from. */
 export type LogStream = 'stdout' | 'stderr'
+/** Wire format of a submitted OpenJD template. */
 export type TemplateFormat = 'yaml' | 'json'
+/** Backing storage kind for a storage location. */
 export type StorageLocationType = 'filesystem' | 's3'
 
 // ── Pagination ────────────────────────────────────────────────────────────────
@@ -54,7 +62,10 @@ export interface Job {
   completed_at?: string
 }
 
-/** Per-status task count summary embedded in {@link JobDetail}. */
+/**
+ * Per-status task count summary. Optional on {@link Job} (list endpoints may
+ * omit it) and required on {@link JobDetail}.
+ */
 export interface TaskCounts {
   total: number
   pending: number

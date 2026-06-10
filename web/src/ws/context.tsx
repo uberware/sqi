@@ -27,6 +27,13 @@ function useWsContext(): WsContextValue {
   return ctx
 }
 
+/**
+ * Provides a single {@link WebSocketClient} to the React tree and tracks its
+ * connection state. Connects on mount and disconnects on unmount.
+ *
+ * @param url - Optional explicit WebSocket URL; defaults to `/api/v1/ws` on the
+ *   current origin (with `ws`/`wss` chosen from the page protocol).
+ */
 export function WebSocketProvider({ children, url }: { children: ReactNode; url?: string }) {
   // useState lazy init creates the client exactly once per mount — stable across renders.
   const [client] = useState(() => new WebSocketClient(url ?? buildWsUrl()))
@@ -44,9 +51,15 @@ export function WebSocketProvider({ children, url }: { children: ReactNode; url?
   return <WsContext.Provider value={{ client, state }}>{children}</WsContext.Provider>
 }
 
-// Subscribe to push messages for a subject. Unsubscribes automatically when the
-// calling component unmounts or when subject changes. The handler reference is
-// stabilised internally so callers may pass inline arrow functions.
+/**
+ * Subscribe to push messages for `subject` for the lifetime of the calling
+ * component. Unsubscribes automatically on unmount or when `subject` changes.
+ * The handler reference is stabilised internally, so callers may pass an inline
+ * arrow function without causing re-subscription on every render.
+ *
+ * @param subject - Subject to subscribe to (e.g. `jobs`, `workers`).
+ * @param handler - Invoked with the payload and full envelope of each push.
+ */
 export function useWebSocket(subject: string, handler: MessageHandler): void {
   const { client } = useWsContext()
   const handlerRef = useRef<MessageHandler>(handler)
@@ -65,6 +78,7 @@ export function useWebSocket(subject: string, handler: MessageHandler): void {
   }, [client, subject])
 }
 
+/** Read the current WebSocket {@link ConnectionState} from context. */
 export function useConnectionState(): ConnectionState {
   return useWsContext().state
 }

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+// Package fake provides an in-memory implementation of [store.Store] for unit
+// tests that must avoid touching the filesystem.
 package fake
 
 import (
