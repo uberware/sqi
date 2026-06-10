@@ -49,3 +49,18 @@
   background-color: var(--color-status-canceled-bg);
   color: var(--color-status-canceled-text);
 }
+
+.online {
+  background-color: var(--color-status-succeeded-bg);
+  color: var(--color-status-succeeded-text);
+}
+
+.offline {
+  background-color: var(--color-status-canceled-bg);
+  color: var(--color-status-canceled-text);
+}
+
+.disabled {
+  background-color: var(--color-status-pending-bg);
+  color: var(--color-status-pending-text);
+}

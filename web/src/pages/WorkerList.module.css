@@ -1,0 +1,303 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-8);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-wrap: wrap;
+}
+
+/* ── Status filter pills ─────────────────────────────────────────────────────── */
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.filterPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 120ms,
+    color 120ms,
+    border-color 120ms;
+}
+
+.filterPill:hover {
+  background: var(--color-surface-raised);
+  border-color: var(--color-text-muted);
+}
+
+.filterPill--active {
+  background: var(--color-accent-muted);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.filterCount {
+  font-size: var(--font-size-xs);
+  opacity: 0.75;
+}
+
+/* ── Table wrapper ───────────────────────────────────────────────────────────── */
+
+.tableWrap {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  user-select: none;
+  z-index: 1;
+}
+
+.table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.table tbody tr {
+  background: var(--color-surface);
+  transition: background 80ms;
+}
+
+.table tbody tr:hover {
+  background: var(--color-surface-raised);
+}
+
+/* ── ID cell ─────────────────────────────────────────────────────────────────── */
+
+.idCell {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.idCell:hover .copyHint {
+  opacity: 1;
+}
+
+.copyHint {
+  opacity: 0;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  transition: opacity 100ms;
+}
+
+/* ── Capability tags ─────────────────────────────────────────────────────────── */
+
+.tagList {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.tagPill {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.tagMore {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.tagMore:hover .tagTooltip {
+  display: flex;
+}
+
+.tagTooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 10;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  min-width: 140px;
+  max-width: 280px;
+}
+
+.tagTooltipItem {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* ── Heartbeat / meta text ───────────────────────────────────────────────────── */
+
+.metaText {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* ── Toggle buttons (enable / disable) ──────────────────────────────────────── */
+
+.toggleBtn {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 80ms,
+    background 80ms,
+    border-color 80ms,
+    color 80ms;
+}
+
+.toggleBtn--disable {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.toggleBtn--enable {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+tr:hover .toggleBtn {
+  opacity: 1;
+}
+
+.toggleBtn:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+}
+
+.toggleBtn--disable:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.toggleBtn--enable:hover:not(:disabled) {
+  background: var(--color-success-muted);
+}
+
+.toggleBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Empty / error / loading ─────────────────────────────────────────────────── */
+
+.emptyRow td {
+  text-align: center;
+  padding: var(--space-16) var(--space-8);
+  color: var(--color-text-muted);
+}
+
+.errorBanner {
+  padding: var(--space-4) var(--space-8);
+  background: var(--color-error-muted);
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--color-error);
+}
+
+/* ── Header actions (refresh + last updated) ─────────────────────────────────── */
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.lastUpdated {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.refreshBtn {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 120ms,
+    border-color 120ms,
+    color 120ms;
+}
+
+.refreshBtn:hover {
+  background: var(--color-surface-raised);
+  border-color: var(--color-text-muted);
+  color: var(--color-text-primary);
+}

@@ -58,3 +58,10 @@ export function isTaskEvent(payload: unknown): payload is WsTaskEvent {
     'status' in payload
   )
 }
+
+/** Returns true when payload is a WsWorkerEvent (has worker_id and status). */
+export function isWorkerEvent(payload: unknown): payload is WsWorkerEvent {
+  return (
+    typeof payload === 'object' && payload !== null && 'worker_id' in payload && 'status' in payload
+  )
+}

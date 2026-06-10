@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import type { JobStatus, TaskStatus, StepStatus, AttemptStatus } from '@/api/types'
+import type { JobStatus, TaskStatus, StepStatus, AttemptStatus, WorkerStatus } from '@/api/types'
 import styles from './StatusBadge.module.css'
 
-export type BadgeStatus = JobStatus | TaskStatus | StepStatus | AttemptStatus
+export type BadgeStatus = JobStatus | TaskStatus | StepStatus | AttemptStatus | WorkerStatus
 
 const LABELS: Record<BadgeStatus, string> = {
   pending: 'Pending',
@@ -15,6 +15,9 @@ const LABELS: Record<BadgeStatus, string> = {
   failed: 'Failed',
   canceled: 'Canceled',
   paused: 'Paused',
+  online: 'Online',
+  offline: 'Offline',
+  disabled: 'Disabled',
 }
 
 interface StatusBadgeProps {
