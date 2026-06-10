@@ -171,7 +171,7 @@ another persistent path).
 
 ### 2. Install the launchd plist
 
-Create `~/Library/LaunchAgents/com.uberware.sqi-worker.plist` for a per-user
+Create `~/Library/LaunchAgents/net.uberware.sqi-worker.plist` for a per-user
 agent (runs when the user is logged in):
 
 ```xml
@@ -181,7 +181,7 @@ agent (runs when the user is logged in):
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.uberware.sqi-worker</string>
+  <string>net.uberware.sqi-worker</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -218,14 +218,14 @@ agent (runs when the user is logged in):
 Replace `YOURUSERNAME` with your actual macOS username.
 
 For a system-wide daemon (runs without a user logged in), place the plist at
-`/Library/LaunchDaemons/com.uberware.sqi-worker.plist` and run it as a
+`/Library/LaunchDaemons/net.uberware.sqi-worker.plist` and run it as a
 dedicated service account. Update `UserName` and paths accordingly.
 
 ### 3. Load and start
 
 ```sh
-launchctl load ~/Library/LaunchAgents/com.uberware.sqi-worker.plist
-launchctl start com.uberware.sqi-worker
+launchctl load ~/Library/LaunchAgents/net.uberware.sqi-worker.plist
+launchctl start net.uberware.sqi-worker
 ```
 
 Check whether it is running:
@@ -243,8 +243,8 @@ tail -f /tmp/sqi-worker.log
 ### 4. Stop and unload
 
 ```sh
-launchctl stop com.uberware.sqi-worker
-launchctl unload ~/Library/LaunchAgents/com.uberware.sqi-worker.plist
+launchctl stop net.uberware.sqi-worker
+launchctl unload ~/Library/LaunchAgents/net.uberware.sqi-worker.plist
 ```
 
 ---
