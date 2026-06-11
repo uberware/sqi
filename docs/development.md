@@ -60,7 +60,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make build-web` | Build the web UI bundle into `web/dist/` (`npm ci` runs only when npm manifests change) |
 | `make run` | Build then run `sqi-server` with default config |
 | `make test` | Run all tests with the race detector enabled |
-| `make test-cover` | Run tests and print coverage; fails below 35% |
+| `make test-cover` | Run tests and print coverage; fails below 60% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
 | `make bench` | Run benchmarks |
@@ -71,7 +71,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
 | `make hooks` | Install git hooks via `lefthook` |
 | `make clean` | Remove build artifacts and `coverage.out` |
-| `make ci` | Run the full CI sequence (build, vet, lint, test-cover) |
+| `make ci` | Run the full CI sequence (fmt-check, vet, lint, test-cover) |
 
 Override the race detector: `make test RACE=off`
 
@@ -156,7 +156,7 @@ types, and route-mounting helper.
 
 **SPDX header on every source file.**
 ```go
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
 **Conventional Commits.** The `commit-msg` hook enforces the format:
@@ -179,7 +179,7 @@ new resource, create `internal/api/<resource>.go` following the pattern in
 ```go
 // internal/api/steps.go
 
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package api
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'

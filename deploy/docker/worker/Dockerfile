@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Standalone multi-stage Dockerfile for sqi-worker.
 # Alpine-based (per sqi.md §9.3) for lightweight cloud worker deployments.
@@ -65,7 +65,7 @@ LABEL org.opencontainers.image.title="sqi-worker" \
       org.opencontainers.image.description="sqi distributed task worker agent" \
       org.opencontainers.image.url="https://github.com/uberware/sqi" \
       org.opencontainers.image.source="https://github.com/uberware/sqi" \
-      org.opencontainers.image.licenses="AGPL-3.0-only"
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 # Copy the statically-linked binary from the build stage.
 COPY --from=builder --chown=sqiworker:sqiworker /out/sqi-worker /usr/local/bin/sqi-worker

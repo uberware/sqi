@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package bus provides the embedded NATS JetStream message broker and the
 // subject/stream definitions used for sqi-server's internal messaging.

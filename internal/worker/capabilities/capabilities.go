@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package capabilities provides auto-detection and manual override of
 // sqi-worker host capabilities reported to sqi-server at registration time.

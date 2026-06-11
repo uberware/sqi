@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package config defines the sqi-worker runtime configuration and provides
 // layered loading from built-in defaults, a YAML/JSON file, SQI_WORKER_*

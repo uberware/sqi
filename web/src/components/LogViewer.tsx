@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useEffect, useRef, useState, memo, useLayoutEffect } from 'react'
 import AnsiToHtml from 'ansi-to-html'

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Hub manages active WebSocket clients, subscription routing, ring-buffer
 // replay, and per-client backpressure for the /api/v1/ws endpoint

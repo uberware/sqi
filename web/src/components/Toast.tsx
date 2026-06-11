@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* eslint-disable react-refresh/only-export-components -- context files export both provider and hooks */
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'

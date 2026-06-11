@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Goreleaser-specific Dockerfile for sqi-worker.
 # Alpine-based (per sqi.md §9.3).
@@ -24,7 +24,7 @@ LABEL org.opencontainers.image.title="sqi-worker" \
       org.opencontainers.image.description="sqi distributed task worker agent" \
       org.opencontainers.image.url="https://github.com/uberware/sqi" \
       org.opencontainers.image.source="https://github.com/uberware/sqi" \
-      org.opencontainers.image.licenses="AGPL-3.0-only"
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 # Goreleaser places the binary in the Docker build context root.
 COPY --chown=sqiworker:sqiworker sqi-worker /usr/local/bin/sqi-worker

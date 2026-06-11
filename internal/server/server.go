@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package server owns the sqi-server component lifecycle: starting and
 // stopping the store, message bus, scheduler, HTTP server, and mDNS

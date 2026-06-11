@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Domain types matching the sqi REST API wire format (JSON field names).
 // Keep in sync with the OpenAPI spec at GET /api/v1/openapi.yaml and with the

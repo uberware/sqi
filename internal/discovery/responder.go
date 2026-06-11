@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package discovery advertises the running sqi-server on the local network via
 // multicast DNS (mDNS / DNS-SD) so that workers and the sqi CLI can find it

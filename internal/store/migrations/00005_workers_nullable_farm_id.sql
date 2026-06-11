@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Workers without a farm affiliation (farm_id = NULL) are valid.
 --
 -- The original schema required farm_id NOT NULL REFERENCES farms(id), which

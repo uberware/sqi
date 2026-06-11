@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Add host_requirements and compute_location to the steps table.
 --
 -- host_requirements: JSON-serialized store.StepHostRequirements, populated at

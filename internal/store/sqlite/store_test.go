@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package sqlite_test provides table-driven integration tests for every
 // [Store] method against an in-memory SQLite instance.

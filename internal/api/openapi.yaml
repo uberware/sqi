@@ -10,7 +10,7 @@ info:
     rather than status code alone to detect error bodies.
   version: "0.1.0"
   license:
-    name: AGPL-3.0-only
+    name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
 
 servers:

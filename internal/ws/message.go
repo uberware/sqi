@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package ws defines the typed WebSocket message envelope shared by the server
 // upgrade handler (internal/api) and the fanout layer (tasks 89–91).

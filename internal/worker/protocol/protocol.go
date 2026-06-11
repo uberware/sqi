@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package protocol defines the versioned JSON wire protocol used between
 // sqi-server and sqi-worker agents.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package migrations embeds the SQL migration files used by goose to manage
 // the sqi-server SQLite schema.

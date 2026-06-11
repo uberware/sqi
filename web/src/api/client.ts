@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** RFC 7807 problem-details body returned by the server on non-2xx responses. */
 export interface ProblemDetail {

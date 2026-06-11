@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Standalone multi-stage Dockerfile for sqi-server.
 #
@@ -60,7 +60,7 @@ LABEL org.opencontainers.image.title="sqi-server" \
       org.opencontainers.image.description="sqi distributed task management server" \
       org.opencontainers.image.url="https://github.com/uberware/sqi" \
       org.opencontainers.image.source="https://github.com/uberware/sqi" \
-      org.opencontainers.image.licenses="AGPL-3.0-only"
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 # Copy the statically-linked binary from the build stage.
 # --chown matches the nonroot UID/GID (65532) used by distroless:nonroot.

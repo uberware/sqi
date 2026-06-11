@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { JobStatus, TaskStatus, StepStatus, AttemptStatus, WorkerStatus } from '@/api/types'
 import styles from './StatusBadge.module.css'

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package web embeds the compiled web UI bundle into the sqi-server binary so
 // the single binary serves its own front-end with no external asset directory.

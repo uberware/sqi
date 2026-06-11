@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package pull implements the JetStream pull loop that fetches task-assignment
 // messages from the SQI_WORK stream and dispatches them for execution.

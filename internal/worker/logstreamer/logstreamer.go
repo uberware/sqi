@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package logstreamer implements the log-chunk publisher for sqi-worker
 // (tasks 64–69).

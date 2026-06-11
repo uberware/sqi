@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package openjd implements parsing, validation, and parameter-space expansion
 // for Open Job Description (OpenJD) job templates.

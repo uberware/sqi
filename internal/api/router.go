@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package api wires together the sqi-server HTTP surface: the chi router,
 // standard middleware stack, and all route groups.
