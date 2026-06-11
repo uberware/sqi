@@ -24,8 +24,8 @@ services:
     restart: unless-stopped
     environment:
       # Bind NATS to all interfaces so worker containers on the bridge network
-      # can connect.  The default (127.0.0.1:4222) is loopback-only and would
-      # refuse connections arriving on the bridge interface.
+      # can connect. This matches the default (0.0.0.0:4222) and is pinned here
+      # explicitly so the smoke topology is self-documenting.
       SQI_NATS_ADDR: "0.0.0.0:4222"
       # mDNS multicast is unreliable inside Docker networks; the worker uses
       # SQI_WORKER_NATS_URL explicitly, so discovery is not needed.

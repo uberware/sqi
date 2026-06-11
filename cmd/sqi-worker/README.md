@@ -76,7 +76,7 @@ SQI_WORKER_DISCOVERY_ENABLE_MDNS=false \
 
 ## Running against a local sqi-server
 
-Start `sqi-server` in one terminal (default: NATS on `127.0.0.1:4222`, HTTP on
+Start `sqi-server` in one terminal (default: NATS on `0.0.0.0:4222`, HTTP on
 `0.0.0.0:8080`):
 
 ```sh

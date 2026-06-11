@@ -19,9 +19,10 @@ import (
 // BrokerConfig holds the parameters needed to start the embedded NATS server.
 type BrokerConfig struct {
 	// Addr is the TCP address the embedded NATS server binds to, in
-	// "host:port" form.  Defaults to "127.0.0.1:4222" (loopback only) so
-	// external clients cannot reach the broker directly; all sqi components
-	// communicate via the typed client wrapper introduced in task 36.
+	// "host:port" form.  Defaults to "0.0.0.0:4222" (all interfaces) so that
+	// workers which discover the server via mDNS can reach the broker at the
+	// advertised LAN host. Broker authentication is not yet in place; it
+	// arrives in phase 3.
 	Addr string
 
 	// DataDir is the directory JetStream uses for file-backed stream storage.

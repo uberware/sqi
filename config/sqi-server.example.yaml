@@ -32,11 +32,12 @@ http:
 # ── NATS JetStream (embedded broker) ─────────────────────────────────────────
 nats:
   # TCP address the embedded NATS server binds to.
-  # Defaults to loopback — sqi-server communicates with NATS in-process.
-  # Change this only if you need to expose NATS to worker nodes directly
-  # (not recommended; prefer the sqi worker protocol over the REST/WS API).
+  # Defaults to all interfaces (0.0.0.0) so that workers which discover the
+  # server via mDNS can connect to NATS at the advertised LAN host. Set this
+  # to "127.0.0.1:4222" to restrict NATS to loopback (single-machine only).
+  # Note: the broker is currently unauthenticated; auth arrives in phase 3.
   # Type: string   Env: SQI_NATS_ADDR
-  addr: "127.0.0.1:4222"
+  addr: "0.0.0.0:4222"
 
   # Directory used by JetStream for file-backed stream persistence.
   # Created at startup if it does not exist. Relative paths are resolved

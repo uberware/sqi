@@ -60,9 +60,10 @@ type Config struct {
 	EnablePprof bool
 
 	// NATSAddr is the TCP address the embedded NATS server listens on.
-	// It defaults to loopback so external clients cannot reach it directly;
-	// the sqi-server communicates with NATS in-process.
-	NATSAddr string // default "127.0.0.1:4222"
+	// It defaults to all interfaces so that workers discovering the server
+	// via mDNS can connect to NATS at the advertised LAN host. (No broker
+	// authentication yet; that arrives in phase 3.)
+	NATSAddr string // default "0.0.0.0:4222"
 
 	// NATSDataDir is the directory used by JetStream for file-backed stream
 	// storage. It is created at startup if it does not exist.
@@ -105,7 +106,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		HTTPAddr:              "0.0.0.0:8080",
-		NATSAddr:              "127.0.0.1:4222",
+		NATSAddr:              "0.0.0.0:4222",
 		NATSDataDir:           "data/nats",
 		NATSMaxStoreMB:        1024,
 		SQLitePath:            "sqi.db",

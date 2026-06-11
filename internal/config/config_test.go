@@ -36,7 +36,7 @@ func TestDefaultConfig(t *testing.T) {
 	}
 
 	check("http.addr", cfg.HTTP.Addr, "0.0.0.0:8080")
-	check("nats.addr", cfg.NATS.Addr, "127.0.0.1:4222")
+	check("nats.addr", cfg.NATS.Addr, "0.0.0.0:4222")
 	check("nats.data_dir", cfg.NATS.DataDir, "data/nats")
 	checkInt("nats.max_store_mb", cfg.NATS.MaxStoreMB, 1024)
 	check("store.sqlite_path", cfg.Store.SQLitePath, "sqi.db")
@@ -129,7 +129,7 @@ discovery:
 		t.Errorf("discovery.instance_name: got %q", cfg.Discovery.InstanceName)
 	}
 	// Unset fields should keep defaults.
-	if cfg.NATS.Addr != "127.0.0.1:4222" {
+	if cfg.NATS.Addr != "0.0.0.0:4222" {
 		t.Errorf("nats.addr: expected default, got %q", cfg.NATS.Addr)
 	}
 }

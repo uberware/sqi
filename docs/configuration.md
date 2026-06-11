@@ -72,17 +72,18 @@ http:
 | | |
 |---|---|
 | **Type** | `string` |
-| **Default** | `"127.0.0.1:4222"` |
+| **Default** | `"0.0.0.0:4222"` |
 | **Env var** | `SQI_NATS_ADDR` |
 
-TCP address the embedded NATS server binds to. Defaults to loopback because
-`sqi-server` communicates with NATS in-process. Change this only if you need to
-expose NATS to worker nodes directly (not recommended for Phase 1; prefer the
-`sqi-worker` protocol over the normal registration/heartbeat path).
+TCP address the embedded NATS server binds to. Defaults to all interfaces so
+that workers which discover the server over mDNS can connect to NATS at the
+advertised LAN host. Set this to `"127.0.0.1:4222"` to restrict NATS to loopback
+(single-machine only). The broker is currently unauthenticated; authentication
+arrives in phase 3.
 
 ```yaml
 nats:
-  addr: "127.0.0.1:4222"
+  addr: "0.0.0.0:4222"
 ```
 
 ---
@@ -322,7 +323,7 @@ discovery:
 |---|---|---|---|---|
 | `http.addr` | string | `0.0.0.0:8080` | `SQI_HTTP_ADDR` | `--http-addr` |
 | `http.enable_pprof` | bool | `false` | `SQI_HTTP_ENABLE_PPROF` | — |
-| `nats.addr` | string | `127.0.0.1:4222` | `SQI_NATS_ADDR` | — |
+| `nats.addr` | string | `0.0.0.0:4222` | `SQI_NATS_ADDR` | — |
 | `nats.data_dir` | string | `data/nats` | `SQI_NATS_DATA_DIR` | — |
 | `nats.max_store_mb` | int | `1024` | `SQI_NATS_MAX_STORE_MB` | — |
 | `store.sqlite_path` | string | `sqi.db` | `SQI_STORE_SQLITE_PATH` | — |

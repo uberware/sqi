@@ -36,7 +36,7 @@ make hooks
 # Build both binaries
 make build
 
-# Start sqi-server with default config (SQLite: sqi.db, NATS: 127.0.0.1:4222)
+# Start sqi-server with default config (SQLite: sqi.db, NATS: 0.0.0.0:4222)
 make run
 ```
 
@@ -389,7 +389,7 @@ make run
 # or: ./bin/sqi-server serve
 ```
 
-The server exposes NATS on `127.0.0.1:4222` by default. In a second terminal,
+The server exposes NATS on `0.0.0.0:4222` (all interfaces) by default. In a second terminal,
 start the worker pointing at it with debug logging:
 
 ```sh

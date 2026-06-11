@@ -138,7 +138,7 @@ func DefaultConfig() Config {
 			Addr: "0.0.0.0:8080",
 		},
 		NATS: NATSConfig{
-			Addr:       "127.0.0.1:4222",
+			Addr:       "0.0.0.0:4222",
 			DataDir:    "data/nats",
 			MaxStoreMB: 1024,
 		},
