@@ -170,7 +170,9 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 // filterWorker reports whether w matches all non-zero filter fields in opts.
 func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	if opts.FarmID != "" && w.FarmID != opts.FarmID {
-		return false
+		if !opts.IncludeUnaffiliated || w.FarmID != "" {
+			return false
+		}
 	}
 	if opts.QueueID != "" && w.QueueID != opts.QueueID {
 		return false

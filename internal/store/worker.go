@@ -127,6 +127,12 @@ type ListWorkersOptions struct {
 	ComputeLocation string
 	Status          WorkerStatus // empty = all statuses
 
+	// IncludeUnaffiliated, when true and FarmID is non-empty, also returns
+	// workers whose FarmID is empty (unaffiliated workers that accept tasks
+	// from any farm). Used by the scheduler's pickWorker so that workers
+	// started without an explicit farm configuration are still dispatched to.
+	IncludeUnaffiliated bool
+
 	// Ordering — zero values use WorkerSortByHostname / SortAsc.
 	SortBy  WorkerSortField
 	SortDir SortDir

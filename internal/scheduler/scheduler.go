@@ -672,8 +672,9 @@ func (s *Scheduler) pickWorker(
 	activeCounts map[string]int,
 ) (store.Worker, error) {
 	opts := store.ListWorkersOptions{
-		FarmID: job.FarmID,
-		Status: store.WorkerStatusOnline,
+		FarmID:              job.FarmID,
+		Status:              store.WorkerStatusOnline,
+		IncludeUnaffiliated: true,
 		Pagination: store.Pagination{
 			Limit:  matchCandidateLimit,
 			Offset: 0,

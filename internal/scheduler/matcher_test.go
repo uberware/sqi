@@ -69,6 +69,17 @@ func TestEligible_FarmMismatch(t *testing.T) {
 	}
 }
 
+func TestEligible_FarmEmpty_MatchesAnyFarm(t *testing.T) {
+	w := baseWorker()
+	w.FarmID = "" // unaffiliated worker
+	j := baseJob()
+	j.FarmID = "any-farm"
+	s := baseStep()
+	if !scheduler.WorkerEligible(w, j, s, nil, nil) {
+		t.Error("unaffiliated worker (empty FarmID) should be eligible for any farm's tasks")
+	}
+}
+
 // ── Queue affinity ────────────────────────────────────────────────────────────
 
 func TestEligible_QueueAffinityEmpty_AcceptsAny(t *testing.T) {

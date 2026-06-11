@@ -121,7 +121,10 @@ func workerEligible(
 	activeCounts map[string]int,
 ) (matchRejection, bool) {
 	// ── 1. Farm membership ────────────────────────────────────────────────────
-	if worker.FarmID != job.FarmID {
+	// An empty worker FarmID means the worker is unaffiliated and accepts
+	// tasks from any farm (analogous to how an empty scheduler FarmID means
+	// "manage all farms"). A non-empty worker FarmID must match the job's farm.
+	if worker.FarmID != "" && worker.FarmID != job.FarmID {
 		return rejectFarm, false
 	}
 

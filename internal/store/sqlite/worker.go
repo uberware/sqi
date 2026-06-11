@@ -173,7 +173,11 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 	args := make([]any, 0, 4)
 
 	if opts.FarmID != "" {
-		where += ` AND farm_id = ?`
+		if opts.IncludeUnaffiliated {
+			where += ` AND (farm_id = ? OR farm_id IS NULL)`
+		} else {
+			where += ` AND farm_id = ?`
+		}
 		args = append(args, opts.FarmID)
 	}
 	if opts.QueueID != "" {

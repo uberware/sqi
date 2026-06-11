@@ -119,10 +119,10 @@ type WorkerSettings struct {
 	// Env: SQI_WORKER_NAME
 	Name string `yaml:"name"`
 
-	// FarmID is the farm this worker belongs to. Workers must be registered
-	// to the same farm as the jobs they process. When empty, the worker
-	// registers without a farm and will not receive assignments from farms
-	// that require farm-specific worker matching.
+	// FarmID is the farm this worker belongs to. When set, the worker only
+	// receives tasks belonging to that farm. When empty (the default), the
+	// worker is unaffiliated and accepts tasks from any farm — suitable for
+	// single-farm or development setups.
 	// Env: SQI_WORKER_FARM_ID
 	FarmID string `yaml:"farm_id"`
 

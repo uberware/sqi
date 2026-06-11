@@ -185,10 +185,11 @@ worker:
 | **Default** | `""` (no farm) |
 | **Env var** | `SQI_WORKER_FARM_ID` |
 
-Farm this worker belongs to. Must match the `farm_id` of the jobs you want
-this worker to execute. When empty, the worker registers without a farm
-affiliation and may receive assignments from any farm that does not enforce
-farm-specific worker matching.
+Farm this worker belongs to. When set, the worker only receives tasks
+belonging to that farm. When empty (the default), the worker is unaffiliated
+and accepts tasks from any farm — suitable for single-farm or development
+setups. Set this when running workers across multiple farms to prevent
+cross-farm task assignment.
 
 ```yaml
 worker:
