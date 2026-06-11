@@ -1,0 +1,114 @@
+[build-system]
+# Floor is 1.27: the PEP 639 string-form `license` expression below (and the
+# resulting Metadata-Version 2.4) requires hatchling >= 1.27. Without the floor a
+# clean build that resolves an older cached hatchling would mishandle the license.
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+# ── Project metadata (PEP 621) ────────────────────────────────────────────────
+
+[project]
+name = "sqi-client"
+description = "Pure-Python client for the sqi distributed task and render farm manager"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Robin Scher", email = "robin@uberware.net" }]
+maintainers = [{ name = "Uberware Inc.", email = "robin@uberware.net" }]
+keywords = ["render-farm", "openjd", "task-queue", "vfx", "sqi"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+# Single runtime dependency — the library is embedded in DCC Python environments,
+# so the dependency tree is kept deliberately small. PyYAML and websockets are
+# optional extras, never hard requirements.
+dependencies = ["httpx"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+yaml = ["PyYAML"]
+ws = ["websockets"]
+# mypy is pinned <2 because mypy 2.x dropped support for targeting Python 3.9
+# (`python_version = "3.9"` below), which is the library's support floor. mypy
+# 1.x still honors the 3.9 target, keeping 3.10+-only stdlib/typing usage a lint
+# failure rather than a runtime error in an old DCC interpreter. Remove this bound
+# when the floor is raised to 3.10+.
+dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx"]
+
+[project.urls]
+Homepage = "https://github.com/uberware/sqi"
+Repository = "https://github.com/uberware/sqi"
+Documentation = "https://github.com/uberware/sqi/blob/main/docs/python-client.md"
+Issues = "https://github.com/uberware/sqi/issues"
+
+# ── Build backend (hatchling) ─────────────────────────────────────────────────
+
+# Single-source the version: hatchling reads __version__ from _version.py so the
+# wheel metadata and the runtime sqi_client.__version__ can never diverge.
+[tool.hatch.version]
+path = "src/sqi_client/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sqi_client"]
+
+# Ensure the py.typed marker ships in the wheel so downstream type checkers see
+# the package's annotations (PEP 561).
+[tool.hatch.build.targets.wheel.force-include]
+"src/sqi_client/py.typed" = "sqi_client/py.typed"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
+
+# ── Ruff (formatter + linter) ─────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Modern strict baseline: pycodestyle/pyflakes, import sorting, pyupgrade,
+# bugbear, simplify, and ruff-specific rules. pyupgrade (UP) with the py39 target
+# flags 3.10+-only syntax so it fails lint even when developing on a newer
+# interpreter.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sqi_client"]
+
+# ── Mypy (strict static typing) ───────────────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true
+
+# ── Pytest + coverage ─────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Integration tests (which need a running server) are deselected by default;
+# opt in with `pytest -m integration`.
+addopts = "-m 'not integration' --cov=sqi_client --cov-report=term-missing --cov-fail-under=60"
+markers = [
+  "integration: tests that require a running sqi-server binary (deselected by default)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["sqi_client"]
+
+[tool.coverage.report]
+show_missing = true

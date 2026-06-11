@@ -245,6 +245,48 @@ deps-upgrade: ## Upgrade all Go dependencies to latest minor/patch
 hooks: ## Install git hooks via lefthook (install: go install github.com/evilmartians/lefthook@latest)
 	lefthook install
 
+# ── Python client (clients/python) ────────────────────────────────────────────
+# The sqi-client library lives in clients/python with its own toolchain (ruff,
+# mypy, pytest). It is developed in an isolated virtualenv at clients/python/.venv
+# so its dependencies never leak into the system interpreter. Targets cd into the
+# project so ruff/mypy/pytest discover the pyproject.toml config there.
+PY_DIR  := clients/python
+PY_VENV := $(PY_DIR)/.venv
+
+.PHONY: py-install
+py-install: ## Create clients/python/.venv and install sqi-client editable with all extras
+	python3 -m venv $(PY_VENV)
+	$(PY_VENV)/bin/python -m pip install --upgrade pip
+	$(PY_VENV)/bin/python -m pip install -e '$(PY_DIR)[yaml,ws,dev]'
+
+.PHONY: py-fmt
+py-fmt: ## Format the Python client with ruff
+	cd $(PY_DIR) && .venv/bin/ruff format .
+
+.PHONY: py-lint
+py-lint: ## Lint the Python client with ruff
+	cd $(PY_DIR) && .venv/bin/ruff check .
+
+.PHONY: py-typecheck
+py-typecheck: ## Type-check the Python client with mypy (strict)
+	cd $(PY_DIR) && .venv/bin/mypy
+
+.PHONY: py-test
+py-test: ## Run the Python client unit tests with coverage
+	cd $(PY_DIR) && .venv/bin/pytest
+
+.PHONY: py-check
+py-check: ## Full Python client gate (check-only): ruff format, ruff check, mypy, pytest
+	cd $(PY_DIR) && .venv/bin/ruff format --check . \
+	  && .venv/bin/ruff check . \
+	  && .venv/bin/mypy \
+	  && .venv/bin/pytest
+
+.PHONY: py-build
+py-build: ## Build the Python client sdist + wheel into clients/python/dist/
+	$(PY_VENV)/bin/python -m pip install --quiet --upgrade build
+	cd $(PY_DIR) && .venv/bin/python -m build
+
 # ── CI convenience target ─────────────────────────────────────────────────────
 
 .PHONY: ci
