@@ -178,7 +178,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - sqi-server: scheduler, REST API, WebSocket, embedded NATS, SQLite state
 - sqi-worker: pull-based worker, bare metal process executor
 - Farm and queue management: REST CRUD plus web UI to list, create, and edit farms and queues (jobs are submitted to a queue, so at least one farm and queue must exist)
-- Basic web UI: job list, worker list, log viewer, job submission
+- Basic web UI: dashboard, job list, worker list, log viewer, job submission
 - Python client API
 - Named storage locations (resolved path translation)
 - License pool tracking (count-based)
@@ -218,6 +218,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Error log diagnosis feature
 - Worker/job management by natural language
 - Web Push notifications
+- User settings (theme, list refresh interval, per-user preferences)
 
 ### Phase 6: v1.0 Release
 
