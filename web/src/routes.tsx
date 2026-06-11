@@ -7,6 +7,10 @@ import JobDetail from '@/pages/JobDetail'
 import TaskLogPage from '@/pages/TaskLogPage'
 import WorkerList from '@/pages/WorkerList'
 import WorkerDetail from '@/pages/WorkerDetail'
+import FarmList from '@/pages/FarmList'
+import FarmForm from '@/pages/FarmForm'
+import QueueList from '@/pages/QueueList'
+import QueueForm from '@/pages/QueueForm'
 import Submit from '@/pages/Submit'
 import NotFound from '@/pages/NotFound'
 
@@ -19,6 +23,12 @@ export default function AppRoutes() {
       <Route path="/jobs/:id/tasks/:taskId/logs" element={<TaskLogPage />} />
       <Route path="/workers" element={<WorkerList />} />
       <Route path="/workers/:id" element={<WorkerDetail />} />
+      <Route path="/farms" element={<FarmList />} />
+      <Route path="/farms/new" element={<FarmForm mode="create" />} />
+      <Route path="/farms/:id/edit" element={<FarmForm mode="edit" />} />
+      <Route path="/queues" element={<QueueList />} />
+      <Route path="/queues/new" element={<QueueForm mode="create" />} />
+      <Route path="/queues/:id/edit" element={<QueueForm mode="edit" />} />
       <Route path="/submit" element={<Submit />} />
       <Route path="*" element={<NotFound />} />
     </Routes>

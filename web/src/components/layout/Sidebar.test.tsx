@@ -19,6 +19,8 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Jobs' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workers' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Farms' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Queues' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Submit' })).toBeInTheDocument()
   })
 
@@ -33,6 +35,12 @@ describe('Sidebar', () => {
     expect(
       (screen.getByRole('link', { name: 'Workers' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/workers')
+    expect(
+      (screen.getByRole('link', { name: 'Farms' }) as HTMLAnchorElement).getAttribute('href'),
+    ).toBe('/farms')
+    expect(
+      (screen.getByRole('link', { name: 'Queues' }) as HTMLAnchorElement).getAttribute('href'),
+    ).toBe('/queues')
     expect(
       (screen.getByRole('link', { name: 'Submit' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/submit')
@@ -55,7 +63,7 @@ describe('Sidebar', () => {
   it('renders deferred Phase 2+ items as non-navigable disabled spans', () => {
     const { container } = renderSidebar()
     const disabledItems = container.querySelectorAll('[data-disabled="true"]')
-    expect(disabledItems.length).toBe(5)
+    expect(disabledItems.length).toBe(6)
     disabledItems.forEach((item) => {
       expect(item.tagName.toLowerCase()).toBe('span')
     })
@@ -64,7 +72,7 @@ describe('Sidebar', () => {
   it('shows "coming soon" badge for each deferred item', () => {
     renderSidebar()
     const badges = screen.getAllByText('coming soon')
-    expect(badges.length).toBe(5)
+    expect(badges.length).toBe(6)
   })
 
   it('deferred items include the expected labels', () => {
@@ -74,6 +82,7 @@ describe('Sidebar', () => {
     expect(screen.getByText('Storage')).toBeInTheDocument()
     expect(screen.getByText('License Pools')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(screen.getByText('Admin')).toBeInTheDocument()
   })
 
   it('has accessible navigation landmark', () => {

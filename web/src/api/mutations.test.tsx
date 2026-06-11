@@ -261,3 +261,200 @@ describe('useEnableWorker', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.workers.all })
   })
 })
+
+// ── farm mutation hooks ───────────────────────────────────────────────────────
+
+import {
+  useCreateFarm,
+  useUpdateFarm,
+  useDeleteFarm,
+  useCreateQueue,
+  useUpdateQueue,
+  useDeleteQueue,
+} from './mutations'
+
+describe('useCreateFarm', () => {
+  it('invalidates farms on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'farm-1' }))
+
+    const { result } = renderHook(() => useCreateFarm(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({ name: 'render', description: '', max_concurrent_tasks: 0 })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.all })
+  })
+})
+
+describe('useUpdateFarm', () => {
+  it('invalidates farms on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'farm-1' }))
+
+    const { result } = renderHook(() => useUpdateFarm(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        id: 'farm-1',
+        input: { name: 'render', description: '', max_concurrent_tasks: 0 },
+      })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.all })
+  })
+})
+
+describe('useDeleteFarm', () => {
+  it('invalidates farms on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useDeleteFarm(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('farm-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.all })
+  })
+})
+
+describe('useCreateQueue', () => {
+  it('invalidates queues and farms on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'queue-1' }))
+
+    const { result } = renderHook(() => useCreateQueue(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        farm_id: 'farm-1',
+        name: 'lighting',
+        description: '',
+        priority: 50,
+        max_concurrent_tasks: 0,
+        paused: false,
+      })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.queues.all })
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.all })
+  })
+})
+
+describe('useUpdateQueue', () => {
+  it('invalidates queues and farms on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'queue-1' }))
+
+    const { result } = renderHook(() => useUpdateQueue(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        id: 'queue-1',
+        input: {
+          farm_id: 'farm-1',
+          name: 'lighting',
+          description: '',
+          priority: 50,
+          max_concurrent_tasks: 0,
+          paused: false,
+        },
+      })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.queues.all })
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.all })
+  })
+})
+
+describe('useDeleteQueue', () => {
+  it('invalidates queues and farms on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useDeleteQueue(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('queue-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.queues.all })
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.farms.all })
+  })
+})
+
+// ── farm mutations ────────────────────────────────────────────────────────────
+
+import { fetchCreateFarm, fetchUpdateFarm, fetchDeleteFarm } from './mutations'
+
+describe('farm mutations', () => {
+  it('fetchCreateFarm POSTs JSON to /api/v1/farms', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'farm-1' }))
+    await fetchCreateFarm({ name: 'render', description: '', max_concurrent_tasks: 0 })
+    expect(calledUrl()).toContain('/api/v1/farms')
+    expect(calledInit().method).toBe('POST')
+    expect(calledInit().body).toBe(
+      JSON.stringify({ name: 'render', description: '', max_concurrent_tasks: 0 }),
+    )
+  })
+
+  it('fetchUpdateFarm PUTs to /api/v1/farms/:id', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'farm-1' }))
+    await fetchUpdateFarm('farm-1', { name: 'r2', description: 'd', max_concurrent_tasks: 5 })
+    expect(calledUrl()).toContain('/api/v1/farms/farm-1')
+    expect(calledInit().method).toBe('PUT')
+  })
+
+  it('fetchDeleteFarm DELETEs /api/v1/farms/:id', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await fetchDeleteFarm('farm-1')
+    expect(calledUrl()).toContain('/api/v1/farms/farm-1')
+    expect(calledInit().method).toBe('DELETE')
+  })
+})
+
+// ── queue mutations ───────────────────────────────────────────────────────────
+
+import { fetchCreateQueue, fetchUpdateQueue, fetchDeleteQueue } from './mutations'
+
+describe('queue mutations', () => {
+  const input = {
+    farm_id: 'farm-1',
+    name: 'lighting',
+    description: '',
+    priority: 50,
+    max_concurrent_tasks: 0,
+    paused: false,
+  }
+
+  it('fetchCreateQueue POSTs JSON to /api/v1/queues', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'queue-1' }))
+    await fetchCreateQueue(input)
+    expect(calledUrl()).toContain('/api/v1/queues')
+    expect(calledInit().method).toBe('POST')
+    expect(calledInit().body).toBe(JSON.stringify(input))
+  })
+
+  it('fetchUpdateQueue PUTs to /api/v1/queues/:id', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'queue-1' }))
+    await fetchUpdateQueue('queue-1', input)
+    expect(calledUrl()).toContain('/api/v1/queues/queue-1')
+    expect(calledInit().method).toBe('PUT')
+  })
+
+  it('fetchDeleteQueue DELETEs /api/v1/queues/:id', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await fetchDeleteQueue('queue-1')
+    expect(calledUrl()).toContain('/api/v1/queues/queue-1')
+    expect(calledInit().method).toBe('DELETE')
+  })
+})

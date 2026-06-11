@@ -10,6 +10,7 @@ import {
   fetchListWorkers,
   fetchGetWorker,
   fetchListFarms,
+  fetchGetFarm,
   fetchListQueues,
 } from './queries'
 
@@ -87,6 +88,10 @@ describe('queryKeys', () => {
 
   it('farms.all equals ["farms"]', () => {
     expect(queryKeys.farms.all).toEqual(['farms'])
+  })
+
+  it('farms.detail includes id in key', () => {
+    expect(queryKeys.farms.detail('farm-1')).toEqual(['farms', 'detail', 'farm-1'])
   })
 
   it('queues.all equals ["queues"]', () => {
@@ -236,6 +241,16 @@ describe('fetchListFarms', () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse([]))
     await fetchListFarms()
     expect(calledUrl()).toBe('/api/v1/farms')
+  })
+})
+
+// ── fetchGetFarm ──────────────────────────────────────────────────────────────
+
+describe('fetchGetFarm', () => {
+  it('calls /api/v1/farms/:id', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'farm-1' }))
+    await fetchGetFarm('farm-1')
+    expect(calledUrl()).toBe('/api/v1/farms/farm-1')
   })
 })
 

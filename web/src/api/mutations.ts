@@ -3,7 +3,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { queryKeys } from './queries'
-import type { Job, RetryResponse, SubmitJobInput, WorkerActionResponse } from './types'
+import type { Farm, Job, Queue, RetryResponse, SubmitJobInput, WorkerActionResponse } from './types'
 
 // ── Raw mutation fetch functions ──────────────────────────────────────────────
 
@@ -113,6 +113,128 @@ export function useEnableWorker() {
     mutationFn: (id: string) => fetchEnableWorker(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workers.all })
+    },
+  })
+}
+
+// ── Farm input ────────────────────────────────────────────────────────────────
+
+export interface FarmInput {
+  name: string
+  description: string
+  max_concurrent_tasks: number
+}
+
+export function fetchCreateFarm(input: FarmInput): Promise<Farm> {
+  return apiFetch<Farm>('/farms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateFarm(id: string, input: FarmInput): Promise<Farm> {
+  return apiFetch<Farm>(`/farms/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteFarm(id: string): Promise<void> {
+  await apiFetch(`/farms/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function useCreateFarm() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateFarm,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
+export function useUpdateFarm() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: FarmInput }) => fetchUpdateFarm(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
+export function useDeleteFarm() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteFarm(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
+// ── Queue input ───────────────────────────────────────────────────────────────
+
+export interface QueueInput {
+  farm_id: string
+  name: string
+  description: string
+  priority: number
+  max_concurrent_tasks: number
+  paused: boolean
+}
+
+export function fetchCreateQueue(input: QueueInput): Promise<Queue> {
+  return apiFetch<Queue>('/queues', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateQueue(id: string, input: QueueInput): Promise<Queue> {
+  return apiFetch<Queue>(`/queues/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteQueue(id: string): Promise<void> {
+  await apiFetch(`/queues/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function useCreateQueue() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateQueue,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queues.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
+export function useUpdateQueue() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: QueueInput }) => fetchUpdateQueue(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queues.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
+export function useDeleteQueue() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteQueue(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queues.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
     },
   })
 }

@@ -98,6 +98,11 @@ type Config struct {
 	// DisableRateLimit turns off per-IP API rate limiting. Only set this in
 	// tests and benchmarks; never in production.
 	DisableRateLimit bool
+
+	// SeedDefaults, when true, creates a "default" farm and queue on first
+	// startup if the store has no farms yet. No-op once any farm exists.
+	// Default true.
+	SeedDefaults bool
 }
 
 // DefaultConfig returns a [Config] with sensible development defaults.
@@ -114,6 +119,7 @@ func DefaultConfig() Config {
 		Scheduler:             scheduler.DefaultConfig(),
 		DiscoveryEnabled:      true,
 		DiscoveryInstanceName: "sqi-server",
+		SeedDefaults:          true,
 	}
 }
 
@@ -212,6 +218,12 @@ func (s *Server) start(ctx context.Context) error {
 		ctx, "store: wal checkpointer started",
 		slog.Duration("interval", s.cfg.CheckpointInterval),
 	)
+
+	// Seed a default farm and queue on first startup so a fresh deployment can
+	// accept job submissions without manual setup (no-op once any farm exists).
+	if err := seedDefaults(ctx, s.store, s.cfg, s.logger); err != nil {
+		return fmt.Errorf("seed defaults: %w", err)
+	}
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// Tasks 33–35: embed NATS server, enable JetStream, provision streams.

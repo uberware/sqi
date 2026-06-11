@@ -12,11 +12,13 @@ const PHASE1_NAV: NavItem[] = [
   { label: 'Dashboard', to: '/' },
   { label: 'Jobs', to: '/jobs' },
   { label: 'Workers', to: '/workers' },
+  { label: 'Farms', to: '/farms' },
+  { label: 'Queues', to: '/queues' },
   { label: 'Submit', to: '/submit' },
 ]
 
-// Labels only — hrefs are inert stubs for deferred Phase 2+ views
-const DEFERRED_LABELS = ['Presets', 'Products', 'Storage', 'License Pools', 'Settings']
+// Labels only — inert "coming soon" stubs for views not yet implemented.
+const DEFERRED_LABELS = ['Presets', 'Products', 'Storage', 'License Pools', 'Settings', 'Admin']
 
 export default function Sidebar() {
   return (

@@ -75,10 +75,12 @@ export const queryKeys = {
   },
   farms: {
     all: ['farms'] as const,
+    detail: (id: string) => ['farms', 'detail', id] as const,
   },
   queues: {
     all: ['queues'] as const,
     list: (farmId: string) => ['queues', 'list', farmId] as const,
+    detail: (id: string) => ['queues', 'detail', id] as const,
   },
 } as const
 
@@ -164,9 +166,19 @@ export function fetchListFarms(): Promise<Farm[]> {
   return apiFetch('/farms')
 }
 
+/** Fetch one farm from `GET /farms/{id}`. */
+export function fetchGetFarm(id: string): Promise<Farm> {
+  return apiFetch(`/farms/${encodeURIComponent(id)}`)
+}
+
 /** Fetch a page of queues belonging to a farm from `GET /queues?farm_id=…`. */
 export function fetchListQueues(farmId: string, limit?: number): Promise<ListResponse<Queue>> {
   return apiFetch(`/queues${buildQS({ farm_id: farmId, limit })}`)
+}
+
+/** Fetch one queue from `GET /queues/{id}`. */
+export function fetchGetQueue(id: string): Promise<Queue> {
+  return apiFetch(`/queues/${encodeURIComponent(id)}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -252,11 +264,29 @@ export function useListFarms() {
   })
 }
 
+/** Load a single farm by id. */
+export function useGetFarm(id: string) {
+  return useQuery({
+    queryKey: queryKeys.farms.detail(id),
+    queryFn: () => fetchGetFarm(id),
+    enabled: id !== '',
+  })
+}
+
 /** List queues belonging to a specific farm. */
 export function useListQueues(farmId: string) {
   return useQuery({
     queryKey: queryKeys.queues.list(farmId),
     queryFn: () => fetchListQueues(farmId),
+  })
+}
+
+/** Load a single queue by id. */
+export function useGetQueue(id: string) {
+  return useQuery({
+    queryKey: queryKeys.queues.detail(id),
+    queryFn: () => fetchGetQueue(id),
+    enabled: id !== '',
   })
 }
 

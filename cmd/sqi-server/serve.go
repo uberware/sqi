@@ -91,6 +91,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		CheckpointInterval:    cfg.Store.CheckpointInterval,
 		DiscoveryEnabled:      cfg.Discovery.Enabled,
 		DiscoveryInstanceName: cfg.Discovery.InstanceName,
+		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
+		// internal/config grows a setting for it.
+		SeedDefaults: true,
 	}, logger)
 	if err := srv.Run(ctx); err != nil {
 		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
