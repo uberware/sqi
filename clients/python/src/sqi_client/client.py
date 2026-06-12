@@ -17,11 +17,11 @@ import random
 import re
 import time
 import warnings
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Union
+from typing import Any, Generic, TypeVar, Union
 from urllib.parse import quote
 
 import httpx
@@ -35,12 +35,16 @@ from .errors import (
     api_error_from_response,
 )
 from .models import (
+    Farm,
     Job,
     JobStatus,
+    LicensePool,
     LogChunk,
     LogPage,
     Page,
+    Queue,
     RetryResult,
+    StorageLocation,
     Task,
     TaskStatus,
     Worker,
@@ -49,6 +53,8 @@ from .models import (
     iter_pages,
     parse_page,
 )
+
+_T = TypeVar("_T")
 
 __all__ = ["JobTemplate", "SqiClient"]
 
@@ -68,6 +74,59 @@ _API_PREFIX = "/api/v1"
 # breaking change does, shipping as /api/v2 with X-API-Version: 2. A server
 # advertising a higher major triggers a one-time warning.
 _SUPPORTED_API_MAJOR = 1
+
+
+class _CrudResource(Generic[_T]):
+    """Generic CRUD transport for one REST resource family (task 54).
+
+    Parameterized by the collection ``path`` (e.g. ``/farms``) and a ``parse``
+    function (a model's ``from_dict``). Covers the five standard operations the
+    server exposes for each resource — ``POST /``, ``GET /``, ``GET /{id}``,
+    ``PUT /{id}``, ``DELETE /{id}`` — so every resource family shares one tested
+    code path. ``GET /`` comes in two flavors because the server returns a bare
+    array for some resources (:meth:`list_all`) and a paginated wrapper for
+    others (:meth:`list_page`).
+    """
+
+    def __init__(
+        self,
+        client: SqiClient,
+        path: str,
+        parse: Callable[[Mapping[str, Any]], _T],
+    ) -> None:
+        self._client = client
+        self._path = path
+        self._parse = parse
+
+    def create(self, body: Mapping[str, Any]) -> _T:
+        data = self._client._request_json("POST", self._path, json=body)
+        return self._parse(data)
+
+    def get(self, resource_id: str) -> _T:
+        data = self._client._request_json("GET", self._item_path(resource_id))
+        return self._parse(data)
+
+    def update(self, resource_id: str, body: Mapping[str, Any]) -> _T:
+        data = self._client._request_json("PUT", self._item_path(resource_id), json=body)
+        return self._parse(data)
+
+    def delete(self, resource_id: str) -> None:
+        self._client._request("DELETE", self._item_path(resource_id))
+
+    def list_all(self) -> list[_T]:
+        """List via a bare JSON array response (no pagination)."""
+        data = self._client._request_json("GET", self._path)
+        if not isinstance(data, list):
+            return []
+        return [self._parse(item) for item in data if isinstance(item, dict)]
+
+    def list_page(self, params: Mapping[str, Any]) -> Page[_T]:
+        """List via a paginated ``{items, total, limit, offset}`` response."""
+        data = self._client._request_json("GET", self._path, params=params)
+        return parse_page(data, self._parse)
+
+    def _item_path(self, resource_id: str) -> str:
+        return f"{self._path}/{quote(resource_id, safe='')}"
 
 
 class SqiClient:
@@ -127,6 +186,16 @@ class SqiClient:
         self._retry_jitter = retry_jitter
         self._version_warned = False
         self._deprecation_warned: set[str] = set()
+
+        # Generic CRUD transports shared by the resource methods below (task 54).
+        self._farms: _CrudResource[Farm] = _CrudResource(self, "/farms", Farm.from_dict)
+        self._queues: _CrudResource[Queue] = _CrudResource(self, "/queues", Queue.from_dict)
+        self._storage_locations: _CrudResource[StorageLocation] = _CrudResource(
+            self, "/storage-locations", StorageLocation.from_dict
+        )
+        self._license_pools: _CrudResource[LicensePool] = _CrudResource(
+            self, "/license-pools", LicensePool.from_dict
+        )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -874,6 +943,282 @@ class SqiClient:
         data = self._request_json("POST", f"/workers/{quote(worker_id, safe='')}/{action}")
         return WorkerAction.from_dict(data) if data is not None else None
 
+    # ── Farms ─────────────────────────────────────────────────────────────────
+
+    def create_farm(
+        self,
+        *,
+        name: str,
+        description: str | None = None,
+        max_concurrent_tasks: int = 0,
+    ) -> Farm:
+        """Create a farm and return it.
+
+        Args:
+            name: Farm name.
+            description: Optional human-readable description.
+            max_concurrent_tasks: Cap on concurrently-running tasks; ``0`` means
+                unlimited (the default).
+        """
+        return self._farms.create(_farm_body(name, description, max_concurrent_tasks))
+
+    def list_farms(self) -> list[Farm]:
+        """Return all farms. The server returns a bare array (no pagination)."""
+        return self._farms.list_all()
+
+    def iter_farms(self) -> Iterator[Farm]:
+        """Iterate all farms (the farms endpoint is not paginated)."""
+        return iter(self._farms.list_all())
+
+    def get_farm(self, farm_id: str) -> Farm:
+        """Fetch one farm by ID. Raises :class:`NotFoundError` if it is missing."""
+        return self._farms.get(farm_id)
+
+    def update_farm(
+        self,
+        farm_id: str,
+        *,
+        name: str,
+        description: str | None = None,
+        max_concurrent_tasks: int = 0,
+    ) -> Farm:
+        """Replace a farm's mutable fields (PUT, full replacement) and return it.
+
+        Per the server's PUT semantics this is a full replace: a field left at
+        its default (e.g. an omitted ``description``) is cleared, not preserved.
+        """
+        return self._farms.update(farm_id, _farm_body(name, description, max_concurrent_tasks))
+
+    def delete_farm(self, farm_id: str) -> None:
+        """Delete a farm. Raises :class:`NotFoundError` if it does not exist."""
+        self._farms.delete(farm_id)
+
+    # ── Queues ────────────────────────────────────────────────────────────────
+
+    def create_queue(
+        self,
+        *,
+        farm_id: str,
+        name: str,
+        description: str | None = None,
+        priority: int = 0,
+        max_concurrent_tasks: int = 0,
+        paused: bool = False,
+    ) -> Queue:
+        """Create a queue within a farm and return it.
+
+        Args:
+            farm_id: The farm to create the queue in (required).
+            name: Queue name.
+            description: Optional description.
+            priority: Scheduling priority within the farm (higher runs sooner).
+            max_concurrent_tasks: Cap on concurrent tasks; ``0`` means unlimited.
+            paused: Whether the queue starts paused.
+        """
+        return self._queues.create(
+            _queue_body(farm_id, name, description, priority, max_concurrent_tasks, paused)
+        )
+
+    def list_queues(
+        self,
+        *,
+        farm_id: str | None = None,
+        paused: bool | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page[Queue]:
+        """List queues (paginated), optionally filtered.
+
+        Args:
+            farm_id: Filter by farm.
+            paused: Filter by paused state.
+            sort_by: Sort field — ``name``, ``priority``, or ``created_at``
+                (server default ``name``).
+            sort_dir: Sort direction, ``asc`` or ``desc``.
+            limit: Page size, 1-1000 (default 50).
+            offset: Zero-based offset of the page (default 0).
+        """
+        return self._queues.list_page(
+            {
+                "farm_id": farm_id,
+                "paused": paused,
+                "sort_by": sort_by,
+                "sort_dir": sort_dir,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+    def iter_queues(
+        self,
+        *,
+        farm_id: str | None = None,
+        paused: bool | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+    ) -> Iterator[Queue]:
+        """Iterate every queue matching the filters, fetching pages lazily."""
+
+        def fetch(page_offset: int, page_limit: int) -> Page[Queue]:
+            return self.list_queues(
+                farm_id=farm_id,
+                paused=paused,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                limit=page_limit,
+                offset=page_offset,
+            )
+
+        return iter_pages(fetch, limit=limit)
+
+    def get_queue(self, queue_id: str) -> Queue:
+        """Fetch one queue by ID. Raises :class:`NotFoundError` if it is missing."""
+        return self._queues.get(queue_id)
+
+    def update_queue(
+        self,
+        queue_id: str,
+        *,
+        farm_id: str,
+        name: str,
+        description: str | None = None,
+        priority: int = 0,
+        max_concurrent_tasks: int = 0,
+        paused: bool = False,
+    ) -> Queue:
+        """Replace a queue's mutable fields (PUT, full replacement) and return it.
+
+        Full replace: any field left at its default (e.g. an omitted
+        ``description``, or ``priority``/``max_concurrent_tasks``/``paused`` not
+        passed) is reset, not preserved — pass every field you want to keep.
+        """
+        return self._queues.update(
+            queue_id,
+            _queue_body(farm_id, name, description, priority, max_concurrent_tasks, paused),
+        )
+
+    def delete_queue(self, queue_id: str) -> None:
+        """Delete a queue. Raises :class:`NotFoundError` if it does not exist."""
+        self._queues.delete(queue_id)
+
+    # ── Storage locations ─────────────────────────────────────────────────────
+
+    def create_storage_location(
+        self,
+        *,
+        name: str,
+        type: str,
+        description: str | None = None,
+        roots: Mapping[str, str] | None = None,
+    ) -> StorageLocation:
+        """Create a storage location and return it.
+
+        Args:
+            name: Storage-location name.
+            type: Storage type — ``filesystem`` or ``s3``.
+            description: Optional description.
+            roots: Map of compute-location name to absolute root path for that
+                location (e.g. ``{"on-prem": "/mnt/farm"}``).
+        """
+        return self._storage_locations.create(_storage_body(name, type, description, roots))
+
+    def list_storage_locations(self) -> list[StorageLocation]:
+        """Return all storage locations (bare array, no pagination)."""
+        return self._storage_locations.list_all()
+
+    def iter_storage_locations(self) -> Iterator[StorageLocation]:
+        """Iterate all storage locations (endpoint is not paginated)."""
+        return iter(self._storage_locations.list_all())
+
+    def get_storage_location(self, location_id: str) -> StorageLocation:
+        """Fetch one storage location by ID. Raises :class:`NotFoundError` if missing."""
+        return self._storage_locations.get(location_id)
+
+    def update_storage_location(
+        self,
+        location_id: str,
+        *,
+        name: str,
+        type: str,
+        description: str | None = None,
+        roots: Mapping[str, str] | None = None,
+    ) -> StorageLocation:
+        """Replace a storage location's fields (PUT, full replacement) and return it.
+
+        Full replace: an omitted ``description`` or ``roots`` is cleared, not
+        preserved — pass every field you want to keep.
+        """
+        return self._storage_locations.update(
+            location_id, _storage_body(name, type, description, roots)
+        )
+
+    def delete_storage_location(self, location_id: str) -> None:
+        """Delete a storage location. Raises :class:`NotFoundError` if it is missing."""
+        self._storage_locations.delete(location_id)
+
+    # ── License pools ─────────────────────────────────────────────────────────
+
+    def create_license_pool(
+        self,
+        *,
+        name: str,
+        product: str,
+        max_concurrent: int,
+        server_hint: str | None = None,
+    ) -> LicensePool:
+        """Create a license pool and return it.
+
+        Args:
+            name: Pool name.
+            product: Product identifier (e.g. ``arnold``, ``nuke``).
+            max_concurrent: Maximum simultaneous checkouts from this pool
+                (must be at least 1; validated client-side before sending).
+            server_hint: Optional license-server address hint (informational).
+
+        Raises:
+            ValueError: ``max_concurrent`` is below the minimum (1).
+        """
+        return self._license_pools.create(_license_body(name, product, max_concurrent, server_hint))
+
+    def list_license_pools(self) -> list[LicensePool]:
+        """Return all license pools (bare array, no pagination)."""
+        return self._license_pools.list_all()
+
+    def iter_license_pools(self) -> Iterator[LicensePool]:
+        """Iterate all license pools (endpoint is not paginated)."""
+        return iter(self._license_pools.list_all())
+
+    def get_license_pool(self, pool_id: str) -> LicensePool:
+        """Fetch one license pool by ID. Raises :class:`NotFoundError` if missing."""
+        return self._license_pools.get(pool_id)
+
+    def update_license_pool(
+        self,
+        pool_id: str,
+        *,
+        name: str,
+        product: str,
+        max_concurrent: int,
+        server_hint: str | None = None,
+    ) -> LicensePool:
+        """Replace a license pool's fields (PUT, full replacement) and return it.
+
+        Full replace: an omitted ``server_hint`` is cleared, not preserved.
+
+        Raises:
+            ValueError: ``max_concurrent`` is below the minimum (1).
+        """
+        return self._license_pools.update(
+            pool_id, _license_body(name, product, max_concurrent, server_hint)
+        )
+
+    def delete_license_pool(self, pool_id: str) -> None:
+        """Delete a license pool. Raises :class:`NotFoundError` if it is missing."""
+        self._license_pools.delete(pool_id)
+
     # ── Health probes ─────────────────────────────────────────────────────────
 
     def ping(self) -> bool:
@@ -903,6 +1248,10 @@ class SqiClient:
 # `PatchJobRequest.priority`, both `minimum: 1`). There is no declared maximum.
 _MIN_JOB_PRIORITY = 1
 
+# Minimum license-pool concurrency the server accepts (OpenAPI `LicensePool` /
+# `CreateLicensePoolRequest.max_concurrent`, `minimum: 1`).
+_MIN_LICENSE_MAX_CONCURRENT = 1
+
 # Task states from which no further log output or transitions occur; once a task
 # reaches one, a follow-tail can stop after draining (see tail_task_logs).
 _TERMINAL_TASK_STATUSES = frozenset({TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED})
@@ -916,6 +1265,75 @@ def _enum_value(value: Any) -> Any:
     value so the query string carries ``running``, not ``JobStatus.RUNNING``.
     """
     return value.value if isinstance(value, Enum) else value
+
+
+# ── CRUD request-body builders ────────────────────────────────────────────────
+#
+# Each builds the create/update request body for a resource family (the create
+# and update schemas are identical per resource — both are full representations).
+# Required and defaulted fields are always sent; optional fields are included
+# only when supplied, so a full-replace PUT that omits one clears it server-side.
+
+
+def _farm_body(name: str, description: str | None, max_concurrent_tasks: int) -> dict[str, Any]:
+    body: dict[str, Any] = {"name": name, "max_concurrent_tasks": max_concurrent_tasks}
+    if description is not None:
+        body["description"] = description
+    return body
+
+
+def _queue_body(
+    farm_id: str,
+    name: str,
+    description: str | None,
+    priority: int,
+    max_concurrent_tasks: int,
+    paused: bool,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "farm_id": farm_id,
+        "name": name,
+        "priority": priority,
+        "max_concurrent_tasks": max_concurrent_tasks,
+        "paused": paused,
+    }
+    if description is not None:
+        body["description"] = description
+    return body
+
+
+def _storage_body(
+    name: str,
+    location_type: str,
+    description: str | None,
+    roots: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"name": name, "type": location_type}
+    if description is not None:
+        body["description"] = description
+    if roots is not None:
+        body["roots"] = dict(roots)
+    return body
+
+
+def _license_body(
+    name: str,
+    product: str,
+    max_concurrent: int,
+    server_hint: str | None,
+) -> dict[str, Any]:
+    if max_concurrent < _MIN_LICENSE_MAX_CONCURRENT:
+        raise ValueError(
+            f"max_concurrent must be >= {_MIN_LICENSE_MAX_CONCURRENT}, got {max_concurrent}"
+        )
+    body: dict[str, Any] = {
+        "name": name,
+        "product": product,
+        "max_concurrent": max_concurrent,
+    }
+    if server_hint is not None:
+        body["server_hint"] = server_hint
+    return body
 
 
 _CONTENT_TYPE_JSON = "application/json"
