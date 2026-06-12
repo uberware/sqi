@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 import warnings
 from collections.abc import Mapping
@@ -173,9 +174,17 @@ class SqiClient:
         if "Deprecation" not in response.headers:
             return
         path = response.request.url.path
-        if path in self._deprecation_warned:
+        # Dedup on the endpoint template, not the concrete path: a deprecated
+        # /jobs/{id} hit while iterating thousands of jobs must warn once. The
+        # size cap is a backstop for path shapes the ID collapsing misses, so
+        # the set cannot grow unboundedly over a long-lived client.
+        key = _endpoint_key(path)
+        if (
+            key in self._deprecation_warned
+            or len(self._deprecation_warned) >= _MAX_DEPRECATION_KEYS
+        ):
             return
-        self._deprecation_warned.add(path)
+        self._deprecation_warned.add(key)
 
         message = f"sqi-server marks {path} as deprecated"
         sunset = response.headers.get("Sunset")
@@ -341,8 +350,40 @@ def _major_version(version: str) -> int | None:
         return None
 
 
+# A path segment that is almost certainly a resource ID rather than a route
+# word: a UUID, a plain number, or a long hex string. Route words ("jobs",
+# "storage-locations", the "v1" prefix) match none of these.
+_ID_SEGMENT = re.compile(
+    r"^(?:"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|[0-9]+"
+    r"|[0-9a-fA-F]{16,}"
+    r")$"
+)
+
+# Backstop cap on remembered deprecated-endpoint keys (see _warn_deprecated_endpoint).
+_MAX_DEPRECATION_KEYS = 100
+
+
+def _endpoint_key(path: str) -> str:
+    """Collapse ID-like path segments to ``{id}``, yielding the endpoint template.
+
+    ``/api/v1/jobs/018f…345`` and ``/api/v1/jobs/119e…7f8`` both key as
+    ``/api/v1/jobs/{id}`` so per-endpoint deduplication does not degrade into
+    per-resource.
+    """
+    return "/".join(
+        "{id}" if _ID_SEGMENT.match(segment) else segment for segment in path.split("/")
+    )
+
+
 def _deprecation_link(value: str | None) -> str | None:
-    """Extract the URL from a ``Link`` header entry with ``rel="deprecation"``."""
+    """Extract the URL from a ``Link`` header entry with ``rel="deprecation"``.
+
+    Matches the exact formatting sqi-server's middleware emits
+    (``<url>; rel="deprecation"``) — not a full RFC 8288 parser; an
+    unrecognized form just yields a less informative warning.
+    """
     if not value:
         return None
     for part in value.split(","):

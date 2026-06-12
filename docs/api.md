@@ -49,6 +49,21 @@ problem-details format with `Content-Type: application/problem+json`:
 The `instance` field contains the request ID, which also appears in the
 `X-Request-Id` response header — useful when correlating with server logs.
 
+### Rate limiting
+
+`/api/v1` requests are rate-limited per client IP (default token bucket: 20
+requests per second sustained, burst of 40). Exceeding the limit returns a
+`429 Too Many Requests` problem-details body and a delta-seconds
+`Retry-After` header indicating when the next request will be accepted:
+
+```
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 1
+```
+
+Clients should back off for at least the advertised duration before retrying.
+
 ### Pagination
 
 List endpoints accept `limit` (default 50, max 1000) and `offset`

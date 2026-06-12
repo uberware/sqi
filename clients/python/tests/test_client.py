@@ -23,7 +23,7 @@ _PROBE = f"{BASE_URL}/api/v1/probe"
 
 @respx.mock
 def test_default_headers_are_set(make_client: ClientFactory) -> None:
-    route = respx.get(f"{BASE_URL}/api/v1/probe").mock(return_value=httpx.Response(200))
+    route = respx.get(_PROBE).mock(return_value=httpx.Response(200))
     client = make_client()
 
     client._request("GET", "/probe")
@@ -35,7 +35,7 @@ def test_default_headers_are_set(make_client: ClientFactory) -> None:
 
 @respx.mock
 def test_extra_headers_are_merged() -> None:
-    route = respx.get(f"{BASE_URL}/api/v1/probe").mock(return_value=httpx.Response(200))
+    route = respx.get(_PROBE).mock(return_value=httpx.Response(200))
     # Caller adds an auth-style header (the Phase 3 hook) and overrides Accept.
     with SqiClient(
         BASE_URL,
@@ -111,9 +111,7 @@ def test_ready_uses_readyz(make_client: ClientFactory) -> None:
 
 @respx.mock
 def test_newer_major_api_version_warns_once(make_client: ClientFactory) -> None:
-    respx.get(f"{BASE_URL}/api/v1/probe").mock(
-        return_value=httpx.Response(200, headers={"X-API-Version": "2.4.0"})
-    )
+    respx.get(_PROBE).mock(return_value=httpx.Response(200, headers={"X-API-Version": "2.4.0"}))
     client = make_client()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -129,9 +127,7 @@ def test_newer_major_api_version_warns_once(make_client: ClientFactory) -> None:
 @respx.mock
 def test_current_server_version_does_not_warn(make_client: ClientFactory) -> None:
     # The deployed sqi-server sends the API contract major matching /api/v1.
-    respx.get(f"{BASE_URL}/api/v1/probe").mock(
-        return_value=httpx.Response(200, headers={"X-API-Version": "1"})
-    )
+    respx.get(_PROBE).mock(return_value=httpx.Response(200, headers={"X-API-Version": "1"}))
     client = make_client()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -144,9 +140,7 @@ def test_current_server_version_does_not_warn(make_client: ClientFactory) -> Non
 @respx.mock
 def test_older_major_version_does_not_warn(make_client: ClientFactory) -> None:
     # Talking down to an older server is not the skew this warning is for.
-    respx.get(f"{BASE_URL}/api/v1/probe").mock(
-        return_value=httpx.Response(200, headers={"X-API-Version": "0.1.0"})
-    )
+    respx.get(_PROBE).mock(return_value=httpx.Response(200, headers={"X-API-Version": "0.1.0"}))
     client = make_client()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -160,9 +154,7 @@ def test_older_major_version_does_not_warn(make_client: ClientFactory) -> None:
 def test_deprecated_endpoint_warns_with_path(make_client: ClientFactory) -> None:
     # RFC 8594: deprecation is signaled by the Deprecation header (a date or
     # "true"), not by the X-API-Deprecated header docs/api.md used to describe.
-    respx.get(f"{BASE_URL}/api/v1/probe").mock(
-        return_value=httpx.Response(200, headers={"Deprecation": "true"})
-    )
+    respx.get(_PROBE).mock(return_value=httpx.Response(200, headers={"Deprecation": "true"}))
     client = make_client()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -196,8 +188,34 @@ def test_deprecation_warns_once_per_endpoint(make_client: ClientFactory) -> None
 
 
 @respx.mock
+def test_deprecation_warns_once_per_endpoint_template(make_client: ClientFactory) -> None:
+    # ID-bearing paths collapse to one endpoint key — a pipeline iterating
+    # thousands of resources of a deprecated /jobs/{id} endpoint must warn
+    # once, not once per resource.
+    respx.get(url__regex=rf"{BASE_URL}/api/v1/jobs/.*").mock(
+        return_value=httpx.Response(200, headers={"Deprecation": "true"})
+    )
+    respx.get(url__regex=rf"{BASE_URL}/api/v1/tasks/.*").mock(
+        return_value=httpx.Response(200, headers={"Deprecation": "true"})
+    )
+    client = make_client()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        client._request("GET", "/jobs/018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345")
+        client._request("GET", "/jobs/119e2b3c-4d5e-6f70-8192-a3b4c5d6e7f8")  # same endpoint
+        client._request("GET", "/tasks/42")
+        client._request("GET", "/tasks/43")  # same endpoint, numeric ids
+
+    messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+    assert len(messages) == 2  # one per endpoint template, not per resource
+    assert any("/api/v1/jobs/" in m for m in messages)
+    assert any("/api/v1/tasks/" in m for m in messages)
+
+
+@respx.mock
 def test_deprecation_warning_includes_sunset_and_link(make_client: ClientFactory) -> None:
-    respx.get(f"{BASE_URL}/api/v1/probe").mock(
+    respx.get(_PROBE).mock(
         return_value=httpx.Response(
             200,
             headers={
@@ -223,7 +241,7 @@ def test_deprecation_warning_includes_sunset_and_link(make_client: ClientFactory
 def test_legacy_x_api_deprecated_header_is_ignored(make_client: ClientFactory) -> None:
     # The header documented by the stale docs/api.md was never sent by the
     # server; the client must not act on it.
-    respx.get(f"{BASE_URL}/api/v1/probe").mock(
+    respx.get(_PROBE).mock(
         return_value=httpx.Response(200, headers={"X-API-Version": "1", "X-API-Deprecated": "true"})
     )
     client = make_client()
@@ -241,6 +259,16 @@ def test_request_json_returns_none_on_204(make_client: ClientFactory) -> None:
     client = make_client()
 
     assert client._request_json("DELETE", "/jobs/abc") is None
+
+
+@respx.mock
+def test_request_json_returns_decoded_body(make_client: ClientFactory) -> None:
+    respx.get(f"{BASE_URL}/api/v1/jobs/abc").mock(
+        return_value=httpx.Response(200, json={"id": "abc", "status": "running"})
+    )
+    client = make_client()
+
+    assert client._request_json("GET", "/jobs/abc") == {"id": "abc", "status": "running"}
 
 
 def test_context_manager_closes_pool() -> None:

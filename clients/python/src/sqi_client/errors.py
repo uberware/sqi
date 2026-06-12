@@ -138,11 +138,10 @@ def _class_for_status(status: int) -> type[APIError]:
 def _parse_retry_after(value: str | None) -> float | None:
     """Parse a ``Retry-After`` header value expressed in delta-seconds.
 
-    sqi-server does not currently emit ``Retry-After`` at all; this exists for
-    proxies and future server versions that do. The HTTP-date form is
-    intentionally not supported, so a non-numeric header yields ``None`` — as
-    does a non-finite value like ``inf``, which would otherwise translate into
-    an unbounded sleep in the retry path.
+    sqi-server's rate limiter emits the delta-seconds form on 429 responses.
+    The HTTP-date form is intentionally not supported, so a non-numeric header
+    yields ``None`` — as does a non-finite value like ``inf``, which would
+    otherwise translate into an unbounded sleep in the retry path.
     """
     if not value:
         return None

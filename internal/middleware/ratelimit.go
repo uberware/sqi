@@ -4,9 +4,12 @@ package middleware
 
 import (
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -23,10 +26,15 @@ type RateLimitConfig struct {
 }
 
 // RateLimit returns middleware that enforces a per-IP token-bucket rate limit.
-// Clients that exceed the limit receive HTTP 429 Too Many Requests.
+// Clients that exceed the limit receive HTTP 429 Too Many Requests with an
+// RFC 7807 problem-details body (matching every other error on the API
+// surface) and a delta-seconds Retry-After header derived from the bucket's
+// refill rate.
 //
 // Each remote IP maintains its own bucket; buckets are allocated lazily on
-// first request.
+// first request. Rejected requests return their reserved token (best-effort
+// under concurrent rejections — see Reservation.Cancel), so being rejected
+// does not push a client's recovery time out further.
 //
 // Phase 1 limitations (both deferred to Phase 3):
 //
@@ -76,17 +84,34 @@ func RateLimit(cfg RateLimitConfig, logger *slog.Logger) func(http.Handler) http
 				ip = r.RemoteAddr
 			}
 
-			if !getLimiter(ip).Allow() {
+			// Reserve instead of Allow so a rejection can report how long
+			// until a token is available. The reservation is canceled on the
+			// rejection path, returning the token so a rejected request does
+			// not drain the bucket further (best-effort when rejections race:
+			// Cancel restores only what later reservations haven't claimed).
+			reservation := getLimiter(ip).Reserve()
+			if delay := reservation.Delay(); delay > 0 {
+				reservation.Cancel()
 				logger.DebugContext(
 					r.Context(), "middleware: rate limit exceeded",
 					slog.String("remote_ip", ip),
 					slog.String("path", r.URL.Path),
+					slog.Duration("retry_after", delay),
 				)
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(delay)))
+				WriteProblem(w, r, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// retryAfterSeconds converts a positive token-bucket delay to the
+// delta-seconds form of the Retry-After header (RFC 7231 requires a whole
+// number), rounding up so the advertised wait is never shorter than the
+// actual one.
+func retryAfterSeconds(delay time.Duration) int {
+	return int(math.Ceil(delay.Seconds()))
 }

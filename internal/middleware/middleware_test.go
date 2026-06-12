@@ -6,9 +6,11 @@ package middleware_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +191,128 @@ func TestRateLimit_RejectsWhenExceeded(t *testing.T) {
 
 	if rr2.Code != http.StatusTooManyRequests {
 		t.Fatalf("want 429 when limit exceeded, got %d", rr2.Code)
+	}
+}
+
+func TestRateLimit_RejectionIsProblemJSONWithRetryAfter(t *testing.T) {
+	// Tight limit: the second request is rejected and must carry the standard
+	// RFC 7807 error body plus a delta-seconds Retry-After header, matching
+	// the error conventions in docs/api.md.
+	cfg := middleware.RateLimitConfig{RequestsPerSecond: 0.5, Burst: 1}
+	h := middleware.RateLimit(cfg, discardLogger())(okHandler)
+
+	req1 := newReq(http.MethodGet, "/api")
+	req1.RemoteAddr = "10.0.0.2:9999"
+	h.ServeHTTP(httptest.NewRecorder(), req1)
+
+	req2 := newReq(http.MethodGet, "/api")
+	req2.RemoteAddr = "10.0.0.2:9999"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req2)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("want application/problem+json, got %q", ct)
+	}
+
+	retryAfter := rr.Header().Get("Retry-After")
+	seconds, err := strconv.Atoi(retryAfter)
+	if err != nil {
+		t.Fatalf("Retry-After %q is not delta-seconds: %v", retryAfter, err)
+	}
+	if seconds < 1 {
+		t.Fatalf("want Retry-After >= 1, got %d", seconds)
+	}
+
+	var body struct {
+		Type   string `json:"type"`
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if body.Status != http.StatusTooManyRequests {
+		t.Errorf("want body status 429, got %d", body.Status)
+	}
+	if body.Title != http.StatusText(http.StatusTooManyRequests) {
+		t.Errorf("want title %q, got %q", http.StatusText(http.StatusTooManyRequests), body.Title)
+	}
+	if body.Detail == "" {
+		t.Error("want non-empty detail")
+	}
+}
+
+func TestRateLimit_RejectionDoesNotConsumeTokens(t *testing.T) {
+	// Rejected requests must not drain the bucket further: once the refill
+	// interval passes, the client gets through again. The rate is slow
+	// relative to the sleep so the assertions don't depend on tight
+	// scheduling margins on a loaded CI runner.
+	cfg := middleware.RateLimitConfig{RequestsPerSecond: 10, Burst: 1}
+	h := middleware.RateLimit(cfg, discardLogger())(okHandler)
+
+	send := func() int {
+		req := newReq(http.MethodGet, "/api")
+		req.RemoteAddr = "10.0.0.3:9999"
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	if code := send(); code != http.StatusOK {
+		t.Fatalf("first request: want 200, got %d", code)
+	}
+	// Burn several rejections in a row; each must return its reservation.
+	for range 3 {
+		if code := send(); code != http.StatusTooManyRequests {
+			t.Fatalf("want 429 while bucket empty, got %d", code)
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // one token refills in 100 ms at 10 rps
+	if code := send(); code != http.StatusOK {
+		t.Fatalf("after refill: want 200, got %d", code)
+	}
+}
+
+func TestWriteProblem_ShapeAndRequestID(t *testing.T) {
+	// WriteProblem inside a RequestLogger-wrapped handler must emit the RFC
+	// 7807 shape with `instance` populated from the request ID.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "job not found")
+	})
+	h := middleware.RequestLogger(discardLogger())(inner)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, newReq(http.MethodGet, "/api/v1/jobs/nope"))
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("want application/problem+json, got %q", ct)
+	}
+
+	var body struct {
+		Type     string `json:"type"`
+		Title    string `json:"title"`
+		Status   int    `json:"status"`
+		Detail   string `json:"detail"`
+		Instance string `json:"instance"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if body.Type != "about:blank" {
+		t.Errorf("want type about:blank, got %q", body.Type)
+	}
+	if body.Title != "Not Found" || body.Status != 404 || body.Detail != "job not found" {
+		t.Errorf("unexpected fields: %+v", body)
+	}
+	if body.Instance == "" {
+		t.Error("want instance populated from the request ID")
 	}
 }
 

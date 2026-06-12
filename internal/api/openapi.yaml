@@ -815,6 +815,26 @@ components:
           schema:
             $ref: "#/components/schemas/ProblemDetail"
 
+    TooManyRequests:
+      description: |
+        Rate limit exceeded. Every `/api/v1` endpoint is rate-limited per
+        client IP (default token bucket: 20 req/s sustained, burst 40), so
+        this response can occur on any operation — it is referenced from the
+        representative `/jobs` operations rather than repeated on every
+        path. Back off for at least the `Retry-After` duration before
+        retrying.
+      headers:
+        Retry-After:
+          description: Delta-seconds until the next request will be accepted.
+          schema:
+            type: integer
+            minimum: 1
+            example: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
     InternalServerError:
       description: Internal server error.
       content:
@@ -899,6 +919,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -945,6 +967,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobList"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
