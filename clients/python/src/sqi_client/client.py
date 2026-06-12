@@ -11,14 +11,16 @@ sections; this module provides the shared request machinery they call.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
 import time
 import warnings
 from collections.abc import Mapping
+from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Union
 
 import httpx
 
@@ -30,8 +32,14 @@ from .errors import (
     _parse_retry_after,
     api_error_from_response,
 )
+from .models import Job
 
-__all__ = ["SqiClient"]
+__all__ = ["JobTemplate", "SqiClient"]
+
+# Accepted shapes for an OpenJD job template at submission time: a raw string
+# (sent verbatim), a filesystem path (read and sent), or a dict (serialized to
+# JSON). See :meth:`SqiClient.submit_job`.
+JobTemplate = Union[str, Path, "dict[str, Any]"]
 
 logger = logging.getLogger("sqi_client")
 
@@ -309,6 +317,69 @@ class SqiClient:
             return None
         return response.json()
 
+    # ── Jobs ──────────────────────────────────────────────────────────────────
+
+    def submit_job(
+        self,
+        template: JobTemplate,
+        *,
+        farm_id: str,
+        queue_id: str,
+        owner: str | None = None,
+        priority: int | None = None,
+        project: str | None = None,
+    ) -> Job:
+        """Submit a raw OpenJD job template and return the created :class:`Job`.
+
+        Args:
+            template: The OpenJD job template, as one of:
+
+                * a ``str`` — sent to the server verbatim (YAML or JSON text);
+                * a :class:`pathlib.Path` — the file is read and its contents
+                  sent;
+                * a ``dict`` — serialized to JSON before sending.
+
+                The ``Content-Type`` is selected automatically: ``application/json``
+                for dicts and for string/file content that parses as JSON,
+                ``application/x-yaml`` otherwise (and always for ``.yaml``/``.yml``
+                file paths). Serializing a dict needs only the standard library —
+                the optional ``yaml`` extra is not required to submit.
+            farm_id: Target farm (required query parameter).
+            queue_id: Target queue (required query parameter).
+            owner: Optional human-readable owner label.
+            priority: Optional scheduling priority (higher runs sooner); the
+                server defaults to 50 when omitted.
+            project: Optional project label for later filtering.
+
+        Returns:
+            The created :class:`Job`, parsed from the ``201 Created`` body.
+
+        Raises:
+            ValidationError: The template failed server-side OpenJD validation
+                (HTTP 422); the server's ``detail`` (e.g. ``"step 'Render'
+                references undefined parameter 'Frames'"``) is preserved verbatim
+                on the exception.
+            TypeError: ``template`` is not a ``str``, ``Path``, or ``dict``.
+            ValueError: ``template`` is a ``dict`` containing values that cannot
+                be serialized to JSON.
+        """
+        body, content_type = _prepare_template(template)
+        params = {
+            "farm_id": farm_id,
+            "queue_id": queue_id,
+            "owner": owner,
+            "priority": priority,
+            "project": project,
+        }
+        data = self._request_json(
+            "POST",
+            "/jobs",
+            params=params,
+            content=body,
+            headers={"Content-Type": content_type},
+        )
+        return Job.from_dict(data)
+
     # ── Health probes ─────────────────────────────────────────────────────────
 
     def ping(self) -> bool:
@@ -332,6 +403,47 @@ class SqiClient:
         except SqiError:
             return False
         return response.status_code == 200
+
+
+_CONTENT_TYPE_JSON = "application/json"
+# The server recognizes application/x-yaml (alongside application/yaml and
+# text/yaml) as the YAML format; anything else is treated as JSON.
+_CONTENT_TYPE_YAML = "application/x-yaml"
+_YAML_SUFFIXES = (".yaml", ".yml")
+
+
+def _prepare_template(template: JobTemplate) -> tuple[str, str]:
+    """Resolve a template input to its request body text and ``Content-Type``.
+
+    A ``dict`` is serialized to JSON; a ``Path`` is read from disk (always YAML
+    for ``.yaml``/``.yml``); a ``str`` is sent verbatim. For string and file
+    content, the type is inferred by attempting a JSON parse.
+    """
+    if isinstance(template, dict):
+        try:
+            return json.dumps(template), _CONTENT_TYPE_JSON
+        except (TypeError, ValueError) as exc:
+            # Distinguish an unserializable *value* inside the dict from the
+            # wrong-type case below: both would otherwise surface as a bare
+            # TypeError, which a caller cannot tell apart.
+            raise ValueError(f"template dict is not JSON-serializable: {exc}") from exc
+    if isinstance(template, Path):
+        text = template.read_text(encoding="utf-8")
+        if template.suffix.lower() in _YAML_SUFFIXES:
+            return text, _CONTENT_TYPE_YAML
+        return text, _content_type_for_text(text)
+    if isinstance(template, str):
+        return template, _content_type_for_text(template)
+    raise TypeError(f"template must be a str, pathlib.Path, or dict, not {type(template).__name__}")
+
+
+def _content_type_for_text(text: str) -> str:
+    """Return the JSON content type if ``text`` parses as JSON, else YAML."""
+    try:
+        json.loads(text)
+    except ValueError:
+        return _CONTENT_TYPE_YAML
+    return _CONTENT_TYPE_JSON
 
 
 def _is_retryable_status(status: int) -> bool:
