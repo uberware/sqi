@@ -32,8 +32,10 @@ classifiers = [
 ]
 # Single runtime dependency — the library is embedded in DCC Python environments,
 # so the dependency tree is kept deliberately small. PyYAML and websockets are
-# optional extras, never hard requirements.
-dependencies = ["httpx"]
+# optional extras, never hard requirements. The floor is 0.23: the transport
+# relies on base-URL raw-path merging (changed in httpx 0.21) and the modern
+# exception hierarchy, and 0.23 is the first release with both on all platforms.
+dependencies = ["httpx>=0.23"]
 dynamic = ["version"]
 
 [project.optional-dependencies]
@@ -89,10 +91,17 @@ known-first-party = ["sqi_client"]
 
 # ── Mypy (strict static typing) ───────────────────────────────────────────────
 
+# The 3.9 floor is a property of the shipped library (src/). mypy parses followed
+# imports with the target grammar, so checking the dev-only test suite at 3.9 would
+# fail to parse third-party tooling that uses 3.10+ syntax (e.g. pytest's internal
+# `match` statements). The Makefile therefore runs two passes: `mypy src` at the
+# 3.9 floor below, and `mypy --python-version=3.13 tests` to type-check the tests
+# against a grammar new enough to parse their dependencies. ruff's py39 target still
+# guards the test sources themselves against 3.10+-only syntax.
 [tool.mypy]
 python_version = "3.9"
 strict = true
-files = ["src", "tests"]
+files = ["src"]
 warn_unused_configs = true
 
 # ── Pytest + coverage ─────────────────────────────────────────────────────────

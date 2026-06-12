@@ -65,9 +65,26 @@ List endpoints accept `limit` (default 50, max 1000) and `offset`
 
 ### Versioning
 
-Responses include `X-API-Version: 0.1.0` and
-`X-API-Deprecated: false` headers. Future breaking changes will increment the
-URL version prefix (`/api/v2/…`).
+The URL prefix is the API contract version, and every response under
+`/api/v1` carries a matching `X-API-Version: 1` header. This contract major
+is deliberately decoupled from the product release version (e.g. sqi 0.1,
+0.2, … all serve contract `1`). Additive changes — new endpoints, new
+optional fields, new enum values — do not change it; clients must tolerate
+unknown fields and values.
+
+A breaking change ships as a new URL prefix (`/api/v2/…`) with
+`X-API-Version: 2`. During the migration window the old prefix keeps working
+and its responses carry the [RFC 8594](https://www.rfc-editor.org/rfc/rfc8594)
+deprecation headers:
+
+| Header | Value |
+|---|---|
+| `Deprecation` | HTTP-date the deprecation was declared, or `true` |
+| `Sunset` | HTTP-date the endpoint will be removed (optional) |
+| `Link` | `<url>; rel="deprecation"` — migration documentation (optional) |
+
+Clients should warn when they see a `Deprecation` header or an
+`X-API-Version` major newer than the one they were written against.
 
 ---
 

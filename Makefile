@@ -268,8 +268,9 @@ py-lint: ## Lint the Python client with ruff
 	cd $(PY_DIR) && .venv/bin/ruff check .
 
 .PHONY: py-typecheck
-py-typecheck: ## Type-check the Python client with mypy (strict)
-	cd $(PY_DIR) && .venv/bin/mypy
+py-typecheck: ## Type-check the Python client with mypy (strict; src at 3.9, tests at 3.13)
+	cd $(PY_DIR) && .venv/bin/mypy src \
+	  && .venv/bin/mypy --python-version=3.13 tests
 
 .PHONY: py-test
 py-test: ## Run the Python client unit tests with coverage
@@ -279,7 +280,8 @@ py-test: ## Run the Python client unit tests with coverage
 py-check: ## Full Python client gate (check-only): ruff format, ruff check, mypy, pytest
 	cd $(PY_DIR) && .venv/bin/ruff format --check . \
 	  && .venv/bin/ruff check . \
-	  && .venv/bin/mypy \
+	  && .venv/bin/mypy src \
+	  && .venv/bin/mypy --python-version=3.13 tests \
 	  && .venv/bin/pytest
 
 .PHONY: py-build

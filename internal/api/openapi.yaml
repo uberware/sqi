@@ -8,6 +8,19 @@ info:
     All error responses use the RFC 7807 problem-details format
     (`application/problem+json`).  Clients should branch on `Content-Type`
     rather than status code alone to detect error bodies.
+
+    ## Versioning
+
+    The URL prefix is the API contract version; every response under
+    `/api/v1` carries a matching `X-API-Version: 1` header (see
+    `components.headers.XAPIVersion`). The contract major is decoupled from
+    the product release version below: additive changes (new endpoints,
+    optional fields, enum values) do not move it, and clients must tolerate
+    unknown fields and values. A breaking change ships as a new URL prefix
+    (`/api/v2`) with `X-API-Version: 2`; during the migration window the old
+    prefix keeps serving and marks retiring endpoints with the RFC 8594
+    deprecation headers (`Deprecation`, `Sunset`, and a
+    `Link rel="deprecation"` — see `components.headers`).
   version: "0.1.0"
   license:
     name: AGPL-3.0-or-later
@@ -36,6 +49,45 @@ tags:
 # ── Reusable components ───────────────────────────────────────────────────────
 
 components:
+  headers:
+    XAPIVersion:
+      description: |
+        API contract major version — the "1" in `/api/v1`. Sent on every
+        response under the API prefix. Decoupled from the product release
+        version; only breaking changes increment it (alongside a new URL
+        prefix). Clients should warn when the major is newer than the one
+        they were written against.
+      schema:
+        type: string
+        example: "1"
+
+    Deprecation:
+      description: |
+        RFC 8594 deprecation marker, present only on responses from
+        deprecated endpoints. The value is either the HTTP-date the
+        deprecation was declared or the literal `true`. Clients should treat
+        the header's presence — regardless of value — as the signal.
+      schema:
+        type: string
+        example: "Mon, 01 Jun 2026 00:00:00 GMT"
+
+    Sunset:
+      description: |
+        RFC 8594 companion to `Deprecation`: the HTTP-date when the
+        deprecated endpoint will be removed. Optional.
+      schema:
+        type: string
+        example: "Fri, 01 Jan 2027 00:00:00 GMT"
+
+    DeprecationLink:
+      description: |
+        `Link` header entry with `rel="deprecation"` pointing at
+        documentation describing the deprecation and migration path.
+        Optional companion to `Deprecation`.
+      schema:
+        type: string
+        example: '<https://docs.sqi.dev/api/deprecations#old-endpoint>; rel="deprecation"'
+
   parameters:
     id:
       name: id
