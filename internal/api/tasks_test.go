@@ -306,6 +306,70 @@ func TestGetTaskLogs(t *testing.T) {
 			t.Errorf("items[0].data = %q, want %q", resp.Items[0].Data, "line one")
 		}
 	})
+
+	t.Run("after_nats_seq returns the cursor to advance to", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		ctx := t.Context()
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+
+		now := time.Now()
+		attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
+			ID:            uuid.NewString(),
+			TaskID:        tk.ID,
+			AttemptNumber: 1,
+			Status:        store.AttemptStatusRunning,
+			StartedAt:     now,
+			CreatedAt:     now,
+		})
+		if err != nil {
+			t.Fatalf("CreateTaskAttempt: %v", err)
+		}
+		for _, seq := range []int64{5, 9, 12} {
+			if _, err := st.CreateTaskLog(ctx, store.TaskLog{
+				ID:         uuid.NewString(),
+				TaskID:     tk.ID,
+				AttemptID:  attempt.ID,
+				SeqNum:     seq,
+				NATSSeq:    seq,
+				Stream:     store.LogStreamStdout,
+				Data:       "x",
+				At:         now,
+				ReceivedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateTaskLog: %v", err)
+			}
+		}
+
+		// A page with chunks reports the highest nats_seq it returned, so the
+		// next poll (after_nats_seq=12) fetches only newer chunks. Echoing the
+		// request (the old bug) would leave the cursor stuck at 0.
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/logs", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		var resp taskLogsResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.AfterNATSSeq != 12 {
+			t.Errorf("after_nats_seq = %d, want 12 (highest returned nats_seq)", resp.AfterNATSSeq)
+		}
+
+		// An empty page leaves the cursor where the caller asked, so a poller
+		// holds its position instead of rewinding.
+		req = newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/logs?after_nats_seq=12", nil)
+		rr = httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Items) != 0 {
+			t.Fatalf("expected empty page after cursor, got %d items", len(resp.Items))
+		}
+		if resp.AfterNATSSeq != 12 {
+			t.Errorf("empty-page after_nats_seq = %d, want 12 (echo request)", resp.AfterNATSSeq)
+		}
+	})
 }
 
 // ── POST /api/v1/tasks/{id}/retry ─────────────────────────────────────────────

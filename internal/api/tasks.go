@@ -241,9 +241,18 @@ func (h *taskHandler) getTaskLogs(w http.ResponseWriter, r *http.Request) {
 		items[i] = toTaskLogResponse(l)
 	}
 
+	// Report the cursor to advance to: the highest nats_seq on this page so the
+	// next poll fetches only newer chunks. With no new chunks the caller's
+	// position is preserved (echo the request) rather than rewound. Logs come
+	// back ordered by nats_seq ascending, so the last item carries the max.
+	nextAfter := afterNATSSeq
+	if n := len(logs); n > 0 {
+		nextAfter = logs[n-1].NATSSeq
+	}
+
 	writeJSON(w, http.StatusOK, taskLogsResponse{
 		Items:        items,
-		AfterNATSSeq: afterNATSSeq,
+		AfterNATSSeq: nextAfter,
 		Limit:        limit,
 	})
 }

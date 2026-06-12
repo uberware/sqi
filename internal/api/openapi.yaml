@@ -405,7 +405,11 @@ components:
         after_nats_seq:
           type: integer
           format: int64
-          description: Echo of the `after_nats_seq` query parameter used for this page.
+          description: |
+            Cursor to advance to: the highest `nats_seq` returned on this page.
+            Pass it as `after_nats_seq` on the next call to fetch only newer
+            chunks. When the page is empty it equals the requested
+            `after_nats_seq`, so a poller holds its position.
         limit:
           type: integer
 

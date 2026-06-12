@@ -34,7 +34,18 @@ from .errors import (
     _parse_retry_after,
     api_error_from_response,
 )
-from .models import Job, JobStatus, Page, iter_pages, parse_page
+from .models import (
+    Job,
+    JobStatus,
+    LogChunk,
+    LogPage,
+    Page,
+    RetryResult,
+    Task,
+    TaskStatus,
+    iter_pages,
+    parse_page,
+)
 
 __all__ = ["JobTemplate", "SqiClient"]
 
@@ -551,6 +562,187 @@ class SqiClient:
             "offset": offset,
         }
 
+    # ── Tasks ─────────────────────────────────────────────────────────────────
+
+    def list_job_tasks(
+        self,
+        job_id: str,
+        *,
+        status: TaskStatus | str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page[Task]:
+        """List the tasks of a job, returning one page of results.
+
+        Args:
+            job_id: The job whose tasks to list.
+            status: Filter by task status; accepts a :class:`TaskStatus` or its
+                plain wire string.
+            sort_by: Sort field — ``created_at``, ``status``, ``updated_at``, or
+                ``name`` (server default ``created_at``).
+            sort_dir: Sort direction, ``asc`` or ``desc``.
+            limit: Page size, 1-1000 (default 50).
+            offset: Zero-based offset of the page (default 0).
+
+        Returns:
+            A :class:`Page` of :class:`Task`. Use :meth:`iter_job_tasks` to walk
+            every page automatically.
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+        """
+        data = self._request_json(
+            "GET",
+            f"/jobs/{quote(job_id, safe='')}/tasks",
+            params={
+                "status": _enum_value(status),
+                "sort_by": sort_by,
+                "sort_dir": sort_dir,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        return parse_page(data, Task.from_dict)
+
+    def iter_job_tasks(
+        self,
+        job_id: str,
+        *,
+        status: TaskStatus | str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+    ) -> Iterator[Task]:
+        """Iterate every task of a job, fetching pages lazily.
+
+        Accepts the same filters as :meth:`list_job_tasks`; ``limit`` is the page
+        size fetched per request.
+
+        Yields:
+            Each :class:`Task`, in the server's order, across page boundaries.
+        """
+
+        def fetch(page_offset: int, page_limit: int) -> Page[Task]:
+            return self.list_job_tasks(
+                job_id,
+                status=status,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                limit=page_limit,
+                offset=page_offset,
+            )
+
+        return iter_pages(fetch, limit=limit)
+
+    def get_task(self, task_id: str) -> Task:
+        """Fetch one task by ID.
+
+        Raises:
+            NotFoundError: No task with that ID exists (HTTP 404).
+        """
+        data = self._request_json("GET", f"/tasks/{quote(task_id, safe='')}")
+        return Task.from_dict(data)
+
+    def retry_task(self, task_id: str) -> RetryResult:
+        """Retry a failed or canceled task, resetting it for re-dispatch.
+
+        Returns:
+            A :class:`RetryResult` describing the retried task and its new status
+            (typically ``ready``).
+
+        Raises:
+            NotFoundError: No task with that ID exists (HTTP 404).
+            ConflictError: The task is not in a ``failed``/``canceled`` state and
+                so cannot be retried (HTTP 409).
+        """
+        data = self._request_json("POST", f"/tasks/{quote(task_id, safe='')}/retry")
+        return RetryResult.from_dict(data)
+
+    def get_task_logs(
+        self,
+        task_id: str,
+        limit: int = 100,
+        after_nats_seq: int = 0,
+    ) -> LogPage:
+        """Fetch one page of a task's log chunks.
+
+        Args:
+            task_id: The task whose logs to fetch (latest attempt).
+            limit: Maximum chunks per page, 1-1000 (default 100).
+            after_nats_seq: Return only chunks with ``nats_seq`` greater than
+                this cursor (default 0 — from the beginning).
+
+        Returns:
+            A :class:`LogPage` whose ``after_nats_seq`` is the cursor to pass on
+            the next call to fetch newer chunks. When a task has no attempt yet
+            the page is empty rather than a 404, so pollers need no special case.
+        """
+        data = self._request_json(
+            "GET",
+            f"/tasks/{quote(task_id, safe='')}/logs",
+            params={"limit": limit, "after_nats_seq": after_nats_seq},
+        )
+        return LogPage.from_dict(data)
+
+    def tail_task_logs(
+        self,
+        task_id: str,
+        poll_interval: float = 1.0,
+        from_seq: int = 0,
+        follow: bool = True,
+    ) -> Iterator[LogChunk]:
+        """Tail a task's logs, yielding each chunk in order as it appears.
+
+        Repeatedly polls :meth:`get_task_logs`, advancing an internal cursor by
+        the ``nats_seq`` of the chunks it yields so no chunk is repeated or
+        skipped. Between empty polls it sleeps ``poll_interval`` seconds.
+
+        Args:
+            task_id: The task whose logs to tail.
+            poll_interval: Seconds to wait between polls once caught up to the
+                end of the log (default 1.0).
+            from_seq: Cursor to start after — ``0`` tails from the beginning.
+            follow: When ``True`` (default), keep polling until the task reaches
+                a terminal state (``succeeded``/``failed``/``canceled``) and the
+                final chunks have been drained, then stop — never spinning on a
+                finished task. When ``False``, stop as soon as the current end of
+                the log is reached.
+
+        Yields:
+            Each :class:`LogChunk`, ordered by ``nats_seq``.
+        """
+        cursor = from_seq
+        # Set once a terminal status is observed after an empty poll; the next
+        # empty poll then confirms everything is drained and stops the loop.
+        pending_terminal = False
+        while True:
+            page = self.get_task_logs(task_id, after_nats_seq=cursor)
+            for chunk in page.items:
+                yield chunk
+                # Advance by the chunk's own seq, not the response's echoed
+                # cursor, so tailing is correct regardless of the server's
+                # after_nats_seq semantics.
+                cursor = max(cursor, chunk.nats_seq)
+            if page.items:
+                pending_terminal = False
+                continue
+            # Empty poll: caught up to the current end of the log.
+            if not follow:
+                return
+            if pending_terminal:
+                return
+            if self._task_is_terminal(task_id):
+                # Poll once more to drain anything written between this empty
+                # poll and the terminal transition, then stop.
+                pending_terminal = True
+                continue
+            time.sleep(poll_interval)
+
+    def _task_is_terminal(self, task_id: str) -> bool:
+        return self.get_task(task_id).status in _TERMINAL_TASK_STATUSES
+
     # ── Health probes ─────────────────────────────────────────────────────────
 
     def ping(self) -> bool:
@@ -579,6 +771,10 @@ class SqiClient:
 # Minimum job priority the server accepts (OpenAPI `Job.priority` /
 # `PatchJobRequest.priority`, both `minimum: 1`). There is no declared maximum.
 _MIN_JOB_PRIORITY = 1
+
+# Task states from which no further log output or transitions occur; once a task
+# reaches one, a follow-tail can stop after draining (see tail_task_logs).
+_TERMINAL_TASK_STATUSES = frozenset({TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED})
 
 
 def _enum_value(value: Any) -> Any:

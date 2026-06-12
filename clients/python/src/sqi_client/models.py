@@ -38,6 +38,7 @@ __all__ = [
     "LogPage",
     "Page",
     "Queue",
+    "RetryResult",
     "Step",
     "StorageLocation",
     "Task",
@@ -463,6 +464,25 @@ class Task:
             parameters=_str_dict(data.get("parameters")),
             assigned_worker_id=_opt_str(data.get("assigned_worker_id")),
             assigned_at=_opt_datetime(data.get("assigned_at")),
+        )
+
+
+@dataclass(frozen=True)
+class RetryResult:
+    """Outcome of retrying a task (OpenAPI ``RetryResponse``).
+
+    Returned by :meth:`~sqi_client.client.SqiClient.retry_task`: the task that
+    was retried and the status it was reset to (typically ``ready``).
+    """
+
+    task_id: str
+    status: TaskStatus
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RetryResult:
+        return cls(
+            task_id=_as_str(data.get("task_id")),
+            status=TaskStatus.parse(_as_str(data.get("status"))),
         )
 
 
