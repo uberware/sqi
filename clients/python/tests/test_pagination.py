@@ -5,10 +5,32 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
-from sqi_client.models import Page, iter_pages
+from sqi_client.models import Page, iter_pages, parse_page
 
 FetchPage = Callable[[int, int], Page[int]]
+
+
+def test_parse_page_builds_page_from_wrapper() -> None:
+    data = {"items": [{"n": 1}, {"n": 2}], "total": 5, "limit": 2, "offset": 0}
+    page = parse_page(data, lambda item: int(item["n"]))
+    assert page.items == [1, 2]
+    assert (page.total, page.limit, page.offset) == (5, 2, 0)
+
+
+def test_parse_page_tolerates_non_mapping_body() -> None:
+    # A pathological 200 body (null, a bare array) degrades to an empty page.
+    for junk in (None, [1, 2, 3], "oops"):
+        page = parse_page(junk, int)  # type: ignore[arg-type]
+        assert page.items == []
+        assert (page.total, page.limit, page.offset) == (0, 0, 0)
+
+
+def test_parse_page_skips_non_object_items() -> None:
+    data: dict[str, Any] = {"items": [{"n": 1}, "bad", 7], "total": 1, "limit": 50, "offset": 0}
+    page = parse_page(data, lambda item: int(item["n"]))
+    assert page.items == [1]
 
 
 def _server(

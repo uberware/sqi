@@ -46,6 +46,7 @@ __all__ = [
     "Worker",
     "WorkerStatus",
     "iter_pages",
+    "parse_page",
 ]
 
 T = TypeVar("T")
@@ -110,6 +111,35 @@ def iter_pages(
         if count == 0 or current + count >= page.total or count < applied_limit:
             return
         current += count
+
+
+def parse_page(
+    data: Mapping[str, Any],
+    parse_item: Callable[[Mapping[str, Any]], T],
+) -> Page[T]:
+    """Build a :class:`Page` from the server's ``{items, total, limit, offset}``.
+
+    ``parse_item`` constructs each item from its JSON object (typically a model's
+    ``from_dict``). Non-object entries in ``items`` are skipped, and a missing or
+    malformed wrapper degrades to an empty page rather than raising — consistent
+    with the tolerant parsing the models use.
+    """
+    if not isinstance(data, Mapping):
+        # A pathological 200 body (null, a bare array, empty) must degrade to an
+        # empty page rather than raising on the .get() calls below.
+        return Page(items=[], total=0, limit=0, offset=0)
+    raw_items = data.get("items")
+    items = (
+        [parse_item(item) for item in raw_items if isinstance(item, dict)]
+        if isinstance(raw_items, list)
+        else []
+    )
+    return Page(
+        items=items,
+        total=_as_int(data.get("total")),
+        limit=_as_int(data.get("limit")),
+        offset=_as_int(data.get("offset")),
+    )
 
 
 # ── Tolerant field parsers ────────────────────────────────────────────────────

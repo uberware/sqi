@@ -940,6 +940,11 @@ paths:
           schema:
             type: string
           description: Filter by owner.
+        - name: farm_id
+          in: query
+          schema:
+            type: string
+          description: Filter by farm.
         - name: queue_id
           in: query
           schema:
@@ -1036,9 +1041,11 @@ paths:
         currently executing tasks that belong to it.
       responses:
         "204":
-          description: Job canceled.
+          description: Job canceled (or already canceled — cancellation is idempotent).
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 

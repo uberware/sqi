@@ -204,6 +204,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 // Query parameters:
 //   - status    — filter by [store.JobStatus]
 //   - owner     — filter by owner string
+//   - farm_id   — filter by farm ID
 //   - queue_id  — filter by queue ID
 //   - project   — filter by project label
 //   - sort_by   — created_at | priority | status | updated_at | name  (default: created_at)
@@ -221,6 +222,7 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	pg.Validate() //nolint:errcheck // Validate only clamps; never errors
 
 	opts := store.ListJobsOptions{
+		FarmID:  q.Get("farm_id"),
 		QueueID: q.Get("queue_id"),
 		Status:  store.JobStatus(q.Get("status")),
 		Owner:   q.Get("owner"),

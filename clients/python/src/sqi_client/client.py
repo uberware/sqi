@@ -17,10 +17,12 @@ import random
 import re
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from enum import Enum
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Union
+from urllib.parse import quote
 
 import httpx
 
@@ -32,7 +34,7 @@ from .errors import (
     _parse_retry_after,
     api_error_from_response,
 )
-from .models import Job
+from .models import Job, JobStatus, Page, iter_pages, parse_page
 
 __all__ = ["JobTemplate", "SqiClient"]
 
@@ -380,6 +382,175 @@ class SqiClient:
         )
         return Job.from_dict(data)
 
+    def list_jobs(
+        self,
+        *,
+        status: JobStatus | str | None = None,
+        farm_id: str | None = None,
+        queue_id: str | None = None,
+        owner: str | None = None,
+        project: str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page[Job]:
+        """List jobs, returning one page of results.
+
+        Args:
+            status: Filter by job status; accepts a :class:`JobStatus` or its
+                plain wire string (e.g. ``"running"``).
+            farm_id: Filter by farm.
+            queue_id: Filter by queue.
+            owner: Filter by owner label.
+            project: Filter by project label.
+            sort_by: Sort field — one of ``created_at``, ``priority``,
+                ``status``, ``updated_at``, ``name`` (server default
+                ``created_at``).
+            sort_dir: Sort direction, ``asc`` or ``desc`` (server default
+                ``asc``).
+            limit: Page size, 1-1000 (default 50).
+            offset: Zero-based offset of the page (default 0).
+
+        Returns:
+            A :class:`Page` of :class:`Job` for the requested window. Use
+            :meth:`iter_jobs` to walk every page automatically.
+        """
+        data = self._request_json(
+            "GET",
+            "/jobs",
+            params=self._job_list_params(
+                status=status,
+                farm_id=farm_id,
+                queue_id=queue_id,
+                owner=owner,
+                project=project,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                limit=limit,
+                offset=offset,
+            ),
+        )
+        return parse_page(data, Job.from_dict)
+
+    def iter_jobs(
+        self,
+        *,
+        status: JobStatus | str | None = None,
+        farm_id: str | None = None,
+        queue_id: str | None = None,
+        owner: str | None = None,
+        project: str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+    ) -> Iterator[Job]:
+        """Iterate every job matching the filters, fetching pages lazily.
+
+        Accepts the same filters as :meth:`list_jobs`; ``limit`` is the page
+        size fetched per request. Pages are walked from the start of the result
+        set until it is exhausted.
+
+        Yields:
+            Each :class:`Job`, in the server's order, across page boundaries.
+        """
+
+        def fetch(page_offset: int, page_limit: int) -> Page[Job]:
+            return self.list_jobs(
+                status=status,
+                farm_id=farm_id,
+                queue_id=queue_id,
+                owner=owner,
+                project=project,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                limit=page_limit,
+                offset=page_offset,
+            )
+
+        return iter_pages(fetch, limit=limit)
+
+    def get_job(self, job_id: str) -> Job:
+        """Fetch one job by ID, with ``steps`` and ``task_counts`` populated.
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+        """
+        data = self._request_json("GET", f"/jobs/{quote(job_id, safe='')}")
+        return Job.from_dict(data)
+
+    def pause_job(self, job_id: str) -> Job:
+        """Pause a job and return its updated state.
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+            ConflictError: The job is in a state that cannot be paused (HTTP 409).
+        """
+        return self._patch_job(job_id, {"action": "pause"})
+
+    def resume_job(self, job_id: str) -> Job:
+        """Resume a paused job and return its updated state.
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+            ConflictError: The job is in a state that cannot be resumed (HTTP 409).
+        """
+        return self._patch_job(job_id, {"action": "resume"})
+
+    def set_job_priority(self, job_id: str, priority: int) -> Job:
+        """Set a job's scheduling priority and return its updated state.
+
+        ``priority`` is validated client-side against the minimum the server
+        accepts (``>= 1``) before any request is sent.
+
+        Raises:
+            ValueError: ``priority`` is below the minimum (1).
+            NotFoundError: No job with that ID exists (HTTP 404).
+            ConflictError: The job is terminal and cannot be modified (HTTP 409).
+        """
+        if priority < _MIN_JOB_PRIORITY:
+            raise ValueError(f"priority must be >= {_MIN_JOB_PRIORITY}, got {priority}")
+        return self._patch_job(job_id, {"priority": priority})
+
+    def cancel_job(self, job_id: str) -> None:
+        """Cancel a job. Returns ``None`` on success (HTTP 204).
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+            ConflictError: The job has already completed or failed and cannot be
+                canceled (HTTP 409). Canceling an already-canceled job succeeds.
+        """
+        self._request("DELETE", f"/jobs/{quote(job_id, safe='')}")
+
+    def _patch_job(self, job_id: str, body: Mapping[str, Any]) -> Job:
+        data = self._request_json("PATCH", f"/jobs/{quote(job_id, safe='')}", json=body)
+        return Job.from_dict(data)
+
+    @staticmethod
+    def _job_list_params(
+        *,
+        status: JobStatus | str | None,
+        farm_id: str | None,
+        queue_id: str | None,
+        owner: str | None,
+        project: str | None,
+        sort_by: str | None,
+        sort_dir: str | None,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        return {
+            "status": _enum_value(status),
+            "farm_id": farm_id,
+            "queue_id": queue_id,
+            "owner": owner,
+            "project": project,
+            "sort_by": sort_by,
+            "sort_dir": sort_dir,
+            "limit": limit,
+            "offset": offset,
+        }
+
     # ── Health probes ─────────────────────────────────────────────────────────
 
     def ping(self) -> bool:
@@ -403,6 +574,21 @@ class SqiClient:
         except SqiError:
             return False
         return response.status_code == 200
+
+
+# Minimum job priority the server accepts (OpenAPI `Job.priority` /
+# `PatchJobRequest.priority`, both `minimum: 1`). There is no declared maximum.
+_MIN_JOB_PRIORITY = 1
+
+
+def _enum_value(value: Any) -> Any:
+    """Return an enum's wire value, passing through plain values unchanged.
+
+    Status filters accept either a :class:`~sqi_client.models.JobStatus` (a
+    str-enum) or a plain string; this normalizes the enum to its serialized
+    value so the query string carries ``running``, not ``JobStatus.RUNNING``.
+    """
+    return value.value if isinstance(value, Enum) else value
 
 
 _CONTENT_TYPE_JSON = "application/json"

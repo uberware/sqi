@@ -320,6 +320,35 @@ func TestListJobs(t *testing.T) {
 		}
 	})
 
+	t.Run("filter by farm_id", func(t *testing.T) {
+		// Matching farm returns the seeded jobs; a non-matching farm returns none.
+		req := newReq(t, http.MethodGet, "/api/v1/jobs?farm_id=farm-1", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		var resp jobListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Total < 2 {
+			t.Errorf("farm-1 total = %d, want >= 2", resp.Total)
+		}
+		for _, item := range resp.Items {
+			if item.FarmID != "farm-1" {
+				t.Errorf("got item with farm_id %q in farm-1 filter", item.FarmID)
+			}
+		}
+
+		req = newReq(t, http.MethodGet, "/api/v1/jobs?farm_id=does-not-exist", nil)
+		rr = httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Total != 0 {
+			t.Errorf("nonexistent-farm total = %d, want 0 (farm_id must filter)", resp.Total)
+		}
+	})
+
 	t.Run("pagination limit and offset", func(t *testing.T) {
 		req := newReq(t, http.MethodGet, "/api/v1/jobs?limit=1&offset=0", nil)
 		rr := httptest.NewRecorder()
