@@ -1,0 +1,33 @@
+{
+  "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1c001",
+  "farm_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10001",
+  "queue_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002",
+  "hostname": "render-node-01",
+  "ip_address": "10.0.0.5",
+  "compute_location": "on-prem",
+  "os": "linux",
+  "os_version": "5.15.0-101-generic",
+  "cpu_count": 64,
+  "ram_mb": 131072,
+  "gpu": {
+    "vendor": "NVIDIA",
+    "model": "RTX 4090",
+    "vram_mb": 24576,
+    "count": 2
+  },
+  "tags": {
+    "arnold": "7.2.1",
+    "gpu": "true"
+  },
+  "status": "online",
+  "last_heartbeat_at": "2026-01-15T10:05:00Z",
+  "registered_at": "2026-01-15T09:00:00Z",
+  "updated_at": "2026-01-15T10:05:00Z",
+  "current_task": {
+    "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1b001",
+    "job_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345",
+    "name": "Render-1001",
+    "status": "running",
+    "assigned_at": "2026-01-15T10:02:00Z"
+  }
+}

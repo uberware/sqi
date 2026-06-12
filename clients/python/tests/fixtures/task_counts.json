@@ -1,0 +1,10 @@
+{
+  "total": 100,
+  "pending": 0,
+  "ready": 10,
+  "assigned": 5,
+  "running": 5,
+  "succeeded": 80,
+  "failed": 0,
+  "canceled": 0
+}

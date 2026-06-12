@@ -1,0 +1,12 @@
+{
+  "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10003",
+  "name": "project-root",
+  "type": "filesystem",
+  "description": "Primary project storage",
+  "roots": {
+    "on-prem": "/mnt/farm",
+    "aws-us-east-1": "s3://sqi-bucket/root"
+  },
+  "created_at": "2026-01-15T09:00:00Z",
+  "updated_at": "2026-01-15T09:00:00Z"
+}

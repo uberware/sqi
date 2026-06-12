@@ -1,0 +1,11 @@
+{
+  "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1d001",
+  "task_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1b001",
+  "attempt_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1e001",
+  "seq_num": 42,
+  "nats_seq": 1001,
+  "stream": "stdout",
+  "data": "Frame 0042 rendered in 3.2s\n",
+  "at": "2026-01-15T10:05:42.123Z",
+  "received_at": "2026-01-15T10:05:42.130Z"
+}

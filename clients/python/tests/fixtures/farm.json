@@ -1,0 +1,8 @@
+{
+  "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10001",
+  "name": "studio-a",
+  "description": "Studio A render farm",
+  "max_concurrent_tasks": 200,
+  "created_at": "2026-01-15T09:00:00Z",
+  "updated_at": "2026-01-15T09:00:00Z"
+}

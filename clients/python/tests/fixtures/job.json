@@ -1,0 +1,16 @@
+{
+  "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345",
+  "farm_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10001",
+  "queue_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002",
+  "name": "Arnold Render — shot_0010",
+  "owner": "alice",
+  "submitter": "deadline-bridge",
+  "priority": 50,
+  "status": "running",
+  "project": "my-film",
+  "template_format": "yaml",
+  "created_at": "2026-01-15T10:00:00Z",
+  "updated_at": "2026-01-15T10:05:00Z",
+  "started_at": "2026-01-15T10:01:00Z",
+  "completed_at": null
+}
