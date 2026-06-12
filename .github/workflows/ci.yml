@@ -195,10 +195,13 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
             GOVERSION=${{ env.GOVERSION }}
-          # Scoped cache key prevents docker-latest and smoke-test from
-          # overwriting each other's binary layer (they differ on VERSION arg).
-          cache-from: type=gha,scope=docker-latest
-          cache-to: type=gha,scope=docker-latest,mode=max
+          # Per-image cache scope so the server and worker exports (both
+          # mode=max, run back-to-back) don't clobber each other's blob refs.
+          # ignore-error keeps a flaky GitHub Actions Cache export (the known
+          # "error writing layer blob: not_found") from failing a job whose real
+          # job — publishing :latest — has already succeeded.
+          cache-from: type=gha,scope=docker-latest-server
+          cache-to: type=gha,scope=docker-latest-server,mode=max,ignore-error=true
 
       - name: Build and push sqi-worker :latest
         uses: docker/build-push-action@v6
@@ -213,8 +216,8 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
             GOVERSION=${{ env.GOVERSION }}
-          cache-from: type=gha,scope=docker-latest
-          cache-to: type=gha,scope=docker-latest,mode=max
+          cache-from: type=gha,scope=docker-latest-worker
+          cache-to: type=gha,scope=docker-latest-worker,mode=max,ignore-error=true
 
   # ── Cross-compilation matrix ─────────────────────────────────────────────────
   # Verifies that the binary compiles cleanly for all target platforms.
