@@ -45,6 +45,7 @@ __all__ = [
     "TaskCounts",
     "TaskStatus",
     "Worker",
+    "WorkerAction",
     "WorkerStatus",
     "iter_pages",
     "parse_page",
@@ -579,6 +580,27 @@ class Worker:
             current_task=(
                 CurrentTask.from_dict(raw_current) if isinstance(raw_current, dict) else None
             ),
+        )
+
+
+@dataclass(frozen=True)
+class WorkerAction:
+    """Outcome of an enable/disable worker call (OpenAPI ``WorkerActionResponse``).
+
+    Returned by :meth:`~sqi_client.client.SqiClient.enable_worker` and
+    :meth:`~sqi_client.client.SqiClient.disable_worker`: the worker's ID and its
+    status after the operation. This is the lightweight body those endpoints
+    return — not a full :class:`Worker`.
+    """
+
+    id: str
+    status: WorkerStatus
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> WorkerAction:
+        return cls(
+            id=_as_str(data.get("id")),
+            status=WorkerStatus.parse(_as_str(data.get("status"))),
         )
 
 

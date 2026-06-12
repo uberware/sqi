@@ -43,6 +43,9 @@ from .models import (
     RetryResult,
     Task,
     TaskStatus,
+    Worker,
+    WorkerAction,
+    WorkerStatus,
     iter_pages,
     parse_page,
 )
@@ -742,6 +745,134 @@ class SqiClient:
 
     def _task_is_terminal(self, task_id: str) -> bool:
         return self.get_task(task_id).status in _TERMINAL_TASK_STATUSES
+
+    # ── Workers ───────────────────────────────────────────────────────────────
+
+    def list_workers(
+        self,
+        *,
+        farm_id: str | None = None,
+        queue_id: str | None = None,
+        compute_location: str | None = None,
+        status: WorkerStatus | str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page[Worker]:
+        """List workers, returning one page of results.
+
+        Args:
+            farm_id: Filter by farm.
+            queue_id: Filter by queue.
+            compute_location: Filter by named compute location (e.g.
+                ``on-prem``, ``aws-us-east-1``).
+            status: Filter by worker status; accepts a :class:`WorkerStatus` or
+                its plain wire string (``online``/``offline``/``disabled``).
+            sort_by: Sort field — ``hostname``, ``status``, ``registered_at``, or
+                ``last_heartbeat_at`` (server default ``hostname``).
+            sort_dir: Sort direction, ``asc`` or ``desc``.
+            limit: Page size, 1-1000 (default 50).
+            offset: Zero-based offset of the page (default 0).
+
+        Returns:
+            A :class:`Page` of :class:`Worker`. Use :meth:`iter_workers` to walk
+            every page automatically.
+        """
+        data = self._request_json(
+            "GET",
+            "/workers",
+            params={
+                "farm_id": farm_id,
+                "queue_id": queue_id,
+                "compute_location": compute_location,
+                "status": _enum_value(status),
+                "sort_by": sort_by,
+                "sort_dir": sort_dir,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        return parse_page(data, Worker.from_dict)
+
+    def iter_workers(
+        self,
+        *,
+        farm_id: str | None = None,
+        queue_id: str | None = None,
+        compute_location: str | None = None,
+        status: WorkerStatus | str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        limit: int = 50,
+    ) -> Iterator[Worker]:
+        """Iterate every worker matching the filters, fetching pages lazily.
+
+        Accepts the same filters as :meth:`list_workers`; ``limit`` is the page
+        size fetched per request.
+
+        Yields:
+            Each :class:`Worker`, in the server's order, across page boundaries.
+        """
+
+        def fetch(page_offset: int, page_limit: int) -> Page[Worker]:
+            return self.list_workers(
+                farm_id=farm_id,
+                queue_id=queue_id,
+                compute_location=compute_location,
+                status=status,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                limit=page_limit,
+                offset=page_offset,
+            )
+
+        return iter_pages(fetch, limit=limit)
+
+    def get_worker(self, worker_id: str) -> Worker:
+        """Fetch one worker by ID, including its currently-executing task if any.
+
+        Raises:
+            NotFoundError: No worker with that ID exists (HTTP 404).
+        """
+        data = self._request_json("GET", f"/workers/{quote(worker_id, safe='')}")
+        return Worker.from_dict(data)
+
+    def disable_worker(self, worker_id: str) -> WorkerAction | None:
+        """Disable a worker so it receives no new task assignments.
+
+        Idempotent: a worker already disabled is accepted unchanged.
+
+        Returns:
+            A :class:`WorkerAction` with the worker's status after the operation
+            when the server returns a body, or ``None`` on a bare success status.
+            The server currently always returns a body, so ``None`` is a
+            defensive should-not-happen path.
+
+        Raises:
+            NotFoundError: No worker with that ID exists (HTTP 404).
+        """
+        return self._worker_action(worker_id, "disable")
+
+    def enable_worker(self, worker_id: str) -> WorkerAction | None:
+        """Re-enable a disabled worker.
+
+        Idempotent: an online or offline worker is accepted unchanged.
+
+        Returns:
+            A :class:`WorkerAction` with the worker's status after the operation
+            when the server returns a body, or ``None`` on a bare success status.
+            The server currently always returns a body, so ``None`` is a
+            defensive should-not-happen path.
+
+        Raises:
+            NotFoundError: No worker with that ID exists (HTTP 404).
+        """
+        return self._worker_action(worker_id, "enable")
+
+    def _worker_action(self, worker_id: str, action: str) -> WorkerAction | None:
+        data = self._request_json("POST", f"/workers/{quote(worker_id, safe='')}/{action}")
+        return WorkerAction.from_dict(data) if data is not None else None
 
     # ── Health probes ─────────────────────────────────────────────────────────
 
