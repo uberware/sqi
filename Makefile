@@ -43,8 +43,10 @@ else
 endif
 
 COVERAGE_OUT := coverage.out
-# Raise in 5-point increments as new test suites land
-COVERAGE_MIN ?= 60
+# Raise in 5-point increments as new test suites land.
+# 2026-06-13: measured 74.5% (race) after the phase-1 unit-test backfill;
+# gate set ~5 points below for headroom against per-platform fluctuation.
+COVERAGE_MIN ?= 70
 
 # ── Default ───────────────────────────────────────────────────────────────────
 
@@ -148,6 +150,11 @@ test-integration: ## Run integration tests (tagged 'integration')
 .PHONY: bench
 bench: ## Run benchmarks
 	go test -bench=. -benchmem $(GO_PKGS)
+
+.PHONY: smoke
+smoke: build-server build-worker ## Run the end-to-end smoke test against the built binaries
+	SQI_SERVER_BIN=$(BUILD_DIR)/$(BINARY) SQI_WORKER_BIN=$(BUILD_DIR)/$(WORKER_BINARY) \
+	  bash scripts/smoke.sh
 
 # ── Lint and Vet ─────────────────────────────────────────────────────────────
 

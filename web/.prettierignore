@@ -1,6 +1,10 @@
 dist/
 node_modules/
 coverage/
+# Playwright E2E artifacts (reports, traces, run metadata)
+test-results/
+playwright-report/
+blob-report/
 # macOS resource fork sidecar files
 ._*
 **/._*

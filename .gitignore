@@ -25,6 +25,10 @@ go.work.sum
 !/web/dist/index.html
 /web/.vite/
 /web/coverage/
+/web/test-results/
+/web/playwright-report/
+/web/blob-report/
+/web/.playwright/
 
 # goreleaser
 /dist/

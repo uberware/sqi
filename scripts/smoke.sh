@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# End-to-end smoke test for the released sqi binaries.
+#
+# Boots a real sqi-server (temp SQLite + temp embedded-NATS JetStream, ephemeral
+# loopback ports, mDNS discovery disabled), connects a real sqi-worker, submits a
+# minimal OpenJD echo job, and asserts the echoed sentinel is retrievable over
+# BOTH the REST API (GET /api/v1/tasks/{id}/logs) and the WebSocket feed
+# (/api/v1/ws, subject tasks/{id}/logs). This exercises the actual bin/ artifacts
+# with default config, complementing the in-process Go integration tests.
+#
+# Usage:
+#   bash scripts/smoke.sh         # builds binaries if missing, runs the flow
+#   make smoke                    # same, via the Makefile
+#
+# Environment overrides:
+#   SQI_SERVER_BIN   path to a prebuilt sqi-server (default: <repo>/bin/sqi-server)
+#   SQI_WORKER_BIN   path to a prebuilt sqi-worker (default: <repo>/bin/sqi-worker)
+#   SQI_SMOKE_PYTHON python interpreter for the WS check (auto-detected otherwise)
+#
+# Exit status: 0 only if every assertion passed; non-zero with a clear message
+# (and the relevant server/worker log tail) otherwise.
+
+set -euo pipefail
+
+# ── Locations ─────────────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+SERVER_BIN="${SQI_SERVER_BIN:-${REPO_ROOT}/bin/sqi-server}"
+WORKER_BIN="${SQI_WORKER_BIN:-${REPO_ROOT}/bin/sqi-worker}"
+
+# ── Logging helpers ───────────────────────────────────────────────────────────
+
+log()  { printf '[smoke] %s\n' "$*" >&2; }
+fail() { printf '[smoke] FAIL: %s\n' "$*" >&2; exit 1; }
+
+# ── Tool detection ────────────────────────────────────────────────────────────
+
+command -v curl >/dev/null 2>&1 || fail "curl is required but not found on PATH"
+
+HAVE_JQ=0
+if command -v jq >/dev/null 2>&1; then
+  HAVE_JQ=1
+fi
+
+# Pick a python3 that can drive a WebSocket. Preference order:
+#   1. $SQI_SMOKE_PYTHON (if it imports websockets)
+#   2. the repo's clients/python/.venv (if present and ws-capable)
+#   3. a system python3 with websockets installed
+# WS_PYTHON stays empty when none qualifies; the WS assertion then degrades to a
+# logged best-effort warning rather than hard-failing the smoke run.
+WS_PYTHON=""
+_ws_capable() {
+  [ -n "${1:-}" ] && command -v "$1" >/dev/null 2>&1 \
+    && "$1" -c 'import websockets' >/dev/null 2>&1
+}
+for cand in \
+  "${SQI_SMOKE_PYTHON:-}" \
+  "${REPO_ROOT}/clients/python/.venv/bin/python" \
+  python3; do
+  if _ws_capable "$cand"; then
+    WS_PYTHON="$cand"
+    break
+  fi
+done
+
+# A plain python3 (no websockets) is still useful for JSON parsing / free ports.
+PY3=""
+if command -v python3 >/dev/null 2>&1; then
+  PY3="python3"
+elif [ -n "$WS_PYTHON" ]; then
+  PY3="$WS_PYTHON"
+fi
+[ "$HAVE_JQ" -eq 1 ] || [ -n "$PY3" ] \
+  || fail "need either jq or python3 to parse JSON responses"
+
+# ── JSON field extraction (jq preferred, python3 fallback) ────────────────────
+
+# json_get <json-string> <key> — print the top-level string value for <key>.
+json_get() {
+  local json="$1" key="$2"
+  if [ "$HAVE_JQ" -eq 1 ]; then
+    printf '%s' "$json" | jq -r --arg k "$key" '.[$k] // empty'
+  else
+    printf '%s' "$json" | "$PY3" -c '
+import json, sys
+d = json.load(sys.stdin)
+v = d.get(sys.argv[1], "")
+sys.stdout.write("" if v is None else str(v))
+' "$key"
+  fi
+}
+
+# first_task_id <jobs-tasks-json> — print items[0].id, or empty.
+first_task_id() {
+  local json="$1"
+  if [ "$HAVE_JQ" -eq 1 ]; then
+    printf '%s' "$json" | jq -r '.items[0].id // empty'
+  else
+    printf '%s' "$json" | "$PY3" -c '
+import json, sys
+items = json.load(sys.stdin).get("items") or []
+sys.stdout.write(items[0]["id"] if items else "")
+'
+  fi
+}
+
+# logs_contain <task-logs-json> <needle> — exit 0 if any item.data contains needle.
+logs_contain() {
+  local json="$1" needle="$2"
+  if [ "$HAVE_JQ" -eq 1 ]; then
+    printf '%s' "$json" \
+      | jq -e --arg n "$needle" '[.items[]?.data] | join("") | contains($n)' \
+        >/dev/null 2>&1
+  else
+    printf '%s' "$json" | "$PY3" -c '
+import json, sys
+items = json.load(sys.stdin).get("items") or []
+text = "".join(i.get("data", "") for i in items)
+sys.exit(0 if sys.argv[1] in text else 1)
+' "$needle"
+  fi
+}
+
+# ── Free TCP ports on loopback ────────────────────────────────────────────────
+
+free_port() {
+  if [ -n "$PY3" ]; then
+    "$PY3" - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+  else
+    fail "cannot allocate a free port without python3"
+  fi
+}
+
+# ── Build binaries if needed ──────────────────────────────────────────────────
+
+if [ -x "$SERVER_BIN" ] && [ -x "$WORKER_BIN" ]; then
+  log "using existing binaries: $SERVER_BIN, $WORKER_BIN"
+else
+  log "building binaries via 'make build' (this may take a minute or two)..."
+  make -C "$REPO_ROOT" build >&2
+  [ -x "$SERVER_BIN" ] || fail "server binary not found after build: $SERVER_BIN"
+  [ -x "$WORKER_BIN" ] || fail "worker binary not found after build: $WORKER_BIN"
+fi
+
+# ── Temp workspace + teardown trap ────────────────────────────────────────────
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sqi-smoke.XXXXXX")"
+SERVER_LOG="${TMP_DIR}/server.log"
+WORKER_LOG="${TMP_DIR}/worker.log"
+WS_OUT="${TMP_DIR}/ws.out"
+WS_READY="${TMP_DIR}/ws.ready"
+
+SERVER_PID=""
+WORKER_PID=""
+WS_PID=""
+
+cleanup() {
+  local status=$?
+  set +e
+  [ -n "$WS_PID" ]     && kill "$WS_PID"     >/dev/null 2>&1
+  [ -n "$WORKER_PID" ] && kill "$WORKER_PID" >/dev/null 2>&1
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" >/dev/null 2>&1
+  # Give them a moment to exit cleanly, then hard-kill any stragglers.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$WORKER_PID" >/dev/null 2>&1 || kill -0 "$SERVER_PID" >/dev/null 2>&1 || break
+    sleep 0.2
+  done
+  [ -n "$WORKER_PID" ] && kill -9 "$WORKER_PID" >/dev/null 2>&1
+  [ -n "$SERVER_PID" ] && kill -9 "$SERVER_PID" >/dev/null 2>&1
+  rm -rf "$TMP_DIR" >/dev/null 2>&1
+  return $status
+}
+trap cleanup EXIT INT TERM
+
+log_tail() {
+  local label="$1" file="$2"
+  if [ -f "$file" ]; then
+    printf '[smoke] --- %s (tail) ---\n' "$label" >&2
+    tail -n 40 "$file" >&2 || true
+    printf '[smoke] --- end %s ---\n' "$label" >&2
+  fi
+}
+
+# ── Start the server ──────────────────────────────────────────────────────────
+
+HTTP_PORT="$(free_port)"
+NATS_PORT="$(free_port)"
+HTTP_ADDR="127.0.0.1:${HTTP_PORT}"
+NATS_ADDR="127.0.0.1:${NATS_PORT}"
+BASE_URL="http://${HTTP_ADDR}"
+
+log "starting sqi-server (http=${HTTP_ADDR}, nats=${NATS_ADDR})"
+SQI_HTTP_ADDR="$HTTP_ADDR" \
+SQI_NATS_ADDR="$NATS_ADDR" \
+SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
+SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
+SQI_DISCOVERY_ENABLED="false" \
+SQI_SCHEDULER_TICK_INTERVAL="100ms" \
+SQI_LOG_LEVEL="warn" \
+  "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
+SERVER_PID=$!
+
+# Poll /readyz until 200 (bounded). Fail fast if the process exits early.
+ready=0
+for _ in $(seq 1 150); do
+  if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    log_tail "server log" "$SERVER_LOG"
+    fail "sqi-server exited before becoming ready"
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/readyz" 2>/dev/null || true)"
+  if [ "$code" = "200" ]; then
+    ready=1
+    break
+  fi
+  sleep 0.2
+done
+[ "$ready" -eq 1 ] || { log_tail "server log" "$SERVER_LOG"; fail "sqi-server not ready within 30s"; }
+log "server ready"
+
+# ── Create a farm and a queue ─────────────────────────────────────────────────
+
+farm_json="$(curl -s -X POST "${BASE_URL}/api/v1/farms" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"smoke farm"}')"
+FARM_ID="$(json_get "$farm_json" id)"
+[ -n "$FARM_ID" ] || fail "could not create farm (response: ${farm_json})"
+log "created farm ${FARM_ID}"
+
+queue_json="$(curl -s -X POST "${BASE_URL}/api/v1/queues" \
+  -H 'Content-Type: application/json' \
+  -d "{\"farm_id\":\"${FARM_ID}\",\"name\":\"smoke queue\"}")"
+QUEUE_ID="$(json_get "$queue_json" id)"
+[ -n "$QUEUE_ID" ] || fail "could not create queue (response: ${queue_json})"
+log "created queue ${QUEUE_ID}"
+
+# ── Start the worker ──────────────────────────────────────────────────────────
+
+log "starting sqi-worker (nats=nats://${NATS_ADDR}, farm=${FARM_ID}, queue=${QUEUE_ID})"
+SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
+SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
+SQI_WORKER_FARM_ID="$FARM_ID" \
+SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
+SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
+SQI_WORKER_ALLOW_ROOT="true" \
+SQI_WORKER_LOG_LEVEL="warn" \
+SQI_WORKER_LOG_FORMAT="text" \
+SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
+SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
+SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
+  "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
+WORKER_PID=$!
+
+# Poll GET /api/v1/workers until our worker is online.
+WORKER_ID=""
+for _ in $(seq 1 150); do
+  if ! kill -0 "$WORKER_PID" >/dev/null 2>&1; then
+    log_tail "worker log" "$WORKER_LOG"
+    fail "sqi-worker exited before coming online"
+  fi
+  workers_json="$(curl -s "${BASE_URL}/api/v1/workers" 2>/dev/null || true)"
+  if [ "$HAVE_JQ" -eq 1 ]; then
+    WORKER_ID="$(printf '%s' "$workers_json" \
+      | jq -r '[.items[]? | select(.status=="online") | .id][0] // empty')"
+  else
+    WORKER_ID="$(printf '%s' "$workers_json" | "$PY3" -c '
+import json, sys
+items = json.load(sys.stdin).get("items") or []
+online = [w["id"] for w in items if w.get("status") == "online"]
+sys.stdout.write(online[0] if online else "")
+' 2>/dev/null || true)"
+  fi
+  [ -n "$WORKER_ID" ] && break
+  sleep 0.2
+done
+[ -n "$WORKER_ID" ] || { log_tail "worker log" "$WORKER_LOG"; fail "worker did not come online within 30s"; }
+log "worker online: ${WORKER_ID}"
+
+# ── Submit a minimal OpenJD echo job ──────────────────────────────────────────
+
+# A unique sentinel so the log assertion cannot match unrelated output.
+SENTINEL="sqi-smoke-sentinel-$$-${RANDOM}"
+JOB_YAML="$(cat <<YAML
+specificationVersion: "jobtemplate-2023-09"
+name: sqi smoke job
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: echo
+          args:
+            - "${SENTINEL}"
+YAML
+)"
+
+submit_url="${BASE_URL}/api/v1/jobs?farm_id=${FARM_ID}&queue_id=${QUEUE_ID}&owner=smoke"
+job_json="$(curl -s -X POST "$submit_url" \
+  -H 'Content-Type: application/x-yaml' \
+  --data-binary "$JOB_YAML")"
+JOB_ID="$(json_get "$job_json" id)"
+[ -n "$JOB_ID" ] || fail "could not submit job (response: ${job_json})"
+log "submitted job ${JOB_ID} (sentinel: ${SENTINEL})"
+
+# ── Resolve the task ID (exists at submit time, before the worker executes) ───
+
+TASK_ID=""
+for _ in $(seq 1 100); do
+  tasks_json="$(curl -s "${BASE_URL}/api/v1/jobs/${JOB_ID}/tasks" 2>/dev/null || true)"
+  TASK_ID="$(first_task_id "$tasks_json")"
+  [ -n "$TASK_ID" ] && break
+  sleep 0.2
+done
+[ -n "$TASK_ID" ] || fail "job ${JOB_ID} produced no tasks"
+log "task ${TASK_ID}"
+
+# ── Arm the WebSocket subscriber BEFORE the worker emits the echo ─────────────
+#
+# The server only buffers log pushes for a subject while it has a live
+# subscriber (internal/ws Hub.NotifyLog early-returns when there are none), so
+# the subscriber must be connected and subscribed before the echo runs. We
+# subscribe immediately after the task exists, which reliably precedes the
+# worker's pull+execute (mirrors the Python integration test).
+WS_OK="skip"
+if [ -n "$WS_PYTHON" ]; then
+  WS_OK="armed"
+  WS_URL="ws://${HTTP_ADDR}/api/v1/ws"
+  log "arming WebSocket subscriber via ${WS_PYTHON} (subject tasks/${TASK_ID}/logs)"
+  "$WS_PYTHON" - "$WS_URL" "tasks/${TASK_ID}/logs" "$SENTINEL" "$WS_READY" <<'PY' >"$WS_OUT" 2>&1 &
+import json
+import sys
+import time
+
+from websockets.sync.client import connect
+
+ws_url, subject, sentinel, ready_path = sys.argv[1:5]
+deadline = time.monotonic() + 45.0
+
+with connect(ws_url, open_timeout=10) as conn:
+    conn.send(json.dumps({
+        "type": "subscribe",
+        "subject": subject,
+        "payload": {"since_seq": 0},
+        "seq": 1,
+    }))
+    found = False
+    while time.monotonic() < deadline:
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            raw = conn.recv(timeout=remaining)
+        except TimeoutError:
+            break
+        try:
+            env = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(env, dict):
+            continue
+        ftype = env.get("type")
+        if ftype == "ack":
+            # Subscription confirmed: signal the parent that we are armed.
+            try:
+                with open(ready_path, "w", encoding="utf-8") as fh:
+                    fh.write("ready\n")
+            except OSError:
+                pass
+            err = (env.get("payload") or {}).get("error")
+            if err:
+                print(f"WS_ERROR ack error: {err}")
+                sys.exit(3)
+            continue
+        if ftype == "error":
+            payload = env.get("payload") or {}
+            print(f"WS_ERROR {payload.get('code')}: {payload.get('message')}")
+            sys.exit(3)
+        if ftype == "push" and env.get("subject") == subject:
+            data = (env.get("payload") or {}).get("data", "")
+            if sentinel in data:
+                found = True
+                break
+
+print("WS_FOUND" if found else "WS_NOT_FOUND")
+sys.exit(0 if found else 2)
+PY
+  WS_PID=$!
+
+  # Wait briefly for the subscription ack so we know the subscriber is armed.
+  for _ in $(seq 1 50); do
+    [ -f "$WS_READY" ] && break
+    kill -0 "$WS_PID" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  if [ -f "$WS_READY" ]; then
+    log "WebSocket subscriber armed"
+  else
+    log "warning: WebSocket subscriber did not confirm subscription quickly; continuing"
+  fi
+else
+  log "warning: no websockets-capable python found; WS assertion will be skipped"
+  log "         (install with: make py-install, or pip install 'sqi-client[ws]')"
+fi
+
+# ── Poll the job to a terminal status ─────────────────────────────────────────
+
+JOB_STATUS=""
+for _ in $(seq 1 200); do
+  job_json="$(curl -s "${BASE_URL}/api/v1/jobs/${JOB_ID}" 2>/dev/null || true)"
+  JOB_STATUS="$(json_get "$job_json" status)"
+  case "$JOB_STATUS" in
+    completed|failed|canceled) break ;;
+  esac
+  sleep 0.2
+done
+[ "$JOB_STATUS" = "completed" ] || {
+  log_tail "server log" "$SERVER_LOG"
+  log_tail "worker log" "$WORKER_LOG"
+  fail "job ${JOB_ID} did not reach 'completed' (last status: '${JOB_STATUS:-unknown}')"
+}
+log "job completed"
+
+# ── Assert the sentinel is retrievable over REST ──────────────────────────────
+
+REST_OK=0
+for _ in $(seq 1 75); do
+  logs_json="$(curl -s "${BASE_URL}/api/v1/tasks/${TASK_ID}/logs" 2>/dev/null || true)"
+  if logs_contain "$logs_json" "$SENTINEL"; then
+    REST_OK=1
+    break
+  fi
+  sleep 0.2
+done
+[ "$REST_OK" -eq 1 ] || {
+  log_tail "server log" "$SERVER_LOG"
+  fail "REST assertion: sentinel '${SENTINEL}' not found in task logs"
+}
+log "REST assertion PASSED: sentinel found in GET /api/v1/tasks/${TASK_ID}/logs"
+
+# ── Assert the sentinel is retrievable over WebSocket ─────────────────────────
+
+if [ "$WS_OK" = "skip" ]; then
+  log "WS assertion SKIPPED (no websockets-capable python available)"
+else
+  # The subscriber exits 0 only when it saw the sentinel in a live push.
+  ws_rc=0
+  wait "$WS_PID" || ws_rc=$?
+  WS_PID=""
+  if [ "$ws_rc" -eq 0 ] && grep -q 'WS_FOUND' "$WS_OUT" 2>/dev/null; then
+    WS_OK="pass"
+    log "WS assertion PASSED: sentinel received live over /api/v1/ws"
+  else
+    WS_OK="fail"
+    log "WS subscriber output:"
+    sed 's/^/[smoke]   /' "$WS_OUT" >&2 2>/dev/null || true
+    fail "WS assertion: sentinel '${SENTINEL}' not received over WebSocket (rc=${ws_rc})"
+  fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+log "=============================================="
+log "SMOKE TEST PASSED"
+log "  REST log assertion: PASSED"
+case "$WS_OK" in
+  pass) log "  WS   log assertion: PASSED" ;;
+  skip) log "  WS   log assertion: SKIPPED (no websockets python)" ;;
+esac
+log "=============================================="
+exit 0

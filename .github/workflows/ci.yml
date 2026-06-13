@@ -205,6 +205,65 @@ jobs:
           flags: web
           fail_ci_if_error: false
 
+  # ── Web end-to-end (Playwright) ──────────────────────────────────────────────
+  # Builds the real binaries (sqi-server embeds web/dist) and drives the embedded
+  # UI in Chromium, Firefox, and WebKit. The Playwright global setup boots a
+  # server + worker on an ephemeral loopback port, seeds a farm/queue, submits a
+  # job through the /submit form, and asserts it runs to completion with logs.
+  # See docs/cross-platform-validation.md for the manual per-OS equivalent.
+  web-e2e:
+    name: Web UI end-to-end (Playwright)
+    runs-on: ubuntu-latest
+    # The worker refuses to run as root unless explicitly allowed; CI runs as
+    # root, so the global setup boots it with this set.
+    env:
+      SQI_WORKER_ALLOW_ROOT: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      # Builds web/dist + both binaries into ./bin so the Playwright global
+      # setup finds bin/sqi-server and bin/sqi-worker (it would build them
+      # otherwise, but doing it here keeps the failure mode obvious).
+      - name: Build binaries (server embeds the UI)
+        run: make build
+
+      # Installs the three browser engines plus their Linux system libraries.
+      - name: Install Playwright browsers
+        working-directory: web
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright E2E (chromium, firefox, webkit)
+        working-directory: web
+        run: npm run test:e2e
+
+      # Publish the HTML report and traces when the E2E run fails so flakes are
+      # diagnosable from the CI artifacts.
+      - name: Upload Playwright report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
   # ── Docker latest ────────────────────────────────────────────────────────────
   # Builds and pushes ghcr.io/uberware/sqi/sqi-server:latest on every push to
   # main. Uses the standalone multi-stage Dockerfile so the image is built from
@@ -306,6 +365,81 @@ jobs:
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-worker/...
+
+  # ── Cross-platform runtime smoke ─────────────────────────────────────────────
+  # cross-compile (above) proves the binaries *build* for every target; this job
+  # proves they *run* — start, register a worker, execute a job, and stream logs
+  # over REST + WebSocket — natively on macOS and Windows. Linux runtime is
+  # already covered by the docker smoke-test and web-e2e jobs, so it is omitted
+  # here. The manual VM-based equivalent is docs/cross-platform-validation.md.
+  #
+  # Native macOS/Windows runner minutes cost ~10x Linux, so this is skipped on
+  # pull requests and runs only on pushes to main and manual dispatch.
+  # fail-fast: false so a Windows-only failure still reports the macOS result.
+  cross-platform-runtime:
+    name: Runtime smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: test
+    if: ${{ github.event_name != 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    # The worker refuses to run as root/elevated unless this is set; harmless on
+    # the unprivileged runner users but keeps parity with the docker smoke job.
+    env:
+      SQI_WORKER_ALLOW_ROOT: "true"
+    # Use bash on every OS (Git Bash on Windows) so the one smoke script runs
+    # unchanged across platforms.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Provides a python with `websockets` so the smoke script's WebSocket
+      # assertion runs for real (it otherwise degrades to a logged SKIP).
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install websockets for the WS smoke check
+        run: python -m pip install --upgrade pip websockets
+
+      # Build the web bundle first (the server embeds web/dist), then both
+      # binaries with the platform-appropriate extension.
+      - name: Build web bundle and binaries
+        run: |
+          (cd web && npm ci && npm run build)
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          go build -o "bin/sqi-server${ext}" ./cmd/sqi-server
+          go build -o "bin/sqi-worker${ext}" ./cmd/sqi-worker
+
+      # Reuses scripts/smoke.sh (the same script developers run via `make smoke`).
+      # Passing the prebuilt binaries skips its internal `make build`, so no GNU
+      # make is required on the Windows runner.
+      - name: End-to-end smoke (REST + WebSocket)
+        run: |
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          export SQI_SERVER_BIN="bin/sqi-server${ext}"
+          export SQI_WORKER_BIN="bin/sqi-worker${ext}"
+          export SQI_SMOKE_PYTHON="$(command -v python)"
+          bash scripts/smoke.sh
 
   # ── Docker smoke test ────────────────────────────────────────────────────────
   # Builds both Docker images from source (no registry push) and runs them
