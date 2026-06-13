@@ -584,3 +584,77 @@ and `probe_other.go`.
    go test -race ./internal/worker/capabilities/...
    make fmt && make lint
    ```
+
+## sqi-client (Python) development
+
+The Python client lives at `clients/python/` (import name `sqi_client`). It is a
+separate toolchain from the Go code — it has its own virtualenv, dependencies,
+and Make targets — so its commands do not overlap with the Go ones above.
+
+### First-time setup
+
+```sh
+# Create clients/python/.venv and install sqi-client editable with all extras
+# (yaml, ws, dev — ruff, mypy, pytest, pytest-cov, pytest-timeout, respx,
+# websockets):
+make py-install
+```
+
+### Day-to-day commands
+
+```sh
+make py-fmt              # format with ruff
+make py-lint             # ruff lint
+make py-typecheck        # mypy (src targets 3.9, tests target 3.13)
+make py-test             # unit tests with coverage gate
+make py-check            # full check-only gate: ruff format --check, ruff check, mypy, pytest
+make py-build            # build sdist + wheel into clients/python/dist/
+```
+
+`make py-check` is the pre-PR gate; it matches what CI runs for the client. Run
+it (not bare `pytest`) from the repo root, or `cd clients/python` first — pytest
+must load `clients/python/pyproject.toml` for the markers, coverage gate, and
+`addopts` to apply.
+
+### Integration tests against locally-built binaries
+
+The `@pytest.mark.integration` suite boots the real `sqi-server` and `sqi-worker`
+binaries as subprocesses (skipped by default; coverage off because the subset
+doesn't meet the unit gate):
+
+```sh
+# Builds the binaries first, then runs pytest -m integration:
+make py-test-integration
+
+# Or, if the binaries are already current, run directly:
+cd clients/python && .venv/bin/pytest -m integration --no-cov
+```
+
+The harness finds the binaries at `<repo-root>/bin/sqi-server` and
+`bin/sqi-worker` by default; override with `SQI_SERVER_BIN` / `SQI_WORKER_BIN`.
+If a binary is missing the whole marker is skipped with a clear message.
+
+### Adding a new endpoint wrapper
+
+To wrap a new server endpoint in the client, mirror the existing layering:
+
+1. **Transport** — reach for the shared helpers in `client.py` rather than
+   calling `httpx` directly: `_request` / `_request_json` (path joining under
+   `/api/v1`, `None`-param dropping, typed-error mapping, GET-only retry),
+   `parse_page` for paginated responses, and the generic `_CrudResource` for
+   standard create/get/update/delete resources.
+2. **Model** — add or extend a frozen dataclass in `models.py` matching the
+   OpenAPI component schema field-for-field, with a tolerant `from_dict`. Export
+   it from `__init__.py`'s `__all__`.
+3. **Method** — add the public method to `SqiClient` (keyword-only options,
+   fully type-annotated, Google-style docstring). Accept status filters as either
+   the enum or its wire string via `_enum_value`.
+4. **Tests** — add `respx`-mocked unit tests in `tests/` (one file per resource
+   group), and extend the integration suite if it exercises a real execution
+   path.
+5. **Docs** — document the method in
+   [`docs/python-client.md`](python-client.md) with a short runnable example.
+
+Run `make py-check` before opening the PR. The authoritative request/response
+shape is always the OpenAPI spec (`internal/api/openapi.yaml`); when it and the
+server diverge, treat the spec as authoritative and flag the discrepancy.

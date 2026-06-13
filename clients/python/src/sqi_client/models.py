@@ -339,6 +339,12 @@ class Step:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Step:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             name=_as_str(data.get("name")),
@@ -365,6 +371,12 @@ class TaskCounts:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> TaskCounts:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             total=_as_int(data.get("total")),
             pending=_as_int(data.get("pending")),
@@ -405,6 +417,12 @@ class Job:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         raw_steps = data.get("steps")
         raw_counts = data.get("task_counts")
         steps = (
@@ -454,6 +472,12 @@ class Task:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Task:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             job_id=_as_str(data.get("job_id")),
@@ -481,6 +505,12 @@ class RetryResult:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RetryResult:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             task_id=_as_str(data.get("task_id")),
             status=TaskStatus.parse(_as_str(data.get("status"))),
@@ -501,6 +531,12 @@ class GPUInfo:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> GPUInfo:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             vendor=_opt_str(data.get("vendor")),
             model=_opt_str(data.get("model")),
@@ -521,6 +557,12 @@ class CurrentTask:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> CurrentTask:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             job_id=_as_str(data.get("job_id")),
@@ -559,6 +601,12 @@ class Worker:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Worker:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         raw_current = data.get("current_task")
         return cls(
             id=_as_str(data.get("id")),
@@ -598,6 +646,12 @@ class WorkerAction:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> WorkerAction:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             status=WorkerStatus.parse(_as_str(data.get("status"))),
@@ -620,6 +674,12 @@ class Farm:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Farm:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             name=_as_str(data.get("name")),
@@ -646,6 +706,12 @@ class Queue:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Queue:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             farm_id=_as_str(data.get("farm_id")),
@@ -673,6 +739,12 @@ class StorageLocation:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> StorageLocation:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             name=_as_str(data.get("name")),
@@ -698,6 +770,12 @@ class LicensePool:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> LicensePool:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             name=_as_str(data.get("name")),
@@ -728,6 +806,12 @@ class LogChunk:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> LogChunk:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         return cls(
             id=_as_str(data.get("id")),
             task_id=_as_str(data.get("task_id")),
@@ -756,6 +840,12 @@ class LogPage:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> LogPage:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
         raw_items = data.get("items")
         items = (
             [LogChunk.from_dict(c) for c in raw_items if isinstance(c, dict)]

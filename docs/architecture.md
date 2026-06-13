@@ -287,9 +287,45 @@ SQLITE_BUSY errors under concurrent write load.
 
 ---
 
+## sqi-client (Python library)
+
+`sqi-client` (the `sqi-client` box in the component overview, per `sqi.md` §6.1)
+is a pure-Python client library that talks to `sqi-server` over the same public
+surface as the web UI: the REST API for everything, plus the WebSocket gateway
+for live events. It lives in the repository at `clients/python/` (import name
+`sqi_client`) and is versioned and released alongside the binaries.
+
+**Module layout** (`clients/python/src/sqi_client/`):
+
+| Module | Role |
+|---|---|
+| `client.py` | `SqiClient` — the HTTP transport core (default headers, `/api/v1` prefix, typed-error mapping, GET retry/backoff, health probes) plus every resource method (submit, query, manage, CRUD) and the conveniences. |
+| `models.py` | Frozen dataclasses and status enums mirroring the OpenAPI component schemas, with a tolerant `from_dict` parsing layer and the `Page`/`iter_pages`/`parse_page` pagination primitives. |
+| `errors.py` | The `SqiError` exception hierarchy and RFC 7807 problem-details parsing. |
+| `events.py` | The optional WebSocket event stream (`SqiEventStream`, `Event`), imported lazily so the core needs no `websockets`. |
+
+**Design notes:**
+
+- **Sync-first.** Phase 1 ships a synchronous client only (backed by
+  `httpx.Client`). The transport is isolated so an `AsyncSqiClient` can be added
+  later without breaking the public API.
+- **Minimal dependencies.** The only required runtime dependency is `httpx`, so
+  the library can be embedded in DCC Python environments (Maya, Houdini, Nuke).
+  `PyYAML` and `websockets` are optional extras (`sqi-client[yaml]`,
+  `sqi-client[ws]`), imported lazily and never required by the core.
+- **Phase 3 auth extension point.** `SqiClient` accepts a `headers` mapping
+  merged into every request (and carried onto the WebSocket upgrade); this is the
+  forward-compatible hook for injecting authentication tokens once Phase 3 lands,
+  with no change to the public method signatures.
+
+See [`docs/python-client.md`](python-client.md) for the full client reference.
+
+---
+
 ## Further reading
 
 - [`docs/configuration.md`](configuration.md) — Every configuration option with defaults and environment variable names.
 - [`docs/api.md`](api.md) — REST API reference with worked examples.
+- [`docs/python-client.md`](python-client.md) — Python client (`sqi-client`) reference.
 - [`docs/development.md`](development.md) — Local setup, test commands, adding a new endpoint.
 - [`internal/store/migrations/`](../internal/store/migrations) — Full schema DDL.
