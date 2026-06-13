@@ -1291,6 +1291,88 @@ class SqiClient:
                 if event.subject == subject:
                     yield LogChunk.from_dict(event.payload)
 
+    # ── High-level conveniences ───────────────────────────────────────────────
+
+    def wait_for_job(
+        self,
+        job_id: str,
+        poll_interval: float = 2.0,
+        timeout: float | None = None,
+    ) -> Job:
+        """Poll a job until it finishes, returning the final :class:`Job`.
+
+        Repeatedly calls :meth:`get_job` until the job reaches a terminal status
+        (``completed``, ``failed``, or ``canceled``), sleeping ``poll_interval``
+        seconds between polls.
+
+        Note that ``paused`` is *not* terminal: waiting on a paused job that is
+        never resumed blocks until ``timeout`` (or forever when ``timeout`` is
+        ``None``). Pass a ``timeout`` when that is possible. A very small
+        ``poll_interval`` polls the server aggressively.
+
+        Args:
+            job_id: The job to wait on.
+            poll_interval: Seconds between polls (default 2.0).
+            timeout: Maximum seconds to wait before giving up. ``None`` (the
+                default) waits indefinitely.
+
+        Returns:
+            The :class:`Job` in its terminal state.
+
+        Raises:
+            SqiTimeoutError: ``timeout`` elapsed before the job finished.
+            NotFoundError: No job with that ID exists (HTTP 404).
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            job = self.get_job(job_id)
+            if job.status in _TERMINAL_JOB_STATUSES:
+                return job
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                raise SqiTimeoutError(
+                    f"job {job_id} did not reach a terminal status within {timeout}s"
+                )
+            # Cap the sleep at the remaining time so the final poll lands on the
+            # deadline rather than overshooting it.
+            delay = poll_interval if deadline is None else min(poll_interval, deadline - now)
+            time.sleep(delay)
+
+    def submit_and_wait(
+        self,
+        template: JobTemplate,
+        *,
+        farm_id: str,
+        queue_id: str,
+        owner: str | None = None,
+        priority: int | None = None,
+        project: str | None = None,
+        poll_interval: float = 2.0,
+        timeout: float | None = None,
+    ) -> Job:
+        """Submit a job and block until it finishes — the one-call pipeline path.
+
+        Composes :meth:`submit_job` and :meth:`wait_for_job`: accepts the same
+        submission arguments as the former plus the ``poll_interval``/``timeout``
+        of the latter.
+
+        Returns:
+            The finished :class:`Job` in its terminal state.
+
+        Raises:
+            ValidationError: The template failed server-side validation (422).
+            SqiTimeoutError: ``timeout`` elapsed before the job finished.
+        """
+        job = self.submit_job(
+            template,
+            farm_id=farm_id,
+            queue_id=queue_id,
+            owner=owner,
+            priority=priority,
+            project=project,
+        )
+        return self.wait_for_job(job.id, poll_interval=poll_interval, timeout=timeout)
+
     # ── Health probes ─────────────────────────────────────────────────────────
 
     def ping(self) -> bool:
@@ -1327,6 +1409,10 @@ _MIN_LICENSE_MAX_CONCURRENT = 1
 # Task states from which no further log output or transitions occur; once a task
 # reaches one, a follow-tail can stop after draining (see tail_task_logs).
 _TERMINAL_TASK_STATUSES = frozenset({TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED})
+
+# Job states past which no further transitions occur; wait_for_job returns once a
+# job reaches one of these.
+_TERMINAL_JOB_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELED})
 
 
 def _enum_value(value: Any) -> Any:

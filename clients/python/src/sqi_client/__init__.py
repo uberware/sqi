@@ -6,12 +6,95 @@ This package wraps the sqi-server REST and WebSocket API for scripted job
 submission, querying, and management. It is the foundation for the Phase 2 DCC
 submitters and for pipeline automation scripts (see ``sqi.md`` §13.2).
 
-The curated public API surface is defined in ``__all__``; everything else is
-underscore-private and not part of the supported interface.
+The curated public API is re-exported here and listed in ``__all__``: the
+client, its typed models, the exception hierarchy, and — when importable — the
+optional WebSocket event stream. Everything else is underscore-private and not
+part of the supported interface.
 """
 
 from __future__ import annotations
 
 from ._version import __version__
+from .client import JobTemplate, SqiClient
+from .errors import (
+    APIError,
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+    RateLimitError,
+    ServerError,
+    SqiConnectionError,
+    SqiError,
+    SqiTimeoutError,
+    ValidationError,
+)
+from .models import (
+    CurrentTask,
+    Farm,
+    GPUInfo,
+    Job,
+    JobStatus,
+    LicensePool,
+    LogChunk,
+    LogPage,
+    Page,
+    Queue,
+    RetryResult,
+    Step,
+    StorageLocation,
+    Task,
+    TaskCounts,
+    TaskStatus,
+    Worker,
+    WorkerAction,
+    WorkerStatus,
+    iter_pages,
+    parse_page,
+)
 
-__all__ = ["__version__"]
+__all__ = [
+    "APIError",
+    "BadRequestError",
+    "ConflictError",
+    "CurrentTask",
+    "Farm",
+    "GPUInfo",
+    "Job",
+    "JobStatus",
+    "JobTemplate",
+    "LicensePool",
+    "LogChunk",
+    "LogPage",
+    "NotFoundError",
+    "Page",
+    "Queue",
+    "RateLimitError",
+    "RetryResult",
+    "ServerError",
+    "SqiClient",
+    "SqiConnectionError",
+    "SqiError",
+    "SqiTimeoutError",
+    "Step",
+    "StorageLocation",
+    "Task",
+    "TaskCounts",
+    "TaskStatus",
+    "ValidationError",
+    "Worker",
+    "WorkerAction",
+    "WorkerStatus",
+    "__version__",
+    "iter_pages",
+    "parse_page",
+]
+
+# The optional WebSocket surface lives in ``events`` (importable without the
+# ``ws`` extra — ``websockets`` is loaded lazily on connect). Guarded so a
+# missing or broken events module never breaks importing the core package.
+try:
+    from .events import Event, SqiEventStream
+except ImportError:  # pragma: no cover - events imports cleanly in supported setups
+    pass
+else:
+    __all__ += ["Event", "SqiEventStream"]
