@@ -276,6 +276,10 @@ py-typecheck: ## Type-check the Python client with mypy (strict; src at 3.9, tes
 py-test: ## Run the Python client unit tests with coverage
 	cd $(PY_DIR) && .venv/bin/pytest
 
+.PHONY: py-test-integration
+py-test-integration: build-server build-worker ## Run the Python client integration tests against freshly-built binaries
+	cd $(PY_DIR) && .venv/bin/pytest -m integration --no-cov
+
 .PHONY: py-check
 py-check: ## Full Python client gate (check-only): ruff format, ruff check, mypy, pytest
 	cd $(PY_DIR) && .venv/bin/ruff format --check . \

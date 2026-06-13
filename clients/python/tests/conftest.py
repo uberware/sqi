@@ -23,6 +23,20 @@ ClientFactory = Callable[..., SqiClient]
 ProblemFactory = Callable[..., httpx.Response]
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the ``integration`` marker.
+
+    It is also declared in ``pyproject.toml``, but that config is only loaded
+    when pytest runs from ``clients/python/``. Registering it here too keeps the
+    marker recognized (no ``PytestUnknownMarkWarning``) even when the suite is
+    invoked from the repository root.
+    """
+    config.addinivalue_line(
+        "markers",
+        "integration: tests that require a running sqi-server binary (deselected by default)",
+    )
+
+
 def problem_response(
     status: int,
     *,
