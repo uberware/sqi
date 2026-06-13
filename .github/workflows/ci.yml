@@ -438,7 +438,10 @@ jobs:
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
           export SQI_SERVER_BIN="bin/sqi-server${ext}"
           export SQI_WORKER_BIN="bin/sqi-worker${ext}"
-          export SQI_SMOKE_PYTHON="$(command -v python)"
+          # Declare and assign separately so the command substitution's exit
+          # status is not masked by `export` (shellcheck SC2155).
+          SQI_SMOKE_PYTHON="$(command -v python)"
+          export SQI_SMOKE_PYTHON
           bash scripts/smoke.sh
 
   # ── Docker smoke test ────────────────────────────────────────────────────────
