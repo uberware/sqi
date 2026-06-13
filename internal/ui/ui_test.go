@@ -100,9 +100,43 @@ func TestSPAFallbackUnderUIPrefix(t *testing.T) {
 	}
 }
 
-func TestUnknownAssetOutsideUIIs404(t *testing.T) {
+func TestServesShellForRootBasedRoutes(t *testing.T) {
 	h := newTestHandler(t)
-	for _, target := range []string{"/missing.js", "/assets/nope.css", "/favicon.ico", "/random/path"} {
+	// The React router is root-based (no /ui basename), so deep links and
+	// refreshes on these client-side routes must serve the SPA shell rather than
+	// 404. These are extensionless paths with no embedded file.
+	routes := []string{
+		"/jobs",
+		"/submit",
+		"/workers",
+		"/workers/abc123",
+		"/jobs/abc123",
+		"/jobs/abc123/tasks/def456/logs",
+	}
+	for _, target := range routes {
+		rec := do(t, h, http.MethodGet, target)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s: status = %d, want %d (SPA fallback)", target, rec.Code, http.StatusOK)
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("GET %s: Content-Type = %q, want text/html", target, ct)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("GET %s: Cache-Control = %q, want no-cache", target, cc)
+		}
+		if !strings.Contains(rec.Body.String(), `id="root"`) {
+			t.Errorf("GET %s: expected SPA shell body (id=root)", target)
+		}
+	}
+}
+
+func TestMissingAssetWithExtensionIs404(t *testing.T) {
+	h := newTestHandler(t)
+	// Paths that look like an asset request (they carry a file extension) but do
+	// not resolve to an embedded file must 404, so a mistyped or stale asset URL
+	// is not masked by the SPA shell.
+	for _, target := range []string{"/missing.js", "/assets/nope.css", "/favicon.ico", "/app.png"} {
 		rec := do(t, h, http.MethodGet, target)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s: status = %d, want %d", target, rec.Code, http.StatusNotFound)
@@ -136,12 +170,20 @@ func TestHeadRequestHasNoBody(t *testing.T) {
 
 func TestPathTraversalIsContained(t *testing.T) {
 	h := newTestHandler(t)
-	// A traversal attempt collapses to /etc/passwd after path.Clean, which is
-	// not an embedded file and is not under /ui, so it must 404 rather than
-	// escape the embedded tree.
+	// A traversal attempt collapses to /etc/passwd after path.Clean. That path
+	// is extensionless, so under the SPA fallback it serves the embedded shell —
+	// crucially, it never serves host filesystem contents. Containment means we
+	// only ever return our own index.html, not /etc/passwd.
 	rec := do(t, h, http.MethodGet, "/../../../../etc/passwd")
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("traversal: status = %d, want %d", rec.Code, http.StatusNotFound)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("traversal: status = %d, want %d (SPA shell)", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="root"`) {
+		t.Errorf("traversal: expected SPA shell body (id=root), not host file contents")
+	}
+	if strings.Contains(body, "root:") {
+		t.Errorf("traversal: response leaked host /etc/passwd contents")
 	}
 }
 
