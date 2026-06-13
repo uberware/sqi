@@ -398,11 +398,50 @@ jobs:
         if: always()
         run: docker compose -f deploy/docker-compose.smoke.yml down -v
 
-  # ── Python client: lint, type-check, unit tests ──────────────────────────────
-  # Runs the sqi-client quality gate across the supported interpreter range
-  # (3.9 floor through the latest stable). Only runs when the client changed.
-  python:
-    name: Python client (${{ matrix.python-version }})
+  # ── Python client: lint + type-check ─────────────────────────────────────────
+  # ruff and mypy are driven by config/target versions (mypy targets the 3.9
+  # floor for src and 3.13 for tests via flags), not by the interpreter they run
+  # on, so they run once on a single Python rather than across the matrix. (A
+  # matrix here would only vary the resolved mypy *version*, which is noise.)
+  python-lint:
+    name: Python client lint + type-check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch' }}
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: clients/python/pyproject.toml
+
+      - name: Install client with all extras
+        run: pip install -e '.[yaml,ws,dev]'
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Ruff lint
+        run: ruff check .
+
+      # src is type-checked at the 3.9 floor (pyproject python_version); the
+      # tests are checked at a newer target where they are allowed to run.
+      - name: mypy
+        run: mypy src && mypy --python-version=3.13 tests
+
+  # ── Python client: unit tests ────────────────────────────────────────────────
+  # Runtime behavior is what genuinely varies by interpreter, so the unit suite
+  # (with its coverage gate) runs across the supported range: 3.9 floor through
+  # the latest stable.
+  python-test:
+    name: Python client tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -426,17 +465,6 @@ jobs:
 
       - name: Install client with all extras
         run: pip install -e '.[yaml,ws,dev]'
-
-      - name: Ruff format check
-        run: ruff format --check .
-
-      - name: Ruff lint
-        run: ruff check .
-
-      # src is type-checked at the 3.9 floor (pyproject python_version); the
-      # tests are checked at a newer target where they are allowed to run.
-      - name: mypy
-        run: mypy src && mypy --python-version=3.13 tests
 
       - name: Unit tests with coverage gate
         run: pytest

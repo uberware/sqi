@@ -75,8 +75,11 @@ def test_unknown_enum_value_preserved_not_raised() -> None:
     # preserve it verbatim rather than raising.
     status = JobStatus.parse("archived")
     assert isinstance(status, JobStatus)
-    assert status == "archived"
+    # Check ``.value`` before the ``== "archived"`` assertion: mypy < 1.20 narrows
+    # a str-enum to Literal['archived'] after the equality, which would otherwise
+    # make the later ``.value`` access a spurious type error.
     assert status.value == "archived"
+    assert status == "archived"
     # The unknown member is not registered in the canonical member map.
     assert "archived" not in {s.value for s in JobStatus}
 
