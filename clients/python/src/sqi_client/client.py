@@ -21,10 +21,13 @@ from collections.abc import Callable, Iterator, Mapping
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Generic, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, Union
 from urllib.parse import quote
 
 import httpx
+
+if TYPE_CHECKING:
+    from .events import SqiEventStream
 
 from ._version import __version__
 from .errors import (
@@ -175,6 +178,10 @@ class SqiClient:
         }
         if headers:
             default_headers.update(headers)
+        # Retained for the WebSocket upgrade (events()), which uses a separate
+        # connection but should carry the same headers (User-Agent, the Phase 3
+        # auth hook).
+        self._default_headers = default_headers
         self._http = httpx.Client(
             base_url=self._base_url,
             timeout=timeout,
@@ -1219,6 +1226,71 @@ class SqiClient:
         """Delete a license pool. Raises :class:`NotFoundError` if it is missing."""
         self._license_pools.delete(pool_id)
 
+    # ── Live events (optional ws extra) ───────────────────────────────────────
+
+    def events(self, *, reconnect: bool = True) -> SqiEventStream:
+        """Open a live WebSocket event stream for this server.
+
+        Requires the optional ``ws`` extra (``pip install 'sqi-client[ws]'``);
+        the import happens when the returned stream connects, so calling this
+        without the extra installed only fails on connection, with an actionable
+        :class:`ImportError`.
+
+        The stream is not yet connected — use it as a context manager::
+
+            with client.events() as stream:
+                stream.subscribe("workers")
+                for event in stream:
+                    ...
+
+        Args:
+            reconnect: Auto-reconnect and resubscribe on disconnect (default true).
+
+        Returns:
+            An unconnected :class:`~sqi_client.events.SqiEventStream` pointed at
+            this client's server, carrying the same default headers.
+        """
+        from .events import SqiEventStream
+
+        return SqiEventStream(
+            _derive_ws_url(self._base_url),
+            headers=self._default_headers,
+            reconnect=reconnect,
+        )
+
+    def tail_task_logs_live(self, task_id: str, from_seq: int = 0) -> Iterator[LogChunk]:
+        """Live-tail a task's logs over WebSocket — the push-based counterpart to
+        :meth:`tail_task_logs`.
+
+        Subscribes to ``tasks/{task_id}/logs`` and yields each :class:`LogChunk`
+        as the server pushes it. Streams until the connection closes or the
+        caller stops iterating; on an idle disconnect or server restart the
+        underlying stream reconnects and resumes from the last seen event.
+
+        Requires the optional ``ws`` extra; without it the first iteration
+        raises :class:`ImportError` naming the ``pip install 'sqi-client[ws]'``
+        remedy.
+
+        Args:
+            task_id: The task whose logs to tail.
+            from_seq: Resume cursor — replay buffered events with ``seq`` greater
+                than this before streaming live ones. ``0`` (the default) streams
+                only new events going forward; pass the last seen ``seq`` to
+                resume without missing chunks.
+
+        Yields:
+            Each :class:`LogChunk` pushed for the task. Note these come from the
+            live ``TaskLogPush`` payload, which omits ``id``/``nats_seq``/
+            ``received_at`` (those are zero-valued); ``seq_num`` and the content
+            fields are present.
+        """
+        subject = f"tasks/{task_id}/logs"
+        with self.events() as stream:
+            stream.subscribe(subject, since_seq=from_seq)
+            for event in stream:
+                if event.subject == subject:
+                    yield LogChunk.from_dict(event.payload)
+
     # ── Health probes ─────────────────────────────────────────────────────────
 
     def ping(self) -> bool:
@@ -1265,6 +1337,20 @@ def _enum_value(value: Any) -> Any:
     value so the query string carries ``running``, not ``JobStatus.RUNNING``.
     """
     return value.value if isinstance(value, Enum) else value
+
+
+def _derive_ws_url(base_url: str) -> str:
+    """Derive the ``ws(s)://…/api/v1/ws`` endpoint from an ``http(s)`` base URL.
+
+    Any path component is preserved (so a reverse-proxy subpath works), matching
+    how :meth:`SqiClient._build_url` treats the base URL.
+    """
+    if base_url.startswith("https://"):
+        return f"wss://{base_url[len('https://') :]}/api/v1/ws"
+    if base_url.startswith("http://"):
+        return f"ws://{base_url[len('http://') :]}/api/v1/ws"
+    # Already a ws/wss or scheme-less base — best effort.
+    return f"{base_url}/api/v1/ws"
 
 
 # ── CRUD request-body builders ────────────────────────────────────────────────

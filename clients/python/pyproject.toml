@@ -46,7 +46,12 @@ ws = ["websockets"]
 # 1.x still honors the 3.9 target, keeping 3.10+-only stdlib/typing usage a lint
 # failure rather than a runtime error in an old DCC interpreter. Remove this bound
 # when the floor is raised to 3.10+.
-dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx"]
+# `websockets` is included here (not only in the `ws` extra) because the unit
+# test suite covers the optional WebSocket features against an in-process
+# server, so the dev/test environment needs it regardless of the runtime extra.
+# `pytest-timeout` bounds the streaming WebSocket tests so a client regression
+# fails fast instead of hanging CI.
+dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "pytest-timeout", "respx", "websockets"]
 
 [project.urls]
 Homepage = "https://github.com/uberware/sqi"
@@ -108,6 +113,9 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A per-test timeout keeps a regression in the streaming WebSocket tests (which
+# rely on the server closing the connection to end iteration) from hanging CI.
+timeout = 30
 # Integration tests (which need a running server) are deselected by default;
 # opt in with `pytest -m integration`.
 addopts = "-m 'not integration' --cov=sqi_client --cov-report=term-missing --cov-fail-under=60"

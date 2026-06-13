@@ -405,34 +405,84 @@ Upgrade: websocket
 
 ### Message envelope
 
-All frames are JSON objects with this shape:
+All frames — in both directions — are JSON objects with this shape:
 
 ```json
 {
-  "type": "subscribe | unsubscribe | push | pong | error",
+  "type": "subscribe | unsubscribe | ping | push | ack | error | pong",
   "subject": "<subject-string>",
   "payload": { ... },
   "seq": 42
 }
 ```
 
+Message types by direction:
+
+| Type | Direction | Purpose |
+|---|---|---|
+| `subscribe` | client → server | Register for a subject's pushes (payload = `{since_seq}`) |
+| `unsubscribe` | client → server | Cancel a subscription |
+| `ping` | client → server | Application-level keep-alive (server replies `pong`) |
+| `ack` | server → client | Confirms a `subscribe`/`unsubscribe` (payload = `{client_seq, error}`) |
+| `push` | server → client | A subscribed event (payload shape varies by subject) |
+| `error` | server → client | Protocol-level error (payload = `{code, message}`) |
+| `pong` | server → client | Reply to a client `ping` |
+
+`seq` on a server `push` is a per-subject, hub-assigned counter (starts at 1,
+increases globally across connections); store the last value you received and
+pass it as `since_seq` when reconnecting. On client messages `seq` is a
+client-chosen value the server echoes back in the `ack`'s `client_seq` so you
+can correlate replies.
+
 ### Subscribe
 
-Send a `subscribe` frame; the server immediately replays buffered events since
-`since_seq` and then streams new events:
+Send a `subscribe` frame with the resume cursor inside `payload` as `since_seq`.
+The server replies with an `ack`, then immediately replays buffered events with
+`seq` greater than `since_seq`, then streams new events live:
 
 ```json
-{"type": "subscribe", "subject": "tasks/{task-id}/logs", "since_seq": 0}
+{"type": "subscribe", "subject": "tasks/{task-id}/logs", "payload": {"since_seq": 0}, "seq": 1}
 ```
+
+The acknowledgement (sent before any replayed pushes):
+
+```json
+{"type": "ack", "payload": {"client_seq": 1, "error": ""}}
+```
+
+A non-empty `ack.error` (e.g. an unknown subject) means the subscription was
+rejected; treat it like an `error` frame.
 
 ### Available subjects
 
-| Subject | Description |
-|---|---|
-| `jobs` | Aggregate job summary changes |
-| `jobs/{job-id}/tasks` | Task-level state transitions for the given job |
-| `tasks/{task-id}/logs` | Live log chunks for the given task attempt |
-| `workers` | Worker registration and heartbeat events |
+| Subject | Description | `push` payload fields |
+|---|---|---|
+| `jobs` | Aggregate job summary changes | `job_id, name, owner, queue_id, status, updated_at` |
+| `jobs/{job-id}/tasks` | Task-level state transitions for the given job | `job_id, task_id, name, status, worker_id, updated_at` |
+| `tasks/{task-id}/logs` | Live log chunks for the given task attempt | `task_id, attempt_id, seq_num, stream, data, at` |
+| `workers` | Worker registration and heartbeat events | `worker_id, hostname, farm_id, status` |
+
+A `tasks/{task-id}/logs` push carries a `seq_num` and the chunk content but —
+unlike the REST `GET /tasks/{id}/logs` chunks — omits `id`, `nats_seq`, and
+`received_at`.
+
+Example `push` frame:
+
+```json
+{
+  "type": "push",
+  "subject": "tasks/{task-id}/logs",
+  "payload": {
+    "task_id": "...",
+    "attempt_id": "...",
+    "seq_num": 42,
+    "stream": "stdout",
+    "data": "Frame 0042 rendered in 3.2s\n",
+    "at": "2026-01-15T10:05:42.123Z"
+  },
+  "seq": 42
+}
+```
 
 ### Unsubscribe
 
@@ -442,10 +492,12 @@ Send a `subscribe` frame; the server immediately replays buffered events since
 
 ### Keep-alive
 
-The server sends a WebSocket ping every 15 seconds. Connections idle for more
-than 60 seconds without any frame are closed with status 1001 (Going Away).
-Reconnect and pass the last received `seq` as `since_seq` to resume without
-missing events.
+The server sends a WebSocket-level ping every 30 seconds (handled transparently
+by any compliant WebSocket client). Connections idle for more than 5 minutes
+without any frame are closed with status 1001 (Going Away). Reconnect, re-send
+your `subscribe` frames, and pass the last received `seq` as `since_seq` to
+resume without missing events. (A client may also send an application-level
+`ping` frame at any time; the server replies with `pong`.)
 
 ---
 
