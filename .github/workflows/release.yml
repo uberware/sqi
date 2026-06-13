@@ -35,6 +35,40 @@ jobs:
           # and for git-cliff to produce a complete CHANGELOG.md.
           fetch-depth: 0
 
+      # Fail fast (before goreleaser publishes anything) if the client version
+      # was not bumped to match the release tag — keeping sqi_client.__version__
+      # aligned with the repo's single version scheme. The comparison is PEP 440
+      # aware (via `packaging`) so pre-release tags like v0.1.0-alpha match a
+      # normalized __version__ of "0.1.0a0".
+      - name: Check sqi-client version matches the tag
+        run: |
+          python3 -m pip install --quiet --upgrade packaging
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          from packaging.version import InvalidVersion, Version
+
+          tag = sys.argv[1]
+          tag = tag[1:] if tag.startswith("v") else tag
+          source = pathlib.Path("clients/python/src/sqi_client/_version.py").read_text()
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', source)
+          if not match:
+              sys.exit("::error::could not find __version__ in clients/python/src/sqi_client/_version.py")
+          version = match.group(1)
+          try:
+              mismatch = Version(version) != Version(tag)
+          except InvalidVersion as exc:
+              sys.exit(f"::error::invalid version string: {exc}")
+          if mismatch:
+              sys.exit(
+                  f"::error::sqi_client.__version__ ({version}) does not match release "
+                  f"tag ({tag}); bump clients/python/src/sqi_client/_version.py"
+              )
+          print(f"sqi-client version {version} matches tag {tag}")
+          PY
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -100,3 +134,43 @@ jobs:
           GOVERSION: ${{ env.GOVERSION }}
           # Required by cosign keyless signing inside goreleaser's signs block.
           COSIGN_YES: "true"
+
+      # ── Python client (sqi-client) distributions ──────────────────────────────
+      # goreleaser does not build Python artifacts, so the sdist + wheel are built
+      # and attached to the same GitHub release in a separate step.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sqi-client sdist + wheel
+        working-directory: clients/python
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      # goreleaser already created the GitHub release for this tag above; attach
+      # the Python distributions to it alongside the Go binaries.
+      - name: Attach sqi-client distributions to the release
+        run: gh release upload "${GITHUB_REF_NAME}" clients/python/dist/* --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── PyPI publish (trusted publishing) — DISABLED BY DEFAULT ────────────────
+      # This publishes sqi-client to PyPI via OIDC trusted publishing (no API
+      # token needed; uses the id-token: write permission already granted above).
+      #
+      # It is gated on the `PUBLISH_TO_PYPI` repository variable, which is unset
+      # (so this step is skipped) until a maintainer opts in. Do NOT set it until
+      # the `sqi-client` PyPI project exists with a configured trusted publisher
+      # pointing at this repository + workflow — registering the PyPI project is a
+      # maintainer action and is deliberately NOT automated here.
+      #
+      # To enable, after registering the project + trusted publisher on PyPI:
+      # create a repository variable `PUBLISH_TO_PYPI` with the value `true`
+      # (Settings → Secrets and variables → Actions → Variables).
+      - name: Publish sqi-client to PyPI (trusted publishing)
+        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }} # DISABLED until the PyPI project + trusted publisher exist
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: clients/python/dist

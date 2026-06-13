@@ -168,6 +168,17 @@ lint: ## Run golangci-lint (install: https://golangci-lint.run/usage/install/)
 lint-fix: ## Run golangci-lint with --fix for auto-correctable issues
 	golangci-lint run --fix $(LINT_PKGS)
 
+# actionlint version, run via `go run` so no global install is required.
+# Files are passed explicitly (rather than relying on actionlint's directory
+# auto-discovery) to skip macOS AppleDouble sidecar files (._*.yml) that appear
+# when the repo lives on a non-APFS volume; CI never sees those.
+ACTIONLINT_VERSION := v1.7.12
+
+.PHONY: lint-actions
+lint-actions: ## Lint GitHub Actions workflows with actionlint (via go run; no install)
+	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) \
+	  $$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) ! -name '._*')
+
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 .PHONY: fmt
