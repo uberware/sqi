@@ -2,7 +2,7 @@
 
 package api
 
-// Unit tests for the WebSocket upgrade handler — task 92.
+// Unit tests for the WebSocket upgrade handler.
 //
 // Each test spins up an httptest.Server backed by wsHandler directly (no chi
 // router needed) and dials it with the coder/websocket client.  This keeps the

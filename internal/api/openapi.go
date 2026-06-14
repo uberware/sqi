@@ -2,7 +2,7 @@
 
 package api
 
-// OpenAPI spec serving — task 83.
+// OpenAPI spec serving.
 //
 // The spec is embedded from api/openapi.yaml at compile time so the binary is
 // self-contained.  The handler is wired into the router at:

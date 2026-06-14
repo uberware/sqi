@@ -2,10 +2,10 @@
 
 package scheduler
 
-// Task 54: cancellation propagation.
+// Cancellation propagation.
 //
 // CancelJob and CancelTask are the server-side entry points for explicit
-// cancellation (triggered by the REST API layer, tasks 71 and 74).  Both
+// cancellation (triggered by the REST API layer). Both
 // methods follow the same sequence used by the heartbeat sweep:
 //
 //  1. Close running task attempts ([store.TaskAttemptStore.CancelJobAttempts]).
@@ -57,7 +57,7 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 
 	// Step 1: close running attempts before canceling the task rows so that
 	// the attempt EndedAt is recorded while the tasks still carry their
-	// assigned_worker_id (mirrors the heartbeat sweep pattern in task 48).
+	// assigned_worker_id (mirrors the heartbeat sweep pattern).
 	nAttempts, err := s.store.CancelJobAttempts(ctx, jobID, now)
 	if err != nil {
 		return fmt.Errorf("scheduler: cancel attempts for job %s: %w", jobID, err)

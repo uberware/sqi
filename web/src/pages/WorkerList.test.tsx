@@ -236,9 +236,9 @@ describe('WorkerList', () => {
     })
   })
 
-  // ── Task 69: status filter counts ────────────────────────────────────────────
+  // ── Status filter counts ────────────────────────────────────────────
 
-  describe('status filter (task 69)', () => {
+  describe('status filter', () => {
     it('renders all four filter pills', async () => {
       fetchMock.mockResolvedValue(okJson(makeListResponse([])))
 
@@ -304,9 +304,9 @@ describe('WorkerList', () => {
     })
   })
 
-  // ── Task 70: enable/disable per-row buttons ───────────────────────────────────
+  // ── Enable/disable per-row buttons ───────────────────────────────────
 
-  describe('per-row enable/disable (task 70)', () => {
+  describe('per-row enable/disable', () => {
     it('shows Disable button for online workers', async () => {
       const worker = makeWorker({ status: 'online', hostname: 'online-node' })
       fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
@@ -382,9 +382,9 @@ describe('WorkerList', () => {
     })
   })
 
-  // ── Task 72: +N more capability tag overflow ──────────────────────────────────
+  // ── +N more capability tag overflow ──────────────────────────────────
 
-  describe('capability tag overflow (task 72)', () => {
+  describe('capability tag overflow', () => {
     it('renders up to 3 capability tags inline without overflow badge', async () => {
       // OS is its own column, so capability tags are: cpu, ram, gpu (model absent here) — 2 tags
       const worker = makeWorker({
@@ -480,9 +480,9 @@ describe('WorkerList', () => {
     })
   })
 
-  // ── Task 71: WebSocket worker updates ────────────────────────────────────────
+  // ── WebSocket worker updates ────────────────────────────────────────
 
-  describe('websocket worker updates (task 71)', () => {
+  describe('websocket worker updates', () => {
     it('updates the status badge when a WsWorkerEvent arrives for a visible worker', async () => {
       const worker = makeWorker({ id: 'ws-worker-1', status: 'online', hostname: 'ws-node' })
       fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))

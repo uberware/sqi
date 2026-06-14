@@ -418,7 +418,7 @@ export default function JobDetail() {
     [job?.steps],
   )
 
-  // ── Task 58: WS-driven task-level updates ─────────────────────────────────
+  // ── WS-driven task-level updates ─────────────────────────────────
 
   // Debounce job-detail invalidation so rapid task bursts only trigger one
   // background re-fetch (which refreshes step statuses, job aggregate status, etc.)
@@ -481,7 +481,7 @@ export default function JobDetail() {
     )
   })
 
-  // ── Task 59: last-updated timestamp ──────────────────────────────────────
+  // ── Last-updated timestamp ──────────────────────────────────────
 
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
@@ -491,7 +491,7 @@ export default function JobDetail() {
 
   const lastUpdated = Math.max(jobUpdatedAt, tasksUpdatedAt)
 
-  // ── Task 60: manual refresh ───────────────────────────────────────────────
+  // ── Manual refresh ───────────────────────────────────────────────
 
   const handleRefresh = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.detail(jobId) })

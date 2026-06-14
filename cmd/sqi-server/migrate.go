@@ -115,7 +115,7 @@ func openMigrateDB(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open sqlite %q: %w", path, err)
 	}
 
-	// Apply SQLite pragmas that match what the store uses (tasks 25–29).
+	// Apply SQLite pragmas that match what the store uses.
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",

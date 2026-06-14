@@ -2,7 +2,7 @@
 
 package openjd_test
 
-// Fuzz targets for the OpenJD parser — task 86.
+// Fuzz targets for the OpenJD parser.
 //
 // Running:
 //

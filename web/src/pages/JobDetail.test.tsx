@@ -212,7 +212,7 @@ describe('JobDetail', () => {
     })
   })
 
-  describe('job metadata (task 44)', () => {
+  describe('job metadata', () => {
     it('renders the job name in the page header', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeJob({ name: 'My Render Job' })))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
@@ -276,7 +276,7 @@ describe('JobDetail', () => {
     })
   })
 
-  describe('step breakdown (task 45)', () => {
+  describe('step breakdown', () => {
     it('renders each step section with its name', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
@@ -346,7 +346,7 @@ describe('JobDetail', () => {
     })
   })
 
-  describe('task table (task 46)', () => {
+  describe('task table', () => {
     it('renders tasks within their parent step section', async () => {
       const task = makeTask({ id: 'task-99887766', step_id: 'step-1', name: 'task.0' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
@@ -417,7 +417,7 @@ describe('JobDetail', () => {
     })
   })
 
-  describe('retry button (task 47)', () => {
+  describe('retry button', () => {
     it('shows Retry button for failed tasks', async () => {
       const task = makeTask({ status: 'failed', name: 'task.0' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
@@ -533,7 +533,7 @@ describe('JobDetail', () => {
     })
   })
 
-  describe('view logs link (task 48)', () => {
+  describe('view logs link', () => {
     it('renders a Logs link on every task row', async () => {
       const tasks = [
         makeTask({ id: 'task-a1', status: 'running', name: 'task.0' }),
@@ -616,9 +616,9 @@ describe('JobDetail', () => {
     })
   })
 
-  // ── Task 58: WS task-level updates ───────────────────────────────────────────
+  // ── WS task-level updates ───────────────────────────────────────────
 
-  describe('websocket task-level updates (task 58)', () => {
+  describe('websocket task-level updates', () => {
     it('updates task status badge in place when a TaskEvent arrives', async () => {
       const task = makeTask({
         id: 'task-ws-update',
@@ -774,9 +774,9 @@ describe('JobDetail', () => {
     })
   })
 
-  // ── Task 59: last-updated timestamp ──────────────────────────────────────────
+  // ── Last-updated timestamp ──────────────────────────────────────────
 
-  describe('last-updated timestamp (task 59)', () => {
+  describe('last-updated timestamp', () => {
     it('shows a last-updated label after data loads', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
@@ -788,9 +788,9 @@ describe('JobDetail', () => {
     })
   })
 
-  // ── Task 60: manual refresh ───────────────────────────────────────────────────
+  // ── Manual refresh ───────────────────────────────────────────────────
 
-  describe('manual refresh button (task 60)', () => {
+  describe('manual refresh button', () => {
     it('renders a Refresh button after data loads', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))

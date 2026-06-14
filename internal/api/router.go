@@ -5,14 +5,14 @@
 //
 // # Router layout
 //
-//	GET  /healthz                      — liveness probe  (task 23)
-//	GET  /readyz                       — readiness probe  (task 23)
-//	GET  /metrics                      — Prometheus scrape endpoint (task 22)
-//	GET  /debug/pprof/*                — Go runtime profiling (task 24, gated by config)
-//	/api/v1/*                          — REST API (tasks 71–86)
-//	GET  /api/v1/ws                    — WebSocket upgrade (task 87; subscriptions in tasks 89–91)
-//	GET  /api/v1/openapi.yaml          — OpenAPI 3.1 spec (task 83)
-//	/*                                 — embedded SPA + static assets (tasks 93–95)
+//	GET /healthz — liveness probe
+//	GET /readyz — readiness probe
+//	GET /metrics — Prometheus scrape endpoint
+//	GET /debug/pprof/* — Go runtime profiling (gated by config)
+//	/api/v1/* — REST API
+//	GET /api/v1/ws — WebSocket upgrade
+//	GET /api/v1/openapi.yaml — OpenAPI 3.1 spec
+//	/* — embedded SPA + static assets
 //
 // # Middleware stack (outermost → innermost)
 //
@@ -21,16 +21,16 @@
 //  3. chi RequestID          — sets X-Request-ID; chi's version generates a
 //     UUID when the header is absent
 //  4. chi Compress           — gzip response bodies for clients that accept it
-//  5. middleware.RequestLogger  — structured slog request logging (task 21)
-//  6. middleware.RequestMetrics — Prometheus HTTP metrics (task 22)
+//  5. middleware.RequestLogger — structured slog request logging
+//  6. middleware.RequestMetrics — Prometheus HTTP metrics
 //
 // # /api/v1 sub-router middleware
 //
-//  7. middleware.APIVersion("1") — sets X-API-Version: 1 on every API response
-//     (task 84). To mark individual endpoints as deprecated wrap their handler
-//     with middleware.Deprecated (also task 84).
+//  7. middleware.APIVersion("1") — sets X-API-Version: 1 on every API response.
+//     To mark individual endpoints as deprecated, wrap their handler with
+//     middleware.Deprecated.
 //
-// Note: the structured-logging and metrics middleware from task 21/22 are
+// Note: the structured-logging and metrics middleware are
 // mounted here instead of the now-removed obsServer so every HTTP and
 // WebSocket request continues to be logged and counted.
 package api
@@ -79,16 +79,16 @@ type Deps struct {
 	Store store.Store
 
 	// Submitter handles the full OpenJD parse → validate → persist pipeline
-	// used by POST /api/v1/jobs (task 71).
+	// used by POST /api/v1/jobs.
 	Submitter *openjd.Submitter
 
 	// Scheduler is the running scheduler instance. It is called by
-	// DELETE /api/v1/jobs/{id} (task 75) to propagate cancellation to workers
+	// DELETE /api/v1/jobs/{id} to propagate cancellation to workers
 	// and by future task/retry endpoints.
 	Scheduler *scheduler.Scheduler
 
-	// Hub is the WebSocket fan-out hub used by the /api/v1/ws handler
-	// (tasks 89–91). May be nil in tests that do not exercise WebSocket push;
+	// Hub is the WebSocket fan-out hub used by the /api/v1/ws handler.
+	// May be nil in tests that do not exercise WebSocket push;
 	// the handler degrades gracefully by accepting subscriptions without
 	// delivering any pushes.
 	Hub *ws.Hub
@@ -150,10 +150,10 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	//    Level 5 balances CPU overhead against compression ratio.
 	r.Use(chimiddleware.Compress(5))
 
-	// 5. Structured request logging (task 21).
+	// 5. Structured request logging.
 	r.Use(middleware.RequestLogger(logger))
 
-	// 6. Prometheus HTTP metrics (task 22).
+	// 6. Prometheus HTTP metrics.
 	r.Use(middleware.RequestMetrics(m))
 
 	// ── Observability routes ──────────────────────────────────────────────────
@@ -181,7 +181,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		r.Handle("/debug/pprof/threadcreate", httppprof.Handler("threadcreate"))
 	}
 
-	// ── REST API (tasks 71–86) ────────────────────────────────────────────────
+	// ── REST API ────────────────────────────────────────────────
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
 	tasks := newTaskHandler(deps.Store, logger)
 	workers := newWorkerHandler(deps.Store, logger)
@@ -191,7 +191,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	licensePools := newLicensePoolHandler(deps.Store, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
-		// 7. Versioning header — X-API-Version: 1 on every response (task 84).
+		// 7. Versioning header — X-API-Version: 1 on every response.
 		api.Use(middleware.APIVersion("1"))
 
 		// 8. Per-IP token-bucket rate limiting (Phase 1; no auth yet).
@@ -205,62 +205,62 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			}, logger))
 		}
 
-		// ── Job endpoints (tasks 71–75) ───────────────────────────────────
-		api.Post("/jobs", jobs.submitJob)        // task 71
-		api.Get("/jobs", jobs.listJobs)          // task 72
-		api.Get("/jobs/{id}", jobs.getJob)       // task 73
-		api.Patch("/jobs/{id}", jobs.patchJob)   // task 74
-		api.Delete("/jobs/{id}", jobs.cancelJob) // task 75
+		// ── Job endpoints ───────────────────────────────────
+		api.Post("/jobs", jobs.submitJob)
+		api.Get("/jobs", jobs.listJobs)
+		api.Get("/jobs/{id}", jobs.getJob)
+		api.Patch("/jobs/{id}", jobs.patchJob)
+		api.Delete("/jobs/{id}", jobs.cancelJob)
 
-		// ── Task endpoints (tasks 76–78) ──────────────────────────────────
-		api.Get("/jobs/{id}/tasks", tasks.listJobTasks) // task 76
-		api.Get("/tasks/{id}", tasks.getTask)           // task 76
-		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)  // task 77
-		api.Post("/tasks/{id}/retry", tasks.retryTask)  // task 78
+		// ── Task endpoints ──────────────────────────────────
+		api.Get("/jobs/{id}/tasks", tasks.listJobTasks)
+		api.Get("/tasks/{id}", tasks.getTask)
+		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)
+		api.Post("/tasks/{id}/retry", tasks.retryTask)
 
-		// ── Worker endpoints (tasks 79–80) ───────────────────────────────
-		api.Get("/workers", workers.listWorkers)                 // task 79
-		api.Get("/workers/{id}", workers.getWorker)              // task 79
-		api.Post("/workers/{id}/disable", workers.disableWorker) // task 80
-		api.Post("/workers/{id}/enable", workers.enableWorker)   // task 80
+		// ── Worker endpoints ───────────────────────────────
+		api.Get("/workers", workers.listWorkers)
+		api.Get("/workers/{id}", workers.getWorker)
+		api.Post("/workers/{id}/disable", workers.disableWorker)
+		api.Post("/workers/{id}/enable", workers.enableWorker)
 
-		// ── Farm endpoints (task 81) ──────────────────────────────────────
+		// ── Farm endpoints ──────────────────────────────────────
 		api.Post("/farms", farms.createFarm)
 		api.Get("/farms", farms.listFarms)
 		api.Get("/farms/{id}", farms.getFarm)
 		api.Put("/farms/{id}", farms.updateFarm)
 		api.Delete("/farms/{id}", farms.deleteFarm)
 
-		// ── Queue endpoints (task 81) ─────────────────────────────────────
+		// ── Queue endpoints ─────────────────────────────────────
 		api.Post("/queues", queues.createQueue)
 		api.Get("/queues", queues.listQueues)
 		api.Get("/queues/{id}", queues.getQueue)
 		api.Put("/queues/{id}", queues.updateQueue)
 		api.Delete("/queues/{id}", queues.deleteQueue)
 
-		// ── Storage-location endpoints (task 81) ──────────────────────────
+		// ── Storage-location endpoints ──────────────────────────
 		api.Post("/storage-locations", storageLocs.createStorageLocation)
 		api.Get("/storage-locations", storageLocs.listStorageLocations)
 		api.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
 		api.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
 		api.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
 
-		// ── License-pool endpoints (task 81) ──────────────────────────────
+		// ── License-pool endpoints ──────────────────────────────
 		api.Post("/license-pools", licensePools.createLicensePool)
 		api.Get("/license-pools", licensePools.listLicensePools)
 		api.Get("/license-pools/{id}", licensePools.getLicensePool)
 		api.Put("/license-pools/{id}", licensePools.updateLicensePool)
 		api.Delete("/license-pools/{id}", licensePools.deleteLicensePool)
 
-		// OpenAPI spec (task 83).
+		// OpenAPI spec.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
-		// WebSocket upgrade (tasks 87–92).
+		// WebSocket upgrade.
 		wsH := newWSHandler(logger, deps.Hub)
 		api.Get("/ws", wsH.ServeHTTP)
 	})
 
-	// ── Embedded web UI (tasks 93–95) ────────────────────────────────────────
+	// ── Embedded web UI ────────────────────────────────────────
 	// Mounted as the root catch-all, so it only handles paths the API and
 	// observability routes above did not claim. The handler serves embedded
 	// assets and falls back to the SPA shell for client-side routes under /ui/*.

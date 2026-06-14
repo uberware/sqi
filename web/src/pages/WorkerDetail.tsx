@@ -100,7 +100,7 @@ function IdDisplay({ id }: { id: string }) {
   )
 }
 
-// ── Task 75: Capabilities ─────────────────────────────────────────────────────
+// ── Capabilities ─────────────────────────────────────────────────────
 
 function CapabilitiesSection({ worker }: { worker: WorkerDetailType }) {
   const hasSystem =
@@ -209,7 +209,7 @@ function CapabilitiesSection({ worker }: { worker: WorkerDetailType }) {
   )
 }
 
-// ── Task 76: Assigned Tasks ───────────────────────────────────────────────────
+// ── Assigned Tasks ───────────────────────────────────────────────────
 
 function AssignedTasksSection({ worker }: { worker: WorkerDetailType }) {
   const task = worker.current_task
@@ -256,7 +256,7 @@ function AssignedTasksSection({ worker }: { worker: WorkerDetailType }) {
   )
 }
 
-// ── Task 77: Toggle button ────────────────────────────────────────────────────
+// ── Toggle button ────────────────────────────────────────────────────
 
 function ToggleButton({
   worker,
@@ -306,7 +306,7 @@ export default function WorkerDetail() {
 
   const { data: worker, isLoading, isError, error } = useGetWorker(workerId)
 
-  // ── Task 77: enable/disable mutations ────────────────────────────────────
+  // ── Enable/disable mutations ────────────────────────────────────
   const queryClient = useQueryClient()
   const disableWorker = useDisableWorker()
   const enableWorker = useEnableWorker()
@@ -420,7 +420,7 @@ export default function WorkerDetail() {
         </div>
       )}
 
-      {/* Task 74: Metadata header card */}
+      {/* Metadata header card */}
       <div className={styles.metaCard}>
         <dl className={styles.metaGrid}>
           <div className={styles.metaField}>
@@ -461,10 +461,10 @@ export default function WorkerDetail() {
       </div>
 
       <div className={styles.body}>
-        {/* Task 75: Full capability list */}
+        {/* Full capability list */}
         <CapabilitiesSection worker={worker} />
 
-        {/* Task 76: Assigned tasks */}
+        {/* Assigned tasks */}
         <AssignedTasksSection worker={worker} />
       </div>
     </div>

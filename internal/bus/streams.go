@@ -35,7 +35,7 @@ const (
 	StreamWorker = "SQI_WORKER"
 
 	// StreamCancel captures task-cancellation signals published by the server
-	// to assigned workers (task 54).  WorkQueuePolicy ensures each signal is
+	// to assigned workers. WorkQueuePolicy ensures each signal is
 	// delivered exactly once; MaxAge of 5 min matches StreamWork so stale
 	// signals for already-completed tasks are discarded automatically.
 	StreamCancel = "SQI_CANCEL"
@@ -129,7 +129,7 @@ func streamDefs() []jetstream.StreamConfig {
 		{
 			// SQI_CANCEL — task.cancel.<taskID>
 			//
-			// The scheduler publishes one message per canceled task (task 54).
+			// The scheduler publishes one message per canceled task.
 			// The worker assigned to that task consumes the message and interrupts
 			// its running process.  WorkQueuePolicy ensures at-most-once delivery
 			// so the same signal is never re-sent to a different worker.

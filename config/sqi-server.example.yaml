@@ -83,7 +83,7 @@ log:
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 # Controls the task assignment loop. These settings are consumed by the
-# scheduler component (tasks 46–55); they are accepted and validated now so
+# scheduler component; they are accepted and validated now so
 # that config files written today remain valid once the scheduler lands.
 scheduler:
   # Duration after which a worker that has not sent a heartbeat is declared

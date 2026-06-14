@@ -8,9 +8,9 @@
 // obtain a populated, validated instance. Use [Default] to obtain defaults
 // alone.
 //
-// Note: This package is the authoritative definition of worker configuration
-// (phase 1 task 5). Fields added here must be mirrored in the example config
-// file at config/sqi-worker.example.yaml.
+// Note: This package is the authoritative definition of worker configuration.
+// Fields added here must be mirrored in the example config file at
+// config/sqi-worker.example.yaml.
 package config
 
 import (
@@ -46,7 +46,7 @@ type WorkerConfig struct {
 	Discovery DiscoveryConfig `yaml:"discovery"`
 
 	// LogStreamer controls the log-chunk publisher that batches task process
-	// output and streams it to sqi-server via NATS (tasks 64–69).
+	// output and streams it to sqi-server via NATS.
 	LogStreamer LogStreamerConfig `yaml:"log_streamer"`
 }
 
@@ -160,7 +160,7 @@ type WorkerSettings struct {
 
 	// AllowRoot permits the worker to run as the root user on Linux/macOS.
 	// Disabled by default because executing render processes as root is a
-	// security risk (sqi.md §18).
+	// security risk (see docs/worker-configuration.md, "worker.allow_root").
 	// Env: SQI_WORKER_ALLOW_ROOT
 	AllowRoot bool `yaml:"allow_root"`
 
@@ -180,14 +180,14 @@ type WorkerSettings struct {
 	QueueIDs []string `yaml:"queue_ids"`
 
 	// PullIdleBackoff is the wait duration between pull attempts when the
-	// work queue is empty (task 42). Prevents tight polling on idle queues.
+	// work queue is empty. Prevents tight polling on idle queues.
 	// Resets to zero immediately when a task is received.
 	// Default: 2s
 	// Env: SQI_WORKER_PULL_IDLE_BACKOFF
 	PullIdleBackoff time.Duration `yaml:"pull_idle_backoff"`
 
 	// PullNackDelay is the redelivery delay applied to an assignment when
-	// pre-execution validation fails (task 40). The delay gives other workers
+	// pre-execution validation fails. The delay gives other workers
 	// a chance to pick it up before NATS redelivers to this one.
 	// Default: 5s
 	// Env: SQI_WORKER_PULL_NACK_DELAY

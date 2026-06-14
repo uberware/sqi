@@ -4,12 +4,12 @@
 // stopping the store, message bus, scheduler, HTTP server, and mDNS
 // responder in the correct dependency order.
 //
-// Components are added to [Server] as their implementing tasks land:
-//   - store (SQLite):          tasks 25–32 ✓
-//   - bus (NATS JetStream):    tasks 33–39 ✓
-//   - scheduler:               tasks 46–55 ✓ (46–48 done)
-//   - httpServer (chi router): task 70 ✓ — REST+WS+UI routes added tasks 71–95
-//   - discovery (mDNS):        tasks 96–97 ✓
+// The server owns these components, started and stopped in dependency order:
+//   - store (SQLite)
+//   - bus (NATS JetStream)
+//   - scheduler
+//   - httpServer (chi router) — REST + WebSocket + UI routes
+//   - discovery (mDNS)
 package server
 
 import (
@@ -40,10 +40,9 @@ const ShutdownTimeout = 30 * time.Second
 
 // Config holds runtime parameters for the server.
 //
-// This struct is a temporary stand-in used by the serve subcommand until
-// internal/config is introduced in tasks 16–19. At that point, the serve
-// subcommand will load a [config.Config] and derive a [Config] from it rather
-// than using defaults.
+// This struct is a stand-in used by the serve subcommand; the serve subcommand
+// can also load a [config.Config] and derive a [Config] from it rather than
+// using defaults.
 type Config struct {
 	// HTTPAddr is the TCP address the REST + WebSocket server listens on.
 	HTTPAddr string // default "0.0.0.0:8080"
@@ -107,7 +106,7 @@ type Config struct {
 
 // DefaultConfig returns a [Config] with sensible development defaults.
 // Production deployments override these via the config file or environment
-// variables (tasks 16–19).
+// variables.
 func DefaultConfig() Config {
 	return Config{
 		HTTPAddr:              "0.0.0.0:8080",
@@ -133,16 +132,15 @@ type Server struct {
 
 	// httpServer is the chi-based HTTP server that handles the full REST API,
 	// WebSocket connections, embedded web UI, and observability routes
-	// (/metrics, /healthz, /readyz, /debug/pprof). Introduced in task 70.
+	// (/metrics, /healthz, /readyz, /debug/pprof).
 	httpServer *http.Server
 
-	// Component fields are added here as their tasks land.
-	store     store.Store          // tasks 25–32 ✓
-	broker    *bus.Broker          // tasks 33–39 ✓
-	busClient *bus.Client          // tasks 36–39 ✓ — typed wrapper; drained before broker shutdown
-	sched     *scheduler.Scheduler // tasks 46–59 ✓
-	wsHub     *ws.Hub              // tasks 89–91 ✓ — WebSocket fan-out hub
-	discovery *discovery.Responder // tasks 96–97 ✓ — mDNS advertisement
+	store     store.Store
+	broker    *bus.Broker
+	busClient *bus.Client          // typed wrapper; drained before broker shutdown
+	sched     *scheduler.Scheduler
+	wsHub     *ws.Hub              // WebSocket fan-out hub
+	discovery *discovery.Responder // mDNS advertisement
 }
 
 // New creates a [Server] with the given configuration and logger.
@@ -226,8 +224,8 @@ func (s *Server) start(ctx context.Context) error {
 	}
 
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
-	// Tasks 33–35: embed NATS server, enable JetStream, provision streams.
-	// Tasks 36–39: typed client wrapper, consumers, reconnect, drain.
+	// Embed NATS server, enable JetStream, provision streams.
+	// Typed client wrapper, consumers, reconnect, drain.
 	broker := bus.New(bus.BrokerConfig{
 		Addr:       s.cfg.NATSAddr,
 		DataDir:    s.cfg.NATSDataDir,
@@ -251,16 +249,16 @@ func (s *Server) start(ctx context.Context) error {
 	s.busClient = busClient
 	s.logger.InfoContext(ctx, "bus: typed client connected")
 
-	// ── WebSocket hub (tasks 89–91) ────────────────────────────────────────
+	// ── WebSocket hub ────────────────────────────────────────
 	// The hub bridges scheduler events to subscribed WebSocket clients.
 	// It is created before the scheduler so it can be passed as the notifier.
 	s.wsHub = ws.NewHub(s.logger)
 	s.logger.InfoContext(ctx, "ws: hub created")
 
 	// ── Scheduler ─────────────────────────────────────────────────────────
-	// Tasks 46–48: assignment loop goroutine pool, worker registry (NATS
+	// Assignment loop goroutine pool, worker registry (NATS
 	// consumer), and heartbeat timeout sweep.
-	// The hub is passed as the notifier (tasks 89–91) so live events are
+	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
 	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger, s.wsHub)
 	go func() {
@@ -271,8 +269,8 @@ func (s *Server) start(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: started")
 
 	// ── HTTP server (chi router) ──────────────────────────────────────────
-	// Task 70: chi router with standard middleware mounts all routes.
-	// Task 71–75: job REST endpoints are now registered via api.Deps.
+	// Chi router with standard middleware mounts all routes.
+	// Job REST endpoints are now registered via api.Deps.
 	router := api.NewRouter(
 		api.Config{
 			CORSOrigins:      s.cfg.CORSOrigins,
@@ -306,9 +304,9 @@ func (s *Server) start(ctx context.Context) error {
 	}()
 
 	// ── mDNS responder ────────────────────────────────────────────────────
-	// Tasks 96–97: advertise _sqi._tcp on the local network so workers and the
+	// Advertise _sqi._tcp on the local network so workers and the
 	// sqi CLI can discover this server without manual address configuration.
-	// Advertisement is gated on DiscoveryEnabled (task 97) for environments
+	// Advertisement is gated on DiscoveryEnabled for environments
 	// that forbid multicast.
 	resp, err := discovery.New(discovery.Config{
 		Enabled:      s.cfg.DiscoveryEnabled,
@@ -381,7 +379,7 @@ func (s *Server) shutdown() error {
 	}
 
 	// ── Message bus ───────────────────────────────────────────────────────
-	// Tasks 36–39: drain the typed client first — stops push consumers,
+	// Drain the typed client first — stops push consumers,
 	// waits for in-flight handlers, and flushes pending publish-acks — then
 	// shut down the embedded NATS server.
 	if s.busClient != nil {

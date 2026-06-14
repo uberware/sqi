@@ -42,4 +42,4 @@ Add the following comment block at the top of every source file, **before** any 
 - Use `AGPL-3.0-or-later` (not `AGPL-3.0-only`) so future relicensing to a newer AGPL version is permissible.
 - The copyright year should reflect the year the file was first created, not last modified.
 - Third-party vendored files retain their original SPDX headers; do not overwrite them.
-- `golangci-lint` can enforce header presence via the `goheader` linter — wire this up in `.golangci.yml` (task 6).
+- `golangci-lint` can enforce header presence via the `goheader` linter — wire this up in `.golangci.yml`.

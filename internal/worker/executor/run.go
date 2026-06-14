@@ -23,7 +23,7 @@ import (
 // ── processResult ─────────────────────────────────────────────────────────────
 
 // processResult captures the complete outcome of an OS process execution
-// (task 53: PID, start time, end time, exit code).
+// (PID, start time, end time, exit code).
 type processResult struct {
 	// ExitCode is the process exit code.  -1 if the process was killed by a
 	// signal and the OS did not produce a meaningful exit code.
@@ -41,7 +41,7 @@ type processResult struct {
 	// TimedOut or Canceled is true) also does not set Err.
 	Err error
 	// TimedOut is true when the process was killed because the per-task
-	// OnRun.TimeoutSeconds was exceeded (task 55).
+	// OnRun.TimeoutSeconds was exceeded.
 	TimedOut bool
 	// Canceled is true when the process was killed because the parent context
 	// was canceled (typically worker shutdown).
@@ -59,8 +59,7 @@ func (r processResult) duration() time.Duration {
 //
 //  1. Validate OnRun action.
 //  2. Build env and start the OS process.
-//  3. Publish "running" status (task 77 — included here as integral to the
-//     executor).
+//  3. Publish "running" status (included here as integral to the executor).
 //  4. Read stdout/stderr concurrently, forwarding to the OutputHandler.
 //  5. Honor per-task timeout and context cancellation.
 //  6. Publish terminal status (succeeded/failed/canceled).
@@ -83,7 +82,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// Per-task derived context for execution control.  Derived from e.execCtx
 	// (not from the worker's signal ctx) so the task goroutine survives
 	// SIGINT/SIGTERM and is only killed when DrainAndShutdown cancels execCtx
-	// after the shutdown grace period expires (task 86).
+	// after the shutdown grace period expires.
 	//
 	// openjd_fail and per-task server cancels call taskCancel directly, which
 	// only cancels this specific task without touching other tasks or execCtx.
@@ -96,7 +95,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		defer hook.Deregister(msg.AttemptID)
 	}
 
-	// ── Store cancel function (task 80) ───────────────────────────────────────
+	// ── Store cancel function ───────────────────────────────────────
 	// applyCancelFunc stores taskCancel and fires it immediately if Cancel() was
 	// called before this goroutine reached here.
 	e.applyCancelFunc(run, taskCancel)
@@ -147,7 +146,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		return
 	}
 
-	// ── Validate and parse path map (task 59 / 62) ────────────────────────────
+	// ── Validate and parse path map ────────────────────────────
 	// Parse validates that every PathMapRule has a non-empty DestinationPath.
 	// If any named location is unresolvable, we abort immediately and publish
 	// a failed status so the server does not wait for heartbeat timeout.
@@ -174,7 +173,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		return
 	}
 
-	// ── Write OpenJD path mapping file (task 61) ──────────────────────────────
+	// ── Write OpenJD path mapping file ──────────────────────────────
 	// Written before execProcess so the launched process (and any future
 	// environment setup or teardown actions) can read it from the session
 	// working directory.  An empty PathMap produces no file (no-op).
@@ -197,10 +196,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// ── Execute process ───────────────────────────────────────────────────────
 	result := e.execProcess(taskCtx, msg, sess, run, lookup)
 
-	// ── Flush buffered log output (task 68) ───────────────────────────────────
+	// ── Flush buffered log output ───────────────────────────────────
 	e.flushTaskLogs(ctx, msg, sess.ID)
 
-	// ── Retrieve openjd_fail reason (task 72) ────────────────────────────────
+	// ── Retrieve openjd_fail reason ────────────────────────────────
 	// Must be called inline (before deferred Deregister runs) so the stored
 	// reason is available for the terminal status switch below.
 	// Both the reason and the bool are kept: openjdFailed=true when openjd_fail
@@ -211,7 +210,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		openjdFailReason, openjdFailed = hook.TakeFailReason(msg.AttemptID)
 	}
 
-	// ── Snapshot last-known progress (task 76) ────────────────────────────────
+	// ── Snapshot last-known progress ────────────────────────────────
 	// Must be called before deferred Deregister removes the attempt state from
 	// the openjd interceptor.
 	lp := e.lastProgress(msg.AttemptID)
@@ -247,11 +246,11 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	case result.Canceled:
 		// Task was killed due to context cancellation.  If DrainAndShutdown set
 		// shuttingDown before canceling execCtx, this is a worker force-shutdown:
-		// publish "failed"/"worker_shutdown" (task 78/87).  Otherwise it is a
-		// per-task server cancel (task 80 path): publish "canceled".
+		// publish "failed"/"worker_shutdown". Otherwise it is a
+		// per-task server cancel: publish "canceled".
 		failed = true
 		if e.shuttingDown.Load() {
-			// Worker force-shutdown path (tasks 78, 87).
+			// Worker force-shutdown path.
 			e.logger.InfoContext(
 				ctx, "executor: task failed (worker shutdown)",
 				slog.String("task_id", msg.TaskID),
@@ -264,7 +263,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			e.m.TasksTotal.WithLabelValues("failed").Inc()
 			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 		} else {
-			// Per-task server cancel (task 80 path).
+			// Per-task server cancel.
 			e.logger.InfoContext(
 				ctx, "executor: task canceled",
 				slog.String("task_id", msg.TaskID),
@@ -316,7 +315,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
 	case result.ExitCode != 0:
-		// Task 54: non-zero exit code → failure.
+		// Non-zero exit code → failure.
 		failed = true
 		exitCode := result.ExitCode
 		reason := fmt.Sprintf("process exited with code %d", exitCode)
@@ -357,23 +356,23 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 // has exited and all output has been consumed.
 //
 // lookup contains the resolved-mode path map parsed by the caller; it is
-// applied to the OnRun command and args before the process is started (task 60).
+// applied to the OnRun command and args before the process is started.
 //
 // Callers must check [processResult.Err] for start/wait failures and
 // [processResult.TimedOut] / [processResult.Canceled] for forced termination.
 func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup) processResult {
-	// Task 60: apply resolved-mode path substitution to the command and args
+	// Apply resolved-mode path substitution to the command and args
 	// so the launched process sees only concrete filesystem paths.
 	action := lookup.ApplyToAction(msg.OnRun)
 
-	// Task 50: build process environment.
-	// Task 51: set working directory to the session working directory.
-	// Task 52: capture stdout and stderr via explicit pipes (not inheriting
+	// Build process environment.
+	// Set working directory to the session working directory.
+	// Capture stdout and stderr via explicit pipes (not inheriting
 	//          the worker's own fds) so output can be attributed and forwarded.
 	// exec.Command is used intentionally instead of exec.CommandContext (noctx)
 	// because CommandContext automatically sends SIGKILL when ctx is canceled,
-	// bypassing the SIGTERM → grace period → SIGKILL escalation required by
-	// task 55.  We manage the process lifetime explicitly via killAndWait.
+	// bypassing the SIGTERM → grace period → SIGKILL escalation we require.
+	// We manage the process lifetime explicitly via killAndWait.
 	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command from server-signed assignment; context handled manually
 	cmd.Dir = sess.WorkDir
 	cmd.Env = buildTaskEnv(msg)
@@ -387,14 +386,14 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		return processResult{Err: fmt.Errorf("stderr pipe: %w", err)}
 	}
 
-	// Task 53: record start time.
+	// Record start time.
 	startedAt := time.Now()
 
 	// Publish "running" status before Start so the server records the attempt
 	// even if the command is not found or cannot be executed.  If Start fails
 	// the caller will publish a terminal "failed" immediately after, giving the
 	// server a well-formed running→failed transition rather than an orphaned
-	// "failed" with no preceding "running" (task 77).
+	// "failed" with no preceding "running".
 	// lastProgress is nil here because the process has not yet emitted any output.
 	e.statusPub.Running(context.Background(), msg, sess.ID, nil, startedAt)
 
@@ -406,7 +405,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		}
 	}
 
-	// Task 53: record PID.
+	// Record PID.
 	pid := cmd.Process.Pid
 	run.pid = pid
 	run.startedAt = startedAt
@@ -415,7 +414,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	sess.AddTask(msg.TaskID)
 	defer sess.RemoveTask(msg.TaskID)
 
-	// Task 52: read stdout and stderr concurrently to prevent pipe-buffer
+	// Read stdout and stderr concurrently to prevent pipe-buffer
 	// deadlocks (if one pipe fills up waiting for the other to be drained,
 	// both sides block indefinitely).
 	var readWg sync.WaitGroup
@@ -439,7 +438,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		waitDone <- cmd.Wait()
 	}()
 
-	// Task 55: compute effective timeout.
+	// Compute effective timeout.
 	var taskTimeout time.Duration
 	if action.TimeoutSeconds > 0 {
 		taskTimeout = time.Duration(action.TimeoutSeconds) * time.Second
@@ -515,7 +514,7 @@ func (e *Executor) killAndWait(
 		slog.Bool("canceled", canceled),
 	)
 
-	// Task 55: SIGTERM first.
+	// SIGTERM first.
 	if err := sendTERM(cmd.Process); err != nil {
 		e.logger.WarnContext(
 			ctx, "executor: SIGTERM failed — escalating to SIGKILL immediately",
@@ -597,7 +596,7 @@ func makeResult(waitErr error, pid int, startedAt time.Time, timedOut, canceled 
 
 // flushTaskLogs calls FlushLogs on the OutputHandler if it implements
 // [LogFlusher], draining buffered lines before the terminal status is
-// published (task 68).  Uses context.Background() so the flush completes
+// published. Uses context.Background() so the flush completes
 // even when ctx is already canceled (e.g., during worker shutdown).
 func (e *Executor) flushTaskLogs(ctx context.Context, msg *protocol.AssignMsg, sessionID string) {
 	flusher, ok := e.outputHandler.(LogFlusher)
@@ -621,7 +620,7 @@ func (e *Executor) flushTaskLogs(ctx context.Context, msg *protocol.AssignMsg, s
 // It returns when r reaches EOF (the process has closed the pipe write end,
 // which happens when the process exits).
 //
-// Task 52: stdout and stderr are read in separate goroutines to prevent pipe
+// Stdout and stderr are read in separate goroutines to prevent pipe
 // deadlocks.
 func scanOutput(
 	ctx context.Context,
@@ -651,8 +650,7 @@ func scanOutput(
 
 // ── Environment construction ─────────────────────────────────────────────────
 
-// buildTaskEnv builds the environment variable slice for the task process
-// (task 50).
+// buildTaskEnv builds the environment variable slice for the task process.
 //
 // Strategy:
 //  1. Start with os.Environ() so DCC tools find their expected system

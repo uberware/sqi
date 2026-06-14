@@ -80,7 +80,7 @@ _SUPPORTED_API_MAJOR = 1
 
 
 class _CrudResource(Generic[_T]):
-    """Generic CRUD transport for one REST resource family (task 54).
+    """Generic CRUD transport for one REST resource family.
 
     Parameterized by the collection ``path`` (e.g. ``/farms``) and a ``parse``
     function (a model's ``from_dict``). Covers the five standard operations the
@@ -194,7 +194,7 @@ class SqiClient:
         self._version_warned = False
         self._deprecation_warned: set[str] = set()
 
-        # Generic CRUD transports shared by the resource methods below (task 54).
+        # Generic CRUD transports shared by the resource methods below.
         self._farms: _CrudResource[Farm] = _CrudResource(self, "/farms", Farm.from_dict)
         self._queues: _CrudResource[Queue] = _CrudResource(self, "/queues", Queue.from_dict)
         self._storage_locations: _CrudResource[StorageLocation] = _CrudResource(

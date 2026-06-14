@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Task 57: server-side handlers that consume worker messages from NATS
+// Server-side handlers that consume worker messages from NATS
 // subjects and persist state via the Store.
 //
 // This file implements the task-status consumer — the counterpart of the

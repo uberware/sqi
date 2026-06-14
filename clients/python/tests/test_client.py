@@ -1,9 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for transport plumbing: headers, URL building, params, health, versioning.
-
-Covers tasks 9-11 and 16-18.
-"""
+"""Tests for transport plumbing: headers, URL building, params, health, versioning."""
 
 from __future__ import annotations
 

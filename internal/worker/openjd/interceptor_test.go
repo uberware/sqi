@@ -105,7 +105,7 @@ func discardLogger() *slog.Logger {
 // ── openjd_progress tests ─────────────────────────────────────────────────────
 
 // TestProgressDirectiveUpdatesState verifies that a valid openjd_progress line
-// updates the in-memory progress percentage and is NOT forwarded (task 70).
+// updates the in-memory progress percentage and is NOT forwarded.
 func TestProgressDirectiveUpdatesState(t *testing.T) {
 	i, downstream, _, ctx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -145,7 +145,7 @@ func TestProgressDirectiveBoundaryValues(t *testing.T) {
 }
 
 // TestProgressInvalidValueIgnored verifies that a malformed openjd_progress
-// line is silently dropped and NOT forwarded to downstream (task 70).
+// line is silently dropped and NOT forwarded to downstream.
 func TestProgressInvalidValueIgnored(t *testing.T) {
 	for _, line := range []string{
 		"openjd_progress: abc",
@@ -173,7 +173,7 @@ func TestProgressInvalidValueIgnored(t *testing.T) {
 
 // TestStatusDirectivePublishesNATS verifies that an openjd_status line
 // publishes an intermediate "running" status to the correct NATS subject and
-// is NOT forwarded to the downstream handler (task 71).
+// is NOT forwarded to the downstream handler.
 func TestStatusDirectivePublishesNATS(t *testing.T) {
 	i, downstream, nc, ctx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -231,8 +231,7 @@ func TestStatusDirectiveMultiple(t *testing.T) {
 // ── openjd_fail tests ─────────────────────────────────────────────────────────
 
 // TestFailDirectiveCancelsAndStoresReason verifies that an openjd_fail line
-// calls the cancel function, stores the failure reason, and is NOT forwarded
-// (task 72).
+// calls the cancel function, stores the failure reason, and is NOT forwarded.
 func TestFailDirectiveCancelsAndStoresReason(t *testing.T) {
 	i, downstream, _, cancelCtx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -264,7 +263,7 @@ func TestFailDirectiveCancelsAndStoresReason(t *testing.T) {
 
 // TestFailDirectiveOnlyFirstTriggers verifies that when a process emits
 // multiple openjd_fail lines, only the first triggers the cancel and stores the
-// reason (task 72).
+// reason.
 func TestFailDirectiveOnlyFirstTriggers(t *testing.T) {
 	cancelCount := 0
 	downstream := &mockDownstream{}
@@ -310,7 +309,7 @@ func TestFailDirectiveEmptyReason(t *testing.T) {
 // ── pass-through tests ────────────────────────────────────────────────────────
 
 // TestUnrecognizedOpenJDPrefixForwarded verifies that lines beginning with
-// openjd_ but not matching a known directive are forwarded unmodified (task 73).
+// openjd_ but not matching a known directive are forwarded unmodified.
 func TestUnrecognizedOpenJDPrefixForwarded(t *testing.T) {
 	i, downstream, _, ctx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -328,7 +327,7 @@ func TestUnrecognizedOpenJDPrefixForwarded(t *testing.T) {
 }
 
 // TestNormalLinesForwarded verifies that ordinary stdout lines are forwarded
-// unchanged to the downstream handler (task 73).
+// unchanged to the downstream handler.
 func TestNormalLinesForwarded(t *testing.T) {
 	i, downstream, _, ctx, _ := setup(t)
 	const attemptID = "attempt-1"
@@ -357,8 +356,7 @@ func TestNormalLinesForwarded(t *testing.T) {
 }
 
 // TestStderrAlwaysForwarded verifies that all stderr lines — including those
-// that contain openjd_ prefixes — are forwarded unmodified without interception
-// (task 73).
+// that contain openjd_ prefixes — are forwarded unmodified without interception.
 func TestStderrAlwaysForwarded(t *testing.T) {
 	i, downstream, nc, ctx, _ := setup(t)
 	const attemptID = "attempt-1"

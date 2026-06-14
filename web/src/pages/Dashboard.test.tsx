@@ -200,9 +200,9 @@ function mockDashboardFetches({
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('Dashboard', () => {
-  // ── Task 78: page structure ───────────────────────────────────────────────────
+  // ── Page structure ───────────────────────────────────────────────────
 
-  describe('page structure (task 78)', () => {
+  describe('page structure', () => {
     it('renders the page heading', async () => {
       mockDashboardFetches()
       render(<Dashboard />, { wrapper: Wrapper })
@@ -232,9 +232,9 @@ describe('Dashboard', () => {
     })
   })
 
-  // ── Task 79: workers summary card ─────────────────────────────────────────────
+  // ── Workers summary card ─────────────────────────────────────────────
 
-  describe('workers card (task 79)', () => {
+  describe('workers card', () => {
     it('shows the online worker count as the primary big number', async () => {
       mockDashboardFetches({ onlineWorkers: 7, offlineWorkers: 2, disabledWorkers: 1 })
       render(<Dashboard />, { wrapper: Wrapper })
@@ -302,9 +302,9 @@ describe('Dashboard', () => {
     })
   })
 
-  // ── Task 80: jobs summary card ─────────────────────────────────────────────────
+  // ── Jobs summary card ─────────────────────────────────────────────────
 
-  describe('jobs card (task 80)', () => {
+  describe('jobs card', () => {
     it('shows running job count', async () => {
       mockDashboardFetches({ runningJobs: 3 })
       render(<Dashboard />, { wrapper: Wrapper })
@@ -362,9 +362,9 @@ describe('Dashboard', () => {
     })
   })
 
-  // ── Task 81: recent failures widget ───────────────────────────────────────────
+  // ── Recent failures widget ───────────────────────────────────────────
 
-  describe('recent failures widget (task 81)', () => {
+  describe('recent failures widget', () => {
     it('shows job names for recent failures', async () => {
       const job = makeJob({ name: 'Render Scene 42', status: 'failed' })
       mockDashboardFetches({ recentFailures: [job], failedJobs: 1 })
@@ -451,9 +451,9 @@ describe('Dashboard', () => {
     })
   })
 
-  // ── Task 82: WebSocket live updates ───────────────────────────────────────────
+  // ── WebSocket live updates ───────────────────────────────────────────
 
-  describe('websocket updates (task 82)', () => {
+  describe('websocket updates', () => {
     it('does not show the disconnect banner when connected', async () => {
       mockDashboardFetches()
       render(<Dashboard />, { wrapper: Wrapper })

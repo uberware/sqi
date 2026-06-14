@@ -2,7 +2,7 @@
 
 package api
 
-// License-pool REST handlers — task 81.
+// License-pool REST handlers.
 //
 // Route summary:
 //

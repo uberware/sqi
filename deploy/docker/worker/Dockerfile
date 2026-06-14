@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Standalone multi-stage Dockerfile for sqi-worker.
-# Alpine-based (per sqi.md §9.3) for lightweight cloud worker deployments.
+# Alpine-based (see docs/worker-docker.md, "Image") for lightweight cloud worker deployments.
 #
 # Usage:
 #   docker build -f deploy/docker/worker/Dockerfile \

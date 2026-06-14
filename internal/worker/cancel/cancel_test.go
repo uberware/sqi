@@ -147,8 +147,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // TestHandler_Register_and_receive verifies that a cancel message published to
-// task.cancel.<taskID> after Register is delivered to TaskCanceler.Cancel
-// (task 80, 81).
+// task.cancel.<taskID> after Register is delivered to TaskCanceler.Cancel.
 func TestHandler_Register_and_receive(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)
@@ -179,7 +178,7 @@ func TestHandler_Register_and_receive(t *testing.T) {
 }
 
 // TestHandler_Deregister_stops_delivery verifies that messages published after
-// Deregister are not delivered to the TaskCanceler (task 80).
+// Deregister are not delivered to the TaskCanceler.
 func TestHandler_Deregister_stops_delivery(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)
@@ -208,7 +207,7 @@ func TestHandler_Deregister_stops_delivery(t *testing.T) {
 }
 
 // TestHandler_multiple_tasks verifies correct per-task routing when several
-// tasks are registered simultaneously (task 81).
+// tasks are registered simultaneously.
 func TestHandler_multiple_tasks(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)
@@ -244,7 +243,7 @@ func TestHandler_multiple_tasks(t *testing.T) {
 }
 
 // TestHandler_task_not_found verifies that a cancel signal for an already-
-// finished task is handled silently without panicking (task 81).
+// finished task is handled silently without panicking.
 func TestHandler_task_not_found(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)
@@ -271,7 +270,7 @@ func TestHandler_task_not_found(t *testing.T) {
 }
 
 // TestHandler_malformed_payload verifies that a malformed cancel message does
-// not panic and does not invoke TaskCanceler.Cancel (task 80).
+// not panic and does not invoke TaskCanceler.Cancel.
 func TestHandler_malformed_payload(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)
@@ -298,7 +297,7 @@ func TestHandler_malformed_payload(t *testing.T) {
 }
 
 // TestHandler_deregister_idempotent verifies that calling Deregister multiple
-// times does not panic (task 80).
+// times does not panic.
 func TestHandler_deregister_idempotent(t *testing.T) {
 	url := startTestNATSServer(t)
 	nc := connectTestNATS(t, url)

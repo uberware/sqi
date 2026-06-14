@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for the curated public API surface (task 69)."""
+"""Tests for the curated public API surface."""
 
 from __future__ import annotations
 

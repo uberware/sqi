@@ -17,14 +17,14 @@
 // queue. Note: wildcard and per-queue consumers must not coexist on the same
 // SQI_WORK stream, as they would race on overlapping messages.
 //
-// # Pull loop (tasks 38–39)
+// # Pull loop
 //
 // Each consumer runs its own pull goroutine. On each iteration the loop
 // computes available concurrency slots (MaxConcurrentTasks − activeCount) and
 // fetches up to that many messages at once. If at capacity, the loop polls
 // every 200 ms until a slot opens.
 //
-// # Ack / nack semantics (tasks 40–41)
+// # Ack / nack semantics
 //
 // After validating the [protocol.AssignMsg] payload, the loop calls
 // [TaskDispatcher.Dispatch]. On success the message is acked immediately so
@@ -33,7 +33,7 @@
 // mismatch, or dispatcher rejection), the message is nacked with a configurable
 // delay so another worker can attempt it.
 //
-// # Idle backoff (task 42)
+// # Idle backoff
 //
 // When a fetch returns no messages, the loop waits [Config.IdleBackoff]
 // (default 2 s) before trying again, avoiding a tight polling loop on empty
@@ -88,7 +88,7 @@ const atCapacityPollInterval = 200 * time.Millisecond
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
-// TaskDispatcher is implemented by the executor component (tasks 49+). The
+// TaskDispatcher is implemented by the executor component. The
 // Puller calls Dispatch after successfully validating an [protocol.AssignMsg].
 //
 // A nil return means the task was accepted and the NATS message is acked. A
@@ -100,7 +100,7 @@ type TaskDispatcher interface {
 }
 
 // NoopDispatcher is a [TaskDispatcher] that accepts every assignment without
-// executing it. Use it until the real executor is wired in (tasks 49+).
+// executing it. Use it until the real executor is wired in.
 type NoopDispatcher struct{}
 
 // Dispatch always returns nil, causing the Puller to ack every assignment.
@@ -108,7 +108,7 @@ func (NoopDispatcher) Dispatch(_ context.Context, _ *protocol.AssignMsg) error {
 
 // StateSource provides the Puller with the current number of active tasks so
 // the pull loop never fetches more assignments than there are concurrency slots.
-// The executor (tasks 49+) implements this interface; use [NoopStateSource]
+// The executor implements this interface; use [NoopStateSource]
 // until then.
 type StateSource interface {
 	// ActiveTaskCount returns the number of task processes currently executing.
@@ -127,24 +127,24 @@ func (NoopStateSource) ActiveTaskCount() int { return 0 }
 // Config parameterises the pull loop. Obtain values from [workerconfig.WorkerSettings].
 type Config struct {
 	// QueueIDs lists the queues this worker serves. An empty slice means the
-	// worker covers all queues via a wildcard consumer (task 38).
+	// worker covers all queues via a wildcard consumer.
 	QueueIDs []string
 
 	// MaxConcurrentTasks is the concurrency ceiling. The loop fetches at most
-	// MaxConcurrentTasks − activeCount messages at a time (task 39).
+	// MaxConcurrentTasks − activeCount messages at a time.
 	MaxConcurrentTasks int
 
 	// ComputeLocation is compared against the ComputeLocation field in each
-	// incoming [protocol.AssignMsg]. A mismatch causes an immediate nack (task 41).
+	// incoming [protocol.AssignMsg]. A mismatch causes an immediate nack.
 	// An empty worker or assignment location disables the check.
 	ComputeLocation string
 
-	// IdleBackoff is the wait between pull attempts when the queue is empty
-	// (task 42). Must be > 0; defaults to 2 s when [New] is called.
+	// IdleBackoff is the wait between pull attempts when the queue is empty.
+	// Must be > 0; defaults to 2 s when [New] is called.
 	IdleBackoff time.Duration
 
 	// NackDelay is the redelivery delay applied when an assignment fails
-	// pre-execution validation (task 40). Gives other workers a window to
+	// pre-execution validation. Gives other workers a window to
 	// pick up the assignment. Must be > 0; defaults to 5 s when [New] is called.
 	NackDelay time.Duration
 }
@@ -348,8 +348,7 @@ func (w wrappedMsg) NakWithDelay(d time.Duration) error { return w.msg.NakWithDe
 //  2. If at capacity, wait [atCapacityPollInterval] and retry.
 //  3. Fetch up to slots messages with a [fetchWait] timeout.
 //  4. Handle each message (validate, dispatch, ack/nack).
-//  5. If the queue was empty, apply [Config.IdleBackoff] before fetching again
-//     (task 42).
+//  5. If the queue was empty, apply [Config.IdleBackoff] before fetching again.
 func (p *Puller) runConsumerLoop(ctx context.Context, consumer jetstream.Consumer, queueLabel string) {
 	idling := false // suppress repeated "queue empty" debug logs
 
@@ -358,7 +357,7 @@ func (p *Puller) runConsumerLoop(ctx context.Context, consumer jetstream.Consume
 			return
 		}
 
-		// Task 39: gate on concurrency slots.
+		// Gate on concurrency slots.
 		slots := p.cfg.MaxConcurrentTasks - p.state.ActiveTaskCount()
 		if slots <= 0 {
 			select {
@@ -391,11 +390,11 @@ func (p *Puller) runConsumerLoop(ctx context.Context, consumer jetstream.Consume
 
 		received := p.drainBatch(ctx, batch, queueLabel)
 		if received > 0 {
-			idling = false // task 42: reset backoff as soon as a message is received
+			idling = false // reset backoff as soon as a message is received
 		}
 
 		if received == 0 {
-			// Task 42: backoff on empty queue to avoid tight polling.
+			// Backoff on empty queue to avoid tight polling.
 			if !idling {
 				p.logger.DebugContext(
 					ctx, "pull: queue empty — backing off",
@@ -447,8 +446,8 @@ func (p *Puller) drainBatch(ctx context.Context, batch jetstream.MessageBatch, q
 // handleMessage validates a raw NATS message, dispatches it via the registered
 // [TaskDispatcher], and acks or nacks the message accordingly.
 //
-// Ack path (task 40): validation passes and Dispatch returns nil → msg.Ack().
-// Nack path (tasks 40–41): any validation failure or Dispatch error → msg.NakWithDelay.
+// Ack path: validation passes and Dispatch returns nil → msg.Ack().
+// Nack path: any validation failure or Dispatch error → msg.NakWithDelay.
 func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel string) {
 	// ── Parse payload ──────────────────────────────────────────────────────
 	var assign protocol.AssignMsg
@@ -475,7 +474,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 		return
 	}
 
-	// ── Compute location check (task 41) ───────────────────────────────────
+	// ── Compute location check ───────────────────────────────────
 	// Only validate when both the worker and the assignment specify a location.
 	// An empty location on either side disables the check (e.g., no path map
 	// was generated, or the worker has no location configured).
@@ -501,7 +500,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 		slog.String("task_name", assign.TaskName),
 	)
 
-	// ── Dispatch (task 40) ─────────────────────────────────────────────────
+	// ── Dispatch ─────────────────────────────────────────────────
 	// Dispatch starts the session. Ack immediately on success so JetStream
 	// removes the message from the stream and does not redeliver it.
 	if err := p.dispatcher.Dispatch(ctx, &assign); err != nil {
@@ -515,7 +514,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 		return
 	}
 
-	// Ack after the dispatcher confirms it accepted the task (task 40).
+	// Ack after the dispatcher confirms it accepted the task.
 	if err := msg.Ack(); err != nil {
 		// Ack failure is non-fatal: the message will be redelivered after
 		// AckWait elapses. The dispatcher/executor must be idempotent with

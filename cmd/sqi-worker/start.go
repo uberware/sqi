@@ -94,11 +94,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return runDryRun(cfg)
 	}
 
-	// ── Root-user check (task 57) ─────────────────────────────────────────────
+	// ── Root-user check ─────────────────────────────────────────────
 	//
 	// Refuse to run as root on Linux/macOS unless allow_root is explicitly set,
-	// because executing render processes as root is a security risk per
-	// sqi.md §18 (open question 2).  The check is a no-op on Windows.
+	// because executing render processes as root is a security risk (see
+	// docs/worker-configuration.md, "worker.allow_root").  No-op on Windows.
 	if err := executor.CheckRootUser(cfg.Worker.AllowRoot, logger); err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	// ── Signal context ────────────────────────────────────────────────────────
 	//
-	// shutdownSig captures the actual OS signal so task 88 can log the trigger
+	// shutdownSig captures the actual OS signal so shutdown can log the trigger
 	// name ("interrupt" vs "terminated") rather than the generic ctx.Err()
 	// string.  signal.NotifyContext registers for the same signals and cancels
 	// ctx; both registrations receive the same delivery.
@@ -126,13 +126,13 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	defer stop()
 	defer signal.Stop(shutdownSig)
 
-	// ── Server discovery (tasks 34–37) ───────────────────────────────────────
+	// ── Server discovery ───────────────────────────────────────
 	//
 	// Resolve the NATS URL before dialing. If an explicit URL is configured
-	// it is used as-is (mDNS bypassed, task 36). Otherwise mDNS is browsed
-	// for "_sqi._tcp" services on the local network (tasks 34–35). If mDNS is
+	// it is used as-is (mDNS bypassed). Otherwise mDNS is browsed
+	// for "_sqi._tcp" services on the local network. If mDNS is
 	// disabled and no explicit URL is set, discovery.ResolveNATSURL returns a
-	// clear error that is surfaced to the operator (task 37).
+	// clear error that is surfaced to the operator.
 	natsURL, err := workerdiscovery.ResolveNATSURL(
 		ctx,
 		cfg.NATS.URL,
@@ -148,22 +148,22 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// all downstream log statements use the concrete URL.
 	cfg.NATS.URL = natsURL
 
-	// ── NATS connection (tasks 20–24) ─────────────────────────────────────────
+	// ── NATS connection ─────────────────────────────────────────
 	//
-	// Connect failure at boot is fatal (task 24). closedCh is closed by the
+	// Connect failure at boot is fatal. closedCh is closed by the
 	// NATS ClosedHandler when the connection permanently closes so we can
 	// detect unexpected disconnects after the initial handshake.
 	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, logger)
 	if err != nil {
-		// Boot-time connect failure is a fatal error (task 24).
+		// Boot-time connect failure is a fatal error.
 		return fmt.Errorf("nats connect: %w", err)
 	}
-	// Drain in-flight subscriptions and flush pending publishes on exit (task 23).
+	// Drain in-flight subscriptions and flush pending publishes on exit.
 	// natsclient.Drain blocks until complete or the shutdown grace period expires,
 	// at which point it force-closes the connection.
 	defer natsclient.Drain(nc, cfg.Worker.ShutdownGracePeriod, logger)
 
-	// Watch for unexpected permanent NATS closure after initial connect (task 24).
+	// Watch for unexpected permanent NATS closure after initial connect.
 	//
 	// If NATS exhausts MaxReconnectAttempts and permanently closes while the
 	// worker is running, initiate a graceful worker shutdown so that in-flight
@@ -212,26 +212,26 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	caps := capabilities.Detect(nil)
 	caps.MergeManualTags(cfg.Worker.CapabilityTags)
 
-	// ── Registration (tasks 25–29) ────────────────────────────────────────────
+	// ── Registration ────────────────────────────────────────────
 	//
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() ensures the registration is re-sent
 	// on any subsequent NATS reconnect so the server always has a live record.
 	reg := registration.New(nc, workerID, cfg.Worker, caps, logger)
 
-	// Wire re-registration into the NATS reconnect callback (task 28).
+	// Wire re-registration into the NATS reconnect callback.
 	// This replaces the reconnect logging that was previously in natsclient;
 	// the new handler logs the reconnect and re-registers in one step.
 	reg.SetupReconnectHook(ctx)
 
-	// Publish the initial registration (tasks 25–26).
+	// Publish the initial registration.
 	// A boot-time registration failure is fatal: the server cannot assign
 	// tasks to a worker it has no record of.
 	if err := reg.Register(ctx); err != nil {
 		return fmt.Errorf("worker registration: %w", err)
 	}
 
-	// ── Session manager (tasks 43–48) ─────────────────────────────────────────
+	// ── Session manager ─────────────────────────────────────────
 	//
 	// The session Manager creates isolated working directories and manages
 	// environment setup/teardown for each task execution.
@@ -240,7 +240,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// operators can inspect partial outputs (SQI_WORKER_KEEP_FAILED_SESSIONS).
 	sessionMgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
 
-	// ── Log chunk publisher (tasks 64–69) ────────────────────────────────────
+	// ── Log chunk publisher ────────────────────────────────────
 	//
 	// The logstreamer Publisher buffers task process output lines and batches
 	// them into LogChunkMsg messages published to NATS JetStream.  It
@@ -255,24 +255,23 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		FlushInterval:    cfg.LogStreamer.FlushInterval,
 	}, logger)
 
-	// ── OpenJD progress/status/fail interceptor (tasks 70–74) ────────────────
+	// ── OpenJD progress/status/fail interceptor ────────────────
 	//
 	// The OpenJD interceptor wraps the log publisher and intercepts recognized
 	// OpenJD directive lines (openjd_progress, openjd_status, openjd_fail)
 	// before forwarding everything else downstream.  It implements
 	// executor.TaskLifecycleHook (for openjd_fail→cancel integration) and
-	// provides LastProgress() for last_progress injection into status messages
-	// (task 76).
+	// provides LastProgress() for last_progress injection into status messages.
 	openjdInterceptor := openjd.New(logPub, nc, workerID, logger)
 
-	// ── Task status publisher (tasks 75–79) ───────────────────────────────────
+	// ── Task status publisher ───────────────────────────────────
 	//
 	// The status Publisher is responsible for all task state-transition messages
 	// (running, succeeded, failed, canceled) with worker_id and last_progress
 	// fields, and retry-with-backoff on transient NATS publish failures.
 	statusPub := status.New(nc, status.Config{WorkerID: workerID}, logger)
 
-	// ── Task executor (tasks 49–58) ───────────────────────────────────────────
+	// ── Task executor ───────────────────────────────────────────
 	//
 	// The Executor starts OS processes for assigned tasks and reports their
 	// status back to sqi-server via NATS.  It implements pull.TaskDispatcher,
@@ -282,7 +281,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		statusPub,
 		sessionMgr,
 		m,
-		openjdInterceptor, // openjd_progress/status/fail interception + log streaming (tasks 64–74)
+		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
 		executor.Config{
 			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
 			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
@@ -291,7 +290,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		logger,
 	)
 
-	// ── Task cancel subscriber (tasks 80–85) ─────────────────────────────────
+	// ── Task cancel subscriber ─────────────────────────────────
 	//
 	// The cancel Handler subscribes to task.cancel.<taskID> for each task the
 	// executor dispatches.  When the server publishes a cancel signal the handler
@@ -302,7 +301,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	cancelHandler := cancel.New(nc, exec, logger)
 	exec.SetCancelRegistrar(cancelHandler)
 
-	// ── Heartbeat (tasks 30–33) ───────────────────────────────────────────────
+	// ── Heartbeat ───────────────────────────────────────────────
 	//
 	// The heartbeat Publisher ticks on cfg.Worker.HeartbeatInterval and
 	// publishes liveness + runtime-state messages to worker.heartbeat.
@@ -323,7 +322,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	go hbPublisher.Run(ctx)
 
-	// ── Work assignment pull loop (tasks 38–42) ───────────────────────────────
+	// ── Work assignment pull loop ───────────────────────────────
 	puller, err := newPuller(nc, cfg, exec, exec, logger)
 	if err != nil {
 		return err
@@ -345,7 +344,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	<-ctx.Done()
 
-	// ── Task 88: log shutdown trigger ─────────────────────────────────────────
+	// ── Log shutdown trigger ─────────────────────────────────────────
 	//
 	// Determine the signal that triggered shutdown for operators reading logs.
 	// NATS-driven shutdowns (permanent connection loss) won't populate sigName;
@@ -364,24 +363,24 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.Duration("grace_period", cfg.Worker.ShutdownGracePeriod),
 	)
 
-	// ── Tasks 86–87: drain in-flight tasks with grace period ──────────────────
+	// ── Drain in-flight tasks with grace period ──────────────────
 	//
 	// Stop accepting new assignments immediately (the pull loop already stopped
-	// when ctx was canceled, task 86).  Allow in-flight tasks to run to
+	// when ctx was canceled). Allow in-flight tasks to run to
 	// completion for up to ShutdownGracePeriod; force-kill any that remain
-	// after the deadline (task 87).  DrainAndShutdown blocks until all task
+	// after the deadline. DrainAndShutdown blocks until all task
 	// goroutines have published their terminal statuses, guaranteeing the
-	// server receives complete status information before NATS drains (task 78).
+	// server receives complete status information before NATS drains.
 	completed, killed := exec.DrainAndShutdown(cfg.Worker.ShutdownGracePeriod)
 
-	// ── Task 88: log shutdown outcome ─────────────────────────────────────────
+	// ── Log shutdown outcome ─────────────────────────────────────────
 	logger.InfoContext(
 		context.Background(), "sqi-worker shutdown complete",
 		slog.Int("tasks_completed_cleanly", completed),
 		slog.Int("tasks_force_terminated", killed),
 	)
 
-	// ── Deregistration (task 27) ──────────────────────────────────────────────
+	// ── Deregistration ──────────────────────────────────────────────
 	//
 	// Publish a departure message before draining the NATS connection so the
 	// server marks this worker offline immediately rather than waiting for the

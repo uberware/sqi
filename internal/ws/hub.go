@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Hub manages active WebSocket clients, subscription routing, ring-buffer
-// replay, and per-client backpressure for the /api/v1/ws endpoint
-// (tasks 89–91).
+// replay, and per-client backpressure for the /api/v1/ws endpoint.
 //
 // # Lifecycle
 //
@@ -17,7 +16,7 @@
 //     ring buffer directly into the client's send channel before returning.
 //
 //  3. When the scheduler processes a NATS message it calls one of the
-//     Notify* methods ([Notifier] implementation, task 90):
+//     Notify* methods ([Notifier] implementation):
 //       a. Build a TypePush [Envelope] with the subject-specific payload.
 //       b. Assign a monotonically increasing hub-level sequence number.
 //       c. Store the envelope in the subject's ring buffer.

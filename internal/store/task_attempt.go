@@ -28,7 +28,8 @@ const (
 // SessionID is the OpenJD session identifier reported by the worker. Multiple
 // task attempts that share the same session ID ran within the same OpenJD
 // Session on the same worker — they shared a working directory and environment
-// setup. See sqi.md §7.4 for why sessions are not a first-class table.
+// setup. See docs/architecture.md ("SQLite schema overview") for why sessions
+// are not a first-class table.
 type TaskAttempt struct {
 	ID            string
 	TaskID        string
@@ -73,7 +74,7 @@ type TaskAttemptStore interface {
 
 	// CancelJobAttempts marks all running [TaskAttempt] records for tasks
 	// belonging to the given job as [AttemptStatusCanceled] with the supplied
-	// end time (task 54). Should be called before [TaskStore.CancelJobTasks] so
+	// end time. Should be called before [TaskStore.CancelJobTasks] so
 	// that attempts are closed while the tasks still carry their assigned worker.
 	// Returns the number of attempts updated.
 	CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error)

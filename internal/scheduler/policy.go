@@ -2,8 +2,7 @@
 
 package scheduler
 
-// policy.go implements queue- and farm-level concurrency policy evaluation
-// (task 51).
+// policy.go implements queue- and farm-level concurrency policy evaluation.
 //
 // Before a task is assigned to a worker the scheduler evaluates two policy
 // gates in order:

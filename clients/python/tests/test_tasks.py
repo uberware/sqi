@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for task operations and log polling (tasks 42-49).
+"""Tests for task operations and log polling.
 
 HTTP is mocked at the transport layer with respx; no server runs.
 """
@@ -58,7 +58,7 @@ def _logs(items: list[dict[str, Any]], *, after_nats_seq: int, limit: int = 100)
     )
 
 
-# ── list_job_tasks / iter_job_tasks (task 42) ─────────────────────────────────
+# ── list_job_tasks / iter_job_tasks ─────────────────────────────────
 
 
 @respx.mock
@@ -132,7 +132,7 @@ def test_iter_job_tasks_walks_all_pages(make_client: ClientFactory) -> None:
     assert collected == ids
 
 
-# ── get_task (task 43) ────────────────────────────────────────────────────────
+# ── get_task ────────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -168,7 +168,7 @@ def test_get_task_missing_raises_not_found(make_client: ClientFactory) -> None:
         client.get_task("nope")
 
 
-# ── retry_task (task 44) ──────────────────────────────────────────────────────
+# ── retry_task ──────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -206,7 +206,7 @@ def test_retry_task_invalid_state_raises_conflict(make_client: ClientFactory) ->
         client.retry_task("t1")
 
 
-# ── get_task_logs (task 45) ───────────────────────────────────────────────────
+# ── get_task_logs ───────────────────────────────────────────────────
 
 
 @respx.mock
@@ -238,7 +238,7 @@ def test_get_task_logs_encodes_cursor_and_limit(make_client: ClientFactory) -> N
     assert "tail" not in params
 
 
-# ── tail_task_logs polling (tasks 46-47) ──────────────────────────────────────
+# ── tail_task_logs polling ──────────────────────────────────────
 
 
 @respx.mock

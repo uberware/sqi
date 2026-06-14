@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package ws defines the typed WebSocket message envelope shared by the server
-// upgrade handler (internal/api) and the fanout layer (tasks 89–91).
+// upgrade handler (internal/api) and the fanout layer.
 //
 // Every message exchanged over the /api/v1/ws connection — in both directions
 // — is encoded as a JSON [Envelope].  Clients send subscription control
@@ -22,7 +22,7 @@
 // # Sequence numbers
 //
 //   - Server TypePush messages carry a per-subject monotonically increasing
-//     sequence number assigned by the Hub (tasks 89–91).  The sequence is
+//     sequence number assigned by the Hub. The sequence is
 //     global across connections so clients can store the last received Seq
 //     and pass it as since_seq when reconnecting to replay missed events.
 //   - Client messages carry a seq chosen by the client. The server echoes it in
@@ -69,7 +69,7 @@ const (
 	TypePong MessageType = "pong"
 )
 
-// Subject constants for the subscription system (tasks 89–91).
+// Subject constants for the subscription system.
 // These are prefix patterns; callers substitute resource IDs as needed.
 const (
 	// SubjectJobs streams aggregate job-summary events for all jobs.
@@ -108,7 +108,7 @@ type Envelope struct {
 	// Payload carries message-specific data as a raw JSON value.
 	//
 	//   TypeSubscribe   → [SubscribePayload]
-	//   TypePush        → subject-specific event struct (defined in tasks 89–91)
+	//   TypePush        → subject-specific event struct
 	//   TypeAck         → [AckPayload]
 	//   TypeError       → [ErrorPayload]
 	//   TypeUnsubscribe, TypePing, TypePong → nil

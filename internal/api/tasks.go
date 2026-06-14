@@ -2,14 +2,14 @@
 
 package api
 
-// Task REST handlers — tasks 76–78.
+// Task REST handlers.
 //
 // Route summary:
 //
-//	GET  /api/v1/jobs/{id}/tasks   — list tasks for a job (task 76)
-//	GET  /api/v1/tasks/{id}        — task detail (task 76)
-//	GET  /api/v1/tasks/{id}/logs   — task logs, offset-based or tail-streaming (task 77)
-//	POST /api/v1/tasks/{id}/retry  — queue a new attempt for a failed/canceled task (task 78)
+//	GET /api/v1/jobs/{id}/tasks — list tasks for a job
+//	GET /api/v1/tasks/{id} — task detail
+//	GET /api/v1/tasks/{id}/logs — task logs, offset-based or tail-streaming
+//	POST /api/v1/tasks/{id}/retry — queue a new attempt for a failed/canceled task
 
 import (
 	"encoding/json"

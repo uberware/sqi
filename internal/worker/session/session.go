@@ -14,15 +14,15 @@
 // Session IDs are worker-generated UUIDs. The ID is included in every
 // [protocol.TaskStatusMsg] and [protocol.LogChunkMsg] published from within
 // the session so the server can group task attempts by session for debugging
-// (sqi.md §7.4, consistent with the session_id column on task_attempts from
-// server task 26).
+// (consistent with the session_id column on task_attempts; see
+// docs/architecture.md, "SQLite schema overview").
 //
 // # Phase 1 scope
 //
 // In Phase 1, sessions are not stored as database rows — they are worker-side
 // runtime constructs. The server records the session ID only on task_attempts.
 // A dedicated sessions table (for session-reuse scheduling) is deferred to
-// Phase 2 per sqi.md §7.4.
+// Phase 2; see docs/architecture.md ("SQLite schema overview").
 //
 // # Usage
 //
@@ -73,7 +73,7 @@ type Session struct {
 	// ID is the worker-generated unique identifier for this session.
 	// Callers MUST include this in every [protocol.TaskStatusMsg] (as
 	// SessionID) and every [protocol.LogChunkMsg] published from within
-	// the session so the server can group attempts by session (task 48).
+	// the session so the server can group attempts by session.
 	ID string
 
 	// WorkDir is the absolute path to the session's isolated working directory,
@@ -102,7 +102,7 @@ func (s *Session) ActiveTaskCount() int {
 }
 
 // AddTask records taskID as executing within this session.
-// Called by the executor when a task process is launched (tasks 49+).
+// Called by the executor when a task process is launched.
 func (s *Session) AddTask(taskID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,7 +137,7 @@ func (s *Session) ActiveTaskIDs() []string {
 
 // ExitEnvironments runs each entered environment's OnExit action in reverse
 // entry order, ensuring host state is restored predictably regardless of
-// session outcome (task 46).
+// session outcome.
 //
 // All teardown actions are attempted even if an earlier one fails. Errors
 // from individual OnExit actions are logged as warnings, collected, and the
@@ -199,7 +199,7 @@ type Manager struct {
 
 // NewManager returns a Manager that stores session working directories under
 // <dataDir>/sessions/. keepFailedSessions controls whether working directories
-// for failed sessions are retained for post-mortem inspection (task 47).
+// for failed sessions are retained for post-mortem inspection.
 func NewManager(dataDir string, keepFailedSessions bool, logger *slog.Logger) *Manager {
 	return &Manager{
 		dataDir:            dataDir,
@@ -211,10 +211,10 @@ func NewManager(dataDir string, keepFailedSessions bool, logger *slog.Logger) *M
 // Create allocates a new Session for the given assignment: generates a UUID
 // as the session ID, creates the working directory under
 // <data_dir>/sessions/<session_id>/, and enters each environment in
-// declaration order (task 44).
+// declaration order.
 //
 // If any OnEnter action fails, already-entered environments are exited in
-// reverse order (task 45) and the working directory is removed before the
+// reverse order and the working directory is removed before the
 // error is returned. Create always returns either a ready-to-use session and
 // nil error, or nil and a non-nil error — never both.
 //
@@ -241,7 +241,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		CreatedAt: time.Now(),
 	}
 
-	// Enter environments in declaration order (task 45).
+	// Enter environments in declaration order.
 	if err := s.enterEnvironments(ctx, msg.Environments, m.logger); err != nil {
 		// enterEnvironments already ran reverse teardown on already-entered
 		// environments. Remove the working directory so the caller gets a clean
@@ -261,7 +261,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 }
 
 // Cleanup exits any remaining environments (if ExitEnvironments has not been
-// called already) and removes the session's working directory (task 47).
+// called already) and removes the session's working directory.
 //
 // If failed is true and keepFailedSessions is set, the working directory is
 // retained and a message is logged so the operator can inspect it.
@@ -279,7 +279,7 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 		)
 	}
 
-	// Task 47: retain the working directory on failure when the debug flag is set.
+	// Retain the working directory on failure when the debug flag is set.
 	if failed && m.keepFailedSessions {
 		m.logger.InfoContext(
 			ctx, "session: retaining failed session directory for inspection (--keep-failed-sessions is set)",
@@ -289,7 +289,7 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 		return
 	}
 
-	// Remove the working directory (task 47).
+	// Remove the working directory.
 	if err := os.RemoveAll(s.WorkDir); err != nil {
 		m.logger.WarnContext(
 			ctx, "session: failed to remove working directory",
@@ -309,7 +309,7 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 
 // enterEnvironments enters each environment in envs in declaration order.
 // If any OnEnter action fails, already-entered environments are torn down
-// in reverse order before the error is returned (task 45).
+// in reverse order before the error is returned.
 func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignEnvironment, logger *slog.Logger) error {
 	for _, env := range envs {
 		if err := s.enterOne(ctx, env, logger); err != nil {
@@ -376,7 +376,7 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 // runAction starts action.Command as a child process and waits for it to exit.
 //
 // The process inherits the worker's environment with envVars merged on top
-// (task 45 — environment variables set for all actions in the session).
+// (environment variables set for all actions in the session).
 // workDir is the process working directory.
 //
 // If action.TimeoutSeconds > 0, a deadline is applied via a derived context.

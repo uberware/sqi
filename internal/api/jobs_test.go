@@ -2,7 +2,7 @@
 
 package api
 
-// Unit tests for the job REST handlers — task 85.
+// Unit tests for the job REST handlers.
 //
 // Each sub-test spins up a chi router wired to the in-memory fake store so no
 // real database or NATS instance is required.

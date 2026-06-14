@@ -1,96 +1,67 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package scheduler implements the sqi-server assignment loop and worker
-// registry.
+// registry — the authoritative component for deciding which task runs on which
+// worker.
 //
-// The [Scheduler] is the authoritative component for deciding which task runs
-// on which worker. It owns three concurrent loops:
+// The [Scheduler] runs three concurrent loops:
 //
-//  1. Assignment loop (task 46): a goroutine pool that periodically polls the
-//     store for ready tasks and, for each one, selects an eligible online
-//     worker, calls [store.TaskStore.AssignTask], and publishes the assignment
-//     payload to the appropriate NATS work-assignment subject.
+//  1. Assignment loop: a goroutine pool that periodically polls the store for
+//     ready tasks ([store.TaskStore.ListReadyTasks], pre-sorted by job
+//     priority, job submission time, step order, then task creation time) and,
+//     for each task, selects an eligible online worker, records the assignment
+//     via [store.TaskStore.AssignTask], and publishes a [protocol.AssignMsg] to
+//     the worker's NATS work-assignment subject.
 //
-//  2. Worker registry (task 47): a NATS push-consumer that processes
-//     worker.register messages, persisting capability data via
-//     [store.WorkerStore.RegisterWorker] and keeping the WorkersTotal
-//     Prometheus gauge current.
+//  2. Worker registry: a NATS push-consumer for worker.register messages that
+//     persists capability data via [store.WorkerStore.RegisterWorker] and keeps
+//     the WorkersTotal Prometheus gauge current.
 //
-//  3. Heartbeat sweep (task 48): a NATS push-consumer that updates each
-//     worker's LastHeartbeatAt timestamp on receipt of a worker.heartbeat
-//     message, paired with a periodic timer that calls
-//     [store.WorkerStore.ListStaleWorkers], marks each stale worker offline,
-//     and calls [store.TaskStore.ReclaimWorkerTasks] to return their
-//     in-flight tasks to the ready queue.
+//  3. Heartbeat sweep: a NATS push-consumer that updates each worker's
+//     LastHeartbeatAt on worker.heartbeat messages, paired with a periodic
+//     timer that marks workers offline once their heartbeat goes stale
+//     ([store.WorkerStore.ListStaleWorkers]), terminates their open attempts
+//     ([store.TaskAttemptStore.TerminateWorkerAttempts]), and returns their
+//     in-flight tasks to the ready queue ([store.TaskStore.ReclaimWorkerTasks]).
 //
-// Task 49 introduced full priority ordering into the ready-task query
-// ([store.TaskStore.ListReadyTasks]): tasks arrive pre-sorted by job priority,
-// job submission time, step order, and task creation time.
+// Worker selection. A task is matched to a worker by capability tags,
+// compute-location affinity, and queue/farm filtering ([WorkerEligible]),
+// subject to per-queue and per-farm maximum-concurrent-task limits
+// ([policyGate]). Once a worker is chosen, a provisional [store.TaskAttempt] is
+// created and any required license slots are claimed atomically
+// ([store.LicenseCheckoutStore.TryClaimLicenseSlots]); if the pool is saturated
+// the assignment is rolled back and the task stays ready for the next tick.
+// Attempt numbers come from [store.TaskAttemptStore.LatestTaskAttempt] — 1 for
+// a fresh task, N+1 on retry.
 //
-// Task 50 added capability-tag matching, compute-location affinity, and
-// queue/farm assignment filtering via [WorkerEligible].
+// Assignment payload. [buildAssignPayload] re-parses the job's raw OpenJD
+// template to extract the matching step's OnRun action, embedded files, and
+// ordered environments (job environments first, then step, per the OpenJD
+// spec). The path-map field is reserved but empty until named storage location
+// CRUD and resolved-mode path translation are implemented.
 //
-// Task 51 added per-queue and per-farm maximum concurrent task limits evaluated
-// inside [policyGate] before any worker is selected.
+// Status and log ingestion. A push-consumer on the SQI_TASK stream
+// ([handleTaskStatusMessage]) decodes [protocol.TaskStatusMsg] from
+// task.status.<job>, updates the task/attempt, releases held license slots, and
+// drives step/job completion including [openjd.ResolveDependencies] for
+// multi-step jobs. A push-consumer on SQI_LOGS ([handleLogChunk]) persists each
+// task.logs.<task> chunk as a [store.TaskLog] row, recording both the
+// worker-assigned sequence number and the NATS stream sequence that serves as
+// the log-tail pagination cursor.
 //
-// Task 52 added atomic license-slot claiming ([store.LicenseCheckoutStore.TryClaimLicenseSlots])
-// after a worker is selected and a provisional [store.TaskAttempt] is created.
-// If the claim fails because the pool is saturated the assignment is rolled
-// back and the task remains ready for the next dispatch tick.
+// Cancellation. [CancelJob] and [CancelTask] are the server-side entry points
+// called by the REST layer: they close running attempts, transition tasks to
+// [store.TaskStatusCanceled], publish task.cancel.<taskID> signals to assigned
+// workers ([bus.Client.PublishTaskCancel]), and release held license slots. The
+// logic lives in cancellation.go; the SQI_CANCEL stream and publish helper live
+// in the bus package.
 //
-// Task 53 adds full retry management. [createAttemptAndClaimLicenses] now calls
-// [store.TaskAttemptStore.LatestTaskAttempt] to determine the correct
-// AttemptNumber for each new attempt (1 for a fresh task, N+1 on retry).
-// The heartbeat sweep calls [store.TaskAttemptStore.TerminateWorkerAttempts]
-// before reclaiming tasks from an offline worker so that every attempt has a
-// closed EndedAt and a terminal status.
-//
-// Task 54 adds explicit cancellation propagation.  [CancelJob] and [CancelTask]
-// are the server-side entry points called by the REST layer.  Both methods
-// close running attempts, transition tasks to [store.TaskStatusCanceled],
-// publish task.cancel.<taskID> NATS signals to assigned workers via
-// [bus.Client.PublishTaskCancel], and release held license slots.  The cancel
-// logic lives in cancellation.go; the SQI_CANCEL JetStream stream definition
-// and [bus.Client.PublishTaskCancel] method live in the bus package.
-//
-// Task 55 adds scheduler instrumentation wired into the Prometheus metrics
-// defined in [metrics.Metrics]:
-//   - [metrics.Metrics.SchedulerQueueDepth] — updated each dispatch tick via
-//     [store.TaskStore.CountReadyTasksByQueue], partitioned by queue ID.
-//   - [metrics.Metrics.SchedulerAssignmentDuration] — histogram observed in the
-//     assignment worker pool, partitioned by result (assigned/deferred/error).
-//   - [metrics.Metrics.SchedulerIdleWorkers] — updated each dispatch tick and
-//     after any worker-status event via [store.WorkerStore.CountIdleWorkers],
-//     partitioned by farm ID.
-//
-// Task 68 adds license-pool observability. [refreshLicenseCheckoutGauge] calls
-// [store.LicensePoolStore.ListLicensePools] and [store.LicenseCheckoutStore.ActiveCheckoutCount]
-// for each pool on every dispatch tick, updating
-// [metrics.Metrics.LicenseActiveCheckouts] so Prometheus reflects current
-// checkout usage per pool.
-//
-// Task 56 introduced the [worker/protocol] package with versioned JSON message
-// types for all worker wire-protocol messages: [protocol.RegisterMsg],
-// [protocol.HeartbeatMsg], [protocol.AssignMsg], [protocol.TaskStatusMsg], and
-// [protocol.LogChunkMsg].
-//
-// Task 57 wires in a server-side push-consumer for the SQI_TASK JetStream
-// stream (task.status.<job> subjects).  [handleTaskStatusMessage] decodes each
-// [protocol.TaskStatusMsg], updates the task/attempt in the store, releases
-// held license slots, and drives step/job completion logic including
-// [openjd.ResolveDependencies] for multi-step jobs.
-//
-// Task 58 replaces the minimal stub buildAssignPayload with a full
-// [protocol.AssignMsg] that re-parses the job's raw OpenJD template to extract
-// the matching step's OnRun action, embedded files, and ordered environments
-// (job environments first, step environments second, per the OpenJD spec).
-// The path map field is present but empty in Phase 1 (tasks 60–62 implement
-// storage location CRUD and resolved-mode path translation).
-//
-// Task 59 adds structured log ingestion.  [handleLogChunk] consumes
-// task.logs.<task> messages from the SQI_LOGS stream and persists each chunk
-// as a [store.TaskLog] row with the worker-assigned sequence number (SeqNum)
-// and the NATS stream sequence (NATSSeq) used as the log-tail pagination cursor.
+// Wire protocol and metrics. All worker messages use the versioned JSON types
+// in [worker/protocol] ([protocol.RegisterMsg], [protocol.HeartbeatMsg],
+// [protocol.AssignMsg], [protocol.TaskStatusMsg], [protocol.LogChunkMsg]). Each
+// dispatch tick refreshes the scheduler's Prometheus metrics ([metrics.Metrics]):
+// queue depth by queue, idle workers by farm, the assignment-duration histogram
+// by result, and active license checkouts per pool.
 package scheduler
 
 import (
@@ -170,7 +141,7 @@ type Scheduler struct {
 	bus      busClient
 	metrics  *metrics.Metrics
 	logger   *slog.Logger
-	notifier ws.Notifier // pushes live events to WebSocket clients (tasks 89–91)
+	notifier ws.Notifier // pushes live events to WebSocket clients
 
 	// taskCh carries ready tasks from the dispatch goroutine to the assignment
 	// worker pool. Sized to AssignBatchSize so a full batch can be queued
@@ -192,7 +163,7 @@ type Scheduler struct {
 // New creates a Scheduler. Call [Run] to start its goroutines.
 //
 // notifier receives live-event notifications after each state change so the
-// WebSocket hub can fan them out to subscribed clients (tasks 89–91). Pass
+// WebSocket hub can fan them out to subscribed clients. Pass
 // [ws.NoopNotifier] (or nil — treated as NoopNotifier) when no WebSocket hub
 // is wired.
 func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, logger *slog.Logger, notifier ws.Notifier) *Scheduler {
@@ -247,7 +218,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		slog.Duration("heartbeat_sweep_interval", s.cfg.HeartbeatSweepInterval),
 	)
 
-	// ── Task 47 + 48: worker NATS consumer ────────────────────────────────
+	// ── Worker NATS consumer ────────────────────────────────
 	// A single JetStream push-consumer delivers both worker.register and
 	// worker.heartbeat messages. The handler dispatches by subject.
 	_, err := s.bus.ConsumeWorker(ctx, s.handleWorkerMessage)
@@ -256,7 +227,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.logger.InfoContext(ctx, "scheduler: worker consumer started")
 
-	// ── Task 57: task-status NATS consumer ────────────────────────────────
+	// ── Task-status NATS consumer ────────────────────────────────
 	// A JetStream push-consumer on SQI_TASK delivers task.status.<job>
 	// messages from workers. handleTaskStatusMessage updates the store,
 	// closes attempt records, releases license slots, and drives step/job
@@ -266,7 +237,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.logger.InfoContext(ctx, "scheduler: task-status consumer started")
 
-	// ── Task 59: task-logs NATS consumer ──────────────────────────────────
+	// ── Task-logs NATS consumer ──────────────────────────────────
 	// A JetStream push-consumer on SQI_LOGS delivers task.logs.<task>
 	// messages from workers. handleLogChunk persists each chunk to the
 	// task_logs table with NATS sequence as the pagination cursor.
@@ -275,19 +246,19 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.logger.InfoContext(ctx, "scheduler: task-logs consumer started")
 
-	// ── Task 46: assignment worker pool ───────────────────────────────────
+	// ── Assignment worker pool ───────────────────────────────────
 	for i := range s.cfg.AssignWorkers {
 		s.wg.Go(func() {
 			s.runAssignWorker(ctx, i)
 		})
 	}
 
-	// ── Task 46: dispatch loop ─────────────────────────────────────────────
+	// ── Dispatch loop ─────────────────────────────────────────────
 	s.wg.Go(func() {
 		s.runDispatchLoop(ctx)
 	})
 
-	// ── Task 48: heartbeat sweep ───────────────────────────────────────────
+	// ── Heartbeat sweep ───────────────────────────────────────────
 	s.wg.Go(func() {
 		s.runHeartbeatSweep(ctx)
 	})
@@ -316,7 +287,7 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// ── Task 46: dispatch loop ────────────────────────────────────────────────────
+// ── Dispatch loop ────────────────────────────────────────────────────
 
 // runDispatchLoop ticks on AssignInterval, fetches a batch of ready tasks from
 // the store, and pushes each task onto taskCh for the worker pool to process.
@@ -336,7 +307,7 @@ func (s *Scheduler) runDispatchLoop(ctx context.Context) {
 
 // dispatchBatch fetches ready tasks and fans them out to the assignment workers.
 // It also refreshes the per-queue depth and idle-worker gauges on every tick so
-// Prometheus always reflects current farm state (task 55).
+// Prometheus always reflects current farm state.
 func (s *Scheduler) dispatchBatch(ctx context.Context) {
 	tasks, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, s.cfg.AssignBatchSize)
 	if err != nil {
@@ -367,16 +338,16 @@ func (s *Scheduler) dispatchBatch(ctx context.Context) {
 	}
 }
 
-// ── Task 46: assignment worker pool ───────────────────────────────────────────
+// ── Assignment worker pool ───────────────────────────────────────────
 
 // runAssignWorker pulls tasks from taskCh and attempts to assign each one to
 // an available online worker.
 //
 // Tasks arrive pre-sorted by [store.TaskStore.ListReadyTasks]: highest job
 // priority first, then earlier job submission time, then lower step order,
-// then task creation time (task 49). [tryAssign] applies capability-tag
-// matching and compute-location affinity (task 50), queue/farm concurrency
-// policy (task 51), and atomic license claiming (task 52).
+// then task creation time. [tryAssign] applies capability-tag
+// matching and compute-location affinity, queue/farm concurrency
+// policy, and atomic license claiming.
 func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 	s.logger.DebugContext(ctx, "scheduler: assignment worker started", slog.Int("worker_id", id))
 
@@ -404,8 +375,8 @@ func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 var errNoWorkerAvailable = errors.New("no worker available")
 
 // tryAssign selects an eligible online worker for task using full capability
-// matching (task 50), policy gates (task 51), and atomic license claiming
-// (task 52), then updates the store and publishes the assignment to NATS.
+// matching, policy gates, and atomic license claiming, then updates the store
+// and publishes the assignment to NATS.
 func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 	job, err := s.store.GetJob(ctx, task.JobID)
 	if err != nil {
@@ -417,7 +388,7 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 		return fmt.Errorf("get step %s: %w", task.StepID, err)
 	}
 
-	// ── Task 51: queue and farm policy gate ───────────────────────────────
+	// ── Queue and farm policy gate ───────────────────────────────
 	queue, err := s.store.GetQueue(ctx, job.QueueID)
 	if err != nil {
 		return fmt.Errorf("get queue %s: %w", job.QueueID, err)
@@ -441,7 +412,7 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 		return err
 	}
 
-	// Build the license pool context needed by the matcher (task 50 pre-check).
+	// Build the license pool context needed by the matcher.
 	pools, activeCounts, err := s.buildLicenseContext(ctx, step)
 	if err != nil {
 		return fmt.Errorf("build license context for step %s: %w", step.ID, err)
@@ -458,14 +429,14 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 		return fmt.Errorf("assign task %s to worker %s: %w", task.ID, worker.ID, err)
 	}
 
-	// ── Task 52: provisional attempt + atomic license claim ───────────────
+	// ── Provisional attempt + atomic license claim ───────────────
 	attempt, err := s.createAttemptAndClaimLicenses(ctx, task, worker, step, pools, now)
 	if err != nil {
 		return err // already reverted task status inside helper
 	}
 
 	// Publish the assignment to NATS so the worker can pull it.
-	// buildAssignPayload (task 58) includes the full step execution spec so
+	// buildAssignPayload includes the full step execution spec so
 	// the worker does not need to make additional API calls.
 	payload, err := buildAssignPayload(ctx, task, worker, job, step, attempt.ID, s.store)
 	if err != nil {
@@ -495,7 +466,7 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 }
 
 // createAttemptAndClaimLicenses creates a provisional [store.TaskAttempt] for
-// the assignment and atomically claims any required license slots (task 52).
+// the assignment and atomically claims any required license slots.
 //
 // If either operation fails the task's status is reverted to
 // [store.TaskStatusReady] so it is re-queued on the next dispatch tick.
@@ -711,9 +682,9 @@ func (s *Scheduler) pickWorker(
 	return store.Worker{}, errNoWorkerAvailable
 }
 
-// buildAssignPayload is implemented in assign.go (task 58).
+// buildAssignPayload is implemented in assign.go.
 
-// ── Task 52: license release ──────────────────────────────────────────────────
+// ── License release ──────────────────────────────────────────────────
 
 // ReleaseTaskLicenses releases all active license checkouts for the given task
 // attempt. It is called when a task attempt transitions to a terminal state
@@ -723,7 +694,7 @@ func (s *Scheduler) pickWorker(
 // querying the store. It is idempotent: releasing an already-released checkout
 // is a no-op in the underlying SQL.
 //
-// Task 56–59 (worker wire protocol) will call this method when terminal task
+// The worker wire protocol calls this method when terminal task
 // status messages arrive from workers.
 func (s *Scheduler) ReleaseTaskLicenses(ctx context.Context, attemptID string) error {
 	if attemptID == "" {
@@ -743,7 +714,7 @@ func (s *Scheduler) ReleaseTaskLicenses(ctx context.Context, attemptID string) e
 	return nil
 }
 
-// ── Task 47: worker NATS consumer ─────────────────────────────────────────────
+// ── Worker NATS consumer ─────────────────────────────────────────────
 
 // handleWorkerMessage is the JetStream message handler for both
 // worker.register and worker.heartbeat subjects (both flow through the
@@ -770,8 +741,8 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 
 // RegisterMsg is the JSON payload workers publish to worker.register.
 // It carries the worker's self-reported identity and capability data.
-// Task 56 will introduce a formally versioned protocol; this struct matches
-// the minimal information the server needs for task matching in tasks 46–52.
+// A later protocol revision may add formal versioning; this struct matches
+// the minimal information the server needs for task matching.
 type RegisterMsg struct {
 	// WorkerID is the stable unique identifier for this worker instance.
 	// Workers MUST use the same ID across restarts so that re-registration
@@ -791,11 +762,11 @@ type RegisterMsg struct {
 
 	// ComputeLocation is the named compute location this worker belongs to
 	// (e.g. "onprem_linux", "cloud_aws_us_east"). Used for path translation
-	// and task affinity (tasks 60–62).
+	// and task affinity.
 	ComputeLocation string `json:"compute_location,omitempty"`
 
 	// OS and OSVersion are the worker's operating system identity, used for
-	// capability matching (tasks 49–50).
+	// capability matching.
 	OS        string `json:"os"`
 	OSVersion string `json:"os_version,omitempty"`
 
@@ -880,7 +851,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 // handleWorkerDeregister processes a worker.deregister message published by a
 // worker on graceful shutdown. It marks the worker offline immediately so the
 // scheduler stops dispatching new assignments to it rather than waiting for
-// the heartbeat-timeout sweep (task 27).
+// the heartbeat-timeout sweep.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg) {
 	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
 	// fields the server needs without importing the worker protocol package.
@@ -938,7 +909,7 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 	s.ackMsg(ctx, msg)
 }
 
-// ── Task 48: heartbeat handler and sweep ──────────────────────────────────────
+// ── Heartbeat handler and sweep ──────────────────────────────────────
 
 // HeartbeatMsg is the JSON payload workers publish to worker.heartbeat.
 type HeartbeatMsg struct {
@@ -1124,7 +1095,7 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 	}
 }
 
-// ── Task 55: instrumentation helpers ─────────────────────────────────────────
+// ── Instrumentation helpers ─────────────────────────────────────────
 
 // observeAssignment records a single assignment attempt's outcome and duration
 // in the SchedulerAssignmentDuration Prometheus histogram.
@@ -1165,7 +1136,7 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 
 // refreshLicenseCheckoutGauge queries the store for all configured license
 // pools and the active checkout count for each, then updates the
-// LicenseActiveCheckouts Prometheus gauge (task 68).
+// LicenseActiveCheckouts Prometheus gauge.
 //
 // Called on every dispatch tick. Errors are non-fatal — a stale gauge is
 // preferable to aborting the assignment loop.

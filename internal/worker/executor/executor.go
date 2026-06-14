@@ -25,15 +25,15 @@
 // # Output handling
 //
 // The [OutputHandler] interface abstracts what happens with each line of
-// process output.  The log-chunk publisher (tasks 64–69) and OpenJD progress
-// line parser (tasks 70–74) will implement this interface; until then the
+// process output. The log-chunk publisher and OpenJD progress
+// line parser will implement this interface; until then the
 // [LogOutput] implementation forwards lines to the structured logger.
 //
 // # Root-user check
 //
 // [CheckRootUser] should be called before creating an Executor.  It returns
 // an error if the worker process is running as root on Linux/macOS and
-// [Config.AllowRoot] is false (task 57, sqi.md §18, open question 2).
+// [Config.AllowRoot] is false (see docs/worker-configuration.md, "worker.allow_root").
 package executor
 
 import (
@@ -53,8 +53,8 @@ import (
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
 // OutputHandler processes lines of output emitted by a running task process.
-// Implementations include the log-chunk publisher (tasks 64–69) and the
-// OpenJD progress-line parser (tasks 70–74).  An OutputHandler must be safe
+// Implementations include the log-chunk publisher and the
+// OpenJD progress-line parser. An OutputHandler must be safe
 // for concurrent use from multiple goroutines (multiple tasks may emit output
 // simultaneously).
 type OutputHandler interface {
@@ -66,7 +66,7 @@ type OutputHandler interface {
 
 // LogFlusher is an optional interface that an [OutputHandler] may implement
 // to flush remaining buffered log output for a specific task attempt before
-// the terminal status message is published (task 68).
+// the terminal status message is published.
 //
 // If the configured OutputHandler also implements LogFlusher, the executor
 // calls FlushLogs immediately after the task process exits and before
@@ -151,14 +151,14 @@ type Config struct {
 
 	// AllowRoot, when true, allows the worker to run as the root user on
 	// Linux/macOS.  [CheckRootUser] returns an error if this is false and the
-	// process UID is 0 (task 57).
+	// process UID is 0.
 	AllowRoot bool
 }
 
 // ── CancelRegistrar ───────────────────────────────────────────────────────────
 
 // CancelRegistrar is an optional hook that the executor calls to subscribe to
-// and unsubscribe from per-task cancel NATS messages (task 80).
+// and unsubscribe from per-task cancel NATS messages.
 //
 // Register is called after the per-task context is set up, immediately before
 // the task process starts.  Deregister is called when the task goroutine exits.
@@ -186,12 +186,12 @@ type taskRun struct {
 
 	// pid is set after the OS process has been started successfully.
 	pid int
-	// startedAt is the wall-clock time of os.Process.Start() (task 53).
+	// startedAt is the wall-clock time of os.Process.Start().
 	startedAt time.Time
 
 	// cancelFunc is the per-task context cancellation function, set by
 	// runTask after creating taskCtx.  External Cancel() calls use it to
-	// interrupt the running process via SIGTERM → SIGKILL escalation (task 80).
+	// interrupt the running process via SIGTERM → SIGKILL escalation.
 	// Protected by Executor.mu; nil until runTask sets it.
 	cancelFunc context.CancelFunc
 
@@ -208,8 +208,7 @@ type taskRun struct {
 // Create an instance with [New] and wire it into the pull loop and heartbeat
 // publisher.  Call [CheckRootUser] before creating an Executor to verify the
 // process is not running as root.  After construction, call
-// [SetCancelRegistrar] to wire in the NATS cancel subscription handler
-// (task 80).
+// [SetCancelRegistrar] to wire in the NATS cancel subscription handler.
 type Executor struct {
 	statusPub     *status.Publisher
 	sessionMgr    *session.Manager
@@ -228,7 +227,7 @@ type Executor struct {
 	lastAssignmentAt *time.Time
 
 	// cancelReg, if non-nil, is notified when tasks start and end so it can
-	// subscribe to per-task cancel NATS messages (task 80).
+	// subscribe to per-task cancel NATS messages.
 	// Protected by mu; set via SetCancelRegistrar before any Dispatch calls.
 	cancelReg CancelRegistrar
 
@@ -247,7 +246,7 @@ type Executor struct {
 	shuttingDown atomic.Bool
 
 	// wg tracks active task goroutines so DrainAndShutdown can block until all
-	// have published their terminal statuses and exited (tasks 86–87).
+	// have published their terminal statuses and exited.
 	wg sync.WaitGroup
 }
 
@@ -311,7 +310,7 @@ func New(
 // launches a goroutine that executes the task process.  Dispatch itself
 // returns quickly; the task goroutine runs independently.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
-	// Task 56: acquire a concurrency slot.
+	// Acquire a concurrency slot.
 	select {
 	case <-e.sem:
 		// Slot acquired.
@@ -320,7 +319,7 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 			e.ActiveTaskCount(), e.cfg.MaxConcurrentTasks)
 	}
 
-	// Create the session (tasks 43–45).  On failure, release the slot before
+	// Create the session. On failure, release the slot before
 	// returning so the pull loop can nack and another worker can try.
 	sess, err := e.sessionMgr.Create(ctx, msg)
 	if err != nil {
@@ -337,13 +336,13 @@ func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error 
 
 	// wg.Add(1) before addActiveTask closes the TOCTOU window: if DrainAndShutdown
 	// polls activeTasks and sees this task, the WaitGroup counter is already ≥1,
-	// so wg.Wait() will not return prematurely (tasks 86–87).
+	// so wg.Wait() will not return prematurely.
 	e.wg.Add(1)
 	e.addActiveTask(run)
 
 	// Launch the task goroutine.  ctx is the worker's signal context used only
 	// for log call context; task execution is gated on e.execCtx, which
-	// DrainAndShutdown cancels after the shutdown grace period (tasks 86–87).
+	// DrainAndShutdown cancels after the shutdown grace period.
 	go e.runTask(ctx, msg, sess, run) //nolint:gosec // G118: ctx used only for logging; e.execCtx governs task lifetime
 
 	return nil
@@ -401,12 +400,12 @@ func (e *Executor) removeActiveTask(taskID string) {
 	delete(e.activeTasks, taskID)
 	e.mu.Unlock()
 	e.m.ActiveTasks.Dec()
-	e.sem <- struct{}{} // release slot (task 56)
+	e.sem <- struct{}{} // release slot
 }
 
 // applyCancelFunc stores taskCancel in run (under e.mu) and calls it
 // immediately if Cancel() was called before runTask set up the context
-// (cancelRequested flag path, task 80).
+// (cancelRequested flag path).
 func (e *Executor) applyCancelFunc(run *taskRun, taskCancel context.CancelFunc) {
 	e.mu.Lock()
 	run.cancelFunc = taskCancel
@@ -418,7 +417,7 @@ func (e *Executor) applyCancelFunc(run *taskRun, taskCancel context.CancelFunc) 
 }
 
 // registerCancelSubscription subscribes to the per-task NATS cancel subject
-// via the configured CancelRegistrar (task 80).  It returns a cleanup
+// via the configured CancelRegistrar. It returns a cleanup
 // function that the caller must defer — it calls Deregister when the task
 // goroutine exits.
 //
@@ -459,7 +458,7 @@ func (e *Executor) lastProgress(attemptID string) *int {
 }
 
 // SetCancelRegistrar wires a [CancelRegistrar] into the executor so that
-// per-task NATS cancel subscriptions are managed automatically (task 80).
+// per-task NATS cancel subscriptions are managed automatically.
 //
 // Must be called before any task is dispatched; it is safe to call
 // concurrently with other methods but races with active Dispatch calls are
@@ -470,7 +469,7 @@ func (e *Executor) SetCancelRegistrar(cr CancelRegistrar) {
 	e.mu.Unlock()
 }
 
-// Cancel requests cancellation of the task identified by taskID (task 81).
+// Cancel requests cancellation of the task identified by taskID.
 //
 // If the task is actively executing its per-task context is canceled,
 // triggering the SIGTERM → SIGKILL escalation in the runTask goroutine.
@@ -570,7 +569,7 @@ func (e *Executor) DrainAndShutdown(gracePeriod time.Duration) (completed, kille
 }
 
 // FlushShutdownStatuses publishes a "failed"/"worker_shutdown" status for
-// every task currently in the active-tasks map (task 78).
+// every task currently in the active-tasks map.
 //
 // This must be called before draining the NATS connection during worker
 // shutdown so the server learns about task failures immediately rather than

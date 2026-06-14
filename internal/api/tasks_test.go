@@ -2,7 +2,7 @@
 
 package api
 
-// Unit tests for the task REST handlers — task 85.
+// Unit tests for the task REST handlers.
 //
 // Route coverage:
 //   GET  /api/v1/jobs/{id}/tasks   — listJobTasks

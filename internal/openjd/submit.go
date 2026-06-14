@@ -18,8 +18,7 @@ import (
 
 // Submitter handles the full OpenJD submission pipeline: parse, validate,
 // expand the parameter space, persist the normalized job/step/task rows
-// alongside the verbatim raw template, and enforce storage-location coverage
-// (task 66).
+// alongside the verbatim raw template, and enforce storage-location coverage.
 //
 // Create one with [NewSubmitter] and reuse it across requests.
 type Submitter struct {
@@ -107,7 +106,7 @@ func (s *Submitter) Submit(
 		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
 	}
 
-	// ── 2b. Validate named storage location coverage (task 66) ────────────
+	// ── 2b. Validate named storage location coverage ────────────
 	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
 		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
 	}
@@ -221,7 +220,7 @@ func (s *Submitter) Submit(
 	return result, nil
 }
 
-// ── Storage location validation (task 66) ────────────────────────────────────
+// ── Storage location validation ────────────────────────────────────
 
 // locRootCache maps location name → its roots map (or an error if not found).
 type locRootCache map[string]locRootEntry

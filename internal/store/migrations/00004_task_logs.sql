@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Task 59: structured log ingestion with monotonic sequence numbers.
+-- Structured log ingestion with monotonic sequence numbers.
 --
 -- task_logs stores log chunks published by workers to task.logs.<task>.
 -- Each row is one chunk of stdout/stderr output from a running task attempt.

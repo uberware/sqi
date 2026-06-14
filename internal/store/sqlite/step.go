@@ -12,7 +12,7 @@ import (
 // stepCols lists every column returned by step queries.
 // host_requirements is stored as a JSON object (see [store.StepHostRequirements]).
 // compute_location is a plain TEXT mirror of the computelocation attribute for
-// SQL-level pre-filtering in the scheduler assignment loop (task 50).
+// SQL-level pre-filtering in the scheduler assignment loop.
 const stepCols = `
 	id, job_id, name, depends_on, step_order, status,
 	host_requirements, compute_location, created_at, updated_at`

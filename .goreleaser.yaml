@@ -113,7 +113,7 @@ archives:
 # ── Checksums ────────────────────────────────────────────────────────────────
 #
 # SHA-256 digest file covering all release artifacts.
-# task 101 adds cosign artifact signing on top of this.
+# Adds cosign artifact signing on top of this.
 
 checksum:
   name_template: checksums.txt
@@ -122,7 +122,7 @@ checksum:
 # ── Changelog ────────────────────────────────────────────────────────────────
 #
 # Lightweight Conventional-Commits grouping for the GitHub release body.
-# task 101 generates a persistent CHANGELOG.md file from this same history.
+# Generates a persistent CHANGELOG.md file from this same history.
 
 changelog:
   sort: asc

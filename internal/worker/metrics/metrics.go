@@ -45,11 +45,11 @@ type Metrics struct {
 	ExecDuration *prometheus.HistogramVec
 
 	// NATSPublishedTotal counts messages published to the sqi-server NATS
-	// broker, labeled by subject. Populated by the NATS client in task 20.
+	// broker, labeled by subject. Populated by the NATS client.
 	NATSPublishedTotal *prometheus.CounterVec
 
 	// NATSConsumedTotal counts messages consumed from the sqi-server NATS
-	// broker, labeled by subject. Populated by the NATS client in task 20.
+	// broker, labeled by subject. Populated by the NATS client.
 	NATSConsumedTotal *prometheus.CounterVec
 
 	// UptimeSeconds is the wall-clock seconds since the worker process started.

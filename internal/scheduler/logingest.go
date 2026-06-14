@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Task 59: structured log ingestion that timestamps and persists log chunks
+// Structured log ingestion that timestamps and persists log chunks
 // with monotonic sequence numbers per task attempt.
 //
 // Workers publish [protocol.LogChunkMsg] values to task.logs.<taskID> as their

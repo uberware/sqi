@@ -285,6 +285,13 @@ WAL mode is always enabled (`PRAGMA journal_mode=WAL`). Foreign keys are
 enforced (`PRAGMA foreign_keys=ON`). A busy timeout of 5 s prevents immediate
 SQLITE_BUSY errors under concurrent write load.
 
+**Sessions are not a first-class table.** A session is an ephemeral,
+worker-side runtime grouping of task attempts (one setup/teardown environment
+reused across attempts). It is identified only by the `session_id` carried on
+`task_attempts` rows and on the status and log messages a worker publishes.
+Persisting sessions as their own table would add no scheduling value, so
+attempts reference a session by ID alone.
+
 ---
 
 ## sqi-client (Python library)

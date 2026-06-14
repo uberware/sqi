@@ -2,7 +2,7 @@
 
 package scheduler
 
-// matcher.go implements worker-to-task eligibility checking (task 50).
+// matcher.go implements worker-to-task eligibility checking.
 //
 // # Capability name conventions
 //

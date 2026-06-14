@@ -5,14 +5,14 @@
 // In resolved mode the server sends an ordered list of source→destination path
 // rules alongside a task assignment. The worker uses those rules to:
 //
-//  1. Validate that every rule has a concrete destination path (task 62).
+//  1. Validate that every rule has a concrete destination path.
 //  2. Apply string substitution to the task command and argument strings,
 //     replacing every occurrence of a source path with its destination path
-//     before launching the OS process (task 60).
+//     before launching the OS process.
 //  3. Write the standard OpenJD path_mapping.json file into the session
 //     working directory so that applications with native OpenJD path-mapping
 //     support can translate internally referenced paths without additional
-//     integration (task 61).
+//     integration.
 //
 // # Lookup
 //
@@ -46,7 +46,7 @@ import (
 )
 
 // PathMappingFileName is the name of the OpenJD path mapping file written
-// to each session working directory (task 61).
+// to each session working directory.
 const PathMappingFileName = "path_mapping.json"
 
 // ── Lookup ────────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ type Lookup struct {
 //
 // It returns a non-nil error if any rule with a non-empty SourcePathFormat
 // has an empty DestinationPath, identifying the offending source so operators
-// can diagnose a misconfigured storage location (task 62).
+// can diagnose a misconfigured storage location.
 //
 // Rules where both SourcePathFormat and DestinationPath are empty are accepted
 // silently — they carry no mapping information and [Lookup.Apply] skips them.
@@ -97,7 +97,7 @@ func (l *Lookup) Len() int {
 	return len(l.rules)
 }
 
-// Apply performs resolved-mode path substitution on s (task 60).
+// Apply performs resolved-mode path substitution on s.
 //
 // Each rule's SourcePathFormat is replaced with its DestinationPath, globally,
 // in declaration order.  A source path that appears more than once in s is
@@ -120,7 +120,7 @@ func (l *Lookup) Apply(s string) string {
 }
 
 // ApplyToAction returns a copy of action with [Apply] applied to
-// action.Command and each element of action.Args (task 60).
+// action.Command and each element of action.Args.
 //
 // The original action is not modified.  If action is nil or the Lookup
 // has no rules, action is returned unchanged.
@@ -152,7 +152,7 @@ type pathMappingEntry struct {
 }
 
 // WritePathMappingFile serializes rules as JSON and writes them to
-// <workDir>/path_mapping.json (task 61).
+// <workDir>/path_mapping.json.
 //
 // The file format is a JSON array of objects with "source_path_format" and
 // "destination_path" keys, matching the OpenJD path mapping specification.

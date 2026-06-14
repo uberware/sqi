@@ -6,11 +6,11 @@
 --   - JSON columns are TEXT; PostgreSQL migration can promote them to JSONB.
 --   - Timestamps are TEXT in ISO 8601 (YYYY-MM-DDTHH:MM:SS.sssZ).
 --   - Schema avoids SQLite-specific type affinity quirks to ease future
---     migration to PostgreSQL (tasks 26-27, deferred Phase 4 work).
+--     migration to PostgreSQL (deferred Phase 4 work).
 --   - Sessions are NOT a first-class table in Phase 1. The OpenJD session ID
 --     is recorded as session_id on task_attempts for grouping/attribution.
 --     A dedicated sessions table should be added when session-reuse scheduling
---     is implemented (see sqi.md §7.4).
+--     is implemented (see docs/architecture.md, "SQLite schema overview").
 
 -- +goose Up
 
@@ -190,7 +190,7 @@ CREATE TABLE task_attempts (
     task_id        TEXT    NOT NULL REFERENCES tasks (id),
     worker_id      TEXT    NOT NULL REFERENCES workers (id),
     -- OpenJD session ID reported by the worker; groups attempts that shared a session.
-    -- See sqi.md §7.4 for the rationale for not persisting sessions as first-class rows.
+    -- See docs/architecture.md ("SQLite schema overview") for why sessions are not first-class rows.
     session_id     TEXT,
     attempt_number INTEGER NOT NULL DEFAULT 1,
     -- 'running' | 'succeeded' | 'failed' | 'canceled'

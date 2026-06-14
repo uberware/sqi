@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Goreleaser-specific Dockerfile for sqi-worker.
-# Alpine-based (per sqi.md §9.3).
+# Alpine-based (see docs/worker-docker.md, "Image").
 #
 # Goreleaser builds the binary for the target platform before invoking Docker,
 # then copies it into the image context at the path below. This Dockerfile

@@ -2,7 +2,7 @@
 
 //go:build windows
 
-// Task 84: Windows-compatible process termination.
+// Windows-compatible process termination.
 //
 // Windows does not support POSIX signals.  sendTERM uses "taskkill /T /PID"
 // (terminate the process tree without /F, which can allow GUI processes to

@@ -39,7 +39,7 @@ type BrokerConfig struct {
 //
 // After [Broker.Start] returns successfully, callers can obtain the server's
 // client URL via [Broker.ClientURL] to establish their own NATS connections.
-// The typed per-subsystem client wrapper lives in task 36.
+// The typed per-subsystem client wrapper is [Client] in client.go.
 type Broker struct {
 	cfg    BrokerConfig
 	logger *slog.Logger

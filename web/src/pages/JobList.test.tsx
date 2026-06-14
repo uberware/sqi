@@ -217,7 +217,7 @@ describe('JobList', () => {
     })
   })
 
-  describe('status filter (task 38)', () => {
+  describe('status filter', () => {
     it('renders all status filter pills', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
 
@@ -266,7 +266,7 @@ describe('JobList', () => {
     })
   })
 
-  describe('search input (task 39)', () => {
+  describe('search input', () => {
     it('renders the search input', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
 
@@ -311,7 +311,7 @@ describe('JobList', () => {
     })
   })
 
-  describe('per-row cancel (task 41)', () => {
+  describe('per-row cancel', () => {
     it('shows Cancel button for running jobs', async () => {
       const job = makeJob({ status: 'running', name: 'Running Job' })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
@@ -352,7 +352,7 @@ describe('JobList', () => {
     })
   })
 
-  describe('bulk cancel (task 42)', () => {
+  describe('bulk cancel', () => {
     it('shows selection checkboxes', async () => {
       const job = makeJob({ status: 'running' })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
@@ -428,9 +428,9 @@ describe('JobList', () => {
     })
   })
 
-  // ── Task 57: WS job-list updates ─────────────────────────────────────────────
+  // ── WS job-list updates ─────────────────────────────────────────────
 
-  describe('websocket job-list updates (task 57)', () => {
+  describe('websocket job-list updates', () => {
     it('updates the status badge when a JobEvent arrives for a visible job', async () => {
       const job = makeJob({ id: 'job-ws-1', status: 'running', name: 'WS Job' })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
@@ -540,9 +540,9 @@ describe('JobList', () => {
     })
   })
 
-  // ── Task 59: last-updated timestamp ──────────────────────────────────────────
+  // ── Last-updated timestamp ──────────────────────────────────────────
 
-  describe('last-updated timestamp (task 59)', () => {
+  describe('last-updated timestamp', () => {
     it('shows a last-updated label after data loads', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
 
@@ -553,9 +553,9 @@ describe('JobList', () => {
     })
   })
 
-  // ── Task 60: manual refresh ───────────────────────────────────────────────────
+  // ── Manual refresh ───────────────────────────────────────────────────
 
-  describe('manual refresh button (task 60)', () => {
+  describe('manual refresh button', () => {
     it('renders a Refresh button', async () => {
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
 

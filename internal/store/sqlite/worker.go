@@ -59,7 +59,7 @@ UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?`
 	sqlListStaleWorkers = `SELECT ` + workerCols + `
 FROM workers WHERE status = 'online' AND last_heartbeat_at < ?`
 
-	// Online workers with no active (assigned or running) task (task 55).
+	// Online workers with no active (assigned or running) task.
 	// An empty farmID is handled in Go by choosing the appropriate variant.
 	sqlCountIdleWorkers = `
 SELECT COUNT(*)

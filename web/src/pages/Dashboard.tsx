@@ -23,7 +23,7 @@ function formatFailureTime(iso: string | undefined): string {
   })
 }
 
-// ── Workers summary card (task 79) ────────────────────────────────────────────
+// ── Workers summary card ────────────────────────────────────────────
 
 function WorkersCard() {
   const { data: onlineData } = useListWorkers({ status: 'online', limit: 1 })
@@ -96,7 +96,7 @@ function WorkersCard() {
   )
 }
 
-// ── Jobs summary card (task 80) ───────────────────────────────────────────────
+// ── Jobs summary card ───────────────────────────────────────────────
 
 function JobsCard() {
   const { data: runningData } = useListJobs({ status: 'running', limit: 1 })
@@ -158,7 +158,7 @@ function JobsCard() {
   )
 }
 
-// ── Recent failures widget (task 81) ──────────────────────────────────────────
+// ── Recent failures widget ──────────────────────────────────────────
 
 const FAILURES_PARAMS = {
   status: 'failed' as const,
@@ -222,7 +222,7 @@ function RecentFailuresWidget() {
   )
 }
 
-// ── Dashboard (tasks 78, 82) ──────────────────────────────────────────────────
+// ── Dashboard ──────────────────────────────────────────────────
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
@@ -244,7 +244,7 @@ export default function Dashboard() {
     [],
   )
 
-  // Task 82: subscribe to worker events — invalidate worker count queries.
+  // Subscribe to worker events — invalidate worker count queries.
   useWebSocket('workers', (payload) => {
     if (!isWorkerEvent(payload)) return
     void queryClient.invalidateQueries({
@@ -258,7 +258,7 @@ export default function Dashboard() {
     })
   })
 
-  // Task 82: subscribe to job events — invalidate job count and recent failures queries.
+  // Subscribe to job events — invalidate job count and recent failures queries.
   useWebSocket('jobs', (payload) => {
     if (!isJobEvent(payload)) return
     // Invalidate the affected status count immediately so the card updates.
@@ -283,7 +283,7 @@ export default function Dashboard() {
     <div className={styles.page}>
       <PageHeader title="Dashboard" subtitle="Farm overview" />
 
-      {/* Task 82: prominent disconnect warning */}
+      {/* Prominent disconnect warning */}
       {isDisconnected && (
         <div className={styles.disconnectBanner} role="alert" data-testid="disconnect-banner">
           <span className={styles.disconnectIcon} aria-hidden="true">
@@ -294,13 +294,13 @@ export default function Dashboard() {
       )}
 
       <div className={styles.content}>
-        {/* Task 79 + 80: summary cards grid */}
+        {/* Summary cards grid */}
         <div className={styles.grid}>
           <WorkersCard />
           <JobsCard />
         </div>
 
-        {/* Task 81: recent failures widget (full width) */}
+        {/* Recent failures widget (full width) */}
         <RecentFailuresWidget />
       </div>
     </div>

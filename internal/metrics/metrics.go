@@ -12,11 +12,11 @@
 //
 //   - [Metrics.SchedulerQueueDepth], [Metrics.SchedulerTasksTotal],
 //     [Metrics.SchedulerAssignmentDuration], [Metrics.SchedulerIdleWorkers] —
-//     populated by the scheduler in tasks 46–55.
-//   - [Metrics.WorkersTotal] — populated by the worker registry in task 47.
+//     populated by the scheduler.
+//   - [Metrics.WorkersTotal] — populated by the worker registry.
 //   - [Metrics.NATSPublishedTotal], [Metrics.NATSConsumedTotal] — populated by
-//     the typed NATS client wrapper in task 36.
-//   - [Metrics.DBQueryDuration] — populated by the SQLite store in task 29.
+//     the typed NATS client wrapper.
+//   - [Metrics.DBQueryDuration] — populated by the SQLite store.
 package metrics
 
 import (
@@ -37,7 +37,7 @@ type Metrics struct {
 	// HTTPRequestsTotal counts completed HTTP requests, labeled by HTTP
 	// method, request path, and response status code.
 	//
-	// TODO(task 66): switch the "path" label to chi's route pattern
+	// TODO: switch the "path" label to chi's route pattern
 	// (chi.RouteContext(r.Context()).RoutePattern()) to avoid high cardinality
 	// from parameterised segments such as /api/v1/jobs/{id}.
 	HTTPRequestsTotal *prometheus.CounterVec
@@ -49,12 +49,12 @@ type Metrics struct {
 	// ── Scheduler ─────────────────────────────────────────────────────────────
 
 	// SchedulerQueueDepth is the current number of ready tasks waiting for
-	// assignment in each named queue. Set by the scheduler (tasks 46–55).
+	// assignment in each named queue. Set by the scheduler.
 	SchedulerQueueDepth *prometheus.GaugeVec
 
 	// SchedulerTasksTotal counts task completions, labeled by queue name and
 	// terminal status (succeeded, failed, canceled). Incremented by the
-	// scheduler (tasks 46–55).
+	// scheduler.
 	SchedulerTasksTotal *prometheus.CounterVec
 
 	// SchedulerAssignmentDuration records the wall-clock time spent in a
@@ -63,44 +63,42 @@ type Metrics struct {
 	//   - "deferred"  — no eligible worker or policy blocked; task stays ready.
 	//   - "error"     — an unexpected error aborted the attempt.
 	//
-	// Populated by the scheduler assignment loop (task 55).
+	// Populated by the scheduler assignment loop.
 	SchedulerAssignmentDuration *prometheus.HistogramVec
 
 	// SchedulerIdleWorkers is the current count of online workers that have no
 	// task in 'assigned' or 'running' state, partitioned by farm ID.
-	// Updated by the scheduler after each worker-registry or sweep event
-	// (task 55).
+	// Updated by the scheduler after each worker-registry or sweep event.
 	SchedulerIdleWorkers *prometheus.GaugeVec
 
 	// ── Workers ───────────────────────────────────────────────────────────────
 
 	// WorkersTotal is the current number of registered workers, partitioned by
-	// status: online, offline, or disabled. Set by the worker registry
-	// (task 47).
+	// status: online, offline, or disabled. Set by the worker registry.
 	WorkersTotal *prometheus.GaugeVec
 
 	// ── NATS JetStream ────────────────────────────────────────────────────────
 
 	// NATSPublishedTotal counts messages published to the embedded NATS broker,
-	// labeled by subject. Incremented by the typed bus client (task 36).
+	// labeled by subject. Incremented by the typed bus client.
 	NATSPublishedTotal *prometheus.CounterVec
 
 	// NATSConsumedTotal counts messages consumed from the embedded NATS broker,
-	// labeled by subject. Incremented by the typed bus client (task 36).
+	// labeled by subject. Incremented by the typed bus client.
 	NATSConsumedTotal *prometheus.CounterVec
 
 	// ── SQLite store ──────────────────────────────────────────────────────────
 
 	// DBQueryDuration records SQLite query execution time in seconds, labeled
 	// by operation name (e.g. "job.insert", "task.list"). Observed by the store
-	// implementation (task 29).
+	// implementation.
 	DBQueryDuration *prometheus.HistogramVec
 
 	// ── License pools ─────────────────────────────────────────────────────────
 
 	// LicenseActiveCheckouts is the current number of active (unreleased)
 	// license checkouts for each named pool. Updated by the scheduler on every
-	// dispatch tick (task 68).
+	// dispatch tick.
 	LicenseActiveCheckouts *prometheus.GaugeVec
 }
 

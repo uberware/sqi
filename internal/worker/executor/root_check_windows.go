@@ -9,7 +9,7 @@ import "log/slog"
 // isRunningAsRoot always returns false on Windows.  Administrator privilege
 // detection on Windows requires checking group membership via the Windows
 // security APIs, which is out of scope for Phase 1.  The root-user check is
-// a Linux/macOS concern (sqi.md §18, open question 2).
+// a Linux/macOS concern (see docs/worker-configuration.md, "worker.allow_root").
 func isRunningAsRoot() bool {
 	return false
 }

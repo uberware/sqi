@@ -71,6 +71,6 @@ type TaskLogStore interface {
 	// maximum number of chunks returned.
 	//
 	// This method is used by the REST log-tail endpoint and by the WebSocket
-	// log-streaming handler (tasks 73 and 83).
+	// log-streaming handler.
 	ListTaskLogs(ctx context.Context, attemptID string, afterNATSSeq int64, limit int) ([]TaskLog, error)
 }

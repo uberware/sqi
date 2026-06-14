@@ -14,7 +14,7 @@ type Farm struct {
 	ID                 string
 	Name               string
 	Description        string
-	MaxConcurrentTasks int // 0 = unlimited; task 51 farm-level policy
+	MaxConcurrentTasks int // 0 = unlimited; farm-level policy
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }

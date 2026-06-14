@@ -19,7 +19,7 @@ import (
 //     returns, labeled by method and path.
 //
 // The "path" label is currently set to r.URL.Path. Once REST endpoints with
-// path parameters are added (tasks 71+), replace this with chi's route pattern
+// path parameters are added, replace this with chi's route pattern
 // via chi.RouteContext(r.Context()).RoutePattern() to prevent high cardinality
 // from parameterised segments such as /api/v1/jobs/{id}.
 func RequestMetrics(m *metrics.Metrics) func(http.Handler) http.Handler {

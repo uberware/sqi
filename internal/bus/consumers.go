@@ -56,7 +56,7 @@ func sanitizeConsumerToken(s string) string {
 	}, s)
 }
 
-// ── Work assignment — pull consumer (task 37) ─────────────────────────────────
+// ── Work assignment — pull consumer ─────────────────────────────────
 
 // EnsureWorkConsumer creates or updates the durable pull consumer for
 // task-assignment messages on the given queue, then returns it.
@@ -68,13 +68,13 @@ func sanitizeConsumerToken(s string) string {
 // Workers then loop calling Fetch (or FetchNoWait) to pull their next
 // assignment.
 //
-// Ack / redelivery policy (task 38):
+// Ack / redelivery policy:
 //   - AckWait 30 s — worker must acknowledge within 30 s of fetching.
-//     The worker protocol (task 56) sends an explicit nack immediately on
+//     The worker protocol sends an explicit nack immediately on
 //     rejection so this is a safety net, not the normal path.
 //   - MaxDeliver 5 — unacknowledged assignments are retried up to 5 times.
 //     After that the stream's MaxAge (5 min) discards the message.  The
-//     scheduler's heartbeat sweep (task 48) reclaims the task and re-publishes
+//     scheduler's heartbeat sweep reclaims the task and re-publishes
 //     a fresh assignment, so an exhausted consumer entry never causes permanent
 //     loss.
 //   - DeliverAllPolicy — required by NATS WorkQueuePolicy streams; DeliverNew
@@ -107,7 +107,7 @@ func (c *Client) EnsureWorkConsumer(ctx context.Context, queueID string) (jetstr
 // handler.  The returned ConsumeContext is tracked internally and stopped
 // automatically during [Client.Drain].
 //
-// Ack / redelivery policy (task 38):
+// Ack / redelivery policy:
 //   - AckWait 30 s — the server has 30 s to persist a status update to SQLite
 //     before NATS redelivers.
 //   - MaxDeliver 10 — allows for transient DB errors without dropping updates.
@@ -146,7 +146,7 @@ func (c *Client) ConsumeTaskStatus(ctx context.Context, handler jetstream.Messag
 // The returned ConsumeContext is tracked internally and stopped automatically
 // during [Client.Drain].
 //
-// Ack / redelivery policy (task 38 extension):
+// Ack / redelivery policy:
 //   - AckWait 30 s — the server has 30 s to persist a log chunk to SQLite.
 //     The SQLite write path is a single INSERT so this window is very generous.
 //   - MaxDeliver 5 — allows for transient DB errors without re-filling the
@@ -185,7 +185,7 @@ func (c *Client) ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageH
 // delivering them to handler.  The returned ConsumeContext is tracked
 // internally and stopped automatically during [Client.Drain].
 //
-// Ack / redelivery policy (task 38):
+// Ack / redelivery policy:
 //   - AckWait 10 s — heartbeats are time-sensitive; a 10 s window is well
 //     within the scheduler's heartbeat-timeout sweep interval (≈30 s) so
 //     delays are caught before workers are incorrectly marked offline.

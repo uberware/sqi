@@ -2,14 +2,14 @@
 
 package api
 
-// Worker REST handlers — tasks 79–80.
+// Worker REST handlers.
 //
 // Route summary:
 //
-//	GET  /api/v1/workers              — list workers with pagination + filters (task 79)
-//	GET  /api/v1/workers/{id}         — worker detail with capability and current-task (task 79)
-//	POST /api/v1/workers/{id}/disable — administratively pause a worker (task 80)
-//	POST /api/v1/workers/{id}/enable  — re-enable a disabled worker (task 80)
+//	GET /api/v1/workers — list workers with pagination + filters
+//	GET /api/v1/workers/{id} — worker detail with capability and current-task
+//	POST /api/v1/workers/{id}/disable — administratively pause a worker
+//	POST /api/v1/workers/{id}/enable — re-enable a disabled worker
 
 import (
 	"errors"

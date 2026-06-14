@@ -48,7 +48,7 @@ func TestParse_valid(t *testing.T) {
 
 // TestParse_emptyDestinationPath verifies that a rule with an empty
 // DestinationPath causes Parse to return an error identifying the offending
-// source path (task 62).
+// source path.
 func TestParse_emptyDestinationPath(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -113,7 +113,7 @@ func TestParse_bothFieldsEmpty(t *testing.T) {
 }
 
 // TestApply is the primary table-driven test for resolved-mode path
-// substitution (task 63).
+// substitution.
 func TestApply(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -343,7 +343,7 @@ func TestApplyToAction_noArgs(t *testing.T) {
 // ── WritePathMappingFile ──────────────────────────────────────────────────────
 
 // TestWritePathMappingFile verifies that the JSON file is created with the
-// correct content and that an empty rules slice produces no file (task 61).
+// correct content and that an empty rules slice produces no file.
 func TestWritePathMappingFile(t *testing.T) {
 	t.Run("writes file with correct content", func(t *testing.T) {
 		dir := t.TempDir()

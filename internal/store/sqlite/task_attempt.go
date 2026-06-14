@@ -83,7 +83,7 @@ WHERE status = 'running'
   )`
 
 	// sqlCancelJobAttempts closes out all running attempts for tasks belonging
-	// to the given job (task 54). Should be called before CancelJobTasks so
+	// to the given job. Should be called before CancelJobTasks so
 	// that task_attempts.ended_at is recorded before the task rows are updated.
 	sqlCancelJobAttempts = `
 UPDATE task_attempts

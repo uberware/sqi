@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Task 58: task-assignment publishing that respects per-worker pull semantics
+// Task-assignment publishing that respects per-worker pull semantics
 // and includes the full task payload (resolved command, env, path map).
 //
 // buildAssignPayload now:
@@ -15,7 +15,7 @@ package scheduler
 //  4. Populates PathMap with path-mapping rules (openjd mode) generated from
 //     all registered storage locations for the worker's compute location.
 //  5. Resolves loc:// URI references in command args, env vars, and task
-//     parameters to concrete local paths (resolved mode, task 65).
+// parameters to concrete local paths (resolved mode).
 //
 // Pull semantics:
 // Workers pull assignments from their per-queue durable JetStream pull consumer
@@ -128,7 +128,7 @@ func buildAssignPayload(
 	// path-mapping support can translate paths themselves.
 	msg.PathMap = buildPathMap(allLocs, worker.ComputeLocation)
 
-	// ── Resolved-mode path translation (task 65) ───────────────────────────
+	// ── Resolved-mode path translation ───────────────────────────
 	// Replace any loc:// URI references in the command, args, task parameters,
 	// and environment variables with concrete local paths for this worker.
 	// This ensures workers with no OpenJD path-mapping support see only

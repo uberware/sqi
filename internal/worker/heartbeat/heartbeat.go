@@ -11,7 +11,7 @@
 // active task IDs, uptime, last assignment time) so the server can detect
 // stale assignments without additional store queries.
 //
-// # Watchdog (task 32)
+// # Watchdog
 //
 // [Publisher.Run] also spawns an internal watchdog goroutine that polls the
 // NATS connection status every [watchdogPollInterval]. When it observes a
@@ -22,7 +22,7 @@
 // where the callback's publish fails or is lost without producing a duplicate
 // registration on every normal reconnect.
 //
-// # Latency warning (task 33)
+// # Latency warning
 //
 // After publishing a heartbeat the Publisher calls [nats.Conn.FlushTimeout]
 // to drain the NATS outbound buffer to the TCP layer. If the flush does not
@@ -33,7 +33,7 @@
 // # StateSource
 //
 // [StateSource] is the interface through which the Publisher reads live task
-// state. It is satisfied by the executor (tasks 49+). Until the executor
+// state. It is satisfied by the executor. Until the executor
 // exists, callers pass a [NoopStateSource] which reports zero active tasks.
 package heartbeat
 
@@ -63,7 +63,7 @@ type natsConn interface {
 const watchdogPollInterval = 500 * time.Millisecond
 
 // StateSource provides the Publisher with live task-execution state.
-// Implemented by the executor package (tasks 49+); use [NoopStateSource]
+// Implemented by the executor package; use [NoopStateSource]
 // until then.
 type StateSource interface {
 	// ActiveTaskCount returns the number of task processes currently running.
@@ -80,7 +80,7 @@ type StateSource interface {
 }
 
 // NoopStateSource is a [StateSource] that always reports zero active tasks.
-// Use it before the executor is available (tasks 49+).
+// Use it before the executor is available.
 type NoopStateSource struct{}
 
 // ActiveTaskCount always returns 0.
@@ -195,7 +195,7 @@ func (p *Publisher) Run(ctx context.Context) {
 }
 
 // publish builds and sends one HeartbeatMsg. After the fire-and-forget
-// Publish call, it flushes the NATS outbound buffer with FlushTimeout (task 33):
+// Publish call, it flushes the NATS outbound buffer with FlushTimeout:
 // if the TCP send buffer does not drain within half the configured interval,
 // backpressure is building and the NATS server or network path is likely under
 // strain.
@@ -234,7 +234,7 @@ func (p *Publisher) publish(ctx context.Context) {
 		return
 	}
 
-	// Task 33: flush the outbound write buffer and measure the drain time.
+	// Flush the outbound write buffer and measure the drain time.
 	// nc.Publish is fire-and-forget (it copies the payload into an in-process
 	// buffer); FlushTimeout blocks until the OS TCP send buffer accepts the
 	// data. A slow or timed-out flush means the network connection or NATS
@@ -266,7 +266,7 @@ func (p *Publisher) publish(ctx context.Context) {
 // runWatchdog polls the NATS connection status on [watchdogPollInterval] and
 // triggers re-registration when it observes a transition from a non-connected
 // state back to connected — but only if the reconnect callback installed by
-// registration.Registrar.SetupReconnectHook did not already succeed (task 32).
+// registration.Registrar.SetupReconnectHook did not already succeed.
 //
 // The coordination mechanism: the watchdog records the time it first observed
 // the connection going down (disconnectedAt). On reconnect, it checks whether

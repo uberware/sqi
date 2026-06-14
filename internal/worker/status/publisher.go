@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package status implements the typed task-status publisher for sqi-worker
-// (tasks 75–79).
+// Package status implements the typed task-status publisher for sqi-worker.
 //
 // A [Publisher] publishes task state-transition messages to the
 // task.status.<job> NATS subject.  It covers the four transitions the worker
-// is responsible for: "running" (task 75, 77), "succeeded", "failed", and
-// "canceled" (task 75).
+// is responsible for: "running", "succeeded", "failed", and "canceled".
 //
-// # Fields (task 76)
+// # Fields
 //
 // Every message includes worker_id (injected from [Config.WorkerID]) and
 // last_progress (the most-recently seen openjd_progress value, passed
 // explicitly by the caller so the publisher remains stateless).
 //
-// # Retry logic (task 79)
+// # Retry logic
 //
 // [Publisher.publishWithRetry] retries transient NATS publish failures up to
 // [Config.MaxRetries] times with exponential backoff starting at
@@ -23,7 +21,7 @@
 // the failure is logged at warning level and the function returns — status
 // loss is preferable to deadlocking the shutdown sequence.
 //
-// # Shutdown flush (task 78)
+// # Shutdown flush
 //
 // [Publisher.ShutdownFailed] publishes a "failed" status with message
 // "worker_shutdown" for every task in a provided list.  It must be called
@@ -63,11 +61,11 @@ type natsPublisher interface {
 // Config holds tunable parameters for a [Publisher].
 // Zero-value fields are replaced with package defaults when [New] is called.
 type Config struct {
-	// WorkerID is embedded in every outgoing status message (task 76).
+	// WorkerID is embedded in every outgoing status message.
 	WorkerID string
 
 	// MaxRetries is the number of retry attempts after an initial publish
-	// failure (task 79).  Default: 3.
+	// failure. Default: 3.
 	MaxRetries int
 
 	// RetryDelay is the base backoff duration before the first retry.
@@ -78,10 +76,10 @@ type Config struct {
 
 // ── Publisher ─────────────────────────────────────────────────────────────────
 
-// Publisher publishes typed task-status messages to task.status.<job> (task 75).
+// Publisher publishes typed task-status messages to task.status.<job>.
 //
-// It injects worker_id and last_progress into every message (task 76) and
-// retries transient NATS publish failures with exponential backoff (task 79).
+// It injects worker_id and last_progress into every message and
+// retries transient NATS publish failures with exponential backoff.
 //
 // Publisher is safe for concurrent use from multiple goroutines.
 type Publisher struct {
@@ -105,7 +103,7 @@ func New(nc natsPublisher, cfg Config, logger *slog.Logger) *Publisher {
 // ── Public methods ────────────────────────────────────────────────────────────
 
 // Running publishes a "running" status message immediately after the task
-// process is successfully launched (tasks 75, 77).
+// process is successfully launched.
 //
 // lastProgress is the most-recently seen openjd_progress value for this
 // attempt, or nil if none has been emitted yet.  For the initial "running"
@@ -133,7 +131,7 @@ func (p *Publisher) Running(
 }
 
 // Terminal publishes a terminal status message: "succeeded", "failed", or
-// "canceled" (task 75).
+// "canceled".
 //
 // exitCode must be non-nil for "succeeded" and "failed" states; it should be
 // nil for "canceled" where a meaningful exit code is unavailable (the process
@@ -170,7 +168,7 @@ func (p *Publisher) Terminal(
 // ── ShutdownTask ──────────────────────────────────────────────────────────────
 
 // ShutdownTask carries the minimum information needed to publish a
-// "worker_shutdown" failed status for an in-flight task (task 78).
+// "worker_shutdown" failed status for an in-flight task.
 type ShutdownTask struct {
 	TaskID    string
 	AttemptID string
@@ -179,7 +177,7 @@ type ShutdownTask struct {
 }
 
 // ShutdownFailed publishes a "failed" status with message "worker_shutdown"
-// for every task in tasks (task 78).
+// for every task in tasks.
 //
 // This MUST be called before draining the NATS connection during worker
 // shutdown so the server learns about task failures immediately rather than
@@ -211,7 +209,7 @@ func (p *Publisher) ShutdownFailed(ctx context.Context, tasks []ShutdownTask) {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 // publishWithRetry marshals msg and publishes it to task.status.<job> with up
-// to cfg.MaxRetries retries on failure, using exponential backoff (task 79).
+// to cfg.MaxRetries retries on failure, using exponential backoff.
 //
 // On a transient NATS failure the method waits cfg.RetryDelay (doubling each
 // attempt) before retrying.  If ctx is canceled during a retry wait the
@@ -260,8 +258,8 @@ func (p *Publisher) publishWithRetry(ctx context.Context, msg protocol.TaskStatu
 			)
 		}
 
-		// Wait before retrying, but abort early if ctx is canceled (task 79:
-		// "status loss is better than deadlocking the shutdown sequence").
+		// Wait before retrying, but abort early if ctx is canceled: status loss
+		// is better than deadlocking the shutdown sequence.
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

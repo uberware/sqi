@@ -132,8 +132,8 @@ worker:
 
   # Allow the worker to run as the root user on Linux and macOS. Disabled by
   # default because executing render processes as root is a security risk (see
-  # sqi.md §18, open question 2). Enable only when running inside a container
-  # where root is expected, or when you understand and accept the risk.
+  # docs/worker-configuration.md, "worker.allow_root"). Enable only when running
+  # inside a container where root is expected, or when you accept the risk.
   # Type: bool   Env: SQI_WORKER_ALLOW_ROOT
   allow_root: false
 
@@ -233,7 +233,7 @@ discovery:
 
 # ── Log chunk publisher ───────────────────────────────────────────────────────
 # Controls how task process stdout/stderr is batched and streamed to sqi-server
-# via NATS JetStream (tasks 64–69).  Tune these values to balance NATS message
+# via NATS JetStream. Tune these values to balance NATS message
 # overhead against how live the web UI log viewer feels.
 log_streamer:
   # Maximum number of output lines batched into a single NATS message.

@@ -15,8 +15,8 @@
 //	// REST handler only needs jobs and queues.
 //	func NewJobHandler(jobs store.JobStore, queues store.QueueStore) *JobHandler
 //
-// The SQLite-backed implementation (task 29) implements Store in full.
-// The in-memory fake (task 32) also implements Store in full, used by unit
+// The SQLite-backed implementation implements Store in full.
+// The in-memory fake also implements Store in full, used by unit
 // tests that must not touch the filesystem.
 //
 // # JSON columns

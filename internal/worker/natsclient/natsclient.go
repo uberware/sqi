@@ -6,9 +6,9 @@
 // broker — the worker connects to a remote NATS server hosted by sqi-server.
 // The connection is configured with:
 //
-//   - Exponential backoff reconnection with jitter (task 21) so a worker
+//   - Exponential backoff reconnection with jitter so a worker
 //     restart storm does not spike load on the server.
-//   - Optional TLS (task 22), including mutual TLS and InsecureSkipVerify for
+//   - Optional TLS, including mutual TLS and InsecureSkipVerify for
 //     development environments.
 //   - Structured slog logging for all lifecycle events (connect, disconnect,
 //     reconnect, close).
@@ -65,7 +65,7 @@ const (
 // connection transitions to a closed state and the returned closedCh is closed.
 //
 // Callers should select on closedCh to detect permanent disconnects that occur
-// outside of a planned shutdown sequence (task 24).
+// outside of a planned shutdown sequence.
 func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
 	// closedCh is closed by the ClosedHandler callback when the NATS connection
 	// permanently closes (MaxReconnects exhausted or explicit nc.Close() call).
@@ -119,12 +119,12 @@ func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 
 // buildOptions assembles the nats.Option slice from WorkerNATSConfig.
 // closedCh is closed by the ClosedHandler when the connection permanently
-// closes so callers can detect unexpected disconnects (task 24).
+// closes so callers can detect unexpected disconnects.
 func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger, closedCh chan struct{}) ([]nats.Option, error) {
 	opts := []nats.Option{
 		nats.MaxReconnects(cfg.MaxReconnectAttempts),
 
-		// ── Exponential backoff with jitter (task 21) ──────────────────────
+		// ── Exponential backoff with jitter ──────────────────────
 		//
 		// CustomReconnectDelay replaces the fixed ReconnectWait with a
 		// function that receives the number of attempts elapsed and returns
@@ -151,7 +151,7 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 		// ClosedHandler fires when the connection transitions to the CLOSED
 		// state: either MaxReconnects was exhausted or the connection was
 		// explicitly closed. Closing closedCh signals any goroutine that is
-		// watching for unexpected permanent disconnects (task 24).
+		// watching for unexpected permanent disconnects.
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			logger.InfoContext(ctx, "natsclient: connection closed")
 			close(closedCh)
@@ -161,7 +161,7 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 		}),
 	}
 
-	// ── TLS (task 22) ──────────────────────────────────────────────────────
+	// ── TLS ──────────────────────────────────────────────────────
 	tlsOpts, err := buildTLSOptions(cfg)
 	if err != nil {
 		return nil, err

@@ -1,6 +1,6 @@
 # `docs/`
 
-Long-form documentation for `sqi-server` operators and contributors. Phase 1 deliverables (tasks 105–112):
+Long-form documentation for `sqi-server` operators and contributors. Phase 1 deliverables:
 
 - `architecture.md` — component layout and job-lifecycle data flow
 - `configuration.md` — every config option with type, default, env var, example

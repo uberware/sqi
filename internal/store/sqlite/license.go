@@ -117,14 +117,14 @@ UPDATE license_checkouts SET released_at = ? WHERE id = ?`
 SELECT COUNT(*) FROM license_checkouts
 WHERE pool_id = ? AND released_at IS NULL`
 
-	// Releases all active checkouts for a given task attempt (task 52).
+	// Releases all active checkouts for a given task attempt.
 	sqlReleaseAttemptCheckouts = `
 UPDATE license_checkouts
 SET released_at = ?
 WHERE task_attempt_id = ? AND released_at IS NULL`
 
 	// Releases all active checkouts held by any attempt belonging to the given
-	// job (task 54). Used during job cancellation to free all license slots in
+	// job. Used during job cancellation to free all license slots in
 	// a single UPDATE rather than iterating through individual attempts.
 	sqlReleaseJobCheckouts = `
 UPDATE license_checkouts

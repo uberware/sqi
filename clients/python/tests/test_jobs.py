@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for job query and management (tasks 34-41).
+"""Tests for job query and management.
 
 HTTP is mocked at the transport layer with respx; no server runs.
 """
@@ -42,7 +42,7 @@ def _page(items: list[dict[str, Any]], *, total: int, limit: int, offset: int) -
     )
 
 
-# ── list_jobs (task 34) ───────────────────────────────────────────────────────
+# ── list_jobs ───────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -113,7 +113,7 @@ def test_list_jobs_omits_none_filters(make_client: ClientFactory) -> None:
         assert absent not in params
 
 
-# ── iter_jobs (task 35) ───────────────────────────────────────────────────────
+# ── iter_jobs ───────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -159,7 +159,7 @@ def test_iter_jobs_passes_filters_on_every_page(make_client: ClientFactory) -> N
         assert params["owner"] == "bob"
 
 
-# ── get_job (task 36) ─────────────────────────────────────────────────────────
+# ── get_job ─────────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -198,7 +198,7 @@ def test_get_job_missing_raises_not_found(make_client: ClientFactory) -> None:
         client.get_job("nope")
 
 
-# ── pause / resume (task 37) ──────────────────────────────────────────────────
+# ── pause / resume ──────────────────────────────────────────────────
 
 
 @respx.mock
@@ -227,7 +227,7 @@ def test_resume_job_sends_action(make_client: ClientFactory) -> None:
     assert job.status is JobStatus.RUNNING
 
 
-# ── set_job_priority (task 38) ────────────────────────────────────────────────
+# ── set_job_priority ────────────────────────────────────────────────
 
 
 @respx.mock
@@ -255,7 +255,7 @@ def test_set_job_priority_rejects_below_minimum(make_client: ClientFactory) -> N
     assert not route.called
 
 
-# ── cancel_job (task 39) ──────────────────────────────────────────────────────
+# ── cancel_job ──────────────────────────────────────────────────────
 
 
 @respx.mock

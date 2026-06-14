@@ -2,11 +2,11 @@
 
 package api
 
-// WebSocket upgrade handler — tasks 87, 89–91.
+// WebSocket upgrade handler.
 //
 // This file implements the GET /api/v1/ws endpoint and the full WebSocket
-// connection lifecycle including subscriptions (task 89), hub fan-out
-// (task 90), and connection health management (task 91).
+// connection lifecycle including subscriptions, hub fan-out, and connection
+// health management.
 //
 // # Lifecycle
 //
@@ -14,7 +14,7 @@ package api
 //  2. authenticateWS runs (Phase 1: always passes; Phase 3 will validate tokens).
 //  3. websocket.Accept completes the handshake (101 Switching Protocols).
 //  4. readLoop starts and blocks for the lifetime of the connection:
-//       a. Registers the client with the hub and starts a send goroutine (task 90).
+// a. Registers the client with the hub and starts a send goroutine.
 //       b. Drives the server-side ping ticker (keep-alive + idle detection).
 //       c. Decodes inbound frames and dispatches to subscribe/unsubscribe/ping.
 //  5. On disconnect or context cancellation readLoop runs cleanup defers:
@@ -32,14 +32,14 @@ package api
 //
 // TypeUnsubscribe: removes the subscription from the hub for that subject.
 //
-// # Ping/pong and idle disconnect (task 91)
+// # Ping/pong and idle disconnect
 //
 // The server sends WebSocket ping frames every wsPingInterval.  The ping
 // goroutine also checks whether any frame has been received from the client
 // within wsIdleTimeout.  If not, the connection is closed with status 1001
 // (Going Away).
 //
-// # Sequence numbers and resumable subscriptions (task 91)
+// # Sequence numbers and resumable subscriptions
 //
 // Hub assigns a per-subject monotonically increasing sequence number (global
 // across connections) to every TypePush envelope.  Clients track the Seq of
@@ -292,7 +292,7 @@ func (wc *wsConn) readLoop(ctx context.Context) {
 	var pingWg, sendWg sync.WaitGroup
 	pingDone := make(chan struct{})
 
-	// ── Hub send goroutine (task 90) ──────────────────────────────────────────
+	// ── Hub send goroutine ──────────────────────────────────────────
 	// Started before cleanup defers so the send goroutine is running before
 	// hub.Deregister is registered as a cleanup step.
 	if wc.hub != nil {

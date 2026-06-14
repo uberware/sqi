@@ -245,7 +245,7 @@ func waitForStatus(t *testing.T, nc *stubNATS, n int, timeout time.Duration) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // TestExecutor_Dispatch_stdout verifies that stdout lines emitted by the
-// subprocess are captured and forwarded to the OutputHandler (task 52).
+// subprocess are captured and forwarded to the OutputHandler.
 func TestExecutor_Dispatch_stdout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec; covered separately on Windows")
@@ -289,7 +289,7 @@ func TestExecutor_Dispatch_stdout(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_stderr verifies that stderr lines are captured and
-// attributed to the "stderr" stream (task 52).
+// attributed to the "stderr" stream.
 func TestExecutor_Dispatch_stderr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -320,7 +320,7 @@ func TestExecutor_Dispatch_stderr(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_exitCode verifies that a non-zero exit code is treated
-// as a failure (task 54) and the exit code is included in the status message.
+// as a failure and the exit code is included in the status message.
 func TestExecutor_Dispatch_exitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -378,7 +378,7 @@ func TestExecutor_Dispatch_exitCodeZero(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_timeout verifies the SIGTERM → SIGKILL escalation
-// path (task 55): a process that sleeps longer than its timeout is killed and
+// path: a process that sleeps longer than its timeout is killed and
 // the task is marked failed with a timeout reason.
 func TestExecutor_Dispatch_timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -410,11 +410,11 @@ func TestExecutor_Dispatch_timeout(t *testing.T) {
 
 // TestExecutor_DrainAndShutdown_workerShutdown verifies that DrainAndShutdown
 // with a zero grace period force-kills in-flight tasks and causes them to
-// publish a "failed"/"worker_shutdown" terminal status (tasks 78, 87).
+// publish a "failed"/"worker_shutdown" terminal status.
 //
-// Prior to tasks 86–87, the equivalent test canceled the worker context
-// directly; the new design decouples task execution from the signal context so
-// that tasks survive SIGINT/SIGTERM and are only killed by DrainAndShutdown.
+// An earlier version of this test canceled the worker context directly; the
+// current design decouples task execution from the signal context so that
+// tasks survive SIGINT/SIGTERM and are only killed by DrainAndShutdown.
 func TestExecutor_DrainAndShutdown_workerShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -452,7 +452,7 @@ func TestExecutor_DrainAndShutdown_workerShutdown(t *testing.T) {
 
 // TestExecutor_DrainAndShutdown_allComplete verifies that when all tasks
 // complete within the grace period, DrainAndShutdown returns the correct
-// completed count with zero killed (task 86).
+// completed count with zero killed.
 func TestExecutor_DrainAndShutdown_allComplete(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -486,7 +486,7 @@ func TestExecutor_DrainAndShutdown_allComplete(t *testing.T) {
 
 // TestExecutor_DrainAndShutdown_mixed verifies that tasks completing within the
 // grace period are counted as completed and tasks still running after the grace
-// period are counted as killed and publish "failed"/"worker_shutdown" (task 87).
+// period are counted as killed and publish "failed"/"worker_shutdown".
 //
 // Both tasks are dispatched and confirmed started before DrainAndShutdown is
 // called so that both are in the initial snapshot.  The "medium" task sleeps
@@ -560,7 +560,7 @@ func TestExecutor_DrainAndShutdown_mixed(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_envMerge verifies that environment variables from
-// AssignEnvironment.Variables are passed to the subprocess (task 50).
+// AssignEnvironment.Variables are passed to the subprocess.
 func TestExecutor_Dispatch_envMerge(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -595,7 +595,7 @@ func TestExecutor_Dispatch_envMerge(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_atCapacity verifies that Dispatch returns a non-nil
-// error when all concurrency slots are occupied (task 56).
+// error when all concurrency slots are occupied.
 func TestExecutor_Dispatch_atCapacity(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -605,7 +605,7 @@ func TestExecutor_Dispatch_atCapacity(t *testing.T) {
 
 	// DrainAndShutdown(0) at cleanup ensures the sleeping goroutine is
 	// terminated when the test ends, preventing goroutine leaks and temp-dir
-	// races.  ctx cancel no longer kills task goroutines (tasks 86–87).
+	// races. ctx cancel no longer kills task goroutines.
 	t.Cleanup(func() { exec.DrainAndShutdown(0) })
 
 	// Dispatch a long-running task to fill the single slot.
@@ -627,7 +627,7 @@ func TestExecutor_Dispatch_atCapacity(t *testing.T) {
 }
 
 // TestExecutor_ActiveTaskCount verifies that ActiveTaskCount increments on
-// Dispatch and decrements when the task exits (task 56).
+// Dispatch and decrements when the task exits.
 func TestExecutor_ActiveTaskCount(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -664,7 +664,7 @@ func TestExecutor_ActiveTaskCount(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_sessionID verifies that every published status message
-// carries a non-empty SessionID (task 48).
+// carries a non-empty SessionID.
 func TestExecutor_Dispatch_sessionID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -724,7 +724,7 @@ func TestExecutor_LastAssignmentAt(t *testing.T) {
 }
 
 // TestExecutor_Dispatch_workerID verifies that every published status message
-// carries the worker_id injected via the status publisher (task 76).
+// carries the worker_id injected via the status publisher.
 func TestExecutor_Dispatch_workerID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -754,7 +754,7 @@ func TestExecutor_Dispatch_workerID(t *testing.T) {
 }
 
 // TestExecutor_FlushShutdownStatuses verifies that FlushShutdownStatuses
-// publishes "failed"/"worker_shutdown" for all active tasks (task 78).
+// publishes "failed"/"worker_shutdown" for all active tasks.
 func TestExecutor_FlushShutdownStatuses(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -816,12 +816,11 @@ func TestExecutor_FlushShutdownStatuses(t *testing.T) {
 	}
 }
 
-// ── Cancellation tests (task 85) ──────────────────────────────────────────────
+// ── Cancellation tests ──────────────────────────────────────────────
 
 // TestExecutor_Cancel_canceledStatus verifies that calling Cancel on an
 // in-progress task causes it to publish a "canceled" terminal status (not
-// "failed/worker_shutdown") and that the worker context is not canceled
-// (task 81, 83).
+// "failed/worker_shutdown") and that the worker context is not canceled.
 func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix signals; covered via taskkill path separately")
@@ -853,7 +852,7 @@ func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 }
 
 // TestExecutor_Cancel_taskNotFound verifies that Cancel returns false for an
-// unknown task ID (task 81).
+// unknown task ID.
 func TestExecutor_Cancel_taskNotFound(t *testing.T) {
 	exec, _, _ := newTestExecutor(t, 1, nil)
 
@@ -865,7 +864,7 @@ func TestExecutor_Cancel_taskNotFound(t *testing.T) {
 
 // TestExecutor_Cancel_sigkillEscalation verifies that a process that ignores
 // SIGTERM is force-killed after KillGracePeriod and that the terminal status
-// is still "canceled" (tasks 82, 83).
+// is still "canceled".
 func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("SIGTERM/SIGKILL escalation is Unix-specific; Windows uses taskkill")
@@ -930,7 +929,7 @@ func waitForOutputLine(t *testing.T, capture *captureOutput, want string, timeou
 // TestExecutor_Cancel_sigtermDelivery verifies that SIGTERM is delivered to
 // the process before SIGKILL escalation by dispatching a subprocess that
 // catches SIGTERM, prints "sigterm" on receipt, and exits 0.  The terminal
-// status must be "canceled" (tasks 82, 83).
+// status must be "canceled".
 func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("SIGTERM is Unix-specific; Windows uses taskkill")
@@ -983,7 +982,7 @@ func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 
 // TestExecutor_Cancel_earlyCancel verifies that calling Cancel before the
 // task's runTask goroutine has set up its per-task context still cancels the
-// task correctly (cancelRequested flag path, task 80).
+// task correctly (cancelRequested flag path).
 func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -1017,7 +1016,7 @@ func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 
 // stubCancelRegistrarError is a CancelRegistrar whose Register always returns
 // an error.  Used to verify that a subscription failure does not abort task
-// execution (task 80).
+// execution.
 type stubCancelRegistrarError struct {
 	mu            sync.Mutex
 	registerCalls int
@@ -1040,7 +1039,7 @@ func (s *stubCancelRegistrarError) Deregister(_ string) {
 // TestExecutor_Cancel_registrarError verifies that a failure in
 // CancelRegistrar.Register is logged as a warning but does not abort task
 // execution: the task still runs to completion and Deregister is NOT called
-// (nothing was registered, so there is nothing to deregister — task 80).
+// (nothing was registered, so there is nothing to deregister).
 func TestExecutor_Cancel_registrarError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")

@@ -3,7 +3,7 @@
 --
 -- host_requirements: JSON-serialized store.StepHostRequirements, populated at
 -- job submission time from the OpenJD step's hostRequirements block.
--- Used by the scheduler's capability-matching logic (task 50).
+-- Used by the scheduler's capability-matching logic.
 --
 -- compute_location: TEXT mirror of the "attr.worker.computelocation" attribute
 -- requirement extracted during submission.  Stored redundantly so the scheduler

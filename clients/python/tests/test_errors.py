@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for HTTP error mapping and RFC 7807 problem-details parsing (task 19)."""
+"""Tests for HTTP error mapping and RFC 7807 problem-details parsing."""
 
 from __future__ import annotations
 

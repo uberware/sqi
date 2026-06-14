@@ -2,7 +2,7 @@
 
 package api
 
-// Queue REST handlers — task 81.
+// Queue REST handlers.
 //
 // Route summary:
 //

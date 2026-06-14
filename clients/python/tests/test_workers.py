@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for worker operations (tasks 50-53).
+"""Tests for worker operations.
 
 HTTP is mocked at the transport layer with respx; no server runs.
 """
@@ -42,7 +42,7 @@ def _page(items: list[dict[str, Any]], *, total: int, limit: int, offset: int) -
     )
 
 
-# ── list_workers / iter_workers (task 50) ─────────────────────────────────────
+# ── list_workers / iter_workers ─────────────────────────────────────
 
 
 @respx.mock
@@ -140,7 +140,7 @@ def test_iter_workers_passes_filters_on_every_page(make_client: ClientFactory) -
         assert params["status"] == "online"
 
 
-# ── get_worker (task 51) ──────────────────────────────────────────────────────
+# ── get_worker ──────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -179,7 +179,7 @@ def test_get_worker_missing_raises_not_found(make_client: ClientFactory) -> None
         client.get_worker("nope")
 
 
-# ── enable / disable (task 52) ────────────────────────────────────────────────
+# ── enable / disable ────────────────────────────────────────────────
 
 
 @respx.mock

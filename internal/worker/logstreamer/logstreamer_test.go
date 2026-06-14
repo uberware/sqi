@@ -99,7 +99,7 @@ func slowFlushCfg(maxLines, maxBytes int) logstreamer.Config {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // TestSequenceNumberMonotonicity verifies that chunk sequence numbers are
-// strictly monotonically increasing from 1 (task 65).
+// strictly monotonically increasing from 1.
 func TestSequenceNumberMonotonicity(t *testing.T) {
 	nc := &mockNATS{}
 	// MaxLinesPerChunk=3 so every 3rd line triggers an immediate flush.
@@ -147,7 +147,7 @@ func TestSequenceNumberMonotonicity(t *testing.T) {
 }
 
 // TestChunkBoundaryLines verifies that a chunk is flushed immediately when
-// MaxLinesPerChunk is reached (task 66).
+// MaxLinesPerChunk is reached.
 func TestChunkBoundaryLines(t *testing.T) {
 	nc := &mockNATS{}
 	const maxLines = 3
@@ -186,7 +186,7 @@ func TestChunkBoundaryLines(t *testing.T) {
 }
 
 // TestChunkBoundaryBytes verifies that a chunk is flushed immediately when
-// MaxBytesPerChunk is reached (task 66).
+// MaxBytesPerChunk is reached.
 func TestChunkBoundaryBytes(t *testing.T) {
 	nc := &mockNATS{}
 	// Each line is 10 chars; byte accounting = 10+1=11 per line.
@@ -228,7 +228,7 @@ func TestChunkBoundaryBytes(t *testing.T) {
 
 // TestFlushBeforeTerminalStatus verifies the ordering guarantee: FlushLogs
 // publishes all remaining buffered lines before it returns, ensuring the
-// caller can safely publish a terminal status immediately after (task 68).
+// caller can safely publish a terminal status immediately after.
 func TestFlushBeforeTerminalStatus(t *testing.T) {
 	nc := &mockNATS{}
 	// Large thresholds so no immediate flush fires during HandleLine calls.
@@ -276,7 +276,7 @@ func TestFlushBeforeTerminalStatus(t *testing.T) {
 }
 
 // TestFlushInterval verifies that the background goroutine flushes buffered
-// lines within the configured interval (task 67).
+// lines within the configured interval.
 func TestFlushInterval(t *testing.T) {
 	nc := &mockNATS{}
 	const interval = 50 * time.Millisecond
@@ -315,7 +315,7 @@ func TestFlushInterval(t *testing.T) {
 }
 
 // TestStdoutStderrSeparateChunks verifies that stdout and stderr lines are
-// published in separate chunks with the correct Stream tag (task 64).
+// published in separate chunks with the correct Stream tag.
 func TestStdoutStderrSeparateChunks(t *testing.T) {
 	nc := &mockNATS{}
 	cfg := slowFlushCfg(1000, 1<<20)

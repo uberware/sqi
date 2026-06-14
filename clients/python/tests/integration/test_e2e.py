@@ -75,7 +75,7 @@ def _first_task_id(client: SqiClient, job_id: str, timeout: float) -> str:
     raise AssertionError(f"job {job_id} produced no tasks within {timeout}s")
 
 
-# ── Task 73: submit, execute, query logs ──────────────────────────────────────
+# ── Submit, execute, query logs ──────────────────────────────────────
 
 
 def test_submit_execute_and_fetch_logs(client: SqiClient, worker_farm: WorkerFarm) -> None:
@@ -94,7 +94,7 @@ def test_submit_execute_and_fetch_logs(client: SqiClient, worker_farm: WorkerFar
     assert _ECHO_TEXT in logs
 
 
-# ── Task 74: every mutating endpoint ──────────────────────────────────────────
+# ── Every mutating endpoint ──────────────────────────────────────────
 
 
 def test_management_endpoints(client: SqiClient, worker_farm: WorkerFarm) -> None:
@@ -141,7 +141,7 @@ def test_management_endpoints(client: SqiClient, worker_farm: WorkerFarm) -> Non
     assert restored.status is not WorkerStatus.DISABLED
 
 
-# ── Task 75: live WebSocket log tailing ───────────────────────────────────────
+# ── Live WebSocket log tailing ───────────────────────────────────────
 
 
 def test_websocket_live_log_tail(client: SqiClient, worker_farm: WorkerFarm) -> None:

@@ -2,7 +2,7 @@
 
 package api
 
-// Fuzz targets for REST endpoint payload decoding — task 86.
+// Fuzz targets for REST endpoint payload decoding.
 //
 // Running:
 //

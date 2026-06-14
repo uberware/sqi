@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for raw OpenJD job submission (tasks 28-33).
+"""Tests for raw OpenJD job submission.
 
 HTTP is mocked at the transport layer with respx; no server runs.
 """
@@ -57,7 +57,7 @@ def _created() -> httpx.Response:
     return httpx.Response(201, json=_JOB_RESPONSE)
 
 
-# ── Return value (task 31) ────────────────────────────────────────────────────
+# ── Return value ────────────────────────────────────────────────────
 
 
 @respx.mock
@@ -72,7 +72,7 @@ def test_submit_returns_parsed_job(make_client: ClientFactory) -> None:
     assert job.status is JobStatus.PENDING
 
 
-# ── Template input types + content-type selection (tasks 29, 30) ──────────────
+# ── Template input types + content-type selection ──────────────
 
 
 @respx.mock
@@ -202,7 +202,7 @@ def test_unsuffixed_path_is_sniffed_by_content(make_client: ClientFactory, tmp_p
     assert route.calls.last.request.headers["Content-Type"] == "application/x-yaml"
 
 
-# ── Query parameter encoding (task 28) ────────────────────────────────────────
+# ── Query parameter encoding ────────────────────────────────────────
 
 
 @respx.mock
@@ -241,7 +241,7 @@ def test_optional_params_encoded_when_set(make_client: ClientFactory) -> None:
     assert params["project"] == "my-film"
 
 
-# ── Validation failures (task 32) ─────────────────────────────────────────────
+# ── Validation failures ─────────────────────────────────────────────
 
 
 @respx.mock

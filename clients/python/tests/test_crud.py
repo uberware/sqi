@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for farm/queue/storage-location/license-pool CRUD (tasks 54-59).
+"""Tests for farm/queue/storage-location/license-pool CRUD.
 
 HTTP is mocked at the transport layer with respx; no server runs. The generic
 CRUD helper is exercised in depth via the farm methods; a parametrized smoke
@@ -41,7 +41,7 @@ def _problem(status: int, title: str, detail: str) -> httpx.Response:
     )
 
 
-# ── Generic helper, in depth via farms (task 54) ──────────────────────────────
+# ── Generic helper, in depth via farms ──────────────────────────────
 
 
 @respx.mock
@@ -249,7 +249,7 @@ def test_create_queue_requires_farm_id_in_body(make_client: ClientFactory) -> No
     assert body["paused"] is False
 
 
-# ── Parametrized smoke across all four families (task 59) ─────────────────────
+# ── Parametrized smoke across all four families ─────────────────────
 
 
 class _Family(NamedTuple):

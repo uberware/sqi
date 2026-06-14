@@ -14,7 +14,7 @@ import (
 // Variables live in internal/version so the Makefile ldflags can target them
 // at the standard path (github.com/uberware/sqi/internal/version.Version …).
 //
-// Full ldflags wiring: phase1-sqi-server-tasks.md task 13.
+// Full ldflags wiring.
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version and build metadata",

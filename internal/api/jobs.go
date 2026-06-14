@@ -2,15 +2,15 @@
 
 package api
 
-// Job REST handlers — tasks 71–75.
+// Job REST handlers.
 //
 // Route summary:
 //
-//	POST   /api/v1/jobs              — submit an OpenJD job (task 71)
-//	GET    /api/v1/jobs              — list jobs with pagination + filters (task 72)
-//	GET    /api/v1/jobs/{id}         — job detail with steps and task counts (task 73)
-//	PATCH  /api/v1/jobs/{id}         — priority, queue move, pause/resume (task 74)
-//	DELETE /api/v1/jobs/{id}         — cancel job (task 75)
+//	POST /api/v1/jobs — submit an OpenJD job
+//	GET /api/v1/jobs — list jobs with pagination + filters
+//	GET /api/v1/jobs/{id} — job detail with steps and task counts
+//	PATCH /api/v1/jobs/{id} — priority, queue move, pause/resume
+//	DELETE /api/v1/jobs/{id} — cancel job
 
 import (
 	"context"
@@ -488,7 +488,7 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CancelJob handles task cancellation and NATS signal dispatch (task 54).
+	// CancelJob handles task cancellation and NATS signal dispatch.
 	if err = h.sched.CancelJob(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: cancel scheduler failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to cancel job tasks")

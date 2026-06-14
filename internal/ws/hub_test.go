@@ -2,7 +2,7 @@
 
 package ws
 
-// Unit tests for [Hub] — task 92.
+// Unit tests for [Hub].
 //
 // These tests exercise the Hub directly without any HTTP or WebSocket
 // machinery, using the Hub's own Register/Subscribe/Deregister/Notify* API as

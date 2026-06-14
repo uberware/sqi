@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for the typed dataclass models and tolerant parsing (tasks 21-27).
+"""Tests for the typed dataclass models and tolerant parsing.
 
 Every model is parsed from a captured wire fixture (``tests/fixtures/``) so the
 assertions track the real server response shapes, not hand-invented ones.
@@ -41,7 +41,7 @@ def load(name: str) -> dict[str, Any]:
     return data
 
 
-# ── Status enums (task 21) ────────────────────────────────────────────────────
+# ── Status enums ────────────────────────────────────────────────────
 
 
 def test_job_status_known_values_parse_to_members() -> None:
@@ -92,7 +92,7 @@ def test_unknown_enum_value_in_model_parsing() -> None:
     assert job.status == "frobnicate"
 
 
-# ── Timestamp parsing (task 25) ───────────────────────────────────────────────
+# ── Timestamp parsing ───────────────────────────────────────────────
 
 
 def test_timestamps_are_timezone_aware() -> None:
@@ -147,7 +147,7 @@ def test_optional_timestamp_malformed_becomes_none() -> None:
     assert Job.from_dict(raw).started_at is None
 
 
-# ── Mistyped-field tolerance (task 25) ────────────────────────────────────────
+# ── Mistyped-field tolerance ────────────────────────────────────────
 
 
 def test_mistyped_fields_fall_back_to_zero_values() -> None:
@@ -191,7 +191,7 @@ def test_mistyped_optional_fields_become_none() -> None:
     assert worker.ip_address is None
 
 
-# ── Unknown-field tolerance (task 25) ─────────────────────────────────────────
+# ── Unknown-field tolerance ─────────────────────────────────────────
 
 
 def test_unknown_fields_ignored() -> None:
@@ -203,7 +203,7 @@ def test_unknown_fields_ignored() -> None:
     assert not hasattr(job, "some_future_field")
 
 
-# ── Job, Step, TaskCounts (task 22) ───────────────────────────────────────────
+# ── Job, Step, TaskCounts ───────────────────────────────────────────
 
 
 def test_job_list_level_fields() -> None:
@@ -264,7 +264,7 @@ def test_task_counts_fields() -> None:
     assert counts.canceled == 0
 
 
-# ── Task (task 23) ────────────────────────────────────────────────────────────
+# ── Task ────────────────────────────────────────────────────────────
 
 
 def test_task_fields() -> None:
@@ -293,7 +293,7 @@ def test_task_optional_fields_default() -> None:
     assert task.assigned_at is None
 
 
-# ── Worker, GPUInfo, CurrentTask (task 23) ────────────────────────────────────
+# ── Worker, GPUInfo, CurrentTask ────────────────────────────────────
 
 
 def test_worker_fields() -> None:
@@ -342,7 +342,7 @@ def test_worker_missing_gpu_yields_empty_gpuinfo() -> None:
     assert worker.gpu.count is None
 
 
-# ── Farm, Queue, StorageLocation, LicensePool (task 23) ───────────────────────
+# ── Farm, Queue, StorageLocation, LicensePool ───────────────────────
 
 
 def test_farm_fields() -> None:
@@ -386,7 +386,7 @@ def test_license_pool_fields() -> None:
     assert pool.max_concurrent == 10
 
 
-# ── LogChunk, LogPage (task 24) ───────────────────────────────────────────────
+# ── LogChunk, LogPage ───────────────────────────────────────────────
 
 
 def test_log_chunk_fields() -> None:

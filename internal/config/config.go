@@ -98,7 +98,7 @@ type LogConfig struct {
 
 // SchedulerConfig controls the task assignment loop behavior.
 // These fields are defined now for completeness and config file documentation;
-// they are consumed by the scheduler component introduced in tasks 46–55.
+// they are consumed by the scheduler component.
 type SchedulerConfig struct {
 	// HeartbeatTimeout is the duration after which a worker that has not sent
 	// a heartbeat is declared offline and its in-flight tasks are reclaimed.

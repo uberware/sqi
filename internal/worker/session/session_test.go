@@ -447,7 +447,7 @@ func TestManagerCleanup_NoKeepFailed_FailedRemoved(t *testing.T) {
 	}
 }
 
-// ── Active task tracking (task 43) ────────────────────────────────────────────
+// ── Active task tracking ────────────────────────────────────────────
 
 func TestSession_ActiveTaskTracking(t *testing.T) {
 	s := &Session{ID: "test-session"}
@@ -503,7 +503,7 @@ func TestSession_ActiveTaskTracking_Concurrent(t *testing.T) {
 	}
 }
 
-// ── Embedded files (task 45) ──────────────────────────────────────────────────
+// ── Embedded files ──────────────────────────────────────────────────
 
 func TestWriteEmbeddedFiles_Basic(t *testing.T) {
 	dir := t.TempDir()

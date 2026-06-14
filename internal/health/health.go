@@ -8,8 +8,8 @@
 // to be considered ready. Components register themselves via [Registry.Register]
 // during startup; later tasks wire in real implementations:
 //
-//   - SQLite store checker — task 29
-//   - NATS JetStream checker — task 36
+// - SQLite store checker
+// - NATS JetStream checker
 //
 // # Endpoints
 //

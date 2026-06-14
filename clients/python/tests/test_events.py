@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for the optional WebSocket event stream (tasks 60-66).
+"""Tests for the optional WebSocket event stream.
 
-The lazy-import tests (task 65) simulate the ``ws`` extra being absent by
-nulling ``websockets`` in ``sys.modules``. The protocol tests (task 66) run an
+The lazy-import tests simulate the ``ws`` extra being absent by
+nulling ``websockets`` in ``sys.modules``. The protocol tests run an
 in-process ``websockets`` server in a background thread and drive the real
 client against it.
 """
@@ -73,7 +73,7 @@ def _ack(client_seq: int, error: str = "") -> str:
     )
 
 
-# ── Lazy import behavior (task 65) ────────────────────────────────────────────
+# ── Lazy import behavior ────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ def test_tail_live_without_websockets_raises_actionable_error(no_websockets: Non
     client.close()
 
 
-# ── Subscribe / ack / push sequencing + seq tracking (task 66) ────────────────
+# ── Subscribe / ack / push sequencing + seq tracking ────────────────
 
 
 def test_subscribe_sends_since_seq_in_payload_and_yields_pushes() -> None:
@@ -303,7 +303,7 @@ def test_subscribe_before_connect_is_queued() -> None:
     assert stream._subscriptions == {"workers": 7}
 
 
-# ── Live log tailing over WebSocket (task 64) ─────────────────────────────────
+# ── Live log tailing over WebSocket ─────────────────────────────────
 
 
 def test_tail_task_logs_live_yields_log_chunks() -> None:

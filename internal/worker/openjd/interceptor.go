@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package openjd implements the OpenJD progress-line interceptor for sqi-worker
-// (tasks 70–74).
+// Package openjd implements the OpenJD progress-line interceptor for sqi-worker.
 //
 // An [Interceptor] wraps a downstream output handler and inspects each process
 // stdout line for recognized OpenJD directive prefixes:
 //
-//   - openjd_progress: <0-100>  — updates the task's in-memory progress percentage (task 70)
-//   - openjd_status: <text>     — publishes a live "running" status update via NATS (task 71)
-//   - openjd_fail: <text>       — cancels the per-task context and stores a failure reason (task 72)
+// - openjd_progress: <0-100> — updates the task's in-memory progress percentage
+// - openjd_status: <text> — publishes a live "running" status update via NATS
+// - openjd_fail: <text> — cancels the per-task context and stores a failure reason
 //
 // All other lines — including unrecognized openjd_* prefixes and all stderr
-// lines — are forwarded to the downstream handler unmodified (task 73).
+// lines — are forwarded to the downstream handler unmodified.
 //
 // # Integration with executor.Executor
 //
@@ -55,7 +54,7 @@ type natsPublisher interface {
 
 // ── Directive constants ───────────────────────────────────────────────────────
 
-// Recognized OpenJD directive prefixes (tasks 70–72).
+// Recognized OpenJD directive prefixes.
 const (
 	prefixProgress = "openjd_progress:"
 	prefixStatus   = "openjd_status:"
@@ -76,8 +75,8 @@ type attemptState struct {
 	// The fields below are mutated after construction and must be accessed
 	// under mu.
 	mu         sync.Mutex
-	progress   *int   // nil until the first valid openjd_progress line (task 70)
-	failReason string // set on the first openjd_fail line (task 72)
+	progress   *int   // nil until the first valid openjd_progress line
+	failReason string // set on the first openjd_fail line
 	failed     bool   // true once openjd_fail fires; prevents duplicate handling
 }
 
@@ -105,8 +104,7 @@ type Interceptor struct {
 //
 // downstream receives all non-directive stdout lines and all stderr lines.
 // nc is used to publish openjd_status messages to the task.status NATS subject.
-// workerID is embedded in every status message published by the interceptor
-// (task 76).
+// workerID is embedded in every status message published by the interceptor.
 func New(downstream outputHandler, nc natsPublisher, workerID string, logger *slog.Logger) *Interceptor {
 	return &Interceptor{
 		downstream: downstream,
@@ -172,7 +170,7 @@ func (i *Interceptor) TakeFailReason(attemptID string) (string, bool) {
 // openjd_progress for the given attemptID, or nil if none has been seen.
 //
 // This is not part of executor.TaskLifecycleHook; it is provided for callers
-// that include the last-known progress in status messages (task 76).
+// that include the last-known progress in status messages.
 func (i *Interceptor) LastProgress(attemptID string) *int {
 	i.mu.Lock()
 	st, ok := i.attempts[attemptID]
@@ -209,7 +207,7 @@ func (i *Interceptor) FlushLogs(ctx context.Context, taskID, attemptID string) e
 // ── executor.OutputHandler ────────────────────────────────────────────────────
 
 // HandleLine intercepts recognized OpenJD directive lines from stdout and
-// forwards everything else to the downstream handler unmodified (task 73).
+// forwards everything else to the downstream handler unmodified.
 //
 // Stderr lines are always forwarded without inspection because tasks are
 // expected to emit directives only to stdout.  Recognized directive lines
@@ -217,7 +215,7 @@ func (i *Interceptor) FlushLogs(ctx context.Context, taskID, attemptID string) e
 // forwarding; all other lines — including unrecognized openjd_* prefixes —
 // are passed through.
 func (i *Interceptor) HandleLine(ctx context.Context, taskID, attemptID, sessionID, stream, line string) {
-	// stderr is never intercepted; forward immediately (task 73).
+	// stderr is never intercepted; forward immediately.
 	if stream == "stderr" {
 		i.downstream.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
 		return
@@ -232,7 +230,7 @@ func (i *Interceptor) HandleLine(ctx context.Context, taskID, attemptID, session
 	case strings.HasPrefix(line, prefixFail):
 		i.handleFail(ctx, attemptID, line)
 	default:
-		// Unrecognized openjd_* prefixes and normal lines pass through (task 73).
+		// Unrecognized openjd_* prefixes and normal lines pass through.
 		i.downstream.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
 	}
 }
@@ -240,7 +238,7 @@ func (i *Interceptor) HandleLine(ctx context.Context, taskID, attemptID, session
 // ── directive handlers ────────────────────────────────────────────────────────
 
 // handleProgress parses an openjd_progress directive and updates the task's
-// in-memory progress percentage (task 70).
+// in-memory progress percentage.
 //
 // Format: "openjd_progress: <integer 0–100>"
 //
@@ -277,9 +275,9 @@ func (i *Interceptor) handleProgress(ctx context.Context, attemptID, line string
 }
 
 // handleStatus parses an openjd_status directive and publishes an intermediate
-// "running" status update to the task.status NATS subject (task 71).
+// "running" status update to the task.status NATS subject.
 //
-// The published message includes worker_id (task 76) and the current
+// The published message includes worker_id and the current
 // last_progress value so the UI can display both the live status text and the
 // progress bar simultaneously.
 //
@@ -345,8 +343,7 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 }
 
 // handleFail parses an openjd_fail directive, stores the failure reason, and
-// calls the per-task cancel function to begin SIGTERM → SIGKILL escalation
-// (task 72).
+// calls the per-task cancel function to begin SIGTERM → SIGKILL escalation.
 //
 // Format: "openjd_fail: <text>"
 //

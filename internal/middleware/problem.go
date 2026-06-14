@@ -23,7 +23,7 @@ package middleware
 //	  "instance": "a1b2c3d4e5f60708"
 //	}
 //
-// TODO(task 82 follow-up): replace "about:blank" with sqi-specific problem type
+// TODO: replace "about:blank" with sqi-specific problem type
 // URIs (e.g. "https://sqi.dev/problems/not-found") once the domain and a
 // problem-type registry are established.
 

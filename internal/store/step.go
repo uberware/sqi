@@ -39,7 +39,7 @@ type Step struct {
 
 	// HostRequirements declares the worker capabilities required by this step.
 	// Nil means any capable worker is eligible.
-	// Populated from the OpenJD hostRequirements block at submission time (task 50).
+	// Populated from the OpenJD hostRequirements block at submission time.
 	HostRequirements *StepHostRequirements
 
 	// ComputeLocation constrains tasks to workers in the named compute location
@@ -56,7 +56,7 @@ type Step struct {
 
 // StepHostRequirements is the scheduler-facing representation of a step's
 // hostRequirements block, normalised from the raw OpenJD model at submission
-// time. The scheduler's matching logic (task 50) reads these fields to
+// time. The scheduler's matching logic reads these fields to
 // determine whether a given worker can run a task.
 //
 // Capability names follow the conventions established in the OpenJD spec and

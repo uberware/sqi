@@ -18,8 +18,8 @@ func isRunningAsRoot() bool {
 }
 
 // CheckRootUser warns and returns an error if the worker is running as the
-// root user on Linux/macOS and allowRoot is false (task 57, sqi.md §18,
-// open question 2).
+// root user on Linux/macOS and allowRoot is false (see
+// docs/worker-configuration.md, "worker.allow_root").
 //
 // Call this at worker startup, before constructing an Executor.  If the
 // function returns a non-nil error the caller should treat it as fatal and
@@ -32,13 +32,12 @@ func CheckRootUser(allowRoot bool, logger *slog.Logger) error {
 		logger.WarnContext(
 			context.Background(),
 			"executor: worker is running as root — allowed by allow_root configuration; "+
-				"executing render processes as root is a security risk (sqi.md §18)",
+				"executing render processes as root is a security risk",
 		)
 		return nil
 	}
 	return errors.New(
-		"worker process is running as root (UID 0), which is a security risk " +
-			"(sqi.md §18, open question 2); " +
+		"worker process is running as root (UID 0), which is a security risk; " +
 			"set allow_root: true in worker configuration or pass --allow-root to override",
 	)
 }

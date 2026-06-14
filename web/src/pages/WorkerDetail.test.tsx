@@ -131,9 +131,9 @@ function Wrapper({
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('WorkerDetail', () => {
-  // ── Task 74: Metadata header ─────────────────────────────────────────────────
+  // ── Metadata header ─────────────────────────────────────────────────
 
-  describe('metadata header (task 74)', () => {
+  describe('metadata header', () => {
     it('renders the worker hostname as the page title', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ hostname: 'gpu-node-07' })))
 
@@ -230,9 +230,9 @@ describe('WorkerDetail', () => {
     })
   })
 
-  // ── Task 75: Capabilities ────────────────────────────────────────────────────
+  // ── Capabilities ────────────────────────────────────────────────────
 
-  describe('capabilities section (task 75)', () => {
+  describe('capabilities section', () => {
     it('renders OS in the system capabilities section', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ os: 'Linux', os_version: '5.15' })))
 
@@ -330,9 +330,9 @@ describe('WorkerDetail', () => {
     })
   })
 
-  // ── Task 76: Assigned tasks ──────────────────────────────────────────────────
+  // ── Assigned tasks ──────────────────────────────────────────────────
 
-  describe('active tasks section (task 76)', () => {
+  describe('active tasks section', () => {
     it('shows "No active tasks" when current_task is absent', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker()))
 
@@ -432,9 +432,9 @@ describe('WorkerDetail', () => {
     })
   })
 
-  // ── Task 77: Enable / Disable toggle ────────────────────────────────────────
+  // ── Enable / Disable toggle ────────────────────────────────────────
 
-  describe('enable/disable toggle (task 77)', () => {
+  describe('enable/disable toggle', () => {
     it('shows Disable button for online worker', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ status: 'online', hostname: 'online-node' })))
 

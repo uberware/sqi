@@ -2,7 +2,7 @@
 
 package api
 
-// Unit tests for the worker REST handlers — task 85.
+// Unit tests for the worker REST handlers.
 //
 // Route coverage:
 //   GET  /api/v1/workers              — listWorkers

@@ -93,7 +93,7 @@ func newPub(nc *stubNC, workerID string, retryDelay time.Duration) *status.Publi
 // ── Running tests ─────────────────────────────────────────────────────────────
 
 // TestRunning_Fields verifies that Running publishes a "running" status with
-// all required fields populated (tasks 75, 76, 77).
+// all required fields populated.
 func TestRunning_Fields(t *testing.T) {
 	nc := &stubNC{}
 	pub := newPub(nc, "worker-abc", time.Millisecond)
@@ -142,7 +142,7 @@ func TestRunning_Fields(t *testing.T) {
 }
 
 // TestRunning_WithProgress verifies that Running propagates a non-nil lastProgress
-// into the message (task 76).
+// into the message.
 func TestRunning_WithProgress(t *testing.T) {
 	nc := &stubNC{}
 	pub := newPub(nc, "w", time.Millisecond)
@@ -162,7 +162,7 @@ func TestRunning_WithProgress(t *testing.T) {
 // ── Terminal tests ────────────────────────────────────────────────────────────
 
 // TestTerminal_Succeeded verifies the "succeeded" terminal status with required
-// fields (task 75, 76).
+// fields.
 func TestTerminal_Succeeded(t *testing.T) {
 	nc := &stubNC{}
 	pub := newPub(nc, "worker-abc", time.Millisecond)
@@ -186,7 +186,7 @@ func TestTerminal_Succeeded(t *testing.T) {
 }
 
 // TestTerminal_Failed verifies the "failed" status with exit code, failure
-// reason, and last_progress (task 75, 76).
+// reason, and last_progress.
 func TestTerminal_Failed(t *testing.T) {
 	nc := &stubNC{}
 	pub := newPub(nc, "w", time.Millisecond)
@@ -210,7 +210,7 @@ func TestTerminal_Failed(t *testing.T) {
 	}
 }
 
-// TestTerminal_Canceled verifies that "canceled" status has no exit code (task 75).
+// TestTerminal_Canceled verifies that "canceled" status has no exit code.
 func TestTerminal_Canceled(t *testing.T) {
 	nc := &stubNC{}
 	pub := newPub(nc, "w", time.Millisecond)
@@ -229,7 +229,7 @@ func TestTerminal_Canceled(t *testing.T) {
 // ── ShutdownFailed tests ──────────────────────────────────────────────────────
 
 // TestShutdownFailed_PublishesForEachTask verifies that ShutdownFailed publishes
-// one "failed"/"worker_shutdown" message per task (task 78).
+// one "failed"/"worker_shutdown" message per task.
 func TestShutdownFailed_PublishesForEachTask(t *testing.T) {
 	nc := &stubNC{}
 	pub := newPub(nc, "worker-abc", time.Millisecond)
@@ -284,7 +284,7 @@ func TestShutdownFailed_NoOp(t *testing.T) {
 // ── Retry tests ───────────────────────────────────────────────────────────────
 
 // TestRetry_SucceedsAfterTransientFailures verifies that publishWithRetry retries
-// on transient publish failures and succeeds once the stub recovers (task 79).
+// on transient publish failures and succeeds once the stub recovers.
 func TestRetry_SucceedsAfterTransientFailures(t *testing.T) {
 	nc := &stubNC{failNext: 2} // first 2 calls fail; 3rd succeeds
 	pub := newPub(nc, "w", time.Millisecond)
@@ -298,7 +298,7 @@ func TestRetry_SucceedsAfterTransientFailures(t *testing.T) {
 }
 
 // TestRetry_AllFail verifies that after MaxRetries all fail, no message is
-// published and the function returns without blocking (task 79).
+// published and the function returns without blocking.
 func TestRetry_AllFail(t *testing.T) {
 	nc := &stubNC{failNext: 999} // always fails
 	pub := status.New(nc, status.Config{
@@ -315,7 +315,7 @@ func TestRetry_AllFail(t *testing.T) {
 }
 
 // TestRetry_ContextCanceled verifies that a canceled context short-circuits the
-// retry backoff (task 79).
+// retry backoff.
 func TestRetry_ContextCanceled(t *testing.T) {
 	nc := &stubNC{failNext: 999}
 	pub := status.New(nc, status.Config{

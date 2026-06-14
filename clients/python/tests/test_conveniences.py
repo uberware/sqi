@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for the high-level conveniences wait_for_job / submit_and_wait (tasks 67-70).
+"""Tests for the high-level conveniences wait_for_job / submit_and_wait.
 
 HTTP is mocked at the transport layer with respx; the wall clock is faked so the
 polling loops run instantly and deterministically.
@@ -52,7 +52,7 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sqi_client.client.time.sleep", fake_sleep)
 
 
-# ── wait_for_job (task 67) ────────────────────────────────────────────────────
+# ── wait_for_job ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "canceled"])
@@ -119,7 +119,7 @@ def test_wait_for_job_poll_cadence(
     assert sleeps == [2.5]
 
 
-# ── submit_and_wait (task 68) ─────────────────────────────────────────────────
+# ── submit_and_wait ─────────────────────────────────────────────────
 
 
 @respx.mock

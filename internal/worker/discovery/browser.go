@@ -228,7 +228,7 @@ func parseTXTRecords(records []string) map[string]string {
 //
 // This is the single entry point that start.go calls before dialing NATS.
 func ResolveNATSURL(ctx context.Context, explicitURL string, mdnsEnabled bool, timeout time.Duration, logger *slog.Logger) (string, error) {
-	// Task 36: explicit URL bypasses mDNS entirely.
+	// Explicit URL bypasses mDNS entirely.
 	if explicitURL != "" {
 		logger.InfoContext(
 			ctx, "discovery: using explicit NATS URL (mDNS bypassed)",
@@ -237,14 +237,14 @@ func ResolveNATSURL(ctx context.Context, explicitURL string, mdnsEnabled bool, t
 		return explicitURL, nil
 	}
 
-	// Task 37: mDNS disabled — log clearly and return actionable error.
+	// MDNS disabled — log clearly and return actionable error.
 	if !mdnsEnabled {
 		logger.ErrorContext(ctx, "discovery: mDNS is disabled and no explicit NATS URL is configured; "+
 			"set nats.url in configuration or enable discovery.enable_mdns")
 		return "", ErrDiscoveryDisabled
 	}
 
-	// Tasks 34–35: browse the local network.
+	// Browse the local network.
 	result, err := Browse(ctx, timeout, logger)
 	if err != nil {
 		return "", err

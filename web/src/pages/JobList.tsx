@@ -246,7 +246,7 @@ export default function JobList() {
   const queryClient = useQueryClient()
   const cancelJob = useCancelJob()
 
-  // ── Task 57: WS-driven in-place updates ───────────────────────────────────
+  // ── WS-driven in-place updates ───────────────────────────────────
 
   // Tracks the last-known status of each task so we can apply accurate count
   // deltas when task events arrive.  Map is keyed by task_id.
@@ -311,7 +311,7 @@ export default function JobList() {
     }
   })
 
-  // ── Task 59: last-updated timestamp ──────────────────────────────────────
+  // ── Last-updated timestamp ──────────────────────────────────────
 
   // Tick every 30 s so the "X ago" label stays reasonably current.
   const [now, setNow] = useState(Date.now)
@@ -320,7 +320,7 @@ export default function JobList() {
     return () => clearInterval(id)
   }, [])
 
-  // ── Task 60: manual refresh ───────────────────────────────────────────────
+  // ── Manual refresh ───────────────────────────────────────────────
 
   const handleRefresh = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
@@ -421,7 +421,7 @@ export default function JobList() {
         }
       />
 
-      {/* Status filter bar (task 38) */}
+      {/* Status filter bar */}
       <div className={styles.toolbar}>
         <div className={styles.filterBar} role="toolbar" aria-label="Filter by status">
           {STATUS_FILTERS.map(({ label, value }) => (
@@ -442,7 +442,7 @@ export default function JobList() {
           ))}
         </div>
 
-        {/* Search input (task 39) */}
+        {/* Search input */}
         <div className={styles.searchWrap}>
           <input
             className={styles.searchInput}
@@ -455,7 +455,7 @@ export default function JobList() {
         </div>
       </div>
 
-      {/* Bulk action bar (task 42) */}
+      {/* Bulk action bar */}
       {selectedIds.size > 0 && (
         <div className={styles.bulkBar}>
           <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
@@ -489,7 +489,7 @@ export default function JobList() {
         </div>
       )}
 
-      {/* Job table (tasks 36, 40, 41, 42) */}
+      {/* Job table */}
       <div className={styles.tableWrap}>
         <table className={styles.table} aria-label="Jobs">
           <thead>

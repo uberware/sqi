@@ -248,7 +248,7 @@ func TestHandleMessage_WrongProtocolVersion_Nacked(t *testing.T) {
 	}
 }
 
-// Task 41: compute location mismatch.
+// Compute location mismatch.
 func TestHandleMessage_ComputeLocationMismatch_Nacked(t *testing.T) {
 	disp := &mockDispatcher{}
 	p := newTestPuller(Config{
@@ -271,7 +271,7 @@ func TestHandleMessage_ComputeLocationMismatch_Nacked(t *testing.T) {
 	}
 }
 
-// Task 41: empty assignment location disables the check.
+// Empty assignment location disables the check.
 func TestHandleMessage_EmptyAssignmentLocation_Accepted(t *testing.T) {
 	disp := &mockDispatcher{}
 	p := newTestPuller(Config{
@@ -289,7 +289,7 @@ func TestHandleMessage_EmptyAssignmentLocation_Accepted(t *testing.T) {
 	}
 }
 
-// Task 41: empty worker location disables the check.
+// Empty worker location disables the check.
 func TestHandleMessage_EmptyWorkerLocation_Accepted(t *testing.T) {
 	disp := &mockDispatcher{}
 	p := newTestPuller(Config{
@@ -306,7 +306,7 @@ func TestHandleMessage_EmptyWorkerLocation_Accepted(t *testing.T) {
 	}
 }
 
-// Task 40: dispatcher rejection → nack with the configured delay.
+// Dispatcher rejection → nack with the configured delay.
 func TestHandleMessage_DispatcherError_Nacked(t *testing.T) {
 	wantDelay := 7 * time.Second
 	disp := &mockDispatcher{err: errors.New("pre-execution validation failed")}
@@ -332,7 +332,7 @@ func TestHandleMessage_DispatcherError_Nacked(t *testing.T) {
 	}
 }
 
-// Task 40: ack failure is non-fatal — the dispatcher still ran.
+// Ack failure is non-fatal — the dispatcher still ran.
 func TestHandleMessage_AckError_DispatchStillRan(t *testing.T) {
 	disp := &mockDispatcher{}
 	p := newTestPuller(Config{

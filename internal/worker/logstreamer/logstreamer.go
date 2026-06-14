@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package logstreamer implements the log-chunk publisher for sqi-worker
-// (tasks 64–69).
+// Package logstreamer implements the log-chunk publisher for sqi-worker.
 //
 // A [Publisher] implements [executor.OutputHandler] and accumulates process
 // output lines from stdout and stderr into [protocol.LogChunkMsg] batches,
 // publishing them to the task.logs.<taskID> NATS JetStream subject.
 //
-// # Chunking (tasks 64, 66)
+// # Chunking
 //
 // Lines are buffered per-stream (stdout / stderr) per task attempt.
 // A chunk is flushed immediately when:
@@ -16,16 +15,16 @@
 //
 // A background per-attempt goroutine also flushes buffered content at
 // [Config.FlushInterval] intervals so the web UI log viewer feels live even
-// for slowly printing processes (task 67).
+// for slowly printing processes.
 //
-// # Sequence numbers (task 65)
+// # Sequence numbers
 //
 // Each published chunk carries a monotonic [protocol.LogChunkMsg.SeqNum]
 // starting at 1 for the first chunk of an attempt.  Seq numbers increment
 // across both stdout and stderr chunks so the server can replay all chunks in
 // publication order regardless of NATS delivery order.
 //
-// # Lifecycle (task 68)
+// # Lifecycle
 //
 // Call [Publisher.FlushLogs] after the process exits to drain all remaining
 // buffered lines and stop the background flush goroutine.  FlushLogs blocks
@@ -130,8 +129,7 @@ type attemptBuf struct {
 
 	// seqNum is the monotonic chunk sequence counter for this attempt.
 	// It is incremented atomically before each publish so that stdout and
-	// stderr chunks share a single, strictly increasing counter per attempt
-	// (task 65).
+	// stderr chunks share a single, strictly increasing counter per attempt.
 	seqNum atomic.Int64
 
 	mu     sync.Mutex
@@ -143,7 +141,7 @@ type attemptBuf struct {
 	done chan struct{}
 
 	// wg tracks the background flush goroutine.  FlushLogs waits on it before
-	// performing the final synchronous drain (task 68 ordering guarantee).
+	// performing the final synchronous drain.
 	wg sync.WaitGroup
 }
 
@@ -186,7 +184,7 @@ func New(nc natsPublisher, cfg Config, logger *slog.Logger) *Publisher {
 	}
 }
 
-// HandleLine implements executor.OutputHandler (tasks 64, 66, 67).
+// HandleLine implements executor.OutputHandler.
 //
 // It appends line to the in-memory buffer for (taskID, attemptID, stream).
 // When the buffer meets the MaxLinesPerChunk or MaxBytesPerChunk threshold, a
@@ -221,7 +219,7 @@ func (p *Publisher) HandleLine(_ context.Context, taskID, attemptID, _ /* sessio
 	}
 }
 
-// FlushLogs implements the executor.LogFlusher interface (task 68).
+// FlushLogs implements the executor.LogFlusher interface.
 //
 // It signals the background flush goroutine to stop, waits for it to exit,
 // then performs a final synchronous drain of any remaining buffered lines for
@@ -288,7 +286,7 @@ func (p *Publisher) getOrCreate(taskID, attemptID string) *attemptBuf {
 }
 
 // flushLoop is the per-attempt background goroutine that periodically drains
-// buffered output lines (task 67).  It exits when buf.done is closed.
+// buffered output lines. It exits when buf.done is closed.
 func (p *Publisher) flushLoop(buf *attemptBuf) {
 	defer buf.wg.Done()
 
@@ -339,7 +337,7 @@ func (p *Publisher) publishChunk(ctx context.Context, buf *attemptBuf, stream st
 		return
 	}
 
-	seq := buf.seqNum.Add(1) // task 65: monotonic, starting at 1
+	seq := buf.seqNum.Add(1) // monotonic, starting at 1
 
 	msg := protocol.LogChunkMsg{
 		Version:   protocol.ProtocolVersion,

@@ -105,7 +105,7 @@ func (c *Client) PublishTaskLog(ctx context.Context, taskID string, data []byte)
 
 // PublishWorkerHeartbeat publishes a heartbeat ping on the worker.heartbeat
 // subject.  Workers call this on a regular interval; the server-side heartbeat
-// sweep (task 48) marks workers offline when pings stop.
+// sweep marks workers offline when pings stop.
 func (c *Client) PublishWorkerHeartbeat(ctx context.Context, data []byte) error {
 	return c.publish(ctx, SubjectWorkerHeartbeat, data)
 }
@@ -118,7 +118,7 @@ func (c *Client) PublishWorkerRegister(ctx context.Context, data []byte) error {
 }
 
 // PublishTaskCancel publishes a task-cancellation signal to the
-// task.cancel.<taskID> subject (task 54).  The scheduler calls this for each
+// task.cancel.<taskID> subject. The scheduler calls this for each
 // task that was actively assigned or running at the time a job is canceled.
 // The worker holding the task consumes this message and interrupts the running
 // process without waiting for the next heartbeat timeout.

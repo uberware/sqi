@@ -33,7 +33,7 @@ const (
 )
 
 // Task is the atomic unit of work — one process on one worker. Tasks are
-// derived from an OpenJD step's parameter space expansion (task 42).
+// derived from an OpenJD step's parameter space expansion.
 type Task struct {
 	ID               string
 	JobID            string // denormalized from Step for query efficiency
@@ -91,32 +91,31 @@ type TaskStore interface {
 	//   3. step order ascending (earlier steps in a job run before later ones),
 	//   4. task creation time ascending (stable tiebreaker within a step).
 	//
-	// Used by the scheduler's assignment loop (tasks 46, 49).
+	// Used by the scheduler's assignment loop.
 	ListReadyTasks(ctx context.Context, farmID string, limit int) ([]Task, error)
 
 	// ReclaimWorkerTasks resets all tasks assigned to workerID that are still
 	// in [TaskStatusAssigned] or [TaskStatusRunning] back to [TaskStatusReady]
 	// so they can be reassigned by the scheduler. Called by the heartbeat
-	// timeout sweep (task 48) after a worker is marked offline.
+	// timeout sweep after a worker is marked offline.
 	// Returns the number of tasks reclaimed.
 	ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue
 	// that are currently in [TaskStatusAssigned] or [TaskStatusRunning] state.
-	// Used by the scheduler's per-queue policy gate (task 51).
+	// Used by the scheduler's per-queue policy gate.
 	CountActiveTasksInQueue(ctx context.Context, queueID string) (int, error)
 
 	// CountActiveTasksInFarm returns the number of tasks across all queues in
 	// the given farm that are currently in [TaskStatusAssigned] or
-	// [TaskStatusRunning] state. Used by the scheduler's per-farm policy gate
-	// (task 51).
+	// [TaskStatusRunning] state. Used by the scheduler's per-farm policy gate.
 	CountActiveTasksInFarm(ctx context.Context, farmID string) (int, error)
 
 	// CountReadyTasksByQueue returns the number of tasks in [TaskStatusReady]
 	// state for each queue within the given farm, keyed by queue ID.
 	// Queues with no ready tasks are omitted from the map.
 	// Used by the scheduler to update the [SchedulerQueueDepth] Prometheus
-	// gauge (task 55).
+	// gauge.
 	CountReadyTasksByQueue(ctx context.Context, farmID string) (map[string]int, error)
 
 	// CancelJobTasks transitions all non-terminal tasks for the given job to
@@ -124,7 +123,7 @@ type TaskStore interface {
 	// and returns the subset that were in [TaskStatusAssigned] or
 	// [TaskStatusRunning] at the time of the call (with their AssignedWorkerID
 	// intact) so the caller can publish NATS cancel signals to the appropriate
-	// workers (task 54).
+	// workers.
 	//
 	// The SELECT and UPDATE run inside a single database transaction so no
 	// concurrent assignment can race between observation and cancellation.
@@ -134,8 +133,7 @@ type TaskStore interface {
 
 	// CountTasksByJob returns the number of tasks for the given job keyed by
 	// status. Statuses with zero tasks are omitted from the returned map.
-	// Used by the REST layer to include aggregate task counts in job responses
-	// (task 73).
+	// Used by the REST layer to include aggregate task counts in job responses.
 	CountTasksByJob(ctx context.Context, jobID string) (map[TaskStatus]int, error)
 }
 

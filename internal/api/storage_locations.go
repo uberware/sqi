@@ -2,7 +2,7 @@
 
 package api
 
-// Storage-location REST handlers — task 81.
+// Storage-location REST handlers.
 //
 // Route summary:
 //

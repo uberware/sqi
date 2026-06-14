@@ -2,7 +2,7 @@
 
 package api
 
-// Farm REST handlers — task 81.
+// Farm REST handlers.
 //
 // Route summary:
 //

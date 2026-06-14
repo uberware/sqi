@@ -14,8 +14,8 @@
 // where <version> is a zero-padded integer and each file contains
 // "-- +goose Up" and "-- +goose Down" sections.
 //
-// The full schema is introduced in tasks 25–27; this package is wired up by
-// the migrate subcommand (task 14) so the CLI is operational from the start.
+// The full schema lives in the numbered migration files; this package is wired
+// up by the migrate subcommand so the CLI is operational from the start.
 package migrations
 
 import (

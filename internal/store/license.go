@@ -78,7 +78,7 @@ type LicensePoolStore interface {
 
 // LicenseCheckoutStore is the persistence interface for [LicenseCheckout]
 // records. It is separated from [LicensePoolStore] because the scheduler
-// (task 52) is the primary caller and only needs checkout operations, not pool
+// is the primary caller and only needs checkout operations, not pool
 // CRUD.
 type LicenseCheckoutStore interface {
 	// CreateCheckout inserts a new active checkout for the given pool and task
@@ -119,7 +119,7 @@ type LicenseCheckoutStore interface {
 	ReleaseAttemptCheckouts(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error)
 
 	// ReleaseJobCheckouts sets ReleasedAt on every active checkout for any task
-	// attempt belonging to a task in the given job (task 54). Called during job
+	// attempt belonging to a task in the given job. Called during job
 	// cancellation to free all license slots held by that job in a single
 	// operation, rather than iterating through individual attempts.
 	//

@@ -125,7 +125,7 @@ function buildCapabilityTags(worker: Worker): string[] {
   return tags
 }
 
-// Task 72: compact capability tag display with +N more popover
+// Compact capability tag display with +N more popover
 function CapabilityTags({ worker }: { worker: Worker }) {
   const allTags = buildCapabilityTags(worker)
   const visible = allTags.slice(0, 3)
@@ -163,7 +163,7 @@ function CapabilityTags({ worker }: { worker: Worker }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkerList() {
-  // ── Task 69: URL-driven status filter ────────────────────────────────────
+  // ── URL-driven status filter ────────────────────────────────────
   const [activeStatus, setActiveStatus] = useState<WorkerStatus | ''>('')
 
   // ── Main data query ───────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ export default function WorkerList() {
   const workers = data?.items ?? []
   const total = data?.total ?? 0
 
-  // ── Task 69: per-status count queries (limit=1 to get totals cheaply) ────
+  // ── Per-status count queries (limit=1 to get totals cheaply) ────
   const { data: onlineCountData } = useListWorkers({ status: 'online', limit: 1 })
   const { data: offlineCountData } = useListWorkers({ status: 'offline', limit: 1 })
   const { data: disabledCountData } = useListWorkers({ status: 'disabled', limit: 1 })
@@ -192,7 +192,7 @@ export default function WorkerList() {
     disabled: disabledCount,
   }
 
-  // ── Task 70: enable/disable mutations ────────────────────────────────────
+  // ── Enable/disable mutations ────────────────────────────────────
   const queryClient = useQueryClient()
   const disableWorker = useDisableWorker()
   const enableWorker = useEnableWorker()
@@ -236,7 +236,7 @@ export default function WorkerList() {
     [enableWorker, disableWorker],
   )
 
-  // ── Task 71: WS-driven in-place worker updates ───────────────────────────
+  // ── WS-driven in-place worker updates ───────────────────────────
   useWebSocket('workers', (payload) => {
     if (!isWorkerEvent(payload)) return
 
@@ -268,7 +268,7 @@ export default function WorkerList() {
     })
   })
 
-  // ── Task 59-style: last-updated timestamp ────────────────────────────────
+  // ── Last-updated timestamp ────────────────────────────────────────────────
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000)
@@ -304,7 +304,7 @@ export default function WorkerList() {
         }
       />
 
-      {/* Task 69: status filter bar */}
+      {/* Status filter bar */}
       <div className={styles.toolbar}>
         <div className={styles.filterBar} role="toolbar" aria-label="Filter by status">
           {STATUS_FILTERS.map(({ label, value }) => (
@@ -394,7 +394,7 @@ export default function WorkerList() {
                         : '—'}
                     </span>
                   </td>
-                  {/* Task 72: compact capability tags */}
+                  {/* Compact capability tags */}
                   <td>
                     <CapabilityTags worker={worker} />
                   </td>
@@ -403,7 +403,7 @@ export default function WorkerList() {
                       {formatHeartbeat(worker.last_heartbeat_at)}
                     </span>
                   </td>
-                  {/* Task 70: per-row enable/disable */}
+                  {/* Per-row enable/disable */}
                   <td>
                     {worker.status === 'online' && (
                       <button

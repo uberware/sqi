@@ -276,8 +276,8 @@ type AssignMsg struct {
 	// rules the worker writes to the OpenJD path-mapping JSON file in the
 	// session working directory.  Generated from the server's named storage
 	// location configuration for the worker's compute location.
-	// Empty in Phase 1 (tasks 60–62 implement named storage location CRUD and
-	// resolved-mode path translation).
+	// Empty in Phase 1; populated once named storage location CRUD and
+	// resolved-mode path translation are wired in.
 	PathMap []PathMapRule `json:"path_map,omitempty"`
 }
 
@@ -390,7 +390,7 @@ type TaskStatusMsg struct {
 
 	// SessionID is the OpenJD session identifier for this task's execution
 	// context. Persisted on the [store.TaskAttempt] for grouping/attribution.
-	// See sqi.md §7.4.
+	// See docs/architecture.md ("SQLite schema overview").
 	SessionID string `json:"session_id,omitempty"`
 
 	// At is the worker's local timestamp for this event.
@@ -458,7 +458,7 @@ type LogChunkMsg struct {
 // ── TaskCancelMsg ─────────────────────────────────────────────────────────────
 
 // TaskCancelMsg is the JSON payload the server publishes to
-// task.cancel.<taskID> when a running task must be interrupted (task 80).
+// task.cancel.<taskID> when a running task must be interrupted.
 //
 // The worker's cancel handler reads this message and calls Cancel on the
 // matching in-progress task, triggering SIGTERM → SIGKILL escalation.

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package cancel implements per-task cancel-signal subscriptions for sqi-worker
-// (tasks 80–85).
+// Package cancel implements per-task cancel-signal subscriptions for sqi-worker.
 //
 // When a job is canceled on sqi-server the scheduler publishes a
-// task.cancel.<taskID> NATS message for each task that was actively executing
-// (server task 54).  [Handler] subscribes to those subjects and routes the
-// signal to the executor via [TaskCanceler.Cancel].
+// task.cancel.<taskID> NATS message for each task that was actively executing.
+// [Handler] subscribes to those subjects and routes the signal to the executor
+// via [TaskCanceler.Cancel].
 //
 // # Subject scheme
 //
@@ -65,7 +64,7 @@ type natsSubscriber interface {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-// Handler manages per-task NATS cancel subscriptions (task 80).
+// Handler manages per-task NATS cancel subscriptions.
 //
 // Create one with [New] and pass it to [executor.Executor.SetCancelRegistrar]
 // before starting the pull loop.  The executor calls [Register] before each
@@ -95,7 +94,7 @@ func New(nc natsSubscriber, canceler TaskCanceler, logger *slog.Logger) *Handler
 }
 
 // Register subscribes to task.cancel.<taskID> so that cancel signals published
-// by the server are delivered to [TaskCanceler.Cancel] (task 80).
+// by the server are delivered to [TaskCanceler.Cancel].
 //
 // Calling Register for the same taskID more than once replaces the existing
 // subscription.  Errors are returned so the executor can log them; they do not
@@ -128,7 +127,7 @@ func (h *Handler) Register(taskID string) error {
 	return nil
 }
 
-// Deregister unsubscribes from task.cancel.<taskID> (task 80).
+// Deregister unsubscribes from task.cancel.<taskID>.
 //
 // Safe to call multiple times; a missing subscription is a no-op.
 func (h *Handler) Deregister(taskID string) {
@@ -154,7 +153,7 @@ func (h *Handler) Deregister(taskID string) {
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-// handleCancel is the NATS message callback for task.cancel.<taskID> (task 81).
+// handleCancel is the NATS message callback for task.cancel.<taskID>.
 //
 // It unmarshals the cancel payload, calls the registered TaskCanceler, and
 // logs the outcome.  Messages that cannot be parsed are logged and ignored;

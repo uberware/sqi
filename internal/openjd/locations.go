@@ -28,9 +28,9 @@ import (
 // worker's compute location (or "default" if no compute-location-specific
 // root is registered).
 //
-// This mechanism implements "resolved" path-translation mode (§8.3 of
-// sqi.md): the worker receives only concrete paths and requires no OpenJD
-// path-mapping support.
+// This mechanism implements "resolved" path-translation mode (see ROADMAP.md,
+// "Path Translation Modes"): the worker receives only concrete paths and
+// requires no OpenJD path-mapping support.
 
 // locURIRE matches a loc:// URI and captures the location name and the
 // remainder of the path (which may be empty for a bare root reference).

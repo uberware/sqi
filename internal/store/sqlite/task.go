@@ -65,7 +65,7 @@ SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at 
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
-	// Counts tasks in 'assigned' or 'running' state for per-queue policy (task 51).
+	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
 	// Joins to jobs so we can filter by queue_id.
 	sqlCountActiveTasksInQueue = `
 SELECT COUNT(*)
@@ -74,7 +74,7 @@ JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.queue_id = ?
   AND  t.status IN ('assigned', 'running')`
 
-	// Counts tasks in 'assigned' or 'running' state for per-farm policy (task 51).
+	// Counts tasks in 'assigned' or 'running' state for per-farm policy.
 	sqlCountActiveTasksInFarm = `
 SELECT COUNT(*)
 FROM   tasks t
@@ -82,7 +82,7 @@ JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.farm_id = ?
   AND  t.status IN ('assigned', 'running')`
 
-	// Per-queue count of tasks in 'ready' state for a given farm (task 55).
+	// Per-queue count of tasks in 'ready' state for a given farm.
 	// Used to populate the sqi_scheduler_queue_depth Prometheus gauge.
 	// farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
@@ -93,7 +93,7 @@ WHERE  t.status  = 'ready'
   AND  (? = '' OR j.farm_id = ?)
 GROUP BY j.queue_id`
 
-	// Counts tasks for a given job grouped by status (task 73).
+	// Counts tasks for a given job grouped by status.
 	// Used by the REST layer to include aggregate task counts in job detail responses.
 	sqlCountTasksByJob = `
 SELECT status, COUNT(*)
@@ -102,7 +102,7 @@ WHERE  job_id = ?
 GROUP BY status`
 
 	// Cancels all non-terminal tasks for a job and returns the number of rows
-	// updated (task 54). The caller first SELECTs active tasks within the same
+	// updated. The caller first SELECTs active tasks within the same
 	// transaction to capture worker IDs before this UPDATE clears them.
 	sqlCancelJobTasks = `
 UPDATE tasks

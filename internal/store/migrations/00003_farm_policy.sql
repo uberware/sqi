@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Task 51: add per-farm maximum concurrent task limit.
+-- Add per-farm maximum concurrent task limit.
 --
 -- max_concurrent_tasks follows the same convention as queues.max_concurrent_tasks:
 -- 0 = unlimited (default). The scheduler enforces this limit before assigning a

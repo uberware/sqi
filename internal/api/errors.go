@@ -2,7 +2,7 @@
 
 package api
 
-// RFC 7807 problem-details error responses (task 82).
+// RFC 7807 problem-details error responses.
 //
 // All error responses from the sqi REST API use the problem+json media type
 // defined in RFC 7807 (https://www.rfc-editor.org/rfc/rfc7807). Clients should
