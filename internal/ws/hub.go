@@ -147,13 +147,14 @@ func (r *subjectRing) add(env Envelope) uint64 {
 }
 
 // since returns all buffered envelopes with Seq strictly greater than
-// sinceSeq, in chronological (oldest-first) order.  Returns nil when sinceSeq
-// is 0 or the ring is empty (callers pass 0 for live-only subscriptions).
+// sinceSeq, in chronological (oldest-first) order.  Returns nil when the ring
+// is empty.  Callers pass 0 to replay all buffered messages (since all hub
+// seqs start at 1, every buffered entry satisfies seq > 0).
 func (r *subjectRing) since(sinceSeq uint64) []Envelope {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.count == 0 || sinceSeq == 0 {
+	if r.count == 0 {
 		return nil
 	}
 
@@ -267,19 +268,18 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 	h.mu.Unlock()
 
 	// Replay outside the hub lock; ring has its own mutex.
-	if sinceSeq > 0 {
-		for _, env := range ring.since(sinceSeq) {
-			select {
-			case c.sendCh <- env:
-			default:
-				h.logger.WarnContext(
-					context.Background(),
-					"ws: hub: replay dropped (slow client)",
-					slog.String("client_id", clientID),
-					slog.String("subject", subject),
-					slog.Uint64("seq", env.Seq),
-				)
-			}
+	// sinceSeq==0 replays all buffered messages; sinceSeq>0 replays from that cursor.
+	for _, env := range ring.since(sinceSeq) {
+		select {
+		case c.sendCh <- env:
+		default:
+			h.logger.WarnContext(
+				context.Background(),
+				"ws: hub: replay dropped (slow client)",
+				slog.String("client_id", clientID),
+				slog.String("subject", subject),
+				slog.Uint64("seq", env.Seq),
+			)
 		}
 	}
 
@@ -365,15 +365,14 @@ func (h *Hub) NotifyWorker(e WorkerEvent) {
 }
 
 // NotifyLog fans a log chunk to clients subscribed to "tasks/{taskID}/logs".
+// The envelope is always stored in the ring buffer so late subscribers can
+// replay it via since_seq: 0 even when no clients are active at emit time.
 func (h *Hub) NotifyLog(e LogEvent) {
 	at := e.At
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
 	logSubject := fmt.Sprintf(SubjectTaskLogsFmt, e.TaskID)
-	if !h.hasSubscribers(logSubject) {
-		return
-	}
 	env, err := buildEnvelope(logSubject, TaskLogPush{
 		TaskID:    e.TaskID,
 		AttemptID: e.AttemptID,

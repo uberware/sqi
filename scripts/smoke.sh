@@ -323,13 +323,12 @@ done
 [ -n "$TASK_ID" ] || fail "job ${JOB_ID} produced no tasks"
 log "task ${TASK_ID}"
 
-# ── Arm the WebSocket subscriber BEFORE the worker emits the echo ─────────────
+# ── Arm the WebSocket subscriber (may subscribe before or after the echo runs) ─
 #
-# The server only buffers log pushes for a subject while it has a live
-# subscriber (internal/ws Hub.NotifyLog early-returns when there are none), so
-# the subscriber must be connected and subscribed before the echo runs. We
-# subscribe immediately after the task exists, which reliably precedes the
-# worker's pull+execute (mirrors the Python integration test).
+# The hub always buffers task-log pushes in a per-subject ring buffer even
+# when no WebSocket clients are subscribed.  Subscribing with since_seq=0
+# replays all buffered entries, so the subscriber receives the sentinel even on
+# fast runners where the task completes before the Python client connects.
 WS_OK="skip"
 if [ -n "$WS_PYTHON" ]; then
   WS_OK="armed"

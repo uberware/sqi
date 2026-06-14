@@ -134,8 +134,10 @@ type Envelope struct {
 // SubscribePayload is the payload of a [TypeSubscribe] client message.
 type SubscribePayload struct {
 	// SinceSeq instructs the server to replay any buffered push messages with
-	// seq strictly greater than SinceSeq before streaming live events. A value
-	// of 0 (the default) requests only live events going forward (task 91).
+	// seq strictly greater than SinceSeq before streaming live events.
+	// A value of 0 (the default) replays all buffered messages for the subject
+	// (hub sequences start at 1, so every buffered entry satisfies seq > 0).
+	// Pass the last received Seq to resume without replay.
 	SinceSeq uint64 `json:"since_seq,omitempty"`
 }
 

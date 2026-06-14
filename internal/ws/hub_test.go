@@ -220,6 +220,29 @@ func TestHub_NotifyWorker_FansToWorkerSubscribers(t *testing.T) {
 	}
 }
 
+func TestHub_NotifyLog_BuffersInRingWithoutSubscribers(t *testing.T) {
+	h := newTestHub()
+	const taskID = "task-no-sub"
+	logSubject := fmt.Sprintf(SubjectTaskLogsFmt, taskID)
+
+	// Fire a log with NO active subscribers — previously this was a no-op.
+	h.NotifyLog(LogEvent{TaskID: taskID, SeqNum: 1, Stream: "stdout", Data: "buffered\n"})
+
+	// Late subscriber with since_seq=0 must receive the buffered log as replay.
+	ch := h.Register("c1")
+	if err := h.Subscribe("c1", logSubject, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("did not receive replayed log after late subscribe with since_seq=0")
+	}
+	if env.Subject != logSubject {
+		t.Fatalf("expected subject %q, got %q", logSubject, env.Subject)
+	}
+}
+
 func TestHub_NotifyLog_FansToLogSubscriber(t *testing.T) {
 	h := newTestHub()
 	const taskID = "task-xyz"
@@ -370,7 +393,7 @@ done:
 	}
 }
 
-func TestHub_RingBuffer_NoReplayWhenSinceSeqZero(t *testing.T) {
+func TestHub_RingBuffer_ReplayAllWhenSinceSeqZero(t *testing.T) {
 	h := newTestHub()
 	trashCh := h.Register("trash")
 	if err := h.Subscribe("trash", SubjectJobs, 0); err != nil {
@@ -381,16 +404,25 @@ func TestHub_RingBuffer_NoReplayWhenSinceSeqZero(t *testing.T) {
 	}
 	drainAll(trashCh)
 
-	// SinceSeq 0 means live-only — no replay.
+	// SinceSeq 0 replays ALL buffered messages (hub seqs start at 1, so every
+	// buffered entry satisfies seq > 0).
 	ch := h.Register("c1")
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe c1: %v", err)
 	}
 
-	select {
-	case env := <-ch:
-		t.Fatalf("unexpected replay envelope (Seq=%d) when sinceSeq=0", env.Seq)
-	case <-time.After(50 * time.Millisecond):
+	var replayed []Envelope
+	for {
+		select {
+		case env := <-ch:
+			replayed = append(replayed, env)
+		case <-time.After(50 * time.Millisecond):
+			goto done
+		}
+	}
+done:
+	if len(replayed) != 5 {
+		t.Fatalf("expected 5 replayed envelopes when sinceSeq=0, got %d", len(replayed))
 	}
 }
 
@@ -466,13 +498,20 @@ func TestSubjectRing_Since_EmptyRing(t *testing.T) {
 	}
 }
 
-func TestSubjectRing_Since_SinceSeqZeroReturnsNil(t *testing.T) {
+func TestSubjectRing_Since_SinceSeqZeroReturnsAll(t *testing.T) {
 	r := &subjectRing{}
-	for i := range 5 {
-		r.add(Envelope{Type: TypePush, Subject: SubjectJobs, Seq: uint64(i)})
+	for range 5 {
+		r.add(Envelope{Type: TypePush, Subject: SubjectJobs})
 	}
-	if got := r.since(0); got != nil {
-		t.Fatalf("since(0) must return nil (live-only), got %v", got)
+	// since(0) should return all 5 entries: hub assigns seq 1-5, all > 0.
+	got := r.since(0)
+	if len(got) != 5 {
+		t.Fatalf("since(0) must return all 5 buffered envelopes, got %d", len(got))
+	}
+	for _, env := range got {
+		if env.Seq == 0 {
+			t.Errorf("since(0) returned envelope with Seq=0, which should never be assigned")
+		}
 	}
 }
 

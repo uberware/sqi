@@ -401,26 +401,23 @@ func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) 
 		return
 	}
 
-	// Validate subject before acking by doing a dry-run subscribe check.
-	// Subscribe itself is the registration; we must send the ack first so that
-	// replayed pushes (enqueued by hub.Subscribe into the send channel) arrive
-	// after the ack, not before it.
-	if err := wc.hub.Subscribe(wc.id, env.Subject, 0); err != nil {
+	// First call: validate subject + register subscription with no replay.
+	// Pass MaxUint64 so ring.since(MaxUint64) returns nothing — the ack must
+	// arrive before any replayed pushes (which are queued by the second call).
+	const noReplaySeq = ^uint64(0)
+	if err := wc.hub.Subscribe(wc.id, env.Subject, noReplaySeq); err != nil {
 		wc.sendAck(ctx, env.Seq, err.Error())
 		return
 	}
 
 	wc.sendAck(ctx, env.Seq, "")
 
-	// Re-subscribe with the actual SinceSeq to trigger replay.  The second
-	// call is a no-op for the subscription itself (idempotent) and only queues
-	// the replayed events after the ack has been written.  Subject validity was
-	// already confirmed by the first Subscribe above, so an error here would be
-	// unexpected; log it rather than silently discarding.
-	if payload.SinceSeq > 0 {
-		if err := wc.hub.Subscribe(wc.id, env.Subject, payload.SinceSeq); err != nil {
-			wc.logger.WarnContext(ctx, "ws: replay re-subscribe failed", slog.Any("error", err))
-		}
+	// Second call: trigger replay after the ack has been written.  Idempotent
+	// for subscription registration; only enqueues buffered ring entries into
+	// the send channel.  since_seq==0 replays all buffered messages; >0 replays
+	// from that cursor.  Subject validity confirmed above; errors are unexpected.
+	if err := wc.hub.Subscribe(wc.id, env.Subject, payload.SinceSeq); err != nil {
+		wc.logger.WarnContext(ctx, "ws: replay re-subscribe failed", slog.Any("error", err))
 	}
 
 	wc.logger.DebugContext(
