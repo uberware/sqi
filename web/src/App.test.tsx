@@ -48,6 +48,6 @@ describe('App', () => {
 
   it('renders the dashboard at the root path', () => {
     render(<App />, { wrapper })
-    expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'dASHBOARD' })).toBeInTheDocument()
   })
 })

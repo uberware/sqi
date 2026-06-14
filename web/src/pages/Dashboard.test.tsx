@@ -206,8 +206,8 @@ describe('Dashboard', () => {
     it('renders the page heading', async () => {
       mockDashboardFetches()
       render(<Dashboard />, { wrapper: Wrapper })
-      await waitFor(() => screen.getByRole('heading', { name: 'Dashboard' }))
-      expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
+      await waitFor(() => screen.getByRole('heading', { name: 'dASHBOARD' }))
+      expect(screen.getByRole('heading', { name: 'dASHBOARD' })).toBeInTheDocument()
     })
 
     it('renders the workers card', async () => {

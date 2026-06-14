@@ -1,14 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
+import { WebSocketProvider } from '@/ws/context'
 import Sidebar from '@/components/layout/Sidebar'
+
+class MockWebSocket {
+  static readonly OPEN = 1
+  onopen: null = null
+  onclose: null = null
+  onerror: null = null
+  onmessage: null = null
+  send(): void {}
+  close(): void {}
+}
+
+beforeEach(() => {
+  vi.stubGlobal('WebSocket', MockWebSocket)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 function renderSidebar(initialEntry = '/') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
-      <Sidebar />
+      <WebSocketProvider url="ws://test">
+        <Sidebar />
+      </WebSocketProvider>
     </MemoryRouter>,
   )
 }
@@ -88,5 +109,12 @@ describe('Sidebar', () => {
   it('has accessible navigation landmark', () => {
     renderSidebar()
     expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument()
+  })
+
+  it('Settings is pinned below all other deferred items', () => {
+    const { container } = renderSidebar()
+    const disabledItems = Array.from(container.querySelectorAll('[data-disabled="true"]'))
+    const settingsIndex = disabledItems.findIndex((el) => el.textContent?.includes('Settings'))
+    expect(settingsIndex).toBe(disabledItems.length - 1)
   })
 })

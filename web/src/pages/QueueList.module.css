@@ -1,13 +1,17 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 .page {
-  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
+/* ── Table wrapper ───────────────────────────────────────────────────────────── */
+
 .tableWrap {
+  flex: 1;
   overflow-x: auto;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  overflow-y: auto;
 }
 
 .table {
@@ -16,18 +20,53 @@
   font-size: var(--font-size-sm);
 }
 
-.table th,
-.table td {
-  text-align: left;
-  padding: var(--space-3) var(--space-4);
+.table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface-raised);
   border-bottom: 1px solid var(--color-border);
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  user-select: none;
+  z-index: 1;
 }
+
+.table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.table tbody tr {
+  background: var(--color-surface);
+  transition: background 80ms;
+}
+
+.table tbody tr:hover {
+  background: var(--color-surface-raised);
+}
+
+/* ── Empty / error / loading ─────────────────────────────────────────────────── */
 
 .emptyRow td {
   text-align: center;
+  padding: var(--space-16) var(--space-8);
   color: var(--color-text-muted);
-  padding: var(--space-6);
 }
+
+.errorBanner {
+  padding: var(--space-4) var(--space-8);
+  background: var(--color-error-muted);
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--color-error);
+}
+
+/* ── Row actions ─────────────────────────────────────────────────────────────── */
 
 .linkBtn {
   color: var(--color-accent);
@@ -35,32 +74,43 @@
 }
 
 .deleteBtn {
-  background: none;
-  border: 1px solid var(--color-border);
+  padding: 2px var(--space-2);
   border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error);
+  background: transparent;
   color: var(--color-error);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
-  padding: var(--space-1) var(--space-3);
+  opacity: 0;
+  transition:
+    opacity 80ms,
+    background 80ms;
+}
+
+tr:hover .deleteBtn {
+  opacity: 1;
+}
+
+.deleteBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
 }
 
 .deleteBtn:disabled {
-  opacity: 0.5;
-  cursor: default;
+  opacity: 0.4;
+  cursor: not-allowed;
 }
+
+/* ── Header action ───────────────────────────────────────────────────────────── */
 
 .newBtn {
+  display: inline-block;
   background: var(--color-accent);
   color: var(--color-text-inverse);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  text-decoration: none;
-}
-
-.errorBanner {
-  background: var(--color-error-muted);
-  color: var(--color-error);
   border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  white-space: nowrap;
 }

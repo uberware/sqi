@@ -188,7 +188,9 @@ function MetadataCard({ job }: { job: JobDetailType }) {
         </div>
         <div className={styles.metaField}>
           <dt>Queue</dt>
-          <dd>{job.queue_name ?? job.queue_id}</dd>
+          <dd>
+            <Link to="/queues">{job.queue_name ?? job.queue_id}</Link>
+          </dd>
         </div>
         {job.project !== undefined && (
           <div className={styles.metaField}>
@@ -527,7 +529,7 @@ export default function JobDetail() {
   if (isLoading) {
     return (
       <div className={styles.page}>
-        <PageHeader title="Job" subtitle="Loading…" />
+        <PageHeader title="Job Details" subtitle="Loading…" />
         <p className={styles.loadingPlaceholder}>Loading job details…</p>
       </div>
     )
@@ -536,7 +538,7 @@ export default function JobDetail() {
   if (isError || job === undefined) {
     return (
       <div className={styles.page}>
-        <PageHeader title="Job" />
+        <PageHeader title="Job Details" />
         <div className={styles.errorBanner} role="alert">
           Failed to load job: {error instanceof Error ? error.message : 'Unknown error'}
         </div>
@@ -547,8 +549,7 @@ export default function JobDetail() {
   return (
     <div className={styles.page}>
       <PageHeader
-        title={job.name}
-        subtitle={`ID: ${truncateId(job.id)}`}
+        title="Job Details"
         action={
           <div className={styles.headerActions}>
             <StatusBadge status={job.status} />
@@ -568,6 +569,10 @@ export default function JobDetail() {
           </div>
         }
       />
+
+      <div className={styles.jobNameArea}>
+        <h2 className={styles.jobName}>{job.name}</h2>
+      </div>
 
       <MetadataCard job={job} />
 

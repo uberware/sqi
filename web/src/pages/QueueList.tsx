@@ -86,7 +86,11 @@ export default function QueueList() {
                     {queue.name}
                   </Link>
                 </td>
-                <td>{farmName}</td>
+                <td>
+                  <Link to="/farms" className={styles.linkBtn}>
+                    {farmName}
+                  </Link>
+                </td>
                 <td>{queue.priority}</td>
                 <td>
                   {queue.max_concurrent_tasks === 0 ? 'Unlimited' : queue.max_concurrent_tasks}

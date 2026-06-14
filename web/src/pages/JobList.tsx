@@ -579,7 +579,9 @@ export default function JobList() {
                     <IdCell id={job.id} />
                   </td>
                   <td>{job.owner}</td>
-                  <td>{job.queue_name ?? job.queue_id}</td>
+                  <td>
+                    <Link to="/queues">{job.queue_name ?? job.queue_id}</Link>
+                  </td>
                   <td>
                     <StatusBadge status={job.status} />
                   </td>

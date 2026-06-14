@@ -139,8 +139,8 @@ describe('WorkerDetail', () => {
 
       render(<WorkerDetail />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getByText('gpu-node-07'))
-      expect(screen.getByText('gpu-node-07')).toBeInTheDocument()
+      await waitFor(() => screen.getByText('gPU-NODE-07'))
+      expect(screen.getByText('gPU-NODE-07')).toBeInTheDocument()
     })
 
     it('renders the worker ID in the metadata card', async () => {

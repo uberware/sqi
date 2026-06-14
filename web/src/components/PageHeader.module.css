@@ -16,8 +16,9 @@
 }
 
 .title {
-  font-size: var(--font-size-2xl);
-  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-family-display);
+  font-size: 3rem;
+  font-weight: var(--font-weight-normal);
   color: var(--color-text-primary);
   line-height: var(--line-height-tight);
   white-space: nowrap;

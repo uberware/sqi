@@ -28,17 +28,22 @@
   line-height: var(--line-height-relaxed);
 }
 
+.editor :global(.cm-editor) {
+  background: #c2ccd6;
+}
+
 .editor :global(.cm-content) {
+  background: #c2ccd6;
   padding: var(--space-3);
 }
 
 .editor :global(.cm-gutters) {
-  background: var(--color-surface-raised);
-  border-right: 1px solid var(--color-border-subtle);
-  color: var(--color-text-muted);
+  background: #aebac6;
+  border-right: 1px solid #9dafc0;
+  color: #5a6a7a;
 }
 
 .editor :global(.cm-activeLineGutter),
 .editor :global(.cm-activeLine) {
-  background: var(--color-surface-raised);
+  background: #b4bfc9;
 }

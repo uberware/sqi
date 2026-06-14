@@ -1,15 +1,15 @@
 :root {
   /* ---- Backgrounds ---- */
-  --color-bg: #f0f2f4;
+  --color-bg: #e1e6eb;
   --color-surface: #ffffff;
   --color-surface-raised: #f6f8fa;
   --color-surface-overlay: rgba(255, 255, 255, 0.95);
 
   /* ---- Sidebar ---- */
-  --color-sidebar-bg: #1a1d23;
-  --color-sidebar-hover: #252932;
-  --color-sidebar-active: #2e3440;
-  --color-sidebar-border: #2e3440;
+  --color-sidebar-bg: #1c2730;
+  --color-sidebar-hover: #263240;
+  --color-sidebar-active: #304050;
+  --color-sidebar-border: #304050;
   --color-sidebar-text: #c9d1d9;
   --color-sidebar-text-muted: #6e7681;
   --color-sidebar-accent: #58a6ff;
@@ -19,16 +19,16 @@
   --color-text-secondary: #656d76;
   --color-text-muted: #9198a1;
   --color-text-inverse: #ffffff;
-  --color-text-link: #0969da;
-  --color-text-link-hover: #0550ae;
+  --color-text-link: #0986ce;
+  --color-text-link-hover: #0670ad;
 
   /* ---- Borders ---- */
   --color-border: #d0d7de;
   --color-border-subtle: #e8ecef;
 
   /* ---- Accent / interactive ---- */
-  --color-accent: #0969da;
-  --color-accent-hover: #0550ae;
+  --color-accent: #0986ce;
+  --color-accent-hover: #0670ad;
   --color-accent-muted: #ddf4ff;
 
   /* ---- Status: pending ---- */
@@ -37,7 +37,7 @@
 
   /* ---- Status: ready ---- */
   --color-status-ready-bg: #ddf4ff;
-  --color-status-ready-text: #0550ae;
+  --color-status-ready-text: #0670ad;
 
   /* ---- Status: assigned ---- */
   --color-status-assigned-bg: #fff8c5;
@@ -45,7 +45,7 @@
 
   /* ---- Status: running (same blue as ready — both represent "active" states) ---- */
   --color-status-running-bg: #ddf4ff;
-  --color-status-running-text: #0550ae;
+  --color-status-running-text: #0670ad;
 
   /* ---- Status: succeeded ---- */
   --color-status-succeeded-bg: #dafbe1;
@@ -66,11 +66,12 @@
   --color-warning-muted: #fff8c5;
   --color-error: #cf222e;
   --color-error-muted: #ffebe9;
-  --color-info: #0969da;
+  --color-info: #0986ce;
   --color-info-muted: #ddf4ff;
 
   /* ---- Typography ---- */
   --font-family-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-family-display: 'Blackout', system-ui, sans-serif;
   --font-family-mono:
     'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, Monaco, 'Courier New', monospace;
 

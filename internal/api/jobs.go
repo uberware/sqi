@@ -51,6 +51,7 @@ type jobResponse struct {
 	ID             string     `json:"id"`
 	FarmID         string     `json:"farm_id"`
 	QueueID        string     `json:"queue_id"`
+	QueueName      string     `json:"queue_name,omitempty"`
 	Name           string     `json:"name"`
 	Owner          string     `json:"owner"`
 	Submitter      string     `json:"submitter"`
@@ -240,6 +241,8 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	queueNames := resolveQueueNames(ctx, h.store, page.Items)
+
 	resp := jobListResponse{
 		Items:  make([]jobResponse, len(page.Items)),
 		Total:  page.Total,
@@ -247,7 +250,9 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Offset: page.Offset,
 	}
 	for i, j := range page.Items {
-		resp.Items[i] = toJobResponse(j)
+		r := toJobResponse(j)
+		r.QueueName = queueNames[j.QueueID]
+		resp.Items[i] = r
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -290,8 +295,13 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		stepResps[i] = toStepResponse(s)
 	}
 
+	jr := toJobResponse(job)
+	if q, err := h.store.GetQueue(ctx, job.QueueID); err == nil {
+		jr.QueueName = q.Name
+	}
+
 	resp := jobDetailResponse{
-		jobResponse: toJobResponse(job),
+		jobResponse: jr,
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts),
 	}
@@ -504,6 +514,23 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
+
+// resolveQueueNames builds a map of queue ID → queue name for the unique queue
+// IDs present in jobs. Missing or erroring queues are silently omitted so a
+// deleted queue does not break the job list response.
+func resolveQueueNames(ctx context.Context, s store.Store, jobs []store.Job) map[string]string {
+	seen := make(map[string]struct{}, len(jobs))
+	for _, j := range jobs {
+		seen[j.QueueID] = struct{}{}
+	}
+	names := make(map[string]string, len(seen))
+	for id := range seen {
+		if q, err := s.GetQueue(ctx, id); err == nil {
+			names[id] = q.Name
+		}
+	}
+	return names
+}
 
 // toJobResponse converts a [store.Job] into the API wire type.
 func toJobResponse(j store.Job) jobResponse {

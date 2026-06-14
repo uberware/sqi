@@ -33,6 +33,14 @@
   font: inherit;
 }
 
+.select:disabled {
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+  opacity: 1;
+  cursor: default;
+}
+
 .footer {
   display: flex;
   gap: var(--space-3);

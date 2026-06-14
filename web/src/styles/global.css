@@ -1,5 +1,13 @@
 @import './tokens.css';
 
+@font-face {
+  font-family: 'Blackout';
+  src: url('../assets/BLACKOUT.TTF') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ---- Box model ---- */
 *,
 *::before,

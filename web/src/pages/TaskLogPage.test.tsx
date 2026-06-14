@@ -52,7 +52,7 @@ describe('TaskLogPage', () => {
       isError: false,
     } as unknown as ReturnType<typeof queries.useGetTask>)
     renderAt()
-    expect(screen.getByText(/Logs: Render/)).toBeInTheDocument()
+    expect(screen.getByText(/lOGS: rENDER/)).toBeInTheDocument()
     expect(screen.getByTestId('log-viewer')).toHaveTextContent('task1:succeeded')
   })
 })
