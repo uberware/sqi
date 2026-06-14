@@ -2,8 +2,9 @@
 
 `sqi-client` is the pure-Python library for driving a `sqi-server` instance from
 scripts and pipeline tooling — the same operations the web UI performs, over the
-REST API (with an optional WebSocket extra for live events). Per `sqi.md` §13.2
-it is the foundation for the Phase 2 DCC submitters and for pipeline automation.
+REST API (with an optional WebSocket extra for live events). Per the roadmap
+([`../ROADMAP.md`](../ROADMAP.md)) it is the foundation for the Phase 2 DCC
+submitters and for pipeline automation.
 
 This is the reference document. For the project overview and install, see
 [`clients/python/README.md`](../clients/python/README.md); the authoritative wire

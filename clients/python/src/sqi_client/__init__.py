@@ -4,7 +4,7 @@
 
 This package wraps the sqi-server REST and WebSocket API for scripted job
 submission, querying, and management. It is the foundation for the Phase 2 DCC
-submitters and for pipeline automation scripts (see ``sqi.md`` §13.2).
+submitters and for pipeline automation scripts (see the project ``ROADMAP.md``).
 
 The curated public API is re-exported here and listed in ``__all__``: the
 client, its typed models, the exception hierarchy, and — when importable — the

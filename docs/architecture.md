@@ -289,7 +289,7 @@ SQLITE_BUSY errors under concurrent write load.
 
 ## sqi-client (Python library)
 
-`sqi-client` (the `sqi-client` box in the component overview, per `sqi.md` §6.1)
+`sqi-client` (the `sqi-client` box in the component overview, per [`../ROADMAP.md`](../ROADMAP.md))
 is a pure-Python client library that talks to `sqi-server` over the same public
 surface as the web UI: the REST API for everything, plus the WebSocket gateway
 for live events. It lives in the repository at `clients/python/` (import name

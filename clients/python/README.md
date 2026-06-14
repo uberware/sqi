@@ -6,7 +6,7 @@ task and render farm manager.
 `sqi-client` (import name `sqi_client`) is a pure-Python library for programmatic
 job submission, status queries, and management. It covers the same operations as
 the web UI via the REST API, and is the foundation for the Phase 2 DCC
-submitters and for pipeline automation scripts (see `sqi.md` §13.2).
+submitters and for pipeline automation scripts (see [`../../ROADMAP.md`](../../ROADMAP.md)).
 
 It talks to a running `sqi-server` over its REST API, with an optional WebSocket
 extra for live event streaming. The only required dependency is

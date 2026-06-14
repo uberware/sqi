@@ -13,4 +13,4 @@ Long-form documentation for `sqi-server` operators and contributors. Phase 1 del
 - `web-build.md` — how `web/dist/` is built, embedded, cache-busted, and debugged
 - `web-accessibility.md` — the Phase 1 web UI accessibility baseline
 
-Top-level product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `sqi.md`) stay at the repo root.
+Top-level product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) stay at the repo root. `ROADMAP.md` is the technical-architecture and roadmap reference these docs point to for design rationale.

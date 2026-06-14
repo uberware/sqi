@@ -192,7 +192,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Web UI product form editor
 - Additional path translation modes
 - S3-compatible storage support
-- DCC submitter framework (Maya, Houdini)
+- DCC submitter framework (Maya, Houdini) — built on the Python client
 - Compute location configuration and job affinity
 
 ### Phase 3: Auth and Multi-User (v0.3)
