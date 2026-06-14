@@ -137,7 +137,7 @@ type Server struct {
 
 	store     store.Store
 	broker    *bus.Broker
-	busClient *bus.Client          // typed wrapper; drained before broker shutdown
+	busClient *bus.Client // typed wrapper; drained before broker shutdown
 	sched     *scheduler.Scheduler
 	wsHub     *ws.Hub              // WebSocket fan-out hub
 	discovery *discovery.Responder // mDNS advertisement
