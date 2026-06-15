@@ -139,7 +139,7 @@ jobs:
       # goreleaser does not build Python artifacts, so the sdist + wheel are built
       # and attached to the same GitHub release in a separate step.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
