@@ -67,3 +67,22 @@ updates:
         update-types:
           - minor
           - patch
+
+  # ── Python client (clients/python) ────────────────────────────────────────────
+  # Version-update PRs are disabled (open-pull-requests-limit: 0). This entry
+  # exists to scope Dependabot's *security* updates for the Python client and to
+  # ignore `pytest`: pytest's fixed versions (>= 9.0.3) require Python >= 3.10,
+  # but this library still supports Python 3.9 (see pyproject `requires-python`
+  # and the CI test matrix), so no fixed pytest can be installed on the 3.9 leg.
+  # pytest is a dev/test-only tool that never ships to consumers, so the advisory
+  # is accepted rather than fixed. Remove this ignore if the floor is raised to 3.10+.
+  - package-ecosystem: pip
+    directory: /clients/python
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "pytest"
