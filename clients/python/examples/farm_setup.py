@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Provision a farm, a queue, a storage location, and a license pool from scratch.
+"""Provision a farm, a queue, a storage location, and a usage pool from scratch.
 
 Creates the four resource families a fresh sqi deployment needs before workers
 can run jobs, printing the ID of each created resource.
@@ -51,13 +51,12 @@ def main(argv: list[str]) -> int:
         )
         print(f"storage location:{location.id}  ({location.name})")
 
-        pool = sqi.create_license_pool(
+        pool = sqi.create_usage_pool(
             name="arnold-pool",
-            product="arnold",
             max_concurrent=10,
             server_hint="27000@licsrv.studio.internal",
         )
-        print(f"license pool:    {pool.id}  ({pool.name})")
+        print(f"usage pool:      {pool.id}  ({pool.name})")
 
     return 0
 

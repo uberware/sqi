@@ -30,7 +30,7 @@ sqi-server
 ├── Scheduler          (job queue, task assignment, priority, dependencies)
 ├── REST + WebSocket API
 ├── Web UI             (embedded SPA)
-├── License pool manager
+├── Usage pool manager
 ├── Preset registry
 └── State store        (SQLite embedded or PostgreSQL external)
 
@@ -77,7 +77,7 @@ The scheduler is intentionally stateless with respect to the running process —
 
 Configuration cascades: farm defaults → queue overrides. This avoids repeating settings across every job submission.
 
-**Scheduling considers:** job priority, task dependencies, queue and farm policy (concurrency limits, scheduling mode), compute location affinity, worker capability tags (OS, GPU, installed software), and license pool availability.
+**Scheduling considers:** job priority, task dependencies, queue and farm policy (concurrency limits, scheduling mode), compute location affinity, worker capability tags (OS, GPU, installed software), and usage pool availability.
 
 ---
 
@@ -181,7 +181,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Basic web UI: dashboard, job list, worker list, log viewer, job submission
 - Python client API
 - Named storage locations (resolved path translation)
-- License pool tracking (count-based)
+- Usage pool tracking (count-based)
 - Simple all-in-one deployment
 - Docker image for worker
 
@@ -194,6 +194,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - S3-compatible storage support
 - DCC submitter framework (Maya, Houdini) — built on the Python client
 - Compute location configuration and job affinity
+- Product limits (concurrency caps tied to a product/preset, building on Phase 1 usage pool tracking)
 
 ### Phase 3: Auth and Multi-User (v0.3)
 
@@ -202,6 +203,8 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Role-based access control (admin, operator, user, read-only)
 - Owner/submitter distinction in job model
 - OAuth2/OIDC support
+- User limits (per-user concurrent task caps)
+- Custom limits (end-user-configurable limit dimensions, e.g. show or client code)
 
 ### Phase 4: Production Hardening (v0.4 — beta)
 

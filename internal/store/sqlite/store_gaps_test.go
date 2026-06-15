@@ -7,9 +7,9 @@ package sqlite_test
 // Adds tests for:
 //   - task_attempt.go: CreateTaskAttempt, GetTaskAttempt, LatestTaskAttempt,
 //     UpdateTaskAttempt, CancelJobAttempts, TerminateWorkerAttempts, ListTaskAttempts
-//   - license.go (checkout side): CreateCheckout, ReleaseCheckout,
-//     ActiveCheckoutCount, TryClaimLicenseSlots, ReleaseAttemptCheckouts,
-//     ReleaseJobCheckouts
+//   - usage.go (claim side): CreateClaim, ReleaseClaim,
+//     ActiveClaimCount, TryClaimSlots, ReleaseAttemptClaims,
+//     ReleaseJobClaims
 //   - task_log.go: CreateTaskLog, ListTaskLogs (offset pagination)
 //   - audit.go: AppendAuditEntry, ListAuditEntries
 //   - job.go: UpdateJob, CancelJobStatus
@@ -279,9 +279,9 @@ func TestTaskAttempt_TerminateWorkerAttempts(t *testing.T) {
 	}
 }
 
-// ── License checkouts ─────────────────────────────────────────────────────────
+// ── Usage claims ──────────────────────────────────────────────────────────────
 
-func TestLicense_CreateAndReleaseCheckout(t *testing.T) {
+func TestUsage_CreateAndReleaseClaim(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
@@ -291,57 +291,56 @@ func TestLicense_CreateAndReleaseCheckout(t *testing.T) {
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
 
-	pool, err := s.CreateLicensePool(ctx, store.LicensePool{
+	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
 		ID:            "p1",
 		Name:          "arnold",
-		Product:       "Arnold",
 		MaxConcurrent: 5,
 	})
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
 	a := insertAttempt(t, s, "t1", "w1", 1)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	checkout, err := s.CreateCheckout(ctx, store.LicenseCheckout{
+	claim, err := s.CreateClaim(ctx, store.UsageClaim{
 		ID:            uuid.NewString(),
 		PoolID:        pool.ID,
 		TaskAttemptID: a.ID,
-		CheckedOutAt:  now,
+		ClaimedAt:     now,
 	})
 	if err != nil {
-		t.Fatalf("CreateCheckout: %v", err)
+		t.Fatalf("CreateClaim: %v", err)
 	}
-	if checkout.PoolID != pool.ID {
-		t.Errorf("PoolID: got %q", checkout.PoolID)
+	if claim.PoolID != pool.ID {
+		t.Errorf("PoolID: got %q", claim.PoolID)
 	}
 
 	// Active count should now be 1.
-	n, err := s.ActiveCheckoutCount(ctx, pool.ID)
+	n, err := s.ActiveClaimCount(ctx, pool.ID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount: %v", err)
+		t.Fatalf("ActiveClaimCount: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("active count: got %d, want 1", n)
 	}
 
-	// Release the checkout.
-	if err := s.ReleaseCheckout(ctx, checkout.ID, time.Now().UTC()); err != nil {
-		t.Fatalf("ReleaseCheckout: %v", err)
+	// Release the claim.
+	if err := s.ReleaseClaim(ctx, claim.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("ReleaseClaim: %v", err)
 	}
 
 	// Active count should now be 0.
-	n, err = s.ActiveCheckoutCount(ctx, pool.ID)
+	n, err = s.ActiveClaimCount(ctx, pool.ID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount after release: %v", err)
+		t.Fatalf("ActiveClaimCount after release: %v", err)
 	}
 	if n != 0 {
 		t.Errorf("active count after release: got %d, want 0", n)
 	}
 }
 
-func TestLicense_TryClaimLicenseSlots_UnderCapacity(t *testing.T) {
+func TestUsage_TryClaimSlots_UnderCapacity(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
@@ -351,35 +350,35 @@ func TestLicense_TryClaimLicenseSlots_UnderCapacity(t *testing.T) {
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
 
-	pool, err := s.CreateLicensePool(ctx, store.LicensePool{
-		ID: "p1", Name: "maya", Product: "Maya", MaxConcurrent: 2,
+	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p1", Name: "maya", MaxConcurrent: 2,
 	})
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
 	a := insertAttempt(t, s, "t1", "w1", 1)
 
-	claims := []store.LicensePoolClaim{{
-		CheckoutID:    uuid.NewString(),
+	claims := []store.UsagePoolClaim{{
+		ClaimID:       uuid.NewString(),
 		PoolID:        pool.ID,
 		PoolName:      pool.Name,
 		MaxConcurrent: pool.MaxConcurrent,
 	}}
-	if err := s.TryClaimLicenseSlots(ctx, a.ID, claims, time.Now().UTC()); err != nil {
-		t.Fatalf("TryClaimLicenseSlots: %v", err)
+	if err := s.TryClaimSlots(ctx, a.ID, claims, time.Now().UTC()); err != nil {
+		t.Fatalf("TryClaimSlots: %v", err)
 	}
 
-	n, err := s.ActiveCheckoutCount(ctx, pool.ID)
+	n, err := s.ActiveClaimCount(ctx, pool.ID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount: %v", err)
+		t.Fatalf("ActiveClaimCount: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("active checkouts: got %d, want 1", n)
+		t.Errorf("active claims: got %d, want 1", n)
 	}
 }
 
-func TestLicense_TryClaimLicenseSlots_AtCapacity(t *testing.T) {
+func TestUsage_TryClaimSlots_AtCapacity(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
@@ -390,36 +389,36 @@ func TestLicense_TryClaimLicenseSlots_AtCapacity(t *testing.T) {
 	insertTask(t, s, "t1", "j1", "s1")
 	insertTask(t, s, "t2", "j1", "s1")
 
-	pool, err := s.CreateLicensePool(ctx, store.LicensePool{
-		ID: "p1", Name: "nuke", Product: "Nuke", MaxConcurrent: 1,
+	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p1", Name: "nuke", MaxConcurrent: 1,
 	})
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
 	a1 := insertAttempt(t, s, "t1", "w1", 1)
 	a2 := insertAttempt(t, s, "t2", "w1", 1)
 
-	claim := []store.LicensePoolClaim{{
-		CheckoutID:    uuid.NewString(),
+	claim := []store.UsagePoolClaim{{
+		ClaimID:       uuid.NewString(),
 		PoolID:        pool.ID,
 		PoolName:      pool.Name,
 		MaxConcurrent: pool.MaxConcurrent,
 	}}
 	// First claim succeeds.
-	if err := s.TryClaimLicenseSlots(ctx, a1.ID, claim, time.Now().UTC()); err != nil {
-		t.Fatalf("first TryClaimLicenseSlots: %v", err)
+	if err := s.TryClaimSlots(ctx, a1.ID, claim, time.Now().UTC()); err != nil {
+		t.Fatalf("first TryClaimSlots: %v", err)
 	}
 
-	// Second claim should fail with ErrLicenseAtCapacity.
-	claim[0].CheckoutID = uuid.NewString()
-	err = s.TryClaimLicenseSlots(ctx, a2.ID, claim, time.Now().UTC())
-	if !errors.Is(err, store.ErrLicenseAtCapacity) {
-		t.Errorf("expected ErrLicenseAtCapacity, got %v", err)
+	// Second claim should fail with ErrUsageAtCapacity.
+	claim[0].ClaimID = uuid.NewString()
+	err = s.TryClaimSlots(ctx, a2.ID, claim, time.Now().UTC())
+	if !errors.Is(err, store.ErrUsageAtCapacity) {
+		t.Errorf("expected ErrUsageAtCapacity, got %v", err)
 	}
 }
 
-func TestLicense_ReleaseAttemptCheckouts(t *testing.T) {
+func TestUsage_ReleaseAttemptClaims(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
@@ -429,42 +428,42 @@ func TestLicense_ReleaseAttemptCheckouts(t *testing.T) {
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
 
-	pool, err := s.CreateLicensePool(ctx, store.LicensePool{
-		ID: "p1", Name: "houdini", Product: "Houdini", MaxConcurrent: 5,
+	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p1", Name: "houdini", MaxConcurrent: 5,
 	})
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
 	a := insertAttempt(t, s, "t1", "w1", 1)
-	claim := []store.LicensePoolClaim{{
-		CheckoutID:    uuid.NewString(),
+	claim := []store.UsagePoolClaim{{
+		ClaimID:       uuid.NewString(),
 		PoolID:        pool.ID,
 		PoolName:      pool.Name,
 		MaxConcurrent: pool.MaxConcurrent,
 	}}
-	if err := s.TryClaimLicenseSlots(ctx, a.ID, claim, time.Now().UTC()); err != nil {
-		t.Fatalf("TryClaimLicenseSlots: %v", err)
+	if err := s.TryClaimSlots(ctx, a.ID, claim, time.Now().UTC()); err != nil {
+		t.Fatalf("TryClaimSlots: %v", err)
 	}
 
-	n, err := s.ReleaseAttemptCheckouts(ctx, a.ID, time.Now().UTC())
+	n, err := s.ReleaseAttemptClaims(ctx, a.ID, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("ReleaseAttemptCheckouts: %v", err)
+		t.Fatalf("ReleaseAttemptClaims: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("released: got %d, want 1", n)
 	}
 
-	count, err := s.ActiveCheckoutCount(ctx, pool.ID)
+	count, err := s.ActiveClaimCount(ctx, pool.ID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount: %v", err)
+		t.Fatalf("ActiveClaimCount: %v", err)
 	}
 	if count != 0 {
 		t.Errorf("active after release: got %d, want 0", count)
 	}
 }
 
-func TestLicense_ReleaseJobCheckouts(t *testing.T) {
+func TestUsage_ReleaseJobClaims(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
@@ -475,34 +474,100 @@ func TestLicense_ReleaseJobCheckouts(t *testing.T) {
 	insertTask(t, s, "t1", "j1", "s1")
 	insertTask(t, s, "t2", "j1", "s1")
 
-	pool, err := s.CreateLicensePool(ctx, store.LicensePool{
-		ID: "p1", Name: "vray", Product: "V-Ray", MaxConcurrent: 10,
+	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p1", Name: "vray", MaxConcurrent: 10,
 	})
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
 	a1 := insertAttempt(t, s, "t1", "w1", 1)
 	a2 := insertAttempt(t, s, "t2", "w1", 1)
 
 	for _, aID := range []string{a1.ID, a2.ID} {
-		claim := []store.LicensePoolClaim{{
-			CheckoutID:    uuid.NewString(),
+		claim := []store.UsagePoolClaim{{
+			ClaimID:       uuid.NewString(),
 			PoolID:        pool.ID,
 			PoolName:      pool.Name,
 			MaxConcurrent: pool.MaxConcurrent,
 		}}
-		if err := s.TryClaimLicenseSlots(ctx, aID, claim, time.Now().UTC()); err != nil {
-			t.Fatalf("TryClaimLicenseSlots: %v", err)
+		if err := s.TryClaimSlots(ctx, aID, claim, time.Now().UTC()); err != nil {
+			t.Fatalf("TryClaimSlots: %v", err)
 		}
 	}
 
-	n, err := s.ReleaseJobCheckouts(ctx, "j1", time.Now().UTC())
+	n, err := s.ReleaseJobClaims(ctx, "j1", time.Now().UTC())
 	if err != nil {
-		t.Fatalf("ReleaseJobCheckouts: %v", err)
+		t.Fatalf("ReleaseJobClaims: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("released: got %d, want 2", n)
+	}
+}
+
+func TestUsage_ListUsagePoolUtilization(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertWorker(t, s, "w1", "f1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+	insertTask(t, s, "t2", "j1", "s1")
+
+	// "arnold": 5 seats, will have 2 active + 1 released → in use 2.
+	arnold, err := s.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p-arnold", Name: "arnold", MaxConcurrent: 5,
+	})
+	if err != nil {
+		t.Fatalf("CreateUsagePool arnold: %v", err)
+	}
+	// "maya": 3 seats, no claims → in use 0.
+	if _, err := s.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p-maya", Name: "maya", MaxConcurrent: 3,
+	}); err != nil {
+		t.Fatalf("CreateUsagePool maya: %v", err)
+	}
+
+	a1 := insertAttempt(t, s, "t1", "w1", 1)
+	a2 := insertAttempt(t, s, "t2", "w1", 1)
+
+	mkClaim := func() []store.UsagePoolClaim {
+		return []store.UsagePoolClaim{{
+			ClaimID: uuid.NewString(), PoolID: arnold.ID,
+			PoolName: arnold.Name, MaxConcurrent: arnold.MaxConcurrent,
+		}}
+	}
+	if err := s.TryClaimSlots(ctx, a1.ID, mkClaim(), time.Now().UTC()); err != nil {
+		t.Fatalf("claim a1: %v", err)
+	}
+	if err := s.TryClaimSlots(ctx, a2.ID, mkClaim(), time.Now().UTC()); err != nil {
+		t.Fatalf("claim a2: %v", err)
+	}
+	// Release a3's claim so it does not count toward in-use.
+	insertTask(t, s, "t3", "j1", "s1")
+	a3 := insertAttempt(t, s, "t3", "w1", 1)
+	if err := s.TryClaimSlots(ctx, a3.ID, mkClaim(), time.Now().UTC()); err != nil {
+		t.Fatalf("claim a3: %v", err)
+	}
+	if _, err := s.ReleaseAttemptClaims(ctx, a3.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("release a3: %v", err)
+	}
+
+	usage, err := s.ListUsagePoolUtilization(ctx)
+	if err != nil {
+		t.Fatalf("ListUsagePoolUtilization: %v", err)
+	}
+	if len(usage) != 2 {
+		t.Fatalf("usage len: got %d, want 2", len(usage))
+	}
+	// Ordered by name: arnold, maya.
+	if usage[0].Name != "arnold" || usage[0].InUse != 2 {
+		t.Errorf("arnold: got name=%q in_use=%d, want arnold/2", usage[0].Name, usage[0].InUse)
+	}
+	if usage[1].Name != "maya" || usage[1].InUse != 0 {
+		t.Errorf("maya: got name=%q in_use=%d, want maya/0", usage[1].Name, usage[1].InUse)
 	}
 }
 

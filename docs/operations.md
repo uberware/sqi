@@ -337,17 +337,17 @@ handled outside the process:
 
 | Metric | Type | Description |
 |---|---|---|
-| `http_requests_total` | counter | HTTP requests by method, path, and status |
-| `http_request_duration_seconds` | histogram | HTTP request latency |
-| `scheduler_queue_depth` | gauge | Ready tasks waiting for assignment, by queue |
-| `scheduler_tasks_total` | counter | Tasks processed by final status |
-| `scheduler_assignment_duration_seconds` | histogram | Time from ready → assigned |
-| `scheduler_idle_workers` | gauge | Workers online but not assigned a task |
-| `workers_total` | gauge | Registered workers by status |
-| `nats_published_total` | counter | NATS messages published by subject |
-| `nats_consumed_total` | counter | NATS messages consumed by subject |
-| `db_query_duration_seconds` | histogram | SQLite query latency by operation |
-| `license_active_checkouts` | gauge | Active license checkouts by pool |
+| `sqi_http_requests_total` | counter | HTTP requests by method, path, and status |
+| `sqi_http_request_duration_seconds` | histogram | HTTP request latency |
+| `sqi_scheduler_queue_depth` | gauge | Ready tasks waiting for assignment, by queue |
+| `sqi_scheduler_tasks_total` | counter | Tasks processed by final status |
+| `sqi_scheduler_assignment_duration_seconds` | histogram | Time from ready → assigned |
+| `sqi_scheduler_idle_workers` | gauge | Workers online but not assigned a task |
+| `sqi_workers_total` | gauge | Registered workers by status |
+| `sqi_nats_published_total` | counter | NATS messages published by subject |
+| `sqi_nats_consumed_total` | counter | NATS messages consumed by subject |
+| `sqi_db_query_duration_seconds` | histogram | SQLite query latency by operation |
+| `sqi_usage_active_claims` | gauge | Active usage-pool claims by pool |
 
 ### Prometheus scrape config
 

@@ -78,23 +78,22 @@ func TestSmoke(t *testing.T) {
 		t.Errorf("Location mismatch: %q != %q", readLoc.Name, createdLoc.Name)
 	}
 
-	// Test LicensePool
+	// Test UsagePool
 	poolID := "pool-1"
-	pool := store.LicensePool{
+	pool := store.UsagePool{
 		ID:            poolID,
 		Name:          "test-pool",
-		Product:       "test-product",
 		MaxConcurrent: 10,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
-	createdPool, err := s.CreateLicensePool(ctx, pool)
+	createdPool, err := s.CreateUsagePool(ctx, pool)
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	readPool, err := s.GetLicensePool(ctx, poolID)
+	readPool, err := s.GetUsagePool(ctx, poolID)
 	if err != nil {
-		t.Fatalf("GetLicensePool: %v", err)
+		t.Fatalf("GetUsagePool: %v", err)
 	}
 	if readPool.Name != createdPool.Name {
 		t.Errorf("Pool mismatch: %q != %q", readPool.Name, createdPool.Name)
@@ -217,23 +216,23 @@ func TestSmoke(t *testing.T) {
 		t.Errorf("TaskAttempt mismatch: %d != %d", readAttempt.AttemptNumber, createdAttempt.AttemptNumber)
 	}
 
-	// Test LicenseCheckout
-	checkout := store.LicenseCheckout{
-		ID:            "checkout-1",
+	// Test UsageClaim
+	claim := store.UsageClaim{
+		ID:            "claim-1",
 		PoolID:        poolID,
 		TaskAttemptID: attemptID,
-		CheckedOutAt:  time.Now(),
+		ClaimedAt:     time.Now(),
 	}
-	_, err = s.CreateCheckout(ctx, checkout)
+	_, err = s.CreateClaim(ctx, claim)
 	if err != nil {
-		t.Fatalf("CreateCheckout: %v", err)
+		t.Fatalf("CreateClaim: %v", err)
 	}
-	activeCount, err := s.ActiveCheckoutCount(ctx, poolID)
+	activeCount, err := s.ActiveClaimCount(ctx, poolID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount: %v", err)
+		t.Fatalf("ActiveClaimCount: %v", err)
 	}
 	if activeCount != 1 {
-		t.Errorf("Expected 1 active checkout, got %d", activeCount)
+		t.Errorf("Expected 1 active claim, got %d", activeCount)
 	}
 
 	// Test AuditEntry

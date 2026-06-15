@@ -9,7 +9,7 @@ package scheduler
 // worker-register and worker-heartbeat consumers already in scheduler.go.
 // When a worker publishes a protocol.TaskStatusMsg to task.status.<job>,
 // handleTaskStatusMessage updates the store, closes the attempt record,
-// releases license slots, and drives step/job completion logic.
+// releases usage pool slots, and drives step/job completion logic.
 //
 // Flow for each TaskStatusMsg:
 //
@@ -19,7 +19,7 @@ package scheduler
 //  4. For terminal states (succeeded/failed/canceled):
 //     a. Close the attempt (EndedAt, Status, ExitCode).
 //     b. Transition the task to the matching terminal status.
-//     c. Release any held license slots.
+//     c. Release any held usage pool slots.
 //     d. Check whether the enclosing step is now complete.
 //     e. If the step completed successfully, call ResolveDependencies to
 //        unblock downstream steps.
@@ -190,7 +190,7 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 }
 
 // handleTaskTerminal handles a terminal TaskStatusMsg (succeeded/failed/canceled):
-// closes the attempt, updates the task, releases licenses, and checks step/job
+// closes the attempt, updates the task, releases usage slots, and checks step/job
 // completion.
 func (s *Scheduler) handleTaskTerminal(
 	ctx context.Context,
@@ -218,12 +218,12 @@ func (s *Scheduler) handleTaskTerminal(
 		return err
 	}
 
-	// ── Release license slots ─────────────────────────────────────────────
-	if err := s.ReleaseTaskLicenses(ctx, attempt.ID); err != nil {
-		// Non-fatal: a leaked slot is recovered by the next license count
+	// ── Release usage pool slots ──────────────────────────────────────────
+	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
+		// Non-fatal: a leaked slot is recovered by the next usage count
 		// check, and the job is not blocked.
 		s.logger.WarnContext(
-			ctx, "scheduler: release task licenses failed",
+			ctx, "scheduler: release task usage claims failed",
 			slog.String("attempt_id", attempt.ID),
 			slog.Any("error", err),
 		)

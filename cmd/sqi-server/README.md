@@ -11,11 +11,11 @@ interact with it over HTTP and WebSocket.
 
 | Component | Responsibility |
 |---|---|
-| **Scheduler** | Assigns ready tasks to available workers, enforcing priority, capability matching, compute-location affinity, and license limits. |
+| **Scheduler** | Assigns ready tasks to available workers, enforcing priority, capability matching, compute-location affinity, and usage pool limits. |
 | **REST API** | `/api/v1/…` endpoints for job submission, status queries, worker management, and system configuration. |
 | **WebSocket gateway** | `/api/v1/ws` endpoint for real-time push of job, task, worker, and log events to subscribed clients. |
 | **Embedded NATS** | In-process JetStream broker used for work assignment, status reporting, log streaming, and worker heartbeats. |
-| **SQLite store** | Single-file database holding all durable state — jobs, tasks, workers, farms, queues, license pools, and audit log. |
+| **SQLite store** | Single-file database holding all durable state — jobs, tasks, workers, farms, queues, usage pools, and audit log. |
 | **Web UI host** | Serves the embedded SPA at `/ui/` and the OpenAPI spec at `/api/v1/openapi.yaml`. |
 | **mDNS responder** | Advertises `_sqi._tcp` on the local network so workers and the CLI can discover the server without manual address configuration. |
 

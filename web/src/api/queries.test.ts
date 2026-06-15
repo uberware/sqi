@@ -12,6 +12,8 @@ import {
   fetchListFarms,
   fetchGetFarm,
   fetchListQueues,
+  fetchListUsagePools,
+  fetchGetUsagePool,
 } from './queries'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -261,5 +263,25 @@ describe('fetchListQueues', () => {
     fetchMock.mockResolvedValueOnce(listResponse([]))
     await fetchListQueues('farm-abc')
     expect(calledUrl()).toBe('/api/v1/queues?farm_id=farm-abc')
+  })
+})
+
+// ── fetchListUsagePools ───────────────────────────────────────────────────────
+
+describe('fetchListUsagePools', () => {
+  it('calls /api/v1/usage-pools', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse([]))
+    await fetchListUsagePools()
+    expect(calledUrl()).toBe('/api/v1/usage-pools')
+  })
+})
+
+// ── fetchGetUsagePool ─────────────────────────────────────────────────────────
+
+describe('fetchGetUsagePool', () => {
+  it('calls /api/v1/usage-pools/:id', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'pool-1' }))
+    await fetchGetUsagePool('pool-1')
+    expect(calledUrl()).toBe('/api/v1/usage-pools/pool-1')
   })
 })

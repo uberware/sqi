@@ -3,11 +3,12 @@
 package api
 
 // Unit tests for the task-81 CRUD handlers: farms, queues, storage-locations,
-// and license-pools. Each test spins up a chi router with the fake in-memory
+// and usage-pools. Each test spins up a chi router with the fake in-memory
 // store so the database is never touched.
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -398,38 +400,37 @@ func TestStorageLocationCRUD(t *testing.T) {
 	})
 }
 
-// ── License-pool tests ────────────────────────────────────────────────────────
+// ── Usage-pool tests ──────────────────────────────────────────────────────────
 
-func TestLicensePoolCRUD(t *testing.T) {
+func TestUsagePoolCRUD(t *testing.T) {
 	st := fake.New()
 	logger := newTestLogger()
-	h := newLicensePoolHandler(st, logger)
+	h := newUsagePoolHandler(st, logger)
 
 	r := chi.NewRouter()
-	r.Post("/license-pools", h.createLicensePool)
-	r.Get("/license-pools", h.listLicensePools)
-	r.Get("/license-pools/{id}", h.getLicensePool)
-	r.Put("/license-pools/{id}", h.updateLicensePool)
-	r.Delete("/license-pools/{id}", h.deleteLicensePool)
+	r.Post("/usage-pools", h.createUsagePool)
+	r.Get("/usage-pools", h.listUsagePools)
+	r.Get("/usage-pools/{id}", h.getUsagePool)
+	r.Put("/usage-pools/{id}", h.updateUsagePool)
+	r.Delete("/usage-pools/{id}", h.deleteUsagePool)
 
 	var createdID string
 
 	// ── POST — success ────────────────────────────────────────────────────────
-	t.Run("create license pool", func(t *testing.T) {
-		body := jsonBody(t, createLicensePoolRequest{
+	t.Run("create usage pool", func(t *testing.T) {
+		body := jsonBody(t, createUsagePoolRequest{
 			Name:          "arnold_render",
-			Product:       "Arnold Renderer",
 			ServerHint:    "10.0.0.50:5053",
 			MaxConcurrent: 20,
 		})
-		req := newReq(t, http.MethodPost, "/license-pools", body)
+		req := newReq(t, http.MethodPost, "/usage-pools", body)
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
 		}
-		var resp licensePoolResponse
+		var resp usagePoolResponse
 		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
@@ -437,12 +438,19 @@ func TestLicensePoolCRUD(t *testing.T) {
 		if resp.MaxConcurrent != 20 {
 			t.Errorf("max_concurrent = %d, want 20", resp.MaxConcurrent)
 		}
+		// A freshly created pool has no claims: in_use 0, available == max.
+		if resp.InUse != 0 {
+			t.Errorf("in_use = %d, want 0", resp.InUse)
+		}
+		if resp.Available != 20 {
+			t.Errorf("available = %d, want 20", resp.Available)
+		}
 	})
 
 	// ── POST — max_concurrent validation ─────────────────────────────────────
-	t.Run("create license pool zero max_concurrent", func(t *testing.T) {
-		body := jsonBody(t, createLicensePoolRequest{Name: "x", Product: "y", MaxConcurrent: 0})
-		req := newReq(t, http.MethodPost, "/license-pools", body)
+	t.Run("create usage pool zero max_concurrent", func(t *testing.T) {
+		body := jsonBody(t, createUsagePoolRequest{Name: "x", MaxConcurrent: 0})
+		req := newReq(t, http.MethodPost, "/usage-pools", body)
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
@@ -452,9 +460,9 @@ func TestLicensePoolCRUD(t *testing.T) {
 	})
 
 	// ── POST — duplicate name ─────────────────────────────────────────────────
-	t.Run("create license pool duplicate", func(t *testing.T) {
-		body := jsonBody(t, createLicensePoolRequest{Name: "arnold_render", Product: "Arnold Renderer", MaxConcurrent: 5})
-		req := newReq(t, http.MethodPost, "/license-pools", body)
+	t.Run("create usage pool duplicate", func(t *testing.T) {
+		body := jsonBody(t, createUsagePoolRequest{Name: "arnold_render", MaxConcurrent: 5})
+		req := newReq(t, http.MethodPost, "/usage-pools", body)
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
@@ -464,14 +472,14 @@ func TestLicensePoolCRUD(t *testing.T) {
 	})
 
 	// ── GET list ──────────────────────────────────────────────────────────────
-	t.Run("list license pools", func(t *testing.T) {
-		req := newReq(t, http.MethodGet, "/license-pools", nil)
+	t.Run("list usage pools", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/usage-pools", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rr.Code)
 		}
-		var resp []licensePoolResponse
+		var resp []usagePoolResponse
 		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
@@ -481,13 +489,12 @@ func TestLicensePoolCRUD(t *testing.T) {
 	})
 
 	// ── PUT — success ─────────────────────────────────────────────────────────
-	t.Run("update license pool", func(t *testing.T) {
-		body := jsonBody(t, updateLicensePoolRequest{
+	t.Run("update usage pool", func(t *testing.T) {
+		body := jsonBody(t, updateUsagePoolRequest{
 			Name:          "arnold_render",
-			Product:       "Arnold Renderer",
 			MaxConcurrent: 30,
 		})
-		req := newReq(t, http.MethodPut, "/license-pools/"+createdID, body)
+		req := newReq(t, http.MethodPut, "/usage-pools/"+createdID, body)
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
@@ -497,19 +504,98 @@ func TestLicensePoolCRUD(t *testing.T) {
 	})
 
 	// ── DELETE ────────────────────────────────────────────────────────────────
-	t.Run("delete license pool", func(t *testing.T) {
-		req := newReq(t, http.MethodDelete, "/license-pools/"+createdID, nil)
+	t.Run("delete usage pool", func(t *testing.T) {
+		req := newReq(t, http.MethodDelete, "/usage-pools/"+createdID, nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNoContent {
 			t.Fatalf("expected 204, got %d", rr.Code)
 		}
 		// Confirm gone.
-		req2 := newReq(t, http.MethodGet, "/license-pools/"+createdID, nil)
+		req2 := newReq(t, http.MethodGet, "/usage-pools/"+createdID, nil)
 		rr2 := httptest.NewRecorder()
 		r.ServeHTTP(rr2, req2)
 		if rr2.Code != http.StatusNotFound {
 			t.Errorf("expected 404 after delete, got %d", rr2.Code)
+		}
+	})
+}
+
+// TestUsagePoolUtilizationReporting verifies that list/get responses report live
+// utilization (in_use / available), and that available never goes negative.
+func TestUsagePoolUtilizationReporting(t *testing.T) {
+	st := fake.New()
+	logger := newTestLogger()
+	h := newUsagePoolHandler(st, logger)
+	ctx := context.Background()
+
+	r := chi.NewRouter()
+	r.Get("/usage-pools", h.listUsagePools)
+	r.Get("/usage-pools/{id}", h.getUsagePool)
+
+	pool, err := st.CreateUsagePool(ctx, store.UsagePool{
+		ID: "p1", Name: "arnold", MaxConcurrent: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateUsagePool: %v", err)
+	}
+
+	// Two active claims → in_use 2, available 1.
+	for _, id := range []string{"co1", "co2"} {
+		if _, err := st.CreateClaim(ctx, store.UsageClaim{
+			ID: id, PoolID: pool.ID, TaskAttemptID: "a-" + id, ClaimedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("CreateClaim %s: %v", id, err)
+		}
+	}
+
+	t.Run("list reports usage", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/usage-pools", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		var resp []usagePoolResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp) != 1 {
+			t.Fatalf("len = %d, want 1", len(resp))
+		}
+		if resp[0].InUse != 2 || resp[0].Available != 1 {
+			t.Errorf("got in_use=%d available=%d, want 2/1", resp[0].InUse, resp[0].Available)
+		}
+	})
+
+	t.Run("get reports usage", func(t *testing.T) {
+		req := newReq(t, http.MethodGet, "/usage-pools/p1", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		var resp usagePoolResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.InUse != 2 || resp.Available != 1 {
+			t.Errorf("got in_use=%d available=%d, want 2/1", resp.InUse, resp.Available)
+		}
+	})
+
+	t.Run("available floors at zero", func(t *testing.T) {
+		// Add two more claims (4 total) against a max of 3 → available 0, not -1.
+		for _, id := range []string{"co3", "co4"} {
+			if _, err := st.CreateClaim(ctx, store.UsageClaim{
+				ID: id, PoolID: pool.ID, TaskAttemptID: "a-" + id, ClaimedAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("CreateClaim %s: %v", id, err)
+			}
+		}
+		req := newReq(t, http.MethodGet, "/usage-pools/p1", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		var resp usagePoolResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.InUse != 4 || resp.Available != 0 {
+			t.Errorf("got in_use=%d available=%d, want 4/0", resp.InUse, resp.Available)
 		}
 	})
 }

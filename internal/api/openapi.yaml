@@ -43,8 +43,8 @@ tags:
     description: Queue configuration (CRUD)
   - name: storage-locations
     description: Named storage-location configuration (CRUD)
-  - name: license-pools
-    description: License-pool configuration (CRUD)
+  - name: usage-pools
+    description: Usage-pool configuration (CRUD)
 
 # ── Reusable components ───────────────────────────────────────────────────────
 
@@ -736,25 +736,30 @@ components:
           additionalProperties:
             type: string
 
-    # ── License pools ─────────────────────────────────────────────────────────
-    LicensePool:
+    # ── Usage pools ───────────────────────────────────────────────────────────
+    UsagePool:
       type: object
-      required: [id, name, product, max_concurrent, created_at, updated_at]
+      required: [id, name, max_concurrent, in_use, available, created_at, updated_at]
       properties:
         id:
           type: string
         name:
           type: string
-        product:
-          type: string
-          description: Product identifier (e.g. "arnold", "nuke", "vray").
         server_hint:
           type: string
-          description: Optional license server address hint (informational only).
+          description: Optional vendor server address hint (informational only).
         max_concurrent:
           type: integer
           minimum: 1
-          description: Maximum tasks that may hold a checkout from this pool simultaneously.
+          description: Maximum tasks that may hold a claim from this pool simultaneously.
+        in_use:
+          type: integer
+          minimum: 0
+          description: Number of slots currently claimed (active, unreleased).
+        available:
+          type: integer
+          minimum: 0
+          description: Free slots, computed as max(max_concurrent - in_use, 0).
         created_at:
           type: string
           format: date-time
@@ -762,13 +767,11 @@ components:
           type: string
           format: date-time
 
-    CreateLicensePoolRequest:
+    CreateUsagePoolRequest:
       type: object
-      required: [name, product, max_concurrent]
+      required: [name, max_concurrent]
       properties:
         name:
-          type: string
-        product:
           type: string
         server_hint:
           type: string
@@ -776,13 +779,11 @@ components:
           type: integer
           minimum: 1
 
-    UpdateLicensePoolRequest:
+    UpdateUsagePoolRequest:
       type: object
-      required: [name, product, max_concurrent]
+      required: [name, max_concurrent]
       properties:
         name:
-          type: string
-        product:
           type: string
         server_hint:
           type: string
@@ -1637,26 +1638,26 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  # ── License pools ──────────────────────────────────────────────────────────
+  # ── Usage pools ────────────────────────────────────────────────────────────
 
-  /license-pools:
+  /usage-pools:
     post:
-      operationId: createLicensePool
-      summary: Create a license pool
-      tags: [license-pools]
+      operationId: createUsagePool
+      summary: Create a usage pool
+      tags: [usage-pools]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateLicensePoolRequest"
+              $ref: "#/components/schemas/CreateUsagePoolRequest"
       responses:
         "201":
-          description: License pool created.
+          description: Usage pool created.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LicensePool"
+                $ref: "#/components/schemas/UsagePool"
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
@@ -1665,58 +1666,58 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
     get:
-      operationId: listLicensePools
-      summary: List all license pools
-      tags: [license-pools]
+      operationId: listUsagePools
+      summary: List all usage pools
+      tags: [usage-pools]
       responses:
         "200":
-          description: Array of license pools.
+          description: Array of usage pools.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/LicensePool"
+                  $ref: "#/components/schemas/UsagePool"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /license-pools/{id}:
+  /usage-pools/{id}:
     parameters:
       - $ref: "#/components/parameters/id"
 
     get:
-      operationId: getLicensePool
-      summary: Get a license pool
-      tags: [license-pools]
+      operationId: getUsagePool
+      summary: Get a usage pool
+      tags: [usage-pools]
       responses:
         "200":
-          description: License pool.
+          description: Usage pool.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LicensePool"
+                $ref: "#/components/schemas/UsagePool"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
     put:
-      operationId: updateLicensePool
-      summary: Update a license pool
-      tags: [license-pools]
+      operationId: updateUsagePool
+      summary: Update a usage pool
+      tags: [usage-pools]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/UpdateLicensePoolRequest"
+              $ref: "#/components/schemas/UpdateUsagePoolRequest"
       responses:
         "200":
-          description: Updated license pool.
+          description: Updated usage pool.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LicensePool"
+                $ref: "#/components/schemas/UsagePool"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1727,12 +1728,12 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
     delete:
-      operationId: deleteLicensePool
-      summary: Delete a license pool
-      tags: [license-pools]
+      operationId: deleteUsagePool
+      summary: Delete a usage pool
+      tags: [usage-pools]
       responses:
         "204":
-          description: License pool deleted.
+          description: Usage pool deleted.
         "404":
           $ref: "#/components/responses/NotFound"
         "500":

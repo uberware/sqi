@@ -94,12 +94,12 @@ type Metrics struct {
 	// implementation.
 	DBQueryDuration *prometheus.HistogramVec
 
-	// ── License pools ─────────────────────────────────────────────────────────
+	// ── Usage pools ───────────────────────────────────────────────────────────
 
-	// LicenseActiveCheckouts is the current number of active (unreleased)
-	// license checkouts for each named pool. Updated by the scheduler on every
+	// UsageActiveClaims is the current number of active (unreleased)
+	// usage-pool claims for each named pool. Updated by the scheduler on every
 	// dispatch tick.
-	LicenseActiveCheckouts *prometheus.GaugeVec
+	UsageActiveClaims *prometheus.GaugeVec
 }
 
 // New creates a [*Metrics] and registers all metric families — plus the
@@ -219,12 +219,12 @@ func New() *Metrics {
 			[]string{"operation"},
 		),
 
-		LicenseActiveCheckouts: prometheus.NewGaugeVec(
+		UsageActiveClaims: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "sqi",
-				Subsystem: "licenses",
-				Name:      "active_checkouts",
-				Help:      "Current number of active (unreleased) license checkouts per pool name.",
+				Subsystem: "usage",
+				Name:      "active_claims",
+				Help:      "Current number of active (unreleased) usage-pool claims per pool name.",
 			},
 			[]string{"pool"},
 		),
@@ -241,7 +241,7 @@ func New() *Metrics {
 		m.NATSPublishedTotal,
 		m.NATSConsumedTotal,
 		m.DBQueryDuration,
-		m.LicenseActiveCheckouts,
+		m.UsageActiveClaims,
 	)
 
 	return m

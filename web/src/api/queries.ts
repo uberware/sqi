@@ -6,6 +6,7 @@ import type {
   Farm,
   Job,
   JobDetail,
+  UsagePool,
   ListResponse,
   Queue,
   Task,
@@ -13,6 +14,13 @@ import type {
   Worker,
   WorkerDetail,
 } from './types'
+
+/**
+ * How often (ms) the usage-pool list refetches so utilization (in_use /
+ * available) stays current while a page is open. Polling keeps the data path
+ * simple; a generic WebSocket limit-usage channel can replace this later.
+ */
+const USAGE_POOL_REFETCH_MS = 5000
 
 // ── Query key factory ─────────────────────────────────────────────────────────
 // Keys are structured arrays enabling prefix-based invalidation.
@@ -81,6 +89,10 @@ export const queryKeys = {
     all: ['queues'] as const,
     list: (farmId: string) => ['queues', 'list', farmId] as const,
     detail: (id: string) => ['queues', 'detail', id] as const,
+  },
+  usagePools: {
+    all: ['usage-pools'] as const,
+    detail: (id: string) => ['usage-pools', 'detail', id] as const,
   },
 } as const
 
@@ -179,6 +191,16 @@ export function fetchListQueues(farmId: string, limit?: number): Promise<ListRes
 /** Fetch one queue from `GET /queues/{id}`. */
 export function fetchGetQueue(id: string): Promise<Queue> {
   return apiFetch(`/queues/${encodeURIComponent(id)}`)
+}
+
+/** Fetch all usage pools from `GET /usage-pools` (server returns them name-sorted, no pagination). */
+export function fetchListUsagePools(): Promise<UsagePool[]> {
+  return apiFetch('/usage-pools')
+}
+
+/** Fetch one usage pool from `GET /usage-pools/{id}`. */
+export function fetchGetUsagePool(id: string): Promise<UsagePool> {
+  return apiFetch(`/usage-pools/${encodeURIComponent(id)}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -286,6 +308,27 @@ export function useGetQueue(id: string) {
   return useQuery({
     queryKey: queryKeys.queues.detail(id),
     queryFn: () => fetchGetQueue(id),
+    enabled: id !== '',
+  })
+}
+
+/**
+ * List all usage pools, including live utilization. Refetches on an interval
+ * so in_use / available stay current while the page is open.
+ */
+export function useListUsagePools() {
+  return useQuery({
+    queryKey: queryKeys.usagePools.all,
+    queryFn: fetchListUsagePools,
+    refetchInterval: USAGE_POOL_REFETCH_MS,
+  })
+}
+
+/** Load a single usage pool by id. */
+export function useGetUsagePool(id: string) {
+  return useQuery({
+    queryKey: queryKeys.usagePools.detail(id),
+    queryFn: () => fetchGetUsagePool(id),
     enabled: id !== '',
   })
 }

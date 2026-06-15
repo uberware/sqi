@@ -149,9 +149,14 @@ function mockDashboardFetches({
   failedJobs = 0,
   recentFailures = [] as Job[],
   farms = [] as Farm[],
+  usagePools = [] as unknown[],
 } = {}): void {
   fetchMock.mockImplementation((input) => {
     const url = typeof input === 'string' ? input : (input as Request).url
+
+    if (url.includes('/usage-pools')) {
+      return Promise.resolve(okJson(usagePools))
+    }
 
     if (url.includes('/farms')) {
       return Promise.resolve(okJson(farms))
@@ -229,6 +234,44 @@ describe('Dashboard', () => {
       render(<Dashboard />, { wrapper: Wrapper })
       await waitFor(() => screen.getByTestId('recent-failures-widget'))
       expect(screen.getByTestId('recent-failures-widget')).toBeInTheDocument()
+    })
+
+    it('renders the usage pools card', async () => {
+      mockDashboardFetches()
+      render(<Dashboard />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByTestId('usage-pools-card'))
+      expect(screen.getByTestId('usage-pools-card')).toBeInTheDocument()
+    })
+  })
+
+  // ── Usage pools card ─────────────────────────────────────────────────
+  describe('usage pools card', () => {
+    it('shows live utilization for each pool', async () => {
+      mockDashboardFetches({
+        usagePools: [
+          {
+            id: 'pool-1',
+            name: 'arnold',
+            max_concurrent: 5,
+            in_use: 2,
+            available: 3,
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      })
+      render(<Dashboard />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByTestId('usage-pools-card'))
+      const card = screen.getByTestId('usage-pools-card')
+      expect(card).toHaveTextContent('arnold')
+      expect(card).toHaveTextContent('2 / 5')
+    })
+
+    it('shows an empty message when no pools are configured', async () => {
+      mockDashboardFetches({ usagePools: [] })
+      render(<Dashboard />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByTestId('usage-pools-card'))
+      expect(screen.getByTestId('usage-pools-card')).toHaveTextContent(/no usage pools/i)
     })
   })
 

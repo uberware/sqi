@@ -19,7 +19,6 @@ from sqi_client.models import (
     GPUInfo,
     Job,
     JobStatus,
-    LicensePool,
     LogChunk,
     LogPage,
     Queue,
@@ -28,6 +27,7 @@ from sqi_client.models import (
     Task,
     TaskCounts,
     TaskStatus,
+    UsagePool,
     Worker,
     WorkerStatus,
 )
@@ -342,7 +342,7 @@ def test_worker_missing_gpu_yields_empty_gpuinfo() -> None:
     assert worker.gpu.count is None
 
 
-# ── Farm, Queue, StorageLocation, LicensePool ───────────────────────
+# ── Farm, Queue, StorageLocation, UsagePool ─────────────────────────
 
 
 def test_farm_fields() -> None:
@@ -377,11 +377,10 @@ def test_storage_location_fields() -> None:
     }
 
 
-def test_license_pool_fields() -> None:
-    pool = LicensePool.from_dict(load("license_pool"))
+def test_usage_pool_fields() -> None:
+    pool = UsagePool.from_dict(load("usage_pool"))
     assert pool.id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10004"
     assert pool.name == "arnold-pool"
-    assert pool.product == "arnold"
     assert pool.server_hint == "27000@licsrv.studio.internal"
     assert pool.max_concurrent == 10
 

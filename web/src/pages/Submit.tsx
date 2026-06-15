@@ -15,7 +15,7 @@ import styles from './Submit.module.css'
 
 const QUEUE_STORAGE_KEY = 'sqi:submit:last-queue-id'
 
-const EXAMPLES: Record<'shell' | 'parameter-space', string> = {
+const EXAMPLES: Record<'shell' | 'parameter-space' | 'license-limit', string> = {
   shell: `specificationVersion: "jobtemplate-2023-09"
 name: hello-world
 steps:
@@ -42,6 +42,24 @@ steps:
           command: echo
           args:
             - "Rendering frame {{Param.Frame}}"
+`,
+  'license-limit': `specificationVersion: "jobtemplate-2023-09"
+name: licensed-render
+steps:
+  - name: render
+    # Require a free slot in a usage pool before each task is dispatched.
+    # The text after "amount.worker.usagepool." is the pool NAME and must
+    # match a pool registered on the Usage Pools page (here: "arnold").
+    hostRequirements:
+      amounts:
+        - name: amount.worker.usagepool.arnold   # <-- "arnold" = pool name
+          min: 1
+    script:
+      actions:
+        onRun:
+          command: echo
+          args:
+            - "Rendering while holding an Arnold license"
 `,
 }
 
@@ -94,7 +112,7 @@ export default function Submit() {
 
   const handleExampleChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const key = e.target.value
-    if (key === 'shell' || key === 'parameter-space') {
+    if (key === 'shell' || key === 'parameter-space' || key === 'license-limit') {
       setTemplate(EXAMPLES[key])
     }
     setExampleKey('')
@@ -257,6 +275,7 @@ export default function Submit() {
                 <option value="">Load example…</option>
                 <option value="shell">Single-step shell command</option>
                 <option value="parameter-space">Multi-task parameter space</option>
+                <option value="license-limit">Step with a license limit</option>
               </select>
             </div>
 

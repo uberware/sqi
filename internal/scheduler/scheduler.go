@@ -28,8 +28,8 @@
 // compute-location affinity, and queue/farm filtering ([WorkerEligible]),
 // subject to per-queue and per-farm maximum-concurrent-task limits
 // ([policyGate]). Once a worker is chosen, a provisional [store.TaskAttempt] is
-// created and any required license slots are claimed atomically
-// ([store.LicenseCheckoutStore.TryClaimLicenseSlots]); if the pool is saturated
+// created and any required usage pool slots are claimed atomically
+// ([store.UsageClaimStore.TryClaimSlots]); if the pool is saturated
 // the assignment is rolled back and the task stays ready for the next tick.
 // Attempt numbers come from [store.TaskAttemptStore.LatestTaskAttempt] — 1 for
 // a fresh task, N+1 on retry.
@@ -42,7 +42,7 @@
 //
 // Status and log ingestion. A push-consumer on the SQI_TASK stream
 // ([handleTaskStatusMessage]) decodes [protocol.TaskStatusMsg] from
-// task.status.<job>, updates the task/attempt, releases held license slots, and
+// task.status.<job>, updates the task/attempt, releases held usage pool slots, and
 // drives step/job completion including [openjd.ResolveDependencies] for
 // multi-step jobs. A push-consumer on SQI_LOGS ([handleLogChunk]) persists each
 // task.logs.<task> chunk as a [store.TaskLog] row, recording both the
@@ -52,7 +52,7 @@
 // Cancellation. [CancelJob] and [CancelTask] are the server-side entry points
 // called by the REST layer: they close running attempts, transition tasks to
 // [store.TaskStatusCanceled], publish task.cancel.<taskID> signals to assigned
-// workers ([bus.Client.PublishTaskCancel]), and release held license slots. The
+// workers ([bus.Client.PublishTaskCancel]), and release held usage pool slots. The
 // logic lives in cancellation.go; the SQI_CANCEL stream and publish helper live
 // in the bus package.
 //
@@ -61,7 +61,7 @@
 // [protocol.AssignMsg], [protocol.TaskStatusMsg], [protocol.LogChunkMsg]). Each
 // dispatch tick refreshes the scheduler's Prometheus metrics ([metrics.Metrics]):
 // queue depth by queue, idle workers by farm, the assignment-duration histogram
-// by result, and active license checkouts per pool.
+// by result, and active usage-pool claims per pool.
 package scheduler
 
 import (
@@ -230,7 +230,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// ── Task-status NATS consumer ────────────────────────────────
 	// A JetStream push-consumer on SQI_TASK delivers task.status.<job>
 	// messages from workers. handleTaskStatusMessage updates the store,
-	// closes attempt records, releases license slots, and drives step/job
+	// closes attempt records, releases usage pool slots, and drives step/job
 	// completion.
 	if err := s.startTaskStatusConsumer(ctx); err != nil {
 		return fmt.Errorf("scheduler: start task-status consumer: %w", err)
@@ -322,7 +322,7 @@ func (s *Scheduler) dispatchBatch(ctx context.Context) {
 	// crash.
 	s.refreshQueueDepthGauge(ctx)
 	s.refreshIdleWorkerGauge(ctx)
-	s.refreshLicenseCheckoutGauge(ctx)
+	s.refreshUsageClaimGauge(ctx)
 
 	if len(tasks) == 0 {
 		return
@@ -347,7 +347,7 @@ func (s *Scheduler) dispatchBatch(ctx context.Context) {
 // priority first, then earlier job submission time, then lower step order,
 // then task creation time. [tryAssign] applies capability-tag
 // matching and compute-location affinity, queue/farm concurrency
-// policy, and atomic license claiming.
+// policy, and atomic usage pool claiming.
 func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 	s.logger.DebugContext(ctx, "scheduler: assignment worker started", slog.Int("worker_id", id))
 
@@ -375,7 +375,7 @@ func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
 var errNoWorkerAvailable = errors.New("no worker available")
 
 // tryAssign selects an eligible online worker for task using full capability
-// matching, policy gates, and atomic license claiming, then updates the store
+// matching, policy gates, and atomic usage pool claiming, then updates the store
 // and publishes the assignment to NATS.
 func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 	job, err := s.store.GetJob(ctx, task.JobID)
@@ -412,10 +412,10 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 		return err
 	}
 
-	// Build the license pool context needed by the matcher.
-	pools, activeCounts, err := s.buildLicenseContext(ctx, step)
+	// Build the usage pool context needed by the matcher.
+	pools, activeCounts, err := s.buildUsageContext(ctx, step)
 	if err != nil {
-		return fmt.Errorf("build license context for step %s: %w", step.ID, err)
+		return fmt.Errorf("build usage context for step %s: %w", step.ID, err)
 	}
 
 	// Find the first eligible online worker using capability matching.
@@ -429,8 +429,8 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 		return fmt.Errorf("assign task %s to worker %s: %w", task.ID, worker.ID, err)
 	}
 
-	// ── Provisional attempt + atomic license claim ───────────────
-	attempt, err := s.createAttemptAndClaimLicenses(ctx, task, worker, step, pools, now)
+	// ── Provisional attempt + atomic usage pool claim ────────────
+	attempt, err := s.createAttemptAndClaimUsage(ctx, task, worker, step, pools, now)
 	if err != nil {
 		return err // already reverted task status inside helper
 	}
@@ -465,22 +465,22 @@ func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
 	return nil
 }
 
-// createAttemptAndClaimLicenses creates a provisional [store.TaskAttempt] for
-// the assignment and atomically claims any required license slots.
+// createAttemptAndClaimUsage creates a provisional [store.TaskAttempt] for
+// the assignment and atomically claims any required usage pool slots.
 //
 // If either operation fails the task's status is reverted to
 // [store.TaskStatusReady] so it is re-queued on the next dispatch tick.
-// [errNoWorkerAvailable] is returned when a license pool is at capacity so
+// [errNoWorkerAvailable] is returned when a usage pool is at capacity so
 // the caller skips logging a warning.
-func (s *Scheduler) createAttemptAndClaimLicenses(
+func (s *Scheduler) createAttemptAndClaimUsage(
 	ctx context.Context,
 	task store.Task,
 	worker store.Worker,
 	step store.Step,
-	pools map[string]store.LicensePool,
+	pools map[string]store.UsagePool,
 	now time.Time,
 ) (store.TaskAttempt, error) {
-	// The attempt record must exist before license checkouts can be created
+	// The attempt record must exist before usage claims can be created
 	// (FK constraint). Determine the next AttemptNumber from the latest existing
 	// attempt so that retries are numbered correctly (1 for a fresh task, N+1
 	// on each subsequent retry).
@@ -504,24 +504,24 @@ func (s *Scheduler) createAttemptAndClaimLicenses(
 		return store.TaskAttempt{}, fmt.Errorf("create task attempt for task %s: %w", task.ID, err)
 	}
 
-	// Re-check pool availability and create checkout rows inside a single DB
+	// Re-check pool availability and create claim rows inside a single DB
 	// transaction so no concurrent assignment can over-subscribe a pool.
-	claims := buildLicenseClaims(step, pools)
+	claims := buildUsageClaims(step, pools)
 	if len(claims) == 0 {
 		return attempt, nil
 	}
 
-	if err := s.store.TryClaimLicenseSlots(ctx, attempt.ID, claims, now); err != nil {
-		s.revertTaskToReady(ctx, task.ID, "license claim error")
-		if errors.Is(err, store.ErrLicenseAtCapacity) {
+	if err := s.store.TryClaimSlots(ctx, attempt.ID, claims, now); err != nil {
+		s.revertTaskToReady(ctx, task.ID, "usage claim error")
+		if errors.Is(err, store.ErrUsageAtCapacity) {
 			s.logger.DebugContext(
-				ctx, "scheduler: license pool at capacity — deferring assignment",
+				ctx, "scheduler: usage pool at capacity — deferring assignment",
 				slog.String("task_id", task.ID),
 				slog.String("attempt_id", attempt.ID),
 			)
 			return store.TaskAttempt{}, errNoWorkerAvailable
 		}
-		return store.TaskAttempt{}, fmt.Errorf("claim license slots for attempt %s: %w", attempt.ID, err)
+		return store.TaskAttempt{}, fmt.Errorf("claim usage slots for attempt %s: %w", attempt.ID, err)
 	}
 	return attempt, nil
 }
@@ -553,23 +553,23 @@ func (s *Scheduler) nextAttemptNumber(ctx context.Context, taskID string) (int, 
 	return latest.AttemptNumber + 1, nil
 }
 
-// buildLicenseClaims converts the step's license pool requirements into
-// [store.LicensePoolClaim] values ready for [store.LicenseCheckoutStore.TryClaimLicenseSlots].
-// Each claim gets a fresh UUID as its checkout ID.
+// buildUsageClaims converts the step's usage pool requirements into
+// [store.UsagePoolClaim] values ready for [store.UsageClaimStore.TryClaimSlots].
+// Each claim gets a fresh UUID as its claim ID.
 // Pools not found in the pools map are skipped (the matcher already rejected
 // workers when the pool was missing, so this path is unreachable in practice).
-func buildLicenseClaims(step store.Step, pools map[string]store.LicensePool) []store.LicensePoolClaim {
-	if step.HostRequirements == nil || len(step.HostRequirements.LicensePools) == 0 {
+func buildUsageClaims(step store.Step, pools map[string]store.UsagePool) []store.UsagePoolClaim {
+	if step.HostRequirements == nil || len(step.HostRequirements.UsagePools) == 0 {
 		return nil
 	}
-	claims := make([]store.LicensePoolClaim, 0, len(step.HostRequirements.LicensePools))
-	for _, name := range step.HostRequirements.LicensePools {
+	claims := make([]store.UsagePoolClaim, 0, len(step.HostRequirements.UsagePools))
+	for _, name := range step.HostRequirements.UsagePools {
 		pool, ok := pools[name]
 		if !ok {
 			continue
 		}
-		claims = append(claims, store.LicensePoolClaim{
-			CheckoutID:    uuid.NewString(),
+		claims = append(claims, store.UsagePoolClaim{
+			ClaimID:       uuid.NewString(),
 			PoolID:        pool.ID,
 			PoolName:      pool.Name,
 			MaxConcurrent: pool.MaxConcurrent,
@@ -578,41 +578,41 @@ func buildLicenseClaims(step store.Step, pools map[string]store.LicensePool) []s
 	return claims
 }
 
-// buildLicenseContext fetches all configured license pools and the current
-// active checkout count for each pool required by step.
+// buildUsageContext fetches all configured usage pools and the current
+// active claim count for each pool required by step.
 // Both return values are safe to pass to [WorkerEligible] when step has no
-// license requirements.
-func (s *Scheduler) buildLicenseContext(
+// usage pool requirements.
+func (s *Scheduler) buildUsageContext(
 	ctx context.Context,
 	step store.Step,
-) (pools map[string]store.LicensePool, activeCounts map[string]int, err error) {
-	pools = make(map[string]store.LicensePool)
+) (pools map[string]store.UsagePool, activeCounts map[string]int, err error) {
+	pools = make(map[string]store.UsagePool)
 	activeCounts = make(map[string]int)
 
-	if step.HostRequirements == nil || len(step.HostRequirements.LicensePools) == 0 {
+	if step.HostRequirements == nil || len(step.HostRequirements.UsagePools) == 0 {
 		return pools, activeCounts, nil
 	}
 
 	// Fetch all pools once and key them by name.
-	allPools, err := s.store.ListLicensePools(ctx)
+	allPools, err := s.store.ListUsagePools(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list license pools: %w", err)
+		return nil, nil, fmt.Errorf("list usage pools: %w", err)
 	}
 	for _, p := range allPools {
 		pools[p.Name] = p
 	}
 
-	// Fetch active checkout count only for pools the step actually requires.
-	for _, name := range step.HostRequirements.LicensePools {
+	// Fetch active claim count only for pools the step actually requires.
+	for _, name := range step.HostRequirements.UsagePools {
 		pool, ok := pools[name]
 		if !ok {
 			// Pool not found; leave activeCounts[name] as zero so the matcher
 			// rejects due to missing pool (capacity = 0).
 			continue
 		}
-		count, err := s.store.ActiveCheckoutCount(ctx, pool.ID)
+		count, err := s.store.ActiveClaimCount(ctx, pool.ID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("active checkout count for pool %q: %w", name, err)
+			return nil, nil, fmt.Errorf("active claim count for pool %q: %w", name, err)
 		}
 		activeCounts[name] = count
 	}
@@ -626,11 +626,11 @@ func (s *Scheduler) buildLicenseContext(
 const matchCandidateLimit = 50
 
 // pickWorker returns the first online worker in job's farm that passes
-// [WorkerEligible] checks for the given step and license pool state.
+// [WorkerEligible] checks for the given step and usage pool state.
 //
 // Filtering strategy:
 //   - SQL-level pre-filter: farm, status=online, optional compute-location.
-//   - Go-level post-filter: queue affinity, capability tags, license pools.
+//   - Go-level post-filter: queue affinity, capability tags, usage pools.
 //
 // If no eligible worker is found within [matchCandidateLimit] candidates,
 // [errNoWorkerAvailable] is returned and the task remains ready for the next
@@ -639,7 +639,7 @@ func (s *Scheduler) pickWorker(
 	ctx context.Context,
 	job store.Job,
 	step store.Step,
-	pools map[string]store.LicensePool,
+	pools map[string]store.UsagePool,
 	activeCounts map[string]int,
 ) (store.Worker, error) {
 	opts := store.ListWorkersOptions{
@@ -684,29 +684,29 @@ func (s *Scheduler) pickWorker(
 
 // buildAssignPayload is implemented in assign.go.
 
-// ── License release ──────────────────────────────────────────────────
+// ── Usage release ────────────────────────────────────────────────────
 
-// ReleaseTaskLicenses releases all active license checkouts for the given task
+// ReleaseTaskUsage releases all active usage-pool claims for the given task
 // attempt. It is called when a task attempt transitions to a terminal state
-// (succeeded, failed, or canceled), freeing the license slots for other tasks.
+// (succeeded, failed, or canceled), freeing the usage pool slots for other tasks.
 //
 // This method is safe to call with an empty attemptID — it returns nil without
-// querying the store. It is idempotent: releasing an already-released checkout
+// querying the store. It is idempotent: releasing an already-released claim
 // is a no-op in the underlying SQL.
 //
 // The worker wire protocol calls this method when terminal task
 // status messages arrive from workers.
-func (s *Scheduler) ReleaseTaskLicenses(ctx context.Context, attemptID string) error {
+func (s *Scheduler) ReleaseTaskUsage(ctx context.Context, attemptID string) error {
 	if attemptID == "" {
 		return nil
 	}
-	n, err := s.store.ReleaseAttemptCheckouts(ctx, attemptID, time.Now().UTC())
+	n, err := s.store.ReleaseAttemptClaims(ctx, attemptID, time.Now().UTC())
 	if err != nil {
-		return fmt.Errorf("release licenses for attempt %s: %w", attemptID, err)
+		return fmt.Errorf("release usage claims for attempt %s: %w", attemptID, err)
 	}
 	if n > 0 {
 		s.logger.DebugContext(
-			ctx, "scheduler: released license checkouts",
+			ctx, "scheduler: released usage-pool claims",
 			slog.String("attempt_id", attemptID),
 			slog.Int("count", n),
 		)
@@ -1134,27 +1134,27 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	}
 }
 
-// refreshLicenseCheckoutGauge queries the store for all configured license
-// pools and the active checkout count for each, then updates the
-// LicenseActiveCheckouts Prometheus gauge.
+// refreshUsageClaimGauge queries the store for all configured usage pools and
+// the active claim count for each, then updates the UsageActiveClaims Prometheus
+// gauge.
 //
 // Called on every dispatch tick. Errors are non-fatal — a stale gauge is
 // preferable to aborting the assignment loop.
-func (s *Scheduler) refreshLicenseCheckoutGauge(ctx context.Context) {
-	pools, err := s.store.ListLicensePools(ctx)
+func (s *Scheduler) refreshUsageClaimGauge(ctx context.Context) {
+	pools, err := s.store.ListUsagePools(ctx)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: refresh license checkout gauge: list pools failed", slog.Any("error", err))
+			s.logger.WarnContext(ctx, "scheduler: refresh usage claim gauge: list pools failed", slog.Any("error", err))
 		}
 		return
 	}
 
 	for _, pool := range pools {
-		n, err := s.store.ActiveCheckoutCount(ctx, pool.ID)
+		n, err := s.store.ActiveClaimCount(ctx, pool.ID)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				s.logger.WarnContext(
-					ctx, "scheduler: refresh license checkout gauge: count failed",
+					ctx, "scheduler: refresh usage claim gauge: count failed",
 					slog.String("pool_id", pool.ID),
 					slog.String("pool_name", pool.Name),
 					slog.Any("error", err),
@@ -1162,7 +1162,7 @@ func (s *Scheduler) refreshLicenseCheckoutGauge(ctx context.Context) {
 			}
 			continue
 		}
-		s.metrics.LicenseActiveCheckouts.WithLabelValues(pool.Name).Set(float64(n))
+		s.metrics.UsageActiveClaims.WithLabelValues(pool.Name).Set(float64(n))
 	}
 }
 

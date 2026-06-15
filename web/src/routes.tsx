@@ -11,6 +11,8 @@ import FarmList from '@/pages/FarmList'
 import FarmForm from '@/pages/FarmForm'
 import QueueList from '@/pages/QueueList'
 import QueueForm from '@/pages/QueueForm'
+import UsagePoolList from '@/pages/UsagePoolList'
+import UsagePoolForm from '@/pages/UsagePoolForm'
 import Submit from '@/pages/Submit'
 import NotFound from '@/pages/NotFound'
 
@@ -29,6 +31,9 @@ export default function AppRoutes() {
       <Route path="/queues" element={<QueueList />} />
       <Route path="/queues/new" element={<QueueForm mode="create" />} />
       <Route path="/queues/:id/edit" element={<QueueForm mode="edit" />} />
+      <Route path="/usage-pools" element={<UsagePoolList />} />
+      <Route path="/usage-pools/new" element={<UsagePoolForm mode="create" />} />
+      <Route path="/usage-pools/:id/edit" element={<UsagePoolForm mode="edit" />} />
       <Route path="/submit" element={<Submit />} />
       <Route path="*" element={<NotFound />} />
     </Routes>

@@ -151,7 +151,7 @@ type StepDependency struct {
 
 // HostRequirements declares the worker capabilities required by a step.
 type HostRequirements struct {
-	// Amounts are quantifiable requirements such as CPUs, RAM, or licenses.
+	// Amounts are quantifiable requirements such as CPUs, RAM, or software slots.
 	Amounts []AmountRequirement
 	// Attributes are categorical requirements such as OS or CPU architecture.
 	Attributes []AttributeRequirement

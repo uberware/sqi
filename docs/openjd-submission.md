@@ -325,6 +325,70 @@ steps:
 
 ---
 
+## 4. Usage pools
+
+A usage pool is a named concurrency limit that sqi enforces by counting active
+claims — it caps how many tasks may run at once against a shared, finite
+resource. Software licenses are the original use case (e.g. a 10-seat Arnold
+license), but a usage pool works for *any* dimension where you want a ceiling:
+a product, a renderer version, a show, or a client code.
+
+Declare a usage pool requirement on a step via an OpenJD host-requirement
+amount named `amount.worker.usagepool.<name>`, where `<name>` matches a pool
+registered on the Usage Pools page (or via `POST /api/v1/usage-pools`). The
+scheduler will not assign a task from that step unless the pool has a free slot,
+and the slot is released when the task reaches a terminal state.
+
+Example — cap concurrent render tasks on a show named `starfield` to the
+pool's registered limit:
+
+```yaml
+specificationVersion: "jobtemplate-2023-09"
+name: comp
+
+steps:
+  - name: render
+    hostRequirements:
+      amounts:
+        # "starfield" must match a usage pool registered on the server.
+        - name: amount.worker.usagepool.starfield
+          min: 1
+    script:
+      actions:
+        onRun:
+          command: /opt/renderer/bin/render
+          args:
+            - "--scene"
+            - "scene.ma"
+            - "--frame"
+            - "{{Task.Param.Frame}}"
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-100"
+```
+
+A step may list multiple `amount.worker.usagepool.*` amounts. The scheduler
+dispatches a task only when **every** named pool has a free slot; if any pool
+is at capacity, the task waits. This lets you enforce overlapping limits
+simultaneously — for example, a per-show cap and a global license count at
+the same time.
+
+> **Gotcha — unregistered pools.** If a step names a pool that is not
+> registered on the server, sqi treats that pool as having zero capacity.
+> Tasks in that step will never be dispatched. If tasks remain stuck in
+> `ready` state longer than expected, check the Usage Pools page to confirm
+> every pool referenced in your job template is registered.
+
+Live utilization — slots in use vs. available — is visible on the **Usage
+Pools** page and the dashboard.
+
+The optional `server_hint` field on a pool records a license server address
+(FLEXlm/RLM) for diagnostics; leave it empty for non-license dimensions.
+
+---
+
 ## Parameter reference syntax
 
 Inside `command`, `args`, step `variables`, and environment `variables`, use

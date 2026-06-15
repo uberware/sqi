@@ -79,7 +79,7 @@ pre-commit:
 # Valid format:  type(optional-scope): description
 # Valid types:   feat fix docs style refactor test chore build ci perf revert
 # Examples:
-#   feat(scheduler): add license-pool admission check
+#   feat(scheduler): add usage-pool admission check
 #   fix: correct heartbeat timeout calculation
 #   chore: bump golangci-lint to v1.60
 
@@ -96,6 +96,6 @@ commit-msg:
       fail_text: |
         Commit message does not follow Conventional Commits.
         Expected:  type(scope)?: short description
-        Example:   feat(scheduler): add license-pool admission check
+        Example:   feat(scheduler): add usage-pool admission check
         Types:     feat fix docs style refactor test chore build ci perf revert
         Docs:      https://www.conventionalcommits.org

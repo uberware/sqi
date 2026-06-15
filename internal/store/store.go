@@ -47,8 +47,8 @@ type Store interface {
 	FarmStore
 	QueueStore
 	StorageLocationStore
-	LicensePoolStore
-	LicenseCheckoutStore
+	UsagePoolStore
+	UsageClaimStore
 	WorkerStore
 	JobStore
 	StepStore

@@ -16,7 +16,7 @@ package scheduler
 //	amount.worker.memory.mb       → worker.RAMMb
 //	amount.worker.gpu.count       → worker.GPUInfo.Count
 //	amount.worker.gpu.memory.mb   → worker.GPUInfo.VRAMMb (per-device; all GPUs assumed identical)
-//	amount.worker.licensepool.<n> → license pool named n must have capacity
+//	amount.worker.usagepool.<n>   → usage pool named n must have capacity
 //
 // Note: gpu.memory.mb matches against the per-device VRAM of a worker's
 // homogeneous GPU pool (see [store.GPUInfo]).  A worker with mixed GPU models
@@ -38,7 +38,7 @@ package scheduler
 //  3. Compute-location affinity: step.ComputeLocation == "" (any) or matches worker.ComputeLocation
 //  4. Amount requirements: all are satisfied by the worker's hardware values
 //  5. Attribute requirements: all AnyOf/AllOf constraints are satisfied
-//  6. License pool availability: all required pools have remaining capacity
+//  6. Usage pool availability: all required pools have remaining capacity
 
 import (
 	"strconv"
@@ -58,7 +58,7 @@ const (
 	rejectComputeLocation                     // worker not in the required compute location
 	rejectAmountRequirement                   // worker lacks required hardware capacity
 	rejectAttributeRequirement                // worker missing required capability attribute
-	rejectLicensePool                         // required license pool is at capacity
+	rejectUsagePool                           // required usage pool is at capacity
 )
 
 func (r matchRejection) String() string {
@@ -73,25 +73,25 @@ func (r matchRejection) String() string {
 		return "amount requirement not met"
 	case rejectAttributeRequirement:
 		return "attribute requirement not met"
-	case rejectLicensePool:
-		return "license pool at capacity"
+	case rejectUsagePool:
+		return "usage pool at capacity"
 	default:
 		return "eligible"
 	}
 }
 
 // WorkerEligible reports whether worker w can run a task that belongs to step s
-// and job j, given the current license pool state.
+// and job j, given the current usage pool state.
 //
-// pools maps pool name → [store.LicensePool].
-// activeCounts maps pool name → current active checkout count.
+// pools maps pool name → [store.UsagePool].
+// activeCounts maps pool name → current active claim count.
 //
-// Both maps may be nil or empty when no license pools exist.
+// Both maps may be nil or empty when no usage pools exist.
 func WorkerEligible(
 	worker store.Worker,
 	job store.Job,
 	step store.Step,
-	pools map[string]store.LicensePool,
+	pools map[string]store.UsagePool,
 	activeCounts map[string]int,
 ) bool {
 	reason, ok := workerEligible(worker, job, step, pools, activeCounts)
@@ -105,7 +105,7 @@ func WorkerEligibleWithReason(
 	worker store.Worker,
 	job store.Job,
 	step store.Step,
-	pools map[string]store.LicensePool,
+	pools map[string]store.UsagePool,
 	activeCounts map[string]int,
 ) (reason string, eligible bool) {
 	r, ok := workerEligible(worker, job, step, pools, activeCounts)
@@ -117,7 +117,7 @@ func workerEligible(
 	worker store.Worker,
 	job store.Job,
 	step store.Step,
-	pools map[string]store.LicensePool,
+	pools map[string]store.UsagePool,
 	activeCounts map[string]int,
 ) (matchRejection, bool) {
 	// ── 1. Farm membership ────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ func workerEligible(
 		if r, ok := checkAttributes(step.HostRequirements.Attributes, worker); !ok {
 			return r, false
 		}
-		if r, ok := checkLicensePools(step.HostRequirements.LicensePools, pools, activeCounts); !ok {
+		if r, ok := checkUsagePools(step.HostRequirements.UsagePools, pools, activeCounts); !ok {
 			return r, false
 		}
 	}
@@ -171,17 +171,17 @@ var workerAmountValue = map[string]func(store.Worker) int{
 
 // checkAmounts evaluates all amount requirements against the worker's hardware
 // values, returning the first rejection reason encountered.
-// License pool requirements (prefixed "amount.worker.licensepool.") are handled
-// separately by [checkLicensePools] and skipped here.
+// Usage pool requirements (prefixed "amount.worker.usagepool.") are handled
+// separately by [checkUsagePools] and skipped here.
 func checkAmounts(
 	amts []store.StepAmountRequirement,
 	worker store.Worker,
-	_ map[string]store.LicensePool,
+	_ map[string]store.UsagePool,
 	_ map[string]int,
 ) (matchRejection, bool) {
 	for _, req := range amts {
-		// License pool amounts are handled by checkLicensePools.
-		if strings.HasPrefix(req.Name, "amount.worker.licensepool.") {
+		// Usage pool amounts are handled by checkUsagePools.
+		if strings.HasPrefix(req.Name, "amount.worker.usagepool.") {
 			continue
 		}
 
@@ -269,21 +269,21 @@ func checkAttributes(attrs []store.StepAttributeRequirement, worker store.Worker
 	return rejectNone, true
 }
 
-// ── License pool requirements ─────────────────────────────────────────────────
+// ── Usage pool requirements ───────────────────────────────────────────────────
 
-// checkLicensePools verifies that every named license pool has at least one
-// free slot (active checkouts < MaxConcurrent). A pool not found in pools is
+// checkUsagePools verifies that every named usage pool has at least one
+// free slot (active claims < MaxConcurrent). A pool not found in pools is
 // treated as having zero capacity, blocking assignment.
-func checkLicensePools(
+func checkUsagePools(
 	poolNames []string,
-	pools map[string]store.LicensePool,
+	pools map[string]store.UsagePool,
 	activeCounts map[string]int,
 ) (matchRejection, bool) {
 	for _, name := range poolNames {
 		pool, ok := pools[name]
 		if !ok {
 			// Pool not configured — treat as at capacity to prevent over-subscription.
-			return rejectLicensePool, false
+			return rejectUsagePool, false
 		}
 		if pool.MaxConcurrent <= 0 {
 			// MaxConcurrent == 0 means unlimited; any positive active count is fine.
@@ -291,7 +291,7 @@ func checkLicensePools(
 		}
 		active := activeCounts[name]
 		if active >= pool.MaxConcurrent {
-			return rejectLicensePool, false
+			return rejectUsagePool, false
 		}
 	}
 	return rejectNone, true

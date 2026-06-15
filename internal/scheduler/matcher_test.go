@@ -366,79 +366,79 @@ func TestEligible_AttrAllOf_NotSatisfied(t *testing.T) {
 	}
 }
 
-// ── License pool gating ───────────────────────────────────────────────────────
+// ── Usage pool gating ─────────────────────────────────────────────────────────
 
-func TestEligible_LicensePool_Available(t *testing.T) {
-	pools := map[string]store.LicensePool{
+func TestEligible_UsagePool_Available(t *testing.T) {
+	pools := map[string]store.UsagePool{
 		"maya": {ID: "p1", Name: "maya", MaxConcurrent: 5},
 	}
 	active := map[string]int{"maya": 2}
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{
-		LicensePools: []string{"maya"},
+		UsagePools: []string{"maya"},
 	}
 	if !scheduler.WorkerEligible(baseWorker(), baseJob(), s, pools, active) {
 		t.Error("pool with 2/5 active should be available")
 	}
 }
 
-func TestEligible_LicensePool_AtCapacity(t *testing.T) {
-	pools := map[string]store.LicensePool{
+func TestEligible_UsagePool_AtCapacity(t *testing.T) {
+	pools := map[string]store.UsagePool{
 		"maya": {ID: "p1", Name: "maya", MaxConcurrent: 3},
 	}
 	active := map[string]int{"maya": 3}
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{
-		LicensePools: []string{"maya"},
+		UsagePools: []string{"maya"},
 	}
 	if scheduler.WorkerEligible(baseWorker(), baseJob(), s, pools, active) {
 		t.Error("pool at capacity (3/3) should block assignment")
 	}
 }
 
-func TestEligible_LicensePool_NotConfigured(t *testing.T) {
+func TestEligible_UsagePool_NotConfigured(t *testing.T) {
 	// Pool required but not present in the pools map — treat as at capacity.
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{
-		LicensePools: []string{"unknown-pool"},
+		UsagePools: []string{"unknown-pool"},
 	}
 	if scheduler.WorkerEligible(baseWorker(), baseJob(), s, nil, nil) {
 		t.Error("unconfigured pool should block assignment")
 	}
 }
 
-func TestEligible_LicensePool_Unlimited(t *testing.T) {
+func TestEligible_UsagePool_Unlimited(t *testing.T) {
 	// MaxConcurrent == 0 means unlimited; any active count is acceptable.
-	pools := map[string]store.LicensePool{
+	pools := map[string]store.UsagePool{
 		"unlimited": {ID: "p1", Name: "unlimited", MaxConcurrent: 0},
 	}
 	active := map[string]int{"unlimited": 9999}
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{
-		LicensePools: []string{"unlimited"},
+		UsagePools: []string{"unlimited"},
 	}
 	if !scheduler.WorkerEligible(baseWorker(), baseJob(), s, pools, active) {
 		t.Error("unlimited pool (MaxConcurrent=0) should never block assignment")
 	}
 }
 
-// ── License pool amounts via amount.worker.licensepool.* ─────────────────────
+// ── Usage pool amounts via amount.worker.usagepool.* ─────────────────────────
 
-func TestEligible_LicensePoolAmount_Skipped(t *testing.T) {
-	// amount.worker.licensepool.* entries in Amounts are skipped by
-	// checkAmounts and delegated to checkLicensePools.
-	// Without a matching LicensePools entry the amount check passes (no
-	// license pool requirement is checked via Amounts alone).
+func TestEligible_UsagePoolAmount_Skipped(t *testing.T) {
+	// amount.worker.usagepool.* entries in Amounts are skipped by
+	// checkAmounts and delegated to checkUsagePools.
+	// Without a matching UsagePools entry the amount check passes (no
+	// usage pool requirement is checked via Amounts alone).
 	w := baseWorker()
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{
 		Amounts: []store.StepAmountRequirement{
-			{Name: "amount.worker.licensepool.maya", Min: new("1")},
+			{Name: "amount.worker.usagepool.maya", Min: new("1")},
 		},
-		// LicensePools is empty — the amount is silently skipped.
+		// UsagePools is empty — the amount is silently skipped.
 	}
 	if !scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
-		t.Error("licensepool amount without LicensePools entry should not block")
+		t.Error("usagepool amount without UsagePools entry should not block")
 	}
 }
 
@@ -531,21 +531,21 @@ func TestEligibleWithReason_AttributeNotMet(t *testing.T) {
 	}
 }
 
-func TestEligibleWithReason_LicensePool(t *testing.T) {
-	pools := map[string]store.LicensePool{
+func TestEligibleWithReason_UsagePool(t *testing.T) {
+	pools := map[string]store.UsagePool{
 		"nuke": {ID: "p1", Name: "nuke", MaxConcurrent: 1},
 	}
 	active := map[string]int{"nuke": 1}
 	s := baseStep()
 	s.HostRequirements = &store.StepHostRequirements{
-		LicensePools: []string{"nuke"},
+		UsagePools: []string{"nuke"},
 	}
 	reason, ok := scheduler.WorkerEligibleWithReason(baseWorker(), baseJob(), s, pools, active)
 	if ok {
 		t.Error("expected not eligible")
 	}
-	if reason != "license pool at capacity" {
-		t.Errorf("reason: got %q, want %q", reason, "license pool at capacity")
+	if reason != "usage pool at capacity" {
+		t.Errorf("reason: got %q, want %q", reason, "usage pool at capacity")
 	}
 }
 
@@ -559,7 +559,7 @@ func TestEligible_AllRequirements_Satisfied(t *testing.T) {
 	w.ComputeLocation = "render-farm"
 	w.Tags = map[string]string{"renderer": "vray"}
 
-	pools := map[string]store.LicensePool{
+	pools := map[string]store.UsagePool{
 		"vray": {ID: "p1", Name: "vray", MaxConcurrent: 10},
 	}
 	active := map[string]int{"vray": 3}
@@ -575,7 +575,7 @@ func TestEligible_AllRequirements_Satisfied(t *testing.T) {
 			{Name: "attr.worker.os.family", AnyOf: []string{"linux"}},
 			{Name: "attr.worker.tag.renderer", AnyOf: []string{"vray", "arnold"}},
 		},
-		LicensePools: []string{"vray"},
+		UsagePools: []string{"vray"},
 	}
 
 	if !scheduler.WorkerEligible(w, baseJob(), s, pools, active) {

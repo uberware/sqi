@@ -30,7 +30,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 ## Key features
 
-- **Farms and queues** organize work hierarchically. Configuration — scheduling policy, worker affinity, license limits, storage bindings — can be set at the farm level and overridden per queue, so you're not repeating yourself on every job submission.
+- **Farms and queues** organize work hierarchically. Configuration — scheduling policy, worker affinity, usage pool limits, storage bindings — can be set at the farm level and overridden per queue, so you're not repeating yourself on every job submission.
 
 - **Products and presets** are the authoring layer above raw job descriptions. A product defines a class of work (an Arnold render, a Houdini sim, an ffmpeg transcode) in terms of user-friendly parameters and how they map to commands. A preset is a ready-to-use product definition for a specific tool, installable from a community library directly through the web UI.
 
@@ -40,7 +40,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 - **Path translation** handles the fact that different applications deal with cross-platform and cross-environment paths differently. Product definitions declare how paths should be resolved — baked into the command line, passed as remapping arguments, set as environment variables, or staged locally before execution.
 
-- **License pool management** tracks concurrent license usage across all workers. Tell `sqi` you have 20 Arnold render licenses and it ensures no more than 20 Arnold tasks run at once, globally, across every compute location. Bring-your-own-license — `sqi` enforces your limits, not its own.
+- **Usage pool management** tracks concurrent usage of any shared, finite resource across all workers. Tell `sqi` you have 20 Arnold render licenses (or a per-show task cap, or any other limit) and it ensures no more than that many tasks run at once, globally, across every compute location. Bring-your-own-limit — `sqi` enforces your cap, not its own.
 
 - **Pull-based workers** register with the farm and pull assigned tasks rather than receiving pushed assignments. Workers can be added, removed, and scaled without the scheduler needing to manage their lifecycle. This makes auto-scaling and ephemeral cloud workers straightforward.
 

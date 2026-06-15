@@ -3,7 +3,7 @@
 package scheduler
 
 // Tests for the assignment path in scheduler.go: tryAssign, pickWorker,
-// createAttemptAndClaimLicenses, buildLicenseContext, nextAttemptNumber,
+// createAttemptAndClaimUsage, buildUsageContext, nextAttemptNumber,
 // revertTaskToReady, dispatchBatch, and the instrumentation gauges.
 //
 // These are white-box tests in package scheduler. A fake store (fake.New)
@@ -277,27 +277,27 @@ func TestTryAssign_Retry_IncrementsAttemptNumber(t *testing.T) {
 	}
 }
 
-// ── license admission: saturated pool defers, freeing capacity resumes ────────
+// ── usage pool admission: saturated pool defers, freeing capacity resumes ─────
 
-func TestTryAssign_LicensePool_DeferThenResume(t *testing.T) {
+func TestTryAssign_UsagePool_DeferThenResume(t *testing.T) {
 	st := fake.New()
 	bus := &recordBus{}
 	s := newMetricsScheduler(st, bus, "farm-1")
 
 	poolID := uuid.NewString()
 	f := seedAssignFixture(t, st, func(f *assignFixture) {
-		f.step.HostRequirements = &store.StepHostRequirements{LicensePools: []string{"maya"}}
+		f.step.HostRequirements = &store.StepHostRequirements{UsagePools: []string{"maya"}}
 	})
 
-	// Create a maya pool with capacity 1 and saturate it with an active checkout.
-	if _, err := st.CreateLicensePool(t.Context(), store.LicensePool{
+	// Create a maya pool with capacity 1 and saturate it with an active claim.
+	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{
 		ID: poolID, Name: "maya", MaxConcurrent: 1,
 	}); err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	heldCheckout := uuid.NewString()
-	if err := st.TryClaimLicenseSlots(t.Context(), "held-attempt",
-		[]store.LicensePoolClaim{{CheckoutID: heldCheckout, PoolID: poolID, PoolName: "maya", MaxConcurrent: 1}},
+	heldClaimID := uuid.NewString()
+	if err := st.TryClaimSlots(t.Context(), "held-attempt",
+		[]store.UsagePoolClaim{{ClaimID: heldClaimID, PoolID: poolID, PoolName: "maya", MaxConcurrent: 1}},
 		time.Now()); err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
@@ -314,9 +314,9 @@ func TestTryAssign_LicensePool_DeferThenResume(t *testing.T) {
 		t.Errorf("task status = %q, want ready while pool saturated", got.Status)
 	}
 
-	// Free the slot; assignment should now succeed and claim a checkout.
-	if err := st.ReleaseCheckout(t.Context(), heldCheckout, time.Now()); err != nil {
-		t.Fatalf("ReleaseCheckout: %v", err)
+	// Free the slot; assignment should now succeed and claim a slot.
+	if err := st.ReleaseClaim(t.Context(), heldClaimID, time.Now()); err != nil {
+		t.Fatalf("ReleaseClaim: %v", err)
 	}
 	if err := s.tryAssign(t.Context(), f.task); err != nil {
 		t.Fatalf("tryAssign (freed) err = %v, want success", err)
@@ -328,26 +328,26 @@ func TestTryAssign_LicensePool_DeferThenResume(t *testing.T) {
 	if got.Status != store.TaskStatusAssigned {
 		t.Errorf("task status = %q, want assigned after capacity freed", got.Status)
 	}
-	n, err := st.ActiveCheckoutCount(t.Context(), poolID)
+	n, err := st.ActiveClaimCount(t.Context(), poolID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount: %v", err)
+		t.Fatalf("ActiveClaimCount: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("active checkouts = %d, want 1 (claimed by new attempt)", n)
+		t.Errorf("active claims = %d, want 1 (claimed by new attempt)", n)
 	}
 }
 
-// ── license claim race: TryClaimLicenseSlots returns ErrLicenseAtCapacity ──────
+// ── usage claim race: TryClaimSlots returns ErrUsageAtCapacity ───────────────
 
-// claimCapacityErrSt forces TryClaimLicenseSlots to report the pool full even
-// though buildLicenseContext saw capacity, exercising the rollback branch of
-// createAttemptAndClaimLicenses.
+// claimCapacityErrSt forces TryClaimSlots to report the pool full even
+// though buildUsageContext saw capacity, exercising the rollback branch of
+// createAttemptAndClaimUsage.
 type claimCapacityErrSt struct {
 	store.Store
 }
 
-func (*claimCapacityErrSt) TryClaimLicenseSlots(_ context.Context, _ string, _ []store.LicensePoolClaim, _ time.Time) error {
-	return store.ErrLicenseAtCapacity
+func (*claimCapacityErrSt) TryClaimSlots(_ context.Context, _ string, _ []store.UsagePoolClaim, _ time.Time) error {
+	return store.ErrUsageAtCapacity
 }
 
 func TestTryAssign_ClaimRace_RevertsAndDefers(t *testing.T) {
@@ -358,12 +358,12 @@ func TestTryAssign_ClaimRace_RevertsAndDefers(t *testing.T) {
 
 	poolID := uuid.NewString()
 	f := seedAssignFixture(t, inner, func(f *assignFixture) {
-		f.step.HostRequirements = &store.StepHostRequirements{LicensePools: []string{"nuke"}}
+		f.step.HostRequirements = &store.StepHostRequirements{UsagePools: []string{"nuke"}}
 	})
-	if _, err := inner.CreateLicensePool(t.Context(), store.LicensePool{
+	if _, err := inner.CreateUsagePool(t.Context(), store.UsagePool{
 		ID: poolID, Name: "nuke", MaxConcurrent: 4, // capacity available at check time
 	}); err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
 	err := s.tryAssign(t.Context(), f.task)
@@ -406,39 +406,39 @@ func TestTryAssign_PublishFailure_ReturnsError(t *testing.T) {
 	}
 }
 
-// ── buildLicenseContext / buildLicenseClaims / nextAttemptNumber units ─────────
+// ── buildUsageContext / buildUsageClaims / nextAttemptNumber units ────────────
 
-func TestBuildLicenseContext_NoRequirements(t *testing.T) {
+func TestBuildUsageContext_NoRequirements(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
-	pools, counts, err := s.buildLicenseContext(t.Context(), store.Step{})
+	pools, counts, err := s.buildUsageContext(t.Context(), store.Step{})
 	if err != nil {
-		t.Fatalf("buildLicenseContext: %v", err)
+		t.Fatalf("buildUsageContext: %v", err)
 	}
 	if len(pools) != 0 || len(counts) != 0 {
 		t.Errorf("expected empty maps, got pools=%v counts=%v", pools, counts)
 	}
 }
 
-func TestBuildLicenseContext_WithPool(t *testing.T) {
+func TestBuildUsageContext_WithPool(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	poolID := uuid.NewString()
-	if _, err := st.CreateLicensePool(t.Context(), store.LicensePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	if err := st.TryClaimLicenseSlots(t.Context(), "a1",
-		[]store.LicensePoolClaim{{CheckoutID: uuid.NewString(), PoolID: poolID, PoolName: "maya", MaxConcurrent: 2}},
+	if err := st.TryClaimSlots(t.Context(), "a1",
+		[]store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: poolID, PoolName: "maya", MaxConcurrent: 2}},
 		time.Now()); err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
 
-	step := store.Step{HostRequirements: &store.StepHostRequirements{LicensePools: []string{"maya"}}}
-	pools, counts, err := s.buildLicenseContext(t.Context(), step)
+	step := store.Step{HostRequirements: &store.StepHostRequirements{UsagePools: []string{"maya"}}}
+	pools, counts, err := s.buildUsageContext(t.Context(), step)
 	if err != nil {
-		t.Fatalf("buildLicenseContext: %v", err)
+		t.Fatalf("buildUsageContext: %v", err)
 	}
 	if _, ok := pools["maya"]; !ok {
 		t.Error("expected maya pool in context")
@@ -448,8 +448,8 @@ func TestBuildLicenseContext_WithPool(t *testing.T) {
 	}
 }
 
-func TestBuildLicenseClaims(t *testing.T) {
-	pools := map[string]store.LicensePool{
+func TestBuildUsageClaims(t *testing.T) {
+	pools := map[string]store.UsagePool{
 		"maya": {ID: "p1", Name: "maya", MaxConcurrent: 3},
 	}
 	tests := []struct {
@@ -460,18 +460,18 @@ func TestBuildLicenseClaims(t *testing.T) {
 		{"nil host requirements", store.Step{}, 0},
 		{
 			"unknown pool skipped",
-			store.Step{HostRequirements: &store.StepHostRequirements{LicensePools: []string{"ghost"}}},
+			store.Step{HostRequirements: &store.StepHostRequirements{UsagePools: []string{"ghost"}}},
 			0,
 		},
 		{
 			"known pool claimed",
-			store.Step{HostRequirements: &store.StepHostRequirements{LicensePools: []string{"maya"}}},
+			store.Step{HostRequirements: &store.StepHostRequirements{UsagePools: []string{"maya"}}},
 			1,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildLicenseClaims(tt.step, pools)
+			got := buildUsageClaims(tt.step, pools)
 			if len(got) != tt.wantCount {
 				t.Errorf("claims = %d, want %d", len(got), tt.wantCount)
 			}
@@ -560,14 +560,14 @@ func TestRefreshGauges_Smoke(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	seedAssignFixture(t, st, nil)
 
-	// Seed a license pool with an active checkout so refreshLicenseCheckoutGauge
+	// Seed a usage pool with an active claim so refreshUsageClaimGauge
 	// iterates its pool/count loop body.
 	poolID := uuid.NewString()
-	if _, err := st.CreateLicensePool(t.Context(), store.LicensePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	if err := st.TryClaimLicenseSlots(t.Context(), "a1",
-		[]store.LicensePoolClaim{{CheckoutID: uuid.NewString(), PoolID: poolID, PoolName: "maya", MaxConcurrent: 2}},
+	if err := st.TryClaimSlots(t.Context(), "a1",
+		[]store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: poolID, PoolName: "maya", MaxConcurrent: 2}},
 		time.Now()); err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
@@ -575,6 +575,6 @@ func TestRefreshGauges_Smoke(t *testing.T) {
 	// Each refresh helper should complete without panic and read the store.
 	s.refreshQueueDepthGauge(t.Context())
 	s.refreshIdleWorkerGauge(t.Context())
-	s.refreshLicenseCheckoutGauge(t.Context())
+	s.refreshUsageClaimGauge(t.Context())
 	s.refreshWorkerGauge(t.Context())
 }

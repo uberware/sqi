@@ -3,7 +3,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { queryKeys } from './queries'
-import type { Farm, Job, Queue, RetryResponse, SubmitJobInput, WorkerActionResponse } from './types'
+import type {
+  Farm,
+  Job,
+  UsagePool,
+  Queue,
+  RetryResponse,
+  SubmitJobInput,
+  WorkerActionResponse,
+} from './types'
 
 // ── Raw mutation fetch functions ──────────────────────────────────────────────
 
@@ -235,6 +243,65 @@ export function useDeleteQueue() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.queues.all })
       void queryClient.invalidateQueries({ queryKey: queryKeys.farms.all })
+    },
+  })
+}
+
+// ── Usage pool input ──────────────────────────────────────────────────────────
+
+export interface UsagePoolInput {
+  name: string
+  server_hint?: string
+  max_concurrent: number
+}
+
+export function fetchCreateUsagePool(input: UsagePoolInput): Promise<UsagePool> {
+  return apiFetch<UsagePool>('/usage-pools', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateUsagePool(id: string, input: UsagePoolInput): Promise<UsagePool> {
+  return apiFetch<UsagePool>(`/usage-pools/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteUsagePool(id: string): Promise<void> {
+  await apiFetch(`/usage-pools/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function useCreateUsagePool() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateUsagePool,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usagePools.all })
+    },
+  })
+}
+
+export function useUpdateUsagePool() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UsagePoolInput }) =>
+      fetchUpdateUsagePool(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usagePools.all })
+    },
+  })
+}
+
+export function useDeleteUsagePool() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteUsagePool(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usagePools.all })
     },
   })
 }

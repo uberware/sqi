@@ -10,6 +10,7 @@ and skip cleanly when the binaries are unavailable.
 from __future__ import annotations
 
 import time
+import uuid
 
 import pytest
 
@@ -46,6 +47,33 @@ steps:
           args:
             - "-c"
             - "exit 7"
+"""
+
+# A parameter-space job that expands to several sleeping tasks, each requiring a
+# seat in a named usage pool. "POOL_NAME" is replaced with the test's unique
+# pool name before submission. The worker has 4 concurrency slots, so absent
+# usage gating these tasks would run in parallel — the pool's max_concurrent
+# is the only thing that can hold them to a lower concurrency.
+_USAGE_POOL_SLEEP_JOB = """specificationVersion: "jobtemplate-2023-09"
+name: sqi-client integration usage pool sleep
+steps:
+  - name: Run
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-3"
+    hostRequirements:
+      amounts:
+        - name: amount.worker.usagepool.POOL_NAME
+          min: 1
+    script:
+      actions:
+        onRun:
+          command: sh
+          args:
+            - "-c"
+            - "sleep 2"
 """
 
 _ECHO_TEXT = "hello from sqi-client integration"
@@ -165,3 +193,38 @@ def test_websocket_live_log_tail(client: SqiClient, worker_farm: WorkerFarm) -> 
     client.wait_for_job(job.id, poll_interval=0.5, timeout=60.0)
     polled = _poll_task_logs(client, task_id, _ECHO_TEXT, timeout=15.0)
     assert _ECHO_TEXT in polled
+
+
+# ── Usage-pool concurrency gating ────────────────────────────────────
+
+
+def test_usage_pool_caps_concurrent_tasks(client: SqiClient, worker_farm: WorkerFarm) -> None:
+    # A pool with a single seat: at most one task holding it may run at a time,
+    # globally across the farm.
+    pool_name = f"it-pool-{uuid.uuid4().hex[:8]}"
+    pool = client.create_usage_pool(name=pool_name, max_concurrent=1)
+
+    template = _USAGE_POOL_SLEEP_JOB.replace("POOL_NAME", pool_name)
+    job = client.submit_job(template, farm_id=worker_farm.farm_id, queue_id=worker_farm.queue_id)
+
+    # Sample live utilization while the job runs. Each task sleeps ~2s and the
+    # worker has 4 free slots, so without gating the in-use count would climb
+    # above 1; gating must hold it at or below the pool's max_concurrent.
+    terminal = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELED}
+    max_seen = 0
+    deadline = time.monotonic() + 120.0
+    while time.monotonic() < deadline:
+        max_seen = max(max_seen, client.get_usage_pool(pool.id).in_use)
+        if client.get_job(job.id).status in terminal:
+            break
+        time.sleep(0.2)
+
+    job = client.wait_for_job(job.id, poll_interval=0.5, timeout=30.0)
+    assert job.status is JobStatus.COMPLETED
+    # The pool was genuinely exercised (a seat was held at least once)...
+    assert max_seen >= 1, "expected at least one active usage claim during the run"
+    # ...and never exceeded its single seat.
+    assert max_seen <= 1, f"usage pool exceeded its cap: saw {max_seen} concurrent claims"
+
+    # Every seat is released once the job reaches a terminal state — no leak.
+    assert client.get_usage_pool(pool.id).in_use == 0

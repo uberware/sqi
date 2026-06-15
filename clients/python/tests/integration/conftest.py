@@ -100,6 +100,11 @@ def server() -> Iterator[Server]:
         "SQI_STORE_SQLITE_PATH": str(tmp / "sqi.db"),
         "SQI_DISCOVERY_ENABLED": "false",
         "SQI_SCHEDULER_TICK_INTERVAL": "100ms",
+        # Allow a single worker to run several tasks at once (worker default is 4
+        # slots; the scheduler default caps assignment at 1/worker). The
+        # usage-pool gating test relies on real cross-task concurrency being
+        # possible so that the pool's max_concurrent is the actual limiter.
+        "SQI_SCHEDULER_MAX_TASKS_PER_WORKER": "4",
         "SQI_LOG_LEVEL": "warn",
     }
     base_url = f"http://{http_addr}"

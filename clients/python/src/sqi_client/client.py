@@ -41,7 +41,6 @@ from .models import (
     Farm,
     Job,
     JobStatus,
-    LicensePool,
     LogChunk,
     LogPage,
     Page,
@@ -50,6 +49,7 @@ from .models import (
     StorageLocation,
     Task,
     TaskStatus,
+    UsagePool,
     Worker,
     WorkerAction,
     WorkerStatus,
@@ -200,8 +200,8 @@ class SqiClient:
         self._storage_locations: _CrudResource[StorageLocation] = _CrudResource(
             self, "/storage-locations", StorageLocation.from_dict
         )
-        self._license_pools: _CrudResource[LicensePool] = _CrudResource(
-            self, "/license-pools", LicensePool.from_dict
+        self._usage_pools: _CrudResource[UsagePool] = _CrudResource(
+            self, "/usage-pools", UsagePool.from_dict
         )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -1166,65 +1166,61 @@ class SqiClient:
         """Delete a storage location. Raises :class:`NotFoundError` if it is missing."""
         self._storage_locations.delete(location_id)
 
-    # ── License pools ─────────────────────────────────────────────────────────
+    # ── Usage pools ───────────────────────────────────────────────────────────
 
-    def create_license_pool(
+    def create_usage_pool(
         self,
         *,
         name: str,
-        product: str,
         max_concurrent: int,
         server_hint: str | None = None,
-    ) -> LicensePool:
-        """Create a license pool and return it.
+    ) -> UsagePool:
+        """Create a usage pool and return it.
 
         Args:
-            name: Pool name.
-            product: Product identifier (e.g. ``arnold``, ``nuke``).
-            max_concurrent: Maximum simultaneous checkouts from this pool
+            name: Pool name (referenced from job templates as
+                ``amount.worker.usagepool.<name>``).
+            max_concurrent: Maximum simultaneous claims from this pool
                 (must be at least 1; validated client-side before sending).
             server_hint: Optional license-server address hint (informational).
 
         Raises:
             ValueError: ``max_concurrent`` is below the minimum (1).
         """
-        return self._license_pools.create(_license_body(name, product, max_concurrent, server_hint))
+        return self._usage_pools.create(_usage_body(name, max_concurrent, server_hint))
 
-    def list_license_pools(self) -> list[LicensePool]:
-        """Return all license pools (bare array, no pagination)."""
-        return self._license_pools.list_all()
+    def list_usage_pools(self) -> list[UsagePool]:
+        """Return all usage pools (bare array, no pagination)."""
+        return self._usage_pools.list_all()
 
-    def iter_license_pools(self) -> Iterator[LicensePool]:
-        """Iterate all license pools (endpoint is not paginated)."""
-        return iter(self._license_pools.list_all())
+    def iter_usage_pools(self) -> Iterator[UsagePool]:
+        """Iterate all usage pools (endpoint is not paginated)."""
+        return iter(self._usage_pools.list_all())
 
-    def get_license_pool(self, pool_id: str) -> LicensePool:
-        """Fetch one license pool by ID. Raises :class:`NotFoundError` if missing."""
-        return self._license_pools.get(pool_id)
+    def get_usage_pool(self, pool_id: str) -> UsagePool:
+        """Fetch one usage pool by ID. Raises :class:`NotFoundError` if missing."""
+        return self._usage_pools.get(pool_id)
 
-    def update_license_pool(
+    def update_usage_pool(
         self,
         pool_id: str,
         *,
         name: str,
-        product: str,
         max_concurrent: int,
         server_hint: str | None = None,
-    ) -> LicensePool:
-        """Replace a license pool's fields (PUT, full replacement) and return it.
+    ) -> UsagePool:
+        """Replace a usage pool's fields (PUT, full replacement) and return it.
 
         Full replace: an omitted ``server_hint`` is cleared, not preserved.
 
         Raises:
             ValueError: ``max_concurrent`` is below the minimum (1).
         """
-        return self._license_pools.update(
-            pool_id, _license_body(name, product, max_concurrent, server_hint)
-        )
+        return self._usage_pools.update(pool_id, _usage_body(name, max_concurrent, server_hint))
 
-    def delete_license_pool(self, pool_id: str) -> None:
-        """Delete a license pool. Raises :class:`NotFoundError` if it is missing."""
-        self._license_pools.delete(pool_id)
+    def delete_usage_pool(self, pool_id: str) -> None:
+        """Delete a usage pool. Raises :class:`NotFoundError` if it is missing."""
+        self._usage_pools.delete(pool_id)
 
     # ── Live events (optional ws extra) ───────────────────────────────────────
 
@@ -1402,9 +1398,9 @@ class SqiClient:
 # `PatchJobRequest.priority`, both `minimum: 1`). There is no declared maximum.
 _MIN_JOB_PRIORITY = 1
 
-# Minimum license-pool concurrency the server accepts (OpenAPI `LicensePool` /
-# `CreateLicensePoolRequest.max_concurrent`, `minimum: 1`).
-_MIN_LICENSE_MAX_CONCURRENT = 1
+# Minimum usage-pool concurrency the server accepts (OpenAPI `UsagePool` /
+# `CreateUsagePoolRequest.max_concurrent`, `minimum: 1`).
+_MIN_USAGE_MAX_CONCURRENT = 1
 
 # Task states from which no further log output or transitions occur; once a task
 # reaches one, a follow-tail can stop after draining (see tail_task_logs).
@@ -1488,19 +1484,17 @@ def _storage_body(
     return body
 
 
-def _license_body(
+def _usage_body(
     name: str,
-    product: str,
     max_concurrent: int,
     server_hint: str | None,
 ) -> dict[str, Any]:
-    if max_concurrent < _MIN_LICENSE_MAX_CONCURRENT:
+    if max_concurrent < _MIN_USAGE_MAX_CONCURRENT:
         raise ValueError(
-            f"max_concurrent must be >= {_MIN_LICENSE_MAX_CONCURRENT}, got {max_concurrent}"
+            f"max_concurrent must be >= {_MIN_USAGE_MAX_CONCURRENT}, got {max_concurrent}"
         )
     body: dict[str, Any] = {
         "name": name,
-        "product": product,
         "max_concurrent": max_concurrent,
     }
     if server_hint is not None:

@@ -4,7 +4,7 @@
 
 This module holds the pagination primitives (:class:`Page`, :func:`iter_pages`)
 plus the resource dataclasses — :class:`Job`, :class:`Task`, :class:`Worker`,
-:class:`Farm`, :class:`Queue`, :class:`StorageLocation`, :class:`LicensePool`,
+:class:`Farm`, :class:`Queue`, :class:`StorageLocation`, :class:`UsagePool`,
 and the log types — that mirror the server's OpenAPI component schemas
 field-for-field.
 
@@ -33,7 +33,6 @@ __all__ = [
     "GPUInfo",
     "Job",
     "JobStatus",
-    "LicensePool",
     "LogChunk",
     "LogPage",
     "Page",
@@ -44,6 +43,7 @@ __all__ = [
     "Task",
     "TaskCounts",
     "TaskStatus",
+    "UsagePool",
     "Worker",
     "WorkerAction",
     "WorkerStatus",
@@ -757,19 +757,22 @@ class StorageLocation:
 
 
 @dataclass(frozen=True)
-class LicensePool:
-    """A pool that caps concurrent license checkouts for a product."""
+class UsagePool:
+    """A pool that caps the number of concurrent usage claims."""
 
     id: str
     name: str
-    product: str
     max_concurrent: int
     created_at: datetime
     updated_at: datetime
     server_hint: str | None = None
+    #: Slots currently claimed (active, unreleased). Read-only; server-computed.
+    in_use: int = 0
+    #: Free slots: max(max_concurrent - in_use, 0). Read-only; server-computed.
+    available: int = 0
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> LicensePool:
+    def from_dict(cls, data: Mapping[str, Any]) -> UsagePool:
         """Build an instance from a decoded JSON response object.
 
         Unknown fields are ignored and missing or mistyped fields fall back to
@@ -779,11 +782,12 @@ class LicensePool:
         return cls(
             id=_as_str(data.get("id")),
             name=_as_str(data.get("name")),
-            product=_as_str(data.get("product")),
             max_concurrent=_as_int(data.get("max_concurrent")),
             created_at=_as_datetime(data.get("created_at")),
             updated_at=_as_datetime(data.get("updated_at")),
             server_hint=_opt_str(data.get("server_hint")),
+            in_use=_as_int(data.get("in_use")),
+            available=_as_int(data.get("available")),
         )
 
 

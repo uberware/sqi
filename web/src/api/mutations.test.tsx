@@ -458,3 +458,92 @@ describe('queue mutations', () => {
     expect(calledInit().method).toBe('DELETE')
   })
 })
+
+// ── usage pool mutation hooks ─────────────────────────────────────────────────
+
+import {
+  useCreateUsagePool,
+  useUpdateUsagePool,
+  useDeleteUsagePool,
+  fetchCreateUsagePool,
+  fetchUpdateUsagePool,
+  fetchDeleteUsagePool,
+} from './mutations'
+
+const usageInput = {
+  name: 'arnold',
+  server_hint: '',
+  max_concurrent: 10,
+}
+
+describe('useCreateUsagePool', () => {
+  it('invalidates usage pools on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'pool-1' }))
+
+    const { result } = renderHook(() => useCreateUsagePool(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync(usageInput)
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.usagePools.all })
+  })
+})
+
+describe('useUpdateUsagePool', () => {
+  it('invalidates usage pools on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'pool-1' }))
+
+    const { result } = renderHook(() => useUpdateUsagePool(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({ id: 'pool-1', input: usageInput })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.usagePools.all })
+  })
+})
+
+describe('useDeleteUsagePool', () => {
+  it('invalidates usage pools on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useDeleteUsagePool(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('pool-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.usagePools.all })
+  })
+})
+
+describe('usage pool mutations', () => {
+  it('fetchCreateUsagePool POSTs JSON to /api/v1/usage-pools', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'pool-1' }))
+    await fetchCreateUsagePool(usageInput)
+    expect(calledUrl()).toContain('/api/v1/usage-pools')
+    expect(calledInit().method).toBe('POST')
+    expect(calledInit().body).toBe(JSON.stringify(usageInput))
+  })
+
+  it('fetchUpdateUsagePool PUTs to /api/v1/usage-pools/:id', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'pool-1' }))
+    await fetchUpdateUsagePool('pool-1', usageInput)
+    expect(calledUrl()).toContain('/api/v1/usage-pools/pool-1')
+    expect(calledInit().method).toBe('PUT')
+  })
+
+  it('fetchDeleteUsagePool DELETEs /api/v1/usage-pools/:id', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await fetchDeleteUsagePool('pool-1')
+    expect(calledUrl()).toContain('/api/v1/usage-pools/pool-1')
+    expect(calledInit().method).toBe('DELETE')
+  })
+})
