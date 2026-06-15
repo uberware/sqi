@@ -162,7 +162,7 @@ jobs:
       # Read the required Node version from .nvmrc at the repo root.
       # The engines field in web/package.json documents the same constraint.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -229,7 +229,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -405,7 +405,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           cache: npm
