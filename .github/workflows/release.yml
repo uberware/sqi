@@ -77,7 +77,7 @@ jobs:
       # Node is required by the goreleaser before hooks that build the web UI
       # bundle (npm ci / npm run build in web/) ahead of the Go builds.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -85,7 +85,7 @@ jobs:
 
       # buildx is required by goreleaser's `use: buildx` docker config.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -139,7 +139,7 @@ jobs:
       # goreleaser does not build Python artifacts, so the sdist + wheel are built
       # and attached to the same GitHub release in a separate step.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
