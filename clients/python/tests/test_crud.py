@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for farm/queue/storage-location/license-pool CRUD.
+"""Tests for farm/queue/storage-location/usage-pool CRUD.
 
 HTTP is mocked at the transport layer with respx; no server runs. The generic
 CRUD helper is exercised in depth via the farm methods; a parametrized smoke
@@ -21,7 +21,7 @@ import respx
 
 from sqi_client.client import SqiClient
 from sqi_client.errors import BadRequestError, ConflictError, NotFoundError, ValidationError
-from sqi_client.models import Farm, LicensePool, Page, Queue, StorageLocation
+from sqi_client.models import Farm, Page, Queue, StorageLocation, UsagePool
 from tests.conftest import BASE_URL, ClientFactory
 
 _API = f"{BASE_URL}/api/v1"
@@ -305,16 +305,16 @@ _FAMILIES: list[_Family] = [
         lambda c, i: c.delete_storage_location(i),
     ),
     _Family(
-        "license-pools",
-        "license_pool",
-        LicensePool,
+        "usage-pools",
+        "usage_pool",
+        UsagePool,
         False,
-        lambda c: c.create_license_pool(name="l", product="arnold", max_concurrent=4),
-        lambda c: c.list_license_pools(),
-        lambda c: c.iter_license_pools(),
-        lambda c, i: c.get_license_pool(i),
-        lambda c, i: c.update_license_pool(i, name="l2", product="vray", max_concurrent=2),
-        lambda c, i: c.delete_license_pool(i),
+        lambda c: c.create_usage_pool(name="l", max_concurrent=4),
+        lambda c: c.list_usage_pools(),
+        lambda c: c.iter_usage_pools(),
+        lambda c, i: c.get_usage_pool(i),
+        lambda c, i: c.update_usage_pool(i, name="l2", max_concurrent=2),
+        lambda c, i: c.delete_usage_pool(i),
     ),
 ]
 
@@ -374,8 +374,8 @@ def test_optional_body_fields_included_when_supplied(make_client: ClientFactory)
     storage_route = respx.post(f"{_API}/storage-locations").mock(
         return_value=httpx.Response(201, json=_load("storage_location"))
     )
-    license_route = respx.post(f"{_API}/license-pools").mock(
-        return_value=httpx.Response(201, json=_load("license_pool"))
+    usage_route = respx.post(f"{_API}/usage-pools").mock(
+        return_value=httpx.Response(201, json=_load("usage_pool"))
     )
     client = make_client()
 
@@ -389,28 +389,42 @@ def test_optional_body_fields_included_when_supplied(make_client: ClientFactory)
     assert storage_body["description"] == "primary"
     assert storage_body["roots"] == {"on-prem": "/mnt/farm"}
 
-    client.create_license_pool(
-        name="l", product="arnold", max_concurrent=4, server_hint="27000@licsrv"
-    )
-    assert json.loads(license_route.calls.last.request.content)["server_hint"] == "27000@licsrv"
+    client.create_usage_pool(name="l", max_concurrent=4, server_hint="27000@licsrv")
+    assert json.loads(usage_route.calls.last.request.content)["server_hint"] == "27000@licsrv"
 
 
 @respx.mock
-def test_create_license_pool_rejects_max_concurrent_below_minimum(
+def test_create_usage_pool_rejects_max_concurrent_below_minimum(
     make_client: ClientFactory,
 ) -> None:
-    route = respx.post(f"{_API}/license-pools").mock(
-        return_value=httpx.Response(201, json=_load("license_pool"))
+    route = respx.post(f"{_API}/usage-pools").mock(
+        return_value=httpx.Response(201, json=_load("usage_pool"))
     )
     client = make_client()
 
     for bad in (0, -1):
         with pytest.raises(ValueError, match="max_concurrent"):
-            client.create_license_pool(name="l", product="arnold", max_concurrent=bad)
+            client.create_usage_pool(name="l", max_concurrent=bad)
         with pytest.raises(ValueError, match="max_concurrent"):
-            client.update_license_pool("p1", name="l", product="arnold", max_concurrent=bad)
+            client.update_usage_pool("p1", name="l", max_concurrent=bad)
     # Rejected entirely client-side: no request is ever sent.
     assert not route.called
+
+
+@respx.mock
+def test_get_usage_pool_parses_utilization_fields(make_client: ClientFactory) -> None:
+    # The server reports live utilization on every usage-pool response; the
+    # client surfaces it as the read-only in_use / available fields.
+    respx.get(f"{_API}/usage-pools/p1").mock(
+        return_value=httpx.Response(200, json=_load("usage_pool"))
+    )
+    client = make_client()
+
+    pool = client.get_usage_pool("p1")
+
+    assert isinstance(pool, UsagePool)
+    assert pool.in_use == 3
+    assert pool.available == 7
 
 
 @respx.mock

@@ -70,11 +70,11 @@ type Step struct {
 //   - "amount.worker.memory.mb"      → worker RAM in MiB
 //   - "amount.worker.gpu.count"      → worker GPU count
 //   - "amount.worker.gpu.memory.mb"  → worker GPU VRAM in MiB
-//   - "amount.worker.licensepool.<name>" → named license pool (capacity check)
+//   - "amount.worker.usagepool.<name>" → named usage pool (capacity check)
 type StepHostRequirements struct {
 	// Amounts are quantifiable requirements such as CPUs, RAM, or GPU VRAM.
-	// License pool requirements use the "amount.worker.licensepool." prefix and
-	// are also listed in LicensePools for quick iteration.
+	// Usage pool requirements use the "amount.worker.usagepool." prefix and
+	// are also listed in UsagePools for quick iteration.
 	Amounts []StepAmountRequirement `json:"amounts,omitempty"`
 
 	// Attributes are categorical requirements such as OS family or custom tags.
@@ -82,11 +82,11 @@ type StepHostRequirements struct {
 	// enclosing [Step.ComputeLocation] field for SQL-level pre-filtering.
 	Attributes []StepAttributeRequirement `json:"attributes,omitempty"`
 
-	// LicensePools lists the names of [LicensePool] records that must have
+	// UsagePools lists the names of [UsagePool] records that must have
 	// remaining capacity before a task from this step can be assigned.
-	// Derived from amounts named "amount.worker.licensepool.<name>" at
+	// Derived from amounts named "amount.worker.usagepool.<name>" at
 	// submission time.
-	LicensePools []string `json:"license_pools,omitempty"`
+	UsagePools []string `json:"usage_pools,omitempty"`
 }
 
 // StepAmountRequirement is a single quantifiable host capability requirement.

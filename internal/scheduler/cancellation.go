@@ -15,8 +15,8 @@ package scheduler
 //     actively executing a task ([bus.Client.PublishTaskCancel]) so the worker
 //     can interrupt the running process without waiting for the next heartbeat
 //     timeout.
-//  4. Release all license slots held by the job
-//     ([store.LicenseCheckoutStore.ReleaseJobCheckouts]).
+//  4. Release all usage pool slots held by the job
+//     ([store.UsageClaimStore.ReleaseJobClaims]).
 //
 // NATS publish failures are non-fatal: the scheduler logs a warning and
 // continues.  Workers that miss the cancel signal will eventually be reclaimed
@@ -42,7 +42,7 @@ type cancelPayload struct {
 }
 
 // CancelJob transitions all non-terminal tasks for the given job to canceled,
-// closes any running task attempts, releases held license slots, and publishes
+// closes any running task attempts, releases held usage pool slots, and publishes
 // a task.cancel.<taskID> signal to each worker that was actively executing a
 // task at the time of cancellation.
 //
@@ -80,21 +80,21 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	// Step 3: publish cancel signals to all workers that had active tasks.
 	s.publishCancelSignals(ctx, activeTasks, now)
 
-	// Step 4: release all license slots held by the job.
-	n, err := s.store.ReleaseJobCheckouts(ctx, jobID, now)
+	// Step 4: release all usage pool slots held by the job.
+	n, err := s.store.ReleaseJobClaims(ctx, jobID, now)
 	if err != nil {
-		// Non-fatal: log and continue — checkouts will be cleaned up when the
+		// Non-fatal: log and continue — claims will be cleaned up when the
 		// worker next tries to claim a slot and finds the attempt gone.
 		s.logger.WarnContext(
-			ctx, "scheduler: release job license checkouts failed",
+			ctx, "scheduler: release job usage claims failed",
 			slog.String("job_id", jobID),
 			slog.Any("error", err),
 		)
 	} else if n > 0 {
 		s.logger.InfoContext(
-			ctx, "scheduler: released license checkouts for canceled job",
+			ctx, "scheduler: released usage claims for canceled job",
 			slog.String("job_id", jobID),
-			slog.Int("checkouts_released", n),
+			slog.Int("claims_released", n),
 		)
 	}
 
@@ -107,7 +107,7 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 }
 
 // CancelTask transitions a single task to [store.TaskStatusCanceled], closes
-// its running attempt if any, releases held license slots, and publishes a
+// its running attempt if any, releases held usage pool slots, and publishes a
 // task.cancel.<taskID> signal to the assigned worker.
 //
 // If the task is already in a terminal state (succeeded, failed, canceled),
@@ -153,12 +153,12 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 		s.publishCancelSignals(ctx, []store.Task{task}, now)
 	}
 
-	// Release any license slots held by this task's latest attempt.
+	// Release any usage pool slots held by this task's latest attempt.
 	attempt, err := s.store.LatestTaskAttempt(ctx, taskID)
 	if err == nil {
-		if releaseErr := s.ReleaseTaskLicenses(ctx, attempt.ID); releaseErr != nil {
+		if releaseErr := s.ReleaseTaskUsage(ctx, attempt.ID); releaseErr != nil {
 			s.logger.WarnContext(
-				ctx, "scheduler: release licenses after task cancel failed",
+				ctx, "scheduler: release usage claims after task cancel failed",
 				slog.String("task_id", taskID),
 				slog.String("attempt_id", attempt.ID),
 				slog.Any("error", releaseErr),

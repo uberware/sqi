@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.bar {
+  position: relative;
+  display: block;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-border-subtle);
+  overflow: hidden;
+}
+
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background: var(--color-accent);
+  transition: width 200ms;
+}

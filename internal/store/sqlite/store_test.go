@@ -1018,50 +1018,53 @@ func TestTask_TransitionStepPendingTasks(t *testing.T) {
 	}
 }
 
-// ── LicensePool CRUD ──────────────────────────────────────────────────────────
+// ── UsagePool CRUD ────────────────────────────────────────────────────────────
 
-func TestLicensePool_CreateAndGet(t *testing.T) {
+func TestUsagePool_CreateAndGet(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	pool, err := s.CreateLicensePool(ctx, store.LicensePool{
+	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
 		ID:            "p1",
-		Name:          "MayaLicense",
-		Product:       "maya",
+		Name:          "MayaRenderer",
+		ServerHint:    "27000@licsrv",
 		MaxConcurrent: 5,
 	})
 	if err != nil {
-		t.Fatalf("CreateLicensePool: %v", err)
+		t.Fatalf("CreateUsagePool: %v", err)
 	}
 	if pool.MaxConcurrent != 5 {
 		t.Errorf("MaxConcurrent: got %d", pool.MaxConcurrent)
 	}
 
-	got, err := s.GetLicensePool(ctx, "p1")
+	got, err := s.GetUsagePool(ctx, "p1")
 	if err != nil {
-		t.Fatalf("GetLicensePool: %v", err)
+		t.Fatalf("GetUsagePool: %v", err)
 	}
-	if got.Product != "maya" {
-		t.Errorf("Product: got %q", got.Product)
+	if got.Name != "MayaRenderer" {
+		t.Errorf("Name: got %q", got.Name)
+	}
+	if got.ServerHint != "27000@licsrv" {
+		t.Errorf("ServerHint: got %q", got.ServerHint)
 	}
 }
 
-func TestLicensePool_Conflict(t *testing.T) {
+func TestUsagePool_Conflict(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	_, err := s.CreateLicensePool(ctx, store.LicensePool{ID: "p1", Name: "X", MaxConcurrent: 1})
+	_, err := s.CreateUsagePool(ctx, store.UsagePool{ID: "p1", Name: "X", MaxConcurrent: 1})
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	_, err = s.CreateLicensePool(ctx, store.LicensePool{ID: "p2", Name: "X", MaxConcurrent: 2})
+	_, err = s.CreateUsagePool(ctx, store.UsagePool{ID: "p2", Name: "X", MaxConcurrent: 2})
 	if !errors.Is(err, store.ErrConflict) {
 		t.Errorf("expected ErrConflict for duplicate name, got %v", err)
 	}
 }
 
-func TestLicensePool_DeleteNotFound(t *testing.T) {
+func TestUsagePool_DeleteNotFound(t *testing.T) {
 	s := openTestStore(t)
-	err := s.DeleteLicensePool(context.Background(), "nope")
+	err := s.DeleteUsagePool(context.Background(), "nope")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}

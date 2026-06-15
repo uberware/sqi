@@ -136,7 +136,7 @@ Status filters accept either the enum or its wire string:
 `sqi.list_jobs(status=JobStatus.RUNNING)` and `sqi.list_jobs(status="running")`
 are equivalent. `None` filters are omitted from the request entirely.
 
-> **Note:** farms, storage locations, and license pools are returned by the
+> **Note:** farms, storage locations, and usage pools are returned by the
 > server as bare arrays (no pagination), so their `list_*` methods return a plain
 > `list[T]`. Only queues, jobs, tasks, and workers are paginated.
 
@@ -255,7 +255,7 @@ reset, so pass every field you want to keep.
 | Farms | `create_farm(*, name, description=None, max_concurrent_tasks=0)` | `list_farms() -> list[Farm]`, `iter_farms()` | `get_farm`, `update_farm`, `delete_farm` |
 | Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset) -> Page[Queue]`, `iter_queues(...)` | `get_queue`, `update_queue`, `delete_queue` |
 | Storage locations | `create_storage_location(*, name, type, description=None, roots=None)` | `list_storage_locations() -> list[StorageLocation]`, `iter_storage_locations()` | `get_storage_location`, `update_storage_location`, `delete_storage_location` |
-| License pools | `create_license_pool(*, name, product, max_concurrent, server_hint=None)` | `list_license_pools() -> list[LicensePool]`, `iter_license_pools()` | `get_license_pool`, `update_license_pool`, `delete_license_pool` |
+| Usage pools | `create_usage_pool(*, name, max_concurrent, server_hint=None)` | `list_usage_pools() -> list[UsagePool]`, `iter_usage_pools()` | `get_usage_pool`, `update_usage_pool`, `delete_usage_pool` |
 
 ```python
 farm = sqi.create_farm(name="studio-a", description="Studio A render farm")
@@ -263,11 +263,13 @@ queue = sqi.create_queue(farm_id=farm.id, name="renders", priority=50, max_concu
 loc = sqi.create_storage_location(
     name="project-root", type="filesystem", roots={"on-prem": "/mnt/farm"}
 )
-pool = sqi.create_license_pool(name="arnold-pool", product="arnold", max_concurrent=10)
+pool = sqi.create_usage_pool(name="arnold-pool", max_concurrent=10)
 ```
 
-`create_license_pool`/`update_license_pool` validate `max_concurrent >= 1`
-client-side (raising `ValueError`) before sending.
+`create_usage_pool`/`update_usage_pool` validate `max_concurrent >= 1`
+client-side (raising `ValueError`) before sending. Every `UsagePool` response
+also carries read-only, server-computed `in_use` (active claims) and
+`available` (`max(max_concurrent - in_use, 0)`) fields for live utilization.
 
 ## Live events (WebSocket, `ws` extra)
 

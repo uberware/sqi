@@ -376,7 +376,7 @@ Each resource supports `GET /` (list), `POST /` (create), `GET /{id}`,
 /api/v1/farms
 /api/v1/queues
 /api/v1/storage-locations
-/api/v1/license-pools
+/api/v1/usage-pools
 ```
 
 Example — create a farm, then a queue inside it:

@@ -18,9 +18,9 @@ package fake
 //                     UpdateTaskAttempt
 //   queue.go      — UpdateQueue (conflict/not-found), DeleteQueue, ListQueues
 //                   (sort/filter/paused)
-//   license.go    — CreateCheckout, ReleaseCheckout, ActiveCheckoutCount,
-//                   TryClaimLicenseSlots, ReleaseAttemptCheckouts,
-//                   ReleaseJobCheckouts, UpdateLicensePool, DeleteLicensePool
+//   usage.go      — CreateClaim, ReleaseClaim, ActiveClaimCount,
+//                   TryClaimSlots, ReleaseAttemptClaims,
+//                   ReleaseJobClaims, UpdateUsagePool, DeleteUsagePool
 
 import (
 	"context"
@@ -137,20 +137,20 @@ func mustGetAttempt(t *testing.T, s *Store, id string) store.TaskAttempt {
 	return a
 }
 
-func mustCreateCheckout(t *testing.T, s *Store, co store.LicenseCheckout) store.LicenseCheckout {
+func mustCreateClaim(t *testing.T, s *Store, co store.UsageClaim) store.UsageClaim {
 	t.Helper()
-	created, err := s.CreateCheckout(ctx(), co)
+	created, err := s.CreateClaim(ctx(), co)
 	if err != nil {
-		t.Fatalf("CreateCheckout(%q): %v", co.ID, err)
+		t.Fatalf("CreateClaim(%q): %v", co.ID, err)
 	}
 	return created
 }
 
-func mustActiveCheckoutCount(t *testing.T, s *Store, poolID string) int {
+func mustActiveClaimCount(t *testing.T, s *Store, poolID string) int {
 	t.Helper()
-	n, err := s.ActiveCheckoutCount(ctx(), poolID)
+	n, err := s.ActiveClaimCount(ctx(), poolID)
 	if err != nil {
-		t.Fatalf("ActiveCheckoutCount(%q): %v", poolID, err)
+		t.Fatalf("ActiveClaimCount(%q): %v", poolID, err)
 	}
 	return n
 }
@@ -1009,119 +1009,153 @@ func TestListQueues_SortAndFilter(t *testing.T) {
 	}
 }
 
-// ── license.go ────────────────────────────────────────────────────────────────
+// ── usage.go ──────────────────────────────────────────────────────────────────
 
-func TestCreateCheckout_ConflictOnDuplicate(t *testing.T) {
+func TestCreateClaim_ConflictOnDuplicate(t *testing.T) {
 	s := New()
 	defer s.Close()
 
-	co := store.LicenseCheckout{
+	co := store.UsageClaim{
 		ID: "co1", PoolID: "pool1", TaskAttemptID: "attempt1",
-		CheckedOutAt: time.Now(),
+		ClaimedAt: time.Now(),
 	}
-	mustCreateCheckout(t, s, co)
-	_, err := s.CreateCheckout(ctx(), co) // duplicate
+	mustCreateClaim(t, s, co)
+	_, err := s.CreateClaim(ctx(), co) // duplicate
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("want ErrConflict on duplicate, got %v", err)
 	}
 }
 
-func TestReleaseCheckout(t *testing.T) {
+func TestReleaseClaim(t *testing.T) {
 	s := New()
 	defer s.Close()
 
-	co := store.LicenseCheckout{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", CheckedOutAt: time.Now()}
-	mustCreateCheckout(t, s, co)
+	co := store.UsageClaim{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", ClaimedAt: time.Now()}
+	mustCreateClaim(t, s, co)
 
-	if err := s.ReleaseCheckout(ctx(), "co1", time.Now()); err != nil {
-		t.Fatalf("ReleaseCheckout: %v", err)
+	if err := s.ReleaseClaim(ctx(), "co1", time.Now()); err != nil {
+		t.Fatalf("ReleaseClaim: %v", err)
 	}
-	if n := mustActiveCheckoutCount(t, s, "p1"); n != 0 {
+	if n := mustActiveClaimCount(t, s, "p1"); n != 0 {
 		t.Errorf("active count = %d, want 0 after release", n)
 	}
 }
 
-func TestReleaseCheckout_NotFound(t *testing.T) {
+func TestReleaseClaim_NotFound(t *testing.T) {
 	s := New()
 	defer s.Close()
-	err := s.ReleaseCheckout(ctx(), "ghost", time.Now())
+	err := s.ReleaseClaim(ctx(), "ghost", time.Now())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
 
-func TestActiveCheckoutCount(t *testing.T) {
+func TestActiveClaimCount(t *testing.T) {
 	s := New()
 	defer s.Close()
 
 	for i, id := range []string{"co1", "co2"} {
-		co := store.LicenseCheckout{
+		co := store.UsageClaim{
 			ID: id, PoolID: "p1",
 			TaskAttemptID: "a" + string(rune('1'+i)),
-			CheckedOutAt:  time.Now(),
+			ClaimedAt:     time.Now(),
 		}
-		mustCreateCheckout(t, s, co)
+		mustCreateClaim(t, s, co)
 	}
 
-	if n := mustActiveCheckoutCount(t, s, "p1"); n != 2 {
+	if n := mustActiveClaimCount(t, s, "p1"); n != 2 {
 		t.Errorf("count = %d, want 2", n)
 	}
 }
 
-func TestTryClaimLicenseSlots_AtCapacity(t *testing.T) {
+func TestListUsagePoolUtilization(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	if _, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p-arnold", Name: "arnold", MaxConcurrent: 5}); err != nil {
+		t.Fatalf("CreateUsagePool arnold: %v", err)
+	}
+	if _, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p-maya", Name: "maya", MaxConcurrent: 3}); err != nil {
+		t.Fatalf("CreateUsagePool maya: %v", err)
+	}
+
+	// Two active claims on arnold, one released (should not count).
+	mustCreateClaim(t, s, store.UsageClaim{ID: "co1", PoolID: "p-arnold", TaskAttemptID: "a1", ClaimedAt: time.Now()})
+	mustCreateClaim(t, s, store.UsageClaim{ID: "co2", PoolID: "p-arnold", TaskAttemptID: "a2", ClaimedAt: time.Now()})
+	mustCreateClaim(t, s, store.UsageClaim{ID: "co3", PoolID: "p-arnold", TaskAttemptID: "a3", ClaimedAt: time.Now()})
+	if err := s.ReleaseClaim(ctx(), "co3", time.Now()); err != nil {
+		t.Fatalf("ReleaseClaim: %v", err)
+	}
+
+	usage, err := s.ListUsagePoolUtilization(ctx())
+	if err != nil {
+		t.Fatalf("ListUsagePoolUtilization: %v", err)
+	}
+	if len(usage) != 2 {
+		t.Fatalf("usage len = %d, want 2", len(usage))
+	}
+	if usage[0].Name != "arnold" || usage[0].InUse != 2 {
+		t.Errorf("arnold: got %q/%d, want arnold/2", usage[0].Name, usage[0].InUse)
+	}
+	if usage[1].Name != "maya" || usage[1].InUse != 0 {
+		t.Errorf("maya: got %q/%d, want maya/0", usage[1].Name, usage[1].InUse)
+	}
+}
+
+func TestTryClaimSlots_AtCapacity(t *testing.T) {
 	s := New()
 	defer s.Close()
 
 	// Pool with max 1 slot; pre-claim it.
-	co := store.LicenseCheckout{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", CheckedOutAt: time.Now()}
-	mustCreateCheckout(t, s, co)
+	co := store.UsageClaim{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", ClaimedAt: time.Now()}
+	mustCreateClaim(t, s, co)
 
-	err := s.TryClaimLicenseSlots(ctx(), "a2", []store.LicensePoolClaim{
-		{PoolID: "p1", MaxConcurrent: 1, CheckoutID: "co2"},
+	err := s.TryClaimSlots(ctx(), "a2", []store.UsagePoolClaim{
+		{PoolID: "p1", MaxConcurrent: 1, ClaimID: "co2"},
 	}, time.Now())
-	if !errors.Is(err, store.ErrLicenseAtCapacity) {
-		t.Fatalf("want ErrLicenseAtCapacity, got %v", err)
+	if !errors.Is(err, store.ErrUsageAtCapacity) {
+		t.Fatalf("want ErrUsageAtCapacity, got %v", err)
 	}
 }
 
-func TestTryClaimLicenseSlots_Unlimited(t *testing.T) {
+func TestTryClaimSlots_Unlimited(t *testing.T) {
 	s := New()
 	defer s.Close()
 
-	err := s.TryClaimLicenseSlots(ctx(), "a1", []store.LicensePoolClaim{
-		{PoolID: "p1", MaxConcurrent: 0, CheckoutID: "co1"}, // 0 = unlimited
+	err := s.TryClaimSlots(ctx(), "a1", []store.UsagePoolClaim{
+		{PoolID: "p1", MaxConcurrent: 0, ClaimID: "co1"}, // 0 = unlimited
 	}, time.Now())
 	if err != nil {
-		t.Fatalf("TryClaimLicenseSlots (unlimited): %v", err)
+		t.Fatalf("TryClaimSlots (unlimited): %v", err)
 	}
 }
 
-func TestReleaseAttemptCheckouts(t *testing.T) {
+func TestReleaseAttemptClaims(t *testing.T) {
 	s := New()
 	defer s.Close()
 
-	// CreateCheckout enforces uniqueness on (TaskAttemptID, PoolID) — use
+	// CreateClaim enforces uniqueness on (TaskAttemptID, PoolID) — use
 	// distinct pool IDs so both rows are accepted.
 	for i, id := range []string{"co1", "co2"} {
-		co := store.LicenseCheckout{
+		co := store.UsageClaim{
 			ID:            id,
 			PoolID:        "p" + string(rune('1'+i)), // p1, p2
 			TaskAttemptID: "a1",
-			CheckedOutAt:  time.Now(),
+			ClaimedAt:     time.Now(),
 		}
-		mustCreateCheckout(t, s, co)
+		mustCreateClaim(t, s, co)
 	}
 
-	n, err := s.ReleaseAttemptCheckouts(ctx(), "a1", time.Now())
+	n, err := s.ReleaseAttemptClaims(ctx(), "a1", time.Now())
 	if err != nil {
-		t.Fatalf("ReleaseAttemptCheckouts: %v", err)
+		t.Fatalf("ReleaseAttemptClaims: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("released = %d, want 2", n)
 	}
 }
 
-func TestReleaseJobCheckouts(t *testing.T) {
+func TestReleaseJobClaims(t *testing.T) {
 	s := New()
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
@@ -1130,48 +1164,48 @@ func TestReleaseJobCheckouts(t *testing.T) {
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusRunning)
 	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
 
-	co := store.LicenseCheckout{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", CheckedOutAt: time.Now()}
-	mustCreateCheckout(t, s, co)
+	co := store.UsageClaim{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", ClaimedAt: time.Now()}
+	mustCreateClaim(t, s, co)
 
-	n, err := s.ReleaseJobCheckouts(ctx(), "j1", time.Now())
+	n, err := s.ReleaseJobClaims(ctx(), "j1", time.Now())
 	if err != nil {
-		t.Fatalf("ReleaseJobCheckouts: %v", err)
+		t.Fatalf("ReleaseJobClaims: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("released = %d, want 1", n)
 	}
 }
 
-func TestUpdateLicensePool_NotFound(t *testing.T) {
+func TestUpdateUsagePool_NotFound(t *testing.T) {
 	s := New()
 	defer s.Close()
-	_, err := s.UpdateLicensePool(ctx(), store.LicensePool{ID: "ghost", Name: "x"})
+	_, err := s.UpdateUsagePool(ctx(), store.UsagePool{ID: "ghost", Name: "x"})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
 
-func TestUpdateLicensePool_Conflict(t *testing.T) {
+func TestUpdateUsagePool_Conflict(t *testing.T) {
 	s := New()
 	defer s.Close()
-	p1, err := s.CreateLicensePool(ctx(), store.LicensePool{ID: "p1", Name: "alpha", Product: "maya", MaxConcurrent: 1})
+	p1, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p1", Name: "alpha", MaxConcurrent: 1})
 	if err != nil {
-		t.Fatalf("CreateLicensePool p1: %v", err)
+		t.Fatalf("CreateUsagePool p1: %v", err)
 	}
-	if _, err := s.CreateLicensePool(ctx(), store.LicensePool{ID: "p2", Name: "beta", Product: "maya", MaxConcurrent: 1}); err != nil {
-		t.Fatalf("CreateLicensePool p2: %v", err)
+	if _, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p2", Name: "beta", MaxConcurrent: 1}); err != nil {
+		t.Fatalf("CreateUsagePool p2: %v", err)
 	}
 
-	_, err = s.UpdateLicensePool(ctx(), store.LicensePool{ID: p1.ID, Name: "beta", Product: "maya", MaxConcurrent: 1})
+	_, err = s.UpdateUsagePool(ctx(), store.UsagePool{ID: p1.ID, Name: "beta", MaxConcurrent: 1})
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("want ErrConflict, got %v", err)
 	}
 }
 
-func TestDeleteLicensePool_NotFound(t *testing.T) {
+func TestDeleteUsagePool_NotFound(t *testing.T) {
 	s := New()
 	defer s.Close()
-	err := s.DeleteLicensePool(ctx(), "ghost")
+	err := s.DeleteUsagePool(ctx(), "ghost")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}

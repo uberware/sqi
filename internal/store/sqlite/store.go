@@ -92,19 +92,20 @@ type Store struct {
 	stmtUpdateStorageLoc    *sql.Stmt
 	stmtDeleteStorageLoc    *sql.Stmt
 
-	// ── license_pools ────────────────────────────────────────────────────
-	stmtInsertPool *sql.Stmt
-	stmtGetPool    *sql.Stmt
-	stmtListPools  *sql.Stmt
-	stmtUpdatePool *sql.Stmt
-	stmtDeletePool *sql.Stmt
+	// ── usage_pools ──────────────────────────────────────────────────────
+	stmtInsertPool    *sql.Stmt
+	stmtGetPool       *sql.Stmt
+	stmtListPools     *sql.Stmt
+	stmtListPoolUsage *sql.Stmt
+	stmtUpdatePool    *sql.Stmt
+	stmtDeletePool    *sql.Stmt
 
-	// ── license_checkouts ────────────────────────────────────────────────
-	stmtInsertCheckout          *sql.Stmt
-	stmtReleaseCheckout         *sql.Stmt
-	stmtActiveCheckoutCount     *sql.Stmt
-	stmtReleaseAttemptCheckouts *sql.Stmt
-	stmtReleaseJobCheckouts     *sql.Stmt
+	// ── usage_claims ─────────────────────────────────────────────────────
+	stmtInsertClaim          *sql.Stmt
+	stmtReleaseClaim         *sql.Stmt
+	stmtActiveClaimCount     *sql.Stmt
+	stmtReleaseAttemptClaims *sql.Stmt
+	stmtReleaseJobClaims     *sql.Stmt
 
 	// ── workers ──────────────────────────────────────────────────────────
 	stmtUpsertWorker             *sql.Stmt
@@ -303,7 +304,7 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 
-	// ── license_pools ─────────────────────────────────────────────────────
+	// ── usage_pools ───────────────────────────────────────────────────────
 	if s.stmtInsertPool, err = s.prepare(ctx, sqlInsertPool); err != nil {
 		return err
 	}
@@ -313,6 +314,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtListPools, err = s.prepare(ctx, sqlListPools); err != nil {
 		return err
 	}
+	if s.stmtListPoolUsage, err = s.prepare(ctx, sqlListPoolUsage); err != nil {
+		return err
+	}
 	if s.stmtUpdatePool, err = s.prepare(ctx, sqlUpdatePool); err != nil {
 		return err
 	}
@@ -320,20 +324,20 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 
-	// ── license_checkouts ─────────────────────────────────────────────────
-	if s.stmtInsertCheckout, err = s.prepare(ctx, sqlInsertCheckout); err != nil {
+	// ── usage_claims ──────────────────────────────────────────────────────
+	if s.stmtInsertClaim, err = s.prepare(ctx, sqlInsertClaim); err != nil {
 		return err
 	}
-	if s.stmtReleaseCheckout, err = s.prepare(ctx, sqlReleaseCheckout); err != nil {
+	if s.stmtReleaseClaim, err = s.prepare(ctx, sqlReleaseClaim); err != nil {
 		return err
 	}
-	if s.stmtActiveCheckoutCount, err = s.prepare(ctx, sqlActiveCheckoutCount); err != nil {
+	if s.stmtActiveClaimCount, err = s.prepare(ctx, sqlActiveClaimCount); err != nil {
 		return err
 	}
-	if s.stmtReleaseAttemptCheckouts, err = s.prepare(ctx, sqlReleaseAttemptCheckouts); err != nil {
+	if s.stmtReleaseAttemptClaims, err = s.prepare(ctx, sqlReleaseAttemptClaims); err != nil {
 		return err
 	}
-	if s.stmtReleaseJobCheckouts, err = s.prepare(ctx, sqlReleaseJobCheckouts); err != nil {
+	if s.stmtReleaseJobClaims, err = s.prepare(ctx, sqlReleaseJobClaims); err != nil {
 		return err
 	}
 

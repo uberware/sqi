@@ -5,7 +5,14 @@ import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
-import { useListJobs, useListWorkers, useListFarms, queryKeys } from '@/api/queries'
+import UsageBar from '@/components/UsageBar'
+import {
+  useListJobs,
+  useListWorkers,
+  useListFarms,
+  useListUsagePools,
+  queryKeys,
+} from '@/api/queries'
 import { useWebSocket, useConnectionState } from '@/ws/context'
 import { isJobEvent, isWorkerEvent } from '@/ws/events'
 import type { Job } from '@/api/types'
@@ -158,6 +165,50 @@ function JobsCard() {
   )
 }
 
+// ── Usage pools utilization card ──────────────────────────────────────
+
+function UsagePoolsCard() {
+  const { data, isLoading, isError } = useListUsagePools()
+  const pools = data ?? []
+
+  return (
+    <div className={styles.card} data-testid="usage-pools-card">
+      <div className={styles.cardHeader}>
+        <h2 className={styles.cardTitle}>Usage Pools</h2>
+        <Link to="/usage-pools" className={styles.cardHeaderLink}>
+          Manage
+        </Link>
+      </div>
+      <div className={styles.cardBody}>
+        {isLoading && <p className={styles.emptyMessage}>Loading…</p>}
+        {isError && (
+          <p className={styles.errorMessage} role="alert">
+            Failed to load usage pools.
+          </p>
+        )}
+        {!isLoading && !isError && pools.length === 0 && (
+          <p className={styles.emptyMessage}>No usage pools configured.</p>
+        )}
+        {pools.length > 0 && (
+          <ul className={styles.poolUsageList} role="list" aria-label="Usage pool utilization">
+            {pools.map((pool) => (
+              <li key={pool.id} className={styles.poolUsageRow}>
+                <span className={styles.poolUsageName} title={pool.name}>
+                  {pool.name}
+                </span>
+                <UsageBar inUse={pool.in_use} max={pool.max_concurrent} />
+                <span className={styles.poolUsageCount}>
+                  {pool.in_use} / {pool.max_concurrent}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Recent failures widget ──────────────────────────────────────────
 
 const FAILURES_PARAMS = {
@@ -298,6 +349,7 @@ export default function Dashboard() {
         <div className={styles.grid}>
           <WorkersCard />
           <JobsCard />
+          <UsagePoolsCard />
         </div>
 
         {/* Recent failures widget (full width) */}

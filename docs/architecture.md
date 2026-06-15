@@ -23,7 +23,7 @@ through scheduling, worker execution, and final state.
 │                                    │  assignment loop     │                 │
 │                                    │  worker registry     │                 │
 │                                    │  heartbeat sweep     │                 │
-│                                    │  license admission   │                 │
+│                                    │  usage pool gating   │                 │
 │                                    └──────┬───────────────┘                 │
 │                                           │                                 │
 │             ┌─────────────────────────────▼──────────────────────────────┐ │
@@ -37,7 +37,7 @@ through scheduling, worker execution, and final state.
 │          ┌───────────▼──────────┐                   ┌────────────────▼──┐ │
 │          │   SQLite state store  │                   │  WebSocket fanout  │ │
 │          │  jobs  tasks  workers │                   │  per-client subs   │ │
-│          │  farms queues licenses│                   │  backpressure      │ │
+│          │  farms queues pools   │                   │  backpressure      │ │
 │          │  audit_log  storage   │                   └───────────────────┘ │
 │          └──────────────────────┘                                          │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -55,7 +55,7 @@ through scheduling, worker execution, and final state.
 | Package | Path | Role |
 |---|---|---|
 | REST + WebSocket | `internal/server`, `internal/ws` | HTTP router, middleware, WebSocket upgrade and subscription hub |
-| Scheduler | `internal/scheduler` | Assignment loop, worker registry, heartbeat sweep, license gating |
+| Scheduler | `internal/scheduler` | Assignment loop, worker registry, heartbeat sweep, usage pool gating |
 | NATS bus | `internal/bus` | Typed JetStream client wrapper; stream, subject, and consumer definitions |
 | Store | `internal/store` | `Store` interface + SQLite implementation; migrations |
 | OpenJD | `internal/openjd` | Template parser, validator, parameter-space expansion |
@@ -153,7 +153,7 @@ Scheduler.tick()
   ├─ matchWorker(task, workers)       → *Worker (first capable match)
   │     Filters by: capability tags, OS, GPU, queue/farm membership,
   │                 compute-location affinity
-  ├─ licensePool.TryAcquire(task)     → bool (defers task if pool saturated)
+  ├─ usagePool.TryClaimSlots(task)    → bool (defers task if pool saturated)
   ├─ store.AssignTask(task, worker)   → TaskAttempt row (status=assigned)
   │
   └─ bus.PublishWorkAssign(worker.Queue, TaskPayload)
@@ -181,7 +181,7 @@ NATS consumer (internal/worker/status_handler.go)
   ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time)
   ├─ If terminal (succeeded/failed/canceled):
   │     store.UpdateTask(task_id, status)
-  │     licensePool.Release(task_id)
+  │     usagePool.ReleaseClaim(task_id)
   │     store.EvaluateStepReadiness(job_id)   ← marks successor tasks ready
   │     bus.PublishTaskStatus(job_id, summary) ← triggers WebSocket fanout
   └─ ack message
@@ -277,8 +277,8 @@ Full DDL lives in `internal/store/migrations/`. The primary tables are:
 | `task_attempts` | One row per execution attempt; holds exit code, timing, session_id |
 | `workers` | Registered workers with capabilities and status |
 | `storage_locations` | Named storage locations with per-compute-location root mappings |
-| `license_pools` | Software license pools with `max_concurrent` cap |
-| `license_checkouts` | Active license checkouts tied to task attempts |
+| `usage_pools` | Named concurrency limits (usage pools) with `max_concurrent` cap |
+| `usage_claims` | Active usage claims tied to task attempts |
 | `audit_log` | Append-only log of state-changing API operations |
 
 WAL mode is always enabled (`PRAGMA journal_mode=WAL`). Foreign keys are

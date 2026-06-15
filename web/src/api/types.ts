@@ -246,15 +246,18 @@ export interface StorageLocation {
   updated_at: string
 }
 
-// ── License pool ──────────────────────────────────────────────────────────────
+// ── Usage pool ────────────────────────────────────────────────────────────────
 
-/** Wire shape returned by license pool endpoints. */
-export interface LicensePool {
+/** Wire shape returned by usage pool endpoints. */
+export interface UsagePool {
   id: string
   name: string
-  product: string
   server_hint?: string
   max_concurrent: number
+  /** Slots currently claimed (active, unreleased). */
+  in_use: number
+  /** Free slots: max(max_concurrent - in_use, 0). */
+  available: number
   created_at: string
   updated_at: string
 }

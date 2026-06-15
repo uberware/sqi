@@ -17,8 +17,8 @@ type Store struct {
 	farms            map[string]store.Farm
 	queues           map[string]store.Queue
 	storageLocations map[string]store.StorageLocation
-	licensePools     map[string]store.LicensePool
-	licenseCheckouts map[string]store.LicenseCheckout
+	usagePools       map[string]store.UsagePool
+	usageClaims      map[string]store.UsageClaim
 	workers          map[string]store.Worker
 	jobs             map[string]store.Job
 	steps            map[string]store.Step
@@ -36,8 +36,8 @@ func New() *Store {
 		farms:            make(map[string]store.Farm),
 		queues:           make(map[string]store.Queue),
 		storageLocations: make(map[string]store.StorageLocation),
-		licensePools:     make(map[string]store.LicensePool),
-		licenseCheckouts: make(map[string]store.LicenseCheckout),
+		usagePools:       make(map[string]store.UsagePool),
+		usageClaims:      make(map[string]store.UsageClaim),
 		workers:          make(map[string]store.Worker),
 		jobs:             make(map[string]store.Job),
 		steps:            make(map[string]store.Step),
@@ -62,8 +62,8 @@ func (s *Store) Reset() {
 	s.farms = make(map[string]store.Farm)
 	s.queues = make(map[string]store.Queue)
 	s.storageLocations = make(map[string]store.StorageLocation)
-	s.licensePools = make(map[string]store.LicensePool)
-	s.licenseCheckouts = make(map[string]store.LicenseCheckout)
+	s.usagePools = make(map[string]store.UsagePool)
+	s.usageClaims = make(map[string]store.UsageClaim)
 	s.workers = make(map[string]store.Worker)
 	s.jobs = make(map[string]store.Job)
 	s.steps = make(map[string]store.Step)

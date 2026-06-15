@@ -355,10 +355,10 @@ func unreportedCacheErrors(cache locRootCache, existing []string) []string {
 
 // ── Host-requirements conversion ──────────────────────────────────────────────
 
-// licensePoolPrefix is the amount-requirement name prefix that signals a
-// license pool capacity requirement in the OpenJD hostRequirements block.
-// The pool name follows the prefix, e.g. "amount.worker.licensepool.arnold".
-const licensePoolPrefix = "amount.worker.licensepool."
+// usagePoolPrefix is the amount-requirement name prefix that signals a
+// usage pool capacity requirement in the OpenJD hostRequirements block.
+// The pool name follows the prefix, e.g. "amount.worker.usagepool.arnold".
+const usagePoolPrefix = "amount.worker.usagepool."
 
 // computeLocationAttr is the attribute name used to declare a compute-location
 // affinity in the OpenJD hostRequirements block.
@@ -378,8 +378,8 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 	shr := &store.StepHostRequirements{}
 
 	for _, a := range hr.Amounts {
-		if poolName, ok := strings.CutPrefix(a.Name, licensePoolPrefix); ok && poolName != "" {
-			shr.LicensePools = append(shr.LicensePools, poolName)
+		if poolName, ok := strings.CutPrefix(a.Name, usagePoolPrefix); ok && poolName != "" {
+			shr.UsagePools = append(shr.UsagePools, poolName)
 		}
 		shr.Amounts = append(shr.Amounts, store.StepAmountRequirement{
 			Name: a.Name,

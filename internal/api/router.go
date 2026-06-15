@@ -188,7 +188,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
-	licensePools := newLicensePoolHandler(deps.Store, logger)
+	usagePools := newUsagePoolHandler(deps.Store, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// 7. Versioning header — X-API-Version: 1 on every response.
@@ -245,12 +245,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
 		api.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
 
-		// ── License-pool endpoints ──────────────────────────────
-		api.Post("/license-pools", licensePools.createLicensePool)
-		api.Get("/license-pools", licensePools.listLicensePools)
-		api.Get("/license-pools/{id}", licensePools.getLicensePool)
-		api.Put("/license-pools/{id}", licensePools.updateLicensePool)
-		api.Delete("/license-pools/{id}", licensePools.deleteLicensePool)
+		// ── Usage-pool endpoints ────────────────────────────────
+		api.Post("/usage-pools", usagePools.createUsagePool)
+		api.Get("/usage-pools", usagePools.listUsagePools)
+		api.Get("/usage-pools/{id}", usagePools.getUsagePool)
+		api.Put("/usage-pools/{id}", usagePools.updateUsagePool)
+		api.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
 
 		// OpenAPI spec.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
