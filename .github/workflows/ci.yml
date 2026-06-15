@@ -105,7 +105,7 @@ jobs:
       # Publish the freshly-built binaries so the Python integration job can run
       # against them without rebuilding the web UI + Go toolchain itself.
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries
           path: |
@@ -258,7 +258,7 @@ jobs:
       # diagnosable from the CI artifacts.
       - name: Upload Playwright report on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: web/playwright-report/
