@@ -48,6 +48,12 @@ web/node_modules/
 /clients/python/.venv/
 /clients/python/dist/
 /clients/python/build/
+# sqi-client is a library: its real constraints live in pyproject.toml ranges,
+# and CI installs via `pip install -e` (not the lock). Tracking uv.lock only
+# pins dev-only tools (e.g. pytest, which stays at the last 3.9-compatible
+# release on the 3.9 leg) and surfaces false-positive Dependabot security
+# alerts for tools consumers never install.
+/clients/python/uv.lock
 *.egg-info/
 __pycache__/
 *.py[cod]
