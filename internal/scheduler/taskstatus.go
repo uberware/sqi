@@ -335,25 +335,67 @@ func (s *Scheduler) checkStepCompletion(ctx context.Context, stepID, jobID strin
 		slog.String("status", string(newStepStatus)),
 	)
 
-	// When all tasks in a step succeed, resolve dependencies so any step that
-	// was waiting on this one can have its tasks promoted to ready.
+	if err := s.propagateStepDependencies(ctx, jobID, newStepStatus); err != nil {
+		return err
+	}
+
+	return s.checkJobCompletion(ctx, jobID)
+}
+
+// propagateStepDependencies updates dependent steps after a step reaches the
+// terminal status newStepStatus. When the step completed successfully it resolves
+// dependencies so any step waiting on it can have its tasks promoted to ready.
+// When the step terminated unsuccessfully it cascade-cancels any step that
+// depended on it, since such steps can never become ready — otherwise they would
+// strand in pending and the job could never reach a terminal state.
+//
+// The error is returned (not swallowed) so the caller can nak the triggering
+// message and let JetStream redeliver: a transient store error mid-cascade would
+// otherwise leave dependents stranded and re-introduce the job hang this logic
+// exists to prevent. All three store operations involved are idempotent, so
+// redelivery is safe.
+func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string, newStepStatus store.StepStatus) error {
 	if newStepStatus == store.StepStatusCompleted {
-		if n, err := openjd.ResolveDependencies(ctx, s.store, jobID); err != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: resolve dependencies failed",
-				slog.String("job_id", jobID),
-				slog.Any("error", err),
-			)
-		} else if n > 0 {
+		n, err := openjd.ResolveDependencies(ctx, s.store, jobID)
+		if err != nil {
+			return fmt.Errorf("scheduler: resolve dependencies for job %s: %w", jobID, err)
+		}
+		if n > 0 {
 			s.logger.InfoContext(
 				ctx, "scheduler: promoted dependent steps to ready",
 				slog.String("job_id", jobID),
 				slog.Int("steps_promoted", n),
 			)
 		}
+		return nil
 	}
 
-	return s.checkJobCompletion(ctx, jobID)
+	n, canceledTasks, err := openjd.CancelDependents(ctx, s.store, jobID)
+	if err != nil {
+		return fmt.Errorf("scheduler: cancel dependents for job %s: %w", jobID, err)
+	}
+	if n > 0 {
+		s.logger.InfoContext(
+			ctx, "scheduler: canceled dependent steps after upstream failure",
+			slog.String("job_id", jobID),
+			slog.Int("steps_canceled", n),
+			slog.Int("tasks_canceled", len(canceledTasks)),
+		)
+	}
+
+	// Fan the cascade-canceled tasks out to WebSocket subscribers; they were never
+	// assigned, so there is no worker to attribute.
+	now := time.Now().UTC()
+	for _, t := range canceledTasks {
+		s.notifier.NotifyTask(ws.TaskEvent{
+			JobID:     t.JobID,
+			TaskID:    t.ID,
+			Name:      t.Name,
+			Status:    string(store.TaskStatusCanceled),
+			UpdatedAt: now,
+		})
+	}
+	return nil
 }
 
 // checkJobCompletion inspects all steps in the job.  If every step has reached

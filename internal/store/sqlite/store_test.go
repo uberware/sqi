@@ -966,6 +966,58 @@ func TestTask_CancelJobTasks(t *testing.T) {
 	}
 }
 
+func TestTask_TransitionStepPendingTasks(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertStep(t, s, "s2", "j1", "S2", 1)
+	insertTask(t, s, "t1", "j1", "s1") // pending, step s1
+	insertTask(t, s, "t2", "j1", "s1") // pending, step s1
+	insertTask(t, s, "t3", "j1", "s2") // pending, but different step
+
+	// A non-pending task in s1 must be left untouched.
+	insertTask(t, s, "t4", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t4", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus t4: %v", err)
+	}
+
+	affected, err := s.TransitionStepPendingTasks(ctx, "s1", store.TaskStatusCanceled)
+	if err != nil {
+		t.Fatalf("TransitionStepPendingTasks: %v", err)
+	}
+
+	// Only the two pending tasks of s1 are affected and returned.
+	gotIDs := make(map[string]bool)
+	for _, task := range affected {
+		gotIDs[task.ID] = true
+		if task.Status != store.TaskStatusCanceled {
+			t.Errorf("returned task %s status = %q, want canceled", task.ID, task.Status)
+		}
+	}
+	if len(affected) != 2 || !gotIDs["t1"] || !gotIDs["t2"] {
+		t.Errorf("affected = %v, want exactly t1 and t2", gotIDs)
+	}
+
+	// Persisted state matches.
+	for id, want := range map[string]store.TaskStatus{
+		"t1": store.TaskStatusCanceled,
+		"t2": store.TaskStatusCanceled,
+		"t3": store.TaskStatusPending, // other step, unchanged
+		"t4": store.TaskStatusReady,   // not pending, unchanged
+	} {
+		task, err := s.GetTask(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTask %q: %v", id, err)
+		}
+		if task.Status != want {
+			t.Errorf("%s status = %q, want %q", id, task.Status, want)
+		}
+	}
+}
+
 // ── LicensePool CRUD ──────────────────────────────────────────────────────────
 
 func TestLicensePool_CreateAndGet(t *testing.T) {

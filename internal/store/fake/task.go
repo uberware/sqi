@@ -75,6 +75,28 @@ func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.Task
 	return nil
 }
 
+// TransitionStepPendingTasks transitions every pending task of the step to `to`,
+// updates UpdatedAt, and returns the affected tasks.
+func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus) ([]store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var affected []store.Task
+	for id, t := range s.tasks {
+		if t.StepID != stepID || t.Status != store.TaskStatusPending {
+			continue
+		}
+		t.Status = to
+		t.UpdatedAt = time.Now()
+		s.tasks[id] = t
+
+		out := t
+		out.Parameters = copyMap(t.Parameters)
+		affected = append(affected, out)
+	}
+	return affected, nil
+}
+
 // AssignTask atomically sets AssignedWorkerID, AssignedAt, and Status to
 // [store.TaskStatusAssigned] for the given task.
 func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt time.Time) error {

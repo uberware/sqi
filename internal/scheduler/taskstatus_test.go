@@ -26,14 +26,30 @@ import (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newStatusTestScheduler(st store.Store) *Scheduler {
+	return newStatusTestSchedulerWithNotifier(st, ws.NoopNotifier{})
+}
+
+func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *Scheduler {
 	return New(
 		DefaultConfig(),
 		st,
 		nil, // bus — not called by processTaskStatus
 		nil, // metrics — not used
 		slog.New(slog.DiscardHandler),
-		ws.NoopNotifier{},
+		notifier,
 	)
+}
+
+// recordingNotifier captures NotifyTask events for assertions; other Notify*
+// methods are inherited as no-ops from ws.NoopNotifier.
+type recordingNotifier struct {
+	ws.NoopNotifier
+
+	tasks []ws.TaskEvent
+}
+
+func (n *recordingNotifier) NotifyTask(e ws.TaskEvent) {
+	n.tasks = append(n.tasks, e)
 }
 
 // taskStatusMsgJSON marshals a TaskStatusMsg to JSON bytes for use as fakeJSMsg.data.
@@ -447,6 +463,172 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	if stored2.Status != store.TaskStatusReady {
 		t.Errorf("task2 status = %q after Step1 completion, want ready", stored2.Status)
 	}
+}
+
+// seedDependentStep adds a pending Step2 (depending on the seedStatusFixture's
+// "Step1") plus a pending task to an existing job, returning both records.
+func seedDependentStep(t *testing.T, st *fake.Store, jobID string) (store.Step, store.Task) {
+	t.Helper()
+	ctx := t.Context()
+	now := time.Now()
+
+	step2, err := st.CreateStep(ctx, store.Step{
+		ID: uuid.NewString(), JobID: jobID, Name: "Step2",
+		Status: store.StepStatusPending, StepOrder: 1,
+		DependsOn: []string{"Step1"},
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateStep2: %v", err)
+	}
+	task2, err := st.CreateTask(ctx, store.Task{
+		ID: uuid.NewString(), JobID: jobID, StepID: step2.ID,
+		Name: "t2", Status: store.TaskStatusPending,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask2: %v", err)
+	}
+	return step2, task2
+}
+
+func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *testing.T) {
+	// Two-step job: Step1 → Step2 (depends on Step1).
+	// When Step1's task fails, Step2 can never run, so it must be canceled
+	// (along with its pending tasks) and the job must reach a terminal state
+	// rather than hanging in running forever.
+	st := fake.New()
+	ctx := t.Context()
+
+	job, _, task1, attempt1 := seedStatusFixture(t, st, store.TaskStatusRunning)
+	step2, task2 := seedDependentStep(t, st, job.ID)
+
+	s := newStatusTestScheduler(st)
+	s.ctx = ctx
+
+	exitCode := 1
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task1.ID,
+			AttemptID: attempt1.ID,
+			Status:    "failed",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.acked {
+		t.Error("successful cascade should ack the message")
+	}
+
+	// Step2 must be canceled (its only dependency failed).
+	stored2Step, err := st.GetStep(ctx, step2.ID)
+	if err != nil {
+		t.Fatalf("GetStep(step2): %v", err)
+	}
+	if stored2Step.Status != store.StepStatusCanceled {
+		t.Errorf("step2 status = %q, want canceled", stored2Step.Status)
+	}
+
+	// task2 (pending) must be canceled too.
+	stored2, err := st.GetTask(ctx, task2.ID)
+	if err != nil {
+		t.Fatalf("GetTask(task2): %v", err)
+	}
+	if stored2.Status != store.TaskStatusCanceled {
+		t.Errorf("task2 status = %q, want canceled", stored2.Status)
+	}
+
+	// The job must reach a terminal state, not hang in running.
+	storedJob, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if storedJob.Status != store.JobStatusFailed {
+		t.Errorf("job status = %q, want failed", storedJob.Status)
+	}
+}
+
+func TestProcessTaskStatus_CascadeCancel_NotifiesCanceledTasks(t *testing.T) {
+	// A cascade-canceled dependent task must be fanned out to WebSocket clients,
+	// otherwise the live UI shows it frozen as pending.
+	st := fake.New()
+	ctx := t.Context()
+
+	job, _, task1, attempt1 := seedStatusFixture(t, st, store.TaskStatusRunning)
+	_, task2 := seedDependentStep(t, st, job.ID)
+
+	notifier := &recordingNotifier{}
+	s := newStatusTestSchedulerWithNotifier(st, notifier)
+	s.ctx = ctx
+
+	exitCode := 1
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task1.ID,
+			AttemptID: attempt1.ID,
+			Status:    "failed",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	// Expect a canceled-task event for task2 (task1's own failed event also fires).
+	var got *ws.TaskEvent
+	for i := range notifier.tasks {
+		if notifier.tasks[i].TaskID == task2.ID {
+			got = &notifier.tasks[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no TaskEvent emitted for cascade-canceled task2; events = %+v", notifier.tasks)
+	}
+	if got.Status != string(store.TaskStatusCanceled) {
+		t.Errorf("task2 event status = %q, want canceled", got.Status)
+	}
+}
+
+func TestProcessTaskStatus_CascadeCancel_StoreError_Nacked(t *testing.T) {
+	// If the cascade hits a transient store error, the message must be nacked so
+	// JetStream redelivers — otherwise dependents strand and the job hangs, the
+	// exact failure this cascade exists to prevent.
+	inner := fake.New()
+	ctx := t.Context()
+
+	job, _, task1, attempt1 := seedStatusFixture(t, inner, store.TaskStatusRunning)
+	seedDependentStep(t, inner, job.ID)
+
+	est := &cancelTasksErrSt{Store: inner}
+	s := newStatusTestScheduler(est)
+	s.ctx = ctx
+
+	exitCode := 1
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task1.ID,
+			AttemptID: attempt1.ID,
+			Status:    "failed",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.nacked {
+		t.Error("store error during cascade should cause the message to be nacked")
+	}
+}
+
+// cancelTasksErrSt makes the dependent-task cancellation fail mid-cascade.
+type cancelTasksErrSt struct {
+	store.Store
+}
+
+func (*cancelTasksErrSt) TransitionStepPendingTasks(_ context.Context, _ string, _ store.TaskStatus) ([]store.Task, error) {
+	return nil, errInjectedLog
 }
 
 // ── Store error on UpdateTaskAttempt → message nacked ────────────────────────

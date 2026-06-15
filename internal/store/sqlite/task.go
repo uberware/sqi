@@ -109,6 +109,15 @@ UPDATE tasks
 SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
 WHERE  job_id = ?
   AND  status IN ('pending', 'ready', 'assigned', 'running')`
+
+	// Transitions all pending tasks of a step to a new status and returns the
+	// affected rows. A pending task has never been assigned, so there is no worker
+	// assignment to clear. Single statement — not bounded by MaxLimit.
+	sqlTransitionStepPendingTasks = `
+UPDATE tasks
+SET    status = ?, updated_at = ?
+WHERE  step_id = ? AND status = 'pending'
+RETURNING ` + taskCols
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -384,6 +393,28 @@ WHERE  job_id = ?
 		return nil, fmt.Errorf("sqlite: commit cancel job tasks: %w", err)
 	}
 	return active, nil
+}
+
+// TransitionStepPendingTasks implements [store.TaskStore].
+//
+// The UPDATE ... RETURNING runs as one statement so the transition is atomic and
+// covers every pending task of the step regardless of count.
+func (s *Store) TransitionStepPendingTasks(ctx context.Context, stepID string, to store.TaskStatus) ([]store.Task, error) {
+	rows, err := s.db.QueryContext(ctx, sqlTransitionStepPendingTasks, string(to), timeToText(time.Now().UTC()), stepID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: transition pending tasks for step %s: %w", stepID, mapErr(err))
+	}
+	defer rows.Close()
+
+	var tasks []store.Task
+	for rows.Next() {
+		t, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, mapErr(rows.Err())
 }
 
 // CountTasksByJob implements [store.TaskStore].

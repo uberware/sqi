@@ -34,11 +34,7 @@ func ResolveDependencies(ctx context.Context, st store.Store, jobID string) (int
 		return 0, fmt.Errorf("openjd: resolve deps for job %s: list steps: %w", jobID, err)
 	}
 
-	// Build name→status lookup used for dependency checking.
-	statusByName := make(map[string]store.StepStatus, len(steps))
-	for _, s := range steps {
-		statusByName[s.Name] = s.Status
-	}
+	statusByName := stepStatusByName(steps)
 
 	var promoted int
 	for _, step := range steps {
@@ -59,14 +55,27 @@ func ResolveDependencies(ctx context.Context, st store.Store, jobID string) (int
 		}
 
 		// Promote every pending task in this step.
-		if err := markStepTasksReady(ctx, st, jobID, step.ID); err != nil {
-			return promoted, err
+		if _, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusReady); err != nil {
+			return promoted, fmt.Errorf(
+				"openjd: resolve deps for job %s: ready pending tasks for step %s: %w",
+				jobID, step.ID, err,
+			)
 		}
 
 		promoted++
 	}
 
 	return promoted, nil
+}
+
+// stepStatusByName builds a name→status lookup over steps, used for dependency
+// resolution and cancellation decisions.
+func stepStatusByName(steps []store.Step) map[string]store.StepStatus {
+	m := make(map[string]store.StepStatus, len(steps))
+	for _, s := range steps {
+		m[s.Name] = s.Status
+	}
+	return m
 }
 
 // allDepsCompleted reports whether every name in deps maps to
@@ -81,37 +90,90 @@ func allDepsCompleted(deps []string, statusByName map[string]store.StepStatus) b
 	return true
 }
 
-// markStepTasksReady transitions every pending task in stepID to
-// [store.TaskStatusReady].
+// CancelDependents cancels every [store.StepStatusPending] step of jobID whose
+// dependency graph includes a step that terminated unsuccessfully — that is,
+// reached [store.StepStatusFailed] or [store.StepStatusCanceled] — and cancels
+// each such step's [store.TaskStatusPending] tasks.
 //
-// Tasks are fetched with [store.MaxLimit] per page. Steps with more than
-// [store.MaxLimit] tasks require multiple passes; for Phase 1 workloads
-// this limit is not expected to be reached.
-func markStepTasksReady(ctx context.Context, st store.Store, jobID, stepID string) error {
-	opts := store.ListTasksOptions{
-		StepID: stepID,
-		Status: store.TaskStatusPending,
-		Pagination: store.Pagination{
-			Limit: store.MaxLimit,
-		},
-	}
-
-	page, err := st.ListTasks(ctx, opts)
+// A pending step that depends on a failed or canceled step can never become
+// ready (ResolveDependencies only promotes steps whose dependencies all reached
+// completed), so it would otherwise strand forever and prevent the job from ever
+// reaching a terminal state. Canceling it lets job-completion detection proceed.
+//
+// It returns the number of steps newly canceled and the pending tasks that were
+// transitioned to canceled (so the caller can fan those terminal task transitions
+// out to subscribers).
+//
+// CancelDependents loops to a fixpoint: canceling a step makes it an
+// unsuccessful dependency for its own dependents, so a single call propagates
+// through transitive dependency chains. Calling it is idempotent — steps already
+// past pending are skipped.
+//
+// It is typically invoked by the scheduler immediately after any step
+// transitions to failed or canceled.
+func CancelDependents(ctx context.Context, st store.Store, jobID string) (int, []store.Task, error) {
+	steps, err := st.ListSteps(ctx, jobID)
 	if err != nil {
-		return fmt.Errorf(
-			"openjd: resolve deps for job %s: list pending tasks for step %s: %w",
-			jobID, stepID, err,
-		)
+		return 0, nil, fmt.Errorf("openjd: cancel dependents for job %s: list steps: %w", jobID, err)
 	}
 
-	for _, task := range page.Items {
-		if err := st.UpdateTaskStatus(ctx, task.ID, store.TaskStatusReady); err != nil {
-			return fmt.Errorf(
-				"openjd: resolve deps for job %s: update task %s to ready: %w",
-				jobID, task.ID, err,
-			)
+	// Build name→status lookup. Dependency edges are immutable and this function
+	// is the only writer of the statuses it inspects, so we list once and keep the
+	// map authoritative as we cancel — updating it in place lets a later pass see
+	// a step we just canceled, which is how transitive chains resolve.
+	statusByName := stepStatusByName(steps)
+
+	var (
+		canceled      int
+		canceledTasks []store.Task
+	)
+	// Loop until a full pass cancels nothing more. Each cancellation can unblock
+	// further cancellations downstream, so we repeat until the graph is stable.
+	for {
+		before := canceled
+		for _, step := range steps {
+			if statusByName[step.Name] != store.StepStatusPending {
+				continue
+			}
+
+			if !anyDepUnsuccessful(step.DependsOn, statusByName) {
+				continue
+			}
+
+			// A dependency can never complete — cancel the step and its pending tasks.
+			if err := st.UpdateStepStatus(ctx, step.ID, store.StepStatusCanceled); err != nil {
+				return canceled, canceledTasks, fmt.Errorf(
+					"openjd: cancel dependents for job %s: cancel step %s: %w",
+					jobID, step.ID, err,
+				)
+			}
+			tasks, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusCanceled)
+			if err != nil {
+				return canceled, canceledTasks, fmt.Errorf(
+					"openjd: cancel dependents for job %s: cancel pending tasks for step %s: %w",
+					jobID, step.ID, err,
+				)
+			}
+			canceledTasks = append(canceledTasks, tasks...)
+
+			statusByName[step.Name] = store.StepStatusCanceled
+			canceled++
+		}
+
+		if canceled == before {
+			return canceled, canceledTasks, nil
 		}
 	}
+}
 
-	return nil
+// anyDepUnsuccessful reports whether any name in deps maps to a step that
+// terminated unsuccessfully ([store.StepStatusFailed] or
+// [store.StepStatusCanceled]) in statusByName.
+func anyDepUnsuccessful(deps []string, statusByName map[string]store.StepStatus) bool {
+	for _, name := range deps {
+		if s := statusByName[name]; s == store.StepStatusFailed || s == store.StepStatusCanceled {
+			return true
+		}
+	}
+	return false
 }

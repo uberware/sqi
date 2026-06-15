@@ -428,3 +428,264 @@ func TestResolveDependencies_SkipsNonPending(t *testing.T) {
 		t.Errorf("promoted = %d, want 0 (non-pending steps skipped)", n)
 	}
 }
+
+// ── CancelDependents (deps.go) ────────────────────────────────────────────────
+
+func TestCancelDependents_FailedDep_CancelsPendingDependentAndTasks(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	// step1 failed; step2 (pending) depends on it and can never run.
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step1", JobID: "j1", Name: "Step1",
+		Status: store.StepStatusFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step2", JobID: "j1", Name: "Step2",
+		Status:    store.StepStatusPending,
+		DependsOn: []string{"Step1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t2", JobID: "j1", StepID: "step2",
+		Status: store.TaskStatusPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, tasks, err := openjd.CancelDependents(ctx, s, "j1")
+	if err != nil {
+		t.Fatalf("CancelDependents: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("canceled = %d, want 1", n)
+	}
+	// The canceled pending tasks are returned so the caller can notify clients.
+	if len(tasks) != 1 || tasks[0].ID != "t2" {
+		t.Errorf("returned tasks = %v, want [t2]", tasks)
+	}
+
+	step, err := s.GetStep(ctx, "step2")
+	if err != nil {
+		t.Fatalf("GetStep: %v", err)
+	}
+	if step.Status != store.StepStatusCanceled {
+		t.Errorf("step2 status = %v, want canceled", step.Status)
+	}
+	task, err := s.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != store.TaskStatusCanceled {
+		t.Errorf("t2 status = %v, want canceled", task.Status)
+	}
+}
+
+func TestCancelDependents_CanceledDep_CancelsPendingDependent(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step1", JobID: "j1", Name: "Step1",
+		Status: store.StepStatusCanceled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step2", JobID: "j1", Name: "Step2",
+		Status:    store.StepStatusPending,
+		DependsOn: []string{"Step1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := openjd.CancelDependents(ctx, s, "j1")
+	if err != nil {
+		t.Fatalf("CancelDependents: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("canceled = %d, want 1", n)
+	}
+}
+
+func TestCancelDependents_PartialFailure_CancelsWhenAnyDepFailed(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	// step3 depends on TWO steps: one completed, one failed. A single failed
+	// dependency means step3 can never become ready, so it must be canceled.
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step1", JobID: "j1", Name: "Step1", Status: store.StepStatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step2", JobID: "j1", Name: "Step2", Status: store.StepStatusFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step3", JobID: "j1", Name: "Step3",
+		Status: store.StepStatusPending, DependsOn: []string{"Step1", "Step2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := openjd.CancelDependents(ctx, s, "j1")
+	if err != nil {
+		t.Fatalf("CancelDependents: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("canceled = %d, want 1", n)
+	}
+	step, err := s.GetStep(ctx, "step3")
+	if err != nil {
+		t.Fatalf("GetStep: %v", err)
+	}
+	if step.Status != store.StepStatusCanceled {
+		t.Errorf("step3 status = %v, want canceled", step.Status)
+	}
+}
+
+func TestCancelDependents_Diamond(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	// Diamond: A → {B, C} → D. A fails; B and C are direct dependents, D depends
+	// on both. One call must cancel B, C and D (D via its now-canceled deps).
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "a", JobID: "j1", Name: "A", Status: store.StepStatusFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "b", JobID: "j1", Name: "B",
+		Status: store.StepStatusPending, DependsOn: []string{"A"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "c", JobID: "j1", Name: "C",
+		Status: store.StepStatusPending, DependsOn: []string{"A"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "d", JobID: "j1", Name: "D",
+		Status: store.StepStatusPending, DependsOn: []string{"B", "C"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := openjd.CancelDependents(ctx, s, "j1")
+	if err != nil {
+		t.Fatalf("CancelDependents: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("canceled = %d, want 3 (B, C, D)", n)
+	}
+	for _, id := range []string{"b", "c", "d"} {
+		step, err := s.GetStep(ctx, id)
+		if err != nil {
+			t.Fatalf("GetStep(%s): %v", id, err)
+		}
+		if step.Status != store.StepStatusCanceled {
+			t.Errorf("step %s status = %v, want canceled", id, step.Status)
+		}
+	}
+}
+
+func TestCancelDependents_Idempotent(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step1", JobID: "j1", Name: "Step1", Status: store.StepStatusFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step2", JobID: "j1", Name: "Step2",
+		Status: store.StepStatusPending, DependsOn: []string{"Step1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := openjd.CancelDependents(ctx, s, "j1"); err != nil {
+		t.Fatalf("CancelDependents (first): %v", err)
+	}
+	// Second call has nothing left to cancel — must be a no-op.
+	n, _, err := openjd.CancelDependents(ctx, s, "j1")
+	if err != nil {
+		t.Fatalf("CancelDependents (second): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("second call canceled = %d, want 0 (idempotent)", n)
+	}
+}
+
+func TestCancelDependents_LeavesHealthyAndNonPendingSteps(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	// step1 completed (healthy) — its dependent must NOT be canceled.
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step1", JobID: "j1", Name: "Step1",
+		Status: store.StepStatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step2", JobID: "j1", Name: "Step2",
+		Status: store.StepStatusPending, DependsOn: []string{"Step1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A running step depending on a failed one is not pending — must be left alone.
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step3", JobID: "j1", Name: "Step3", Status: store.StepStatusFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateStep(ctx, store.Step{
+		ID: "step4", JobID: "j1", Name: "Step4",
+		Status: store.StepStatusRunning, DependsOn: []string{"Step3"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := openjd.CancelDependents(ctx, s, "j1")
+	if err != nil {
+		t.Fatalf("CancelDependents: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("canceled = %d, want 0", n)
+	}
+}

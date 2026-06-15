@@ -131,6 +131,17 @@ type TaskStore interface {
 	// modified.
 	CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]Task, error)
 
+	// TransitionStepPendingTasks transitions every task of the given step that is
+	// currently in [TaskStatusPending] to status `to`, updates UpdatedAt, and
+	// returns the affected task rows. It is used to promote a step's tasks to
+	// [TaskStatusReady] once its dependencies resolve, and to cancel them when an
+	// upstream dependency fails.
+	//
+	// The transition is applied as a single statement covering all matching rows
+	// regardless of count, so it is not subject to the [MaxLimit] pagination
+	// ceiling. Tasks not in pending state are not modified.
+	TransitionStepPendingTasks(ctx context.Context, stepID string, to TaskStatus) ([]Task, error)
+
 	// CountTasksByJob returns the number of tasks for the given job keyed by
 	// status. Statuses with zero tasks are omitted from the returned map.
 	// Used by the REST layer to include aggregate task counts in job responses.
