@@ -232,13 +232,13 @@ describe('Submit page', () => {
       expect(editor.value).toContain('taskParameterDefinitions')
     })
 
-    it('populates the editor with the license-limit example on selection', async () => {
+    it('populates the editor with the usage-limit example on selection', async () => {
       mockFarmsAndQueues()
       const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
 
       const select = screen.getByRole('combobox', { name: /load example/i })
-      await user.selectOptions(select, 'license-limit')
+      await user.selectOptions(select, 'usage-limit')
 
       const editor = screen.getByTestId('template-editor') as HTMLTextAreaElement
       expect(editor.value).toContain('amount.worker.usagepool.arnold')

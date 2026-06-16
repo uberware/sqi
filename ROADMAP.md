@@ -221,7 +221,6 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Error log diagnosis feature
 - Worker/job management by natural language
 - Web Push notifications
-- User settings (theme, list refresh interval, per-user preferences)
 
 ### Phase 6: v1.0 Release
 

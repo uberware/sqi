@@ -133,3 +133,84 @@
   --sidebar-width: 220px;
   --header-height: 48px;
 }
+
+:root[data-theme='dark'] {
+  /* ---- Backgrounds ---- */
+  /* Surfaces (list rows, page header bar, cards) sit roughly halfway between the
+     window bg and the sidebar, so the sidebar stays the lightest element and reads
+     as distinct from the content surfaces. Order: bg < surface < raised < sidebar. */
+  --color-bg: #0d0c10;
+  --color-surface: #1c1820;
+  --color-surface-raised: #211c24;
+  --color-surface-overlay: rgba(28, 24, 32, 0.95);
+
+  /* ---- Sidebar ---- */
+  --color-sidebar-bg: #261f29;
+  --color-sidebar-hover: #423b46;
+  --color-sidebar-active: #4d4452;
+  --color-sidebar-border: #423b46;
+  --color-sidebar-text: #e8e5d8;
+  --color-sidebar-text-muted: #b7ac85;
+  --color-sidebar-accent: #f7a83a;
+
+  /* ---- Text ---- */
+  --color-text-primary: #eeebe2;
+  --color-text-secondary: #d6cfb8;
+  --color-text-muted: #b4a77e;
+  --color-text-inverse: #1e1b22;
+  --color-text-link: #f7a83a;
+  --color-text-link-hover: #ffc163;
+
+  /* ---- Borders ---- */
+  --color-border: #423b46;
+  --color-border-subtle: #2f2834;
+
+  /* ---- Accent / interactive ---- */
+  --color-accent: #f7a83a;
+  --color-accent-hover: #ffc163;
+  --color-accent-muted: #3a2c1a;
+
+  /* ---- Status: pending ---- */
+  --color-status-pending-bg: #2a252f;
+  --color-status-pending-text: #9a8697;
+
+  /* ---- Status: ready ---- */
+  --color-status-ready-bg: #242e34;
+  --color-status-ready-text: #94bee4;
+
+  /* ---- Status: assigned ---- */
+  --color-status-assigned-bg: #332c1d;
+  --color-status-assigned-text: #c3a661;
+
+  /* ---- Status: running ---- */
+  --color-status-running-bg: #242e34;
+  --color-status-running-text: #94bee4;
+
+  /* ---- Status: succeeded ---- */
+  --color-status-succeeded-bg: #19231c;
+  --color-status-succeeded-text: #6eb283;
+
+  /* ---- Status: failed ---- */
+  --color-status-failed-bg: #342022;
+  --color-status-failed-text: #e9a9a8;
+
+  /* ---- Status: canceled ---- */
+  --color-status-canceled-bg: #2a252f;
+  --color-status-canceled-text: #9a8697;
+
+  /* ---- Severity ---- */
+  --color-success: #57a162;
+  --color-success-muted: #19231c;
+  --color-warning: #c3a661;
+  --color-warning-muted: #332c1d;
+  --color-error: #d5716c;
+  --color-error-muted: #342022;
+  --color-info: #79a8de;
+  --color-info-muted: #242e34;
+
+  /* ---- Shadows (heavier on dark backgrounds) ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 8px 16px rgba(0, 0, 0, 0.6), 0 4px 8px rgba(0, 0, 0, 0.45);
+}

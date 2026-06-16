@@ -2,6 +2,7 @@
 
 import { NavLink } from 'react-router-dom'
 import ConnectionStatusBadge from '@/components/ConnectionStatusBadge'
+import ThemeToggle from '@/components/layout/ThemeToggle'
 import styles from './Sidebar.module.css'
 
 interface NavItem {
@@ -22,8 +23,6 @@ const PHASE1_NAV: NavItem[] = [
 
 // Labels only — inert "coming soon" stubs for views not yet implemented.
 const DEFERRED_LABELS = ['Presets', 'Products', 'Admin']
-
-const DEFERRED_BOTTOM = ['Settings']
 
 function DeferredItem({ label }: { label: string }) {
   return (
@@ -76,13 +75,7 @@ export default function Sidebar() {
 
       <div className={styles.divider} />
 
-      <ul className={styles.navSection} role="list">
-        {DEFERRED_BOTTOM.map((label) => (
-          <li key={label}>
-            <DeferredItem label={label} />
-          </li>
-        ))}
-      </ul>
+      <ThemeToggle />
     </nav>
   )
 }

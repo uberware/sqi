@@ -4,7 +4,9 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { WebSocketProvider } from '@/ws/context'
+import { ThemeProvider } from '@/theme/context'
 import Sidebar from '@/components/layout/Sidebar'
+import { installLocalStorageMock, setMatchMedia, resetThemeDom } from '@/theme/test-utils'
 
 class MockWebSocket {
   static readonly OPEN = 1
@@ -18,17 +20,23 @@ class MockWebSocket {
 
 beforeEach(() => {
   vi.stubGlobal('WebSocket', MockWebSocket)
+  installLocalStorageMock()
+  resetThemeDom()
+  setMatchMedia(false)
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function renderSidebar(initialEntry = '/') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <WebSocketProvider url="ws://test">
-        <Sidebar />
+        <ThemeProvider>
+          <Sidebar />
+        </ThemeProvider>
       </WebSocketProvider>
     </MemoryRouter>,
   )
@@ -92,7 +100,7 @@ describe('Sidebar', () => {
   it('renders deferred Phase 2+ items as non-navigable disabled spans', () => {
     const { container } = renderSidebar()
     const disabledItems = container.querySelectorAll('[data-disabled="true"]')
-    expect(disabledItems.length).toBe(4)
+    expect(disabledItems.length).toBe(3)
     disabledItems.forEach((item) => {
       expect(item.tagName.toLowerCase()).toBe('span')
     })
@@ -101,15 +109,15 @@ describe('Sidebar', () => {
   it('shows "coming soon" badge for each deferred item', () => {
     renderSidebar()
     const badges = screen.getAllByText('coming soon')
-    expect(badges.length).toBe(4)
+    expect(badges.length).toBe(3)
   })
 
   it('deferred items include the expected labels', () => {
     renderSidebar()
     expect(screen.getByText('Presets')).toBeInTheDocument()
     expect(screen.getByText('Products')).toBeInTheDocument()
-    expect(screen.getByText('Settings')).toBeInTheDocument()
     expect(screen.getByText('Admin')).toBeInTheDocument()
+    expect(screen.queryByText('Settings')).not.toBeInTheDocument()
   })
 
   it('shows an active Storage nav link to /storage-locations', () => {
@@ -123,10 +131,8 @@ describe('Sidebar', () => {
     expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument()
   })
 
-  it('Settings is pinned below all other deferred items', () => {
-    const { container } = renderSidebar()
-    const disabledItems = Array.from(container.querySelectorAll('[data-disabled="true"]'))
-    const settingsIndex = disabledItems.findIndex((el) => el.textContent?.includes('Settings'))
-    expect(settingsIndex).toBe(disabledItems.length - 1)
+  it('renders the theme toggle switch in the footer', () => {
+    renderSidebar()
+    expect(screen.getByRole('switch', { name: /dark mode/i })).toBeInTheDocument()
   })
 })

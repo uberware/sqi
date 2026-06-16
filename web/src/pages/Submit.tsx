@@ -15,7 +15,7 @@ import styles from './Submit.module.css'
 
 const QUEUE_STORAGE_KEY = 'sqi:submit:last-queue-id'
 
-const EXAMPLES: Record<'shell' | 'parameter-space' | 'license-limit', string> = {
+const EXAMPLES: Record<'shell' | 'parameter-space' | 'usage-limit', string> = {
   shell: `specificationVersion: "jobtemplate-2023-09"
 name: hello-world
 steps:
@@ -43,7 +43,7 @@ steps:
           args:
             - "Rendering frame {{Param.Frame}}"
 `,
-  'license-limit': `specificationVersion: "jobtemplate-2023-09"
+  'usage-limit': `specificationVersion: "jobtemplate-2023-09"
 name: licensed-render
 steps:
   - name: render
@@ -112,7 +112,7 @@ export default function Submit() {
 
   const handleExampleChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const key = e.target.value
-    if (key === 'shell' || key === 'parameter-space' || key === 'license-limit') {
+    if (key === 'shell' || key === 'parameter-space' || key === 'usage-limit') {
       setTemplate(EXAMPLES[key])
     }
     setExampleKey('')
@@ -275,7 +275,7 @@ export default function Submit() {
                 <option value="">Load example…</option>
                 <option value="shell">Single-step shell command</option>
                 <option value="parameter-space">Multi-task parameter space</option>
-                <option value="license-limit">Step with a license limit</option>
+                <option value="usage-limit">Step with a usage limit</option>
               </select>
             </div>
 

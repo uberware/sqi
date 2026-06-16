@@ -5,6 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex" />
     <title>sqi</title>
+    <script>
+      // Apply the saved (or OS-preferred) theme before first paint to avoid a flash.
+      // Mirrors resolveInitialTheme() in src/theme/context.tsx — keep both in sync
+      // (same 'sqi:theme' key and fallback order: stored -> prefers-color-scheme -> light).
+      ;(function () {
+        try {
+          var t = localStorage.getItem('sqi:theme')
+          if (t !== 'light' && t !== 'dark') {
+            t =
+              window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          }
+          document.documentElement.dataset.theme = t
+        } catch (e) {
+          /* localStorage/matchMedia unavailable — fall back to default light theme */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

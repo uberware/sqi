@@ -5,7 +5,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
-import { useGetJob, useListTasks, queryKeys } from '@/api/queries'
+import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
 import { useRetryTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { isJobEvent, isTaskEvent } from '@/ws/events'
@@ -223,9 +223,10 @@ interface TaskRowProps {
   isRetrying: boolean
   retryError: string | undefined
   onRetry: (taskId: string) => void
+  workerNamesById: ReadonlyMap<string, string>
 }
 
-function TaskRow({ task, jobId, isRetrying, retryError, onRetry }: TaskRowProps) {
+function TaskRow({ task, jobId, isRetrying, retryError, onRetry, workerNamesById }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
   const canRetry = RETRYABLE.has(task.status) && !isRetrying
@@ -250,7 +251,7 @@ function TaskRow({ task, jobId, isRetrying, retryError, onRetry }: TaskRowProps)
               className={styles.workerLink}
               title={task.assigned_worker_id}
             >
-              {truncateId(task.assigned_worker_id)}
+              {workerNamesById.get(task.assigned_worker_id) ?? truncateId(task.assigned_worker_id)}
             </Link>
           ) : (
             <span className={styles.muted}>—</span>
@@ -316,9 +317,18 @@ interface StepSectionProps {
   retryingIds: ReadonlySet<string>
   retryErrors: ReadonlyMap<string, string>
   onRetry: (taskId: string) => void
+  workerNamesById: ReadonlyMap<string, string>
 }
 
-function StepSection({ step, tasks, jobId, retryingIds, retryErrors, onRetry }: StepSectionProps) {
+function StepSection({
+  step,
+  tasks,
+  jobId,
+  retryingIds,
+  retryErrors,
+  onRetry,
+  workerNamesById,
+}: StepSectionProps) {
   const counts = stepCountsFromTasks(tasks)
   const deps = step.depends_on ?? []
 
@@ -371,6 +381,7 @@ function StepSection({ step, tasks, jobId, retryingIds, retryErrors, onRetry }: 
                   isRetrying={retryingIds.has(task.id)}
                   retryError={retryErrors.get(task.id)}
                   onRetry={onRetry}
+                  workerNamesById={workerNamesById}
                 />
               ))}
             </tbody>
@@ -395,6 +406,16 @@ export default function JobDetail() {
     isLoading: tasksLoading,
     dataUpdatedAt: tasksUpdatedAt,
   } = useListTasks(jobId, { limit: 1000 })
+
+  // Worker hostnames for the task list (tasks only carry assigned_worker_id).
+  const { data: workersPage } = useListWorkers({ limit: 1000 })
+  const workerNamesById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const worker of workersPage?.items ?? []) {
+      map.set(worker.id, worker.hostname)
+    }
+    return map
+  }, [workersPage])
 
   const queryClient = useQueryClient()
   const retryTask = useRetryTask()
@@ -588,6 +609,7 @@ export default function JobDetail() {
             retryingIds={retryingIds}
             retryErrors={retryErrors}
             onRetry={(taskId) => void handleRetry(taskId)}
+            workerNamesById={workerNamesById}
           />
         ))}
         {sortedSteps.length === 0 && !tasksLoading && (

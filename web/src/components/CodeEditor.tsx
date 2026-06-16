@@ -5,9 +5,26 @@ import { EditorView, basicSetup } from 'codemirror'
 import { EditorState } from '@codemirror/state'
 import { json } from '@codemirror/lang-json'
 import { yaml } from '@codemirror/lang-yaml'
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { tags as t } from '@lezer/highlight'
 import styles from './CodeEditor.module.css'
 
 type Language = 'json' | 'yaml'
+
+/**
+ * Syntax highlighting whose colors are CSS custom properties, so the editor
+ * follows the active light/dark theme. The --cm-* variables are defined per
+ * theme in CodeEditor.module.css. basicSetup registers the default highlight
+ * style as a fallback, so this style takes precedence for the tags it defines.
+ */
+const themeHighlightStyle = HighlightStyle.define([
+  { tag: t.comment, color: 'var(--cm-comment)', fontStyle: 'italic' },
+  { tag: t.keyword, color: 'var(--cm-keyword)' },
+  { tag: t.string, color: 'var(--cm-string)' },
+  { tag: t.number, color: 'var(--cm-number)' },
+  { tag: [t.bool, t.null], color: 'var(--cm-atom)' },
+  { tag: t.propertyName, color: 'var(--cm-property)' },
+])
 
 /** Infer JSON vs YAML from the first non-whitespace character. */
 function detectLanguage(text: string): Language {
@@ -70,6 +87,7 @@ export default function CodeEditor({
         extensions: [
           basicSetup,
           langExtension,
+          syntaxHighlighting(themeHighlightStyle),
           // Thread aria-label through to the cm-content contenteditable element
           // so assistive technology can announce the field purpose.
           EditorView.contentAttributes.of(() => ({

@@ -8,7 +8,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobDetail from './JobDetail'
 import { WebSocketProvider } from '@/ws/context'
-import type { JobDetail as JobDetailType, ListResponse, Task } from '@/api/types'
+import type { JobDetail as JobDetailType, ListResponse, Task, Worker } from '@/api/types'
 
 // ── Mock WebSocket ────────────────────────────────────────────────────────────
 
@@ -136,6 +136,23 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 
 function makeTaskListResponse(tasks: Task[]): ListResponse<Task> {
   return { items: tasks, total: tasks.length, limit: 1000, offset: 0 }
+}
+
+function makeWorker(overrides: Partial<Worker> = {}): Worker {
+  return {
+    id: 'worker-abcdef12',
+    farm_id: 'farm-1',
+    hostname: 'render-node-42',
+    gpu: {},
+    status: 'online',
+    registered_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeWorkerListResponse(workers: Worker[]): ListResponse<Worker> {
+  return { items: workers, total: workers.length, limit: 1000, offset: 0 }
 }
 
 function okJson(body: unknown): Response {
@@ -390,10 +407,30 @@ describe('JobDetail', () => {
       expect(screen.getByText('camera')).toBeInTheDocument()
     })
 
-    it('renders worker link for assigned tasks', async () => {
+    it('renders worker name with link for assigned tasks', async () => {
       const task = makeTask({ assigned_worker_id: 'worker-abcdef12' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(
+        okJson(
+          makeWorkerListResponse([
+            makeWorker({ id: 'worker-abcdef12', hostname: 'render-node-42' }),
+          ]),
+        ),
+      )
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('render-node-42'))
+      const link = screen.getByText('render-node-42').closest('a')
+      expect(link).toHaveAttribute('href', '/workers/worker-abcdef12')
+    })
+
+    it('falls back to the truncated worker ID when the name is unknown', async () => {
+      const task = makeTask({ assigned_worker_id: 'worker-abcdef12' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
 
       render(<JobDetail />, { wrapper: Wrapper })
 
@@ -486,6 +523,7 @@ describe('JobDetail', () => {
       const task = makeTask({ status: 'failed', name: 'task.0' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
 
       // Slow retry — never resolves during this test
       let resolveRetry!: (v: Response) => void
@@ -516,6 +554,7 @@ describe('JobDetail', () => {
       const task = makeTask({ status: 'failed', name: 'task.0' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
       // Retry returns 409 Conflict
       fetchMock.mockResolvedValueOnce(problemJson(409, 'task cannot be retried'))
 

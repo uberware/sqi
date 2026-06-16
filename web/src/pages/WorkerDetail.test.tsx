@@ -134,13 +134,16 @@ describe('WorkerDetail', () => {
   // ── Metadata header ─────────────────────────────────────────────────
 
   describe('metadata header', () => {
-    it('renders the worker hostname as the page title', async () => {
+    it('renders the "Worker Details" title with the hostname beneath it', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ hostname: 'gpu-node-07' })))
 
       render(<WorkerDetail />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getByText('gPU-NODE-07'))
-      expect(screen.getByText('gPU-NODE-07')).toBeInTheDocument()
+      // Generic page title (PageHeader applies its inverted-case styling treatment).
+      await waitFor(() => screen.getByText('wORKER dETAILS'))
+      expect(screen.getByText('wORKER dETAILS')).toBeInTheDocument()
+      // Hostname renders verbatim in the sans-serif name area below the title.
+      expect(screen.getByRole('heading', { level: 2, name: 'gpu-node-07' })).toBeInTheDocument()
     })
 
     it('renders the worker ID in the metadata card', async () => {
@@ -158,12 +161,13 @@ describe('WorkerDetail', () => {
       expect(screen.getByText('abc12345-1111-2222-3333-444444444444')).toBeInTheDocument()
     })
 
-    it('renders the compute_location as the page subtitle when present', async () => {
+    it('renders the compute_location in the metadata card when present', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ compute_location: 'us-east-1' })))
 
       render(<WorkerDetail />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByText('us-east-1'))
+      expect(screen.getByText('Compute Location')).toBeInTheDocument()
       expect(screen.getByText('us-east-1')).toBeInTheDocument()
     })
 

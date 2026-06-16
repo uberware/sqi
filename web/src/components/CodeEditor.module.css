@@ -9,11 +9,58 @@
   /* Let CodeMirror fill the container height. */
   display: flex;
   flex-direction: column;
+
+  /*
+   * Editor color palette as CSS variables (light defaults). The dark overrides
+   * below adapt these to the dark theme; the --cm-* token colors also feed the
+   * CSS-variable HighlightStyle in CodeEditor.tsx, so both structure and syntax
+   * switch with the active theme.
+   */
+  --cm-bg: #c2ccd6;
+  --cm-text: #1f2328;
+  --cm-gutter-bg: #aebac6;
+  --cm-gutter-border: #9dafc0;
+  --cm-gutter-text: #5a6a7a;
+  --cm-active-gutter: #b4bfc9;
+  --cm-active-line: rgba(90, 106, 122, 0.15);
+  --cm-selection: #7fb0e6;
+
+  --cm-comment: #940;
+  --cm-keyword: #708;
+  --cm-string: #a11;
+  --cm-number: #164;
+  --cm-atom: #219;
+  --cm-property: #00c;
+}
+
+/*
+ * Dark theme: the editor sits on --color-surface, slightly offset (lighter) from
+ * the dark window background so it stands out; gutters recede to the window
+ * color, and the syntax tokens use lighter values that stay legible on the dark
+ * surface.
+ */
+:global(:root[data-theme='dark']) .editor {
+  --cm-bg: var(--color-surface);
+  --cm-text: var(--color-text-primary);
+  --cm-gutter-bg: var(--color-bg);
+  --cm-gutter-border: var(--color-border-subtle);
+  --cm-gutter-text: var(--color-text-muted);
+  --cm-active-gutter: var(--color-surface-raised);
+  --cm-active-line: rgba(246, 238, 223, 0.06);
+  --cm-selection: #3f5468;
+
+  --cm-comment: #8a7f72;
+  --cm-keyword: #cba6e3;
+  --cm-string: #a3cf9f;
+  --cm-number: #e0b072;
+  --cm-atom: #d39a6a;
+  --cm-property: #e6c98a;
 }
 
 .editor :global(.cm-editor) {
   height: 100%;
   outline: none;
+  background: var(--cm-bg);
 }
 
 .editor :global(.cm-editor.cm-focused) {
@@ -28,10 +75,6 @@
   line-height: var(--line-height-relaxed);
 }
 
-.editor :global(.cm-editor) {
-  background: #c2ccd6;
-}
-
 .editor :global(.cm-content) {
   /*
    * Transparent (not opaque) so the selection layer CodeMirror draws *behind*
@@ -39,31 +82,36 @@
    * visible color. An opaque background here hides the selection entirely.
    */
   padding: var(--space-3);
+  color: var(--cm-text);
+}
+
+.editor :global(.cm-cursor) {
+  border-left-color: var(--cm-text);
 }
 
 .editor :global(.cm-gutters) {
-  background: #aebac6;
-  border-right: 1px solid #9dafc0;
-  color: #5a6a7a;
+  background: var(--cm-gutter-bg);
+  border-right: 1px solid var(--cm-gutter-border);
+  color: var(--cm-gutter-text);
 }
 
 .editor :global(.cm-activeLineGutter) {
-  background: #b4bfc9;
+  background: var(--cm-active-gutter);
 }
 
 .editor :global(.cm-activeLine) {
   /* Semi-transparent so a selection on the active line stays visible behind it. */
-  background: rgba(90, 106, 122, 0.15);
+  background: var(--cm-active-line);
 }
 
 /*
  * Selection highlight. CodeMirror draws it in a layer behind the text
- * (see .cm-content above). Its default light-theme color is nearly invisible
- * against this editor's #c2ccd6 background, so force a clearly visible blue.
+ * (see .cm-content above). Its default theme color is nearly invisible against
+ * the editor background, so force a clearly visible one.
  * !important is used because CodeMirror injects high-specificity theme rules
  * for .cm-selectionBackground at runtime that a module selector can't reliably
  * out-rank.
  */
 .editor :global(.cm-selectionBackground) {
-  background: #7fb0e6 !important;
+  background: var(--cm-selection) !important;
 }

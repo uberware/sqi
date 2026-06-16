@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WebSocketProvider } from '@/ws/context'
+import { ThemeProvider } from '@/theme/context'
 import App from '@/App'
+import { installLocalStorageMock, setMatchMedia, resetThemeDom } from '@/theme/test-utils'
 
 class MockWebSocket {
   static readonly OPEN = 1
@@ -17,10 +21,14 @@ class MockWebSocket {
 
 beforeEach(() => {
   vi.stubGlobal('WebSocket', MockWebSocket)
+  installLocalStorageMock()
+  resetThemeDom()
+  setMatchMedia(false)
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -29,7 +37,9 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <WebSocketProvider url="ws://test">{children}</WebSocketProvider>
+        <WebSocketProvider url="ws://test">
+          <ThemeProvider>{children}</ThemeProvider>
+        </WebSocketProvider>
       </MemoryRouter>
     </QueryClientProvider>
   )

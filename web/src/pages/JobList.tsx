@@ -455,28 +455,6 @@ export default function JobList() {
         </div>
       </div>
 
-      {/* Bulk action bar */}
-      {selectedIds.size > 0 && (
-        <div className={styles.bulkBar}>
-          <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
-          <button
-            className={styles.bulkCancelBtn}
-            onClick={() => void handleBulkCancel()}
-            disabled={selectedCancelable.length === 0 || cancelJob.isPending}
-            type="button"
-          >
-            Cancel selected ({selectedCancelable.length})
-          </button>
-          <button
-            className={styles.filterPill}
-            onClick={() => setSelectedIds(new Set())}
-            type="button"
-          >
-            Clear
-          </button>
-        </div>
-      )}
-
       {isError && (
         <div className={styles.errorBanner} role="alert">
           Failed to load jobs: {error instanceof Error ? error.message : 'Unknown error'}
@@ -610,6 +588,28 @@ export default function JobList() {
           </tbody>
         </table>
       </div>
+
+      {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
+      {selectedIds.size > 0 && (
+        <div className={styles.bulkBar}>
+          <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
+          <button
+            className={styles.bulkCancelBtn}
+            onClick={() => void handleBulkCancel()}
+            disabled={selectedCancelable.length === 0 || cancelJob.isPending}
+            type="button"
+          >
+            Cancel selected ({selectedCancelable.length})
+          </button>
+          <button
+            className={styles.filterPill}
+            onClick={() => setSelectedIds(new Set())}
+            type="button"
+          >
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   )
 }

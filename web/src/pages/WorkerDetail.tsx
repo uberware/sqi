@@ -367,7 +367,7 @@ export default function WorkerDetail() {
   if (isLoading) {
     return (
       <div className={styles.page}>
-        <PageHeader title="Worker" subtitle="Loading…" />
+        <PageHeader title="Worker Details" subtitle="Loading…" />
         <div className={styles.loadingPlaceholder}>Loading worker details…</div>
       </div>
     )
@@ -376,7 +376,7 @@ export default function WorkerDetail() {
   if (isError || !worker) {
     return (
       <div className={styles.page}>
-        <PageHeader title="Worker" />
+        <PageHeader title="Worker Details" />
         <div className={styles.errorBanner} role="alert">
           Failed to load worker:{' '}
           {error instanceof Error ? error.message : 'Worker not found or unavailable.'}
@@ -388,8 +388,7 @@ export default function WorkerDetail() {
   return (
     <div className={styles.page}>
       <PageHeader
-        title={worker.hostname}
-        {...(worker.compute_location ? { subtitle: worker.compute_location } : {})}
+        title="Worker Details"
         action={
           <div className={styles.headerActions}>
             <StatusBadge status={worker.status} />
@@ -410,6 +409,10 @@ export default function WorkerDetail() {
           </div>
         }
       />
+
+      <div className={styles.workerNameArea}>
+        <h2 className={styles.workerName}>{worker.hostname}</h2>
+      </div>
 
       {(disableWorker.isError || enableWorker.isError) && (
         <div className={styles.errorBanner} role="alert">
@@ -433,6 +436,12 @@ export default function WorkerDetail() {
             <dt>Farm</dt>
             <dd className={styles.metaValue}>{worker.farm_id}</dd>
           </div>
+          {worker.compute_location && (
+            <div className={styles.metaField}>
+              <dt>Compute Location</dt>
+              <dd className={styles.metaValue}>{worker.compute_location}</dd>
+            </div>
+          )}
           {worker.queue_id && (
             <div className={styles.metaField}>
               <dt>Queue</dt>

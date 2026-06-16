@@ -1,0 +1,64 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.toggle {
+  display: flex;
+  align-items: center;
+  /* Center the switch horizontally within the sidebar footer. */
+  align-self: center;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+
+.toggle:hover .track {
+  background-color: var(--color-sidebar-active);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--color-sidebar-accent);
+  outline-offset: 2px;
+}
+
+.track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 56px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background-color: var(--color-sidebar-hover);
+  transition: background-color 0.15s ease;
+}
+
+.icon {
+  width: 14px;
+  height: 14px;
+  color: var(--color-sidebar-text-muted);
+  z-index: 1;
+}
+
+.track:not([data-checked='true']) .icon:first-child,
+.track[data-checked='true'] .icon:nth-child(2) {
+  color: var(--color-sidebar-text);
+}
+
+.thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-sidebar-accent);
+  transition: transform 0.15s ease;
+}
+
+.track[data-checked='true'] .thumb {
+  transform: translateX(28px);
+}

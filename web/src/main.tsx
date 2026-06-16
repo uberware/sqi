@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from '@/api/queryClient'
 import { WebSocketProvider } from '@/ws/context'
+import { ThemeProvider } from '@/theme/context'
 import './index.css'
 import App from './App.tsx'
 
@@ -15,7 +16,9 @@ createRoot(rootElement).render(
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
         <WebSocketProvider>
-          <App />
+          <ThemeProvider>
+            <App />
+          </ThemeProvider>
         </WebSocketProvider>
       </QueryClientProvider>
     </BrowserRouter>
