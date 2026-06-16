@@ -14,6 +14,9 @@ import {
   useRetryTask,
   useDisableWorker,
   useEnableWorker,
+  fetchCreateStorageLocation,
+  fetchUpdateStorageLocation,
+  fetchDeleteStorageLocation,
 } from './mutations'
 import { queryKeys } from './queries'
 
@@ -544,6 +547,34 @@ describe('usage pool mutations', () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
     await fetchDeleteUsagePool('pool-1')
     expect(calledUrl()).toContain('/api/v1/usage-pools/pool-1')
+    expect(calledInit().method).toBe('DELETE')
+  })
+})
+
+describe('storage location mutations', () => {
+  it('POSTs to /storage-locations with the roots map', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'loc-1' }))
+    await fetchCreateStorageLocation({
+      name: 'nas_shows',
+      type: 'filesystem',
+      roots: { default: '/mnt/nas/shows' },
+    })
+    expect(calledUrl()).toContain('/storage-locations')
+    expect(calledInit().method).toBe('POST')
+    expect(JSON.parse(calledInit().body as string).roots.default).toBe('/mnt/nas/shows')
+  })
+
+  it('PUTs to /storage-locations/{id}', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'loc-1' }))
+    await fetchUpdateStorageLocation('loc-1', { name: 'nas_shows', type: 's3' })
+    expect(calledUrl()).toContain('/storage-locations/loc-1')
+    expect(calledInit().method).toBe('PUT')
+  })
+
+  it('DELETEs /storage-locations/{id}', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await fetchDeleteStorageLocation('loc-1')
+    expect(calledUrl()).toContain('/storage-locations/loc-1')
     expect(calledInit().method).toBe('DELETE')
   })
 })

@@ -105,6 +105,17 @@
   --space-12: 3rem;
   --space-16: 4rem;
 
+  /* ---- Form controls ---- */
+  /*
+   * Shared height for single-line text inputs and selects. Equals the natural
+   * height of a base-font input with --space-2 vertical padding and a 1px
+   * border, so applying it does not shift existing inputs — it just forces
+   * native selects (which Safari sizes differently) to the same height.
+   */
+  --control-height: calc(
+    var(--line-height-normal) * var(--font-size-base) + 2 * var(--space-2) + 2px
+  );
+
   /* ---- Border radii ---- */
   --radius-sm: 4px;
   --radius-md: 6px;

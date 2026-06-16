@@ -36,6 +36,20 @@ import (
 // remainder of the path (which may be empty for a bare root reference).
 var locURIRE = regexp.MustCompile(`loc://([^/\s"']+)(/[^\s"']*)?`)
 
+// locationNameRE matches a syntactically valid storage-location name: one or
+// more characters, none of which may be whitespace, "/", or a quote. The
+// character class is the anchored form of the name group in locURIRE — keep the
+// two in sync. A name that fails this check can never be referenced via a
+// loc:// URI, so it must be rejected at creation time.
+var locationNameRE = regexp.MustCompile(`^[^/\s"']+$`)
+
+// ValidLocationName reports whether name is a referenceable storage-location
+// name — i.e. one that a loc:// URI can address. Names containing whitespace,
+// "/", or quotes are rejected because the loc:// parser cannot match them.
+func ValidLocationName(name string) bool {
+	return locationNameRE.MatchString(name)
+}
+
 // LocRef is a single named-location reference extracted from a template string.
 type LocRef struct {
 	// LocationName is the symbolic storage-location name (e.g. "nas_shows").
@@ -145,6 +159,36 @@ func ExtractStepLocRefs(st StepTemplate) []string {
 			seen[ref.LocationName] = struct{}{}
 		}
 	})
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	return names
+}
+
+// ExtractJobLevelLocRefs returns the deduplicated set of location names
+// referenced at job scope only — job-parameter defaults and job environments.
+// Step references are intentionally excluded; use [ExtractStepLocRefs] for those.
+func ExtractJobLevelLocRefs(tmpl *JobTemplate) []string {
+	seen := make(map[string]struct{})
+	add := func(s string) {
+		for _, ref := range ExtractLocRefs(s) {
+			seen[ref.LocationName] = struct{}{}
+		}
+	}
+
+	for _, p := range tmpl.ParameterDefinitions {
+		if p.Default != nil {
+			add(*p.Default)
+		}
+	}
+	for _, e := range tmpl.JobEnvironments {
+		addEnvRefs(e, add)
+	}
+
 	if len(seen) == 0 {
 		return nil
 	}

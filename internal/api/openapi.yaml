@@ -710,6 +710,10 @@ components:
       properties:
         name:
           type: string
+          pattern: '^[^/\s"'']+$'
+          description: >-
+            Must be referenceable via a loc:// URI: no whitespace, "/", or
+            quote characters.
         type:
           type: string
           enum: [filesystem, s3]
@@ -726,6 +730,10 @@ components:
       properties:
         name:
           type: string
+          pattern: '^[^/\s"'']+$'
+          description: >-
+            Must be referenceable via a loc:// URI: no whitespace, "/", or
+            quote characters.
         type:
           type: string
           enum: [filesystem, s3]

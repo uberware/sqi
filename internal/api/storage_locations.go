@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -78,6 +79,10 @@ func (h *storageLocationHandler) createStorageLocation(w http.ResponseWriter, r 
 
 	if req.Name == "" {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
+		return
+	}
+	if !openjd.ValidLocationName(req.Name) {
+		writeProblem(w, r, http.StatusBadRequest, `name must not contain whitespace, "/", or quotes (it must be referenceable via a loc:// URI)`)
 		return
 	}
 	if !isValidStorageLocationType(req.Type) {
@@ -164,6 +169,10 @@ func (h *storageLocationHandler) updateStorageLocation(w http.ResponseWriter, r 
 
 	if req.Name == "" {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
+		return
+	}
+	if !openjd.ValidLocationName(req.Name) {
+		writeProblem(w, r, http.StatusBadRequest, `name must not contain whitespace, "/", or quotes (it must be referenceable via a loc:// URI)`)
 		return
 	}
 	if !isValidStorageLocationType(req.Type) {

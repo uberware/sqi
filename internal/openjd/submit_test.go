@@ -338,6 +338,131 @@ steps:
 	}
 }
 
+// ── Job-level loc:// ref with no default root → validation error ──────────────
+
+func TestSubmitter_Submit_JobEnvMissingDefaultRoot(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+
+	// Location exists but has ONLY a compute-location-specific root, no default.
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID:    uuid.NewString(),
+		Name:  "job_assets",
+		Type:  store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{"windows_workers": `Z:\assets`},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+
+	sub := openjd.NewSubmitter(st)
+
+	// loc:// referenced in a JOB environment variable (job scope, no affinity).
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "JobEnvLocJob",
+  "jobEnvironments": [
+    { "name": "Setup", "variables": { "ASSETS": "loc://job_assets/lib" } }
+  ],
+  "steps": [
+    {
+      "name": "Step1",
+      "script": { "actions": { "onRun": { "command": "echo", "args": ["hi"] } } }
+    }
+  ]
+}`
+
+	_, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	})
+	if err == nil {
+		t.Fatal("expected error: job-level ref to a location with no default root")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+func TestSubmitter_Submit_JobParamDefaultMissingDefaultRoot(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID:    uuid.NewString(),
+		Name:  "job_assets",
+		Type:  store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{"windows_workers": `Z:\assets`},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+
+	sub := openjd.NewSubmitter(st)
+
+	// loc:// referenced in a JOB PARAMETER default (job scope, no affinity).
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "JobParamLocJob",
+  "parameterDefinitions": [
+    { "name": "AssetDir", "type": "STRING", "default": "loc://job_assets/lib" }
+  ],
+  "steps": [
+    {
+      "name": "Step1",
+      "script": { "actions": { "onRun": { "command": "echo", "args": ["hi"] } } }
+    }
+  ]
+}`
+
+	_, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	})
+	if err == nil {
+		t.Fatal("expected error: job-param-default ref to a location with no default root")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+func TestSubmitter_Submit_JobEnvWithDefaultRootOK(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID:    uuid.NewString(),
+		Name:  "job_assets",
+		Type:  store.StorageLocationTypeFilesystem,
+		Roots: map[string]string{"default": "/mnt/assets"},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+
+	sub := openjd.NewSubmitter(st)
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "JobEnvLocOKJob",
+  "jobEnvironments": [
+    { "name": "Setup", "variables": { "ASSETS": "loc://job_assets/lib" } }
+  ],
+  "steps": [
+    {
+      "name": "Step1",
+      "script": { "actions": { "onRun": { "command": "echo", "args": ["hi"] } } }
+    }
+  ]
+}`
+
+	if _, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	}); err != nil {
+		t.Fatalf("Submit with default root should succeed: %v", err)
+	}
+}
+
 // ── Job metadata fields are stored correctly ──────────────────────────────────
 
 func TestSubmitter_Submit_Metadata(t *testing.T) {

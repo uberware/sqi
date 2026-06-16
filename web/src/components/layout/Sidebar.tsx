@@ -17,10 +17,11 @@ const PHASE1_NAV: NavItem[] = [
   { label: 'Farms', to: '/farms' },
   { label: 'Queues', to: '/queues' },
   { label: 'Usage Pools', to: '/usage-pools' },
+  { label: 'Storage', to: '/storage-locations' },
 ]
 
 // Labels only — inert "coming soon" stubs for views not yet implemented.
-const DEFERRED_LABELS = ['Presets', 'Products', 'Storage', 'Admin']
+const DEFERRED_LABELS = ['Presets', 'Products', 'Admin']
 
 const DEFERRED_BOTTOM = ['Settings']
 

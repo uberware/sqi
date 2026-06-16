@@ -7,6 +7,7 @@ Long-form documentation for `sqi-server` operators and contributors. Phase 1 del
 - `api.md` — REST API guide with worked examples, links to the served OpenAPI spec
 - `python-client.md` — `sqi-client` Python library reference (construction, every method, examples)
 - `openjd-submission.md` — minimal, parameter-space, and multi-step OpenJD examples
+- `storage-locations.md` — named storage locations, `loc://` URIs, and path resolution (concept intro + reference)
 - `operations.md` — install, upgrade, backup/restore, log rotation, metrics scraping
 - `development.md` — local setup, test commands, code layout, how to add an endpoint
 - `web-development.md` — web UI dev-server workflow, proxy, adding a route/query hook

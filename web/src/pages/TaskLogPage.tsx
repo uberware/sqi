@@ -3,7 +3,7 @@
 import { Link, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import LogViewer from '@/components/LogViewer'
-import { useGetTask } from '@/api/queries'
+import { useGetTask, useGetJob } from '@/api/queries'
 import styles from './TaskLogPage.module.css'
 
 export default function TaskLogPage() {
@@ -12,48 +12,45 @@ export default function TaskLogPage() {
   const resolvedTaskId = taskId ?? ''
 
   const { data: task, isLoading, isError } = useGetTask(resolvedTaskId)
+  const { data: job } = useGetJob(resolvedJobId)
 
-  const backLink = (
-    <Link to={`/jobs/${resolvedJobId}`} className={styles.backLink}>
-      ← Back to job
-    </Link>
+  // Header action area (far right): the back link, with the job name beneath it
+  // in a bold, larger sans-serif, both right-justified.
+  const headerActions = (
+    <div className={styles.headerActions}>
+      <Link to={`/jobs/${resolvedJobId}`} className={styles.backLink}>
+        ← Back to job
+      </Link>
+      {job?.name !== undefined && <span className={styles.jobName}>{job.name}</span>}
+    </div>
   )
 
-  if (isLoading) {
-    return (
-      <div className={styles.page}>
-        <PageHeader title="Task Logs" subtitle={resolvedTaskId} action={backLink} />
-        <div className={styles.viewerWrap}>
-          <LogViewer taskId={resolvedTaskId} taskStatus="pending" />
-        </div>
-      </div>
-    )
-  }
+  // Subtitle (sans-serif, beneath the display-font "Logs" header): the short
+  // task id, then the task status for context once it is known.
+  const taskIdLabel = resolvedTaskId ? `Task ${resolvedTaskId.slice(0, 8)}` : undefined
+  const subtitleParts = [taskIdLabel, task?.status].filter((part): part is string => Boolean(part))
+  const subtitle = subtitleParts.length > 0 ? subtitleParts.join(' · ') : undefined
 
-  if (isError || task === undefined) {
-    return (
-      <div className={styles.page}>
-        <PageHeader title="Task Logs" subtitle={resolvedTaskId} action={backLink} />
-        <p className={styles.error} role="alert">
-          Could not load task details. Showing logs if available.
-        </p>
-        <div className={styles.viewerWrap}>
-          {/* Err toward live so WS pushes still arrive if the task is running. */}
-          <LogViewer taskId={resolvedTaskId} taskStatus="running" />
-        </div>
-      </div>
-    )
-  }
+  // LogViewer status: pending while the task loads, running on error (so live
+  // WS pushes still arrive), otherwise the task's actual status.
+  const viewerStatus = task?.status ?? (isLoading ? 'pending' : 'running')
+  const showError = !isLoading && (isError || task === undefined)
 
   return (
     <div className={styles.page}>
       <PageHeader
-        title={`Logs: ${task.name}`}
-        subtitle={`Task ${resolvedTaskId.slice(0, 8)} · ${task.status}`}
-        action={backLink}
+        title="Logs"
+        action={headerActions}
+        actionAlign="end"
+        {...(subtitle ? { subtitle } : {})}
       />
+      {showError && (
+        <p className={styles.error} role="alert">
+          Could not load task details. Showing logs if available.
+        </p>
+      )}
       <div className={styles.viewerWrap}>
-        <LogViewer taskId={resolvedTaskId} taskStatus={task.status} />
+        <LogViewer taskId={resolvedTaskId} taskStatus={viewerStatus} />
       </div>
     </div>
   )

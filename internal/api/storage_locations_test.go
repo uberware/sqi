@@ -92,6 +92,48 @@ func TestCreateStorageLocation_InvalidType(t *testing.T) {
 	}
 }
 
+func TestCreateStorageLocation_InvalidName(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+
+	req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
+		"name": "nas shows", // space — unreferenceable via loc://
+		"type": "filesystem",
+	}))
+	rr := httptest.NewRecorder()
+	newStorageLocationRouter(st).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for name with a space, got %d", rr.Code)
+	}
+	// The bad name must not have been persisted.
+	locs, err := st.ListStorageLocations(t.Context())
+	if err != nil {
+		t.Fatalf("ListStorageLocations: %v", err)
+	}
+	if len(locs) != 0 {
+		t.Errorf("expected no locations persisted, got %d", len(locs))
+	}
+}
+
+func TestUpdateStorageLocation_InvalidName(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+
+	existing := seedStorageLoc(t, st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/storage-locations/"+existing.ID, jsonBody(t, map[string]any{
+		"name": "nas/shows", // slash — unreferenceable via loc://
+		"type": "filesystem",
+	}))
+	rr := httptest.NewRecorder()
+	newStorageLocationRouter(st).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for name with a slash, got %d", rr.Code)
+	}
+}
+
 func TestCreateStorageLocation_Conflict(t *testing.T) {
 	st := fake.New()
 	defer st.Close()

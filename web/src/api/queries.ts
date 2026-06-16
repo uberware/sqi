@@ -6,6 +6,7 @@ import type {
   Farm,
   Job,
   JobDetail,
+  StorageLocation,
   UsagePool,
   ListResponse,
   Queue,
@@ -93,6 +94,10 @@ export const queryKeys = {
   usagePools: {
     all: ['usage-pools'] as const,
     detail: (id: string) => ['usage-pools', 'detail', id] as const,
+  },
+  storageLocations: {
+    all: ['storage-locations'] as const,
+    detail: (id: string) => ['storage-locations', 'detail', id] as const,
   },
 } as const
 
@@ -201,6 +206,16 @@ export function fetchListUsagePools(): Promise<UsagePool[]> {
 /** Fetch one usage pool from `GET /usage-pools/{id}`. */
 export function fetchGetUsagePool(id: string): Promise<UsagePool> {
   return apiFetch(`/usage-pools/${encodeURIComponent(id)}`)
+}
+
+/** Fetch all storage locations from `GET /storage-locations` (bare array, no pagination). */
+export function fetchListStorageLocations(): Promise<StorageLocation[]> {
+  return apiFetch('/storage-locations')
+}
+
+/** Fetch one storage location from `GET /storage-locations/{id}`. */
+export function fetchGetStorageLocation(id: string): Promise<StorageLocation> {
+  return apiFetch(`/storage-locations/${encodeURIComponent(id)}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -329,6 +344,23 @@ export function useGetUsagePool(id: string) {
   return useQuery({
     queryKey: queryKeys.usagePools.detail(id),
     queryFn: () => fetchGetUsagePool(id),
+    enabled: id !== '',
+  })
+}
+
+/** List all storage locations (name-sorted by the server, no pagination). */
+export function useListStorageLocations() {
+  return useQuery({
+    queryKey: queryKeys.storageLocations.all,
+    queryFn: fetchListStorageLocations,
+  })
+}
+
+/** Load a single storage location by id. */
+export function useGetStorageLocation(id: string) {
+  return useQuery({
+    queryKey: queryKeys.storageLocations.detail(id),
+    queryFn: () => fetchGetStorageLocation(id),
     enabled: id !== '',
   })
 }

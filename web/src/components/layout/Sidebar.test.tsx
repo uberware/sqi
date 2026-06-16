@@ -43,6 +43,7 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Farms' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Queues' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Usage Pools' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Storage' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Submit' })).toBeInTheDocument()
   })
 
@@ -67,6 +68,9 @@ describe('Sidebar', () => {
       (screen.getByRole('link', { name: 'Usage Pools' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/usage-pools')
     expect(
+      (screen.getByRole('link', { name: 'Storage' }) as HTMLAnchorElement).getAttribute('href'),
+    ).toBe('/storage-locations')
+    expect(
       (screen.getByRole('link', { name: 'Submit' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/submit')
   })
@@ -88,7 +92,7 @@ describe('Sidebar', () => {
   it('renders deferred Phase 2+ items as non-navigable disabled spans', () => {
     const { container } = renderSidebar()
     const disabledItems = container.querySelectorAll('[data-disabled="true"]')
-    expect(disabledItems.length).toBe(5)
+    expect(disabledItems.length).toBe(4)
     disabledItems.forEach((item) => {
       expect(item.tagName.toLowerCase()).toBe('span')
     })
@@ -97,16 +101,21 @@ describe('Sidebar', () => {
   it('shows "coming soon" badge for each deferred item', () => {
     renderSidebar()
     const badges = screen.getAllByText('coming soon')
-    expect(badges.length).toBe(5)
+    expect(badges.length).toBe(4)
   })
 
   it('deferred items include the expected labels', () => {
     renderSidebar()
     expect(screen.getByText('Presets')).toBeInTheDocument()
     expect(screen.getByText('Products')).toBeInTheDocument()
-    expect(screen.getByText('Storage')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
     expect(screen.getByText('Admin')).toBeInTheDocument()
+  })
+
+  it('shows an active Storage nav link to /storage-locations', () => {
+    renderSidebar()
+    const link = screen.getByRole('link', { name: 'Storage' })
+    expect(link.getAttribute('href')).toBe('/storage-locations')
   })
 
   it('has accessible navigation landmark', () => {

@@ -101,6 +101,18 @@ textarea {
   line-height: inherit;
 }
 
+/*
+ * Consistent control height across browsers. Safari gives native selects a
+ * different intrinsic height than text inputs even with identical padding;
+ * pinning both to --control-height (with the global border-box model) keeps
+ * them aligned. Checkboxes and radios keep their native sizing, and the
+ * multi-line textarea is intentionally excluded so it can still grow.
+ */
+input:not([type='checkbox']):not([type='radio']),
+select {
+  height: var(--control-height);
+}
+
 button {
   cursor: pointer;
   background: none;

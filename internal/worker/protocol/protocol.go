@@ -275,9 +275,8 @@ type AssignMsg struct {
 	// PathMap is the ordered list of source→destination root path translation
 	// rules the worker writes to the OpenJD path-mapping JSON file in the
 	// session working directory.  Generated from the server's named storage
-	// location configuration for the worker's compute location.
-	// Empty in Phase 1; populated once named storage location CRUD and
-	// resolved-mode path translation are wired in.
+	// location configuration for the worker's compute location.  May be empty
+	// when a task references no named storage locations.
 	PathMap []PathMapRule `json:"path_map,omitempty"`
 }
 

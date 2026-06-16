@@ -13,6 +13,14 @@ vi.mock('@/components/LogViewer', () => ({
   ),
 }))
 
+function mockJob(data: unknown) {
+  vi.spyOn(queries, 'useGetJob').mockReturnValue({
+    data,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof queries.useGetJob>)
+}
+
 function renderAt(path = '/jobs/job1/tasks/task1/logs') {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -30,6 +38,7 @@ describe('TaskLogPage', () => {
       isLoading: true,
       isError: false,
     } as unknown as ReturnType<typeof queries.useGetTask>)
+    mockJob(undefined)
     renderAt()
     expect(screen.getByTestId('log-viewer')).toHaveTextContent('task1:pending')
   })
@@ -40,19 +49,31 @@ describe('TaskLogPage', () => {
       isLoading: false,
       isError: true,
     } as unknown as ReturnType<typeof queries.useGetTask>)
+    mockJob(undefined)
     renderAt()
     expect(screen.getByRole('alert')).toBeInTheDocument()
     expect(screen.getByTestId('log-viewer')).toHaveTextContent('task1:running')
   })
 
-  it('renders the task name and status once loaded', () => {
+  it('shows "Logs" in the header with the job name (not the task name) beneath it', () => {
     vi.spyOn(queries, 'useGetTask').mockReturnValue({
       data: { name: 'Render', status: 'succeeded' },
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof queries.useGetTask>)
+    mockJob({ name: 'frame-render' })
     renderAt()
-    expect(screen.getByText(/lOGS: rENDER/)).toBeInTheDocument()
+
+    // Header is just "Logs" (display font applies the invert-case styling),
+    // and no longer embeds the name.
+    const heading = screen.getByRole('heading')
+    expect(heading).toHaveTextContent(/^lOGS$/)
+    expect(heading.textContent ?? '').not.toContain('rENDER')
+
+    // The subtitle beneath the header shows the short task id and status.
+    expect(screen.getByText('Task task1 · succeeded')).toBeInTheDocument()
+    // The job name is shown separately (far right, with the back link).
+    expect(screen.getByText('frame-render')).toBeInTheDocument()
     expect(screen.getByTestId('log-viewer')).toHaveTextContent('task1:succeeded')
   })
 })

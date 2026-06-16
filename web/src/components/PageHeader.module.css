@@ -35,3 +35,8 @@
 .action {
   flex-shrink: 0;
 }
+
+/* Bottom-align the action slot with the subtitle instead of the title. */
+.actionEnd {
+  align-self: flex-end;
+}

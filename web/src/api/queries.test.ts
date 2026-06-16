@@ -14,6 +14,8 @@ import {
   fetchListQueues,
   fetchListUsagePools,
   fetchGetUsagePool,
+  fetchListStorageLocations,
+  fetchGetStorageLocation,
 } from './queries'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -283,5 +285,52 @@ describe('fetchGetUsagePool', () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'pool-1' }))
     await fetchGetUsagePool('pool-1')
     expect(calledUrl()).toBe('/api/v1/usage-pools/pool-1')
+  })
+})
+
+// ── fetchListStorageLocations ─────────────────────────────────────────────────
+
+describe('fetchListStorageLocations', () => {
+  it('GETs /storage-locations and returns the bare array', async () => {
+    const body = [
+      {
+        id: 'loc-1',
+        name: 'nas_shows',
+        type: 'filesystem',
+        roots: { default: '/mnt/nas/shows' },
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const result = await fetchListStorageLocations()
+    expect(result).toHaveLength(1)
+    expect(result[0]?.name).toBe('nas_shows')
+  })
+})
+
+// ── fetchGetStorageLocation ───────────────────────────────────────────────────
+
+describe('fetchGetStorageLocation', () => {
+  it('calls /api/v1/storage-locations/:id', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'loc-1' }))
+    await fetchGetStorageLocation('loc-1')
+    expect(calledUrl()).toBe('/api/v1/storage-locations/loc-1')
+  })
+})
+
+describe('queryKeys.storageLocations', () => {
+  it('exposes stable all + detail keys', () => {
+    expect(queryKeys.storageLocations.all).toEqual(['storage-locations'])
+    expect(queryKeys.storageLocations.detail('loc-1')).toEqual([
+      'storage-locations',
+      'detail',
+      'loc-1',
+    ])
   })
 })

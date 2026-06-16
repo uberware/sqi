@@ -6,6 +6,8 @@ import { queryKeys } from './queries'
 import type {
   Farm,
   Job,
+  StorageLocation,
+  StorageLocationType,
   UsagePool,
   Queue,
   RetryResponse,
@@ -302,6 +304,69 @@ export function useDeleteUsagePool() {
     mutationFn: (id: string) => fetchDeleteUsagePool(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.usagePools.all })
+    },
+  })
+}
+
+// ── Storage location input ────────────────────────────────────────────────────
+
+export interface StorageLocationInput {
+  name: string
+  type: StorageLocationType
+  description?: string
+  roots?: Record<string, string>
+}
+
+export function fetchCreateStorageLocation(input: StorageLocationInput): Promise<StorageLocation> {
+  return apiFetch<StorageLocation>('/storage-locations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateStorageLocation(
+  id: string,
+  input: StorageLocationInput,
+): Promise<StorageLocation> {
+  return apiFetch<StorageLocation>(`/storage-locations/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteStorageLocation(id: string): Promise<void> {
+  await apiFetch(`/storage-locations/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function useCreateStorageLocation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateStorageLocation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.storageLocations.all })
+    },
+  })
+}
+
+export function useUpdateStorageLocation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: StorageLocationInput }) =>
+      fetchUpdateStorageLocation(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.storageLocations.all })
+    },
+  })
+}
+
+export function useDeleteStorageLocation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteStorageLocation(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.storageLocations.all })
     },
   })
 }

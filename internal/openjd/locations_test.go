@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
@@ -647,6 +648,50 @@ func TestCancelDependents_Idempotent(t *testing.T) {
 	}
 }
 
+// ── ExtractJobLevelLocRefs ────────────────────────────────────────────────────
+
+func TestExtractJobLevelLocRefs_EnvAndParam(t *testing.T) {
+	def := "loc://job_assets/setup.json"
+	tmpl := &openjd.JobTemplate{
+		ParameterDefinitions: []openjd.JobParameter{
+			{Name: "Config", Default: &def},
+		},
+		JobEnvironments: []openjd.Environment{
+			{
+				Name:      "Setup",
+				Variables: map[string]string{"ASSETS": "loc://job_assets/lib"},
+			},
+		},
+		Steps: []openjd.StepTemplate{
+			{
+				Name: "Step1",
+				Script: &openjd.StepScript{
+					Actions: openjd.StepActions{
+						OnRun: openjd.Action{
+							Command: "cp",
+							Args:    []string{"loc://step_only/in", "out"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := openjd.ExtractJobLevelLocRefs(tmpl)
+
+	if len(got) != 1 {
+		t.Errorf("expected 1 deduplicated ref, got %v", got)
+	}
+
+	// job_assets is referenced at job scope; step_only must NOT appear.
+	if !slices.Contains(got, "job_assets") {
+		t.Errorf("expected job_assets in %v", got)
+	}
+	if slices.Contains(got, "step_only") {
+		t.Errorf("step_only is a step ref and must be excluded; got %v", got)
+	}
+}
+
 func TestCancelDependents_LeavesHealthyAndNonPendingSteps(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
@@ -687,5 +732,34 @@ func TestCancelDependents_LeavesHealthyAndNonPendingSteps(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("canceled = %d, want 0", n)
+	}
+}
+
+// ── ValidLocationName ─────────────────────────────────────────────────────────
+
+func TestValidLocationName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"simple", "nas_shows", true},
+		{"with dash and dot", "cloud-aws.us_east", true},
+		{"single char", "a", true},
+		{"empty", "", false},
+		{"space", "nas shows", false},
+		{"leading space", " nas", false},
+		{"tab", "nas\tshows", false},
+		{"newline", "nas\nshows", false},
+		{"slash", "nas/shows", false},
+		{"double quote", `nas"shows`, false},
+		{"single quote", "nas'shows", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openjd.ValidLocationName(tc.in); got != tc.want {
+				t.Errorf("ValidLocationName(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

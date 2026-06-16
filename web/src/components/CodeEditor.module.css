@@ -33,7 +33,11 @@
 }
 
 .editor :global(.cm-content) {
-  background: #c2ccd6;
+  /*
+   * Transparent (not opaque) so the selection layer CodeMirror draws *behind*
+   * the text shows through; the .cm-editor background above provides the
+   * visible color. An opaque background here hides the selection entirely.
+   */
   padding: var(--space-3);
 }
 
@@ -43,7 +47,23 @@
   color: #5a6a7a;
 }
 
-.editor :global(.cm-activeLineGutter),
-.editor :global(.cm-activeLine) {
+.editor :global(.cm-activeLineGutter) {
   background: #b4bfc9;
+}
+
+.editor :global(.cm-activeLine) {
+  /* Semi-transparent so a selection on the active line stays visible behind it. */
+  background: rgba(90, 106, 122, 0.15);
+}
+
+/*
+ * Selection highlight. CodeMirror draws it in a layer behind the text
+ * (see .cm-content above). Its default light-theme color is nearly invisible
+ * against this editor's #c2ccd6 background, so force a clearly visible blue.
+ * !important is used because CodeMirror injects high-specificity theme rules
+ * for .cm-selectionBackground at runtime that a module selector can't reliably
+ * out-rank.
+ */
+.editor :global(.cm-selectionBackground) {
+  background: #7fb0e6 !important;
 }

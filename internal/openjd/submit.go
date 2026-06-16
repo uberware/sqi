@@ -248,6 +248,7 @@ func (s *Submitter) validateStorageLocations(ctx context.Context, tmpl *JobTempl
 
 	var errs []string
 	errs = append(errs, s.validateStepLocRefs(tmpl.Steps, cache)...)
+	errs = append(errs, s.validateJobLocRefs(tmpl, cache)...)
 	errs = append(errs, unreportedCacheErrors(cache, errs)...)
 
 	if len(errs) == 0 {
@@ -283,6 +284,26 @@ func (*Submitter) validateStepLocRefs(steps []StepTemplate, cache locRootCache) 
 		_, computeLoc := toStoreHostRequirements(st.HostRequirements)
 		for _, name := range stepNames {
 			errs = append(errs, checkLocRootCoverage(i, name, computeLoc, cache)...)
+		}
+	}
+	return errs
+}
+
+// validateJobLocRefs checks root coverage for locations referenced at job scope
+// (job-parameter defaults and job environments). Because a job environment may
+// run on a worker in any compute location, a job-scope reference requires a
+// "default" root — the universal resolution fallback. This reuses the
+// no-affinity coverage rule (missingRootMsg with an empty compute location).
+func (*Submitter) validateJobLocRefs(tmpl *JobTemplate, cache locRootCache) []string {
+	var errs []string
+	for _, name := range ExtractJobLevelLocRefs(tmpl) {
+		entry := cache[name]
+		if entry.err != nil {
+			// Existence errors are reported by unreportedCacheErrors.
+			continue
+		}
+		if msg := missingRootMsg(name, "", entry.roots); msg != "" {
+			errs = append(errs, "/job: "+msg)
 		}
 	}
 	return errs

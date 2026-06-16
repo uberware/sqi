@@ -13,6 +13,8 @@ import QueueList from '@/pages/QueueList'
 import QueueForm from '@/pages/QueueForm'
 import UsagePoolList from '@/pages/UsagePoolList'
 import UsagePoolForm from '@/pages/UsagePoolForm'
+import StorageLocationList from '@/pages/StorageLocationList'
+import StorageLocationForm from '@/pages/StorageLocationForm'
 import Submit from '@/pages/Submit'
 import NotFound from '@/pages/NotFound'
 
@@ -34,6 +36,9 @@ export default function AppRoutes() {
       <Route path="/usage-pools" element={<UsagePoolList />} />
       <Route path="/usage-pools/new" element={<UsagePoolForm mode="create" />} />
       <Route path="/usage-pools/:id/edit" element={<UsagePoolForm mode="edit" />} />
+      <Route path="/storage-locations" element={<StorageLocationList />} />
+      <Route path="/storage-locations/new" element={<StorageLocationForm mode="create" />} />
+      <Route path="/storage-locations/:id/edit" element={<StorageLocationForm mode="edit" />} />
       <Route path="/submit" element={<Submit />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
