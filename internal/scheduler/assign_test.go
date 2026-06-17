@@ -280,6 +280,121 @@ func TestBuildAssignPayload_LocURIResolved(t *testing.T) {
 	}
 }
 
+// ── JobParameters carried from persisted job.Parameters ───────────────────────
+
+// templateWithJobParam is a JSON template that declares one job-level
+// parameter (Frame) with a default of "1".
+const templateWithJobParam = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "JobParamJob",
+  "parameterDefinitions": [
+    { "name": "Frame", "type": "INT", "default": "1" }
+  ],
+  "steps": [
+    {
+      "name": "Render",
+      "script": {
+        "actions": {
+          "onRun": { "command": "render" }
+        }
+      }
+    }
+  ]
+}`
+
+// TestBuildAssignPayload_JobParametersFromPersistedValues verifies that when
+// job.Parameters is non-empty (persisted at submit), the assignment carries
+// those values — not just the template defaults.
+func TestBuildAssignPayload_JobParametersFromPersistedValues(t *testing.T) {
+	st := fake.New()
+	task, worker, job, step := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
+
+	// Simulate a job submitted with a non-default value for Frame.
+	job.Parameters = map[string]string{"Frame": "42"}
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, "attempt-1", st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if msg.JobParameters == nil {
+		t.Fatal("JobParameters must not be nil")
+	}
+	if got := msg.JobParameters["Frame"]; got != "42" {
+		t.Errorf("JobParameters[Frame] = %q, want 42 (from persisted job.Parameters)", got)
+	}
+}
+
+// TestBuildAssignPayload_JobParametersFallbackToDefaults verifies that when
+// job.Parameters is empty (pre-migration jobs), the assignment falls back to
+// extracting defaults from the template.
+func TestBuildAssignPayload_JobParametersFallbackToDefaults(t *testing.T) {
+	st := fake.New()
+	task, worker, job, step := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
+
+	// job.Parameters is nil — simulate a pre-migration job.
+	job.Parameters = nil
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, "attempt-1", st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if msg.JobParameters == nil {
+		t.Fatal("JobParameters must not be nil (fallback to defaults)")
+	}
+	if got := msg.JobParameters["Frame"]; got != "1" {
+		t.Errorf("JobParameters[Frame] = %q, want 1 (template default fallback)", got)
+	}
+}
+
+// TestBuildAssignPayload_JobParameterLocURIResolved verifies that a loc:// URI
+// in a persisted job-parameter value is concretized server-side (so the worker
+// never substitutes a raw loc:// URI into a {{Param.*}} expansion), and that the
+// resolution does NOT mutate the caller's job.Parameters map.
+func TestBuildAssignPayload_JobParameterLocURIResolved(t *testing.T) {
+	st := fake.New()
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID:    uuid.NewString(),
+		Name:  "nas_shows",
+		Type:  "filesystem",
+		Roots: map[string]string{"default": "/mnt/nas/shows"},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+
+	task, worker, job, step := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
+	const rawURI = "loc://nas_shows/scenes/hero.hip"
+	job.Parameters = map[string]string{"Frame": rawURI}
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, "attempt-1", st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := msg.JobParameters["Frame"]; got == rawURI {
+		t.Errorf("JobParameters[Frame] = %q, want it resolved to a concrete path", got)
+	}
+	// The original job.Parameters map must be untouched (buildJobParameters clones).
+	if got := job.Parameters["Frame"]; got != rawURI {
+		t.Errorf("job.Parameters[Frame] was mutated to %q; want original %q", got, rawURI)
+	}
+}
+
 // ── Unregistered loc:// URI returns an error ──────────────────────────────────
 
 func TestBuildAssignPayload_UnregisteredLocURI(t *testing.T) {
@@ -306,5 +421,117 @@ func TestBuildAssignPayload_UnregisteredLocURI(t *testing.T) {
 	_, err := buildAssignPayload(t.Context(), task, worker, job, step, uuid.NewString(), st)
 	if err == nil {
 		t.Fatal("expected error for unregistered loc:// URI, got nil")
+	}
+}
+
+// ── buildPathMap ──────────────────────────────────────────────────────────────
+
+// TestBuildPathMap verifies that buildPathMap populates SourcePath (the shared
+// root), DestinationPath (the worker-local root), and SourcePathFormat (the
+// WINDOWS-vs-POSIX heuristic) for representative storage locations, and that it
+// omits locations needing no translation.
+func TestBuildPathMap(t *testing.T) {
+	tests := []struct {
+		name      string
+		locs      []store.StorageLocation
+		compute   string
+		wantRules []protocol.PathMapRule
+	}{
+		{
+			name: "posix source root",
+			locs: []store.StorageLocation{
+				{Name: "proj", Roots: map[string]string{
+					"default":   "/mnt/shared/proj",
+					"cloud_aws": "/local/proj",
+				}},
+			},
+			compute: "cloud_aws",
+			wantRules: []protocol.PathMapRule{
+				{SourcePathFormat: "POSIX", SourcePath: "/mnt/shared/proj", DestinationPath: "/local/proj"},
+			},
+		},
+		{
+			name: "windows drive-letter source root",
+			locs: []store.StorageLocation{
+				{Name: "proj", Roots: map[string]string{
+					"default":   `Z:\shared\proj`,
+					"cloud_aws": "/local/proj",
+				}},
+			},
+			compute: "cloud_aws",
+			wantRules: []protocol.PathMapRule{
+				{SourcePathFormat: "WINDOWS", SourcePath: `Z:\shared\proj`, DestinationPath: "/local/proj"},
+			},
+		},
+		{
+			name: "windows backslash UNC source root",
+			locs: []store.StorageLocation{
+				{Name: "proj", Roots: map[string]string{
+					"default":   `\\nas\share\proj`,
+					"cloud_aws": "/local/proj",
+				}},
+			},
+			compute: "cloud_aws",
+			wantRules: []protocol.PathMapRule{
+				{SourcePathFormat: "WINDOWS", SourcePath: `\\nas\share\proj`, DestinationPath: "/local/proj"},
+			},
+		},
+		{
+			name: "no compute-specific root — omitted",
+			locs: []store.StorageLocation{
+				{Name: "proj", Roots: map[string]string{"default": "/mnt/shared/proj"}},
+			},
+			compute:   "cloud_aws",
+			wantRules: nil,
+		},
+		{
+			name: "compute root equals default — omitted",
+			locs: []store.StorageLocation{
+				{Name: "proj", Roots: map[string]string{
+					"default":   "/mnt/shared/proj",
+					"cloud_aws": "/mnt/shared/proj",
+				}},
+			},
+			compute:   "cloud_aws",
+			wantRules: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildPathMap(tc.locs, tc.compute)
+			if len(got) != len(tc.wantRules) {
+				t.Fatalf("buildPathMap returned %d rules; want %d (%+v)", len(got), len(tc.wantRules), got)
+			}
+			for i, w := range tc.wantRules {
+				if got[i] != w {
+					t.Errorf("rule[%d] = %+v; want %+v", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+// TestDetectPathFormat verifies the WINDOWS-vs-POSIX heuristic directly.
+func TestDetectPathFormat(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"/mnt/shared/proj", "POSIX"},
+		{"s3://bucket/assets", "POSIX"},
+		{`C:\proj`, "WINDOWS"},
+		{"C:/proj", "WINDOWS"},
+		{`\\nas\share`, "WINDOWS"},
+		{`relative\path`, "WINDOWS"},
+		{"d:/lower/drive", "WINDOWS"},
+		{"", "POSIX"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := detectPathFormat(tc.in); got != tc.want {
+				t.Errorf("detectPathFormat(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

@@ -28,6 +28,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -94,7 +96,7 @@ func buildAssignPayload(
 		WorkerID:      worker.ID,
 		AssignedAt:    time.Now().UTC(),
 		Parameters:    task.Parameters,
-		JobParameters: buildJobParameters(tmpl),
+		JobParameters: buildJobParameters(tmpl, job),
 	}
 
 	// ── OnRun action and step-level embedded files ─────────────────────────
@@ -123,9 +125,10 @@ func buildAssignPayload(
 
 	// ── PathMap (openjd mode) ──────────────────────────────────────────────
 	// Build source→destination path-mapping rules for the worker's compute
-	// location.  Workers write these to the OpenJD assetreferences.json file
-	// in the session working directory so that applications with native OpenJD
-	// path-mapping support can translate paths themselves.
+	// location.  Workers write these to the OpenJD pathmapping-1.0
+	// path_mapping.json file in the session working directory so that
+	// applications with native OpenJD path-mapping support can translate paths
+	// themselves.
 	msg.PathMap = buildPathMap(allLocs, worker.ComputeLocation)
 
 	// ── Resolved-mode path translation ───────────────────────────
@@ -142,15 +145,26 @@ func buildAssignPayload(
 
 // ── Template → protocol conversion helpers ────────────────────────────────────
 
-// buildJobParameters extracts the job-level parameter values from the parsed
-// template.  In OpenJD the template stores parameter definitions (name, type,
-// default); the actual values are provided at submission time via
-// job.RawTemplate's parameterValues block (if present) or inferred from
-// defaults.  For Phase 1, the default value from each definition is included
-// when non-nil; submitter-provided overrides are stored in job.RawTemplate
-// and will already be reflected in the expanded task parameters via the
-// openjd.ExpandParameterSpace path.
-func buildJobParameters(tmpl *openjd.JobTemplate) map[string]string {
+// buildJobParameters returns the job-parameter values to carry in the
+// assignment message so the worker can resolve {{Param.*}} format strings.
+//
+// When job.Parameters is non-empty (jobs submitted after the parameters-
+// persistence migration), those fully-bound values are used directly — they
+// include both caller-supplied values and applied defaults, so no information
+// is lost and submitted non-default values are preserved.
+//
+// When job.Parameters is empty (pre-migration jobs or jobs with no declared
+// parameters), the function falls back to extracting defaults from the parsed
+// template so that existing jobs continue to work correctly.
+func buildJobParameters(tmpl *openjd.JobTemplate, job store.Job) map[string]string {
+	// Prefer persisted bound values when available. Clone so downstream
+	// resolution (e.g. loc:// rewriting in resolveLocURIsInMsg) never mutates
+	// the caller's store.Job — or, with the in-memory fake, the shared map in
+	// the store.
+	if len(job.Parameters) > 0 {
+		return maps.Clone(job.Parameters)
+	}
+	// Fallback: extract defaults from parameter definitions (pre-migration jobs).
 	if len(tmpl.ParameterDefinitions) == 0 {
 		return nil
 	}
@@ -224,9 +238,12 @@ func convertEnvironment(e openjd.Environment) protocol.AssignEnvironment {
 // registered storage locations for the given compute location.
 //
 // For each location that has both a "default" root and a compute-location-
-// specific root (and the two differ), a rule is emitted that maps the default
-// root to the compute-location-specific root.  This allows workers on
-// non-default compute locations to translate canonical paths transparently.
+// specific root (and the two differ), a rule is emitted whose SourcePath is the
+// default root, DestinationPath is the compute-location-specific root, and
+// SourcePathFormat is the OpenJD enum derived from the source root via
+// [detectPathFormat] (WINDOWS for drive-letter/backslash paths, else POSIX).
+// This allows workers on non-default compute locations to translate canonical
+// paths transparently.
 //
 // Locations that only have a "default" root are omitted — their canonical
 // paths are already correct and no translation is needed.
@@ -252,11 +269,34 @@ func buildPathMap(locs []store.StorageLocation, computeLocation string) []protoc
 		}
 
 		rules = append(rules, protocol.PathMapRule{
-			SourcePathFormat: defaultRoot,
+			SourcePathFormat: detectPathFormat(defaultRoot),
+			SourcePath:       defaultRoot,
 			DestinationPath:  destRoot,
 		})
 	}
 	return rules
+}
+
+// detectPathFormat returns the OpenJD pathmapping source-path-format enum for
+// p using a simple heuristic: a path that contains a backslash or begins with a
+// drive-letter specifier (e.g. "C:\\foo" or "C:/foo") is treated as "WINDOWS";
+// everything else (POSIX absolute paths, S3/loc URIs, etc.) is "POSIX".
+//
+// This is a best-effort classification for OpenJD-aware applications reading
+// path_mapping.json; sqi's own substitution (pathmap.Apply) is format-agnostic
+// and keys solely on the literal SourcePath string.
+func detectPathFormat(p string) string {
+	if strings.Contains(p, `\`) {
+		return "WINDOWS"
+	}
+	// Drive-letter prefix: a single ASCII letter followed by a colon, e.g. "C:".
+	if len(p) >= 2 && p[1] == ':' {
+		c := p[0]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return "WINDOWS"
+		}
+	}
+	return "POSIX"
 }
 
 // resolveLocURIsInMsg rewrites all loc:// URI references inside msg in-place.
@@ -283,6 +323,18 @@ func resolveLocURIsInMsg(
 			return "", err
 		}
 		return openjd.JoinPath(root, relPath), nil
+	}
+
+	// Resolve job parameters. A PATH job parameter whose value (or applied
+	// default) is a loc:// URI must be concretized here, server-side; otherwise
+	// the worker would splice the raw URI into a {{Param.*}} expansion. The map
+	// is a clone (see buildJobParameters), so this in-place rewrite is safe.
+	for k, v := range msg.JobParameters {
+		resolved, err := openjd.ResolveLocURIs(v, resolve)
+		if err != nil {
+			return fmt.Errorf("job parameter %q: %w", k, err)
+		}
+		msg.JobParameters[k] = resolved
 	}
 
 	// Resolve task parameters.

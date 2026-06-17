@@ -257,6 +257,36 @@ func TestSmoke(t *testing.T) {
 		t.Errorf("Expected 1 audit entry, got %d", len(entries))
 	}
 
+	// Test Job.Parameters round-trip
+	jobWithParams := store.Job{
+		ID:         "job-params",
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Name:       "paramjob",
+		Status:     store.JobStatusPending,
+		Priority:   50,
+		Parameters: map[string]string{"Frame": "42", "Quality": "high"},
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	createdParamJob, err := s.CreateJob(ctx, jobWithParams)
+	if err != nil {
+		t.Fatalf("CreateJob with params: %v", err)
+	}
+	readParamJob, err := s.GetJob(ctx, "job-params")
+	if err != nil {
+		t.Fatalf("GetJob with params: %v", err)
+	}
+	if createdParamJob.Parameters["Frame"] != "42" {
+		t.Errorf("CreateJob Parameters[Frame] = %q, want 42", createdParamJob.Parameters["Frame"])
+	}
+	if readParamJob.Parameters["Frame"] != "42" {
+		t.Errorf("GetJob Parameters[Frame] = %q, want 42", readParamJob.Parameters["Frame"])
+	}
+	if readParamJob.Parameters["Quality"] != "high" {
+		t.Errorf("GetJob Parameters[Quality] = %q, want high", readParamJob.Parameters["Quality"])
+	}
+
 	// Test Close
 	err = s.Close()
 	if err != nil {
@@ -268,5 +298,68 @@ func TestSmoke(t *testing.T) {
 	_, err = s.GetFarm(ctx, farmID)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Expected ErrNotFound after Reset, got %v", err)
+	}
+}
+
+func TestFakeJob_UpdateJobPreservesParameters(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer s.Close()
+
+	// Create a job with Parameters
+	jobID := "job-preserve-params"
+	originalParams := map[string]string{"Frame": "42", "Quality": "high"}
+	job := store.Job{
+		ID:         jobID,
+		FarmID:     "farm-1",
+		QueueID:    "queue-1",
+		Name:       "original-name",
+		Status:     store.JobStatusPending,
+		Priority:   50,
+		Parameters: originalParams,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	createdJob, err := s.CreateJob(ctx, job)
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	// Verify Parameters were stored
+	if createdJob.Parameters["Frame"] != "42" {
+		t.Errorf("CreateJob Parameters[Frame] = %q, want 42", createdJob.Parameters["Frame"])
+	}
+
+	// Call UpdateJob with a nil Parameters field and different Name/Priority
+	updateJob := store.Job{
+		ID:       jobID,
+		Name:     "updated-name",
+		Priority: 75,
+		// Parameters intentionally nil to simulate user not providing them
+		Parameters: nil,
+	}
+	updatedJob, err := s.UpdateJob(ctx, updateJob)
+	if err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+
+	// After update, Parameters should still be preserved from the original
+	if updatedJob.Parameters["Frame"] != "42" {
+		t.Errorf("UpdateJob returned Parameters[Frame] = %q, want 42", updatedJob.Parameters["Frame"])
+	}
+	if updatedJob.Parameters["Quality"] != "high" {
+		t.Errorf("UpdateJob returned Parameters[Quality] = %q, want high", updatedJob.Parameters["Quality"])
+	}
+
+	// Verify by fetching the job again
+	retrievedJob, err := s.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if retrievedJob.Parameters["Frame"] != "42" {
+		t.Errorf("GetJob Parameters[Frame] = %q, want 42", retrievedJob.Parameters["Frame"])
+	}
+	if retrievedJob.Parameters["Quality"] != "high" {
+		t.Errorf("GetJob Parameters[Quality] = %q, want high", retrievedJob.Parameters["Quality"])
 	}
 }

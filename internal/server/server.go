@@ -98,6 +98,11 @@ type Config struct {
 	// tests and benchmarks; never in production.
 	DisableRateLimit bool
 
+	// EnforceOpenJDLimits controls whether quantitative OpenJD limit checks
+	// (name lengths, element counts, reserved-name rules) are enforced during
+	// job submission.  Default true.  Mirror of config.OpenJDConfig.EnforceLimits.
+	EnforceOpenJDLimits bool
+
 	// SeedDefaults, when true, creates a "default" farm and queue on first
 	// startup if the store has no farms yet. No-op once any farm exists.
 	// Default true.
@@ -118,6 +123,7 @@ func DefaultConfig() Config {
 		Scheduler:             scheduler.DefaultConfig(),
 		DiscoveryEnabled:      true,
 		DiscoveryInstanceName: "sqi-server",
+		EnforceOpenJDLimits:   true,
 		SeedDefaults:          true,
 	}
 }
@@ -278,8 +284,10 @@ func (s *Server) start(ctx context.Context) error {
 			DisableRateLimit: s.cfg.DisableRateLimit,
 		},
 		api.Deps{
-			Store:     s.store,
-			Submitter: openjd.NewSubmitter(s.store),
+			Store: s.store,
+			Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
+				EnforceLimits: s.cfg.EnforceOpenJDLimits,
+			}),
 			Scheduler: s.sched,
 			Hub:       s.wsHub,
 		},

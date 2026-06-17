@@ -49,6 +49,9 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("discovery.enabled: got false, want true")
 	}
 	check("discovery.instance_name", cfg.Discovery.InstanceName, "sqi-server")
+	if !cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: got false, want true")
+	}
 }
 
 // ── Load: defaults when no file ───────────────────────────────────────────────
@@ -186,6 +189,33 @@ func TestLoad_FlagWinsOverEnv(t *testing.T) {
 	}
 	if cfg.HTTP.Addr != "127.0.0.1:8888" {
 		t.Errorf("http.addr: flag should win; got %q", cfg.HTTP.Addr)
+	}
+}
+
+// TestLoad_EnforceLimitsFlagOverride verifies the --openjd-enforce-limits flag
+// (a *bool override) wins over the SQI_OPENJD_ENFORCE_LIMITS env var, and that a
+// nil override leaves the env/default value intact.
+func TestLoad_EnforceLimitsFlagOverride(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_OPENJD_ENFORCE_LIMITS", "true")
+
+	// Explicit false flag turns the (env-true) gate off.
+	disabled := false
+	cfg, err := config.Load("", config.FlagOverrides{EnforceLimits: &disabled})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: --openjd-enforce-limits=false should win over env=true")
+	}
+
+	// A nil override must NOT clobber the env value.
+	cfg, err = config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: nil flag override must leave env=true intact")
 	}
 }
 
@@ -364,5 +394,67 @@ func TestLoad_MalformedYAML_Errors(t *testing.T) {
 	_, err := config.Load(f, config.FlagOverrides{})
 	if err == nil {
 		t.Fatal("expected error for malformed YAML, got nil")
+	}
+}
+
+// ── OpenJD: defaults and overrides ───────────────────────────────────────────
+//
+// The EnforceLimits default (true) is asserted in TestDefaultConfig.
+
+func TestLoad_OpenJD_FileOverride_EnforceLimitsFalse(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yaml := "openjd:\n  enforce_limits: false\n"
+	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: file override to false not applied")
+	}
+}
+
+func TestLoad_OpenJD_EnvOverride_EnforceLimitsFalse(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_OPENJD_ENFORCE_LIMITS", "false")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: env SQI_OPENJD_ENFORCE_LIMITS=false not applied")
+	}
+}
+
+func TestLoad_OpenJD_EnvOverride_EnforceLimitsTrue(t *testing.T) {
+	// The default is already true; this verifies an explicit "true" env var also works.
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_OPENJD_ENFORCE_LIMITS", "1")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: env SQI_OPENJD_ENFORCE_LIMITS=1 not applied")
+	}
+}
+
+func TestLoad_OpenJD_DefaultUnchangedWhenNotInFile(t *testing.T) {
+	// A config file that sets other fields should leave enforce_limits at its default.
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yaml := "log:\n  level: debug\n"
+	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.OpenJD.EnforceLimits {
+		t.Error("openjd.enforce_limits: should remain true when not specified in config file")
 	}
 }

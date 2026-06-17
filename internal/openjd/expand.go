@@ -62,11 +62,80 @@ func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
 		return nil, fmt.Errorf("openjd: combination expression: %w", err)
 	}
 
+	// Resource-exhaustion guard: compute the emitted task count arithmetically
+	// from the tree before materializing the Cartesian product. This bounds both
+	// the result allocation and the number of per-task DB inserts a single
+	// submission can trigger. Like the per-range maxRangeValues cap it ALWAYS
+	// applies, independent of EnforceLimits.
+	if count, ok := countCombNode(tree, paramValues); !ok || count > maxTasksPerStep {
+		return nil, fmt.Errorf(
+			"openjd: parameter space expands to too many tasks (limit %d)", maxTasksPerStep,
+		)
+	}
+
 	rows, err := evalCombNode(tree, paramValues)
 	if err != nil {
 		return nil, fmt.Errorf("openjd: combination expression: %w", err)
 	}
 	return rows, nil
+}
+
+// maxTasksPerStep is a hard resource-exhaustion bound on the number of tasks a
+// single step's parameter space may expand to. Like [maxRangeValues] it ALWAYS
+// applies — even when EnforceLimits is false — because it guards against
+// unbounded materialization and an unbounded number of per-task DB inserts
+// reachable from POST /api/v1/jobs (e.g. two 1024-value parameters joined by a
+// Cartesian product already yield ~1M tasks). It is deliberately generous; tune
+// it if legitimate jobs need larger steps.
+const maxTasksPerStep = 1_000_000
+
+// countCombNode computes, arithmetically, the number of [TaskParams] rows that
+// [evalCombNode] would produce for tree, WITHOUT materializing them. ok is false
+// if the running product overflows, so callers can reject before allocating. A
+// product node multiplies its children; an association (zip) node takes its
+// first child's count, matching [zipRows] (a length mismatch is reported later
+// by zipRows itself). An identifier not present in values counts as 0, leaving
+// the real "undeclared parameter" error to [evalIdent].
+func countCombNode(node combNode, values map[string][]string) (count int, ok bool) {
+	switch n := node.(type) {
+	case combIdent:
+		return len(values[n.Name]), true
+	case combProduct:
+		total := 1
+		for _, child := range n.Children {
+			c, cok := countCombNode(child, values)
+			if !cok {
+				return 0, false
+			}
+			total, ok = mulSaturate(total, c)
+			if !ok {
+				return 0, false
+			}
+			if total > maxTasksPerStep {
+				return total, true // already over the cap; no need to keep multiplying
+			}
+		}
+		return total, true
+	case combAssoc:
+		if len(n.Children) == 0 {
+			return 0, true
+		}
+		return countCombNode(n.Children[0], values)
+	default:
+		return 0, false
+	}
+}
+
+// mulSaturate multiplies a and b, returning ok=false on int overflow.
+func mulSaturate(a, b int) (product int, ok bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	product = a * b
+	if product/b != a {
+		return 0, false // overflowed
+	}
+	return product, true
 }
 
 // expandTaskParam expands a single task parameter definition into a flat list
@@ -269,11 +338,17 @@ func (combAssoc) isCombNode() {}
 
 // parseCombinationExpr tokenizes and parses a combination expression.
 //
-// Grammar:
+// Grammar (OpenJD jobtemplate-2023-09, recursive):
 //
-//	expr   ::= term ('*' term)*
-//	term   ::= ident | '(' ident (',' ident)+ ')'
-//	ident  ::= [A-Za-z_][A-Za-z0-9_]*
+//	<CombinationExpr> ::= <Element> | <CombinationExpr> '*' <Element>
+//	<Element>         ::= <Identifier> | '(' <ExprList> ')'
+//	<ExprList>        ::= <CombinationExpr> | <ExprList> ',' <CombinationExpr>
+//	<Identifier>      ::= [A-Za-z_][A-Za-z0-9_]*
+//
+// i.e. a product is a sequence of Elements joined by '*'; an Element is either
+// an identifier or a parenthesised, comma-separated list of full
+// sub-expressions (an association group). An association group must contain at
+// least two comma-separated expressions.
 func parseCombinationExpr(expr string) (combNode, error) {
 	p := &combParser{tokens: tokenizeComb(expr)}
 	node, err := p.parseExpr()
@@ -281,20 +356,21 @@ func parseCombinationExpr(expr string) (combNode, error) {
 		return nil, err
 	}
 	if !p.done() {
-		return nil, fmt.Errorf("unexpected token %q at position %d", p.peek(), p.pos)
+		return nil, fmt.Errorf("unexpected token %q (token index %d)", p.peek(), p.pos)
 	}
 	return node, nil
 }
 
 // combinationIdentifiers parses an expression and returns the identifier list
-// for validation purposes.  Duplicates are allowed by this function (the
-// validator checks for them separately via containment checks).
-func combinationIdentifiers(expr string) ([]string, error) {
+// and the parsed tree, both for use by the validator.  Duplicates are allowed
+// by this function (the validator checks for them separately via containment
+// checks).  The returned tree lets callers avoid a second parse.
+func combinationIdentifiers(expr string) ([]string, combNode, error) {
 	tree, err := parseCombinationExpr(expr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return collectIdents(tree), nil
+	return collectIdents(tree), tree, nil
 }
 
 func collectIdents(node combNode) []string {
@@ -321,6 +397,7 @@ func collectIdents(node combNode) []string {
 type combParser struct {
 	tokens []string
 	pos    int
+	depth  int
 }
 
 func (p *combParser) done() bool { return p.pos >= len(p.tokens) }
@@ -338,9 +415,9 @@ func (p *combParser) consume() string {
 	return t
 }
 
-// parseExpr parses term ('*' term)*.
+// parseExpr parses a CombinationExpr: element ('*' element)*.
 func (p *combParser) parseExpr() (combNode, error) {
-	left, err := p.parseTerm()
+	left, err := p.parseElement()
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +429,7 @@ func (p *combParser) parseExpr() (combNode, error) {
 	children := []combNode{left}
 	for !p.done() && p.peek() == "*" {
 		p.consume() // consume '*'
-		right, err := p.parseTerm()
+		right, err := p.parseElement()
 		if err != nil {
 			return nil, err
 		}
@@ -361,8 +438,8 @@ func (p *combParser) parseExpr() (combNode, error) {
 	return combProduct{Children: children}, nil
 }
 
-// parseTerm parses: ident | '(' ident (',' ident)+ ')'.
-func (p *combParser) parseTerm() (combNode, error) {
+// parseElement parses an Element: ident | '(' <ExprList> ')'.
+func (p *combParser) parseElement() (combNode, error) {
 	if p.done() {
 		return nil, errors.New("unexpected end of expression")
 	}
@@ -377,19 +454,33 @@ func (p *combParser) parseTerm() (combNode, error) {
 	return combIdent{Name: name}, nil
 }
 
-// parseAssocGroup parses '(' ident (',' ident)+ ')' into a combAssoc node.
+// parseAssocGroup parses '(' <ExprList> ')' into a combAssoc node, where
+// <ExprList> is a comma-separated list of full CombinationExprs. An association
+// group must contain at least two comma-separated expressions.
+//
+// A depth counter guards against adversarial deeply-nested input: nesting
+// beyond 64 levels is rejected with an error rather than growing the stack.
 func (p *combParser) parseAssocGroup() (combNode, error) {
+	p.depth++
+	defer func() { p.depth-- }()
+	if p.depth > 64 {
+		return nil, errors.New("combination expression nested too deeply (max 64 levels)")
+	}
 	p.consume() // consume '('
 	var children []combNode
 	for {
 		if p.done() {
-			return nil, errors.New("unexpected end of expression inside group")
+			return nil, errors.New("unclosed parenthesis in combination expression")
 		}
-		name := p.consume()
-		if !isIdentifier(name) {
-			return nil, fmt.Errorf("expected parameter name, got %q", name)
+		if p.peek() == ")" || p.peek() == "," {
+			return nil, fmt.Errorf("expected expression in group, got %q", p.peek())
 		}
-		children = append(children, combIdent{Name: name})
+		child, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+
 		if p.done() {
 			return nil, errors.New("unclosed parenthesis in combination expression")
 		}
@@ -402,7 +493,7 @@ func (p *combParser) parseAssocGroup() (combNode, error) {
 		}
 	}
 	if len(children) < 2 {
-		return nil, errors.New("association group must contain at least two parameters")
+		return nil, errors.New("association group must contain at least two comma-separated expressions")
 	}
 	return combAssoc{Children: children}, nil
 }

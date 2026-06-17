@@ -4,8 +4,10 @@
 //
 // An [Executor] starts OS processes via [os/exec] for each assigned task,
 // captures their stdout and stderr line-by-line, manages per-task execution
-// timeouts (SIGTERM → SIGKILL after a configurable grace period), and publishes
-// task-status messages back to sqi-server via NATS.
+// timeouts and cancellation per the OpenJD Action.cancelation method (TERMINATE
+// = immediate SIGKILL, the spec default; NOTIFY_THEN_TERMINATE = SIGTERM then
+// SIGKILL after the notify period), and publishes task-status messages back to
+// sqi-server via NATS.
 //
 // # Interfaces
 //
@@ -95,7 +97,9 @@ type LogFlusher interface {
 type TaskLifecycleHook interface {
 	// RegisterTask associates task metadata and a cancel function with
 	// attemptID.  The cancel function is called when an openjd_fail directive
-	// is seen, triggering per-task SIGTERM → SIGKILL escalation.
+	// is seen; termination then honors the action's OpenJD cancelation method
+	// (TERMINATE by default → immediate SIGKILL; NOTIFY_THEN_TERMINATE →
+	// SIGTERM then SIGKILL after the notify period).
 	RegisterTask(attemptID, taskID, jobID, sessionID string, cancel context.CancelFunc)
 
 	// Deregister removes the per-task state for attemptID.  Safe to call
@@ -144,9 +148,14 @@ type Config struct {
 	MaxConcurrentTasks int
 
 	// KillGracePeriod is the time the executor waits after sending SIGTERM
-	// before escalating to SIGKILL when forcibly terminating a process due to
-	// a per-task timeout or worker shutdown.  Defaults to 10 s when zero or
+	// before escalating to SIGKILL when forcibly terminating a process during
+	// worker force-shutdown (DrainAndShutdown). Defaults to 10 s when zero or
 	// negative.
+	//
+	// Note: per-task timeout and per-task cancellation no longer use this value;
+	// they follow the assignment's OpenJD Action.cancelation method (TERMINATE =
+	// immediate SIGKILL; NOTIFY_THEN_TERMINATE = SIGTERM then the action's notify
+	// period). KillGracePeriod governs only the worker-shutdown grace window.
 	KillGracePeriod time.Duration
 
 	// AllowRoot, when true, allows the worker to run as the root user on
@@ -472,7 +481,9 @@ func (e *Executor) SetCancelRegistrar(cr CancelRegistrar) {
 // Cancel requests cancellation of the task identified by taskID.
 //
 // If the task is actively executing its per-task context is canceled,
-// triggering the SIGTERM → SIGKILL escalation in the runTask goroutine.
+// triggering termination per the assignment's OpenJD Action.cancelation method
+// (TERMINATE by default → immediate SIGKILL; NOTIFY_THEN_TERMINATE → SIGTERM
+// then SIGKILL after the notify period).
 // If the task is known but its process has not yet started (race between
 // Dispatch and goroutine scheduling), the cancel is noted and takes effect
 // as soon as runTask initializes its context.

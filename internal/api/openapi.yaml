@@ -882,6 +882,28 @@ paths:
         - anything else (or absent) → JSON
 
         `farm_id` and `queue_id` are required query parameters.
+
+        ## Job parameters
+
+        Job-level parameter values (matching the template's
+        `parameterDefinitions`) are supplied as `param.<Name>=<value>` query
+        parameters — for example:
+
+        ```
+        POST /api/v1/jobs?farm_id=f1&queue_id=q1&param.FrameStart=1&param.FrameEnd=100
+        ```
+
+        OpenAPI cannot fully model arbitrary-suffix query parameters, so they
+        are documented here rather than as individual parameter entries.
+        Rules:
+        - Each `param.<Name>` key must match a declared `parameterDefinitions`
+          entry in the template; unknown keys are rejected with **422**.
+        - Parameters omitted from the request use their `default` if the
+          template declares one; otherwise a **422** is returned (required
+          parameter missing).
+        - Values are validated against the parameter type (`INT`, `FLOAT`,
+          `STRING`, `PATH`) and any `minValue`, `maxValue`, `minLength`,
+          `maxLength`, or `allowedValues` constraints declared in the template.
       parameters:
         - name: farm_id
           in: query
@@ -917,6 +939,10 @@ paths:
           schema:
             type: string
           description: Arbitrary project label for filtering.
+      # Note: param.<Name>=<value> query parameters are intentionally omitted
+      # from this parameters list because OpenAPI 3.x does not support
+      # arbitrary-suffix parameters.  Full semantics are documented in the
+      # operation description above.
       requestBody:
         required: true
         content:

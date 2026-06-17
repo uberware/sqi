@@ -143,6 +143,8 @@ func newJobHandler(
 //
 // Query parameters: farm_id (required), queue_id (required), owner,
 // submitter, priority (integer ≥ 1; defaults to 50), project.
+// Job-parameter values are supplied as param.<Name>=<value> query parameters
+// (e.g. ?param.FrameStart=1&param.Quality=high).
 func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -169,12 +171,13 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := openjd.SubmitOptions{
-		FarmID:    farmID,
-		QueueID:   queueID,
-		Owner:     r.URL.Query().Get("owner"),
-		Submitter: r.URL.Query().Get("submitter"),
-		Priority:  priority,
-		Project:   r.URL.Query().Get("project"),
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Owner:      r.URL.Query().Get("owner"),
+		Submitter:  r.URL.Query().Get("submitter"),
+		Priority:   priority,
+		Project:    r.URL.Query().Get("project"),
+		Parameters: parseParamQueryParams(r.URL.Query()),
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
@@ -664,6 +667,31 @@ func parseIntQuery(s string, fallback int) int {
 func isSubmitValidationError(err error) bool {
 	var ve *openjd.SubmitValidationError
 	return errors.As(err, &ve)
+}
+
+// parseParamQueryParams extracts job-parameter values from query parameters
+// using the prefix convention "param.<Name>=<value>".
+//
+// For example, ?param.FrameStart=1&param.FrameEnd=100 yields:
+//
+//	map[string]string{"FrameStart": "1", "FrameEnd": "100"}
+//
+// Keys that do not start with "param." are silently ignored.  The returned
+// map is nil when no matching keys are present.
+func parseParamQueryParams(query map[string][]string) map[string]string {
+	const prefix = "param."
+	var result map[string]string
+	for key, vals := range query {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || name == "" || len(vals) == 0 {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]string)
+		}
+		result[name] = vals[0] // first value wins; duplicates are ignored
+	}
+	return result
 }
 
 // writeProblem, writeJSON, and the problemDetail type are defined in errors.go.

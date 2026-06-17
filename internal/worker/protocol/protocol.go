@@ -315,7 +315,7 @@ type CancelationMethod struct {
 type EmbeddedFile struct {
 	// Name is the identifier for this embedded file.
 	Name string `json:"name"`
-	// Filename is the on-disk name; if empty the worker generates one.
+	// Filename is the on-disk name; if empty, Name is used.
 	Filename string `json:"filename,omitempty"`
 	// Data is the file content (may contain format-string references).
 	Data string `json:"data"`
@@ -340,15 +340,18 @@ type AssignEnvironment struct {
 	EmbeddedFiles []EmbeddedFile `json:"embedded_files,omitempty"`
 }
 
-// PathMapRule is one source→destination root mapping in the OpenJD path-mapping
-// file.  The worker writes all rules to the JSON file at
-// <session_dir>/assetreferences.json (or whichever name the OpenJD spec
-// designates) before running any actions.
+// PathMapRule is one source→destination path mapping in the OpenJD
+// pathmapping-1.0 file.  The worker writes all rules to the JSON file at
+// <session_dir>/path_mapping.json before running any actions, conformant with
+// the OpenJD pathmapping-1.0 schema.
 type PathMapRule struct {
-	// SourcePathFormat is the source root path (may be a filesystem path or
-	// an S3 URI such as "s3://bucket/prefix").
+	// SourcePathFormat is the format of SourcePath: the OpenJD enum "POSIX" or
+	// "WINDOWS" (and "URI" only with the path-mapping EXPR extension).  It tells
+	// an OpenJD-aware application how to interpret and compare SourcePath.
 	SourcePathFormat string `json:"source_path_format"`
-	// DestinationPath is the local concrete path on the worker host.
+	// SourcePath is the source path to match (the shared/canonical root).
+	SourcePath string `json:"source_path"`
+	// DestinationPath is the worker-local concrete path that replaces SourcePath.
 	DestinationPath string `json:"destination_path"`
 }
 

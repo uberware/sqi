@@ -34,6 +34,7 @@ type Config struct {
 	Log       LogConfig       `yaml:"log"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
 	Discovery DiscoveryConfig `yaml:"discovery"`
+	OpenJD    OpenJDConfig    `yaml:"openjd"`
 }
 
 // HTTPConfig controls the REST and WebSocket listener.
@@ -129,6 +130,15 @@ type DiscoveryConfig struct {
 	InstanceName string `yaml:"instance_name"`
 }
 
+// OpenJDConfig controls OpenJD submission and validation behavior.
+type OpenJDConfig struct {
+	// EnforceLimits gates quantitative limit validation (maximum name lengths,
+	// counts, reserved-name rules). Disable only when onboarding templates that
+	// predate the strict limits and cannot yet be updated.
+	// Env: SQI_OPENJD_ENFORCE_LIMITS
+	EnforceLimits bool `yaml:"enforce_limits"`
+}
+
 // DefaultConfig returns a [Config] with sensible defaults suitable for local
 // development. Production deployments should override fields via a config file
 // or SQI_* environment variables.
@@ -158,6 +168,9 @@ func DefaultConfig() Config {
 		Discovery: DiscoveryConfig{
 			Enabled:      true,
 			InstanceName: "sqi-server",
+		},
+		OpenJD: OpenJDConfig{
+			EnforceLimits: true,
 		},
 	}
 }

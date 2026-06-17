@@ -12,14 +12,14 @@ import (
 
 const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
-	raw_template, template_format, created_at, updated_at, started_at, completed_at`
+	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at`
 
 const (
 	sqlInsertJob = `
 INSERT INTO jobs (
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
-	raw_template, template_format, created_at, updated_at, started_at, completed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
@@ -62,14 +62,14 @@ WHERE id = ?
 
 func scanJob(row scanner) (store.Job, error) {
 	var j store.Job
-	var status, templateFormat string
+	var status, templateFormat, paramsJSON string
 	var createdAt, updatedAt string
 	var startedAt, completedAt sql.NullString
 
 	if err := row.Scan(
 		&j.ID, &j.FarmID, &j.QueueID, &j.Name, &j.Owner, &j.Submitter,
 		&j.Priority, &status, &j.Project,
-		&j.RawTemplate, &templateFormat,
+		&j.RawTemplate, &templateFormat, &paramsJSON,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
 	); err != nil {
 		return store.Job{}, err
@@ -81,16 +81,27 @@ func scanJob(row scanner) (store.Job, error) {
 	j.UpdatedAt = mustTime(updatedAt)
 	j.StartedAt = nullTextToTime(startedAt)
 	j.CompletedAt = nullTextToTime(completedAt)
+
+	params, err := unmarshalJSON(paramsJSON, map[string]string{})
+	if err != nil {
+		return store.Job{}, err
+	}
+	j.Parameters = params
+
 	return j, nil
 }
 
 // CreateJob implements [store.JobStore].
 func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error) {
+	paramsJSON, err := marshalJSON(job.Parameters)
+	if err != nil {
+		return store.Job{}, err
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertJob.QueryRowContext(ctx,
 		job.ID, job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter,
 		job.Priority, string(job.Status), job.Project,
-		job.RawTemplate, string(job.TemplateFormat),
+		job.RawTemplate, string(job.TemplateFormat), paramsJSON,
 		now, now,
 		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt))
 	out, err := scanJob(row)

@@ -502,3 +502,336 @@ func TestSubmitter_Submit_Metadata(t *testing.T) {
 		t.Error("updated_at seems too old")
 	}
 }
+
+// ── Parameter binding ─────────────────────────────────────────────────────────
+
+// templateWithParams is a minimal template that declares two job parameters:
+// FrameStart (INT, required) and Quality (STRING with default "medium").
+const templateWithParams = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "ParamJob",
+  "parameterDefinitions": [
+    { "name": "FrameStart", "type": "INT" },
+    { "name": "Quality", "type": "STRING", "default": "medium" }
+  ],
+  "steps": [
+    {
+      "name": "Render",
+      "script": { "actions": { "onRun": { "command": "render" } } }
+    }
+  ]
+}`
+
+// TestSubmitter_Submit_BoundParameters verifies that Submit with valid
+// Parameters populates SubmitResult.BoundParameters and applies defaults.
+func TestSubmitter_Submit_BoundParameters(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	result, err := sub.Submit(t.Context(), templateWithParams, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		Parameters: map[string]string{
+			"FrameStart": "1",
+			// Quality is omitted; its default "medium" should be applied.
+		},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	if result.BoundParameters == nil {
+		t.Fatal("BoundParameters must not be nil")
+	}
+	if result.BoundParameters["FrameStart"] != "1" {
+		t.Errorf("BoundParameters[FrameStart] = %q, want %q", result.BoundParameters["FrameStart"], "1")
+	}
+	if result.BoundParameters["Quality"] != "medium" {
+		t.Errorf("BoundParameters[Quality] = %q, want default %q", result.BoundParameters["Quality"], "medium")
+	}
+}
+
+// TestSubmitter_Submit_MissingRequiredParam verifies that Submit returns a
+// SubmitValidationError when a required parameter has no value and no default.
+func TestSubmitter_Submit_MissingRequiredParam(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	_, err := sub.Submit(t.Context(), templateWithParams, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		// FrameStart is required but not provided.
+	})
+	if err == nil {
+		t.Fatal("expected error for missing required parameter, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestSubmitter_Submit_InvalidParamValue verifies that Submit returns a
+// SubmitValidationError when a provided parameter value fails type validation.
+func TestSubmitter_Submit_InvalidParamValue(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	_, err := sub.Submit(t.Context(), templateWithParams, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		Parameters: map[string]string{
+			"FrameStart": "not-an-int", // INT type — must be an integer
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid INT value, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestSubmitter_Submit_UnknownParam verifies that Submit returns a
+// SubmitValidationError when an unknown parameter name is provided.
+func TestSubmitter_Submit_UnknownParam(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	_, err := sub.Submit(t.Context(), templateWithParams, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		Parameters: map[string]string{
+			"FrameStart": "1",
+			"Unknown":    "value", // not declared in the template
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown parameter, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestSubmitter_Submit_PersistedParameters verifies that after a successful
+// Submit with caller-supplied parameters, result.Job.Parameters holds the
+// fully-bound values (including defaults applied for omitted parameters).
+func TestSubmitter_Submit_PersistedParameters(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	result, err := sub.Submit(t.Context(), templateWithParams, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		Parameters: map[string]string{
+			"FrameStart": "10",
+			// Quality is omitted; default "medium" should be applied.
+		},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// The persisted job row must carry the bound values.
+	if result.Job.Parameters == nil {
+		t.Fatal("result.Job.Parameters must not be nil after submit with params")
+	}
+	if result.Job.Parameters["FrameStart"] != "10" {
+		t.Errorf("Job.Parameters[FrameStart] = %q, want 10", result.Job.Parameters["FrameStart"])
+	}
+	if result.Job.Parameters["Quality"] != "medium" {
+		t.Errorf("Job.Parameters[Quality] = %q, want default medium", result.Job.Parameters["Quality"])
+	}
+
+	// Re-fetch from the store and confirm the values survived the round-trip.
+	fetched, err := st.GetJob(t.Context(), result.Job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if fetched.Parameters["FrameStart"] != "10" {
+		t.Errorf("fetched Job.Parameters[FrameStart] = %q, want 10", fetched.Parameters["FrameStart"])
+	}
+	if fetched.Parameters["Quality"] != "medium" {
+		t.Errorf("fetched Job.Parameters[Quality] = %q, want medium", fetched.Parameters["Quality"])
+	}
+
+	// BoundParameters on the result must also match.
+	if result.BoundParameters["FrameStart"] != "10" {
+		t.Errorf("BoundParameters[FrameStart] = %q, want 10", result.BoundParameters["FrameStart"])
+	}
+}
+
+// TestSubmitter_Submit_NoParamsNoBinding verifies that a template with no
+// parameterDefinitions succeeds with empty Parameters and returns an empty
+// (non-nil) BoundParameters map.
+func TestSubmitter_Submit_NoParamsNoBinding(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	result, err := sub.Submit(t.Context(), minimalJSON("NoParamJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if result.BoundParameters == nil {
+		t.Error("BoundParameters must not be nil even when template has no parameters")
+	}
+	if len(result.BoundParameters) != 0 {
+		t.Errorf("BoundParameters = %v, want empty map", result.BoundParameters)
+	}
+}
+
+// ── {{Param.*}} resolved in parameter space before expansion ─────────────────
+
+// TestSubmitter_Submit_ParamInRangeExpr verifies that a step whose INT range
+// expression contains {{Param.*}} references is resolved against bound job
+// parameters before expansion, producing the correct number of tasks.
+func TestSubmitter_Submit_ParamInRangeExpr(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	// StartFrame=1, EndFrame=3 → "1-3" → frames 1, 2, 3 → 3 tasks
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "FrameRangeParamJob",
+  "parameterDefinitions": [
+    { "name": "StartFrame", "type": "INT" },
+    { "name": "EndFrame",   "type": "INT" }
+  ],
+  "steps": [
+    {
+      "name": "Render",
+      "script": { "actions": { "onRun": { "command": "render" } } },
+      "parameterSpace": {
+        "taskParameterDefinitions": [
+          { "name": "Frame", "type": "INT", "range": "{{Param.StartFrame}}-{{Param.EndFrame}}" }
+        ]
+      }
+    }
+  ]
+}`
+	result, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		Parameters: map[string]string{
+			"StartFrame": "1",
+			"EndFrame":   "3",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(result.Tasks) != 3 {
+		t.Errorf("expected 3 tasks (frames 1–3), got %d", len(result.Tasks))
+	}
+	// Verify the task parameters carry the resolved per-frame integer values.
+	wantFrames := map[string]bool{"1": true, "2": true, "3": true}
+	for _, tk := range result.Tasks {
+		frame, ok := tk.Parameters["Frame"]
+		if !ok {
+			t.Errorf("task %q has no Frame parameter", tk.Name)
+			continue
+		}
+		if !wantFrames[frame] {
+			t.Errorf("unexpected Frame value %q in task %q", frame, tk.Name)
+		}
+		delete(wantFrames, frame)
+	}
+	for f := range wantFrames {
+		t.Errorf("Frame=%q was not produced by any task", f)
+	}
+}
+
+// TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit verifies that a
+// parameterized range cannot smuggle past the per-parameter value limit: the
+// limit is skipped at template-validation time because the range still contains
+// {{...}}, so it must be re-checked on the RESOLVED space. Here Start=1,End=2000
+// resolves to "1-2000" → 2000 values, exceeding maxTaskParamValues (1024).
+func TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "OverLimitParamJob",
+  "parameterDefinitions": [
+    { "name": "Start", "type": "INT" },
+    { "name": "End",   "type": "INT" }
+  ],
+  "steps": [
+    {
+      "name": "Render",
+      "script": { "actions": { "onRun": { "command": "render" } } },
+      "parameterSpace": {
+        "taskParameterDefinitions": [
+          { "name": "Frame", "type": "INT", "range": "{{Param.Start}}-{{Param.End}}" }
+        ]
+      }
+    }
+  ]
+}`
+	_, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+		Parameters: map[string]string{
+			"Start": "1",
+			"End":   "2000",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected SubmitValidationError for resolved range exceeding the value limit, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestSubmitter_Submit_ParamInRangeExpr_UnknownParam verifies that a step
+// whose range expression references an undeclared job parameter produces a
+// SubmitValidationError (HTTP 422-class).
+func TestSubmitter_Submit_ParamInRangeExpr_UnknownParam(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "MissingParamJob",
+  "steps": [
+    {
+      "name": "Render",
+      "script": { "actions": { "onRun": { "command": "render" } } },
+      "parameterSpace": {
+        "taskParameterDefinitions": [
+          { "name": "Frame", "type": "INT", "range": "{{Param.Missing}}-5" }
+        ]
+      }
+    }
+  ]
+}`
+	_, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	})
+	if err == nil {
+		t.Fatal("expected SubmitValidationError for unknown {{Param.Missing}}, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+}

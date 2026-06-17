@@ -20,7 +20,8 @@ import (
 
 // serveFlags holds values for flags specific to the serve subcommand.
 var serveFlags struct {
-	HTTPAddr string
+	HTTPAddr            string
+	OpenJDEnforceLimits bool
 }
 
 var serveCmd = &cobra.Command{
@@ -41,6 +42,11 @@ func init() {
 		"http-addr", "",
 		"HTTP listen address (overrides config file and SQI_HTTP_ADDR)",
 	)
+	serveCmd.Flags().BoolVar(
+		&serveFlags.OpenJDEnforceLimits,
+		"openjd-enforce-limits", true,
+		"enforce OpenJD quantitative limits during submission (overrides config file and SQI_OPENJD_ENFORCE_LIMITS)",
+	)
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -48,6 +54,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	overrides := persistentFlagOverrides()
 	if cmd.Flags().Changed("http-addr") {
 		overrides.HTTPAddr = serveFlags.HTTPAddr
+	}
+	if cmd.Flags().Changed("openjd-enforce-limits") {
+		overrides.EnforceLimits = &serveFlags.OpenJDEnforceLimits
 	}
 	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
 	if err != nil {
@@ -91,6 +100,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		CheckpointInterval:    cfg.Store.CheckpointInterval,
 		DiscoveryEnabled:      cfg.Discovery.Enabled,
 		DiscoveryInstanceName: cfg.Discovery.InstanceName,
+		EnforceOpenJDLimits:   cfg.OpenJD.EnforceLimits,
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
 		SeedDefaults: true,

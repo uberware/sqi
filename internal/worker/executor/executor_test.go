@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -83,11 +84,23 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 
 	case "ignore_term":
-		// Ignore SIGTERM and sleep; only exits via SIGKILL escalation.
-		// Used to assert that the kill-grace-period enforcement is correct.
-		signal.Ignore(syscall.SIGTERM)
-		time.Sleep(60 * time.Second)
-		os.Exit(0)
+		// Install SIGTERM handler first, then print "ready" so the parent
+		// test knows the handler is installed before it calls Cancel.
+		// signal.Notify is used (not signal.Ignore) so the Go runtime
+		// captures SIGTERM into our channel rather than relying on SIG_IGN,
+		// which the runtime may reset in the test-binary harness.
+		// The drain loop keeps the process alive until SIGKILL arrives.
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGTERM)
+		fmt.Println("ready") // signals the test that the handler is installed
+		timeout := time.After(60 * time.Second)
+		for {
+			select {
+			case <-c: // SIGTERM received — drain but do not exit
+			case <-timeout:
+				os.Exit(0) // unreachable in normal tests; guards against orphaning
+			}
+		}
 	}
 
 	os.Exit(m.Run())
@@ -377,9 +390,10 @@ func TestExecutor_Dispatch_exitCodeZero(t *testing.T) {
 	}
 }
 
-// TestExecutor_Dispatch_timeout verifies the SIGTERM → SIGKILL escalation
-// path: a process that sleeps longer than its timeout is killed and
-// the task is marked failed with a timeout reason.
+// TestExecutor_Dispatch_timeout verifies the per-task timeout termination path:
+// a process with no cancelation method (the OpenJD TERMINATE default → immediate
+// SIGKILL) that sleeps longer than its timeout is killed and the task is marked
+// failed with a timeout reason.
 func TestExecutor_Dispatch_timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -591,6 +605,66 @@ func TestExecutor_Dispatch_envMerge(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected stdout line %q from env subprocess; got: %v", "injected-value", lines)
+	}
+}
+
+// TestExecutor_Dispatch_openjdEnvDirective verifies that an environment variable
+// exported by an environment onEnter via an openjd_env directive is visible in
+// the task OnRun process environment.
+func TestExecutor_Dispatch_openjdEnvDirective(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, 1, capture)
+
+	// The "setup" environment's onEnter emits an openjd_env directive on stdout.
+	// The "vars" environment statically sets SQI_TEST_SUBPROCESS so the OnRun
+	// subprocess runs in "env" mode and prints SQI_TEST_ENV_KEY — which is set
+	// only by the directive, proving directive-exported vars reach the task.
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		TaskID:    "task-envdir",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		OnRun: &protocol.Action{
+			Command: testBinary(),
+			Args:    []string{"-test.run=^$"},
+		},
+		Environments: []protocol.AssignEnvironment{
+			{
+				Name: "setup",
+				OnEnter: &protocol.Action{
+					Command: "sh",
+					Args:    []string{"-c", "echo 'openjd_env: SQI_TEST_ENV_KEY=from-directive'"},
+				},
+			},
+			{
+				Name:      "vars",
+				Variables: map[string]string{"SQI_TEST_SUBPROCESS": "env"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	lines := capture.all()
+	found := false
+	for _, l := range lines {
+		if l.stream == "stdout" && l.line == "from-directive" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected OnRun to see SQI_TEST_ENV_KEY=from-directive from openjd_env directive; got: %v", lines)
 	}
 }
 
@@ -862,26 +936,42 @@ func TestExecutor_Cancel_taskNotFound(t *testing.T) {
 	}
 }
 
-// TestExecutor_Cancel_sigkillEscalation verifies that a process that ignores
-// SIGTERM is force-killed after KillGracePeriod and that the terminal status
-// is still "canceled".
+// TestExecutor_Cancel_sigkillEscalation verifies that under NOTIFY_THEN_TERMINATE
+// a process that ignores SIGTERM is force-killed after the notify period and that
+// the terminal status is still "canceled".
 func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("SIGTERM/SIGKILL escalation is Unix-specific; Windows uses taskkill")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	// captureOutput is required here so we can wait for the "ready" line
+	// that the subprocess prints after installing its SIGTERM handler.
+	// Waiting for "ready" (not just "running") avoids the race between
+	// signal.Notify and SIGTERM delivery that arises because "running" is
+	// published before cmd.Start(), leaving the subprocess with almost no
+	// time to set up signal handling before Cancel is called — especially
+	// under the -race build which slows Go runtime initialization.
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, 1, capture)
 
-	// "ignore_term" subprocess installs signal.Ignore(SIGTERM) and sleeps.
-	// It will only exit when SIGKILL is sent after the grace period.
+	// "ignore_term" subprocess installs a SIGTERM handler, prints "ready",
+	// and then drains SIGTERM in a loop without exiting.  It exits only
+	// when SIGKILL is sent after the notify period.  With
+	// NOTIFY_THEN_TERMINATE the executor sends SIGTERM (drained), then
+	// escalates to SIGKILL after the notify period.
 	msg := makeAssign("ignore_term", nil)
+	msg.OnRun.Cancelation = &protocol.CancelationMethod{
+		Mode:                "NOTIFY_THEN_TERMINATE",
+		NotifyPeriodSeconds: 1, // short notify period for a fast test
+	}
 	ctx := context.Background()
 	if err := exec.Dispatch(ctx, msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	// Wait for "running" before canceling.
-	waitForStatus(t, nc, 1, 5*time.Second)
+	// Wait for "ready" — this confirms signal.Notify has been called in the
+	// subprocess and it is safe to send Cancel without a race on signal delivery.
+	waitForOutputLine(t, capture, "ready", 5*time.Second)
 
 	cancelAt := time.Now()
 	found := exec.Cancel(msg.TaskID)
@@ -889,15 +979,19 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 		t.Fatal("Cancel returned false; expected the task to be found")
 	}
 
-	// The process should die within: KillGracePeriod (500ms) + SIGKILL overhead +
-	// a generous scheduling slack.  Total budget: 5 s.
+	// The process should die within: notify period (1s) + SIGKILL overhead +
+	// a generous scheduling slack.
 	waitForStatus(t, nc, 2, 10*time.Second)
 
 	elapsed := time.Since(cancelAt)
-	// Must not die too quickly (before SIGTERM grace expires) or too slowly.
-	// Lower bound: SIGTERM sent, grace period ~0 ms (process might exit on SIGTERM
-	// even if Ignore was set — on some platforms Ignore affects signal delivery).
-	// We just assert it completes within the test timeout above.
+	// Lower bound: the subprocess drains SIGTERM without exiting and must
+	// survive until SIGKILL arrives after the 1s notify period.  700ms is
+	// generous enough to avoid flakiness under -race while still proving
+	// that the grace timer fired before SIGKILL was sent.
+	if elapsed < 700*time.Millisecond {
+		t.Errorf("process exited in %v — SIGKILL arrived before the 1s notify period elapsed, "+
+			"suggesting the SIGTERM→SIGKILL escalation path was not exercised", elapsed)
+	}
 	if elapsed > 8*time.Second {
 		t.Errorf("process did not exit within expected window after Cancel; took %v", elapsed)
 	}
@@ -926,10 +1020,10 @@ func waitForOutputLine(t *testing.T, capture *captureOutput, want string, timeou
 	t.Fatalf("stdout line %q not seen within %v", want, timeout)
 }
 
-// TestExecutor_Cancel_sigtermDelivery verifies that SIGTERM is delivered to
-// the process before SIGKILL escalation by dispatching a subprocess that
-// catches SIGTERM, prints "sigterm" on receipt, and exits 0.  The terminal
-// status must be "canceled".
+// TestExecutor_Cancel_sigtermDelivery verifies that under NOTIFY_THEN_TERMINATE
+// SIGTERM is delivered to the process before SIGKILL escalation, by dispatching a
+// subprocess that catches SIGTERM, prints "sigterm" on receipt, and exits 0.  The
+// terminal status must be "canceled".
 func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("SIGTERM is Unix-specific; Windows uses taskkill")
@@ -940,7 +1034,12 @@ func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 
 	// "catch_sigterm" subprocess installs a SIGTERM handler, prints "ready" to
 	// signal it is safe to cancel, then prints "sigterm" on receipt and exits 0.
+	// NOTIFY_THEN_TERMINATE makes the executor send SIGTERM (notify) first.
 	msg := makeAssign("catch_sigterm", nil)
+	msg.OnRun.Cancelation = &protocol.CancelationMethod{
+		Mode:                "NOTIFY_THEN_TERMINATE",
+		NotifyPeriodSeconds: 5, // generous so SIGTERM handler runs before SIGKILL
+	}
 	ctx := context.Background()
 	if err := exec.Dispatch(ctx, msg); err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -980,6 +1079,54 @@ func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 	}
 }
 
+// TestExecutor_Cancel_terminateImmediate verifies the OpenJD TERMINATE default
+// (no cancelation method specified): the process is SIGKILLed immediately on
+// cancel, with NO SIGTERM sent and NO grace period waited.
+//
+// The subprocess ignores SIGTERM and sleeps 60 s, so under the previous graceful
+// default it would survive until the KillGracePeriod (500 ms) elapsed and a
+// SIGKILL escalated.  Under the TERMINATE default it is SIGKILLed at once, so the
+// process must exit well inside the grace window — proving no SIGTERM/grace wait.
+// The terminal status is "canceled".
+func TestExecutor_Cancel_terminateImmediate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM/SIGKILL semantics are Unix-specific; Windows uses taskkill")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil) // KillGracePeriod = 500ms
+
+	// No Cancelation set → TERMINATE default → immediate SIGKILL.
+	msg := makeAssign("ignore_term", nil)
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Wait for "running" before canceling.
+	waitForStatus(t, nc, 1, 5*time.Second)
+
+	cancelAt := time.Now()
+	if found := exec.Cancel(msg.TaskID); !found {
+		t.Fatal("Cancel returned false; expected the task to be found")
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	// Immediate SIGKILL: the SIGTERM-ignoring process must NOT be waited on for
+	// the 500 ms KillGracePeriod.  Generous upper bound for scheduling/-race slack
+	// while still well below the old grace-then-kill timing.
+	// 400ms < 500ms KillGracePeriod: any SIGTERM+grace path would exceed this
+	// bound, proving immediate SIGKILL with no SIGTERM or grace wait.
+	if elapsed := time.Since(cancelAt); elapsed > 400*time.Millisecond {
+		t.Errorf("process took %v to exit after Cancel; want prompt SIGKILL with no grace wait", elapsed)
+	}
+
+	last := nc.lastStatus()
+	if last.Status != "canceled" {
+		t.Errorf("terminal status = %q; want %q", last.Status, "canceled")
+	}
+}
+
 // TestExecutor_Cancel_earlyCancel verifies that calling Cancel before the
 // task's runTask goroutine has set up its per-task context still cancels the
 // task correctly (cancelRequested flag path).
@@ -1009,6 +1156,216 @@ func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 	// "failed/worker_shutdown".
 	if last.Status != "canceled" {
 		t.Errorf("terminal status = %q; want %q", last.Status, "canceled")
+	}
+}
+
+// ── Embedded files ────────────────────────────────────────────────────────────
+
+// TestExecutor_Dispatch_embeddedFiles_content verifies that EmbeddedFiles in
+// AssignMsg are materialized to the session working directory before OnRun
+// executes, allowing the task command to read them.
+func TestExecutor_Dispatch_embeddedFiles_content(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell commands")
+	}
+
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, 1, capture)
+
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		TaskID:    "task-embeds-content",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		OnRun: &protocol.Action{
+			Command: "sh",
+			Args:    []string{"-c", "cat data.txt"},
+		},
+		EmbeddedFiles: []protocol.EmbeddedFile{
+			{Name: "data.txt", Data: "sentinel-value\n"},
+		},
+	}
+
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "succeeded" {
+		t.Errorf("terminal status = %q; want %q", last.Status, "succeeded")
+	}
+
+	lines := capture.all()
+	found := false
+	for _, l := range lines {
+		if l.stream == "stdout" && l.line == "sentinel-value" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected embedded file content %q in stdout; got: %v", "sentinel-value", lines)
+	}
+}
+
+// TestExecutor_Dispatch_embeddedFiles_runnable verifies that an embedded file
+// with Runnable=true is materialized with the execute permission bit set,
+// allowing OnRun to execute it directly.
+func TestExecutor_Dispatch_embeddedFiles_runnable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell commands")
+	}
+
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, 1, capture)
+
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		TaskID:    "task-embeds-runnable",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		OnRun: &protocol.Action{
+			Command: "sh",
+			Args:    []string{"-c", "./render.sh"},
+		},
+		EmbeddedFiles: []protocol.EmbeddedFile{
+			{Name: "render.sh", Data: "#!/bin/sh\necho script-ran\n", Runnable: true},
+		},
+	}
+
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "succeeded" {
+		t.Errorf("terminal status = %q; want %q (runnable embedded script should execute)", last.Status, "succeeded")
+	}
+
+	lines := capture.all()
+	found := false
+	for _, l := range lines {
+		if l.stream == "stdout" && l.line == "script-ran" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected stdout %q from runnable embedded script; got: %v", "script-ran", lines)
+	}
+}
+
+// TestExecutor_Dispatch_embeddedFiles_eol verifies that EndOfLine conversion is
+// applied when embedded files are materialized: data with CRLF line endings and
+// EndOfLine="LF" is stored with LF endings in the working directory.
+func TestExecutor_Dispatch_embeddedFiles_eol(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell commands")
+	}
+
+	capture := &captureOutput{}
+	exec, nc, _ := newTestExecutor(t, 1, capture)
+
+	// The embedded file carries CRLF data with EndOfLine="LF".
+	// OnRun outputs the byte count of the file; after LF conversion "line1\nline2\n"
+	// is 12 bytes, whereas the CRLF original "line1\r\nline2\r\n" would be 14.
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		TaskID:    "task-embeds-eol",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		OnRun: &protocol.Action{
+			Command: "sh",
+			// wc -c counts bytes; "line1\nline2\n" = 12 bytes.
+			Args: []string{"-c", "wc -c < eol.txt | tr -d ' '"},
+		},
+		EmbeddedFiles: []protocol.EmbeddedFile{
+			{Name: "eol.txt", Data: "line1\r\nline2\r\n", EndOfLine: "LF"},
+		},
+	}
+
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "succeeded" {
+		t.Errorf("terminal status = %q; want %q", last.Status, "succeeded")
+	}
+
+	// After LF conversion: "line1\nline2\n" = 12 bytes.
+	lines := capture.all()
+	found := false
+	for _, l := range lines {
+		if l.stream == "stdout" && l.line == "12" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected byte count %q (LF conversion applied); got: %v", "12", lines)
+	}
+}
+
+// TestExecutor_Dispatch_embeddedFiles_writeFail verifies that a write failure
+// during step-level embedded-file materialization fails the task cleanly with a
+// running→failed status transition, without panicking.
+func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell commands")
+	}
+
+	exec, nc, _ := newTestExecutor(t, 1, nil)
+
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		TaskID:    "task-embeds-writefail",
+		AttemptID: "attempt-1",
+		JobID:     "job-1",
+		OnRun: &protocol.Action{
+			Command: "sh",
+			Args:    []string{"-c", "echo should-not-run"},
+		},
+		// Path traversal filename triggers validation failure in writeEmbeddedFile.
+		EmbeddedFiles: []protocol.EmbeddedFile{
+			{Name: "evil", Filename: "../escape.txt", Data: "bad"},
+		},
+	}
+
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Pre-execution failures still publish running→failed (2 status messages).
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "failed" {
+		t.Errorf("terminal status = %q; want %q (path traversal should fail task cleanly)", last.Status, "failed")
+	}
+	if last.ExitCode == nil {
+		t.Fatal("ExitCode is nil; want -1")
+	}
+	if *last.ExitCode != -1 {
+		t.Errorf("ExitCode = %d; want -1", *last.ExitCode)
+	}
+	const wantSub = "must not contain path separators"
+	if !strings.Contains(last.Message, wantSub) {
+		t.Errorf("Message = %q; want it to contain %q", last.Message, wantSub)
 	}
 }
 

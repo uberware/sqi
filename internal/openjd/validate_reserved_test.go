@@ -1,0 +1,340 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package openjd_test
+
+// Tests for reserved capability-name and attribute-value checks.
+//
+// All checks are gated behind EnforceLimits (part of the limits bucket).
+// Each table case is exercised twice:
+//   - EnforceLimits=true  → if wantPtr != "", the error must appear at that pointer.
+//   - EnforceLimits=false → the reserved-name error must NOT appear, proving the gate.
+
+import (
+	"testing"
+
+	"github.com/uberware/sqi/internal/openjd"
+)
+
+func TestValidate_ReservedNames_Gated(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*openjd.JobTemplate)
+		wantPtr string // "" → mutation is valid; no error expected
+	}{
+		// ── Reserved AMOUNT minimums ──────────────────────────────────────────
+
+		{
+			name: "amount.worker.vcpu min 1 ok (at reserved minimum)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("1")}},
+				}
+			},
+		},
+		{
+			name: "amount.worker.vcpu min 0 error (below reserved minimum 1)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("0")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
+		},
+		{
+			name: "amount.worker.vcpu min 4 ok (above reserved minimum 1)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("4")}},
+				}
+			},
+		},
+
+		{
+			name: "amount.worker.memory min 0 ok (at reserved minimum 0)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.memory", Min: new("0")}},
+				}
+			},
+		},
+		{
+			name: "amount.worker.memory min -1 error (below reserved minimum 0)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.memory", Min: new("-1")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
+		},
+
+		{
+			name: "amount.worker.gpu min 0 ok (at reserved minimum 0)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.gpu", Min: new("0")}},
+				}
+			},
+		},
+		{
+			name: "amount.worker.gpu.memory min 0 ok (at reserved minimum 0)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.gpu.memory", Min: new("0")}},
+				}
+			},
+		},
+		{
+			name: "amount.worker.disk.scratch min 0 ok (at reserved minimum 0)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.disk.scratch", Min: new("0")}},
+				}
+			},
+		},
+
+		// Non-reserved names are unconstrained — any value is accepted.
+		{
+			name: "non-reserved amount.worker.custom min 0 ok (unconstrained)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.custom", Min: new("0")}},
+				}
+			},
+		},
+
+		// Reserved names are matched case-insensitively.
+		{
+			name: "reserved name case-insensitive Amount.Worker.VCPU min 0 error",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "Amount.Worker.VCPU", Min: new("0")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
+		},
+
+		// Template references in Min/Max cannot be evaluated; skip the check.
+		{
+			name: "amount.worker.vcpu min with template ref skips reserved check",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("{{Param.MinCPU}}")}},
+				}
+			},
+		},
+
+		// Max is checked independently when present.
+		{
+			name: "amount.worker.vcpu min 1 max 0 error (max below reserved minimum)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("1"), Max: new("0")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/max",
+		},
+		{
+			name: "amount.worker.vcpu max 1 only (no min) ok (at reserved minimum)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Max: new("1")}},
+				}
+			},
+		},
+		{
+			name: "amount.worker.vcpu max 0 only (no min) error (max below reserved minimum)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Max: new("0")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/max",
+		},
+
+		// ── Reserved ATTRIBUTE allowed values ─────────────────────────────────
+
+		{
+			name: "attr.worker.os.family anyOf linux ok",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"linux"}}},
+				}
+			},
+		},
+		{
+			name: "attr.worker.os.family anyOf windows ok",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"windows"}}},
+				}
+			},
+		},
+		{
+			name: "attr.worker.os.family anyOf macos ok",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"macos"}}},
+				}
+			},
+		},
+		{
+			name: "attr.worker.os.family anyOf linux windows ok (multiple valid values)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"linux", "windows"}}},
+				}
+			},
+		},
+		{
+			name: "attr.worker.os.family anyOf solaris error",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"solaris"}}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/0",
+		},
+		{
+			name: "attr.worker.os.family anyOf linux then solaris: second entry error",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"linux", "solaris"}}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/1",
+		},
+
+		{
+			name: "attr.worker.cpu.arch allOf x86_64 ok",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.cpu.arch", AllOf: []string{"x86_64"}}},
+				}
+			},
+		},
+		{
+			name: "attr.worker.cpu.arch allOf arm64 ok",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.cpu.arch", AllOf: []string{"arm64"}}},
+				}
+			},
+		},
+		{
+			name: "attr.worker.cpu.arch allOf sparc error",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.cpu.arch", AllOf: []string{"sparc"}}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/attributes/0/allOf/0",
+		},
+
+		// Non-reserved attribute names are unconstrained — any value is accepted.
+		{
+			name: "non-reserved attr.worker.custom any value ok",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.custom", AnyOf: []string{"anything"}}},
+				}
+			},
+		},
+
+		// Reserved attribute names are matched case-insensitively.
+		{
+			name: "reserved attr name case-insensitive Attr.Worker.OS.Family anyOf solaris error",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "Attr.Worker.OS.Family", AnyOf: []string{"solaris"}}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/0",
+		},
+
+		// Attribute VALUES are compared case-sensitively: "Linux" != "linux".
+		{
+			name: "attr.worker.os.family anyOf Linux (uppercase) error (values are case-sensitive)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"Linux"}}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/0",
+		},
+
+		// ── NaN/Inf escape in reserved amounts ─────────────────────────────────
+
+		{
+			name: "amount.worker.vcpu min NaN error (non-finite value)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("NaN")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
+		},
+		{
+			name: "amount.worker.vcpu min +Inf error (non-finite value)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("+Inf")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
+		},
+
+		// ── Non-numeric reserved-amount bound is a validation error ────────────
+		// A non-numeric bound (that is not a template reference) is a structural
+		// error, not a silently-skipped value.  Ensures the nilerr fix is correct.
+
+		{
+			name: "amount.worker.vcpu min non-numeric string error",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("abc")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
+		},
+
+		// ── Reserved amount with neither min nor max ───────────────────────────
+
+		{
+			name: "amount.worker.vcpu with neither min nor max ok (no reserved constraint)",
+			mutate: func(t *openjd.JobTemplate) {
+				t.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu"}},
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// ── EnforceLimits=true: reserved-name errors must fire ────────────
+			tmplOn := mustParse(t, minimalValidYAML())
+			tc.mutate(tmplOn)
+			errsOn := openjd.ValidateWithOptions(tmplOn, openjd.ValidateOptions{EnforceLimits: true})
+
+			if tc.wantPtr == "" {
+				if len(errsOn) != 0 {
+					t.Fatalf("EnforceLimits=true: expected no errors, got %v", errsOn)
+				}
+			} else if !containsPointer(errsOn, tc.wantPtr) {
+				t.Fatalf("EnforceLimits=true: expected pointer %q, got %v", tc.wantPtr, errsOn)
+			}
+
+			// ── EnforceLimits=false: reserved-name check must be gated off ───
+			tmplOff := mustParse(t, minimalValidYAML())
+			tc.mutate(tmplOff)
+			errsOff := openjd.ValidateWithOptions(tmplOff, openjd.ValidateOptions{EnforceLimits: false})
+
+			if tc.wantPtr != "" && containsPointer(errsOff, tc.wantPtr) {
+				t.Fatalf("EnforceLimits=false: reserved-name pointer %q should be gated off, got %v", tc.wantPtr, errsOff)
+			}
+			if tc.wantPtr == "" && len(errsOff) != 0 {
+				t.Fatalf("EnforceLimits=false: expected no errors, got %v", errsOff)
+			}
+		})
+	}
+}

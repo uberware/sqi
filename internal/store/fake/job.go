@@ -56,8 +56,9 @@ func (s *Store) ListJobs(_ context.Context, opts store.ListJobsOptions) (store.P
 }
 
 // UpdateJob replaces only the mutable user-settable fields of an existing job.
-// status, started_at, and completed_at are preserved from the stored record
-// to match the sqlite implementation which excludes those columns.
+// status, started_at, completed_at, and parameters are preserved from the stored
+// record to match the sqlite implementation which excludes those columns.
+// parameters is persisted at submission time and is not mutable via UpdateJob.
 func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,6 +74,7 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	job.StartedAt = existing.StartedAt
 	job.CompletedAt = existing.CompletedAt
 	job.CreatedAt = existing.CreatedAt
+	job.Parameters = existing.Parameters // persisted at submit; not mutable via UpdateJob (parity with SQLite)
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job
 	return job, nil

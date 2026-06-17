@@ -52,6 +52,36 @@ const (
 	JobParamTypePath JobParamType = "PATH"
 )
 
+// PathObjectType is the objectType discriminator for a PATH [JobParameter].
+// An empty value means the field was not set; the OpenJD spec default when
+// absent is DIRECTORY.  Only valid on PATH parameters.
+type PathObjectType string
+
+const (
+	// PathObjectTypeFile means the path refers to a regular file.
+	PathObjectTypeFile PathObjectType = "FILE"
+	// PathObjectTypeDirectory means the path refers to a directory.
+	// This is the spec default when objectType is absent.
+	PathObjectTypeDirectory PathObjectType = "DIRECTORY"
+)
+
+// PathDataFlow is the dataFlow discriminator for a PATH [JobParameter].
+// An empty value means the field was not set; the OpenJD spec default when
+// absent is NONE.  Only valid on PATH parameters.
+type PathDataFlow string
+
+const (
+	// PathDataFlowNone means the path has no specific data-flow direction.
+	// This is the spec default when dataFlow is absent.
+	PathDataFlowNone PathDataFlow = "NONE"
+	// PathDataFlowIn means the path is read as input by the job.
+	PathDataFlowIn PathDataFlow = "IN"
+	// PathDataFlowOut means the path is written as output by the job.
+	PathDataFlowOut PathDataFlow = "OUT"
+	// PathDataFlowInOut means the path is both read and written.
+	PathDataFlowInOut PathDataFlow = "INOUT"
+)
+
 // JobParameter is one entry in [JobTemplate.ParameterDefinitions].
 type JobParameter struct {
 	// Name is the parameter identifier; must match [A-Za-z_][A-Za-z0-9_]*.
@@ -73,6 +103,14 @@ type JobParameter struct {
 	// MinLength / MaxLength constrain STRING and PATH parameters.
 	MinLength *int
 	MaxLength *int
+	// ObjectType narrows how the PATH value is interpreted: FILE or DIRECTORY.
+	// Empty means absent; the spec default is DIRECTORY.
+	// Only valid for PATH parameters; validation rejects it on other types.
+	ObjectType PathObjectType
+	// DataFlow describes the data-flow direction of the PATH value.
+	// Empty means absent; the spec default is NONE.
+	// Only valid for PATH parameters; validation rejects it on other types.
+	DataFlow PathDataFlow
 }
 
 // ─── Environments ────────────────────────────────────────────────────────────
@@ -238,6 +276,17 @@ type TaskChunks struct {
 
 // ─── Embedded files ───────────────────────────────────────────────────────────
 
+// EmbeddedFileType is the type discriminator for an [EmbeddedFile].
+// In jobtemplate-2023-09 the only allowed value is [EmbeddedFileTypeText].
+// An empty value means the field was absent in the source document.
+type EmbeddedFileType string
+
+const (
+	// EmbeddedFileTypeText is the only supported embedded-file type in
+	// jobtemplate-2023-09.  It means the file contains UTF-8 plain text.
+	EmbeddedFileTypeText EmbeddedFileType = "TEXT"
+)
+
 // EmbeddedFile is a plain-text file embedded directly in the job template.
 // The worker materializes it to the session working directory before running
 // the associated actions.
@@ -248,6 +297,10 @@ type EmbeddedFile struct {
 	Filename string
 	// Data is the file content (may contain format-string references).
 	Data string
+	// Type is the file-type discriminator.  In jobtemplate-2023-09 the only
+	// allowed value is [EmbeddedFileTypeText].  Empty means absent; validation
+	// rejects it as required.
+	Type EmbeddedFileType
 	// Runnable, when true, sets the file's execute permission.
 	Runnable bool
 	// EndOfLine is "AUTO", "LF", or "CRLF".  Empty means "AUTO".

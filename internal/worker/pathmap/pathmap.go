@@ -49,9 +49,13 @@ import (
 // to each session working directory.
 const PathMappingFileName = "path_mapping.json"
 
+// PathMappingVersion is the OpenJD path-mapping schema version emitted in the
+// "version" field of the path_mapping.json envelope.
+const PathMappingVersion = "pathmapping-1.0"
+
 // ── Lookup ────────────────────────────────────────────────────────────────────
 
-// Lookup is an ordered list of source-path-format → destination-path pairs
+// Lookup is an ordered list of source-path → destination-path pairs
 // derived from an [protocol.AssignMsg]'s PathMap field.
 //
 // Create a Lookup via [Parse].  The zero value is safe to use and behaves
@@ -62,24 +66,24 @@ type Lookup struct {
 
 // Parse validates and converts rules into a Lookup.
 //
-// It returns a non-nil error if any rule with a non-empty SourcePathFormat
-// has an empty DestinationPath, identifying the offending source so operators
-// can diagnose a misconfigured storage location.
+// It returns a non-nil error if any rule with a non-empty SourcePath has an
+// empty DestinationPath, identifying the offending source path so operators can
+// diagnose a misconfigured storage location.
 //
-// Rules where both SourcePathFormat and DestinationPath are empty are accepted
+// Rules where both SourcePath and DestinationPath are empty are accepted
 // silently — they carry no mapping information and [Lookup.Apply] skips them.
 //
 // An empty or nil rules slice is valid; Parse returns a non-nil empty Lookup
 // and nil error.
 func Parse(rules []protocol.PathMapRule) (*Lookup, error) {
 	for _, r := range rules {
-		// Only error if a named location (non-empty source) has no resolved path.
-		// A rule with both fields empty is a no-op and is accepted without error.
-		if r.SourcePathFormat != "" && r.DestinationPath == "" {
+		// Only error if a named location (non-empty source path) has no resolved
+		// destination. A rule with both fields empty is a no-op, accepted silently.
+		if r.SourcePath != "" && r.DestinationPath == "" {
 			return nil, fmt.Errorf(
-				"pathmap: named location %q has an empty resolved path; "+
+				"pathmap: source path %q has an empty resolved path; "+
 					"check that the storage location is correctly configured for the worker's compute location",
-				r.SourcePathFormat,
+				r.SourcePath,
 			)
 		}
 	}
@@ -99,9 +103,9 @@ func (l *Lookup) Len() int {
 
 // Apply performs resolved-mode path substitution on s.
 //
-// Each rule's SourcePathFormat is replaced with its DestinationPath, globally,
-// in declaration order.  A source path that appears more than once in s is
-// replaced every time.  Rules with an empty SourcePathFormat are skipped.
+// Each rule's SourcePath is replaced with its DestinationPath, globally, in
+// declaration order.  A source path that appears more than once in s is
+// replaced every time.  Rules with an empty SourcePath are skipped.
 //
 // If the Lookup is nil or empty, s is returned unchanged.
 func (l *Lookup) Apply(s string) string {
@@ -109,12 +113,12 @@ func (l *Lookup) Apply(s string) string {
 		return s
 	}
 	for _, r := range l.rules {
-		if r.SourcePathFormat == "" {
-			// Skip rules with empty source; they cannot appear in a command
+		if r.SourcePath == "" {
+			// Skip rules with empty source path; they cannot appear in a command
 			// string and a global replace of "" would corrupt every character.
 			continue
 		}
-		s = strings.ReplaceAll(s, r.SourcePathFormat, r.DestinationPath)
+		s = strings.ReplaceAll(s, r.SourcePath, r.DestinationPath)
 	}
 	return s
 }
@@ -143,21 +147,31 @@ func (l *Lookup) ApplyToAction(action *protocol.Action) *protocol.Action {
 
 // ── Path mapping file ─────────────────────────────────────────────────────────
 
-// pathMappingEntry is the on-disk JSON representation of a single
-// source→destination pair in the OpenJD path_mapping.json file.
-// The field names match the OpenJD path mapping specification exactly.
+// pathMappingEntry is the on-disk JSON representation of a single path-mapping
+// rule in the OpenJD path_mapping.json file.  The field names match the OpenJD
+// pathmapping-1.0 schema exactly.
 type pathMappingEntry struct {
 	SourcePathFormat string `json:"source_path_format"`
+	SourcePath       string `json:"source_path"`
 	DestinationPath  string `json:"destination_path"`
+}
+
+// pathMappingDoc is the top-level JSON envelope for the OpenJD pathmapping-1.0
+// file: a "version" string plus the ordered list of rules under
+// "path_mapping_rules".
+type pathMappingDoc struct {
+	Version          string             `json:"version"`
+	PathMappingRules []pathMappingEntry `json:"path_mapping_rules"`
 }
 
 // WritePathMappingFile serializes rules as JSON and writes them to
 // <workDir>/path_mapping.json.
 //
-// The file format is a JSON array of objects with "source_path_format" and
-// "destination_path" keys, matching the OpenJD path mapping specification.
-// Applications with native OpenJD support read this file to translate
-// internally referenced paths without additional integration.
+// The file is the OpenJD pathmapping-1.0 envelope: a top-level object with a
+// "version" field set to [PathMappingVersion] and a "path_mapping_rules" array
+// of objects carrying "source_path_format", "source_path", and
+// "destination_path" keys.  Applications with native OpenJD support read this
+// file to translate internally referenced paths without additional integration.
 //
 // If rules is empty, no file is written (an empty path map carries no
 // mapping information and applications should treat a missing file as
@@ -174,11 +188,17 @@ func WritePathMappingFile(workDir string, rules []protocol.PathMapRule) error {
 	for i, r := range rules {
 		entries[i] = pathMappingEntry{
 			SourcePathFormat: r.SourcePathFormat,
+			SourcePath:       r.SourcePath,
 			DestinationPath:  r.DestinationPath,
 		}
 	}
 
-	data, err := json.MarshalIndent(entries, "", "  ")
+	doc := pathMappingDoc{
+		Version:          PathMappingVersion,
+		PathMappingRules: entries,
+	}
+
+	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		// Unreachable in practice: entries contains only strings.
 		return fmt.Errorf("pathmap: marshal %s: %w", PathMappingFileName, err)

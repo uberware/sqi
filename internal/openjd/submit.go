@@ -20,18 +20,35 @@ import (
 // expand the parameter space, persist the normalized job/step/task rows
 // alongside the verbatim raw template, and enforce storage-location coverage.
 //
-// Create one with [NewSubmitter] and reuse it across requests.
+// Create one with [NewSubmitter] or [NewSubmitterWithOptions] and reuse it
+// across requests.
 type Submitter struct {
-	st    store.Store
-	locSt store.StorageLocationStore
+	st            store.Store
+	locSt         store.StorageLocationStore
+	enforceLimits bool
 }
 
-// NewSubmitter returns a [Submitter] backed by st.  The store must implement
-// [store.StorageLocationStore] (which [store.Store] always does) so that
-// named-location references in submitted templates can be validated at
-// submission time.
+// SubmitterOptions carries optional configuration for a [Submitter].
+type SubmitterOptions struct {
+	// EnforceLimits controls whether quantitative OpenJD limit checks are run
+	// during validation.  Mirrors [ValidateOptions.EnforceLimits].
+	// Defaults to true when using [NewSubmitter].
+	EnforceLimits bool
+}
+
+// NewSubmitter returns a [Submitter] backed by st with default options
+// (EnforceLimits: true).  The store must implement [store.StorageLocationStore]
+// (which [store.Store] always does) so that named-location references in
+// submitted templates can be validated at submission time.
 func NewSubmitter(st store.Store) *Submitter {
-	return &Submitter{st: st, locSt: st}
+	return NewSubmitterWithOptions(st, SubmitterOptions{EnforceLimits: true})
+}
+
+// NewSubmitterWithOptions returns a [Submitter] backed by st with the supplied
+// options.  Use this when the caller needs to control [SubmitterOptions.EnforceLimits]
+// based on operator configuration.
+func NewSubmitterWithOptions(st store.Store, opts SubmitterOptions) *Submitter {
+	return &Submitter{st: st, locSt: st, enforceLimits: opts.EnforceLimits}
 }
 
 // ── SubmitOptions ─────────────────────────────────────────────────────────────
@@ -53,6 +70,12 @@ type SubmitOptions struct {
 	Priority int
 	// Project is an optional label for grouping jobs in the UI and API.
 	Project string
+	// Parameters holds the caller-supplied values for job-level parameters
+	// declared in the template's parameterDefinitions.  Keys are parameter
+	// names; values are raw strings.  Missing entries are filled from each
+	// parameter's Default; parameters with neither a supplied value nor a
+	// default produce a [SubmitValidationError].
+	Parameters map[string]string
 }
 
 // ── SubmitResult ──────────────────────────────────────────────────────────────
@@ -66,6 +89,11 @@ type SubmitResult struct {
 	Steps []store.Step
 	// Tasks holds all persisted task rows across all steps.
 	Tasks []store.Task
+	// BoundParameters is the fully-resolved name→value map produced by
+	// [BindJobParameters].  Defaults from the template are merged in; every
+	// declared parameter is guaranteed to have an entry here.
+	// Later tasks ({{Param.*}} resolution, worker carry) consume this map.
+	BoundParameters map[string]string
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
@@ -102,13 +130,19 @@ func (s *Submitter) Submit(
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
-	if errs := Validate(tmpl); len(errs) > 0 {
+	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: s.enforceLimits}); len(errs) > 0 {
 		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
 	}
 
 	// ── 2b. Validate named storage location coverage ────────────
 	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
 		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
+	}
+
+	// ── 2c. Bind job parameters ────────────────────────────────────────────
+	boundParams, bindErrs := BindJobParameters(tmpl.ParameterDefinitions, opts.Parameters)
+	if len(bindErrs) > 0 {
+		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
 	}
 
 	// ── 3. Resolve priority default ───────────────────────────────────────
@@ -131,8 +165,11 @@ func (s *Submitter) Submit(
 		Project:        opts.Project,
 		RawTemplate:    rawTemplate,
 		TemplateFormat: format,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		// Persist the fully-bound parameter values so the scheduler can carry
+		// them to the worker without re-deriving from the raw template.
+		Parameters: boundParams,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 
 	job, err = s.st.CreateJob(ctx, job)
@@ -140,84 +177,131 @@ func (s *Submitter) Submit(
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
-	result := &SubmitResult{Job: job}
+	result := &SubmitResult{Job: job, BoundParameters: boundParams}
 
 	// ── 5. Create Step and Task rows ──────────────────────────────────────
+	// Each step is handled by a helper to keep Submit's cyclomatic complexity
+	// within bounds.
 	for i, stepTmpl := range tmpl.Steps {
-		// Collect dependency names from the template.
-		dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
-		for _, dep := range stepTmpl.Dependencies {
-			dependsOn = append(dependsOn, dep.DependsOn)
-		}
-
-		// Initial step status: ready immediately when there are no deps.
-		stepStatus := store.StepStatusReady
-		if len(dependsOn) > 0 {
-			stepStatus = store.StepStatusPending
-		}
-
-		hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
-
-		step := store.Step{
-			ID:               uuid.NewString(),
-			JobID:            job.ID,
-			Name:             stepTmpl.Name,
-			DependsOn:        dependsOn,
-			StepOrder:        i,
-			Status:           stepStatus,
-			HostRequirements: hostReqs,
-			ComputeLocation:  computeLoc,
-			CreatedAt:        now,
-			UpdatedAt:        now,
-		}
-
-		step, err = s.st.CreateStep(ctx, step)
+		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, now)
 		if err != nil {
-			return nil, fmt.Errorf("openjd: submit: create step %q: %w", stepTmpl.Name, err)
+			return nil, err
 		}
-
-		result.Steps = append(result.Steps, step)
-
-		// Task status mirrors the step's initial status.
-		taskStatus := store.TaskStatusReady
-		if stepStatus == store.StepStatusPending {
-			taskStatus = store.TaskStatusPending
-		}
-
-		// ── 6. Expand parameter space ──────────────────────────────────────
-		taskParamList, err := ExpandParameterSpace(stepTmpl.ParameterSpace)
-		if err != nil {
-			return nil, &SubmitValidationError{
-				Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),
-			}
-		}
-
-		// ── 7. Create one Task row per parameter combination ───────────────
-		for j, params := range taskParamList {
-			task := store.Task{
-				ID:         uuid.NewString(),
-				JobID:      job.ID,
-				StepID:     step.ID,
-				Name:       buildTaskName(stepTmpl.Name, j, params),
-				Parameters: params,
-				Status:     taskStatus,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-
-			task, err = s.st.CreateTask(ctx, task)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"openjd: submit: create task %d of step %q: %w",
-					j, stepTmpl.Name, err,
-				)
-			}
-
-			result.Tasks = append(result.Tasks, task)
-		}
+		result.Steps = append(result.Steps, steps...)
+		result.Tasks = append(result.Tasks, tasks...)
 	}
 
 	return result, nil
+}
+
+// createStepWithTasks creates one [store.Step] row and all of its [store.Task]
+// rows for a single step template. It is extracted from [Submit] to reduce
+// that function's cyclomatic complexity.
+func (s *Submitter) createStepWithTasks(
+	ctx context.Context,
+	job store.Job,
+	stepTmpl StepTemplate,
+	stepIdx int,
+	boundParams map[string]string,
+	now time.Time,
+) (steps []store.Step, tasks []store.Task, err error) {
+	// Collect dependency names from the template.
+	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
+	for _, dep := range stepTmpl.Dependencies {
+		dependsOn = append(dependsOn, dep.DependsOn)
+	}
+
+	// Initial step status: ready immediately when there are no deps.
+	stepStatus := store.StepStatusReady
+	if len(dependsOn) > 0 {
+		stepStatus = store.StepStatusPending
+	}
+
+	hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
+
+	step := store.Step{
+		ID:               uuid.NewString(),
+		JobID:            job.ID,
+		Name:             stepTmpl.Name,
+		DependsOn:        dependsOn,
+		StepOrder:        stepIdx,
+		Status:           stepStatus,
+		HostRequirements: hostReqs,
+		ComputeLocation:  computeLoc,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	step, err = s.st.CreateStep(ctx, step)
+	if err != nil {
+		return nil, nil, fmt.Errorf("openjd: submit: create step %q: %w", stepTmpl.Name, err)
+	}
+
+	// Task status mirrors the step's initial status.
+	taskStatus := store.TaskStatusReady
+	if stepStatus == store.StepStatusPending {
+		taskStatus = store.TaskStatusPending
+	}
+
+	// ── Expand parameter space ──────────────────────────────────────────────
+	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first.
+	resolvedPS, resolveErrs := ResolveParameterSpaceParams(stepTmpl.ParameterSpace, boundParams)
+	if len(resolveErrs) > 0 {
+		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
+		for k := range resolveErrs {
+			resolveErrs[k].Pointer = stepPrefix + resolveErrs[k].Pointer
+		}
+		return nil, nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: resolve step %q parameter space: %w", stepTmpl.Name, resolveErrs),
+		}
+	}
+
+	// Re-run the gated per-parameter value-count and overlap limits on the
+	// RESOLVED space. Validation (step 2) runs on the unresolved template and
+	// skips ranges containing {{...}}; without this re-check a parameterized
+	// range like "{{Param.Start}}-{{Param.End}}" would bypass maxTaskParamValues
+	// and overlap detection entirely. Gated by enforceLimits to match validation.
+	if s.enforceLimits && resolvedPS != nil {
+		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
+		if errs := validateParameterSpaceLimits(*resolvedPS, stepPrefix+"/parameterSpace"); len(errs) > 0 {
+			return nil, nil, &SubmitValidationError{
+				Cause: fmt.Errorf("openjd: submit: step %q resolved parameter space: %w", stepTmpl.Name, errs),
+			}
+		}
+	}
+
+	taskParamList, err := ExpandParameterSpace(resolvedPS)
+	if err != nil {
+		return nil, nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),
+		}
+	}
+
+	// ── Create one Task row per parameter combination ───────────────────────
+	for j, params := range taskParamList {
+		task := store.Task{
+			ID:         uuid.NewString(),
+			JobID:      job.ID,
+			StepID:     step.ID,
+			Name:       buildTaskName(stepTmpl.Name, j, params),
+			Parameters: params,
+			Status:     taskStatus,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+
+		task, err = s.st.CreateTask(ctx, task)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"openjd: submit: create task %d of step %q: %w",
+				j, stepTmpl.Name, err,
+			)
+		}
+
+		tasks = append(tasks, task)
+	}
+
+	return []store.Step{step}, tasks, nil
 }
 
 // ── Storage location validation ────────────────────────────────────

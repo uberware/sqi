@@ -30,3 +30,44 @@ func TestExpand_MalformedCombinationExpr(t *testing.T) {
 		t.Fatal("expected error for malformed combination expression 'A**B', got nil")
 	}
 }
+
+// TestExpand_TaskCountExplosionRejected verifies the resource-exhaustion guard:
+// a Cartesian product whose task count exceeds the per-step cap is rejected
+// BEFORE materialization, rather than allocating ~1M task rows.
+func TestExpand_TaskCountExplosionRejected(t *testing.T) {
+	// 1024 * 1024 = 1,048,576 tasks, just over the 1,000,000 cap.
+	a, b := "1-1024", "1-1024"
+	prod := "A*B"
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{Name: "A", Type: openjd.TaskParamTypeInt, RangeExpr: &a},
+			{Name: "B", Type: openjd.TaskParamTypeInt, RangeExpr: &b},
+		},
+		Combination: &prod,
+	}
+	if _, err := openjd.ExpandParameterSpace(ps); err == nil {
+		t.Fatal("expected error for task-count explosion (1024*1024 > cap), got nil")
+	}
+}
+
+// TestExpand_TaskCountGuardRespectsZip verifies the guard counts via the
+// combination tree, not a naive product: zipping two 1024-value parameters
+// yields 1024 tasks (not ~1M), so it must be accepted.
+func TestExpand_TaskCountGuardRespectsZip(t *testing.T) {
+	a, b := "1-1024", "1-1024"
+	zip := "(A,B)"
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{Name: "A", Type: openjd.TaskParamTypeInt, RangeExpr: &a},
+			{Name: "B", Type: openjd.TaskParamTypeInt, RangeExpr: &b},
+		},
+		Combination: &zip,
+	}
+	rows, err := openjd.ExpandParameterSpace(ps)
+	if err != nil {
+		t.Fatalf("zip of two 1024-value params should be accepted (1024 tasks), got error: %v", err)
+	}
+	if len(rows) != 1024 {
+		t.Fatalf("zip expansion produced %d tasks, want 1024", len(rows))
+	}
+}

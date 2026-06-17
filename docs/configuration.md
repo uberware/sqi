@@ -317,6 +317,31 @@ discovery:
 
 ---
 
+## `openjd` — OpenJD submission and validation
+
+### `openjd.enforce_limits`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_OPENJD_ENFORCE_LIMITS` |
+| **CLI flag** | `--openjd-enforce-limits` |
+
+When `true`, submitted job templates are checked against the OpenJD quantitative
+limits — maximum name lengths, parameter-definition counts, per-parameter value
+counts, and host-requirement counts. Set to `false` only in operator
+environments that predate strict limit enforcement and cannot yet update all
+templates; resource-exhaustion guards (the per-range value cap and the per-step
+task-count cap) always apply regardless of this setting.
+
+```yaml
+openjd:
+  enforce_limits: true
+```
+
+---
+
 ## Quick reference table
 
 | Key | Type | Default | Env var | CLI flag |
@@ -335,6 +360,7 @@ discovery:
 | `scheduler.max_tasks_per_worker` | int | `1` | `SQI_SCHEDULER_MAX_TASKS_PER_WORKER` | — |
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
+| `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
 
 ---
 

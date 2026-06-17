@@ -10,11 +10,12 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/uberware/sqi/internal/worker/envutil"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
@@ -165,36 +166,48 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 			slog.String("attempt_id", msg.AttemptID),
 			slog.Any("error", err),
 		)
-		failed = true
-		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
-		minusOne := -1
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &minusOne, err.Error(), nil, time.Now())
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		e.failPreExec(msg, sess.ID, &failed, err.Error())
 		return
 	}
 
-	// ── Write OpenJD path mapping file ──────────────────────────────
-	// Written before execProcess so the launched process (and any future
-	// environment setup or teardown actions) can read it from the session
-	// working directory.  An empty PathMap produces no file (no-op).
-	if writeErr := pathmap.WritePathMappingFile(sess.WorkDir, msg.PathMap); writeErr != nil {
+	// ── OpenJD path mapping file ────────────────────────────────────
+	// The pathmapping-1.0 path_mapping.json file is written once at session
+	// creation (session.Manager.Create) so that both environment actions and the
+	// task action can rely on Session.PathMappingRulesFile.  It is intentionally
+	// NOT written here, to avoid a double-write.
+
+	// ── Resolve OpenJD {{...}} format strings ──────────────────────────────────
+	// The session working directory (Session.WorkingDirectory) is only known now,
+	// at run time, so command/args, environment-variable values, and embedded
+	// file data are resolved here on the worker rather than server-side.  A bad
+	// reference fails the task cleanly with a descriptive message naming the
+	// offending variable.  resolvedFiles are the step embedded files with their
+	// data resolved against the task scope (which includes Task.File.*).
+	resolvedRun, resolvedEnvVars, resolvedFiles, err := resolveAssignment(msg, sess)
+	if err != nil {
+		e.failResolution(ctx, msg, sess, &failed, err)
+		return
+	}
+
+	// ── Materialize step-level embedded files ────────────────────────────────
+	// Files are written into the session working directory before OnRun so the
+	// task command can reference them by name (and by {{Task.File.<name>}}).
+	// Environment-level embedded files are materialized earlier, at
+	// environment-enter time (session.enterOne).  Data was resolved above against
+	// the task scope; the writer materializes the already-resolved copies.
+	if err := sess.WriteEmbeddedFiles(resolvedFiles); err != nil {
 		e.logger.ErrorContext(
-			ctx, "executor: failed to write path_mapping.json — failing task",
+			ctx, "executor: step embedded file write failed — failing task",
 			slog.String("task_id", msg.TaskID),
 			slog.String("attempt_id", msg.AttemptID),
-			slog.String("work_dir", sess.WorkDir),
-			slog.Any("error", writeErr),
+			slog.Any("error", err),
 		)
-		failed = true
-		e.statusPub.Running(context.Background(), msg, sess.ID, nil, time.Now())
-		minusOne := -1
-		e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", &minusOne, writeErr.Error(), nil, time.Now())
-		e.m.TasksTotal.WithLabelValues("failed").Inc()
+		e.failPreExec(msg, sess.ID, &failed, err.Error())
 		return
 	}
 
 	// ── Execute process ───────────────────────────────────────────────────────
-	result := e.execProcess(taskCtx, msg, sess, run, lookup)
+	result := e.execProcess(taskCtx, msg, sess, run, lookup, resolvedRun, resolvedEnvVars)
 
 	// ── Flush buffered log output ───────────────────────────────────
 	e.flushTaskLogs(ctx, msg, sess.ID)
@@ -223,7 +236,8 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	switch {
 	case openjdFailed:
 		// The task self-reported failure via openjd_fail.  The process was
-		// terminated via taskCancel (SIGTERM → SIGKILL); treat the terminal
+		// terminated via taskCancel using the action's cancelation method
+		// (TERMINATE by default → immediate SIGKILL); treat the terminal
 		// state as "failed" with the process-supplied reason rather than
 		// "canceled" so the server records the correct outcome.
 		// openjdFailReason may be an empty string when the process emitted
@@ -349,6 +363,75 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	}
 }
 
+// resolveAssignment resolves the OpenJD {{...}} format strings for a task:
+//   - the OnRun action against the task-action scope (Task.Param.*, Task.File.*,
+//     Param.*, Session.*);
+//   - each step embedded file's data against that same task scope, so file data
+//     may reference Task.Param.* and Task.File.* (the materialized path of any
+//     step file, including itself or a sibling);
+//   - the merged environment-variable values against the environment scope
+//     (Task.Param.* intentionally unavailable; Env.File.* of every environment
+//     exposed so env-var values may reference an environment file's path).
+//
+// It returns the resolved action copy, the resolved environment-variable map,
+// and the step embedded files with their data resolved, or a descriptive error
+// naming the offending reference.
+func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	workDir := sess.WorkDir
+	pathMapFile := sess.PathMappingRulesFile()
+	hasPathMap := sess.HasPathMappingRules()
+
+	taskScope := fmtres.TaskScope(msg.JobParameters, msg.Parameters, workDir, pathMapFile, hasPathMap)
+	// Expose Task.File.<name> -> materialized path for each step embedded file
+	// BEFORE resolving the command/args and the files' own data, so both can
+	// reference a file's on-disk path.
+	if err := fmtres.AddFileVars(taskScope, "Task.File", msg.EmbeddedFiles, workDir); err != nil {
+		return nil, nil, nil, fmt.Errorf("step embedded files: %w", err)
+	}
+	resolvedRun, err := fmtres.ResolveAction(msg.OnRun, taskScope)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve command: %w", err)
+	}
+	resolvedFiles, err := fmtres.ResolveEmbeddedFiles(msg.EmbeddedFiles, taskScope)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
+	}
+
+	// Reuse the static environment that session.Create already resolved at
+	// enter time. Each environment's Variables were resolved against that
+	// environment's OWN Env.File.* scope; re-resolving here against a merged
+	// all-environments scope would both duplicate the work and risk resolving a
+	// same-named Env.File.* reference to a different file (last-wins across
+	// environments). The session is the single source of truth.
+	resolvedEnvVars := sess.StaticEnv()
+	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
+}
+
+// failPreExec publishes the running→failed transition for a pre-execution
+// failure (exit code -1) and marks the task failed. Callers log their own
+// context-specific message before calling.
+func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *bool, reason string) {
+	*failed = true
+	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
+	minusOne := -1
+	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, reason, nil, time.Now())
+	e.m.TasksTotal.WithLabelValues("failed").Inc()
+}
+
+// failResolution publishes the running→failed transition for a task that could
+// not have its OpenJD format strings resolved, mirroring the other
+// pre-execution failure paths in runTask.  It sets *failed so the deferred
+// session cleanup honors keepFailedSessions, and records the failure metric.
+func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, failed *bool, err error) {
+	e.logger.ErrorContext(
+		ctx, "executor: format-string resolution failed — failing task",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.Any("error", err),
+	)
+	e.failPreExec(msg, sess.ID, failed, err.Error())
+}
+
 // ── execProcess ──────────────────────────────────────────────────────────────
 
 // execProcess starts the OS process for msg.OnRun, reads its output, and
@@ -360,22 +443,38 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 //
 // Callers must check [processResult.Err] for start/wait failures and
 // [processResult.TimedOut] / [processResult.Canceled] for forced termination.
-func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup) processResult {
+// resolvedRun is the OnRun action with its format strings already resolved by
+// the caller; envVars is the merged, format-string-resolved environment-variable
+// map to apply on top of the inherited process environment.
+func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string) processResult {
 	// Apply resolved-mode path substitution to the command and args
 	// so the launched process sees only concrete filesystem paths.
-	action := lookup.ApplyToAction(msg.OnRun)
+	action := lookup.ApplyToAction(resolvedRun)
 
 	// Build process environment.
 	// Set working directory to the session working directory.
 	// Capture stdout and stderr via explicit pipes (not inheriting
 	//          the worker's own fds) so output can be attributed and forwarded.
 	// exec.Command is used intentionally instead of exec.CommandContext (noctx)
-	// because CommandContext automatically sends SIGKILL when ctx is canceled,
-	// bypassing the SIGTERM → grace period → SIGKILL escalation we require.
-	// We manage the process lifetime explicitly via killAndWait.
+	// because CommandContext sends a fixed signal when ctx is canceled, bypassing
+	// the OpenJD Action.cancelation policy (TERMINATE vs NOTIFY_THEN_TERMINATE)
+	// that killAndWait applies.  We manage the process lifetime explicitly.
 	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command from server-signed assignment; context handled manually
 	cmd.Dir = sess.WorkDir
-	cmd.Env = buildTaskEnv(msg)
+
+	// Merge the session's dynamic environment (accumulated from openjd_env /
+	// openjd_redacted_env / openjd_unset_env directives emitted by environment
+	// actions) on top of the task's static environment variables. Precedence:
+	// worker os.Environ (lowest) < static env Variables < session dynamic env;
+	// openjd_unset_env removes a variable even if a static entry or the worker
+	// environment set it.
+	overrides := envVars
+	if dyn := sess.EnvOverrides(); len(dyn) > 0 {
+		overrides = make(map[string]string, len(envVars)+len(dyn))
+		maps.Copy(overrides, envVars)
+		maps.Copy(overrides, dyn)
+	}
+	cmd.Env = envutil.BuildWithUnset(overrides, sess.EnvUnset())
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -421,11 +520,11 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	readWg.Add(2)
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stdoutPipe, "stdout", msg.TaskID, msg.AttemptID, sess.ID, e.outputHandler, e.logger)
+		scanOutput(ctx, stdoutPipe, "stdout", msg.TaskID, msg.AttemptID, sess.ID, e.outputHandler, sess.ScrubRedacted, e.logger)
 	}()
 	go func() {
 		defer readWg.Done()
-		scanOutput(ctx, stderrPipe, "stderr", msg.TaskID, msg.AttemptID, sess.ID, e.outputHandler, e.logger)
+		scanOutput(ctx, stderrPipe, "stderr", msg.TaskID, msg.AttemptID, sess.ID, e.outputHandler, sess.ScrubRedacted, e.logger)
 	}()
 
 	// Wait for the output goroutines to finish and then for cmd.Wait() to
@@ -444,15 +543,20 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		taskTimeout = time.Duration(action.TimeoutSeconds) * time.Second
 	}
 
+	// The OpenJD Action.cancelation method governs how the process is terminated
+	// on timeout or cancellation (TERMINATE = immediate SIGKILL, the spec default;
+	// NOTIFY_THEN_TERMINATE = SIGTERM then SIGKILL after the notify period).
 	if taskTimeout > 0 {
-		return e.waitWithTimeout(ctx, cmd, run, waitDone, startedAt, pid, taskTimeout)
+		return e.waitWithTimeout(ctx, cmd, run, waitDone, startedAt, pid, taskTimeout, action.Cancelation)
 	}
-	return e.waitForCompletion(ctx, cmd, run, waitDone, startedAt, pid)
+	return e.waitForCompletion(ctx, cmd, run, waitDone, startedAt, pid, action.Cancelation)
 }
 
 // ── Wait helpers ──────────────────────────────────────────────────────────────
 
 // waitForCompletion blocks until the process exits normally or ctx is canceled.
+// cancelation is the OpenJD Action.cancelation method honored when the process
+// must be forcibly terminated.
 func (e *Executor) waitForCompletion(
 	ctx context.Context,
 	cmd *exec.Cmd,
@@ -460,17 +564,20 @@ func (e *Executor) waitForCompletion(
 	waitDone <-chan error,
 	startedAt time.Time,
 	pid int,
+	cancelation *protocol.CancelationMethod,
 ) processResult {
 	select {
 	case waitErr := <-waitDone:
 		return makeResult(waitErr, pid, startedAt, false, false)
 	case <-ctx.Done():
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true)
+		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true, cancelation)
 	}
 }
 
 // waitWithTimeout blocks until the process exits, the per-task timeout
-// elapses, or ctx is canceled — whichever comes first.
+// elapses, or ctx is canceled — whichever comes first.  cancelation is the
+// OpenJD Action.cancelation method honored when the process must be forcibly
+// terminated (on timeout or cancellation).
 func (e *Executor) waitWithTimeout(
 	ctx context.Context,
 	cmd *exec.Cmd,
@@ -479,6 +586,7 @@ func (e *Executor) waitWithTimeout(
 	startedAt time.Time,
 	pid int,
 	timeout time.Duration,
+	cancelation *protocol.CancelationMethod,
 ) processResult {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -487,15 +595,80 @@ func (e *Executor) waitWithTimeout(
 	case waitErr := <-waitDone:
 		return makeResult(waitErr, pid, startedAt, false, false)
 	case <-timer.C:
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, true, false)
+		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, true, false, cancelation)
 	case <-ctx.Done():
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true)
+		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true, cancelation)
 	}
 }
 
-// killAndWait sends SIGTERM to the process, waits up to [Config.KillGracePeriod]
-// for it to exit, then escalates to SIGKILL.  It blocks until cmd.Wait()
-// returns (which happens only after all pipe-reading goroutines exit).
+// OpenJD Action.cancelation modes and notify-period bounds.
+//
+// These implement the OpenJD spec for how a running action is terminated on
+// cancel/timeout.  TERMINATE is the spec default when no cancelation is
+// specified: terminate immediately (SIGKILL on POSIX) with no SIGTERM grace.
+const (
+	// modeTerminate terminates the action immediately — SIGKILL on POSIX, no
+	// SIGTERM, no grace period.  This is the OpenJD spec default when an action
+	// declares no cancelation method.
+	modeTerminate = "TERMINATE"
+	// modeNotifyThenTerminate sends SIGTERM (notify), waits the effective notify
+	// period, then SIGKILL.
+	modeNotifyThenTerminate = "NOTIFY_THEN_TERMINATE"
+
+	// defaultNotifyPeriod is the OpenJD default notify period for an OnRun action
+	// using NOTIFY_THEN_TERMINATE when notifyPeriodInSeconds is unset (the "30s
+	// otherwise" default applies only to non-run actions, which are out of scope
+	// here).
+	defaultNotifyPeriod = 120 * time.Second
+	// maxNotifyPeriod is the OpenJD maximum allowed notify period; larger values
+	// are clamped down to this ceiling.
+	maxNotifyPeriod = 600 * time.Second
+)
+
+// terminationMode resolves the effective cancelation mode and, for
+// NOTIFY_THEN_TERMINATE, the effective notify period from an OpenJD
+// Action.cancelation method.
+//
+// A nil method (no cancelation specified) yields TERMINATE — the OpenJD spec
+// default — which terminates immediately with no notify period.  Any mode other
+// than NOTIFY_THEN_TERMINATE is likewise treated as TERMINATE.
+//
+// For NOTIFY_THEN_TERMINATE the notify period is NotifyPeriodSeconds when > 0,
+// otherwise the 120 s default, clamped to a 600 s maximum.
+func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod time.Duration) {
+	if c == nil || c.Mode != modeNotifyThenTerminate {
+		return modeTerminate, 0
+	}
+	period := defaultNotifyPeriod
+	if c.NotifyPeriodSeconds > 0 {
+		period = time.Duration(c.NotifyPeriodSeconds) * time.Second
+	}
+	if period > maxNotifyPeriod {
+		period = maxNotifyPeriod
+	}
+	return modeNotifyThenTerminate, period
+}
+
+// killAndWait terminates the process and blocks until cmd.Wait() returns (which
+// happens only after all pipe-reading goroutines exit).
+//
+// The termination strategy follows the OpenJD Action.cancelation method carried
+// by the assignment (cancelation):
+//
+//   - TERMINATE (or nil — the OpenJD spec default): SIGKILL immediately, with no
+//     SIGTERM and no grace period.
+//   - NOTIFY_THEN_TERMINATE: SIGTERM (notify), wait the effective notify period,
+//     then escalate to SIGKILL.
+//
+// Worker force-shutdown (DrainAndShutdown → execCtx cancellation) is a separate
+// concern: it always uses the graceful SIGTERM → [Config.KillGracePeriod] →
+// SIGKILL escalation regardless of the action's cancelation method, so the
+// configured shutdown grace window is honored for every in-flight task.
+//
+// Note: the worker-shutdown-vs-per-task distinction relies on the shuttingDown
+// flag being set before execCtx is canceled in DrainAndShutdown.  A concurrent
+// external Cancel racing a shutdown is harmless — the server tolerates duplicate
+// or short-window terminal status messages (first one wins, subsequent ignored).
 func (e *Executor) killAndWait(
 	ctx context.Context,
 	cmd *exec.Cmd,
@@ -505,16 +678,53 @@ func (e *Executor) killAndWait(
 	pid int,
 	timedOut bool,
 	canceled bool,
+	cancelation *protocol.CancelationMethod,
 ) processResult {
+	// Decide whether to notify (SIGTERM first) and, if so, the grace period
+	// before escalating to SIGKILL.
+	var notify bool
+	var gracePeriod time.Duration
+	switch {
+	case canceled && e.shuttingDown.Load():
+		// Worker force-shutdown: preserve the configured shutdown grace window
+		// independent of the per-action cancelation method.
+		notify = true
+		gracePeriod = e.cfg.KillGracePeriod
+	default:
+		// Per-task action cancelation (per-task timeout, per-task server cancel,
+		// or openjd_fail): honor the OpenJD Action.cancelation method.  TERMINATE
+		// (the spec default) kills immediately; NOTIFY_THEN_TERMINATE notifies
+		// first and waits the effective notify period.
+		mode, period := terminationMode(cancelation)
+		notify = mode == modeNotifyThenTerminate
+		gracePeriod = period
+	}
+
 	e.logger.WarnContext(
 		ctx, "executor: terminating process",
 		slog.String("task_id", run.taskID),
 		slog.Int("pid", pid),
 		slog.Bool("timed_out", timedOut),
 		slog.Bool("canceled", canceled),
+		slog.Bool("notify", notify),
+		slog.Duration("grace_period", gracePeriod),
 	)
 
-	// SIGTERM first.
+	// TERMINATE (default): SIGKILL immediately — no SIGTERM, no grace period.
+	if !notify {
+		if killErr := sendKILL(cmd.Process); killErr != nil {
+			e.logger.WarnContext(
+				ctx, "executor: SIGKILL failed",
+				slog.String("task_id", run.taskID),
+				slog.Int("pid", pid),
+				slog.Any("error", killErr),
+			)
+		}
+		waitErr := <-waitDone
+		return makeResult(waitErr, pid, startedAt, timedOut, canceled)
+	}
+
+	// NOTIFY_THEN_TERMINATE (or worker shutdown): SIGTERM first.
 	if err := sendTERM(cmd.Process); err != nil {
 		e.logger.WarnContext(
 			ctx, "executor: SIGTERM failed — escalating to SIGKILL immediately",
@@ -537,7 +747,7 @@ func (e *Executor) killAndWait(
 	// Wait for the process to exit gracefully or escalate to SIGKILL.
 	// Use time.NewTimer (not time.After) so the timer is stopped and GC'd
 	// promptly when the process exits before the grace period elapses (B5).
-	graceTimer := time.NewTimer(e.cfg.KillGracePeriod)
+	graceTimer := time.NewTimer(gracePeriod)
 	defer graceTimer.Stop()
 	select {
 	case waitErr := <-waitDone:
@@ -547,7 +757,7 @@ func (e *Executor) killAndWait(
 			ctx, "executor: process did not exit after SIGTERM — sending SIGKILL",
 			slog.String("task_id", run.taskID),
 			slog.Int("pid", pid),
-			slog.Duration("grace_period", e.cfg.KillGracePeriod),
+			slog.Duration("grace_period", gracePeriod),
 		)
 		if killErr := sendKILL(cmd.Process); killErr != nil {
 			e.logger.WarnContext(
@@ -616,9 +826,12 @@ func (e *Executor) flushTaskLogs(ctx context.Context, msg *protocol.AssignMsg, s
 
 // ── Output capture ────────────────────────────────────────────────────────────
 
-// scanOutput reads lines from r and forwards each to handler.HandleLine.
-// It returns when r reaches EOF (the process has closed the pipe write end,
-// which happens when the process exits).
+// scanOutput reads lines from r, scrubs each through scrub, and forwards the
+// result to handler.HandleLine. It returns when r reaches EOF (the process has
+// closed the pipe write end, which happens when the process exits).
+//
+// scrub redacts any openjd_redacted_env values the step may echo to its own
+// output; it may be nil to disable scrubbing.
 //
 // Stdout and stderr are read in separate goroutines to prevent pipe
 // deadlocks.
@@ -627,11 +840,16 @@ func scanOutput(
 	r io.Reader,
 	stream, taskID, attemptID, sessionID string,
 	handler OutputHandler,
+	scrub func(string) string,
 	logger *slog.Logger,
 ) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		handler.HandleLine(ctx, taskID, attemptID, sessionID, stream, scanner.Text())
+		line := scanner.Text()
+		if scrub != nil {
+			line = scrub(line)
+		}
+		handler.HandleLine(ctx, taskID, attemptID, sessionID, stream, line)
 	}
 	// scanner.Err() returns nil on EOF (normal completion) and a non-nil error
 	// on unexpected read failures.  A non-nil error here typically means the
@@ -646,62 +864,4 @@ func scanOutput(
 			slog.Any("error", err),
 		)
 	}
-}
-
-// ── Environment construction ─────────────────────────────────────────────────
-
-// buildTaskEnv builds the environment variable slice for the task process.
-//
-// Strategy:
-//  1. Start with os.Environ() so DCC tools find their expected system
-//     variables (PATH, library dirs, HOME, etc.).
-//  2. Merge in the Variables from each AssignEnvironment in declaration order;
-//     later environments' variables take precedence over earlier ones.
-//
-// The resulting slice has the format expected by exec.Cmd.Env ("KEY=VALUE").
-// Map iteration order is non-deterministic; callers must not rely on the
-// ordering of variables within the slice.
-func buildTaskEnv(msg *protocol.AssignMsg) []string {
-	// Collect all per-environment variables.  Later entries win.
-	var taskVars map[string]string
-	for _, env := range msg.Environments {
-		if len(env.Variables) == 0 {
-			continue
-		}
-		if taskVars == nil {
-			taskVars = make(map[string]string, len(env.Variables))
-		}
-		maps.Copy(taskVars, env.Variables)
-	}
-
-	base := os.Environ()
-	if len(taskVars) == 0 {
-		return base
-	}
-
-	// Index the inherited environment for O(n) override application.
-	merged := make(map[string]string, len(base)+len(taskVars))
-	for _, kv := range base {
-		k, v := splitEnvPair(kv)
-		merged[k] = v
-	}
-	// Task variables take precedence over the inherited environment.
-	maps.Copy(merged, taskVars)
-
-	out := make([]string, 0, len(merged))
-	for k, v := range merged {
-		out = append(out, k+"="+v)
-	}
-	return out
-}
-
-// splitEnvPair splits "KEY=VALUE" into ("KEY", "VALUE").
-// If there is no '=' the key is the entire string and the value is empty.
-func splitEnvPair(kv string) (key, value string) {
-	for i := range len(kv) {
-		if kv[i] == '=' {
-			return kv[:i], kv[i+1:]
-		}
-	}
-	return kv, ""
 }

@@ -52,10 +52,16 @@ type Job struct {
 	Project        string
 	RawTemplate    string // verbatim OpenJD YAML or JSON as submitted
 	TemplateFormat TemplateFormat
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	StartedAt      *time.Time
-	CompletedAt    *time.Time
+	// Parameters holds the fully-bound job-parameter values produced by
+	// BindJobParameters at submission time, including applied defaults.
+	// Nil or empty for jobs with no declared parameters or submitted before
+	// the parameters-persistence migration (back-compat: scheduler falls back
+	// to template defaults).
+	Parameters  map[string]string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	StartedAt   *time.Time
+	CompletedAt *time.Time
 }
 
 // JobSortField is a column by which [JobStore.ListJobs] results can be ordered.

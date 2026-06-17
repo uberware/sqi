@@ -515,6 +515,71 @@ func TestJob_GetNotFound(t *testing.T) {
 	}
 }
 
+func TestJob_Parameters_RoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+
+	want := map[string]string{"Frame": "42", "Quality": "high"}
+	j, err := s.CreateJob(ctx, store.Job{
+		ID:             "j1",
+		FarmID:         "f1",
+		QueueID:        "q1",
+		Name:           "ParamJob",
+		Status:         store.JobStatusPending,
+		Priority:       50,
+		TemplateFormat: store.TemplateFormatYAML,
+		Parameters:     want,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if len(j.Parameters) != len(want) {
+		t.Errorf("CreateJob returned Parameters len %d, want %d", len(j.Parameters), len(want))
+	}
+
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	for k, v := range want {
+		if got.Parameters[k] != v {
+			t.Errorf("GetJob Parameters[%q] = %q, want %q", k, got.Parameters[k], v)
+		}
+	}
+}
+
+func TestJob_Parameters_NilRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+
+	j, err := s.CreateJob(ctx, store.Job{
+		ID:             "j1",
+		FarmID:         "f1",
+		QueueID:        "q1",
+		Name:           "NoParamJob",
+		Status:         store.JobStatusPending,
+		Priority:       50,
+		TemplateFormat: store.TemplateFormatYAML,
+		Parameters:     nil,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob with nil Parameters: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	// nil or empty map both acceptable for a job with no parameters
+	if len(got.Parameters) != 0 {
+		t.Errorf("GetJob Parameters = %v, want nil or empty", got.Parameters)
+	}
+}
+
 func TestJob_UpdateStatus(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

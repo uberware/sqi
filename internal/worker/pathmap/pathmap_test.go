@@ -34,8 +34,8 @@ func TestParse_empty(t *testing.T) {
 // error.
 func TestParse_valid(t *testing.T) {
 	rules := []protocol.PathMapRule{
-		{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
-		{SourcePathFormat: "s3://bucket/assets", DestinationPath: "/mnt/s3/assets"},
+		{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+		{SourcePath: "s3://bucket/assets", DestinationPath: "/mnt/s3/assets"},
 	}
 	l, err := pathmap.Parse(rules)
 	if err != nil {
@@ -58,15 +58,15 @@ func TestParse_emptyDestinationPath(t *testing.T) {
 		{
 			name: "single empty destination",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/projects", DestinationPath: ""},
+				{SourcePath: "/nfs/projects", DestinationPath: ""},
 			},
 			wantSrc: "/nfs/projects",
 		},
 		{
 			name: "second rule empty destination",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
-				{SourcePathFormat: "s3://bucket/assets", DestinationPath: ""},
+				{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+				{SourcePath: "s3://bucket/assets", DestinationPath: ""},
 			},
 			wantSrc: "s3://bucket/assets",
 		},
@@ -89,16 +89,69 @@ func TestParse_emptyDestinationPath(t *testing.T) {
 	}
 }
 
+// TestParse_validatesSourcePathNotFormat verifies that validation keys on
+// SourcePath (the new field), not SourcePathFormat: a rule that carries only a
+// format enum but no SourcePath is a no-op and must not error, while a rule with
+// a SourcePath but no DestinationPath must error and name the SourcePath.
+func TestParse_validatesSourcePathNotFormat(t *testing.T) {
+	t.Run("format set but empty source path is accepted", func(t *testing.T) {
+		// A format enum without a source path carries no mapping; must not error.
+		rules := []protocol.PathMapRule{
+			{SourcePathFormat: "POSIX", SourcePath: "", DestinationPath: ""},
+		}
+		if _, err := pathmap.Parse(rules); err != nil {
+			t.Fatalf("Parse: unexpected error for format-only rule: %v", err)
+		}
+	})
+
+	t.Run("source path without destination errors naming the source", func(t *testing.T) {
+		rules := []protocol.PathMapRule{
+			{SourcePathFormat: "POSIX", SourcePath: "/nfs/projects", DestinationPath: ""},
+		}
+		_, err := pathmap.Parse(rules)
+		if err == nil {
+			t.Fatal("Parse: expected error for source path with empty destination; got nil")
+		}
+		if !strings.Contains(err.Error(), "/nfs/projects") {
+			t.Errorf("error %q does not name the offending source path %q", err.Error(), "/nfs/projects")
+		}
+		if strings.Contains(err.Error(), "POSIX") {
+			t.Errorf("error %q should not reference the format enum %q", err.Error(), "POSIX")
+		}
+	})
+}
+
+// TestApply_keysOnSourcePathNotFormat verifies that substitution replaces the
+// SourcePath value and ignores SourcePathFormat entirely (the format enum must
+// never be substituted into the command string).
+func TestApply_keysOnSourcePathNotFormat(t *testing.T) {
+	rules := []protocol.PathMapRule{
+		{SourcePathFormat: "POSIX", SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+	}
+	l, err := pathmap.Parse(rules)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := l.Apply("/nfs/projects/shot.ma")
+	if got != "/mnt/nas/projects/shot.ma" {
+		t.Errorf("Apply = %q; want %q", got, "/mnt/nas/projects/shot.ma")
+	}
+	// The format enum "POSIX" must not be substituted.
+	if got := l.Apply("POSIX-literal"); got != "POSIX-literal" {
+		t.Errorf("Apply(%q) = %q; want it unchanged (format enum must not match)", "POSIX-literal", got)
+	}
+}
+
 // ── Apply ─────────────────────────────────────────────────────────────────────
 
-// TestParse_bothFieldsEmpty verifies that a rule with both SourcePathFormat
+// TestParse_bothFieldsEmpty verifies that a rule with both SourcePath
 // and DestinationPath empty is accepted by Parse (the empty DestinationPath is
 // not treated as an error because the source is also empty, meaning the rule
 // carries no usable mapping) and that Apply skips it without modifying the
 // input string.
 func TestParse_bothFieldsEmpty(t *testing.T) {
 	rules := []protocol.PathMapRule{
-		{SourcePathFormat: "", DestinationPath: ""},
+		{SourcePath: "", DestinationPath: ""},
 	}
 	l, err := pathmap.Parse(rules)
 	if err != nil {
@@ -130,7 +183,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "simple prefix substitution",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+				{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
 			},
 			input: "/nfs/projects/shot001/render.ma",
 			want:  "/mnt/nas/projects/shot001/render.ma",
@@ -138,7 +191,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "location appearing multiple times in one command",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+				{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
 			},
 			input: "/nfs/projects/shot001/in.ma -output /nfs/projects/shot001/out/",
 			want:  "/mnt/nas/projects/shot001/in.ma -output /mnt/nas/projects/shot001/out/",
@@ -146,7 +199,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "location with no mapping — string unchanged",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/renders", DestinationPath: "/mnt/nas/renders"},
+				{SourcePath: "/nfs/renders", DestinationPath: "/mnt/nas/renders"},
 			},
 			input: "/nfs/projects/shot001/render.ma",
 			want:  "/nfs/projects/shot001/render.ma",
@@ -154,8 +207,8 @@ func TestApply(t *testing.T) {
 		{
 			name: "multiple rules applied in order",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
-				{SourcePathFormat: "/nfs/renders", DestinationPath: "/mnt/nas/renders"},
+				{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+				{SourcePath: "/nfs/renders", DestinationPath: "/mnt/nas/renders"},
 			},
 			input: "/nfs/projects/shot.ma -o /nfs/renders/out/shot.exr",
 			want:  "/mnt/nas/projects/shot.ma -o /mnt/nas/renders/out/shot.exr",
@@ -163,7 +216,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "S3 URI source path",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "s3://bucket/assets", DestinationPath: "/mnt/s3/assets"},
+				{SourcePath: "s3://bucket/assets", DestinationPath: "/mnt/s3/assets"},
 			},
 			input: "s3://bucket/assets/scene.ma",
 			want:  "/mnt/s3/assets/scene.ma",
@@ -171,7 +224,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "empty source path format — skipped, no substitution",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "", DestinationPath: "/mnt/nas/projects"},
+				{SourcePath: "", DestinationPath: "/mnt/nas/projects"},
 			},
 			input: "some command /nfs/projects/shot.ma",
 			want:  "some command /nfs/projects/shot.ma",
@@ -179,7 +232,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "empty input string",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+				{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
 			},
 			input: "",
 			want:  "",
@@ -187,8 +240,8 @@ func TestApply(t *testing.T) {
 		{
 			name: "rules applied sequentially — earlier output can be matched by later rules",
 			rules: []protocol.PathMapRule{
-				{SourcePathFormat: "/a", DestinationPath: "/b"},
-				{SourcePathFormat: "/b", DestinationPath: "/c"},
+				{SourcePath: "/a", DestinationPath: "/b"},
+				{SourcePath: "/b", DestinationPath: "/c"},
 			},
 			// Rules are applied in declaration order via strings.ReplaceAll.
 			// /a → /b after rule 1; /b → /c after rule 2.  Callers should use
@@ -228,7 +281,7 @@ func TestApply_nilLookup(t *testing.T) {
 // Command and Args, and that the original action is not modified.
 func TestApplyToAction(t *testing.T) {
 	rules := []protocol.PathMapRule{
-		{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+		{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
 	}
 	l, err := pathmap.Parse(rules)
 	if err != nil {
@@ -273,7 +326,7 @@ func TestApplyToAction(t *testing.T) {
 // also subject to substitution when it contains a source path.
 func TestApplyToAction_commandSubstitution(t *testing.T) {
 	rules := []protocol.PathMapRule{
-		{SourcePathFormat: "/nfs/tools", DestinationPath: "/opt/dcc"},
+		{SourcePath: "/nfs/tools", DestinationPath: "/opt/dcc"},
 	}
 	l, err := pathmap.Parse(rules)
 	if err != nil {
@@ -295,7 +348,7 @@ func TestApplyToAction_commandSubstitution(t *testing.T) {
 // TestApplyToAction_nilAction verifies that nil action returns nil.
 func TestApplyToAction_nilAction(t *testing.T) {
 	rules := []protocol.PathMapRule{
-		{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+		{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
 	}
 	l, err := pathmap.Parse(rules)
 	if err != nil {
@@ -324,7 +377,7 @@ func TestApplyToAction_emptyRules(t *testing.T) {
 // without panic.
 func TestApplyToAction_noArgs(t *testing.T) {
 	rules := []protocol.PathMapRule{
-		{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+		{SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
 	}
 	l, err := pathmap.Parse(rules)
 	if err != nil {
@@ -345,11 +398,11 @@ func TestApplyToAction_noArgs(t *testing.T) {
 // TestWritePathMappingFile verifies that the JSON file is created with the
 // correct content and that an empty rules slice produces no file.
 func TestWritePathMappingFile(t *testing.T) {
-	t.Run("writes file with correct content", func(t *testing.T) {
+	t.Run("writes conformant pathmapping-1.0 envelope", func(t *testing.T) {
 		dir := t.TempDir()
 		rules := []protocol.PathMapRule{
-			{SourcePathFormat: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
-			{SourcePathFormat: "s3://bucket/assets", DestinationPath: "/mnt/s3/assets"},
+			{SourcePathFormat: "POSIX", SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+			{SourcePathFormat: "WINDOWS", SourcePath: `C:\assets`, DestinationPath: "/mnt/s3/assets"},
 		}
 		if err := pathmap.WritePathMappingFile(dir, rules); err != nil {
 			t.Fatalf("WritePathMappingFile: %v", err)
@@ -359,29 +412,39 @@ func TestWritePathMappingFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read file: %v", err)
 		}
-		// Decode and verify the JSON structure.
+		// Decode and verify the OpenJD pathmapping-1.0 envelope: a top-level
+		// object with "version" and "path_mapping_rules".
 		type entry struct {
 			SourcePathFormat string `json:"source_path_format"`
+			SourcePath       string `json:"source_path"`
 			DestinationPath  string `json:"destination_path"`
 		}
-		var got []entry
+		type doc struct {
+			Version          string  `json:"version"`
+			PathMappingRules []entry `json:"path_mapping_rules"`
+		}
+		var got doc
 		if err := json.Unmarshal(data, &got); err != nil {
 			t.Fatalf("unmarshal: %v — raw: %s", err, data)
 		}
-		if len(got) != 2 {
-			t.Fatalf("len = %d; want 2", len(got))
+		if got.Version != pathmap.PathMappingVersion {
+			t.Errorf("version = %q; want %q", got.Version, pathmap.PathMappingVersion)
 		}
-		if got[0].SourcePathFormat != "/nfs/projects" {
-			t.Errorf("[0].source_path_format = %q; want %q", got[0].SourcePathFormat, "/nfs/projects")
+		if got.Version != "pathmapping-1.0" {
+			t.Errorf("version = %q; want literal %q", got.Version, "pathmapping-1.0")
 		}
-		if got[0].DestinationPath != "/mnt/nas/projects" {
-			t.Errorf("[0].destination_path = %q; want %q", got[0].DestinationPath, "/mnt/nas/projects")
+		if len(got.PathMappingRules) != 2 {
+			t.Fatalf("rules len = %d; want 2", len(got.PathMappingRules))
 		}
-		if got[1].SourcePathFormat != "s3://bucket/assets" {
-			t.Errorf("[1].source_path_format = %q; want %q", got[1].SourcePathFormat, "s3://bucket/assets")
+		want := []entry{
+			{SourcePathFormat: "POSIX", SourcePath: "/nfs/projects", DestinationPath: "/mnt/nas/projects"},
+			{SourcePathFormat: "WINDOWS", SourcePath: `C:\assets`, DestinationPath: "/mnt/s3/assets"},
 		}
-		if got[1].DestinationPath != "/mnt/s3/assets" {
-			t.Errorf("[1].destination_path = %q; want %q", got[1].DestinationPath, "/mnt/s3/assets")
+		for i, w := range want {
+			g := got.PathMappingRules[i]
+			if g != w {
+				t.Errorf("rule[%d] = %+v; want %+v", i, g, w)
+			}
 		}
 	})
 
@@ -399,7 +462,7 @@ func TestWritePathMappingFile(t *testing.T) {
 	t.Run("single rule", func(t *testing.T) {
 		dir := t.TempDir()
 		rules := []protocol.PathMapRule{
-			{SourcePathFormat: "/source", DestinationPath: "/dest"},
+			{SourcePath: "/source", DestinationPath: "/dest"},
 		}
 		if err := pathmap.WritePathMappingFile(dir, rules); err != nil {
 			t.Fatalf("WritePathMappingFile: %v", err)
@@ -412,7 +475,7 @@ func TestWritePathMappingFile(t *testing.T) {
 
 	t.Run("invalid directory returns error", func(t *testing.T) {
 		rules := []protocol.PathMapRule{
-			{SourcePathFormat: "/src", DestinationPath: "/dst"},
+			{SourcePath: "/src", DestinationPath: "/dst"},
 		}
 		err := pathmap.WritePathMappingFile("/nonexistent/no/such/dir", rules)
 		if err == nil {

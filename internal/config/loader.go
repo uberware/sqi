@@ -24,6 +24,11 @@ type FlagOverrides struct {
 	LogFormat string
 	// HTTPAddr overrides HTTP.Addr when non-empty. Bound to --http-addr.
 	HTTPAddr string
+	// EnforceLimits overrides OpenJD.EnforceLimits when non-nil. Bound to
+	// --openjd-enforce-limits. A pointer (not a bool) so an unset flag leaves the
+	// lower layers intact while an explicit --openjd-enforce-limits=false can turn
+	// the (default-true) gate off.
+	EnforceLimits *bool
 }
 
 // defaultSearchPaths returns the ordered list of config file locations
@@ -118,6 +123,10 @@ type fileConfig struct {
 		Enabled      *bool   `yaml:"enabled"`
 		InstanceName *string `yaml:"instance_name"`
 	} `yaml:"discovery"`
+
+	OpenJD *struct {
+		EnforceLimits *bool `yaml:"enforce_limits"`
+	} `yaml:"openjd"`
 }
 
 func applyFile(cfg *Config, explicit string) error {
@@ -170,6 +179,7 @@ func mergeFileConfig(cfg *Config, fc fileConfig) {
 	mergeLogFile(cfg, fc)
 	mergeSchedulerFile(cfg, fc)
 	mergeDiscoveryFile(cfg, fc)
+	mergeOpenJDFile(cfg, fc)
 }
 
 func mergeHTTPFile(cfg *Config, fc fileConfig) {
@@ -256,6 +266,15 @@ func mergeDiscoveryFile(cfg *Config, fc fileConfig) {
 	}
 }
 
+func mergeOpenJDFile(cfg *Config, fc fileConfig) {
+	if fc.OpenJD == nil {
+		return
+	}
+	if fc.OpenJD.EnforceLimits != nil {
+		cfg.OpenJD.EnforceLimits = *fc.OpenJD.EnforceLimits
+	}
+}
+
 // ── Environment variable layer ────────────────────────────────────────────────
 
 func applyEnv(cfg *Config) {
@@ -278,6 +297,8 @@ func applyEnv(cfg *Config) {
 
 	setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED")
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
+
+	setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS")
 }
 
 func setString(dst *string, key string) {
@@ -324,5 +345,8 @@ func applyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.HTTPAddr != "" {
 		cfg.HTTP.Addr = f.HTTPAddr
+	}
+	if f.EnforceLimits != nil {
+		cfg.OpenJD.EnforceLimits = *f.EnforceLimits
 	}
 }

@@ -125,6 +125,26 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 		p.Default = &s
 	}
 
+	// Constraint fields (allowedValues, minValue/maxValue, minLength/maxLength)
+	// are decoded by a helper to keep this function's cyclomatic complexity
+	// within bounds.
+	decodeJobParamConstraints(raw, &p)
+
+	// objectType / dataFlow (PATH only; stored verbatim — validation enforces
+	// the allowed values and the PATH-only constraint).
+	if v, ok := raw["objectType"]; ok && v != nil {
+		p.ObjectType = PathObjectType(anyToString(v))
+	}
+	if v, ok := raw["dataFlow"]; ok && v != nil {
+		p.DataFlow = PathDataFlow(anyToString(v))
+	}
+
+	return p, nil
+}
+
+// decodeJobParamConstraints populates the allowedValues, minValue/maxValue, and
+// minLength/maxLength fields of p from the raw decoded map.
+func decodeJobParamConstraints(raw map[string]any, p *JobParameter) {
 	// allowedValues
 	if v, ok := raw["allowedValues"]; ok && v != nil {
 		items, _ := toAnySlice(v)
@@ -152,8 +172,6 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 		n := anyToInt(v)
 		p.MaxLength = &n
 	}
-
-	return p, nil
 }
 
 // ─── environment decoder ─────────────────────────────────────────────────────
@@ -506,6 +524,7 @@ func decodeEmbeddedFile(raw map[string]any) EmbeddedFile {
 		Name:      getString(raw, "name"),
 		Filename:  getString(raw, "filename"),
 		Data:      getString(raw, "data"),
+		Type:      EmbeddedFileType(getString(raw, "type")),
 		EndOfLine: getString(raw, "endOfLine"),
 	}
 	if v, ok := raw["runnable"]; ok {

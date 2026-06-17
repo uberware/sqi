@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -653,11 +654,80 @@ func TestApplyEOL(t *testing.T) {
 	}
 }
 
-// ── buildEnv ──────────────────────────────────────────────────────────────────
+// ── Session.WriteEmbeddedFiles (public method) ────────────────────────────────
+
+func TestSession_WriteEmbeddedFiles_WritesContent(t *testing.T) {
+	s := &Session{WorkDir: t.TempDir()}
+	files := []protocol.EmbeddedFile{
+		{Name: "data.txt", Data: "hello embedded\n"},
+	}
+	if err := s.WriteEmbeddedFiles(files); err != nil {
+		t.Fatalf("WriteEmbeddedFiles: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(s.WorkDir, "data.txt"))
+	if err != nil {
+		t.Fatalf("read data.txt: %v", err)
+	}
+	if string(got) != "hello embedded\n" {
+		t.Errorf("content = %q; want %q", string(got), "hello embedded\n")
+	}
+}
+
+func TestSession_WriteEmbeddedFiles_RunnableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permissions not applicable on Windows")
+	}
+	s := &Session{WorkDir: t.TempDir()}
+	files := []protocol.EmbeddedFile{
+		{Name: "run.sh", Data: "#!/bin/sh\necho hi\n", Runnable: true},
+	}
+	if err := s.WriteEmbeddedFiles(files); err != nil {
+		t.Fatalf("WriteEmbeddedFiles: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(s.WorkDir, "run.sh"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("runnable file should have execute bit set; mode=%v", info.Mode())
+	}
+}
+
+func TestSession_WriteEmbeddedFiles_EOLConversion(t *testing.T) {
+	s := &Session{WorkDir: t.TempDir()}
+	files := []protocol.EmbeddedFile{
+		{Name: "crlf.txt", Data: "line1\r\nline2\r\n", EndOfLine: "LF"},
+	}
+	if err := s.WriteEmbeddedFiles(files); err != nil {
+		t.Fatalf("WriteEmbeddedFiles: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(s.WorkDir, "crlf.txt"))
+	if err != nil {
+		t.Fatalf("read crlf.txt: %v", err)
+	}
+	want := "line1\nline2\n"
+	if string(got) != want {
+		t.Errorf("EOL-converted content = %q; want %q", string(got), want)
+	}
+}
+
+func TestSession_WriteEmbeddedFiles_PathTraversalError(t *testing.T) {
+	s := &Session{WorkDir: t.TempDir()}
+	files := []protocol.EmbeddedFile{
+		{Name: "evil", Filename: "../escape.txt", Data: "oops"},
+	}
+	if err := s.WriteEmbeddedFiles(files); err == nil {
+		t.Error("expected error for path traversal filename; got nil")
+	}
+}
+
+// ── envutil.Build (via session) ───────────────────────────────────────────────
+// These tests exercise the shared helper that session uses for process env
+// construction; they are kept here to confirm the wiring after the refactor.
 
 func TestBuildEnv_OverridesInheritedVars(t *testing.T) {
 	overrides := map[string]string{"MY_VAR": "overridden"}
-	env := buildEnv(overrides)
+	env := envutil.Build(overrides)
 
 	found := false
 	for _, kv := range env {
@@ -672,31 +742,10 @@ func TestBuildEnv_OverridesInheritedVars(t *testing.T) {
 
 func TestBuildEnv_NilOverrides_ReturnsOsEnviron(t *testing.T) {
 	// Capture os.Environ() once to avoid TOCTOU if another goroutine changes
-	// the environment between the buildEnv call and the comparison.
+	// the environment between the Build call and the comparison.
 	want := os.Environ()
-	env := buildEnv(nil)
+	env := envutil.Build(nil)
 	if len(env) != len(want) {
-		t.Errorf("len(buildEnv(nil)) = %d; want %d", len(env), len(want))
-	}
-}
-
-// ── splitEnvPair ──────────────────────────────────────────────────────────────
-
-func TestSplitEnvPair(t *testing.T) {
-	tests := []struct {
-		kv    string
-		key   string
-		value string
-	}{
-		{"KEY=VALUE", "KEY", "VALUE"},
-		{"KEY=", "KEY", ""},
-		{"KEY=A=B", "KEY", "A=B"}, // value may contain '='
-		{"NOEQUAL", "NOEQUAL", ""},
-	}
-	for _, tc := range tests {
-		k, v := splitEnvPair(tc.kv)
-		if k != tc.key || v != tc.value {
-			t.Errorf("splitEnvPair(%q) = (%q, %q); want (%q, %q)", tc.kv, k, v, tc.key, tc.value)
-		}
+		t.Errorf("len(envutil.Build(nil)) = %d; want %d", len(env), len(want))
 	}
 }

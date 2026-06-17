@@ -653,3 +653,160 @@ func TestCancelJob(t *testing.T) {
 		}
 	})
 }
+
+// ── parseParamQueryParams unit tests ─────────────────────────────────────────
+
+func TestParseParamQueryParams(t *testing.T) {
+	tests := []struct {
+		name  string
+		query map[string][]string
+		want  map[string]string
+	}{
+		{
+			name:  "nil input returns nil",
+			query: nil,
+			want:  nil,
+		},
+		{
+			name:  "no param. keys returns nil",
+			query: map[string][]string{"farm_id": {"f1"}, "queue_id": {"q1"}},
+			want:  nil,
+		},
+		{
+			name: "single param.* key extracted",
+			query: map[string][]string{
+				"farm_id":          {"f1"},
+				"param.FrameStart": {"1"},
+			},
+			want: map[string]string{"FrameStart": "1"},
+		},
+		{
+			name: "multiple param.* keys extracted",
+			query: map[string][]string{
+				"param.FrameStart": {"1"},
+				"param.FrameEnd":   {"100"},
+				"owner":            {"alice"},
+			},
+			want: map[string]string{"FrameStart": "1", "FrameEnd": "100"},
+		},
+		{
+			name: "bare 'param.' prefix with empty name is ignored",
+			query: map[string][]string{
+				"param.": {"val"},
+			},
+			want: nil,
+		},
+		{
+			name: "first value wins when multi-valued",
+			query: map[string][]string{
+				"param.Scene": {"shot_010", "shot_020"},
+			},
+			want: map[string]string{"Scene": "shot_010"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseParamQueryParams(tc.query)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len(got) = %d, want %d — got: %v", len(got), len(tc.want), got)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("got[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// ── POST /api/v1/jobs with param.* query parameters ──────────────────────────
+
+// templateWithIntParam is a minimal OpenJD template with a single required
+// INT job parameter so that submit tests can exercise param.* binding.
+func templateWithIntParam(jobName string) string {
+	return `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "` + jobName + `",
+  "parameterDefinitions": [
+    { "name": "Frame", "type": "INT" }
+  ],
+  "steps": [
+    {
+      "name": "Render",
+      "script": { "actions": { "onRun": { "command": "render" } } }
+    }
+  ]
+}`
+}
+
+func TestSubmitJobWithParams(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+
+	t.Run("valid param.* value yields 201", func(t *testing.T) {
+		body := strings.NewReader(templateWithIntParam("ParamJob1"))
+		req := newReq(t, http.MethodPost,
+			"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&param.Frame=42",
+			body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	t.Run("invalid param.* value (non-INT) yields 422", func(t *testing.T) {
+		body := strings.NewReader(templateWithIntParam("ParamJob2"))
+		req := newReq(t, http.MethodPost,
+			"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&param.Frame=not-an-int",
+			body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 for invalid param value, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	t.Run("missing required param yields 422", func(t *testing.T) {
+		body := strings.NewReader(templateWithIntParam("ParamJob3"))
+		req := newReq(t, http.MethodPost,
+			"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1",
+			// Frame is required but no param.Frame is provided.
+			body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 for missing required param, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	t.Run("unknown param.* key yields 422", func(t *testing.T) {
+		body := strings.NewReader(templateWithIntParam("ParamJob4"))
+		req := newReq(t, http.MethodPost,
+			"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&param.Frame=1&param.Ghost=x",
+			body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 for unknown param, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+}
