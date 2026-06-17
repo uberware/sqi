@@ -123,6 +123,41 @@ run-server: build-server ## Build then run sqi-server with default config
 run-worker: build-worker ## Build then run sqi-worker with default config
 	$(BUILD_DIR)/$(WORKER_BINARY) start
 
+# run-workers spins up several sqi-worker instances on this one host to simulate
+# a multi-worker farm locally. Each instance gets a unique identity so they do
+# not collide: its own data dir (which holds the persistent worker.id UUID and
+# session dirs), its own metrics/health port, and a distinct UI name. They all
+# discover/connect to the same sqi-server (run `make run` in another terminal).
+# Inherited SQI_WORKER_* env vars still apply, so e.g.
+#   SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 make run-workers N=5
+# overrides discovery and starts five workers. Ctrl-C stops all of them.
+# Number of workers to start, and a short `N=` alias so `make run-workers N=5` works.
+WORKERS                  ?= 3
+N                        ?= $(WORKERS)
+# First worker's metrics/health port; each subsequent worker increments by one.
+WORKER_METRICS_BASE_PORT ?= 9091
+# Per-instance state (worker.id UUID + session dirs) lives under here, one subdir
+# per worker, so instances never share an identity.
+WORKER_DATA_ROOT         ?= ./.run/workers
+
+.PHONY: run-workers
+run-workers: build-worker ## Spin up N sqi-worker instances locally (N=3 default; Ctrl-C stops all)
+	@echo "Starting $(N) workers (Ctrl-C to stop all)..."
+	@pids=""; \
+	trap 'echo; echo "Stopping workers..."; kill $$pids 2>/dev/null; wait $$pids 2>/dev/null; exit 0' INT TERM; \
+	for i in $$(seq 1 $(N)); do \
+	  port=$$(( $(WORKER_METRICS_BASE_PORT) + i - 1 )); \
+	  data_dir="$(WORKER_DATA_ROOT)/worker-$$i"; \
+	  mkdir -p "$$data_dir"; \
+	  echo "  worker-$$i  data_dir=$$data_dir  metrics=127.0.0.1:$$port"; \
+	  SQI_WORKER_NAME="worker-$$i" \
+	  SQI_WORKER_DATA_DIR="$$data_dir" \
+	  SQI_WORKER_METRICS_ADDR="127.0.0.1:$$port" \
+	    $(BUILD_DIR)/$(WORKER_BINARY) start & \
+	  pids="$$pids $$!"; \
+	done; \
+	wait
+
 # ── Test ──────────────────────────────────────────────────────────────────────
 
 .PHONY: test

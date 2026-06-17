@@ -61,6 +61,7 @@ type workerResponse struct {
 	ID              string            `json:"id"`
 	FarmID          string            `json:"farm_id"`
 	QueueID         string            `json:"queue_id,omitempty"`
+	Name            string            `json:"name,omitempty"`
 	Hostname        string            `json:"hostname"`
 	IPAddress       string            `json:"ip_address,omitempty"`
 	ComputeLocation string            `json:"compute_location,omitempty"`
@@ -273,6 +274,7 @@ func toWorkerResponse(wk store.Worker) workerResponse {
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,
 		QueueID:         wk.QueueID,
+		Name:            wk.Name,
 		Hostname:        wk.Hostname,
 		IPAddress:       wk.IPAddress,
 		ComputeLocation: wk.ComputeLocation,

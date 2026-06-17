@@ -171,6 +171,12 @@ export interface Worker {
   id: string
   farm_id: string
   queue_id?: string
+  /**
+   * Human-readable display label (the worker's worker.name config, default the
+   * hostname). Distinguishes multiple workers on one host. May be empty for
+   * workers registered before this field existed; fall back to {@link hostname}.
+   */
+  name?: string
   hostname: string
   ip_address?: string
   compute_location?: string

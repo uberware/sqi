@@ -33,6 +33,7 @@ export interface WsTaskEvent {
 /** Payload received on the "workers" subject when a worker status changes. */
 export interface WsWorkerEvent {
   worker_id: string
+  name?: string
   hostname?: string
   farm_id?: string
   status: WorkerStatus

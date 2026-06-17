@@ -250,7 +250,8 @@ export default function WorkerList() {
       newItems[idx] = {
         ...prev,
         status: payload.status,
-        // Update hostname if provided by the event
+        // Update name/hostname if provided by the event
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
         ...(payload.hostname !== undefined ? { hostname: payload.hostname } : {}),
       }
       return { ...old, items: newItems }
@@ -374,7 +375,7 @@ export default function WorkerList() {
               return (
                 <tr key={worker.id}>
                   <td>
-                    <Link to={`/workers/${worker.id}`}>{worker.hostname}</Link>
+                    <Link to={`/workers/${worker.id}`}>{worker.name || worker.hostname}</Link>
                   </td>
                   <td>
                     <IdCell id={worker.id} />
@@ -411,7 +412,7 @@ export default function WorkerList() {
                         onClick={() => void handleDisable(worker.id)}
                         disabled={isToggling}
                         type="button"
-                        aria-label={`Disable worker ${worker.hostname}`}
+                        aria-label={`Disable worker ${worker.name || worker.hostname}`}
                       >
                         {isToggling ? '…' : 'Disable'}
                       </button>
@@ -422,7 +423,7 @@ export default function WorkerList() {
                         onClick={() => void handleEnable(worker.id)}
                         disabled={isToggling}
                         type="button"
-                        aria-label={`Enable worker ${worker.hostname}`}
+                        aria-label={`Enable worker ${worker.name || worker.hostname}`}
                       >
                         {isToggling ? '…' : 'Enable'}
                       </button>

@@ -310,6 +310,7 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 	w := store.Worker{
 		ID:              "w1",
 		FarmID:          "f1",
+		Name:            "render-node-alpha",
 		Hostname:        "host1",
 		IPAddress:       "10.0.0.1",
 		ComputeLocation: "onprem",
@@ -328,6 +329,9 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 	if got.CPUCount != 16 {
 		t.Errorf("CPUCount: got %d", got.CPUCount)
 	}
+	if got.Name != "render-node-alpha" {
+		t.Errorf("Name: got %q, want render-node-alpha", got.Name)
+	}
 	if got.Tags["env"] != "prod" {
 		t.Errorf("Tags[env]: got %q", got.Tags["env"])
 	}
@@ -335,6 +339,9 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 	fetched, err := s.GetWorker(ctx, "w1")
 	if err != nil {
 		t.Fatalf("GetWorker: %v", err)
+	}
+	if fetched.Name != "render-node-alpha" {
+		t.Errorf("GetWorker Name: got %q, want render-node-alpha", fetched.Name)
 	}
 	if fetched.GPUInfo.Model != "RTX4090" {
 		t.Errorf("GPUInfo.Model: got %q", fetched.GPUInfo.Model)

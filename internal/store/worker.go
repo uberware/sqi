@@ -43,9 +43,14 @@ type GPUInfo struct {
 // capabilities at registration; the server persists the reported values and
 // uses them for task matching.
 type Worker struct {
-	ID              string
-	FarmID          string
-	QueueID         string // empty = no queue affinity
+	ID      string
+	FarmID  string
+	QueueID string // empty = no queue affinity
+	// Name is the worker's human-readable display label (the worker.name
+	// config field, default the hostname). Distinguishes multiple workers
+	// running on one host in the UI; may be empty for workers registered
+	// before this field existed, in which case callers fall back to Hostname.
+	Name            string
 	Hostname        string
 	IPAddress       string
 	ComputeLocation string

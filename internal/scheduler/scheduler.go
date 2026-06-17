@@ -756,6 +756,10 @@ type RegisterMsg struct {
 	// An empty value means the worker accepts tasks from any queue in FarmID.
 	QueueID string `json:"queue_id,omitempty"`
 
+	// Name is the worker's human-readable display label. Persisted so the UI
+	// can distinguish multiple workers running on a single host.
+	Name string `json:"name,omitempty"`
+
 	// Hostname and IPAddress are the worker's network identity.
 	Hostname  string `json:"hostname"`
 	IPAddress string `json:"ip_address,omitempty"`
@@ -808,6 +812,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		ID:              m.WorkerID,
 		FarmID:          m.FarmID,
 		QueueID:         m.QueueID,
+		Name:            m.Name,
 		Hostname:        m.Hostname,
 		IPAddress:       m.IPAddress,
 		ComputeLocation: m.ComputeLocation,
@@ -840,6 +845,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 	)
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
+		Name:     m.Name,
 		Hostname: m.Hostname,
 		FarmID:   m.FarmID,
 		Status:   string(store.WorkerStatusOnline),
@@ -1012,6 +1018,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		}
 		s.notifier.NotifyWorker(ws.WorkerEvent{
 			WorkerID: w.ID,
+			Name:     w.Name,
 			Hostname: w.Hostname,
 			FarmID:   w.FarmID,
 			Status:   string(store.WorkerStatusOffline),

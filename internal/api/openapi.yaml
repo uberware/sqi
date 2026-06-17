@@ -446,6 +446,13 @@ components:
           type: string
         queue_id:
           type: string
+        name:
+          type: string
+          description: >-
+            Human-readable display label (the worker's worker.name config,
+            default the hostname). Distinguishes multiple workers on one host.
+            May be empty for workers registered before this field existed; clients
+            fall back to hostname.
         hostname:
           type: string
         ip_address:

@@ -83,6 +83,11 @@ type RegisterMsg struct {
 	// An empty value means the worker accepts tasks from any queue in FarmID.
 	QueueID string `json:"queue_id,omitempty"`
 
+	// Name is the worker's human-readable display label (the worker.name
+	// config field, default the hostname). The server stores it so the UI can
+	// distinguish multiple workers running on a single host.
+	Name string `json:"name,omitempty"`
+
 	// Hostname and IPAddress are the worker's network identity.
 	Hostname  string `json:"hostname"`
 	IPAddress string `json:"ip_address,omitempty"`

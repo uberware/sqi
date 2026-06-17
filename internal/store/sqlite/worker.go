@@ -11,7 +11,7 @@ import (
 )
 
 const workerCols = `
-	id, farm_id, queue_id, hostname, ip_address, compute_location,
+	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, cpu_count, ram_mb, gpu_info, tags, status,
 	last_heartbeat_at, registered_at, updated_at`
 
@@ -19,13 +19,14 @@ const (
 	// ON CONFLICT preserves registered_at so re-registration does not reset it.
 	sqlUpsertWorker = `
 INSERT INTO workers (
-	id, farm_id, queue_id, hostname, ip_address, compute_location,
+	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, cpu_count, ram_mb, gpu_info, tags, status,
 	last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
+	name              = excluded.name,
 	hostname          = excluded.hostname,
 	ip_address        = excluded.ip_address,
 	compute_location  = excluded.compute_location,
@@ -44,7 +45,7 @@ RETURNING ` + workerCols
 
 	sqlUpdateWorker = `
 UPDATE workers
-SET farm_id = ?, queue_id = ?, hostname = ?, ip_address = ?, compute_location = ?,
+SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_location = ?,
 	os = ?, os_version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
 	status = ?, last_heartbeat_at = ?, updated_at = ?
 WHERE id = ?
@@ -90,7 +91,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	var registeredAt, updatedAt string
 
 	if err := row.Scan(
-		&w.ID, &farmID, &queueID, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
+		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt,
 	); err != nil {
@@ -129,7 +130,7 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 		return nil, err
 	}
 	return []any{
-		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Hostname, w.IPAddress, w.ComputeLocation,
+		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
 		w.OS, w.OSVersion, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now,
 	}, nil
@@ -246,7 +247,7 @@ func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Wo
 	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateWorker.QueryRowContext(ctx,
-		nullString(worker.FarmID), nullString(worker.QueueID), worker.Hostname, worker.IPAddress,
+		nullString(worker.FarmID), nullString(worker.QueueID), worker.Name, worker.Hostname, worker.IPAddress,
 		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.CPUCount, worker.RAMMb,
 		gpuJSON, tagsJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
 		now, worker.ID)

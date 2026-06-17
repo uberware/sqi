@@ -73,6 +73,8 @@ htmlcov/
 *.sqlite-wal
 /nats-data/
 /data/
+# Per-instance state for `make run-workers` (one subdir per simulated worker).
+/.run/
 
 # ─── Secrets and local config ─────────────────────────────────────────────────
 .env

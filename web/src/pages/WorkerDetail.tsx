@@ -276,7 +276,7 @@ function ToggleButton({
         onClick={onDisable}
         disabled={isToggling}
         type="button"
-        aria-label={`Disable worker ${worker.hostname}`}
+        aria-label={`Disable worker ${worker.name || worker.hostname}`}
       >
         {isToggling ? '…' : 'Disable'}
       </button>
@@ -289,7 +289,7 @@ function ToggleButton({
         onClick={onEnable}
         disabled={isToggling}
         type="button"
-        aria-label={`Enable worker ${worker.hostname}`}
+        aria-label={`Enable worker ${worker.name || worker.hostname}`}
       >
         {isToggling ? '…' : 'Enable'}
       </button>
@@ -345,6 +345,7 @@ export default function WorkerDetail() {
       return {
         ...old,
         status: payload.status,
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
         ...(payload.hostname !== undefined ? { hostname: payload.hostname } : {}),
       }
     })
@@ -411,7 +412,7 @@ export default function WorkerDetail() {
       />
 
       <div className={styles.workerNameArea}>
-        <h2 className={styles.workerName}>{worker.hostname}</h2>
+        <h2 className={styles.workerName}>{worker.name || worker.hostname}</h2>
       </div>
 
       {(disableWorker.isError || enableWorker.isError) && (
@@ -432,6 +433,14 @@ export default function WorkerDetail() {
               <IdDisplay id={worker.id} />
             </dd>
           </div>
+          {/* Only show the hostname separately when it differs from the
+              displayed name; otherwise the heading already shows it. */}
+          {worker.name && worker.name !== worker.hostname && (
+            <div className={styles.metaField}>
+              <dt>Hostname</dt>
+              <dd className={styles.metaValue}>{worker.hostname}</dd>
+            </div>
+          )}
           <div className={styles.metaField}>
             <dt>Farm</dt>
             <dd className={styles.metaValue}>{worker.farm_id}</dd>

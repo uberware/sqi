@@ -42,7 +42,7 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
 		data: workerMsgJSON(t, RegisterMsg{
-			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+			WorkerID: "w-1", FarmID: "farm-1", Name: "worker-2", Hostname: "node-1", OS: "linux",
 		}),
 	}
 	s.handleWorkerMessage(msg)
@@ -56,6 +56,9 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	}
 	if w.Status != store.WorkerStatusOnline {
 		t.Errorf("worker status = %q, want online", w.Status)
+	}
+	if w.Name != "worker-2" {
+		t.Errorf("worker name = %q, want worker-2", w.Name)
 	}
 	if w.LastHeartbeatAt == nil {
 		t.Error("expected LastHeartbeatAt set on registration")

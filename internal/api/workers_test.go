@@ -44,6 +44,7 @@ func seedWorker(t *testing.T, st *fake.Store, status store.WorkerStatus) store.W
 	w := store.Worker{
 		ID:           uuid.NewString(),
 		FarmID:       "farm-1",
+		Name:         "worker-" + uuid.NewString()[:4],
 		Hostname:     "node-" + uuid.NewString()[:8],
 		OS:           "linux",
 		OSVersion:    "22.04",
@@ -210,6 +211,9 @@ func TestGetWorker(t *testing.T) {
 		}
 		if resp.ID != w.ID {
 			t.Errorf("id = %q, want %q", resp.ID, w.ID)
+		}
+		if resp.Name != w.Name {
+			t.Errorf("name = %q, want %q", resp.Name, w.Name)
 		}
 		if resp.Status != "online" {
 			t.Errorf("status = %q, want online", resp.Status)

@@ -22,6 +22,7 @@ type TaskEvent struct {
 // The Hub fans this out to clients subscribed to [SubjectWorkers].
 type WorkerEvent struct {
 	WorkerID string
+	Name     string
 	Hostname string
 	FarmID   string
 	Status   string // store.WorkerStatus value

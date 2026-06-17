@@ -345,6 +345,82 @@ docker run -d \
 
 ---
 
+## Multiple workers on one host
+
+A single worker runs `worker.max_concurrent_tasks` tasks in parallel (default
+4), so raise that value first if you only need more throughput. Run *separate*
+worker processes when you want distinct identities — independent heartbeats and
+registrations, different capability sets, or separate queue assignments.
+
+Each instance must have its own `worker.data_dir` (it holds the persistent
+`worker.id` UUID) and its own `metrics.addr` (the local health/metrics port),
+and should have a distinct `worker.name`. See
+[Running multiple workers on one host](worker-configuration.md#running-multiple-workers-on-one-host)
+for the full rationale.
+
+On Linux the idiomatic approach is a **systemd template unit**, where the
+instance identifier (`%i`) carries the per-instance metrics port. Create
+`/etc/systemd/system/sqi-worker@.service`:
+
+```ini
+[Unit]
+Description=sqi distributed task worker (instance %i)
+Documentation=https://github.com/uberware/sqi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sqiworker
+Group=sqiworker
+ExecStart=/usr/local/bin/sqi-worker start --config /etc/sqi/sqi-worker.yaml
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sqi-worker-%i
+
+# Per-instance identity (%i is the metrics port, e.g. 9091)
+Environment=SQI_WORKER_NAME=%H-worker-%i
+Environment=SQI_WORKER_DATA_DIR=/var/lib/sqi-worker-%i
+Environment=SQI_WORKER_METRICS_ADDR=127.0.0.1:%i
+
+# Per-instance state directory: /var/lib/sqi-worker-<port>
+StateDirectory=sqi-worker-%i
+StateDirectoryMode=0750
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sqi-worker-%i
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable one instance per port:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now sqi-worker@9091 sqi-worker@9092 sqi-worker@9093
+```
+
+The shared `/etc/sqi/sqi-worker.yaml` holds everything common (NATS URL,
+capability tags, queues); the template's `Environment=` lines override only the
+three settings that must differ per instance. Manage each with the usual
+`systemctl status sqi-worker@9091` / `journalctl -u sqi-worker@9091`.
+
+> **macOS / Windows:** the same rule applies — give each launchd plist or
+> Windows service a unique `Label`/service name, `SQI_WORKER_DATA_DIR`, and
+> `SQI_WORKER_METRICS_ADDR`.
+
+> **Docker:** containers are already filesystem-isolated, so just run multiple
+> containers with distinct `--name` values and separate data volumes — see
+> [`docs/worker-docker.md`](worker-docker.md).
+
+---
+
 ## Verifying the deployment
 
 After starting the worker, confirm it registered with the server:

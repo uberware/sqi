@@ -160,6 +160,27 @@ describe('WorkerList', () => {
       expect(screen.getByText('render-node-99')).toBeInTheDocument()
     })
 
+    it('prefers the worker name over the hostname when set', async () => {
+      const worker = makeWorker({ name: 'worker-2', hostname: 'render-node-99' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('worker-2'))
+      expect(screen.getByText('worker-2')).toBeInTheDocument()
+      expect(screen.queryByText('render-node-99')).not.toBeInTheDocument()
+    })
+
+    it('falls back to the hostname when name is empty', async () => {
+      const worker = makeWorker({ name: '', hostname: 'render-node-99' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('render-node-99'))
+      expect(screen.getByText('render-node-99')).toBeInTheDocument()
+    })
+
     it('renders a truncated worker ID', async () => {
       const worker = makeWorker({ id: 'abcdef1234567890' })
       fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))

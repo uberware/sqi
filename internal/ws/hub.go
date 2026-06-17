@@ -86,8 +86,14 @@ type TaskUpdatePush struct {
 }
 
 // WorkerStatusPush is the TypePush payload for [SubjectWorkers] subscriptions.
+//
+// Its field set and order must mirror [WorkerEvent] exactly: the hub builds the
+// push via the direct struct conversion WorkerStatusPush(e) (see buildEnvelope
+// call in NotifyWorker). Adding or reordering a field here without doing the
+// same in WorkerEvent breaks that conversion at compile time.
 type WorkerStatusPush struct {
 	WorkerID string `json:"worker_id"`
+	Name     string `json:"name,omitempty"`
 	Hostname string `json:"hostname,omitempty"`
 	FarmID   string `json:"farm_id,omitempty"`
 	Status   string `json:"status"`

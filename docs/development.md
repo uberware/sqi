@@ -59,6 +59,8 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make build-server` | Build `sqi-server` only (builds the web UI first) |
 | `make build-web` | Build the web UI bundle into `web/dist/` (`npm ci` runs only when npm manifests change) |
 | `make run` | Build then run `sqi-server` with default config |
+| `make run-worker` | Build then run a single `sqi-worker` with default config |
+| `make run-workers` | Build then run N `sqi-worker` instances locally (`N=3` default); Ctrl-C stops all |
 | `make test` | Run all tests with the race detector enabled |
 | `make test-cover` | Run tests and print coverage; fails below 60% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
@@ -424,6 +426,33 @@ SQI_WORKER_DISCOVERY_ENABLE_MDNS=false \
 SQI_WORKER_LOG_FORMAT=text \
   ./bin/sqi-worker start
 ```
+
+### Running multiple workers locally
+
+To simulate a multi-worker farm on one machine — for exercising the scheduler,
+capability matching, or queue routing — use the `run-workers` target. With
+`sqi-server` running (`make run` in another terminal), start N workers:
+
+```sh
+make run-workers          # 3 workers (the default)
+make run-workers N=5      # 5 workers
+```
+
+Each instance gets a distinct identity so they don't collide: a unique name
+(`worker-1`, `worker-2`, …), its own data dir under `./.run/workers/worker-<i>`
+(holding a separate `worker.id` UUID), and its own metrics port (`9091`,
+`9092`, …). Ctrl-C stops them all. Inherited `SQI_WORKER_*` env vars still
+apply, so you can layer on shared config — e.g. point them at an explicit NATS
+URL instead of mDNS discovery:
+
+```sh
+SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 make run-workers N=5
+```
+
+Tunable Makefile variables: `N` (or `WORKERS`), `WORKER_METRICS_BASE_PORT`,
+and `WORKER_DATA_ROOT`. See
+[Running multiple workers on one host](worker-configuration.md#running-multiple-workers-on-one-host)
+for the underlying settings and a manual (non-Make) equivalent.
 
 Worker tests:
 

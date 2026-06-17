@@ -213,6 +213,10 @@ The worker ID file ensures the server can correlate this worker across
 restarts. Do not delete `worker.id` unless you intend to re-register as a new
 worker. For production, use an absolute path on a fast local SSD.
 
+Each worker instance needs its own `data_dir`: two workers sharing one would
+load the same `worker.id` and collide on the server. This is the key setting
+when [running multiple workers on one host](#running-multiple-workers-on-one-host).
+
 ```yaml
 worker:
   data_dir: "/var/lib/sqi-worker"
@@ -508,6 +512,9 @@ TCP address the local HTTP server listens on. Use `0.0.0.0:9091` to expose
 the endpoints to Prometheus scrapers on the network (ensure the port is
 firewalled appropriately).
 
+When [running multiple workers on one host](#running-multiple-workers-on-one-host),
+give each instance a distinct port — otherwise the second worker fails to bind.
+
 ```yaml
 metrics:
   addr: "127.0.0.1:9091"
@@ -708,6 +715,44 @@ log:
 
 metrics:
   addr: "0.0.0.0:9091"        # expose to Prometheus scraper
+```
+
+---
+
+## Running multiple workers on one host
+
+A single worker already executes tasks in parallel — see
+[`worker.max_concurrent_tasks`](#workermax_concurrent_tasks) (default 4). Raise
+that value when you simply want more throughput from one machine.
+
+Run *separate* worker processes when you want distinct worker identities:
+independent heartbeats and registrations, different capability sets, or
+separate queue assignments — useful for local farm simulation and testing the
+scheduler. `sqi-worker` dials out to the server's NATS (it binds no inbound
+ports except the metrics server), so multiple instances coexist on one host as
+long as three things differ per instance:
+
+| Setting | Env var | Why it must differ |
+|---|---|---|
+| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID; a shared dir means a duplicate identity on the server. |
+| [`metrics.addr`](#metricsaddr) | `SQI_WORKER_METRICS_ADDR` | The local health/metrics HTTP server; a second instance on the same port fails to bind. |
+| [`worker.name`](#workername) | `SQI_WORKER_NAME` | Cosmetic only — defaults to the hostname, so instances would otherwise share a label in the web UI. |
+
+Everything else (NATS URL, discovery, capability tags) can be shared or vary
+as you like.
+
+For local development the `make run-workers` target wires all of this up for
+you — see
+[Running multiple workers locally](development.md#running-multiple-workers-locally)
+in the development guide. A manual example starting three workers:
+
+```sh
+for i in 1 2 3; do
+  SQI_WORKER_NAME="worker-$i" \
+  SQI_WORKER_DATA_DIR="$HOME/.sqi/worker-$i" \
+  SQI_WORKER_METRICS_ADDR="127.0.0.1:$((9090 + i))" \
+    sqi-worker start &
+done
 ```
 
 ---
