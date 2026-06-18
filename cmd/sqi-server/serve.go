@@ -78,7 +78,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// logger below. Remains nil when diagnostics are disabled, in which case the
 	// logger is built without a sink and the diagnostics endpoint returns 503.
 	var diagBuf *diag.Buffer
-	if cfg.Diagnostics.Enabled {
+	if cfg.Diagnostics.BufferSize > 0 {
 		diagBuf = diag.NewBuffer(cfg.Diagnostics.BufferSize, nil)
 	}
 

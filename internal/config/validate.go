@@ -181,11 +181,11 @@ func validateDiscovery(cfg DiscoveryConfig) []ValidationError {
 }
 
 func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
-	if cfg.Enabled && cfg.BufferSize <= 0 {
+	if cfg.BufferSize < 0 {
 		return []ValidationError{{
 			Field: "diagnostics.buffer_size",
 			Message: fmt.Sprintf(
-				"must be > 0 when diagnostics is enabled, got %d; set SQI_DIAGNOSTICS_BUFFER_SIZE or diagnostics.buffer_size",
+				"must be >= 0 (0 disables diagnostics), got %d; set SQI_DIAGNOSTICS_BUFFER_SIZE or diagnostics.buffer_size",
 				cfg.BufferSize,
 			),
 		}}

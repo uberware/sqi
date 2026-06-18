@@ -132,16 +132,14 @@ type DiscoveryConfig struct {
 }
 
 // DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
-// in the web UI.  Disable it to avoid spending memory on something accessed
-// out-of-band (journald/Docker/Loki/etc.).
+// in the web UI.
 type DiagnosticsConfig struct {
-	// Enabled turns the server-side ring buffer and worker.diag subscription
-	// on or off.  Default: true.
-	// Env: SQI_DIAGNOSTICS_ENABLED
-	Enabled bool `yaml:"enabled"`
-
 	// BufferSize is the maximum diagnostic records retained per component
-	// (server + each worker).  Must be > 0.  Default: 1000.
+	// (server + each worker). 0 disables diagnostics entirely: no ring buffer,
+	// no worker.diag subscription, and the REST endpoint returns 503. A positive
+	// value is the per-component capacity. Default: 1000. Set to 0 to avoid
+	// spending memory on something accessed out-of-band
+	// (journald/Docker/Loki/etc.). Must not be negative.
 	// Env: SQI_DIAGNOSTICS_BUFFER_SIZE
 	BufferSize int `yaml:"buffer_size"`
 }
@@ -189,7 +187,6 @@ func DefaultConfig() Config {
 			EnforceLimits: true,
 		},
 		Diagnostics: DiagnosticsConfig{
-			Enabled:    true,
 			BufferSize: 1000,
 		},
 	}

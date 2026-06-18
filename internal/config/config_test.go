@@ -467,26 +467,49 @@ func TestLoad_DiagnosticsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.Diagnostics.Enabled {
-		t.Fatal("diagnostics should default to enabled")
-	}
 	if cfg.Diagnostics.BufferSize <= 0 {
 		t.Fatalf("buffer size default should be positive, got %d", cfg.Diagnostics.BufferSize)
 	}
 }
 
-func TestLoad_DiagnosticsEnvOverride(t *testing.T) {
+func TestLoad_DiagnosticsBufferSizeEnvOverride(t *testing.T) {
 	t.Chdir(t.TempDir())
-	t.Setenv("SQI_DIAGNOSTICS_ENABLED", "false")
 	t.Setenv("SQI_DIAGNOSTICS_BUFFER_SIZE", "500")
 	cfg, err := config.Load("", config.FlagOverrides{})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Diagnostics.Enabled {
-		t.Fatal("env should disable diagnostics")
-	}
 	if cfg.Diagnostics.BufferSize != 500 {
 		t.Fatalf("buffer size = %d", cfg.Diagnostics.BufferSize)
+	}
+}
+
+func TestLoad_DiagnosticsBufferSizeZeroDisables(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_DIAGNOSTICS_BUFFER_SIZE", "0")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Diagnostics.BufferSize != 0 {
+		t.Fatalf("buffer size should be 0 (disabled), got %d", cfg.Diagnostics.BufferSize)
+	}
+}
+
+func TestValidate_DiagnosticsNegativeBufferSizeRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.BufferSize = -1
+	if errs := config.Validate(cfg); len(errs) == 0 {
+		t.Fatal("negative buffer size should be a validation error")
+	}
+}
+
+func TestValidate_DiagnosticsZeroBufferSizeAllowed(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.BufferSize = 0
+	for _, e := range config.Validate(cfg) {
+		if e.Field == "diagnostics.buffer_size" {
+			t.Fatalf("zero buffer size (disabled) should be valid, got %v", e)
+		}
 	}
 }

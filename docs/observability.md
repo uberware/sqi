@@ -19,7 +19,7 @@ and follow different flows.
 | **Transport** | NATS JetStream `task.logs.<taskID>` | Core NATS `worker.diag.<workerID>` (best-effort); server logs go in-process |
 | **Persistence** | Durable; retained ~96 h in JetStream, also written to SQLite | In-memory ring buffer on the server; lost on server restart |
 | **Where to read** | Task detail → log tab in the web UI | Worker detail panel, Admin → Server log, or REST/WS API |
-| **Disable** | Not configurable (always streamed for running tasks) | `SQI_DIAGNOSTICS_ENABLED=false` |
+| **Disable** | Not configurable (always streamed for running tasks) | Server: `SQI_DIAGNOSTICS_BUFFER_SIZE=0`; worker: `SQI_DIAGNOSTICS_ENABLED=false` |
 
 ### Task logs
 
@@ -85,20 +85,23 @@ empty.
 
 ### Disabling in-UI diagnostics
 
-Set `SQI_DIAGNOSTICS_ENABLED=false` on the server (and optionally on workers)
-to turn off the ring buffer and the `worker.diag.>` subscription:
+Set `SQI_DIAGNOSTICS_BUFFER_SIZE=0` on the server to turn off the ring buffer and
+the `worker.diag.>` subscription (a single knob: `0` = off, a positive value = the
+per-component buffer capacity):
 
 ```sh
-SQI_DIAGNOSTICS_ENABLED=false sqi-server serve --config /etc/sqi/sqi-server.yaml
+SQI_DIAGNOSTICS_BUFFER_SIZE=0 sqi-server serve --config /etc/sqi/sqi-server.yaml
 ```
 
-When diagnostics are disabled:
+When server diagnostics are disabled (`buffer_size: 0`):
 
 - No in-memory buffer is allocated.
 - The REST endpoint returns **503 Service Unavailable**.
-- Workers with `SQI_DIAGNOSTICS_ENABLED=false` log to stderr only and do not
-  publish `worker.diag` messages.
 - The worker diagnostics panel and Admin → Server log show nothing.
+
+Workers have a separate boolean toggle: set `SQI_DIAGNOSTICS_ENABLED=false` on a
+worker so it logs to stderr only and does not publish `worker.diag` messages
+(workers publish rather than buffer, so there is no size to configure there).
 
 In this mode, operational logs are available only out-of-band (journald, Docker,
 file forwarding — see [Out-of-band wiring](#out-of-band-wiring)).
@@ -431,15 +434,13 @@ Kibana.
 
 | YAML key | Env var | Type | Default | Description |
 |---|---|---|---|---|
-| `diagnostics.enabled` | `SQI_DIAGNOSTICS_ENABLED` | bool | `true` | Enable in-memory ring buffer and `worker.diag.>` subscription. |
-| `diagnostics.buffer_size` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | int | `1000` | Max records retained per component (`server`, each worker). Must be > 0 when enabled. |
+| `diagnostics.buffer_size` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | int | `1000` | Per-component ring-buffer capacity (`server`, each worker). `0` disables diagnostics (no buffer, no `worker.diag.>` subscription, REST 503); positive = capacity; negative is rejected. |
 
 Example:
 
 ```yaml
 diagnostics:
-  enabled: true
-  buffer_size: 2000
+  buffer_size: 2000 # 0 to disable
 ```
 
 ### Worker (`sqi-worker`)

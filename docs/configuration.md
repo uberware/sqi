@@ -344,31 +344,6 @@ openjd:
 
 ## `diagnostics` — In-UI diagnostic log buffer
 
-### `diagnostics.enabled`
-
-| | |
-|---|---|
-| **Type** | `bool` |
-| **Default** | `true` |
-| **Env var** | `SQI_DIAGNOSTICS_ENABLED` |
-
-When `true`, `sqi-server` maintains an in-memory ring buffer of its own
-structured log output and subscribes to `worker.diag.>` to receive diagnostic
-records from connected workers. Both surfaces are exposed in the web UI (Admin →
-Server log and each worker's detail page). Set to `false` to skip the buffer
-allocation and subscription; the REST diagnostics endpoint will return 503.
-
-The same env var controls the worker's diagnostic publisher: when `false` on a
-worker, the worker logs to stderr only and does not publish `worker.diag`
-messages.
-
-```yaml
-diagnostics:
-  enabled: true
-```
-
----
-
 ### `diagnostics.buffer_size`
 
 | | |
@@ -378,14 +353,26 @@ diagnostics:
 | **Env var** | `SQI_DIAGNOSTICS_BUFFER_SIZE` |
 
 Maximum diagnostic records retained **per component** (`server` plus each
-connected worker). When the buffer is full the oldest records are evicted. The
-buffer is in-memory only and is cleared on server restart. Must be `> 0` when
-diagnostics are enabled.
+connected worker) in `sqi-server`'s in-memory ring buffer. This single value is
+also the on/off switch:
+
+- **`0`** — diagnostics are **disabled**: no buffer is allocated, the server
+  does not subscribe to `worker.diag.>`, and the REST diagnostics endpoint
+  returns 503.
+- **positive** — the per-component capacity. When a component's buffer is full
+  the oldest records are evicted. The buffer is in-memory only and is cleared on
+  server restart.
+
+Negative values are rejected. The buffer feeds the web UI (Admin → Server log
+and each worker's detail page).
 
 ```yaml
 diagnostics:
-  buffer_size: 2000
+  buffer_size: 2000 # or 0 to disable
 ```
+
+> Workers have their own separate `diagnostics.enabled` toggle (they publish
+> rather than buffer) — see the worker configuration guide.
 
 See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
@@ -410,7 +397,6 @@ See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
-| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — |
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 
 ---
