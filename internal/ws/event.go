@@ -52,6 +52,17 @@ type JobEvent struct {
 	UpdatedAt time.Time
 }
 
+// DiagEvent is published when a diagnostic log record is ingested (from the
+// server's own logger or a worker's worker.diag stream).  The Hub fans this out
+// to clients subscribed to [SubjectDiagnostics].
+type DiagEvent struct {
+	Component string // "server" or "worker:<id>"
+	Level     string // DEBUG|INFO|WARN|ERROR
+	Msg       string
+	Attrs     map[string]string
+	At        time.Time
+}
+
 // Notifier is implemented by [Hub].  Packages outside the ws package —
 // primarily the scheduler — call these methods after persisting state changes
 // to push live events to subscribed WebSocket clients.
@@ -62,6 +73,7 @@ type Notifier interface {
 	NotifyWorker(e WorkerEvent)
 	NotifyLog(e LogEvent)
 	NotifyJob(e JobEvent)
+	NotifyDiag(e DiagEvent)
 }
 
 // NoopNotifier is a [Notifier] that discards all events.  Use it in tests that
@@ -79,3 +91,6 @@ func (NoopNotifier) NotifyLog(LogEvent) {}
 
 // NotifyJob discards the event.
 func (NoopNotifier) NotifyJob(JobEvent) {}
+
+// NotifyDiag discards the event.
+func (NoopNotifier) NotifyDiag(DiagEvent) {}

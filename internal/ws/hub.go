@@ -109,6 +109,15 @@ type TaskLogPush struct {
 	At        time.Time `json:"at"`
 }
 
+// DiagnosticsPush is the TypePush payload for [SubjectDiagnostics] subscriptions.
+type DiagnosticsPush struct {
+	Component string            `json:"component"`
+	Level     string            `json:"level"`
+	Msg       string            `json:"msg"`
+	Attrs     map[string]string `json:"attrs,omitempty"`
+	At        time.Time         `json:"at"`
+}
+
 // ── hubClient ─────────────────────────────────────────────────────────────────
 
 // hubClient holds per-connection state owned by the Hub.
@@ -417,6 +426,29 @@ func (h *Hub) NotifyJob(e JobEvent) {
 	h.fanout(SubjectJobs, env)
 }
 
+// NotifyDiag fans a diagnostic log record to all SubjectDiagnostics subscribers.
+func (h *Hub) NotifyDiag(e DiagEvent) {
+	if !h.hasSubscribers(SubjectDiagnostics) {
+		return
+	}
+	at := e.At
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	env, err := buildEnvelope(SubjectDiagnostics, DiagnosticsPush{
+		Component: e.Component,
+		Level:     e.Level,
+		Msg:       e.Msg,
+		Attrs:     e.Attrs,
+		At:        at,
+	})
+	if err != nil {
+		h.logger.WarnContext(context.Background(), "ws: hub: NotifyDiag envelope", slog.Any("error", err))
+		return
+	}
+	h.fanout(SubjectDiagnostics, env)
+}
+
 // ── internal helpers ──────────────────────────────────────────────────────────
 
 // hasSubscribers reports whether subject currently has at least one subscribed
@@ -508,7 +540,7 @@ func buildEnvelope(subject string, payload any) (Envelope, error) {
 // only (non-empty); the store is not queried.
 func isValidSubject(subject string) bool {
 	switch subject {
-	case SubjectJobs, SubjectWorkers:
+	case SubjectJobs, SubjectWorkers, SubjectDiagnostics:
 		return true
 	}
 	// "jobs/{id}/tasks" — e.g. "jobs/abc123/tasks"
