@@ -703,6 +703,7 @@ func (e *Executor) killAndWait(
 	e.logger.WarnContext(
 		ctx, "executor: terminating process",
 		slog.String("task_id", run.taskID),
+		slog.String("attempt_id", run.attemptID),
 		slog.Int("pid", pid),
 		slog.Bool("timed_out", timedOut),
 		slog.Bool("canceled", canceled),
@@ -716,6 +717,7 @@ func (e *Executor) killAndWait(
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
+				slog.String("attempt_id", run.attemptID),
 				slog.Int("pid", pid),
 				slog.Any("error", killErr),
 			)
@@ -729,6 +731,7 @@ func (e *Executor) killAndWait(
 		e.logger.WarnContext(
 			ctx, "executor: SIGTERM failed — escalating to SIGKILL immediately",
 			slog.String("task_id", run.taskID),
+			slog.String("attempt_id", run.attemptID),
 			slog.Int("pid", pid),
 			slog.Any("error", err),
 		)
@@ -736,6 +739,7 @@ func (e *Executor) killAndWait(
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
+				slog.String("attempt_id", run.attemptID),
 				slog.Int("pid", pid),
 				slog.Any("error", killErr),
 			)
@@ -756,6 +760,7 @@ func (e *Executor) killAndWait(
 		e.logger.WarnContext(
 			ctx, "executor: process did not exit after SIGTERM — sending SIGKILL",
 			slog.String("task_id", run.taskID),
+			slog.String("attempt_id", run.attemptID),
 			slog.Int("pid", pid),
 			slog.Duration("grace_period", gracePeriod),
 		)
@@ -763,6 +768,7 @@ func (e *Executor) killAndWait(
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
+				slog.String("attempt_id", run.attemptID),
 				slog.Int("pid", pid),
 				slog.Any("error", killErr),
 			)
@@ -860,6 +866,7 @@ func scanOutput(
 		logger.DebugContext(
 			context.Background(), "executor: output scan error",
 			slog.String("task_id", taskID),
+			slog.String("attempt_id", attemptID),
 			slog.String("stream", stream),
 			slog.Any("error", err),
 		)

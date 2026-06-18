@@ -305,7 +305,7 @@ func (h *taskHandler) streamTaskLogs(w http.ResponseWriter, r *http.Request, tas
 		logs, err := h.store.ListTaskLogs(ctx, attempt.ID, cursor, limit)
 		if err != nil {
 			h.logger.ErrorContext(ctx, "tasks: stream list logs failed",
-				slog.String("task_id", taskID), slog.Any("error", err))
+				slog.String("task_id", taskID), slog.String("attempt_id", attempt.ID), slog.Any("error", err))
 			return
 		}
 
@@ -313,7 +313,7 @@ func (h *taskHandler) streamTaskLogs(w http.ResponseWriter, r *http.Request, tas
 			b, merr := json.Marshal(toTaskLogResponse(l))
 			if merr != nil {
 				h.logger.ErrorContext(ctx, "tasks: stream marshal failed",
-					slog.String("task_id", taskID), slog.Any("error", merr))
+					slog.String("task_id", taskID), slog.String("attempt_id", attempt.ID), slog.Any("error", merr))
 				return
 			}
 			if _, werr := fmt.Fprintf(w, "%s\n", b); werr != nil {

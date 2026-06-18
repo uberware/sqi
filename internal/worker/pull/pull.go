@@ -467,6 +467,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 			ctx, "pull: protocol version mismatch — nacking",
 			slog.String("queue", queueLabel),
 			slog.String("task_id", assign.TaskID),
+			slog.String("attempt_id", assign.AttemptID),
 			slog.String("received_version", assign.Version),
 			slog.String("expected_version", protocol.ProtocolVersion),
 		)
@@ -484,6 +485,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 			ctx, "pull: assignment targets a different compute location — nacking",
 			slog.String("queue", queueLabel),
 			slog.String("task_id", assign.TaskID),
+			slog.String("attempt_id", assign.AttemptID),
 			slog.String("assignment_location", assign.ComputeLocation),
 			slog.String("worker_location", p.cfg.ComputeLocation),
 		)
@@ -508,6 +510,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 			ctx, "pull: dispatcher rejected assignment — nacking",
 			slog.String("queue", queueLabel),
 			slog.String("task_id", assign.TaskID),
+			slog.String("attempt_id", assign.AttemptID),
 			slog.Any("error", err),
 		)
 		p.nack(ctx, msg, queueLabel, assign.TaskID)
@@ -523,6 +526,7 @@ func (p *Puller) handleMessage(ctx context.Context, msg ackableMsg, queueLabel s
 			ctx, "pull: ack failed — task is executing but may be redelivered",
 			slog.String("queue", queueLabel),
 			slog.String("task_id", assign.TaskID),
+			slog.String("attempt_id", assign.AttemptID),
 			slog.Any("error", err),
 		)
 	}
