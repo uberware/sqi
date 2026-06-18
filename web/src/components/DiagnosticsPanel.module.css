@@ -1,0 +1,63 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.title {
+  font-size: var(--font-size-lg);
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-primary);
+}
+
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 24rem;
+  overflow-y: auto;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+}
+
+.line {
+  display: grid;
+  grid-template-columns: auto 4rem 1fr;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+.ts {
+  color: var(--color-text-muted);
+}
+
+.level {
+  font-weight: var(--font-weight-semibold);
+}
+.level[data-level='ERROR'] {
+  color: var(--color-error);
+}
+.level[data-level='WARN'] {
+  color: var(--color-warning);
+}
+.level[data-level='INFO'] {
+  color: var(--color-info);
+}
+.level[data-level='DEBUG'] {
+  color: var(--color-text-muted);
+}
+
+.msg {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
