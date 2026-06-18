@@ -177,7 +177,10 @@ type Scheduler struct {
 // WebSocket hub can fan them out to subscribed clients. Pass
 // [ws.NoopNotifier] (or nil — treated as NoopNotifier) when no WebSocket hub
 // is wired.
-func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, logger *slog.Logger, notifier ws.Notifier) *Scheduler {
+// diagBuf, when non-nil, enables worker diagnostic-log ingestion: the scheduler
+// subscribes to worker.diag.> and appends records under "worker:<id>". Pass nil
+// to disable diagnostics.
+func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, logger *slog.Logger, notifier ws.Notifier, diagBuf *diag.Buffer) *Scheduler {
 	if cfg.AssignBatchSize <= 0 {
 		cfg.AssignBatchSize = DefaultConfig().AssignBatchSize
 	}
@@ -204,6 +207,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		metrics:  m,
 		logger:   logger,
 		notifier: n,
+		diagBuf:  diagBuf,
 		taskCh:   make(chan store.Task, cfg.AssignBatchSize),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if

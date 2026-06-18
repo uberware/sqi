@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/uberware/sqi/internal/config"
+	"github.com/uberware/sqi/internal/diag"
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/server"
 )
@@ -71,8 +72,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("%d configuration error(s):\n%s", len(errs), b.String())
 	}
 
+	// ── Diagnostic buffer ─────────────────────────────────────────────────────
+	// Created before the logger (when enabled) so the server's own logs are
+	// captured from the very first line via the server sink wired into the
+	// logger below. Remains nil when diagnostics are disabled, in which case the
+	// logger is built without a sink and the diagnostics endpoint returns 503.
+	var diagBuf *diag.Buffer
+	if cfg.Diagnostics.Enabled {
+		diagBuf = diag.NewBuffer(cfg.Diagnostics.BufferSize, nil)
+	}
+
 	// ── Logger ────────────────────────────────────────────────────────────────
-	logger, err := sqilog.New(cfg.Log.Level, cfg.Log.Format, os.Stderr)
+	var sink sqilog.Sink
+	if diagBuf != nil {
+		sink = diag.NewServerSink(diagBuf)
+	}
+	logger, err := sqilog.NewWithSink(cfg.Log.Level, cfg.Log.Format, os.Stderr, sink)
 	if err != nil {
 		return fmt.Errorf("init logger: %w", err)
 	}
@@ -104,7 +119,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
 		SeedDefaults: true,
-	}, logger)
+	}, logger, diagBuf)
 	if err := srv.Run(ctx); err != nil {
 		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
 		return err

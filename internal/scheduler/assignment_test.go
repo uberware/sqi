@@ -65,7 +65,7 @@ func (*recordBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nat
 func newMetricsScheduler(st store.Store, bus busClient, farmID string) *Scheduler {
 	cfg := DefaultConfig()
 	cfg.FarmID = farmID
-	s := New(cfg, st, bus, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{})
+	s := New(cfg, st, bus, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
 	s.ctx = context.Background()
 	return s
 }

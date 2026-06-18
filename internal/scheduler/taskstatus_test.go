@@ -37,6 +37,7 @@ func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *S
 		nil, // metrics — not used
 		slog.New(slog.DiscardHandler),
 		notifier,
+		nil, // diagBuf — diagnostics disabled
 	)
 }
 

@@ -64,6 +64,7 @@ func newTestScheduler(st store.Store, bus busClient) *Scheduler {
 		nil, // metrics — not used by CancelJob/CancelTask
 		slog.New(slog.DiscardHandler),
 		ws.NoopNotifier{},
+		nil, // diagBuf — diagnostics disabled
 	)
 }
 

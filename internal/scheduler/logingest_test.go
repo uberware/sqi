@@ -83,6 +83,7 @@ func newLogTestScheduler(st store.Store) *Scheduler {
 		nil, // metrics — not used
 		slog.New(slog.DiscardHandler),
 		ws.NoopNotifier{},
+		nil, // diagBuf — diagnostics disabled
 	)
 }
 
