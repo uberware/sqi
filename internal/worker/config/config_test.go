@@ -378,6 +378,28 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	}
 }
 
+// ── Diagnostics: defaults and env overrides ──────────────────────────────────
+
+func TestDefault_DiagnosticsEnabledByDefault(t *testing.T) {
+	cfg := Default()
+	if !cfg.Diagnostics.Enabled {
+		t.Error("diagnostics.enabled default should be true")
+	}
+}
+
+func TestLoad_DiagnosticsEnvOverridesToFalse(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222") // satisfy validation
+	t.Setenv("SQI_DIAGNOSTICS_ENABLED", "false")
+
+	cfg, err := Load("", FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Diagnostics.Enabled {
+		t.Error("diagnostics.enabled: expected false from env")
+	}
+}
+
 // ── Worker ID persistence ─────────────────────────────────────────────────────
 // Core tests live in workerid_test.go. These tests exercise the integration
 // between Load and the persistence layer.

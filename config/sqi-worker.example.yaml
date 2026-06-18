@@ -256,3 +256,14 @@ log_streamer:
   # more frequent small NATS publishes on slowly printing processes.
   # Type: duration   Env: SQI_WORKER_LOG_STREAMER_FLUSH_INTERVAL
   flush_interval: "500ms"
+
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+# Controls publishing the worker's own structured (slog) output to sqi-server
+# over core NATS, where it is surfaced in the web UI alongside server logs.
+# This is the worker agent's operational log — distinct from task process
+# output, which is always streamed via the log chunk publisher above.
+diagnostics:
+  # Enable diagnostic-log publishing. When true (the default) the worker's slog
+  # records are mirrored to sqi-server in addition to local stderr output.
+  # Type: bool   Env: SQI_DIAGNOSTICS_ENABLED
+  enabled: true

@@ -48,6 +48,20 @@ type WorkerConfig struct {
 	// LogStreamer controls the log-chunk publisher that batches task process
 	// output and streams it to sqi-server via NATS.
 	LogStreamer LogStreamerConfig `yaml:"log_streamer"`
+
+	// Diagnostics controls publishing the worker's own slog output to
+	// sqi-server for display in the web UI.
+	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
+}
+
+// DiagnosticsConfig controls the diagnostic-log sink that ships the worker's
+// own slog output to sqi-server over core NATS (worker.diag.<workerID>), where
+// it is surfaced in the web UI.
+type DiagnosticsConfig struct {
+	// Enabled turns on diagnostic-log publishing.  When true (the default) the
+	// worker's slog records are mirrored to sqi-server in addition to stderr.
+	// Env: SQI_DIAGNOSTICS_ENABLED
+	Enabled bool `yaml:"enabled"`
 }
 
 // LogStreamerConfig controls the log-chunk publisher that streams task
@@ -281,6 +295,9 @@ func Default() WorkerConfig {
 			MaxBytesPerChunk: 16 * 1024,
 			FlushInterval:    500 * time.Millisecond,
 		},
+		Diagnostics: DiagnosticsConfig{
+			Enabled: true,
+		},
 	}
 }
 
@@ -389,6 +406,13 @@ func applyEnv(cfg *WorkerConfig) {
 	applyMetricsEnv(&cfg.Metrics)
 	applyDiscoveryEnv(&cfg.Discovery)
 	applyLogStreamerEnv(&cfg.LogStreamer)
+	applyDiagnosticsEnv(&cfg.Diagnostics)
+}
+
+func applyDiagnosticsEnv(c *DiagnosticsConfig) {
+	if v := os.Getenv("SQI_DIAGNOSTICS_ENABLED"); v != "" {
+		c.Enabled = parseBoolEnv(v)
+	}
 }
 
 func applyNATSEnv(c *NATSConfig) {
