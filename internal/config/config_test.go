@@ -458,3 +458,35 @@ func TestLoad_OpenJD_DefaultUnchangedWhenNotInFile(t *testing.T) {
 		t.Error("openjd.enforce_limits: should remain true when not specified in config file")
 	}
 }
+
+// ── Diagnostics: defaults and env overrides ──────────────────────────────────
+
+func TestLoad_DiagnosticsDefaults(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Diagnostics.Enabled {
+		t.Fatal("diagnostics should default to enabled")
+	}
+	if cfg.Diagnostics.BufferSize <= 0 {
+		t.Fatalf("buffer size default should be positive, got %d", cfg.Diagnostics.BufferSize)
+	}
+}
+
+func TestLoad_DiagnosticsEnvOverride(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_DIAGNOSTICS_ENABLED", "false")
+	t.Setenv("SQI_DIAGNOSTICS_BUFFER_SIZE", "500")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Diagnostics.Enabled {
+		t.Fatal("env should disable diagnostics")
+	}
+	if cfg.Diagnostics.BufferSize != 500 {
+		t.Fatalf("buffer size = %d", cfg.Diagnostics.BufferSize)
+	}
+}

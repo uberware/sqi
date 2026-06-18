@@ -37,6 +37,7 @@ func Validate(cfg Config) []ValidationError {
 	errs = append(errs, validateLog(cfg.Log)...)
 	errs = append(errs, validateScheduler(cfg.Scheduler)...)
 	errs = append(errs, validateDiscovery(cfg.Discovery)...)
+	errs = append(errs, validateDiagnostics(cfg.Diagnostics)...)
 	return errs
 }
 
@@ -174,6 +175,19 @@ func validateDiscovery(cfg DiscoveryConfig) []ValidationError {
 		return []ValidationError{{
 			Field:   "discovery.instance_name",
 			Message: "must not be empty; set SQI_DISCOVERY_INSTANCE_NAME or discovery.instance_name",
+		}}
+	}
+	return nil
+}
+
+func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
+	if cfg.Enabled && cfg.BufferSize <= 0 {
+		return []ValidationError{{
+			Field: "diagnostics.buffer_size",
+			Message: fmt.Sprintf(
+				"must be > 0 when diagnostics is enabled, got %d; set SQI_DIAGNOSTICS_BUFFER_SIZE or diagnostics.buffer_size",
+				cfg.BufferSize,
+			),
 		}}
 	}
 	return nil
