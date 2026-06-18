@@ -53,6 +53,7 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Usage Pools' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Storage' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Submit' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Admin' })).toBeInTheDocument()
   })
 
   it('Phase 1 links point to correct paths', () => {
@@ -81,6 +82,9 @@ describe('Sidebar', () => {
     expect(
       (screen.getByRole('link', { name: 'Submit' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/submit')
+    expect(
+      (screen.getByRole('link', { name: 'Admin' }) as HTMLAnchorElement).getAttribute('href'),
+    ).toBe('/admin')
   })
 
   it('Dashboard link is active at / and inactive at /jobs', () => {
@@ -100,7 +104,7 @@ describe('Sidebar', () => {
   it('renders deferred Phase 2+ items as non-navigable disabled spans', () => {
     const { container } = renderSidebar()
     const disabledItems = container.querySelectorAll('[data-disabled="true"]')
-    expect(disabledItems.length).toBe(3)
+    expect(disabledItems.length).toBe(2)
     disabledItems.forEach((item) => {
       expect(item.tagName.toLowerCase()).toBe('span')
     })
@@ -109,15 +113,20 @@ describe('Sidebar', () => {
   it('shows "coming soon" badge for each deferred item', () => {
     renderSidebar()
     const badges = screen.getAllByText('coming soon')
-    expect(badges.length).toBe(3)
+    expect(badges.length).toBe(2)
   })
 
   it('deferred items include the expected labels', () => {
     renderSidebar()
     expect(screen.getByText('Presets')).toBeInTheDocument()
     expect(screen.getByText('Products')).toBeInTheDocument()
-    expect(screen.getByText('Admin')).toBeInTheDocument()
     expect(screen.queryByText('Settings')).not.toBeInTheDocument()
+  })
+
+  it('Admin is an active nav link to /admin', () => {
+    renderSidebar()
+    const adminLink = screen.getByRole('link', { name: 'Admin' })
+    expect(adminLink.getAttribute('href')).toBe('/admin')
   })
 
   it('shows an active Storage nav link to /storage-locations', () => {
