@@ -457,4 +457,5 @@ accordingly.
 - [`docs/worker-configuration.md`](worker-configuration.md) — Every configuration option.
 - [`docs/worker-capabilities.md`](worker-capabilities.md) — Capability tag reference.
 - [`docs/worker-docker.md`](worker-docker.md) — Docker deployment details.
+- [`docs/observability.md`](observability.md) — In-UI diagnostic panels, REST/WS log API, and log forwarding to journald, Docker, Loki, and ELK.
 - [`config/sqi-worker.example.yaml`](../config/sqi-worker.example.yaml) — Annotated example config.

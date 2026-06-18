@@ -342,6 +342,55 @@ openjd:
 
 ---
 
+## `diagnostics` — In-UI diagnostic log buffer
+
+### `diagnostics.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_DIAGNOSTICS_ENABLED` |
+
+When `true`, `sqi-server` maintains an in-memory ring buffer of its own
+structured log output and subscribes to `worker.diag.>` to receive diagnostic
+records from connected workers. Both surfaces are exposed in the web UI (Admin →
+Server log and each worker's detail page). Set to `false` to skip the buffer
+allocation and subscription; the REST diagnostics endpoint will return 503.
+
+The same env var controls the worker's diagnostic publisher: when `false` on a
+worker, the worker logs to stderr only and does not publish `worker.diag`
+messages.
+
+```yaml
+diagnostics:
+  enabled: true
+```
+
+---
+
+### `diagnostics.buffer_size`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `1000` |
+| **Env var** | `SQI_DIAGNOSTICS_BUFFER_SIZE` |
+
+Maximum diagnostic records retained **per component** (`server` plus each
+connected worker). When the buffer is full the oldest records are evicted. The
+buffer is in-memory only and is cleared on server restart. Must be `> 0` when
+diagnostics are enabled.
+
+```yaml
+diagnostics:
+  buffer_size: 2000
+```
+
+See [`docs/observability.md`](observability.md) for the full diagnostics guide.
+
+---
+
 ## Quick reference table
 
 | Key | Type | Default | Env var | CLI flag |
@@ -361,6 +410,8 @@ openjd:
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
+| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — |
+| `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 
 ---
 
@@ -401,3 +452,4 @@ discovery:
   commented example with every option.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
 - [`docs/operations.md`](operations.md) — Install, upgrade, backup, and log rotation.
+- [`docs/observability.md`](observability.md) — In-UI diagnostics, REST/WS log API, and external log wiring.
