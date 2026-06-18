@@ -299,7 +299,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	// Unsubscribe the core-NATS diagnostic-log subscriber if active.
 	if s.diagSub != nil {
-		_ = s.diagSub.Unsubscribe()
+		if err := s.diagSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+			s.logger.WarnContext(ctx, "scheduler: diagnostic-log unsubscribe failed", slog.Any("error", err))
+		}
 	}
 
 	// Close taskCh so assignment workers exit their range loop.

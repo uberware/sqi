@@ -104,12 +104,10 @@ func TestBuffer_SetNotify(t *testing.T) {
 func TestBuffer_ConcurrentAppend(t *testing.T) {
 	b := diag.NewBuffer(100, nil)
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			b.Append(rec("server", "INFO", "x", nil))
-		}()
+		})
 	}
 	wg.Wait()
 	if got := b.Query(diag.Filter{Component: "server", Limit: 1000}); len(got) != 50 {

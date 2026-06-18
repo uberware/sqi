@@ -53,7 +53,10 @@ func TestNewWithSink_WritesStderrAndSink(t *testing.T) {
 func TestNewWithSink_RespectsLevel(t *testing.T) {
 	var buf bytes.Buffer
 	sink := &captureSink{}
-	logger, _ := sqilog.NewWithSink("warn", "json", &buf, sink)
+	logger, err := sqilog.NewWithSink("warn", "json", &buf, sink)
+	if err != nil {
+		t.Fatalf("NewWithSink: %v", err)
+	}
 
 	logger.InfoContext(context.Background(), "ignored")
 

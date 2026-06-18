@@ -32,7 +32,11 @@ func TestClient_PublishSubscribeWorkerDiag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	defer func() { _ = sub.Unsubscribe() }()
+	t.Cleanup(func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Logf("unsubscribe: %v", err)
+		}
+	})
 
 	if err := client.PublishWorkerDiag(context.Background(), "w1", []byte(`{"msg":"hi"}`)); err != nil {
 		t.Fatalf("publish: %v", err)

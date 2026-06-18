@@ -51,13 +51,13 @@ func TestPublisher_Emit_PublishesDiagLogMsg(t *testing.T) {
 	}
 }
 
-func TestPublisher_Emit_PublishErrorDropped(t *testing.T) {
-	fp := &fakePublisher{err: errBoom{}}
+func TestPublisher_Emit_PublishErrorDropped(_ *testing.T) {
+	fp := &fakePublisher{err: boomError{}}
 	p := diaglog.New(fp, "w1")
 	p.Emit(sqilog.SinkRecord{Ts: "2026-06-17T12:00:00.000000000Z", Level: "INFO", Msg: "x"})
 	// Must not panic or block; error swallowed.
 }
 
-type errBoom struct{}
+type boomError struct{}
 
-func (errBoom) Error() string { return "boom" }
+func (boomError) Error() string { return "boom" }

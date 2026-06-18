@@ -49,5 +49,5 @@ func (p *Publisher) Emit(r sqilog.SinkRecord) {
 	if err != nil {
 		return
 	}
-	_ = p.nc.Publish(p.subject, data)
+	p.nc.Publish(p.subject, data) //nolint:errcheck // best-effort diagnostic publish; the sink must not log (would re-enter the fan-out handler and loop)
 }

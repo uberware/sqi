@@ -21,7 +21,10 @@ func TestHandleDiagMessage_AppendsWithWorkerComponent(t *testing.T) {
 		Msg:   "boom",
 		Attrs: map[string]string{"task_id": "t1"},
 	}
-	data, _ := json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 
 	s.handleDiagMessage("worker.diag.w1", data)
 
@@ -40,7 +43,7 @@ func TestHandleDiagMessage_IgnoresMalformed(t *testing.T) {
 	}
 }
 
-func TestHandleDiagMessage_NilBufferNoPanic(t *testing.T) {
+func TestHandleDiagMessage_NilBufferNoPanic(_ *testing.T) {
 	s := &Scheduler{} // diagnostics disabled → diagBuf nil
 	s.handleDiagMessage("worker.diag.w1", []byte(`{"msg":"x"}`))
 }
