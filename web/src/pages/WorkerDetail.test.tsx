@@ -58,6 +58,25 @@ function wsInstance(i: number): MockWebSocket {
   return ws
 }
 
+// ── Module mocks (hoisted) ────────────────────────────────────────────────────
+
+vi.mock('@/api/diagnostics', () => ({
+  useDiagnosticsLogs: () => ({
+    data: {
+      records: [
+        {
+          ts: '2026-06-17T12:00:00Z',
+          component: 'worker:worker-aabbccdd',
+          level: 'INFO',
+          msg: 'worker diag line',
+        },
+      ],
+    },
+    isLoading: false,
+    isError: false,
+  }),
+}))
+
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const fetchMock = vi.fn<typeof fetch>()
@@ -585,5 +604,13 @@ describe('WorkerDetail', () => {
       expect(screen.getAllByLabelText('Status: Online').length).toBeGreaterThan(0)
       expect(screen.queryByLabelText('Status: Disabled')).not.toBeInTheDocument()
     })
+  })
+
+  // ── Diagnostics panel ─────────────────────────────────────────────────────────
+
+  it('renders a diagnostics panel for the worker', async () => {
+    fetchMock.mockResolvedValue(okJson(makeWorker()))
+    render(<WorkerDetail />, { wrapper: Wrapper })
+    expect(await screen.findByText('worker diag line')).toBeInTheDocument()
   })
 })

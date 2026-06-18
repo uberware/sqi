@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/store"
@@ -44,6 +45,11 @@ func (*stubBus) ConsumeTaskLogs(_ context.Context, _ jetstream.MessageHandler) (
 	return nil, nil
 }
 func (*stubBus) PublishWorkAssign(_ context.Context, _ string, _ []byte) error { return nil }
+
+func (*stubBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nats.Subscription, error) {
+	return nil, nil
+}
+
 func (b *stubBus) PublishTaskCancel(_ context.Context, taskID string, _ []byte) error {
 	b.cancelCalls = append(b.cancelCalls, taskID)
 	return b.cancelErr
@@ -59,6 +65,7 @@ func newTestScheduler(st store.Store, bus busClient) *Scheduler {
 		nil, // metrics — not used by CancelJob/CancelTask
 		slog.New(slog.DiscardHandler),
 		ws.NoopNotifier{},
+		nil, // diagBuf — diagnostics disabled
 	)
 }
 

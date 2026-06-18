@@ -23,6 +23,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/diaglog"
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
@@ -158,6 +159,20 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		// Boot-time connect failure is a fatal error.
 		return fmt.Errorf("nats connect: %w", err)
 	}
+
+	// ── Diagnostic-log sink ─────────────────────────────────────
+	//
+	// Now that NATS is connected and the stable worker ID is resolved, rebuild
+	// the logger so the worker's own slog output is mirrored to sqi-server on
+	// worker.diag.<workerID> (in addition to stderr) for display in the web UI.
+	// All components constructed below receive this sink-enabled logger;
+	// NewWithSink also installs it as slog.Default(). The early logger was used
+	// only for startup messages emitted before the NATS connection existed.
+	logger, err = withDiagnosticSink(cfg, logger, nc, workerID)
+	if err != nil {
+		return err
+	}
+
 	// Drain in-flight subscriptions and flush pending publishes on exit.
 	// natsclient.Drain blocks until complete or the shutdown grace period expires,
 	// at which point it force-closes the connection.
@@ -173,18 +188,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// When MaxReconnectAttempts is -1 (unlimited) this goroutine exits only
 	// via ctx.Done() (normal shutdown path), since the connection will never
 	// permanently close on its own.
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Normal shutdown initiated by signal — NATS closure expected.
-		case <-natsClosed:
-			// NATS permanently closed outside of a planned shutdown. Cancel
-			// the signal context to trigger the worker shutdown sequence.
-			logger.ErrorContext(context.Background(),
-				"natsclient: connection permanently closed — initiating worker shutdown")
-			stop()
-		}
-	}()
+	go watchNATSClosure(ctx, natsClosed, stop, logger)
 
 	// ── Observability (metrics, health, pprof) ────────────────────────────────
 	m := workmetrics.New()
@@ -494,6 +498,44 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	}
 
 	return nil
+}
+
+// watchNATSClosure blocks until either ctx is canceled (normal shutdown) or the
+// NATS connection permanently closes. On unexpected closure it logs and calls
+// stop to trigger a graceful worker shutdown. Extracted from [runStart] to keep
+// that function's cyclomatic complexity within the project limit.
+func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func(), logger *slog.Logger) {
+	select {
+	case <-ctx.Done():
+		// Normal shutdown initiated by signal — NATS closure expected.
+	case <-natsClosed:
+		// NATS permanently closed outside of a planned shutdown. Cancel the
+		// signal context to trigger the worker shutdown sequence.
+		logger.ErrorContext(context.Background(),
+			"natsclient: connection permanently closed — initiating worker shutdown")
+		stop()
+	}
+}
+
+// withDiagnosticSink rebuilds logger so the worker's own slog output is mirrored
+// to sqi-server on worker.diag.<workerID> (in addition to stderr) when
+// diagnostics are enabled; otherwise it returns logger unchanged. Extracted from
+// [runStart] to keep that function's cyclomatic complexity within the project
+// limit.
+func withDiagnosticSink(
+	cfg workerconfig.WorkerConfig,
+	logger *slog.Logger,
+	nc *nats.Conn,
+	workerID string,
+) (*slog.Logger, error) {
+	if !cfg.Diagnostics.Enabled {
+		return logger, nil
+	}
+	l, err := sqilog.NewWithSink(cfg.Log.Level, cfg.Log.Format, os.Stderr, diaglog.New(nc, workerID))
+	if err != nil {
+		return nil, fmt.Errorf("init diagnostic logger: %w", err)
+	}
+	return l, nil
 }
 
 // newPuller creates a JetStream context from nc and returns a configured

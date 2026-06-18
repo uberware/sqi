@@ -28,13 +28,14 @@ import "time"
 // Zero values are not valid; use [DefaultConfig] or [Load] to obtain a
 // populated instance.
 type Config struct {
-	HTTP      HTTPConfig      `yaml:"http"`
-	NATS      NATSConfig      `yaml:"nats"`
-	Store     StoreConfig     `yaml:"store"`
-	Log       LogConfig       `yaml:"log"`
-	Scheduler SchedulerConfig `yaml:"scheduler"`
-	Discovery DiscoveryConfig `yaml:"discovery"`
-	OpenJD    OpenJDConfig    `yaml:"openjd"`
+	HTTP        HTTPConfig        `yaml:"http"`
+	NATS        NATSConfig        `yaml:"nats"`
+	Store       StoreConfig       `yaml:"store"`
+	Log         LogConfig         `yaml:"log"`
+	Scheduler   SchedulerConfig   `yaml:"scheduler"`
+	Discovery   DiscoveryConfig   `yaml:"discovery"`
+	OpenJD      OpenJDConfig      `yaml:"openjd"`
+	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
 }
 
 // HTTPConfig controls the REST and WebSocket listener.
@@ -130,6 +131,19 @@ type DiscoveryConfig struct {
 	InstanceName string `yaml:"instance_name"`
 }
 
+// DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
+// in the web UI.
+type DiagnosticsConfig struct {
+	// BufferSize is the maximum diagnostic records retained per component
+	// (server + each worker). 0 disables diagnostics entirely: no ring buffer,
+	// no worker.diag subscription, and the REST endpoint returns 503. A positive
+	// value is the per-component capacity. Default: 1000. Set to 0 to avoid
+	// spending memory on something accessed out-of-band
+	// (journald/Docker/Loki/etc.). Must not be negative.
+	// Env: SQI_DIAGNOSTICS_BUFFER_SIZE
+	BufferSize int `yaml:"buffer_size"`
+}
+
 // OpenJDConfig controls OpenJD submission and validation behavior.
 type OpenJDConfig struct {
 	// EnforceLimits gates quantitative limit validation (maximum name lengths,
@@ -171,6 +185,9 @@ func DefaultConfig() Config {
 		},
 		OpenJD: OpenJDConfig{
 			EnforceLimits: true,
+		},
+		Diagnostics: DiagnosticsConfig{
+			BufferSize: 1000,
 		},
 	}
 }

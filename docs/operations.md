@@ -264,6 +264,10 @@ To restore from a backup:
 
 ## Log management
 
+See [`docs/observability.md`](observability.md) for the full observability
+guide, including the in-UI diagnostic panels, the REST and WebSocket APIs, and
+worked examples for wiring sqi logs to journald, Docker, Loki, and ELK.
+
 ### Output format
 
 By default `sqi-server` writes structured JSON logs to stdout:

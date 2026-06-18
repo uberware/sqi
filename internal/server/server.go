@@ -23,6 +23,7 @@ import (
 
 	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
@@ -147,15 +148,26 @@ type Server struct {
 	sched     *scheduler.Scheduler
 	wsHub     *ws.Hub              // WebSocket fan-out hub
 	discovery *discovery.Responder // mDNS advertisement
+
+	// diagBuf is the in-memory diagnostic-log ring buffer. It is created in the
+	// serve command before the logger (so the server's own logs are captured
+	// from the first line) and threaded here. Nil when diagnostics are disabled.
+	diagBuf *diag.Buffer
 }
 
 // New creates a [Server] with the given configuration and logger.
-func New(cfg Config, logger *slog.Logger) *Server {
+//
+// diagBuf is the diagnostic-log ring buffer fed by the server's own logs (via
+// the logger's server sink) and by worker diagnostics (via the scheduler). It
+// must be created before the logger so startup logs are captured; pass nil to
+// disable diagnostics.
+func New(cfg Config, logger *slog.Logger, diagBuf *diag.Buffer) *Server {
 	return &Server{
 		cfg:     cfg,
 		logger:  logger,
 		metrics: metrics.New(),
 		health:  health.NewRegistry(),
+		diagBuf: diagBuf,
 	}
 }
 
@@ -261,12 +273,28 @@ func (s *Server) start(ctx context.Context) error {
 	s.wsHub = ws.NewHub(s.logger)
 	s.logger.InfoContext(ctx, "ws: hub created")
 
+	// Wire the diagnostic buffer's notifier to the hub now that the hub exists,
+	// so every appended record (server logs and worker diagnostics) is fanned
+	// out to subscribed WebSocket clients. No-op when diagnostics are disabled.
+	if s.diagBuf != nil {
+		hub := s.wsHub
+		s.diagBuf.SetNotify(func(r diag.Record) {
+			hub.NotifyDiag(ws.DiagEvent{
+				Component: r.Component,
+				Level:     r.Level,
+				Msg:       r.Msg,
+				Attrs:     r.Attrs,
+				At:        r.Ts,
+			})
+		})
+	}
+
 	// ── Scheduler ─────────────────────────────────────────────────────────
 	// Assignment loop goroutine pool, worker registry (NATS
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger, s.wsHub)
+	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	go func() {
 		if err := s.sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
@@ -277,20 +305,27 @@ func (s *Server) start(ctx context.Context) error {
 	// ── HTTP server (chi router) ──────────────────────────────────────────
 	// Chi router with standard middleware mounts all routes.
 	// Job REST endpoints are now registered via api.Deps.
+	deps := api.Deps{
+		Store: s.store,
+		Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
+			EnforceLimits: s.cfg.EnforceOpenJDLimits,
+		}),
+		Scheduler: s.sched,
+		Hub:       s.wsHub,
+	}
+	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
+	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes
+	// the endpoint return 503 instead of panicking on Query.
+	if s.diagBuf != nil {
+		deps.DiagReader = s.diagBuf
+	}
 	router := api.NewRouter(
 		api.Config{
 			CORSOrigins:      s.cfg.CORSOrigins,
 			EnablePprof:      s.cfg.EnablePprof,
 			DisableRateLimit: s.cfg.DisableRateLimit,
 		},
-		api.Deps{
-			Store: s.store,
-			Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
-				EnforceLimits: s.cfg.EnforceOpenJDLimits,
-			}),
-			Scheduler: s.sched,
-			Hub:       s.wsHub,
-		},
+		deps,
 		s.logger,
 		s.metrics,
 		s.health,

@@ -314,6 +314,8 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	m.logger.InfoContext(
 		ctx, "session: created",
 		slog.String("session_id", sessionID),
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
 		slog.String("work_dir", workDir),
 		slog.String("job_id", msg.JobID),
 	)

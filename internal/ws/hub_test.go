@@ -546,3 +546,36 @@ func TestSubjectRing_Add_AssignsIncreasingSeq(t *testing.T) {
 		prev = seq
 	}
 }
+
+func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler))
+	ch := h.Register("c1")
+	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	h.NotifyDiag(DiagEvent{
+		Component: "worker:w1",
+		Level:     "ERROR",
+		Msg:       "boom",
+		Attrs:     map[string]string{"task_id": "t1"},
+		At:        time.Now().UTC(),
+	})
+
+	select {
+	case env := <-ch:
+		if env.Type != TypePush || env.Subject != SubjectDiagnostics {
+			t.Fatalf("envelope = %+v", env)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no diagnostics push received")
+	}
+}
+
+func TestHub_DiagnosticsIsValidSubject(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler))
+	h.Register("c1")
+	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
+		t.Fatalf("diagnostics should be a valid subject: %v", err)
+	}
+}

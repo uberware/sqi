@@ -342,6 +342,42 @@ openjd:
 
 ---
 
+## `diagnostics` — In-UI diagnostic log buffer
+
+### `diagnostics.buffer_size`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `1000` |
+| **Env var** | `SQI_DIAGNOSTICS_BUFFER_SIZE` |
+
+Maximum diagnostic records retained **per component** (`server` plus each
+connected worker) in `sqi-server`'s in-memory ring buffer. This single value is
+also the on/off switch:
+
+- **`0`** — diagnostics are **disabled**: no buffer is allocated, the server
+  does not subscribe to `worker.diag.>`, and the REST diagnostics endpoint
+  returns 503.
+- **positive** — the per-component capacity. When a component's buffer is full
+  the oldest records are evicted. The buffer is in-memory only and is cleared on
+  server restart.
+
+Negative values are rejected. The buffer feeds the web UI (Admin → Server log
+and each worker's detail page).
+
+```yaml
+diagnostics:
+  buffer_size: 2000 # or 0 to disable
+```
+
+> Workers have their own separate `diagnostics.enabled` toggle (they publish
+> rather than buffer) — see the worker configuration guide.
+
+See [`docs/observability.md`](observability.md) for the full diagnostics guide.
+
+---
+
 ## Quick reference table
 
 | Key | Type | Default | Env var | CLI flag |
@@ -361,6 +397,7 @@ openjd:
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
+| `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 
 ---
 
@@ -401,3 +438,4 @@ discovery:
   commented example with every option.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
 - [`docs/operations.md`](operations.md) — Install, upgrade, backup, and log rotation.
+- [`docs/observability.md`](observability.md) — In-UI diagnostics, REST/WS log API, and external log wiring.

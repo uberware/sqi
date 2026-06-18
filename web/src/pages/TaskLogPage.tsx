@@ -3,7 +3,8 @@
 import { Link, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import LogViewer from '@/components/LogViewer'
-import { useGetTask, useGetJob } from '@/api/queries'
+import DiagnosticsPanel from '@/components/DiagnosticsPanel'
+import { useGetTask, useGetJob, useTaskLogs } from '@/api/queries'
 import styles from './TaskLogPage.module.css'
 
 export default function TaskLogPage() {
@@ -13,6 +14,17 @@ export default function TaskLogPage() {
 
   const { data: task, isLoading, isError } = useGetTask(resolvedTaskId)
   const { data: job } = useGetJob(resolvedJobId)
+  const { data: logs, isLoading: logsLoading } = useTaskLogs(resolvedTaskId)
+
+  // Diagnostics fallback: a task can fail before its process emits any output
+  // (e.g. "executable file not found"), leaving an empty log. When that happens
+  // surface the worker's diagnostics for this task so the failure is
+  // self-diagnosable. The worker id may be absent on a pre-execution failure;
+  // an empty component then asks the panel for diagnostics across all components
+  // (filtered by task id).
+  const isFailed = task?.status === 'failed'
+  const hasNoLogs = !logsLoading && (logs?.items.length ?? 0) === 0
+  const workerId = task?.assigned_worker_id ?? ''
 
   // Header action area (far right): the back link, with the job name beneath it
   // in a bold, larger sans-serif, both right-justified.
@@ -52,6 +64,16 @@ export default function TaskLogPage() {
       <div className={styles.viewerWrap}>
         <LogViewer taskId={resolvedTaskId} taskStatus={viewerStatus} />
       </div>
+      {isFailed && hasNoLogs && (
+        <div className={styles.fallback}>
+          <p>No task output was produced. Showing worker diagnostics for this task.</p>
+          <DiagnosticsPanel
+            component={workerId ? `worker:${workerId}` : ''}
+            title="Worker diagnostics"
+            taskId={resolvedTaskId}
+          />
+        </div>
+      )}
     </div>
   )
 }

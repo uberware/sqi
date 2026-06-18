@@ -541,6 +541,38 @@ components:
           type: string
           enum: [online, offline, disabled]
 
+    # ── Diagnostics ───────────────────────────────────────────────────────────
+    DiagnosticRecord:
+      type: object
+      required: [ts, component, level, msg]
+      properties:
+        ts:
+          type: string
+          format: date-time
+          description: Timestamp the record was emitted (RFC3339Nano).
+        component:
+          type: string
+          description: Source component, e.g. "server" or "worker:<id>".
+        level:
+          type: string
+          enum: [DEBUG, INFO, WARN, ERROR]
+        msg:
+          type: string
+        attrs:
+          type: object
+          additionalProperties:
+            type: string
+          description: Structured key/value attributes (e.g. task_id, job_id).
+
+    DiagnosticLogsResponse:
+      type: object
+      required: [records]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagnosticRecord"
+
     # ── Farms ─────────────────────────────────────────────────────────────────
     Farm:
       type: object
@@ -857,6 +889,13 @@ components:
 
     InternalServerError:
       description: Internal server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    ServiceUnavailable:
+      description: Service unavailable — the requested capability is disabled.
       content:
         application/problem+json:
           schema:
@@ -1356,6 +1395,59 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  # ── Diagnostics ────────────────────────────────────────────────────────────
+
+  /diagnostics/logs:
+    get:
+      operationId: getDiagnosticsLogs
+      summary: Query diagnostic logs
+      tags: [diagnostics]
+      description: |
+        Returns recent diagnostic (operational) log records from the
+        server-side in-memory buffer, gathered from sqi-server and connected
+        workers. The buffer is bounded and ephemeral; it is lost on restart.
+        Returns 503 when diagnostics are disabled.
+      parameters:
+        - name: component
+          in: query
+          description: Exact component match, e.g. "server" or "worker:<id>".
+          schema:
+            type: string
+        - name: level
+          in: query
+          description: Minimum log level to include.
+          schema:
+            type: string
+            enum: [DEBUG, INFO, WARN, ERROR]
+        - name: task_id
+          in: query
+          description: Match records whose attrs.task_id equals this value.
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: RFC3339Nano lower bound (exclusive); ignored if unparseable.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Maximum records to return (newest kept), clamped to 1000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 1000
+      responses:
+        "200":
+          description: Matching diagnostic log records (newest last).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosticLogsResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   # ── Farms ──────────────────────────────────────────────────────────────────
 

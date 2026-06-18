@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package log provides slog-based structured logging for sqi-server.
+// Package log provides slog-based structured logging for the sqi binaries.
 //
 // New constructs a [*slog.Logger] from a level string and format string,
 // registers it as the process-wide default, and returns it for injection into

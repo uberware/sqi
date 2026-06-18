@@ -125,7 +125,7 @@ func startServer(t *testing.T) *testServer {
 		Level: slog.LevelWarn, // suppress info noise in test output
 	}))
 
-	srv := server.New(cfg, logger)
+	srv := server.New(cfg, logger, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

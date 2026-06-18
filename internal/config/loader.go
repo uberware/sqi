@@ -127,6 +127,10 @@ type fileConfig struct {
 	OpenJD *struct {
 		EnforceLimits *bool `yaml:"enforce_limits"`
 	} `yaml:"openjd"`
+
+	Diagnostics *struct {
+		BufferSize *int `yaml:"buffer_size"`
+	} `yaml:"diagnostics"`
 }
 
 func applyFile(cfg *Config, explicit string) error {
@@ -180,6 +184,7 @@ func mergeFileConfig(cfg *Config, fc fileConfig) {
 	mergeSchedulerFile(cfg, fc)
 	mergeDiscoveryFile(cfg, fc)
 	mergeOpenJDFile(cfg, fc)
+	mergeDiagnosticsFile(cfg, fc)
 }
 
 func mergeHTTPFile(cfg *Config, fc fileConfig) {
@@ -275,6 +280,15 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	}
 }
 
+func mergeDiagnosticsFile(cfg *Config, fc fileConfig) {
+	if fc.Diagnostics == nil {
+		return
+	}
+	if fc.Diagnostics.BufferSize != nil {
+		cfg.Diagnostics.BufferSize = *fc.Diagnostics.BufferSize
+	}
+}
+
 // ── Environment variable layer ────────────────────────────────────────────────
 
 func applyEnv(cfg *Config) {
@@ -299,6 +313,8 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
 
 	setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS")
+
+	setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE")
 }
 
 func setString(dst *string, key string) {

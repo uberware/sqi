@@ -85,6 +85,11 @@ const (
 	// SubjectTaskLogsFmt streams log chunks for a specific task attempt.
 	// Format: "tasks/{task_id}/logs".
 	SubjectTaskLogsFmt = "tasks/%s/logs"
+
+	// SubjectDiagnostics streams diagnostic (operational) log records from the
+	// server and all workers.  Payload is a [DiagnosticsPush]; subscribers
+	// filter by component client-side.
+	SubjectDiagnostics = "diagnostics"
 )
 
 // Envelope is the single message type used for all WebSocket communication.

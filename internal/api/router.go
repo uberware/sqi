@@ -92,6 +92,11 @@ type Deps struct {
 	// the handler degrades gracefully by accepting subscriptions without
 	// delivering any pushes.
 	Hub *ws.Hub
+
+	// DiagReader exposes the in-memory diagnostic log buffer to
+	// GET /api/v1/diagnostics/logs. It is nil-tolerant: when nil (diagnostics
+	// disabled) the endpoint responds with 503.
+	DiagReader DiagReader
 }
 
 // NewRouter builds and returns the chi router that serves the full sqi-server
@@ -189,6 +194,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
+	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// 7. Versioning header — X-API-Version: 1 on every response.
@@ -251,6 +257,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/usage-pools/{id}", usagePools.getUsagePool)
 		api.Put("/usage-pools/{id}", usagePools.updateUsagePool)
 		api.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
+
+		// ── Diagnostics endpoints ───────────────────────────────
+		api.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
 
 		// OpenAPI spec.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
