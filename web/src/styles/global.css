@@ -185,3 +185,28 @@ table {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* ---- Scrollbars ---- */
+/* Theme scrollbars to match the design tokens. These only take space / appear
+   when an element actually overflows — no permanent reserved gutter. */
+* {
+  scrollbar-color: var(--color-border) transparent; /* Firefox */
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
