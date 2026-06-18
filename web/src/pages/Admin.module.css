@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 .page {
+  /* Fill the scrollable main area so a fill section can extend to the bottom. */
+  height: 100%;
   padding: var(--space-4);
   display: flex;
   flex-direction: column;
@@ -15,4 +17,13 @@
 
 .section {
   width: 100%;
+}
+
+/* A fill section grows to consume the remaining page height; its panel and the
+   panel's log list then flex to fill and scroll internally. */
+.sectionFill {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { useDiagnosticsLogs, type DiagRecord } from '@/api/diagnostics'
 import { useWebSocket } from '@/ws/context'
 import { isDiagEvent } from '@/ws/diagnostics'
@@ -13,9 +13,19 @@ interface Props {
   title: string
   /** Optional task_id filter (used by the task-detail fallback). */
   taskId?: string
+  /**
+   * When true, the panel grows to fill its flex parent (used on the Admin page
+   * where the server log is the only content). When false (default), the log
+   * list is capped at a fixed height.
+   */
+  fill?: boolean
 }
 
-export default function DiagnosticsPanel({ component, title, taskId }: Props) {
+// How close to the bottom (in px) still counts as "at the bottom" for the
+// auto-follow behavior. A small tolerance absorbs sub-pixel rounding.
+const BOTTOM_THRESHOLD_PX = 16
+
+export default function DiagnosticsPanel({ component, title, taskId, fill = false }: Props) {
   // An empty component means "all components" — omit it from the query so the
   // backend returns diagnostics across every component (used by the task-detail
   // fallback when the failing task has no recorded worker id).
@@ -48,8 +58,28 @@ export default function DiagnosticsPanel({ component, title, taskId }: Props) {
 
   const records = [...(data?.records ?? []), ...live]
 
+  // Auto-follow the tail: scroll to the newest line when records change, but
+  // only while the viewer is already at (or near) the bottom. If the user has
+  // scrolled up to read history, leave their position untouched.
+  const listRef = useRef<HTMLOListElement>(null)
+  const stickToBottomRef = useRef(true)
+
+  const handleScroll = useCallback(() => {
+    const el = listRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickToBottomRef.current = distanceFromBottom <= BOTTOM_THRESHOLD_PX
+  }, [])
+
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (el && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [records.length])
+
   return (
-    <section className={styles.panel} aria-label={title}>
+    <section className={fill ? `${styles.panel} ${styles.fill}` : styles.panel} aria-label={title}>
       <h3 className={styles.title}>{title}</h3>
       {isLoading && <p className={styles.muted}>Loading…</p>}
       {isError && <p className={styles.muted}>Diagnostics unavailable.</p>}
@@ -57,7 +87,12 @@ export default function DiagnosticsPanel({ component, title, taskId }: Props) {
         <p className={styles.muted}>No diagnostic logs.</p>
       )}
       {records.length > 0 && (
-        <ol className={styles.lines} role="log">
+        <ol
+          ref={listRef}
+          onScroll={handleScroll}
+          className={fill ? `${styles.lines} ${styles.fillLines}` : styles.lines}
+          role="log"
+        >
           {records.map((r, i) => (
             <li key={`${r.ts}-${i}`} className={styles.line}>
               <time className={styles.ts} dateTime={r.ts}>

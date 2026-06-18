@@ -7,6 +7,8 @@ import styles from './Admin.module.css'
 interface AdminSection {
   id: string
   label: string
+  /** When true, the section grows to fill the remaining page height. */
+  fill?: boolean
   render: () => ReactNode
 }
 
@@ -15,7 +17,8 @@ const SECTIONS: AdminSection[] = [
   {
     id: 'server-log',
     label: 'Server log',
-    render: () => <DiagnosticsPanel component="server" title="Server log" />,
+    fill: true,
+    render: () => <DiagnosticsPanel component="server" title="Server log" fill />,
   },
 ]
 
@@ -24,7 +27,11 @@ export default function Admin() {
     <div className={styles.page}>
       <h1 className={styles.heading}>Admin</h1>
       {SECTIONS.map((s) => (
-        <section key={s.id} className={styles.section} aria-label={s.label}>
+        <section
+          key={s.id}
+          className={s.fill ? `${styles.section} ${styles.sectionFill}` : styles.section}
+          aria-label={s.label}
+        >
           {s.render()}
         </section>
       ))}

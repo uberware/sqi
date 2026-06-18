@@ -102,6 +102,33 @@ describe('DiagnosticsPanel', () => {
     expect(lastCall?.[0]).not.toHaveProperty('component')
   })
 
+  it('renders the log region in fill mode', async () => {
+    vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
+      makeQueryResult({
+        data: {
+          records: [
+            {
+              ts: '2026-06-17T12:00:00Z',
+              component: 'server',
+              level: 'INFO',
+              msg: 'fill mode line',
+            },
+          ],
+        },
+        isSuccess: true,
+        status: 'success',
+      }),
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <DiagnosticsPanel component="server" title="Server log" fill />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText('fill mode line')).toBeInTheDocument()
+    expect(screen.getByRole('log')).toBeInTheDocument()
+  })
+
   it('shows an empty state when there are no records', async () => {
     vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
       makeQueryResult({

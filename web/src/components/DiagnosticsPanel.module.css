@@ -7,6 +7,15 @@
   padding: var(--space-3);
 }
 
+/* Fill mode: grow to fill the flex parent and let the log list scroll
+   internally instead of capping at a fixed height. */
+.fill {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .title {
   font-size: var(--font-size-lg);
   margin: 0 0 var(--space-2);
@@ -26,6 +35,13 @@
   overflow-y: auto;
   font-family: var(--font-family-mono);
   font-size: var(--font-size-xs);
+}
+
+/* In fill mode the list takes all remaining panel height and scrolls there. */
+.fillLines {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
 }
 
 .line {
