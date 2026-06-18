@@ -49,6 +49,7 @@ func (*stubBus) PublishWorkAssign(_ context.Context, _ string, _ []byte) error {
 func (*stubBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nats.Subscription, error) {
 	return nil, nil
 }
+
 func (b *stubBus) PublishTaskCancel(_ context.Context, taskID string, _ []byte) error {
 	b.cancelCalls = append(b.cancelCalls, taskID)
 	return b.cancelErr
