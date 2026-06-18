@@ -23,6 +23,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/diaglog"
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
@@ -158,6 +159,22 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		// Boot-time connect failure is a fatal error.
 		return fmt.Errorf("nats connect: %w", err)
 	}
+
+	// ── Diagnostic-log sink ─────────────────────────────────────
+	//
+	// Now that NATS is connected and the stable worker ID is resolved, rebuild
+	// the logger so the worker's own slog output is mirrored to sqi-server on
+	// worker.diag.<workerID> (in addition to stderr) for display in the web UI.
+	// All components constructed below receive this sink-enabled logger;
+	// NewWithSink also installs it as slog.Default(). The early logger was used
+	// only for startup messages emitted before the NATS connection existed.
+	if cfg.Diagnostics.Enabled {
+		logger, err = sqilog.NewWithSink(cfg.Log.Level, cfg.Log.Format, os.Stderr, diaglog.New(nc, workerID))
+		if err != nil {
+			return fmt.Errorf("init diagnostic logger: %w", err)
+		}
+	}
+
 	// Drain in-flight subscriptions and flush pending publishes on exit.
 	// natsclient.Drain blocks until complete or the shutdown grace period expires,
 	// at which point it force-closes the connection.
