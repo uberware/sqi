@@ -55,6 +55,31 @@ func TestManagerCreate_CreatesWorkDir(t *testing.T) {
 	}
 }
 
+// TestManagerCreate_WorkDirIsAbsolute verifies that the session working
+// directory is absolute even when the worker's data_dir is configured as a
+// relative path (e.g. ./.run/workers/worker-2, as the Makefile's run targets
+// do). A relative WorkDir makes Task.File.* / Env.File.* relative; combined with
+// cmd.Dir being set to the session directory, the forked child chdir's into the
+// session dir and then resolves the relative command path against it, doubling
+// the path and failing with "no such file or directory".
+func TestManagerCreate_WorkDirIsAbsolute(t *testing.T) {
+	// Run from a temp dir so the relative data_dir resolves somewhere clean.
+	t.Chdir(t.TempDir())
+
+	mgr := NewManager(filepath.Join(".run", "workers", "worker-2"), false, nopLogger())
+
+	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "job-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !filepath.IsAbs(s.WorkDir) {
+		t.Errorf("WorkDir = %q; want an absolute path", s.WorkDir)
+	}
+	if info, err := os.Stat(s.WorkDir); err != nil || !info.IsDir() {
+		t.Errorf("WorkDir %q does not exist or is not a directory: %v", s.WorkDir, err)
+	}
+}
+
 func TestManagerCreate_UniqueSessionIDs(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(dataDir, false, nopLogger())

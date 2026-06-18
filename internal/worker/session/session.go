@@ -306,7 +306,15 @@ func NewManager(dataDir string, keepFailedSessions bool, logger *slog.Logger) *M
 func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session, error) {
 	sessionID := uuid.New().String()
 
-	workDir := filepath.Join(m.dataDir, "sessions", sessionID)
+	// WorkDir must be absolute: it becomes cmd.Dir for every action and the base
+	// for Task.File.* / Env.File.* paths. A relative data_dir (e.g. the Makefile's
+	// ./.run/workers/worker-N) would otherwise yield a relative command path that,
+	// combined with cmd.Dir, the forked child resolves against the session dir
+	// itself — doubling the path and failing with "no such file or directory".
+	workDir, err := filepath.Abs(filepath.Join(m.dataDir, "sessions", sessionID))
+	if err != nil {
+		return nil, fmt.Errorf("session %s: resolve absolute working directory: %w", sessionID, err)
+	}
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		return nil, fmt.Errorf("session %s: create working directory %q: %w", sessionID, workDir, err)
 	}
