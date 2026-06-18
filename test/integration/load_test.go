@@ -137,7 +137,7 @@ func startLoadServer(tb testing.TB) *testServer {
 	}
 
 	logger := slog.New(slog.DiscardHandler)
-	srv := server.New(cfg, logger)
+	srv := server.New(cfg, logger, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
