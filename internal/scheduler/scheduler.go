@@ -74,9 +74,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ws"
@@ -131,6 +133,7 @@ type busClient interface {
 	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	PublishWorkAssign(ctx context.Context, queueID string, data []byte) error
 	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
+	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -142,6 +145,14 @@ type Scheduler struct {
 	metrics  *metrics.Metrics
 	logger   *slog.Logger
 	notifier ws.Notifier // pushes live events to WebSocket clients
+
+	// diagBuf is the in-memory diagnostic-log ring buffer fed by the
+	// worker.diag.> core-NATS subscriber. Nil when diagnostics are disabled.
+	diagBuf *diag.Buffer
+
+	// diagSub is the core-NATS subscription for worker.diag.> messages,
+	// unsubscribed during shutdown. Nil when diagnostics are disabled.
+	diagSub *nats.Subscription
 
 	// taskCh carries ready tasks from the dispatch goroutine to the assignment
 	// worker pool. Sized to AssignBatchSize so a full batch can be queued
@@ -246,6 +257,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.logger.InfoContext(ctx, "scheduler: task-logs consumer started")
 
+	// ── Worker diagnostic-log subscriber ─────────────────────────
+	// A core-NATS subscriber on worker.diag.> decodes worker diagnostic
+	// records into the in-memory ring buffer. No-op when diagnostics are
+	// disabled (diagBuf nil).
+	if err := s.startDiagConsumer(); err != nil {
+		return fmt.Errorf("scheduler: start diagnostic-log consumer: %w", err)
+	}
+	if s.diagBuf != nil {
+		s.logger.InfoContext(ctx, "scheduler: diagnostic-log consumer started")
+	}
+
 	// ── Assignment worker pool ───────────────────────────────────
 	for i := range s.cfg.AssignWorkers {
 		s.wg.Go(func() {
@@ -270,6 +292,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// Block until canceled, then wait for goroutines.
 	<-ctx.Done()
 	s.logger.InfoContext(ctx, "scheduler: shutdown signaled — draining goroutines")
+
+	// Unsubscribe the core-NATS diagnostic-log subscriber if active.
+	if s.diagSub != nil {
+		_ = s.diagSub.Unsubscribe()
+	}
 
 	// Close taskCh so assignment workers exit their range loop.
 	close(s.taskCh)

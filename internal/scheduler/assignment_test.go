@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/metrics"
@@ -54,6 +55,10 @@ func (b *recordBus) PublishWorkAssign(_ context.Context, queueID string, _ []byt
 }
 
 func (*recordBus) PublishTaskCancel(_ context.Context, _ string, _ []byte) error { return nil }
+
+func (*recordBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nats.Subscription, error) {
+	return nil, nil
+}
 
 // newMetricsScheduler builds a Scheduler with a real metrics registry so the
 // gauge/observe helpers do not nil-panic. cfg.FarmID is set to farmID.
