@@ -25,6 +25,19 @@ interface Props {
 // auto-follow behavior. A small tolerance absorbs sub-pixel rounding.
 const BOTTOM_THRESHOLD_PX = 16
 
+// orderedAttrs returns a record's attributes as key=value entries with `error`
+// first (it carries the failure detail operators care about most), then the
+// rest alphabetically for stable rendering.
+function orderedAttrs(attrs: Record<string, string> | undefined): Array<[string, string]> {
+  if (!attrs) return []
+  return Object.entries(attrs).sort(([a], [b]) => {
+    if (a === b) return 0
+    if (a === 'error') return -1
+    if (b === 'error') return 1
+    return a.localeCompare(b)
+  })
+}
+
 export default function DiagnosticsPanel({ component, title, taskId, fill = false }: Props) {
   // An empty component means "all components" — omit it from the query so the
   // backend returns diagnostics across every component (used by the task-detail
@@ -101,7 +114,16 @@ export default function DiagnosticsPanel({ component, title, taskId, fill = fals
               <span className={styles.level} data-level={r.level}>
                 {r.level}
               </span>
-              <span className={styles.msg}>{r.msg}</span>
+              <span className={styles.msg}>
+                <span className={styles.msgText}>{r.msg}</span>
+                {orderedAttrs(r.attrs).map(([k, v]) => (
+                  <span key={k} className={styles.attr} data-attr-key={k}>
+                    <span className={styles.attrKey}>{k}</span>
+                    <span className={styles.attrSep}>=</span>
+                    <span className={styles.attrVal}>{v}</span>
+                  </span>
+                ))}
+              </span>
             </li>
           ))}
         </ol>

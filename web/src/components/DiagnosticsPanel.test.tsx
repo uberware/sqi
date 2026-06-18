@@ -129,6 +129,34 @@ describe('DiagnosticsPanel', () => {
     expect(screen.getByRole('log')).toBeInTheDocument()
   })
 
+  it('renders structured attributes including the error detail', async () => {
+    vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
+      makeQueryResult({
+        data: {
+          records: [
+            {
+              ts: '2026-06-17T12:00:00Z',
+              component: 'worker:worker-3',
+              level: 'ERROR',
+              msg: 'executor: task process error',
+              attrs: {
+                task_id: '4a7d3b72',
+                error: 'fork/exec main: no such file or directory',
+              },
+            },
+          ],
+        },
+        isSuccess: true,
+        status: 'success',
+      }),
+    )
+    renderPanel('worker:worker-3')
+    expect(await screen.findByText('executor: task process error')).toBeInTheDocument()
+    expect(screen.getByText('fork/exec main: no such file or directory')).toBeInTheDocument()
+    expect(screen.getByText('error')).toBeInTheDocument()
+    expect(screen.getByText('task_id')).toBeInTheDocument()
+  })
+
   it('shows an empty state when there are no records', async () => {
     vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
       makeQueryResult({

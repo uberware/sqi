@@ -77,3 +77,35 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.msgText {
+  color: var(--color-text-primary);
+}
+
+/* Structured attributes (key=value), shown after the message. `error` carries
+   the failure detail and is highlighted; the rest are secondary context. */
+.attr {
+  margin-left: var(--space-2);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.attrKey {
+  color: var(--color-text-muted);
+}
+
+.attrSep {
+  color: var(--color-text-muted);
+}
+
+.attrVal {
+  color: var(--color-text-secondary);
+}
+
+.attr[data-attr-key='error'] .attrKey {
+  color: var(--color-error);
+}
+
+.attr[data-attr-key='error'] .attrVal {
+  color: var(--color-text-primary);
+}
