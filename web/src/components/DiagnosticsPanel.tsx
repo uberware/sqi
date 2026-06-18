@@ -16,14 +16,20 @@ interface Props {
 }
 
 export default function DiagnosticsPanel({ component, title, taskId }: Props) {
-  const params = taskId ? { component, task_id: taskId } : { component }
+  // An empty component means "all components" — omit it from the query so the
+  // backend returns diagnostics across every component (used by the task-detail
+  // fallback when the failing task has no recorded worker id).
+  const params: { component?: string; task_id?: string } = {}
+  if (component) params.component = component
+  if (taskId) params.task_id = taskId
   const { data, isLoading, isError } = useDiagnosticsLogs(params)
   const [live, setLive] = useState<DiagRecord[]>([])
 
   const onMessage = useCallback(
     (payload: unknown) => {
       if (!isDiagEvent(payload)) return
-      if (payload.component !== component) return
+      // Skip the component-equality check when filtering across all components.
+      if (component && payload.component !== component) return
       if (taskId && payload.attrs?.['task_id'] !== taskId) return
       setLive((prev) => [
         ...prev.slice(-499),

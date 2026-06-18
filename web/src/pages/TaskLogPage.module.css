@@ -52,3 +52,15 @@
   color: var(--color-error);
   font-size: var(--font-size-sm);
 }
+
+.fallback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fallback p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}

@@ -72,6 +72,26 @@ describe('DiagnosticsPanel', () => {
     expect(screen.getByText('ERROR')).toBeInTheDocument()
   })
 
+  it('queries all components and skips the component filter when component is empty', async () => {
+    vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
+      makeQueryResult({
+        data: {
+          records: [
+            { ts: '2026-06-17T12:00:00Z', component: 'worker:w1', level: 'ERROR', msg: 'all-components hit' },
+          ],
+        },
+        isSuccess: true,
+        status: 'success',
+      }),
+    )
+    renderPanel('')
+    // The record from a non-matching component is still rendered.
+    expect(await screen.findByText('all-components hit')).toBeInTheDocument()
+    // The REST params omit `component` entirely so the backend returns all.
+    const lastCall = vi.mocked(api.useDiagnosticsLogs).mock.calls.at(-1)
+    expect(lastCall?.[0]).not.toHaveProperty('component')
+  })
+
   it('shows an empty state when there are no records', async () => {
     vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
       makeQueryResult({

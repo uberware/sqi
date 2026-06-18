@@ -76,6 +76,7 @@ export const queryKeys = {
     all: ['tasks'] as const,
     list: (jobId: string, params?: ListTasksParams) => ['tasks', 'list', jobId, params] as const,
     detail: (id: string) => ['tasks', 'detail', id] as const,
+    logs: (id: string) => ['tasks', 'logs', id] as const,
   },
   workers: {
     all: ['workers'] as const,
@@ -392,4 +393,17 @@ export function fetchTaskLogs(params: FetchTaskLogsParams): Promise<TaskLogsResp
       limit: params.limit,
     })}`,
   )
+}
+
+/**
+ * Fetch the first page of a task's stored log chunks. Used by the task-log page
+ * to detect whether a task produced any output (so a failed task with none can
+ * fall back to worker diagnostics); a small limit is enough for that decision.
+ */
+export function useTaskLogs(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.tasks.logs(taskId),
+    queryFn: () => fetchTaskLogs({ taskId, limit: 1 }),
+    enabled: taskId !== '',
+  })
 }
