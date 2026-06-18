@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import DiagnosticsPanel from '@/components/DiagnosticsPanel'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import { useGetWorker, queryKeys } from '@/api/queries'
@@ -484,6 +485,9 @@ export default function WorkerDetail() {
 
         {/* Assigned tasks */}
         <AssignedTasksSection worker={worker} />
+
+        {/* Worker diagnostic logs */}
+        <DiagnosticsPanel component={`worker:${workerId}`} title="Worker diagnostics" />
       </div>
     </div>
   )
