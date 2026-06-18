@@ -8,7 +8,11 @@ import Admin from '@/pages/Admin'
 vi.mock('@/ws/context', () => ({ useWebSocket: () => {} }))
 vi.mock('@/api/diagnostics', () => ({
   useDiagnosticsLogs: () => ({
-    data: { records: [{ ts: '2026-06-17T12:00:00Z', component: 'server', level: 'INFO', msg: 'server up' }] },
+    data: {
+      records: [
+        { ts: '2026-06-17T12:00:00Z', component: 'server', level: 'INFO', msg: 'server up' },
+      ],
+    },
     isLoading: false,
     isError: false,
   }),

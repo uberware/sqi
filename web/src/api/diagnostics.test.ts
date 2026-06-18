@@ -10,9 +10,7 @@ describe('fetchDiagnosticsLogs', () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
-          records: [
-            { ts: '2026-06-17T12:00:00Z', component: 'server', level: 'INFO', msg: 'hi' },
-          ],
+          records: [{ ts: '2026-06-17T12:00:00Z', component: 'server', level: 'INFO', msg: 'hi' }],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),

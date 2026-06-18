@@ -60,7 +60,12 @@ describe('DiagnosticsPanel', () => {
       makeQueryResult({
         data: {
           records: [
-            { ts: '2026-06-17T12:00:00Z', component: 'server', level: 'ERROR', msg: 'process not found' },
+            {
+              ts: '2026-06-17T12:00:00Z',
+              component: 'server',
+              level: 'ERROR',
+              msg: 'process not found',
+            },
           ],
         },
         isSuccess: true,
@@ -77,7 +82,12 @@ describe('DiagnosticsPanel', () => {
       makeQueryResult({
         data: {
           records: [
-            { ts: '2026-06-17T12:00:00Z', component: 'worker:w1', level: 'ERROR', msg: 'all-components hit' },
+            {
+              ts: '2026-06-17T12:00:00Z',
+              component: 'worker:w1',
+              level: 'ERROR',
+              msg: 'all-components hit',
+            },
           ],
         },
         isSuccess: true,

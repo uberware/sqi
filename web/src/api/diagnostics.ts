@@ -41,8 +41,7 @@ export function fetchDiagnosticsLogs(
   return apiFetch<DiagnosticLogsResponse>(`/diagnostics/logs${buildQuery(params)}`)
 }
 
-export const diagnosticsQueryKey = (params: DiagnosticsParams) =>
-  ['diagnostics', params] as const
+export const diagnosticsQueryKey = (params: DiagnosticsParams) => ['diagnostics', params] as const
 
 export function useDiagnosticsLogs(params: DiagnosticsParams = {}) {
   return useQuery({
