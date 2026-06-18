@@ -114,3 +114,34 @@ func TestBuffer_ConcurrentAppend(t *testing.T) {
 		t.Fatalf("concurrent append lost records: got %d", len(got))
 	}
 }
+
+func TestBuffer_EvictsLeastRecentComponentBeyondGlobalCap(t *testing.T) {
+	b := diag.NewBuffer(10, nil)
+	b.SetMaxComponents(2)
+
+	now := time.Now()
+	b.Append(diag.Record{Ts: now.Add(-3 * time.Minute), Component: "worker:a", Level: "INFO", Msg: "a"})
+	b.Append(diag.Record{Ts: now.Add(-2 * time.Minute), Component: "worker:b", Level: "INFO", Msg: "b"})
+	b.Append(diag.Record{Ts: now.Add(-1 * time.Minute), Component: "worker:c", Level: "INFO", Msg: "c"})
+
+	// With cap 2, the oldest-activity component ("worker:a") must be evicted.
+	if got := b.Query(diag.Filter{Component: "worker:a", Limit: 10}); len(got) != 0 {
+		t.Fatalf("worker:a should have been evicted, got %d", len(got))
+	}
+	if got := b.Query(diag.Filter{Component: "worker:c", Limit: 10}); len(got) != 1 {
+		t.Fatalf("worker:c should be retained, got %d", len(got))
+	}
+}
+
+func TestBuffer_NeverEvictsServerComponent(t *testing.T) {
+	b := diag.NewBuffer(10, nil)
+	b.SetMaxComponents(1)
+	now := time.Now()
+	// server logged first (oldest activity) — must still survive eviction.
+	b.Append(diag.Record{Ts: now.Add(-5 * time.Minute), Component: "server", Level: "INFO", Msg: "srv"})
+	b.Append(diag.Record{Ts: now.Add(-1 * time.Minute), Component: "worker:x", Level: "INFO", Msg: "x"})
+
+	if got := b.Query(diag.Filter{Component: "server", Limit: 10}); len(got) != 1 {
+		t.Fatalf("server must never be evicted, got %d", len(got))
+	}
+}

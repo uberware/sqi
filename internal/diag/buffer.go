@@ -33,6 +33,13 @@ type Filter struct {
 
 const defaultLimit = 200
 
+// defaultMaxComponents is the default ceiling on the number of distinct
+// component rings retained in a [Buffer].  When the ceiling is exceeded,
+// the component with the oldest most-recent record (LRU by latest activity)
+// is evicted.  [ServerComponent] is never evicted regardless of activity.
+// At the default of 512 the worst-case memory is 512 × perComponent records.
+const defaultMaxComponents = 512
+
 // levelRank maps a level string to an ordinal for MinLevel comparison.
 func levelRank(level string) int {
 	switch level {
@@ -51,7 +58,8 @@ func levelRank(level string) int {
 
 // Buffer is a concurrency-safe, per-component bounded ring buffer of [Record].
 type Buffer struct {
-	perComponent int
+	perComponent  int
+	maxComponents int // global ceiling on the number of component rings
 
 	mu     sync.RWMutex
 	notify func(Record)
@@ -66,9 +74,10 @@ func NewBuffer(perComponent int, notify func(Record)) *Buffer {
 		perComponent = 1
 	}
 	return &Buffer{
-		perComponent: perComponent,
-		notify:       notify,
-		rings:        make(map[string][]Record),
+		perComponent:  perComponent,
+		maxComponents: defaultMaxComponents,
+		notify:        notify,
+		rings:         make(map[string][]Record),
 	}
 }
 
@@ -81,8 +90,23 @@ func (b *Buffer) SetNotify(fn func(Record)) {
 	b.mu.Unlock()
 }
 
+// SetMaxComponents overrides the global ceiling on the number of distinct
+// component rings retained.  Values ≤ 0 are clamped to 1.  Safe for
+// concurrent use; typically called once at server boot to tune the default.
+func (b *Buffer) SetMaxComponents(n int) {
+	if n <= 0 {
+		n = 1
+	}
+	b.mu.Lock()
+	b.maxComponents = n
+	b.mu.Unlock()
+}
+
 // Append stores r under its component, evicting the oldest record for that
 // component when the per-component cap is exceeded, then invokes notify.
+// If the global component ceiling is exceeded after the insert, the component
+// with the oldest most-recent record (LRU by latest activity) is evicted;
+// [ServerComponent] is never chosen for eviction.
 func (b *Buffer) Append(r Record) {
 	b.mu.Lock()
 	ring := b.rings[r.Component]
@@ -91,11 +115,44 @@ func (b *Buffer) Append(r Record) {
 		ring = ring[len(ring)-b.perComponent:]
 	}
 	b.rings[r.Component] = ring
+	if len(b.rings) > b.maxComponents {
+		b.evictLRUComponent()
+	}
 	notify := b.notify
 	b.mu.Unlock()
 
 	if notify != nil {
 		notify(r)
+	}
+}
+
+// evictLRUComponent removes the one component ring whose most-recent record
+// has the oldest timestamp (LRU by latest activity).  [ServerComponent] is
+// never evicted.  Must be called with b.mu held for writing.
+func (b *Buffer) evictLRUComponent() {
+	var (
+		evictKey string
+		oldest   time.Time
+		found    bool
+	)
+	for comp, ring := range b.rings {
+		if comp == ServerComponent {
+			continue
+		}
+		var last time.Time
+		if len(ring) > 0 {
+			last = ring[len(ring)-1].Ts
+		}
+		// Empty rings have last == zero time, the smallest possible value,
+		// so they are always preferred for eviction over non-empty rings.
+		if !found || last.Before(oldest) {
+			evictKey = comp
+			oldest = last
+			found = true
+		}
+	}
+	if found {
+		delete(b.rings, evictKey)
 	}
 }
 
