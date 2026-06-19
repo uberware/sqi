@@ -394,6 +394,27 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 	return total, nil
 }
 
+// LeaseReadyTask implements [store.TaskStore].
+func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return false, store.ErrNotFound
+	}
+	if t.Status != store.TaskStatusReady {
+		return false, nil
+	}
+	t.Status = store.TaskStatusAssigned
+	t.AssignedWorkerID = workerID
+	at := now
+	t.AssignedAt = &at
+	t.UpdatedAt = now
+	s.tasks[taskID] = t
+	return true, nil
+}
+
 // cmpReadyTask orders tasks by job priority descending, then CreatedAt ascending.
 func cmpReadyTask(a, b store.Task, jobPriority map[string]int) int {
 	if n := cmp.Compare(jobPriority[b.JobID], jobPriority[a.JobID]); n != 0 {

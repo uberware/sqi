@@ -137,6 +137,11 @@ SELECT COALESCE(SUM(COALESCE(required_cores, ?)), 0)
 FROM   tasks
 WHERE  assigned_worker_id = ?
   AND  status IN ('assigned', 'running')`
+
+	sqlLeaseReadyTask = `
+UPDATE tasks
+SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?
+WHERE  id = ? AND status = 'ready'`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -523,4 +528,18 @@ func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachine
 	var n int
 	err := s.db.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
 	return n, mapErr(err)
+}
+
+// LeaseReadyTask implements [store.TaskStore].
+func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error) {
+	nowText := timeToText(now.UTC())
+	res, err := s.db.ExecContext(ctx, sqlLeaseReadyTask, workerID, nowText, nowText, taskID)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }

@@ -167,6 +167,13 @@ type TaskStore interface {
 	// fullMachineCost). Callers pass the worker's CPUCount as fullMachineCost so
 	// an undeclared task (required_cores NULL) counts as the whole machine.
 	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
+
+	// LeaseReadyTask atomically transitions a task from [TaskStatusReady] to
+	// [TaskStatusAssigned], setting assigned_worker_id and assigned_at. It
+	// returns true iff the task was still ready (exactly one row changed); a
+	// false return means another worker leased it first. This is the race guard
+	// for concurrent lease requests.
+	LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

@@ -1601,3 +1601,34 @@ func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 		t.Errorf("undeclared RequiredCores = %v, want nil", got2.RequiredCores)
 	}
 }
+
+func TestLeaseReadyTask(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+	insertWorker(t, s, "w1", "f1")
+	insertWorker(t, s, "w2", "f1")
+	tk, _ := s.CreateTask(ctx, store.Task{
+		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
+		Status: store.TaskStatusReady, Parameters: map[string]string{},
+	})
+
+	now := time.Now().UTC()
+	ok, err := s.LeaseReadyTask(ctx, tk.ID, "w1", now)
+	if err != nil || !ok {
+		t.Fatalf("first lease = %v, %v, want true, nil", ok, err)
+	}
+	got, _ := s.GetTask(ctx, "t1")
+	if got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w1" || got.AssignedAt == nil {
+		t.Fatalf("after lease: status=%q worker=%q at=%v", got.Status, got.AssignedWorkerID, got.AssignedAt)
+	}
+
+	// Second lease loses the race (no longer ready).
+	ok2, err := s.LeaseReadyTask(ctx, tk.ID, "w2", now)
+	if err != nil || ok2 {
+		t.Errorf("second lease = %v, %v, want false, nil", ok2, err)
+	}
+}
