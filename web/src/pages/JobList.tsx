@@ -10,6 +10,7 @@ import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useLiveNow } from '@/hooks/useLiveNow'
 import { useWebSocket } from '@/ws/context'
 import { isJobEvent, isTaskEvent } from '@/ws/events'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
@@ -50,11 +51,12 @@ function formatTime(iso: string | undefined): string {
   })
 }
 
-function elapsedLabel(job: Job): string {
+// eslint-disable-next-line react-refresh/only-export-components
+export function elapsedLabel(job: Job, now: number): string {
   const start = job.started_at ? new Date(job.started_at).getTime() : null
   const end = job.completed_at ? new Date(job.completed_at).getTime() : null
   if (!start) return '—'
-  const ms = (end ?? Date.now()) - start
+  const ms = (end ?? now) - start
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
@@ -293,14 +295,11 @@ export default function JobList() {
     }
   })
 
-  // ── Last-updated timestamp ──────────────────────────────────────
-
-  // Tick every 30 s so the "X ago" label stays reasonably current.
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(id)
-  }, [])
+  // ── Live clock ──────────────────────────────────────────────────
+  // Tick every second while a job on this page is active so the
+  // "Elapsed" column and "Updated X ago" label stay alive; otherwise 30s.
+  const hasActiveJob = jobs.some((j) => j.status === 'running' || j.status === 'pending')
+  const now = useLiveNow(hasActiveJob)
 
   // ── Manual refresh ───────────────────────────────────────────────
 
@@ -550,7 +549,7 @@ export default function JobList() {
                     <ProgressCell job={job} />
                   </td>
                   <td>{formatTime(job.created_at)}</td>
-                  <td>{elapsedLabel(job)}</td>
+                  <td>{elapsedLabel(job, now)}</td>
                   <td>
                     {canCancel && (
                       <button
