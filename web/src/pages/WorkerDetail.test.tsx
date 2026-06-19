@@ -677,4 +677,15 @@ describe('WorkerDetail', () => {
     render(<WorkerDetail />, { wrapper: Wrapper })
     expect(await screen.findByText('worker diag line')).toBeInTheDocument()
   })
+
+  it('labels the diagnostics section with a section heading like the other sections', async () => {
+    fetchMock.mockResolvedValue(okJson(makeWorker()))
+    render(<WorkerDetail />, { wrapper: Wrapper })
+    await screen.findByText('worker diag line')
+    // The "Worker diagnostics" label sits outside the log box as a level-2
+    // section heading, matching Capabilities and Active Tasks.
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Worker diagnostics' }),
+    ).toBeInTheDocument()
+  })
 })

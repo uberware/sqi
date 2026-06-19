@@ -466,8 +466,16 @@ export default function WorkerDetail() {
         {/* Assigned tasks */}
         <AssignedTasksSection worker={worker} now={now} />
 
-        {/* Worker diagnostic logs */}
-        <DiagnosticsPanel component={`worker:${workerId}`} title="Worker diagnostics" />
+        {/* Worker diagnostic logs — heading sits outside the log box to match
+            the Capabilities and Active Tasks sections. */}
+        <section className={styles.diagSection} aria-label="Worker diagnostics">
+          <h2 className={styles.sectionTitle}>Worker diagnostics</h2>
+          <DiagnosticsPanel
+            component={`worker:${workerId}`}
+            title="Worker diagnostics"
+            showTitle={false}
+          />
+        </section>
       </div>
     </div>
   )
