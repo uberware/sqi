@@ -53,6 +53,11 @@ const (
 	// than waiting for heartbeat timeout. The server handler for this subject
 	// calls [store.WorkerStore.UpdateWorkerStatus] with WorkerStatusOffline.
 	SubjectWorkerDeregister = "worker.deregister"
+
+	// SubjectWorkLeasePrefix is the prefix for worker work-lease requests.
+	// Full subject: SubjectWorkLeasePrefix + "." + queueID. Core NATS
+	// request/reply — workers ask for work; the server replies with a batch.
+	SubjectWorkLeasePrefix = "work.lease"
 )
 
 // WorkAssignSubject returns the full NATS subject for task-assignment messages
@@ -77,4 +82,10 @@ func TaskLogsSubject(taskID string) string {
 // signal targeting the worker that holds the given task.
 func TaskCancelSubject(taskID string) string {
 	return SubjectTaskCancelPrefix + "." + taskID
+}
+
+// WorkLeaseSubject returns the full NATS subject a worker requests work on for
+// the given queue.
+func WorkLeaseSubject(queueID string) string {
+	return SubjectWorkLeasePrefix + "." + queueID
 }
