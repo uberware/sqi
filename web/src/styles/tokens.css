@@ -31,33 +31,33 @@
   --color-accent-hover: #0670ad;
   --color-accent-muted: #ddf4ff;
 
-  /* ---- Status: pending ---- */
-  --color-status-pending-bg: #f0f2f4;
-  --color-status-pending-text: #656d76;
+  /* ---- Status: pending (same blue as ready — both "waiting" states) ---- */
+  --color-status-pending-bg: #c2ecff;
+  --color-status-pending-text: #1a74a8;
 
   /* ---- Status: ready ---- */
-  --color-status-ready-bg: #ddf4ff;
-  --color-status-ready-text: #0670ad;
+  --color-status-ready-bg: #c2ecff;
+  --color-status-ready-text: #1a74a8;
 
   /* ---- Status: assigned ---- */
-  --color-status-assigned-bg: #fff8c5;
-  --color-status-assigned-text: #7d4e00;
+  --color-status-assigned-bg: #fef4a4;
+  --color-status-assigned-text: #8e5e10;
 
-  /* ---- Status: running (same blue as ready — both represent "active" states) ---- */
-  --color-status-running-bg: #ddf4ff;
-  --color-status-running-text: #0670ad;
+  /* ---- Status: running (same yellow as assigned — both "active" states) ---- */
+  --color-status-running-bg: #fef4a4;
+  --color-status-running-text: #8e5e10;
 
   /* ---- Status: succeeded ---- */
-  --color-status-succeeded-bg: #dafbe1;
-  --color-status-succeeded-text: #116329;
+  --color-status-succeeded-bg: #b2f5c0;
+  --color-status-succeeded-text: #1d813b;
 
   /* ---- Status: failed ---- */
-  --color-status-failed-bg: #ffebe9;
-  --color-status-failed-text: #82071e;
+  --color-status-failed-bg: #fcc5c0;
+  --color-status-failed-text: #851429;
 
   /* ---- Status: canceled ---- */
-  --color-status-canceled-bg: #f0f2f4;
-  --color-status-canceled-text: #656d76;
+  --color-status-canceled-bg: #909ead;
+  --color-status-canceled-text: #1c1e21;
 
   /* ---- Severity ---- */
   --color-success: #2da44e;
@@ -170,33 +170,33 @@
   --color-accent-hover: #ffc163;
   --color-accent-muted: #3a2c1a;
 
-  /* ---- Status: pending ---- */
-  --color-status-pending-bg: #2a252f;
-  --color-status-pending-text: #9a8697;
+  /* ---- Status: pending (same blue as ready — both "waiting" states) ---- */
+  --color-status-pending-bg: #284253;
+  --color-status-pending-text: #68b0f3;
 
   /* ---- Status: ready ---- */
-  --color-status-ready-bg: #242e34;
-  --color-status-ready-text: #94bee4;
+  --color-status-ready-bg: #284253;
+  --color-status-ready-text: #68b0f3;
 
   /* ---- Status: assigned ---- */
-  --color-status-assigned-bg: #332c1d;
-  --color-status-assigned-text: #c3a661;
+  --color-status-assigned-bg: #4e4227;
+  --color-status-assigned-text: #cc9c2e;
 
-  /* ---- Status: running ---- */
-  --color-status-running-bg: #242e34;
-  --color-status-running-text: #94bee4;
+  /* ---- Status: running (same yellow as assigned — both "active" states) ---- */
+  --color-status-running-bg: #4e4227;
+  --color-status-running-text: #cc9c2e;
 
   /* ---- Status: succeeded ---- */
-  --color-status-succeeded-bg: #19231c;
-  --color-status-succeeded-text: #6eb283;
+  --color-status-succeeded-bg: #2c4e36;
+  --color-status-succeeded-text: #56c87a;
 
   /* ---- Status: failed ---- */
-  --color-status-failed-bg: #342022;
-  --color-status-failed-text: #e9a9a8;
+  --color-status-failed-bg: #412023;
+  --color-status-failed-text: #f47371;
 
   /* ---- Status: canceled ---- */
-  --color-status-canceled-bg: #2a252f;
-  --color-status-canceled-text: #9a8697;
+  --color-status-canceled-bg: #3d3941;
+  --color-status-canceled-text: #8d7c8b;
 
   /* ---- Severity ---- */
   --color-success: #57a162;
