@@ -75,7 +75,7 @@ import (
 // [Session.ExitEnvironments] followed by [Manager.Cleanup].
 //
 // Session is safe for concurrent use. Multiple tasks may execute within a
-// single session simultaneously (subject to max_concurrent_tasks).
+// single session simultaneously.
 type Session struct {
 	// ID is the worker-generated unique identifier for this session.
 	// Callers MUST include this in every [protocol.TaskStatusMsg] (as

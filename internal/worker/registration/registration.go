@@ -123,8 +123,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 			VRAMMb: r.caps.GPU.VRAMMb,
 			Count:  r.caps.GPU.Count,
 		},
-		MaxConcurrentTasks: r.cfg.MaxConcurrentTasks,
-		Tags:               r.caps.Tags,
+		Tags: r.caps.Tags,
 	}
 
 	data, err := json.Marshal(msg)
@@ -152,7 +151,6 @@ func (r *Registrar) Register(ctx context.Context) error {
 		slog.String("os", r.caps.OS),
 		slog.Int("cpu_count", r.caps.CPUCount),
 		slog.Int("ram_mb", r.caps.RAMMb),
-		slog.Int("max_concurrent_tasks", r.cfg.MaxConcurrentTasks),
 		slog.Int("tag_count", len(r.caps.Tags)),
 	)
 	return nil

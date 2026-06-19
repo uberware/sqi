@@ -92,13 +92,6 @@ worker:
   # Type: string   Env: SQI_WORKER_COMPUTE_LOCATION
   compute_location: ""
 
-  # Maximum number of tasks this worker will execute simultaneously. Set to the
-  # number of parallel render slots on this host — typically 1 for GPU rendering
-  # or the logical CPU count ÷ cores-per-task for CPU rendering.
-  # Must be ≥ 1.
-  # Type: int   Env: SQI_WORKER_MAX_CONCURRENT_TASKS
-  max_concurrent_tasks: 4
-
   # Arbitrary capability tags merged with auto-detected capabilities at
   # registration time. Use these to annotate software or hardware features that
   # the auto-detector cannot discover, such as installed DCC versions, licensed

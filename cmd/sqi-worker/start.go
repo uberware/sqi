@@ -287,9 +287,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		m,
 		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
 		executor.Config{
-			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
-			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
-			AllowRoot:          cfg.Worker.AllowRoot,
+			KillGracePeriod: cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
+			AllowRoot:       cfg.Worker.AllowRoot,
 		},
 		logger,
 	)
@@ -318,7 +317,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	hbPublisher := heartbeat.New(
 		nc,
 		workerID,
-		cfg.Worker.MaxConcurrentTasks,
+		caps.CPUCount,
 		cfg.Worker.HeartbeatInterval,
 		exec, // executor implements heartbeat.StateSource
 		reg,
@@ -330,8 +329,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	//
 	// The worker asks the server for work on work.lease.<queue> and dispatches
 	// whatever the server leases it. The server gates capacity (CPU-core fit,
-	// policy, usage pools), so the worker simply runs what it is given; the
-	// executor's own MaxConcurrentTasks semaphore remains as a defensive cap.
+	// policy, usage pools), so the worker simply runs what it is given.
 	leaseLoop := lease.New(
 		leaseTransport{nc: nc}, // adapts *nats.Conn to lease.Transport
 		exec,                   // *executor.Executor implements lease.Dispatcher
@@ -348,7 +346,6 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.String("worker_id", workerID),
 		slog.String("worker_name", cfg.Worker.Name),
 		slog.String("data_dir", cfg.Worker.DataDir),
-		slog.Int("max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks),
 		slog.String("metrics_addr", cfg.Metrics.Addr),
 		slog.String("nats_url", nc.ConnectedUrl()),
 		slog.String("os", caps.OS),
@@ -498,9 +495,8 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "## Would register as")
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  name:                 %s\n", cfg.Worker.Name)
-	fmt.Fprintf(w, "  compute_location:     %s\n", cfg.Worker.ComputeLocation)
-	fmt.Fprintf(w, "  max_concurrent_tasks: %d\n", cfg.Worker.MaxConcurrentTasks)
+	fmt.Fprintf(w, "  name:             %s\n", cfg.Worker.Name)
+	fmt.Fprintf(w, "  compute_location: %s\n", cfg.Worker.ComputeLocation)
 	if cfg.NATS.URL != "" {
 		fmt.Fprintf(w, "  server_nats_url:      %s\n", cfg.NATS.URL)
 	} else {

@@ -244,30 +244,6 @@ worker:
 
 ---
 
-### `worker.max_concurrent_tasks`
-
-| | |
-|---|---|
-| **Type** | `int` |
-| **Default** | `4` |
-| **Env var** | `SQI_WORKER_MAX_CONCURRENT_TASKS` |
-
-Defensive upper bound on the number of tasks the worker will run at once.
-This is a local safety cap, not the primary concurrency control: the server
-gates how many tasks a worker receives by tracking committed CPU cores
-(`CPUCount − committed`). In practice this limit is rarely hit — the server
-will not lease more tasks than the worker's CPU capacity allows. Lower this
-value only if you need a hard local ceiling for reasons outside the server's
-view (e.g., memory pressure not expressed as an OpenJD host requirement). Must
-be `≥ 1`.
-
-```yaml
-worker:
-  max_concurrent_tasks: 4
-```
-
----
-
 ### `worker.capability_tags`
 
 | | |
@@ -655,7 +631,6 @@ log_streamer:
 | `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
 | `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) | `SQI_WORKER_DATA_DIR` | — |
 | `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — |
-| `worker.max_concurrent_tasks` | int | `4` | `SQI_WORKER_MAX_CONCURRENT_TASKS` | — |
 | `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — |
 | `worker.heartbeat_interval` | duration | `15s` | `SQI_WORKER_HEARTBEAT_INTERVAL` | — |
 | `worker.shutdown_grace_period` | duration | `30s` | `SQI_WORKER_SHUTDOWN_GRACE_PERIOD` | — |
@@ -694,7 +669,6 @@ worker:
   farm_id: "studio-main"
   data_dir: "/var/lib/sqi-worker"
   compute_location: "nas-studio"
-  max_concurrent_tasks: 1      # defensive cap; server gates by CPU cores (undeclared vcpu = full machine)
   capability_tags:
     - houdini-20.5
     - karma-renderer
@@ -714,12 +688,11 @@ metrics:
 
 ## Running multiple workers on one host
 
-A single worker already executes tasks in parallel — the server leases as many
-tasks as fit the worker's CPU cores (see [CPU reservations in OpenJD
-templates](openjd-submission.md#5-cpu-reservations)). The local
-[`worker.max_concurrent_tasks`](#workermax_concurrent_tasks) cap (default 4) is
-a defensive ceiling. Raise it only when the server would otherwise be capped
-below what the host can actually run.
+A single worker executes tasks in parallel — the server leases as many tasks as
+fit the worker's CPU cores (see [CPU reservations in OpenJD
+templates](openjd-submission.md#5-cpu-reservations)). The worker runs whatever
+it is leased; concurrency is gated entirely by the server's CPU-core accounting
+(`amount.worker.vcpu`). There is no local task-count cap.
 
 Run *separate* worker processes when you want distinct worker identities:
 independent heartbeats and registrations, different capability sets, or
