@@ -9,7 +9,9 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -99,7 +101,10 @@ func (s *Scheduler) leaseGatesPass(
 
 	policyErr := policyGate(ctx, s.store, job, queue, farm)
 	if policyErr != nil {
-		return d, false, nil //nolint:nilerr // policy blocked is a skip signal, not a caller error
+		if errors.Is(policyErr, errPolicyBlocked) {
+			return d, false, nil // errPolicyBlocked is a skip signal, not a caller error
+		}
+		return d, false, policyErr // genuine store error → propagate
 	}
 
 	pools, activeCounts, err := s.buildUsageContext(ctx, step)
@@ -150,7 +155,14 @@ func (s *Scheduler) tryLeaseTask(
 	// Attempt + usage claim (reverts task to ready on failure internally).
 	attempt, claimErr := s.createAttemptAndClaimUsage(ctx, task, worker, gd.step, gd.pools, now)
 	if claimErr != nil {
-		return nil, 0, false, nil //nolint:nilerr // task already reverted; skip this task
+		if !errors.Is(claimErr, errNoWorkerAvailable) {
+			s.logger.WarnContext(
+				ctx, "lease: createAttemptAndClaimUsage failed — task reverted to ready",
+				slog.String("task_id", task.ID),
+				slog.Any("error", claimErr),
+			)
+		}
+		return nil, 0, false, nil // task already reverted internally; skip, do not propagate
 	}
 
 	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, attempt.ID, s.store)
@@ -164,6 +176,9 @@ func (s *Scheduler) tryLeaseTask(
 // required_cores, or the worker's full CPUCount when undeclared.
 func fullMachineCost(task store.Task, worker store.Worker) int {
 	if task.RequiredCores != nil {
+		if *task.RequiredCores < 1 {
+			return 1
+		}
 		return *task.RequiredCores
 	}
 	if worker.CPUCount > 0 {

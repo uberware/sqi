@@ -3,6 +3,8 @@
 package scheduler
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -132,4 +134,47 @@ func TestSelectLeaseBatch_UndeclaredIsFullMachine(t *testing.T) {
 	if len(batch) != 1 {
 		t.Fatalf("batch len = %d, want 1 (undeclared takes whole machine)", len(batch))
 	}
+}
+
+// TestSelectLeaseBatch_PolicyStoreErrorPropagates verifies that a genuine DB
+// error from CountActiveTasksInQueue (inside policyGate) is not swallowed as a
+// silent skip but is instead returned as an error from selectLeaseBatch.
+func TestSelectLeaseBatch_PolicyStoreErrorPropagates(t *testing.T) {
+	inner := fake.New()
+	one := 1
+	w, _ := seedLeaseFixture(t, inner, []*int{&one})
+
+	// Seed a queue-level concurrency limit so policyGate calls CountActiveTasksInQueue.
+	q, err := inner.GetQueue(t.Context(), "q1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.MaxConcurrentTasks = 10
+	if _, err := inner.UpdateQueue(t.Context(), q); err != nil {
+		t.Fatal(err)
+	}
+
+	errDB := errors.New("connection reset by peer")
+	st := &policyErrStore{Store: inner, errCountQueue: errDB}
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+
+	_, batchErr := s.selectLeaseBatch(t.Context(), w)
+	if batchErr == nil {
+		t.Fatal("selectLeaseBatch: want error, got nil")
+	}
+	if !errors.Is(batchErr, errDB) {
+		t.Errorf("selectLeaseBatch err = %v, want to wrap errDB", batchErr)
+	}
+}
+
+// policyErrStore wraps a [store.Store] and injects errCountQueue on
+// CountActiveTasksInQueue calls to simulate a DB failure inside policyGate.
+type policyErrStore struct {
+	store.Store
+
+	errCountQueue error
+}
+
+func (s *policyErrStore) CountActiveTasksInQueue(_ context.Context, _ string) (int, error) {
+	return 0, s.errCountQueue
 }
