@@ -185,8 +185,46 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 			WorkerID:  attempt.WorkerID,
 			UpdatedAt: time.Now().UTC(),
 		})
+
+		// Promote the enclosing job to running on its first running task. This
+		// stamps the job's StartedAt via the store's COALESCE-on-running logic;
+		// without it the job would stay pending and never record a start time.
+		s.maybePromoteJobRunning(ctx, task.JobID)
 	}
 	return nil
+}
+
+// maybePromoteJobRunning transitions a job from pending to running, which the
+// store uses to stamp StartedAt. It is a no-op for any non-pending status so a
+// late task report cannot un-pause a paused job or revive a terminal one.
+// Best-effort: failures are logged, not propagated, since the task itself has
+// already been recorded running and a subsequent running report will retry.
+func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: promote job running: get job failed",
+			slog.String("job_id", jobID),
+			slog.Any("error", err),
+		)
+		return
+	}
+	if job.Status != store.JobStatusPending {
+		return
+	}
+	if err := s.store.UpdateJobStatus(ctx, jobID, store.JobStatusRunning); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: promote job running: update status failed",
+			slog.String("job_id", jobID),
+			slog.Any("error", err),
+		)
+		return
+	}
+	s.notifier.NotifyJob(ws.JobEvent{
+		JobID:     jobID,
+		Status:    string(store.JobStatusRunning),
+		UpdatedAt: time.Now().UTC(),
+	})
 }
 
 // handleTaskTerminal handles a terminal TaskStatusMsg (succeeded/failed/canceled):

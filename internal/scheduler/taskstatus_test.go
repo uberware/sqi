@@ -63,9 +63,20 @@ func taskStatusMsgJSON(t *testing.T, m protocol.TaskStatusMsg) []byte {
 	return b
 }
 
-// seedStatusFixture builds a complete job/step/task/attempt in the store.
-// Returns all four records.
+// seedStatusFixture builds a complete job/step/task/attempt in the store with
+// the job already in the running state. Returns all four records.
 func seedStatusFixture(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (
+	job store.Job, step store.Step, task store.Task, attempt store.TaskAttempt,
+) {
+	t.Helper()
+	return seedStatusFixtureWithJobStatus(t, st, store.JobStatusRunning, taskStatus)
+}
+
+// seedStatusFixtureWithJobStatus is like seedStatusFixture but lets the caller
+// choose the initial job status (e.g. pending, to exercise promotion to running).
+func seedStatusFixtureWithJobStatus(
+	t *testing.T, st *fake.Store, jobStatus store.JobStatus, taskStatus store.TaskStatus,
+) (
 	job store.Job, step store.Step, task store.Task, attempt store.TaskAttempt,
 ) {
 	t.Helper()
@@ -77,7 +88,7 @@ func seedStatusFixture(t *testing.T, st *fake.Store, taskStatus store.TaskStatus
 		FarmID:         "farm-1",
 		QueueID:        "queue-1",
 		Name:           "job",
-		Status:         store.JobStatusRunning,
+		Status:         jobStatus,
 		TemplateFormat: store.TemplateFormatJSON,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -207,6 +218,72 @@ func TestProcessTaskStatus_Running(t *testing.T) {
 	}
 	if updatedAttempt.SessionID != sessionID {
 		t.Errorf("attempt.SessionID = %q, want %q", updatedAttempt.SessionID, sessionID)
+	}
+}
+
+// TestProcessTaskStatus_Running_PromotesPendingJob verifies that when the first
+// task of a still-pending job reports "running", the enclosing job is promoted
+// to running and its StartedAt is stamped.
+func TestProcessTaskStatus_Running_PromotesPendingJob(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	job, _, task, attempt := seedStatusFixtureWithJobStatus(
+		t, st, store.JobStatusPending, store.TaskStatusAssigned,
+	)
+
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "running",
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.acked {
+		t.Fatal("expected message to be acked")
+	}
+	storedJob, err := st.GetJob(t.Context(), job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if storedJob.Status != store.JobStatusRunning {
+		t.Errorf("job status = %q, want running", storedJob.Status)
+	}
+	if storedJob.StartedAt == nil {
+		t.Error("job StartedAt should be set once its first task is running")
+	}
+}
+
+// TestProcessTaskStatus_Running_DoesNotUnpauseJob verifies that a "running"
+// status for a job that is not pending (e.g. paused) does not flip it back to
+// running.
+func TestProcessTaskStatus_Running_DoesNotUnpauseJob(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	job, _, task, attempt := seedStatusFixtureWithJobStatus(
+		t, st, store.JobStatusPaused, store.TaskStatusAssigned,
+	)
+
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "running",
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	storedJob, err := st.GetJob(t.Context(), job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if storedJob.Status != store.JobStatusPaused {
+		t.Errorf("job status = %q, want paused (unchanged)", storedJob.Status)
 	}
 }
 

@@ -7,6 +7,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -904,6 +905,61 @@ func TestTask_ReclaimWorkerTasks(t *testing.T) {
 	}
 }
 
+func TestTask_ReclaimStaleAssignedTasks(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertWorker(t, s, "w1", "f1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1") // stale assignment
+	insertTask(t, s, "t2", "j1", "s1") // fresh assignment
+
+	if err := s.AssignTask(ctx, "t1", "w1", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("AssignTask t1: %v", err)
+	}
+	if err := s.AssignTask(ctx, "t2", "w1", time.Now()); err != nil {
+		t.Fatalf("AssignTask t2: %v", err)
+	}
+
+	cutoff := time.Now().Add(-30 * time.Minute)
+	reclaimed, err := s.ReclaimStaleAssignedTasks(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("ReclaimStaleAssignedTasks: %v", err)
+	}
+	if len(reclaimed) != 1 {
+		t.Fatalf("reclaimed count: got %d, want 1", len(reclaimed))
+	}
+	if reclaimed[0].ID != "t1" {
+		t.Errorf("reclaimed task: got %q, want t1", reclaimed[0].ID)
+	}
+	// The returned snapshot must retain the pre-reset worker so the caller can
+	// close attempts and release usage claims.
+	if reclaimed[0].AssignedWorkerID != "w1" {
+		t.Errorf("reclaimed AssignedWorkerID: got %q, want w1", reclaimed[0].AssignedWorkerID)
+	}
+
+	t1, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask t1: %v", err)
+	}
+	if t1.Status != store.TaskStatusReady {
+		t.Errorf("t1 status: got %q, want ready", t1.Status)
+	}
+	if t1.AssignedWorkerID != "" {
+		t.Errorf("t1 AssignedWorkerID: got %q, want cleared", t1.AssignedWorkerID)
+	}
+
+	t2, err := s.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask t2: %v", err)
+	}
+	if t2.Status != store.TaskStatusAssigned {
+		t.Errorf("t2 status: got %q, want assigned (still fresh)", t2.Status)
+	}
+}
+
 func TestTask_CountActiveTasksInQueue(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -1350,5 +1406,106 @@ func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {
 	}
 	if page.Items[0].ID != "w1" {
 		t.Errorf("Items[0].ID: got %q", page.Items[0].ID)
+	}
+}
+
+// ── DemoteStalledJobs ─────────────────────────────────────────────────────────
+
+// seedJobWithTasks creates a job (in the given status) with one step and a task
+// per status in taskStatuses. Returns the job ID.
+func seedJobWithTasks(t *testing.T, s *sqlite.Store, jobID string, jobStatus store.JobStatus, taskStatuses ...store.TaskStatus) string {
+	t.Helper()
+	ctx := context.Background()
+	insertJob(t, s, jobID, "f1", "q1")
+	step := insertStep(t, s, jobID+"-step", jobID, "render", 0)
+	for i, ts := range taskStatuses {
+		if _, err := s.CreateTask(ctx, store.Task{
+			ID:         fmt.Sprintf("%s-t%d", jobID, i),
+			JobID:      jobID,
+			StepID:     step.ID,
+			Name:       fmt.Sprintf("task-%d", i),
+			Status:     ts,
+			Parameters: map[string]string{},
+		}); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+	}
+	if err := s.UpdateJobStatus(ctx, jobID, jobStatus); err != nil {
+		t.Fatalf("UpdateJobStatus(%q): %v", jobStatus, err)
+	}
+	return jobID
+}
+
+func TestDemoteStalledJobs(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+
+	const (
+		R = store.TaskStatusReady
+		A = store.TaskStatusAssigned
+		U = store.TaskStatusRunning
+		S = store.TaskStatusSucceeded
+	)
+
+	// stalled: running job whose only non-terminal work is ready (the recovered
+	// frames 41-50 case: 2 succeeded + 1 ready, no in-flight task).
+	seedJobWithTasks(t, s, "stalled", store.JobStatusRunning, S, S, R)
+	// inflight-running: a running task means the job is genuinely running.
+	seedJobWithTasks(t, s, "inflight-running", store.JobStatusRunning, U, R)
+	// inflight-assigned: an assigned task also counts as in flight.
+	seedJobWithTasks(t, s, "inflight-assigned", store.JobStatusRunning, A, R)
+	// all-terminal: no schedulable work left — leave it for completion logic.
+	seedJobWithTasks(t, s, "all-terminal", store.JobStatusRunning, S, S)
+	// pending: not running, so never a demotion candidate even when idle.
+	seedJobWithTasks(t, s, "pending", store.JobStatusPending, R)
+
+	now := time.Now().UTC()
+	demoted, err := s.DemoteStalledJobs(ctx, now)
+	if err != nil {
+		t.Fatalf("DemoteStalledJobs: %v", err)
+	}
+
+	if len(demoted) != 1 || demoted[0] != "stalled" {
+		t.Fatalf("demoted = %v, want [stalled]", demoted)
+	}
+
+	wantStatus := map[string]store.JobStatus{
+		"stalled":           store.JobStatusPending,
+		"inflight-running":  store.JobStatusRunning,
+		"inflight-assigned": store.JobStatusRunning,
+		"all-terminal":      store.JobStatusRunning,
+		"pending":           store.JobStatusPending,
+	}
+	for id, want := range wantStatus {
+		j, err := s.GetJob(ctx, id)
+		if err != nil {
+			t.Fatalf("GetJob(%q): %v", id, err)
+		}
+		if j.Status != want {
+			t.Errorf("job %q status = %q, want %q", id, j.Status, want)
+		}
+	}
+
+	// The demoted job keeps its StartedAt (it did start) and stamps updated_at.
+	j, err := s.GetJob(ctx, "stalled")
+	if err != nil {
+		t.Fatalf("GetJob(stalled): %v", err)
+	}
+	if j.StartedAt == nil {
+		t.Error("demoted job lost StartedAt, want preserved")
+	}
+	if !j.UpdatedAt.Equal(now) {
+		t.Errorf("demoted job UpdatedAt = %v, want %v", j.UpdatedAt, now)
+	}
+
+	// Idempotent: a second sweep with the stalled job now pending demotes nothing.
+	again, err := s.DemoteStalledJobs(ctx, now)
+	if err != nil {
+		t.Fatalf("DemoteStalledJobs (2nd): %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("second sweep demoted %v, want none", again)
 	}
 }

@@ -290,6 +290,60 @@ func TestListJobs(t *testing.T) {
 		}
 	})
 
+	t.Run("includes task_counts per item", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		ctx := t.Context()
+		job := seedJob(t, st, store.JobStatusRunning)
+
+		now := time.Now()
+		step, err := st.CreateStep(ctx, store.Step{
+			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
+			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateStep: %v", err)
+		}
+		for _, ts := range []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusRunning} {
+			if _, err := st.CreateTask(ctx, store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+				Name: "t", Status: ts, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rr.Code)
+		}
+		var resp jobListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		var found *jobListItemResponse
+		for i := range resp.Items {
+			if resp.Items[i].ID == job.ID {
+				found = &resp.Items[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("seeded job not present in list response")
+		}
+		if found.TaskCounts.Total != 2 {
+			t.Errorf("task_counts.total = %d, want 2", found.TaskCounts.Total)
+		}
+		if found.TaskCounts.Succeeded != 1 {
+			t.Errorf("task_counts.succeeded = %d, want 1", found.TaskCounts.Succeeded)
+		}
+		if found.TaskCounts.Running != 1 {
+			t.Errorf("task_counts.running = %d, want 1", found.TaskCounts.Running)
+		}
+	})
+
 	t.Run("filter by status", func(t *testing.T) {
 		req := newReq(t, http.MethodGet, "/api/v1/jobs?status=running", nil)
 		rr := httptest.NewRecorder()

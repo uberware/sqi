@@ -96,12 +96,21 @@ type jobDetailResponse struct {
 	TaskCounts taskCountsResponse `json:"task_counts"`
 }
 
+// jobListItemResponse is a single entry in the job list. It carries the base
+// job fields plus the aggregate task counts used to render progress without a
+// per-row detail fetch.
+type jobListItemResponse struct {
+	jobResponse
+
+	TaskCounts taskCountsResponse `json:"task_counts"`
+}
+
 // jobListResponse is the paginated result returned by GET /api/v1/jobs.
 type jobListResponse struct {
-	Items  []jobResponse `json:"items"`
-	Total  int           `json:"total"`
-	Limit  int           `json:"limit"`
-	Offset int           `json:"offset"`
+	Items  []jobListItemResponse `json:"items"`
+	Total  int                   `json:"total"`
+	Limit  int                   `json:"limit"`
+	Offset int                   `json:"offset"`
 }
 
 // patchJobRequest is the body accepted by PATCH /api/v1/jobs/{id}.
@@ -247,7 +256,7 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	queueNames := resolveQueueNames(ctx, h.store, page.Items)
 
 	resp := jobListResponse{
-		Items:  make([]jobResponse, len(page.Items)),
+		Items:  make([]jobListItemResponse, len(page.Items)),
 		Total:  page.Total,
 		Limit:  page.Limit,
 		Offset: page.Offset,
@@ -255,7 +264,13 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	for i, j := range page.Items {
 		r := toJobResponse(j)
 		r.QueueName = queueNames[j.QueueID]
-		resp.Items[i] = r
+		item := jobListItemResponse{jobResponse: r}
+		// Per-job count query, mirroring resolveQueueNames' per-row enrichment.
+		// A count failure degrades to zero counts rather than failing the list.
+		if counts, err := h.store.CountTasksByJob(ctx, j.ID); err == nil {
+			item.TaskCounts = toTaskCountsResponse(counts)
+		}
+		resp.Items[i] = item
 	}
 
 	writeJSON(w, http.StatusOK, resp)

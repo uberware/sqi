@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -58,6 +59,23 @@ SET status       = 'canceled',
 	updated_at   = ?
 WHERE id = ?
   AND status NOT IN ('completed', 'failed', 'canceled')`
+
+	// sqlDemoteStalledJobs demotes any running job with no in-flight (assigned or
+	// running) task back to pending, but only while it still has schedulable
+	// (ready or pending) work — a job whose tasks are all terminal is left for the
+	// completion logic to finalize. started_at is intentionally preserved.
+	// RETURNING yields the demoted job IDs so the caller can fan out WS events.
+	sqlDemoteStalledJobs = `
+UPDATE jobs
+SET status = 'pending', updated_at = ?
+WHERE status = 'running'
+  AND NOT EXISTS (
+        SELECT 1 FROM tasks t
+        WHERE t.job_id = jobs.id AND t.status IN ('assigned', 'running'))
+  AND EXISTS (
+        SELECT 1 FROM tasks t
+        WHERE t.job_id = jobs.id AND t.status IN ('ready', 'pending'))
+RETURNING id`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -276,4 +294,27 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 		return nil // already canceled — idempotent
 	}
 	return store.ErrConflict // completed or failed — cannot cancel
+}
+
+// DemoteStalledJobs implements [store.JobStore].
+//
+// The single UPDATE ... RETURNING statement is atomic: a concurrent task
+// transition to assigned/running cannot slip between the EXISTS check and the
+// write, so a job that has just been re-activated is never spuriously demoted.
+func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, sqlDemoteStalledJobs, timeToText(now.UTC()))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: demote stalled jobs: %w", mapErr(err))
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("sqlite: scan demoted job id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, mapErr(rows.Err())
 }

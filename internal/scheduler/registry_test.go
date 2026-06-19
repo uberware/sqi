@@ -247,6 +247,79 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 }
 
+// TestHandleWorkerDeregister_ReclaimsInFlightTasks verifies that a graceful
+// deregister returns the worker's assigned/running tasks to the ready queue and
+// closes their attempts. Without this, the heartbeat sweep (which only inspects
+// online workers) would never recover them, stranding the tasks in 'assigned'.
+func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "")
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	const workerID = "w-bye"
+	if _, err := st.RegisterWorker(ctx, store.Worker{
+		ID: workerID, FarmID: "farm-1", Hostname: "node-bye",
+		Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+	}); err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	job, err := st.CreateJob(ctx, store.Job{
+		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "j",
+		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	step, err := st.CreateStep(ctx, store.Step{
+		ID: uuid.NewString(), JobID: job.ID, Name: "s",
+		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateStep: %v", err)
+	}
+	task, err := st.CreateTask(ctx, store.Task{
+		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t",
+		Status: store.TaskStatusAssigned, AssignedWorkerID: workerID,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
+		ID: uuid.NewString(), TaskID: task.ID, WorkerID: workerID, AttemptNumber: 1,
+		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
+	msg := &fakeJSMsg{
+		subject: bus.SubjectWorkerDeregister,
+		data:    workerMsgJSON(t, map[string]string{"worker_id": workerID, "reason": "shutdown"}),
+	}
+	s.handleWorkerMessage(msg)
+
+	tk, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if tk.Status != store.TaskStatusReady {
+		t.Errorf("task status = %q, want ready (reclaimed on deregister)", tk.Status)
+	}
+	if tk.AssignedWorkerID != "" {
+		t.Errorf("task still assigned to %q, want cleared", tk.AssignedWorkerID)
+	}
+	att, err := st.GetTaskAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAttempt: %v", err)
+	}
+	if att.Status != store.AttemptStatusFailed {
+		t.Errorf("attempt status = %q, want failed", att.Status)
+	}
+}
+
 func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")

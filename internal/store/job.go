@@ -119,6 +119,18 @@ type JobStore interface {
 	//   - Already completed or failed → returns [ErrConflict].
 	//   - Job not found → returns [ErrNotFound].
 	CancelJobStatus(ctx context.Context, id string) error
+
+	// DemoteStalledJobs returns any job in [JobStatusRunning] that currently has
+	// no task in [TaskStatusAssigned] or [TaskStatusRunning] — yet still has at
+	// least one schedulable (ready or pending) task — back to [JobStatusPending],
+	// stamping updated_at = now. It reconciles the [JobStatusRunning] invariant
+	// ("at least one task is currently assigned or running") after the heartbeat
+	// sweep or stale-assigned reaper returns a job's last in-flight task to the
+	// ready queue with no worker to pick it up, leaving the job spuriously marked
+	// running. Jobs whose tasks are all terminal are left untouched so the
+	// completion logic can finalize them to completed/failed. StartedAt is
+	// preserved (the job did start). Returns the IDs of the demoted jobs.
+	DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error)
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

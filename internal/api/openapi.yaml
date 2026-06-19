@@ -207,6 +207,11 @@ components:
           type: string
           format: date-time
           nullable: true
+        task_counts:
+          $ref: "#/components/schemas/TaskCounts"
+          description: >-
+            Aggregate task counts by status. Present on job list items and job
+            detail; omitted from the create-job response.
 
     Step:
       type: object

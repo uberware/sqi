@@ -93,6 +93,7 @@ func DefaultConfig() Config {
 		AssignWorkers:          4,
 		WorkerTimeout:          30 * time.Second,
 		HeartbeatSweepInterval: 15 * time.Second,
+		AssignedTaskTimeout:    10 * time.Minute,
 	}
 }
 
@@ -123,6 +124,16 @@ type Config struct {
 	// HeartbeatSweepInterval is how often the heartbeat sweep runs. Should be
 	// well below WorkerTimeout so stale workers are caught promptly. Default: 15 s.
 	HeartbeatSweepInterval time.Duration
+
+	// AssignedTaskTimeout is the maximum time a task may sit in 'assigned'
+	// without transitioning to 'running' before the reaper returns it to the
+	// ready queue. It guards against assignments that are lost between the store
+	// and a live worker — e.g. the work-stream message expiring (SQI_WORK MaxAge)
+	// while the worker is busy — which the heartbeat sweep cannot recover because
+	// the worker is still online. Must exceed the SQI_WORK stream MaxAge (5 min)
+	// so a still-deliverable assignment is never reaped out from under a worker.
+	// Runs on the heartbeat sweep tick. Default: 10 min.
+	AssignedTaskTimeout time.Duration
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -195,6 +206,9 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	}
 	if cfg.HeartbeatSweepInterval <= 0 {
 		cfg.HeartbeatSweepInterval = DefaultConfig().HeartbeatSweepInterval
+	}
+	if cfg.AssignedTaskTimeout <= 0 {
+		cfg.AssignedTaskTimeout = DefaultConfig().AssignedTaskTimeout
 	}
 	n := notifier
 	if n == nil {
@@ -940,6 +954,13 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		slog.String("worker_id", m.WorkerID),
 		slog.String("reason", m.Reason),
 	)
+
+	// A gracefully-deregistered worker is now offline and the heartbeat sweep
+	// (which only inspects workers still marked online) will never look at it
+	// again. Reclaim its in-flight tasks here so they return to the ready queue
+	// instead of being stranded in 'assigned'/'running'.
+	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "")
+
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
 		Status:   string(store.WorkerStatusOffline),
@@ -1004,6 +1025,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 
 // runHeartbeatSweep periodically finds workers whose last heartbeat is older
 // than WorkerTimeout, marks them offline, and reclaims their in-flight tasks.
+// On the same tick it reaps tasks stranded in 'assigned' on still-live workers.
 func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.HeartbeatSweepInterval)
 	defer ticker.Stop()
@@ -1014,7 +1036,119 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.sweepStaleWorkers(ctx)
+			s.reapStaleAssignedTasks(ctx)
+			s.demoteStalledJobs(ctx)
 		}
+	}
+}
+
+// demoteStalledJobs reconciles the JobStatusRunning invariant after a sweep or
+// reap. A job whose last assigned/running task was just returned to the ready
+// queue (worker died, or assignment reaped) is left marked 'running' even
+// though nothing is in flight; this returns such jobs to 'pending' so their
+// status reflects reality until a worker picks the work back up. Self-healing
+// and idempotent: a job with work still in flight, or already terminal, is
+// untouched.
+func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
+	demoted, err := s.store.DemoteStalledJobs(ctx, time.Now().UTC())
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
+		}
+		return
+	}
+	now := time.Now().UTC()
+	for _, jobID := range demoted {
+		s.logger.InfoContext(
+			ctx, "scheduler: demoted stalled job to pending (no in-flight tasks)",
+			slog.String("job_id", jobID),
+		)
+		s.notifier.NotifyJob(ws.JobEvent{
+			JobID:     jobID,
+			Status:    string(store.JobStatusPending),
+			UpdatedAt: now,
+		})
+	}
+}
+
+// reapStaleAssignedTasks returns tasks that have been stuck in 'assigned' longer
+// than AssignedTaskTimeout to the ready queue. Unlike sweepStaleWorkers it does
+// not key on worker liveness: a task can be lost in 'assigned' on a worker that
+// is still happily heartbeating (e.g. the assignment message expired from the
+// work stream before the worker had a free slot to pull it), and nothing else
+// in the system would ever recover it. For each reclaimed task it closes the
+// provisional attempt and releases any usage-pool claims it held.
+func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
+	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
+	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
+		}
+		return
+	}
+	if len(reclaimed) == 0 {
+		return
+	}
+
+	s.logger.WarnContext(
+		ctx, "scheduler: reaped tasks stuck in assigned — returning to ready queue",
+		slog.Int("count", len(reclaimed)),
+		slog.Duration("assigned_task_timeout", s.cfg.AssignedTaskTimeout),
+	)
+
+	now := time.Now().UTC()
+	for _, task := range reclaimed {
+		s.cleanupReapedAttempt(ctx, task, now)
+		s.notifier.NotifyTask(ws.TaskEvent{
+			JobID:     task.JobID,
+			TaskID:    task.ID,
+			Name:      task.Name,
+			Status:    string(store.TaskStatusReady),
+			UpdatedAt: now,
+		})
+	}
+}
+
+// cleanupReapedAttempt closes the provisional attempt for a reaped task and
+// releases its usage-pool claims. Both steps are best-effort: the task is
+// already back in the ready queue, so a cleanup failure leaks an attempt record
+// or pool slot but never blocks rescheduling.
+func (s *Scheduler) cleanupReapedAttempt(ctx context.Context, task store.Task, now time.Time) {
+	attempt, err := s.store.LatestTaskAttempt(ctx, task.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: reap cleanup: latest attempt lookup failed",
+			slog.String("task_id", task.ID),
+			slog.Any("error", err),
+		)
+		return
+	}
+	// Only the open provisional attempt needs closing; a terminal attempt is
+	// already accounted for.
+	if attempt.Status == store.AttemptStatusRunning {
+		closed := attempt
+		closed.Status = store.AttemptStatusFailed
+		closed.EndedAt = &now
+		if _, err := s.store.UpdateTaskAttempt(ctx, closed); err != nil {
+			s.logger.WarnContext(
+				ctx, "scheduler: reap cleanup: close attempt failed",
+				slog.String("task_id", task.ID),
+				slog.String("attempt_id", attempt.ID),
+				slog.Any("error", err),
+			)
+		}
+	}
+	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: reap cleanup: release usage failed",
+			slog.String("task_id", task.ID),
+			slog.String("attempt_id", attempt.ID),
+			slog.Any("error", err),
+		)
 	}
 }
 
@@ -1057,53 +1191,65 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			Status:   string(store.WorkerStatusOffline),
 		})
 
-		// Close out any running attempt records before the task assignment is
-		// cleared by ReclaimWorkerTasks. The subquery in TerminateWorkerAttempts
-		// joins on assigned_worker_id, which is still set at this point.
-		now := time.Now().UTC()
-		nAttempts, err := s.store.TerminateWorkerAttempts(ctx, w.ID, store.AttemptStatusFailed, now)
-		if err != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: terminate worker attempts failed",
-				slog.String("worker_id", w.ID),
-				slog.Any("error", err),
-			)
-			// Non-fatal: continue to reclaim tasks so the farm keeps running.
-		} else if nAttempts > 0 {
-			s.logger.InfoContext(
-				ctx, "scheduler: closed running attempts for offline worker",
-				slog.String("worker_id", w.ID),
-				slog.String("hostname", w.Hostname),
-				slog.Int("attempts_closed", nAttempts),
-			)
-		}
-
-		// Reclaim tasks that were assigned to or running on the now-offline worker.
-		n, err := s.store.ReclaimWorkerTasks(ctx, w.ID)
-		switch {
-		case err != nil:
-			s.logger.WarnContext(
-				ctx, "scheduler: reclaim worker tasks failed",
-				slog.String("worker_id", w.ID),
-				slog.Any("error", err),
-			)
-		case n > 0:
-			s.logger.InfoContext(
-				ctx, "scheduler: reclaimed tasks from offline worker",
-				slog.String("worker_id", w.ID),
-				slog.String("hostname", w.Hostname),
-				slog.Int("tasks_reclaimed", n),
-			)
-		default:
-			s.logger.InfoContext(
-				ctx, "scheduler: worker marked offline (no tasks to reclaim)",
-				slog.String("worker_id", w.ID),
-				slog.String("hostname", w.Hostname),
-			)
-		}
+		// Close out running attempts and return the worker's in-flight tasks to
+		// the ready queue so they can be reassigned.
+		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname)
 	}
 
 	s.refreshWorkerGauge(ctx)
+}
+
+// reclaimOfflineWorkerTasks closes any running attempt records for workerID and
+// returns its assigned/running tasks to the ready queue. It is shared by the
+// heartbeat sweep and the graceful-deregister handler: both mark a worker
+// offline and must hand its in-flight work back to the scheduler, otherwise the
+// tasks are orphaned in 'assigned'/'running' forever (the heartbeat sweep only
+// considers workers still marked online, so it cannot recover them afterwards).
+func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string) {
+	// Close out any running attempt records before the task assignment is
+	// cleared by ReclaimWorkerTasks. The subquery in TerminateWorkerAttempts
+	// joins on assigned_worker_id, which is still set at this point.
+	now := time.Now().UTC()
+	nAttempts, err := s.store.TerminateWorkerAttempts(ctx, workerID, store.AttemptStatusFailed, now)
+	if err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: terminate worker attempts failed",
+			slog.String("worker_id", workerID),
+			slog.Any("error", err),
+		)
+		// Non-fatal: continue to reclaim tasks so the farm keeps running.
+	} else if nAttempts > 0 {
+		s.logger.InfoContext(
+			ctx, "scheduler: closed running attempts for offline worker",
+			slog.String("worker_id", workerID),
+			slog.String("hostname", hostname),
+			slog.Int("attempts_closed", nAttempts),
+		)
+	}
+
+	// Reclaim tasks that were assigned to or running on the now-offline worker.
+	n, err := s.store.ReclaimWorkerTasks(ctx, workerID)
+	switch {
+	case err != nil:
+		s.logger.WarnContext(
+			ctx, "scheduler: reclaim worker tasks failed",
+			slog.String("worker_id", workerID),
+			slog.Any("error", err),
+		)
+	case n > 0:
+		s.logger.InfoContext(
+			ctx, "scheduler: reclaimed tasks from offline worker",
+			slog.String("worker_id", workerID),
+			slog.String("hostname", hostname),
+			slog.Int("tasks_reclaimed", n),
+		)
+	default:
+		s.logger.InfoContext(
+			ctx, "scheduler: worker marked offline (no tasks to reclaim)",
+			slog.String("worker_id", workerID),
+			slog.String("hostname", hostname),
+		)
+	}
 }
 
 // refreshWorkerGauge reads current worker counts from the store and sets the

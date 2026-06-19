@@ -141,6 +141,32 @@ func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, err
 	return count, nil
 }
 
+// ReclaimStaleAssignedTasks resets tasks stuck in [store.TaskStatusAssigned]
+// with an AssignedAt older than cutoff back to [store.TaskStatusReady] and
+// returns the reclaimed tasks (carrying their pre-reset assigned_worker_id).
+func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) ([]store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var reclaimed []store.Task
+	for id, task := range s.tasks {
+		if task.Status != store.TaskStatusAssigned {
+			continue
+		}
+		if task.AssignedAt == nil || !task.AssignedAt.Before(cutoff) {
+			continue
+		}
+		reclaimed = append(reclaimed, task) // snapshot with assigned_worker_id intact
+		task.Status = store.TaskStatusReady
+		task.AssignedWorkerID = ""
+		task.AssignedAt = nil
+		task.UpdatedAt = now
+		s.tasks[id] = task
+	}
+	return reclaimed, nil
+}
+
 // ListReadyTasks returns up to limit tasks in [store.TaskStatusReady] that
 // belong to non-paused queues within the given farm, ordered by job priority
 // descending then CreatedAt ascending.

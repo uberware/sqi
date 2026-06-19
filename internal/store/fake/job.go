@@ -110,6 +110,47 @@ func (s *Store) UpdateJobStatus(_ context.Context, id string, status store.JobSt
 	return nil
 }
 
+// DemoteStalledJobs implements [store.JobStore]. It returns every running job
+// with no assigned/running task — but at least one ready/pending task — to
+// pending, and returns the demoted job IDs.
+func (s *Store) DemoteStalledJobs(_ context.Context, now time.Time) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Tally each job's task statuses in one pass.
+	type counts struct{ active, schedulable int }
+	byJob := make(map[string]*counts)
+	for _, t := range s.tasks {
+		c := byJob[t.JobID]
+		if c == nil {
+			c = &counts{}
+			byJob[t.JobID] = c
+		}
+		switch t.Status {
+		case store.TaskStatusAssigned, store.TaskStatusRunning:
+			c.active++
+		case store.TaskStatusReady, store.TaskStatusPending:
+			c.schedulable++
+		}
+	}
+
+	var demoted []string
+	for id, job := range s.jobs {
+		if job.Status != store.JobStatusRunning {
+			continue
+		}
+		c := byJob[id]
+		if c == nil || c.active > 0 || c.schedulable == 0 {
+			continue
+		}
+		job.Status = store.JobStatusPending
+		job.UpdatedAt = now
+		s.jobs[id] = job
+		demoted = append(demoted, id)
+	}
+	return demoted, nil
+}
+
 // CancelJobStatus implements [store.JobStore].
 // Transitions the job to canceled unless it is already completed or failed.
 func (s *Store) CancelJobStatus(_ context.Context, id string) error {

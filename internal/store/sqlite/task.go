@@ -65,6 +65,19 @@ SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at 
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
+	// Selects tasks stuck in 'assigned' past the cutoff so the reaper can return
+	// the affected rows to the caller. Only 'assigned' (never 'running') so an
+	// in-progress task is never disturbed by the timer.
+	sqlSelectStaleAssignedTasks = `
+SELECT ` + taskCols + `
+FROM   tasks
+WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
+
+	sqlReclaimStaleAssignedTasks = `
+UPDATE tasks
+SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
+
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
 	// Joins to jobs so we can filter by queue_id.
 	sqlCountActiveTasksInQueue = `
@@ -283,6 +296,57 @@ func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, e
 	}
 	n, err := res.RowsAffected()
 	return int(n), err
+}
+
+// ReclaimStaleAssignedTasks implements [store.TaskStore].
+//
+// The SELECT and UPDATE run inside a single SQLite transaction so a concurrent
+// "running" status update cannot slip a task out of 'assigned' between the
+// observation and the reset; the UPDATE's status guard keeps the returned set
+// and the reclaimed set identical. Mirrors [Store.CancelJobTasks].
+func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+	cutoffText := timeToText(cutoff.UTC())
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: begin tx for reclaim stale assigned tasks: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+
+	// Read matching rows into a slice before the UPDATE so the cursor is closed
+	// by the time we write (single-connection pool).
+	stale, err := func() ([]store.Task, error) {
+		rows, queryErr := tx.QueryContext(ctx, sqlSelectStaleAssignedTasks, cutoffText)
+		if queryErr != nil {
+			return nil, fmt.Errorf("sqlite: select stale assigned tasks: %w", mapErr(queryErr))
+		}
+		defer rows.Close()
+
+		var tasks []store.Task
+		for rows.Next() {
+			t, scanErr := scanTask(rows)
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			tasks = append(tasks, t)
+		}
+		return tasks, rows.Err()
+	}()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(stale) == 0 {
+		return nil, nil // nothing to reclaim; no write needed
+	}
+
+	if _, err = tx.ExecContext(ctx, sqlReclaimStaleAssignedTasks, timeToText(time.Now().UTC()), cutoffText); err != nil {
+		return nil, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", mapErr(err))
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sqlite: commit reclaim stale assigned tasks: %w", mapErr(err))
+	}
+	return stale, nil
 }
 
 // ListReadyTasks implements [store.TaskStore].
