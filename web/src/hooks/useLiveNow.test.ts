@@ -64,11 +64,22 @@ describe('useLiveNow', () => {
     expect(result.current).toBeGreaterThanOrEqual(start + 10_000)
   })
 
-  // eslint-disable-next-line vitest/expect-expect
   it('clears the interval on unmount', () => {
     const { unmount } = renderHook(() => useLiveNow(true))
+    expect(vi.getTimerCount()).toBe(1)
     unmount()
-    // Advancing after unmount must not throw a setState-after-unmount warning.
+    expect(vi.getTimerCount()).toBe(0)
     act(() => vi.advanceTimersByTime(5_000))
+  })
+
+  it('clears the old interval when active flips, leaving exactly one', () => {
+    const { rerender } = renderHook(({ active }) => useLiveNow(active), {
+      initialProps: { active: false },
+    })
+    expect(vi.getTimerCount()).toBe(1)
+    rerender({ active: true })
+    // The effect re-ran: the old interval was cleared before the new one was
+    // created — one interval, not a leaked pair.
+    expect(vi.getTimerCount()).toBe(1)
   })
 })
