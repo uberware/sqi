@@ -145,6 +145,7 @@ type busClient interface {
 	PublishWorkAssign(ctx context.Context, queueID string, data []byte) error
 	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
+	SubscribeLease(handler func(queueID string, data []byte) []byte) (*nats.Subscription, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -164,6 +165,17 @@ type Scheduler struct {
 	// diagSub is the core-NATS subscription for worker.diag.> messages,
 	// unsubscribed during shutdown. Nil when diagnostics are disabled.
 	diagSub *nats.Subscription
+
+	// leaseSub is the core-NATS subscription for worker lease requests,
+	// unsubscribed during shutdown.
+	leaseSub *nats.Subscription
+
+	// waiters parks long-poll lease requests per queue; woken by wake triggers.
+	waiters *waiterRegistry
+
+	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
+	// before replying empty. Overridable in tests.
+	leaseHoldTimeout time.Duration
 
 	// taskCh carries ready tasks from the dispatch goroutine to the assignment
 	// worker pool. Sized to AssignBatchSize so a full batch can be queued
@@ -215,14 +227,16 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		n = ws.NoopNotifier{}
 	}
 	return &Scheduler{
-		cfg:      cfg,
-		store:    st,
-		bus:      busClient,
-		metrics:  m,
-		logger:   logger,
-		notifier: n,
-		diagBuf:  diagBuf,
-		taskCh:   make(chan store.Task, cfg.AssignBatchSize),
+		cfg:              cfg,
+		store:            st,
+		bus:              busClient,
+		metrics:          m,
+		logger:           logger,
+		notifier:         n,
+		diagBuf:          diagBuf,
+		waiters:          newWaiterRegistry(),
+		leaseHoldTimeout: 30 * time.Second,
+		taskCh:           make(chan store.Task, cfg.AssignBatchSize),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).
@@ -286,6 +300,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		s.logger.InfoContext(ctx, "scheduler: diagnostic-log consumer started")
 	}
 
+	// ── Lease subscriber ──────────────────────────────────────────
+	// A core-NATS request-reply subscriber that handles worker lease requests.
+	// Workers ask for work; handleLeaseRequest selects a batch or parks until
+	// new work appears (long-poll) and then replies.
+	leaseSub, err := s.bus.SubscribeLease(s.handleLeaseRequest)
+	if err != nil {
+		return fmt.Errorf("scheduler: start lease subscriber: %w", err)
+	}
+	s.leaseSub = leaseSub
+	s.logger.InfoContext(ctx, "scheduler: lease subscriber started")
+
 	// ── Assignment worker pool ───────────────────────────────────
 	for i := range s.cfg.AssignWorkers {
 		s.wg.Go(func() {
@@ -315,6 +340,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	if s.diagSub != nil {
 		if err := s.diagSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
 			s.logger.WarnContext(ctx, "scheduler: diagnostic-log unsubscribe failed", slog.Any("error", err))
+		}
+	}
+
+	// Unsubscribe the core-NATS lease subscriber if active.
+	if s.leaseSub != nil {
+		if err := s.leaseSub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+			s.logger.WarnContext(ctx, "scheduler: lease subscriber unsubscribe failed", slog.Any("error", err))
 		}
 	}
 
@@ -1107,6 +1139,7 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 			Status:    string(store.TaskStatusReady),
 			UpdatedAt: now,
 		})
+		s.notifyQueueForJob(ctx, task.JobID)
 	}
 }
 
@@ -1250,6 +1283,17 @@ func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hos
 			slog.String("hostname", hostname),
 		)
 	}
+}
+
+// notifyQueueForJob wakes any parked lease waiters on the job's queue.
+// Best-effort: a missed wake is self-correcting because the worker's outstanding
+// lease request re-issues after leaseHoldTimeout.
+func (s *Scheduler) notifyQueueForJob(ctx context.Context, jobID string) {
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return
+	}
+	s.waiters.notify(job.QueueID)
 }
 
 // refreshWorkerGauge reads current worker counts from the store and sets the

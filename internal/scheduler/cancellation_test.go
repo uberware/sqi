@@ -50,6 +50,10 @@ func (*stubBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nats.
 	return nil, nil
 }
 
+func (*stubBus) SubscribeLease(_ func(string, []byte) []byte) (*nats.Subscription, error) {
+	return nil, nil
+}
+
 func (b *stubBus) PublishTaskCancel(_ context.Context, taskID string, _ []byte) error {
 	b.cancelCalls = append(b.cancelCalls, taskID)
 	return b.cancelErr

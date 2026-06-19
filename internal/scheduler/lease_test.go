@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -177,4 +178,63 @@ type policyErrStore struct {
 
 func (s *policyErrStore) CountActiveTasksInQueue(_ context.Context, _ string) (int, error) {
 	return 0, s.errCountQueue
+}
+
+func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	one := 1
+	w, _ := seedLeaseFixture(t, st, []*int{&one, &one})
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	reply := s.handleLeaseRequest("q1", req)
+
+	var got leaseReply
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if len(got.Assignments) != 2 {
+		t.Fatalf("assignments = %d, want 2", len(got.Assignments))
+	}
+}
+
+func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 40 * time.Millisecond
+	// Register a worker but seed no ready tasks.
+	now := time.Now().UTC()
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "f1", Name: "F1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: "w1", FarmID: "f1", Status: store.WorkerStatusOnline, CPUCount: 4,
+		LastHeartbeatAt: &now, Tags: map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := json.Marshal(leaseRequest{WorkerID: "w1"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	start := time.Now()
+	reply := s.handleLeaseRequest("q1", req)
+	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
+		t.Errorf("returned too fast (%v); expected to park until timeout", elapsed)
+	}
+	var got leaseReply
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if len(got.Assignments) != 0 {
+		t.Errorf("assignments = %d, want 0", len(got.Assignments))
+	}
 }

@@ -9,6 +9,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,64 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 )
+
+// leaseRequest is the worker's work-lease request payload.
+type leaseRequest struct {
+	WorkerID string `json:"worker_id"`
+}
+
+// leaseReply is the server's batch response. Assignments holds marshaled
+// protocol.AssignMsg payloads (json.RawMessage) so the worker can decode each.
+type leaseReply struct {
+	Assignments []json.RawMessage `json:"assignments"`
+}
+
+// handleLeaseRequest decodes a lease request, leases a fitting batch, and on an
+// empty result parks the request in the waiter registry until new work appears
+// or leaseHoldTimeout elapses, then replies once more.
+func (s *Scheduler) handleLeaseRequest(queueID string, data []byte) []byte {
+	ctx := s.ctx
+	var req leaseRequest
+	if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
+		return marshalLeaseReply(nil)
+	}
+
+	worker, err := s.store.GetWorker(ctx, req.WorkerID)
+	if err != nil {
+		return marshalLeaseReply(nil)
+	}
+
+	batch, err := s.selectLeaseBatch(ctx, worker)
+	if err != nil {
+		s.logger.WarnContext(ctx, "scheduler: lease selection failed",
+			slog.String("worker_id", req.WorkerID),
+			slog.Any("error", err),
+		)
+		return marshalLeaseReply(nil)
+	}
+	if len(batch) > 0 {
+		return marshalLeaseReply(batch)
+	}
+
+	// Park until work appears or the hold elapses, then try exactly once more.
+	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
+		if w2, err2 := s.store.GetWorker(ctx, req.WorkerID); err2 == nil {
+			if batch2, err2 := s.selectLeaseBatch(ctx, w2); err2 == nil {
+				return marshalLeaseReply(batch2)
+			}
+		}
+	}
+	return marshalLeaseReply(nil)
+}
+
+func marshalLeaseReply(batch [][]byte) []byte {
+	reply := leaseReply{Assignments: make([]json.RawMessage, 0, len(batch))}
+	for _, b := range batch {
+		reply.Assignments = append(reply.Assignments, json.RawMessage(b))
+	}
+	out, _ := json.Marshal(reply) //nolint:errcheck // leaseReply always marshals
+	return out
+}
 
 // leaseGateData holds the records fetched by leaseGatesPass for use by the
 // caller after all gates have passed.
