@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -278,16 +279,22 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	// ── Create one Task row per parameter combination ───────────────────────
+	var reqCores *int
+	if hostReqs != nil {
+		reqCores = requiredCoresFromAmounts(hostReqs.Amounts)
+	}
+
 	for j, params := range taskParamList {
 		task := store.Task{
-			ID:         uuid.NewString(),
-			JobID:      job.ID,
-			StepID:     step.ID,
-			Name:       buildTaskName(stepTmpl.Name, j, params),
-			Parameters: params,
-			Status:     taskStatus,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			ID:            uuid.NewString(),
+			JobID:         job.ID,
+			StepID:        step.ID,
+			Name:          buildTaskName(stepTmpl.Name, j, params),
+			Parameters:    params,
+			Status:        taskStatus,
+			RequiredCores: reqCores,
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 
 		task, err = s.st.CreateTask(ctx, task)
@@ -512,6 +519,25 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 	}
 
 	return shr, computeLoc
+}
+
+// requiredCoresFromAmounts extracts the task CPU reservation from a step's host
+// requirements: the floor of amount.worker.vcpu min, parsed as an int. Returns
+// nil when no vcpu min is declared (undeclared = full machine at lease time) or
+// when the value cannot be parsed as a positive number.
+func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {
+	for _, a := range amts {
+		if a.Name != "amount.worker.vcpu" || a.Min == nil {
+			continue
+		}
+		f, err := strconv.ParseFloat(*a.Min, 64)
+		if err != nil || f <= 0 {
+			return nil
+		}
+		n := max(int(f), 1) // floor; a 2.5-core reservation reserves whole cores conservatively
+		return &n
+	}
+	return nil
 }
 
 // buildTaskName constructs a human-readable name for one task instance.

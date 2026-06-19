@@ -194,7 +194,7 @@ func (c *captureOutput) all() []capturedLine {
 
 // newTestExecutor creates an Executor backed by a temp data dir and a stub
 // NATS.  The caller is responsible for removing the temp dir.
-func newTestExecutor(t *testing.T, maxConcurrent int, capture *captureOutput) (*executor.Executor, *stubNATS, string) {
+func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, *stubNATS, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	nc := &stubNATS{}
@@ -202,8 +202,7 @@ func newTestExecutor(t *testing.T, maxConcurrent int, capture *captureOutput) (*
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	mgr := session.NewManager(tmpDir, false, logger)
 	cfg := executor.Config{
-		MaxConcurrentTasks: maxConcurrent,
-		KillGracePeriod:    500 * time.Millisecond, // short for fast tests
+		KillGracePeriod: 500 * time.Millisecond, // short for fast tests
 	}
 	var oh executor.OutputHandler
 	if capture != nil {
@@ -265,7 +264,7 @@ func TestExecutor_Dispatch_stdout(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := makeAssign("stdout", map[string]string{"SQI_TEST_OUTPUT": "hello stdout"})
 	ctx := context.Background()
@@ -309,7 +308,7 @@ func TestExecutor_Dispatch_stderr(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := makeAssign("stderr", map[string]string{"SQI_TEST_OUTPUT": "hello stderr"})
 	ctx := context.Background()
@@ -339,7 +338,7 @@ func TestExecutor_Dispatch_exitCode(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "42"})
 	ctx := context.Background()
@@ -368,7 +367,7 @@ func TestExecutor_Dispatch_exitCodeZero(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
 	ctx := context.Background()
@@ -399,7 +398,7 @@ func TestExecutor_Dispatch_timeout(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
 	// Set a very short timeout so the test completes quickly.
@@ -434,7 +433,7 @@ func TestExecutor_DrainAndShutdown_workerShutdown(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
 	if err := exec.Dispatch(context.Background(), msg); err != nil {
@@ -472,7 +471,7 @@ func TestExecutor_DrainAndShutdown_allComplete(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 2, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	// Both tasks exit immediately.
 	for i := range 2 {
@@ -513,7 +512,7 @@ func TestExecutor_DrainAndShutdown_mixed(t *testing.T) {
 	}
 
 	// Two concurrent slots.
-	exec, nc, _ := newTestExecutor(t, 2, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	// Medium task: sleeps 300 ms → completes naturally during the 2 s grace period.
 	medMsg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "300ms"})
@@ -581,7 +580,7 @@ func TestExecutor_Dispatch_envMerge(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	// The "env" subprocess prints os.Getenv("SQI_TEST_ENV_KEY") to stdout.
 	// We pass it via AssignEnvironment.Variables so it reaches the process.
@@ -617,7 +616,7 @@ func TestExecutor_Dispatch_openjdEnvDirective(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	// The "setup" environment's onEnter emits an openjd_env directive on stdout.
 	// The "vars" environment statically sets SQI_TEST_SUBPROCESS so the OnRun
@@ -668,38 +667,6 @@ func TestExecutor_Dispatch_openjdEnvDirective(t *testing.T) {
 	}
 }
 
-// TestExecutor_Dispatch_atCapacity verifies that Dispatch returns a non-nil
-// error when all concurrency slots are occupied.
-func TestExecutor_Dispatch_atCapacity(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("subprocess test uses Unix-style exec")
-	}
-
-	exec, _, _ := newTestExecutor(t, 1, nil) // max 1 concurrent task
-
-	// DrainAndShutdown(0) at cleanup ensures the sleeping goroutine is
-	// terminated when the test ends, preventing goroutine leaks and temp-dir
-	// races. ctx cancel no longer kills task goroutines.
-	t.Cleanup(func() { exec.DrainAndShutdown(0) })
-
-	// Dispatch a long-running task to fill the single slot.
-	fillMsg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "60s"})
-	fillMsg.TaskID = "fill-task"
-	if err := exec.Dispatch(context.Background(), fillMsg); err != nil {
-		t.Fatalf("first Dispatch: %v", err)
-	}
-
-	// Give the goroutine time to start and consume the semaphore slot.
-	time.Sleep(200 * time.Millisecond)
-
-	// Second dispatch should be rejected while the first task is running.
-	overMsg := makeAssign("stdout", map[string]string{"SQI_TEST_OUTPUT": "should not run"})
-	overMsg.TaskID = "over-capacity-task"
-	if err := exec.Dispatch(context.Background(), overMsg); err == nil {
-		t.Error("expected error when dispatching over capacity; got nil")
-	}
-}
-
 // TestExecutor_ActiveTaskCount verifies that ActiveTaskCount increments on
 // Dispatch and decrements when the task exits.
 func TestExecutor_ActiveTaskCount(t *testing.T) {
@@ -707,7 +674,7 @@ func TestExecutor_ActiveTaskCount(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 4, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	if n := exec.ActiveTaskCount(); n != 0 {
 		t.Fatalf("initial ActiveTaskCount = %d; want 0", n)
@@ -744,7 +711,7 @@ func TestExecutor_Dispatch_sessionID(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
 	ctx := context.Background()
@@ -774,7 +741,7 @@ func TestExecutor_LastAssignmentAt(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	if exec.LastAssignmentAt() != nil {
 		t.Fatal("LastAssignmentAt should be nil before any dispatch")
@@ -804,7 +771,7 @@ func TestExecutor_Dispatch_workerID(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
 	ctx := context.Background()
@@ -834,7 +801,7 @@ func TestExecutor_FlushShutdownStatuses(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 2, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 	// Ensure sleeping subprocesses are force-killed when the test ends.
 	// DrainAndShutdown(0) waits until all goroutines exit before returning,
 	// preventing goroutine leaks and temp-dir races.
@@ -900,7 +867,7 @@ func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 		t.Skip("subprocess test uses Unix signals; covered via taskkill path separately")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
 	ctx := context.Background() // worker-wide context — NOT canceled
@@ -928,7 +895,7 @@ func TestExecutor_Cancel_canceledStatus(t *testing.T) {
 // TestExecutor_Cancel_taskNotFound verifies that Cancel returns false for an
 // unknown task ID.
 func TestExecutor_Cancel_taskNotFound(t *testing.T) {
-	exec, _, _ := newTestExecutor(t, 1, nil)
+	exec, _, _ := newTestExecutor(t, nil)
 
 	found := exec.Cancel("nonexistent-task-id")
 	if found {
@@ -952,7 +919,7 @@ func TestExecutor_Cancel_sigkillEscalation(t *testing.T) {
 	// time to set up signal handling before Cancel is called — especially
 	// under the -race build which slows Go runtime initialization.
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	// "ignore_term" subprocess installs a SIGTERM handler, prints "ready",
 	// and then drains SIGTERM in a loop without exiting.  It exits only
@@ -1030,7 +997,7 @@ func TestExecutor_Cancel_sigtermDelivery(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	// "catch_sigterm" subprocess installs a SIGTERM handler, prints "ready" to
 	// signal it is safe to cancel, then prints "sigterm" on receipt and exits 0.
@@ -1093,7 +1060,7 @@ func TestExecutor_Cancel_terminateImmediate(t *testing.T) {
 		t.Skip("SIGTERM/SIGKILL semantics are Unix-specific; Windows uses taskkill")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil) // KillGracePeriod = 500ms
+	exec, nc, _ := newTestExecutor(t, nil) // KillGracePeriod = 500ms
 
 	// No Cancelation set → TERMINATE default → immediate SIGKILL.
 	msg := makeAssign("ignore_term", nil)
@@ -1135,7 +1102,7 @@ func TestExecutor_Cancel_earlyCancel(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := makeAssign("sleep", map[string]string{"SQI_TEST_SLEEP": "30s"})
 	ctx := context.Background()
@@ -1170,7 +1137,7 @@ func TestExecutor_Dispatch_embeddedFiles_content(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -1221,7 +1188,7 @@ func TestExecutor_Dispatch_embeddedFiles_runnable(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -1272,7 +1239,7 @@ func TestExecutor_Dispatch_embeddedFiles_eol(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	// The embedded file carries CRLF data with EndOfLine="LF".
 	// OnRun outputs the byte count of the file; after LF conversion "line1\nline2\n"
@@ -1327,7 +1294,7 @@ func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 		t.Skip("test uses POSIX shell commands")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -1402,7 +1369,7 @@ func TestExecutor_Cancel_registrarError(t *testing.T) {
 		t.Skip("subprocess test uses Unix-style exec")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	cr := &stubCancelRegistrarError{}
 	exec.SetCancelRegistrar(cr)

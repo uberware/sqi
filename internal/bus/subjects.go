@@ -8,7 +8,7 @@
 // Each subject class follows a hierarchical naming scheme so that JetStream
 // stream subject-filters and consumer subject-bindings are intuitive:
 //
-//	work.assign.<queue>    — server → worker(s): task assignment payload
+//	work.lease.<queue>     — worker → server: request/reply work-lease batch
 //	task.status.<job>      — worker → server: task state transitions
 //	task.logs.<task>       — worker → server: log chunk ingestion
 //	worker.heartbeat       — worker → server: periodic liveness pings
@@ -23,10 +23,6 @@ package bus
 
 // Subject prefix and fixed-subject constants.
 const (
-	// SubjectWorkAssignPrefix is the prefix for task-assignment subjects.
-	// Full subject: SubjectWorkAssignPrefix + "." + queueID.
-	SubjectWorkAssignPrefix = "work.assign"
-
 	// SubjectTaskStatusPrefix is the prefix for task-status subjects.
 	// Full subject: SubjectTaskStatusPrefix + "." + jobID.
 	SubjectTaskStatusPrefix = "task.status"
@@ -53,13 +49,22 @@ const (
 	// than waiting for heartbeat timeout. The server handler for this subject
 	// calls [store.WorkerStore.UpdateWorkerStatus] with WorkerStatusOffline.
 	SubjectWorkerDeregister = "worker.deregister"
-)
 
-// WorkAssignSubject returns the full NATS subject for task-assignment messages
-// targeting workers subscribed to the given queue.
-func WorkAssignSubject(queueID string) string {
-	return SubjectWorkAssignPrefix + "." + queueID
-}
+	// SubjectWorkLeasePrefix is the prefix for worker work-lease requests.
+	// Full subject: SubjectWorkLeasePrefix + "." + queueID. Core NATS
+	// request/reply — workers ask for work; the server replies with a batch.
+	SubjectWorkLeasePrefix = "work.lease"
+
+	// WildcardQueueToken is the lease-subject leaf a queue-unaffiliated worker
+	// (empty QueueIDs — "serve any queue") uses in place of a real queue ID, so
+	// it requests on a valid subject (work.lease._any) that the server's
+	// work.lease.> subscription actually receives. An empty leaf would produce
+	// the invalid subject "work.lease." (no responders). The leaf is reserved
+	// (underscore prefix) so it cannot collide with a real UUID queue ID; the
+	// server selects tasks farm-wide and gates by worker eligibility, so the
+	// token's only role is subject routing and wake-up bucketing.
+	WildcardQueueToken = "_any"
+)
 
 // TaskStatusSubject returns the full NATS subject for task-status messages
 // belonging to the given job.
@@ -77,4 +82,10 @@ func TaskLogsSubject(taskID string) string {
 // signal targeting the worker that holds the given task.
 func TaskCancelSubject(taskID string) string {
 	return SubjectTaskCancelPrefix + "." + taskID
+}
+
+// WorkLeaseSubject returns the full NATS subject a worker requests work on for
+// the given queue.
+func WorkLeaseSubject(queueID string) string {
+	return SubjectWorkLeasePrefix + "." + queueID
 }

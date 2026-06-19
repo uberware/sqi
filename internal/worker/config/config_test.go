@@ -14,9 +14,6 @@ import (
 func TestDefault_SanityValues(t *testing.T) {
 	cfg := Default()
 
-	if cfg.Worker.MaxConcurrentTasks < 1 {
-		t.Errorf("max_concurrent_tasks default %d < 1", cfg.Worker.MaxConcurrentTasks)
-	}
 	if cfg.Worker.HeartbeatInterval <= 0 {
 		t.Errorf("heartbeat_interval default %v is not positive", cfg.Worker.HeartbeatInterval)
 	}
@@ -50,7 +47,6 @@ nats:
   reconnect_wait: "10s"
 worker:
   name: "from-file"
-  max_concurrent_tasks: 8
 log:
   level: "debug"
   format: "text"
@@ -65,7 +61,6 @@ log:
 	assertStr(t, "nats.url", cfg.NATS.URL, "nats://file-host:4222")
 	assertDuration(t, "nats.reconnect_wait", cfg.NATS.ReconnectWait, 10*time.Second)
 	assertStr(t, "worker.name", cfg.Worker.Name, "from-file")
-	assertInt(t, "worker.max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks, 8)
 	assertStr(t, "log.level", cfg.Log.Level, "debug")
 	assertStr(t, "log.format", cfg.Log.Format, "text")
 }
@@ -93,13 +88,11 @@ nats:
   url: "nats://file-host:4222"
 worker:
   name: "from-file"
-  max_concurrent_tasks: 2
 `
 	f := writeTempYAML(t, yaml)
 
 	t.Setenv("SQI_WORKER_NATS_URL", "nats://env-host:4222")
 	t.Setenv("SQI_WORKER_NAME", "from-env")
-	t.Setenv("SQI_WORKER_MAX_CONCURRENT_TASKS", "6")
 
 	cfg, err := Load(f, FlagOverrides{})
 	if err != nil {
@@ -108,7 +101,6 @@ worker:
 
 	assertStr(t, "nats.url", cfg.NATS.URL, "nats://env-host:4222")
 	assertStr(t, "worker.name", cfg.Worker.Name, "from-env")
-	assertInt(t, "worker.max_concurrent_tasks", cfg.Worker.MaxConcurrentTasks, 6)
 }
 
 func TestLoad_EnvOverridesDefaults(t *testing.T) {
@@ -286,28 +278,6 @@ func TestValidate_MissingNATSURLWhenMDNSDisabled(t *testing.T) {
 	}
 }
 
-func TestValidate_ZeroMaxConcurrentTasks(t *testing.T) {
-	cfg := Default()
-	cfg.NATS.URL = "nats://localhost:4222"
-	cfg.Worker.MaxConcurrentTasks = 0
-
-	errs := Validate(cfg)
-	if !containsField(errs, "worker.max_concurrent_tasks") {
-		t.Errorf("expected max_concurrent_tasks error, got %v", errs)
-	}
-}
-
-func TestValidate_NegativeMaxConcurrentTasks(t *testing.T) {
-	cfg := Default()
-	cfg.NATS.URL = "nats://localhost:4222"
-	cfg.Worker.MaxConcurrentTasks = -1
-
-	errs := Validate(cfg)
-	if !containsField(errs, "worker.max_concurrent_tasks") {
-		t.Errorf("expected max_concurrent_tasks error, got %v", errs)
-	}
-}
-
 func TestValidate_EmptyDataDir(t *testing.T) {
 	cfg := Default()
 	cfg.NATS.URL = "nats://localhost:4222"
@@ -367,14 +337,13 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	cfg := Default()
 	cfg.NATS.URL = ""
 	cfg.Discovery.EnableMDNS = false
-	cfg.Worker.MaxConcurrentTasks = 0
 	cfg.Worker.DataDir = ""
 	cfg.Log.Level = "bad"
 	cfg.Log.Format = "bad"
 
 	errs := Validate(cfg)
-	if len(errs) < 4 {
-		t.Errorf("expected at least 4 errors for broken config, got %d: %v", len(errs), errs)
+	if len(errs) < 3 {
+		t.Errorf("expected at least 3 errors for broken config, got %d: %v", len(errs), errs)
 	}
 }
 
@@ -450,13 +419,6 @@ func assertStr(t *testing.T, label, got, want string) {
 	t.Helper()
 	if got != want {
 		t.Errorf("%s: got %q, want %q", label, got, want)
-	}
-}
-
-func assertInt(t *testing.T, label string, got, want int) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s: got %d, want %d", label, got, want)
 	}
 }
 

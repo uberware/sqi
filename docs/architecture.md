@@ -20,16 +20,16 @@ through scheduling, worker execution, and final state.
 │                                               │                             │
 │                                    ┌──────────▼──────────┐                 │
 │                                    │     Scheduler        │                 │
-│                                    │  assignment loop     │                 │
+│                                    │  lease handler       │                 │
 │                                    │  worker registry     │                 │
 │                                    │  heartbeat sweep     │                 │
 │                                    │  usage pool gating   │                 │
 │                                    └──────┬───────────────┘                 │
 │                                           │                                 │
 │             ┌─────────────────────────────▼──────────────────────────────┐ │
-│             │           embedded NATS JetStream                          │ │
+│             │           embedded NATS (JetStream + core NATS)            │ │
 │             │                                                            │ │
-│             │  work.assign.<queue>   task.status.<job>                   │ │
+│             │  work.lease.<queue>    task.status.<job>                   │ │
 │             │  task.logs.<task>      worker.heartbeat                    │ │
 │             │  worker.register                                           │ │
 │             └────────┬────────────────────────────────────────────────┬─┘ │
@@ -138,35 +138,49 @@ reached `succeeded`.
 This evaluation runs inside the `CreateJob` transaction for the initial set,
 and again inside `RecordTaskTerminal` whenever a task reaches a terminal state.
 
-### 3. Assignment
+### 3. Assignment (lease-on-request)
 
-The scheduler's assignment loop runs on a configurable `tick_interval` (default
-500 ms):
+Ready tasks stay `ready` until a worker asks for work. Workers keep exactly one
+outstanding lease request per queue on `work.lease.<queue>` (core-NATS
+request/reply). When a request arrives the server:
 
 ```
-Scheduler.tick()
+handleLeaseRequest(queueID, workerID)
   │
-  ├─ store.ListReadyTasks(limit)      → []Task (ordered by priority, age)
+  ├─ store.CommittedCores(workerID)   → committed (Σ required_cores of assigned+running tasks)
+  ├─ free = worker.CPUCount − committed
+  │     If free ≤ 0: park request in the per-queue waiter registry (~30 s hold)
   │
-  │  For each ready task:
-  ├─ store.ListIdleWorkers(farm, queue, capabilities)
-  ├─ matchWorker(task, workers)       → *Worker (first capable match)
-  │     Filters by: capability tags, OS, GPU, queue/farm membership,
-  │                 compute-location affinity
-  ├─ usagePool.TryClaimSlots(task)    → bool (defers task if pool saturated)
-  ├─ store.AssignTask(task, worker)   → TaskAttempt row (status=assigned)
+  ├─ store.ListReadyTasks(queue, …)   → candidates (priority-ordered)
   │
-  └─ bus.PublishWorkAssign(worker.Queue, TaskPayload)
-         Payload includes: resolved command, args, env, path map, session_id
+  │  First-fit walk over candidates:
+  ├─ WorkerEligible(task, worker)     → bool (capability/queue/farm/location/amounts match)
+  ├─ effectiveCost = task.RequiredCores ?? worker.CPUCount
+  ├─ If effectiveCost fits free:
+  │     store.LeaseReadyTask(taskID, workerID, now)
+  │           Atomically: status ready→assigned, stamp assigned_at,
+  │                       create running attempt, apply policy gates,
+  │                       TryClaimSlots (usage pools)
+  │     Decrement free; add to batch
+  │
+  └─ bus.Reply(batch []AssignMsg)
+         Each AssignMsg includes: resolved command, args, env, path map, session_id
 ```
+
+A parked request is woken when new work becomes available for that queue (job
+submitted, task becomes `ready`, task completes freeing cores, or stale-task
+reaper reclaims a task). Unfulfillable requests time out after ~30 s and return
+an empty batch; the worker immediately re-requests.
 
 ### 4. Worker execution
 
 ```
 sqi-worker
   │
-  ├─ Pulls from work.assign.<queue> (JetStream pull consumer)
-  ├─ Executes task (spawns child process, manages lifecycle)
+  ├─ Keeps one outstanding lease request per queue (work.lease.<queue>)
+  │     Long-poll (~35 s timeout); re-issues immediately on return
+  ├─ Receives batch of AssignMsgs from server
+  ├─ Executes each task (spawns child process, manages lifecycle)
   ├─ Streams log chunks → NATS task.logs.<task_id>
   └─ Reports status changes → NATS task.status.<job_id>
          { task_id, attempt_id, status, exit_code, timestamp }
@@ -222,10 +236,10 @@ bus fanout goroutine (internal/ws/hub.go)
                      ┌─────────────────┐
                      │      ready      │  (eligible for assignment)
                      └────────┬────────┘
-                              │ scheduler assigns to worker
+                              │ worker requests work; scheduler leases task
                               ▼
                      ┌─────────────────┐
-                     │    assigned     │  (work.assign published)
+                     │    assigned     │  (worker leased; brief window before running)
                      └────────┬────────┘
                               │ worker picks up task
                               ▼
@@ -249,17 +263,19 @@ a new `task_attempt` row and moves the task back to `ready`.
 
 ## NATS subjects and streams
 
-| Subject pattern | Direction | Stream | Purpose |
+| Subject pattern | Transport | Direction | Purpose |
 |---|---|---|---|
-| `work.assign.<queue>` | server → worker | `WORK` | Task assignment payload |
-| `task.status.<job_id>` | worker → server | `TASK_STATUS` | Terminal and intermediate status updates |
-| `task.logs.<task_id>` | worker → server | `TASK_LOGS` | Log chunk delivery |
-| `worker.heartbeat` | worker → server | `WORKER_HB` | Liveness heartbeat |
-| `worker.register` | worker → server | `WORKER_REG` | Registration at startup |
+| `work.lease.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
+| `task.status.<job_id>` | JetStream (`TASK_STATUS`) | worker → server | Terminal and intermediate status updates |
+| `task.logs.<task_id>` | JetStream (`TASK_LOGS`) | worker → server | Log chunk delivery |
+| `worker.heartbeat` | JetStream (`WORKER_HB`) | worker → server | Liveness heartbeat |
+| `worker.register` | JetStream (`WORKER_REG`) | worker → server | Registration at startup |
+| `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
-All streams use JetStream file-backed storage with configurable size limits.
-Consumer groups on `work.assign.<queue>` ensure each work item is delivered to
-exactly one worker. Other streams use individual consumers per handler.
+JetStream streams use file-backed storage with configurable size limits.
+`work.lease.<queue>` uses core NATS request/reply — no stream is created for
+it. The server holds an unfulfillable request in memory for up to 30 s before
+replying with an empty batch; the worker re-requests immediately.
 
 ---
 

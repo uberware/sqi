@@ -6,7 +6,7 @@
 // NATS, scheduler, HTTP) inside the test process, then drives a mock worker
 // over NATS to verify the complete job lifecycle:
 //
-//	submit job (REST) → assignment (NATS pull) → log streaming (NATS) →
+//	submit job (REST) → lease (NATS request/reply) → log streaming (NATS) →
 //	completion (NATS status) → job succeeded (REST poll)
 //
 // Integration tests live here rather than alongside a single package because
@@ -222,20 +222,18 @@ func waitForReadyz(tb testing.TB, httpAddr string, timeout time.Duration) bool {
 // ── Mock worker ───────────────────────────────────────────────────────────────
 
 // mockWorker is a minimal in-process NATS client that behaves like a real
-// sqi-worker: it registers with the server, pulls task assignments, and
+// sqi-worker: it registers with the server, requests task leases, and
 // publishes status + log messages.  It does not execute any OS processes.
 type mockWorker struct {
-	t        *testing.T
-	id       string
-	farmID   string
-	queueID  string
-	nc       *nats.Conn
-	js       jetstream.JetStream
-	consumer jetstream.Consumer
+	t       *testing.T
+	id      string
+	farmID  string
+	queueID string
+	nc      *nats.Conn
+	js      jetstream.JetStream
 }
 
-// newMockWorker dials the embedded NATS server at natsURL, ensures the
-// work-assignment pull consumer exists for queueID, and returns a ready
+// newMockWorker dials the embedded NATS server at natsURL and returns a ready
 // *mockWorker.  The connection is closed via t.Cleanup.
 func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string) *mockWorker {
 	t.Helper()
@@ -261,30 +259,13 @@ func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string) *moc
 		}
 	})
 
-	// Create the durable pull consumer for the worker's queue.  The consumer
-	// name and configuration mirror [bus.Client.EnsureWorkConsumer] exactly so
-	// the server and mock worker share the same durable name.
-	consumer, err := js.CreateOrUpdateConsumer(context.Background(), bus.StreamWork, jetstream.ConsumerConfig{
-		Durable:       "sqi-work-" + sanitize(queueID),
-		FilterSubject: bus.WorkAssignSubject(queueID),
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       30 * time.Second,
-		MaxDeliver:    5,
-		DeliverPolicy: jetstream.DeliverAllPolicy,
-		Description:   "integration test pull consumer for queue " + queueID,
-	})
-	if err != nil {
-		t.Fatalf("mockWorker: create pull consumer: %v", err)
-	}
-
 	return &mockWorker{
-		t:        t,
-		id:       workerID,
-		farmID:   farmID,
-		queueID:  queueID,
-		nc:       nc,
-		js:       js,
-		consumer: consumer,
+		t:       t,
+		id:      workerID,
+		farmID:  farmID,
+		queueID: queueID,
+		nc:      nc,
+		js:      js,
 	}
 }
 
@@ -358,40 +339,47 @@ func (w *mockWorker) startHeartbeat(interval time.Duration) {
 	}()
 }
 
-// pullAssignment blocks until a task-assignment message is delivered or
-// timeout expires.  It acks the message and returns the decoded [protocol.AssignMsg].
+// pullAssignment requests a work lease on work.lease.<queue> and blocks until
+// the server returns a non-empty batch or timeout expires.  It returns the
+// first decoded [protocol.AssignMsg] in the reply.  The request timeout exceeds
+// the server's long-poll hold so a parked request is never abandoned (which
+// would strand a leased task).
 func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
 	w.t.Helper()
 
+	reqBytes, err := json.Marshal(struct {
+		WorkerID string `json:"worker_id"`
+	}{w.id})
+	if err != nil {
+		w.t.Fatalf("mockWorker.pullAssignment: marshal request: %v", err)
+	}
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		msgs, err := w.consumer.Fetch(1, jetstream.FetchMaxWait(500*time.Millisecond))
-		if err != nil {
-			// Distinguish transient fetch-window expiry from hard errors.
-			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrTimeout) {
-				w.t.Logf("mockWorker.pullAssignment: Fetch error: %v", err)
+		reqTimeout := min(time.Until(deadline), 35*time.Second)
+		reqCtx, cancel := context.WithTimeout(context.Background(), reqTimeout)
+		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.queueID), reqBytes)
+		cancel()
+		if reqErr != nil {
+			if !errors.Is(reqErr, context.DeadlineExceeded) && !errors.Is(reqErr, nats.ErrTimeout) {
+				w.t.Logf("mockWorker.pullAssignment: request error: %v", reqErr)
 			}
 			continue
 		}
-		for msg := range msgs.Messages() {
-			var assign protocol.AssignMsg
-			if err := json.Unmarshal(msg.Data(), &assign); err != nil {
-				if nakErr := msg.Nak(); nakErr != nil {
-					w.t.Logf("mockWorker.pullAssignment: nak error: %v", nakErr)
-				}
-				w.t.Fatalf("mockWorker.pullAssignment: unmarshal: %v", err)
-			}
-			if err := msg.Ack(); err != nil {
-				w.t.Logf("mockWorker.pullAssignment: ack error (non-fatal): %v", err)
-			}
-			return assign
+		var rep struct {
+			Assignments []json.RawMessage `json:"assignments"`
 		}
-		// Log non-timeout batch errors but keep polling.
-		if batchErr := msgs.Error(); batchErr != nil &&
-			!errors.Is(batchErr, context.DeadlineExceeded) &&
-			!errors.Is(batchErr, nats.ErrTimeout) {
-			w.t.Logf("mockWorker.pullAssignment: batch error: %v", batchErr)
+		if err := json.Unmarshal(msg.Data, &rep); err != nil {
+			w.t.Fatalf("mockWorker.pullAssignment: unmarshal reply: %v", err)
 		}
+		if len(rep.Assignments) == 0 {
+			continue // server had no work; ask again
+		}
+		var assign protocol.AssignMsg
+		if err := json.Unmarshal(rep.Assignments[0], &assign); err != nil {
+			w.t.Fatalf("mockWorker.pullAssignment: unmarshal assignment: %v", err)
+		}
+		return assign
 	}
 	w.t.Fatalf("mockWorker.pullAssignment: no assignment received within %s", timeout)
 	return protocol.AssignMsg{} // unreachable
@@ -448,25 +436,4 @@ func (w *mockWorker) publishLogChunk(assign protocol.AssignMsg, seqNum int64, da
 	if _, err := w.js.Publish(ctx, bus.TaskLogsSubject(assign.TaskID), raw); err != nil {
 		w.t.Fatalf("mockWorker.publishLogChunk: publish: %v", err)
 	}
-}
-
-// sanitize replaces non-alphanumeric, non-dash, non-underscore, non-dot
-// characters with underscores — mirrors the bus package's internal helper so
-// the test uses the same consumer name the server expects.
-//
-// Note: this uses byte-level indexing like the original, which is correct for
-// UUID-format IDs (all ASCII).  If IDs ever contain multibyte characters this
-// should switch to strings.Map with rune semantics, matching the bus package.
-func sanitize(s string) string {
-	out := make([]byte, len(s))
-	for i := range s {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
-			out[i] = c
-		} else {
-			out[i] = '_'
-		}
-	}
-	return string(out)
 }

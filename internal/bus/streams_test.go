@@ -23,7 +23,6 @@ func TestStreamDefs(t *testing.T) {
 		subjects  []string
 		retention jetstream.RetentionPolicy
 	}{
-		StreamWork:   {[]string{SubjectWorkAssignPrefix + ".>"}, jetstream.WorkQueuePolicy},
 		StreamTask:   {[]string{SubjectTaskStatusPrefix + ".>"}, jetstream.WorkQueuePolicy},
 		StreamLogs:   {[]string{SubjectTaskLogsPrefix + ".>"}, jetstream.LimitsPolicy},
 		StreamWorker: {[]string{SubjectWorkerRegister, SubjectWorkerHeartbeat, SubjectWorkerDeregister}, jetstream.WorkQueuePolicy},

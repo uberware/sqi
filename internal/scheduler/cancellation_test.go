@@ -27,7 +27,7 @@ import (
 // ── stubBus: minimal busClient for cancellation tests ────────────────────────
 
 // stubBus records PublishTaskCancel calls and can be configured to return an
-// error.  All Consume* and PublishWorkAssign methods are no-ops.
+// error.  All Consume*/Subscribe* methods are no-ops.
 type stubBus struct {
 	cancelErr   error
 	cancelCalls []string // taskIDs published
@@ -44,9 +44,12 @@ func (*stubBus) ConsumeTaskStatus(_ context.Context, _ jetstream.MessageHandler)
 func (*stubBus) ConsumeTaskLogs(_ context.Context, _ jetstream.MessageHandler) (jetstream.ConsumeContext, error) {
 	return nil, nil
 }
-func (*stubBus) PublishWorkAssign(_ context.Context, _ string, _ []byte) error { return nil }
 
 func (*stubBus) SubscribeWorkerDiag(_ func(subject string, data []byte)) (*nats.Subscription, error) {
+	return nil, nil
+}
+
+func (*stubBus) SubscribeLease(_ func(string, []byte) []byte) (*nats.Subscription, error) {
 	return nil, nil
 }
 

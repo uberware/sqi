@@ -2,10 +2,10 @@
 
 package scheduler
 
-// Task-assignment publishing that respects per-worker pull semantics
-// and includes the full task payload (resolved command, env, path map).
+// Task-assignment payload construction: builds the full task payload (resolved
+// command, env, path map) returned to a worker when it leases a task.
 //
-// buildAssignPayload now:
+// buildAssignPayload:
 //
 //  1. Parses job.RawTemplate to extract the matching StepTemplate by name.
 //  2. Builds a protocol.AssignMsg with the step's OnRun action, embedded files,
@@ -17,12 +17,12 @@ package scheduler
 //  5. Resolves loc:// URI references in command args, env vars, and task
 // parameters to concrete local paths (resolved mode).
 //
-// Pull semantics:
-// Workers pull assignments from their per-queue durable JetStream pull consumer
-// (EnsureWorkConsumer). The per-worker pull model means the server never pushes
-// a message directly to a worker address; instead, a worker that becomes ready
-// calls Consumer.Fetch and receives the next available assignment for its queue.
-// This is enforced by using WorkQueuePolicy on the SQI_WORK JetStream stream.
+// Lease semantics:
+// Workers request work via the core-NATS work.lease.<queue> request/reply
+// protocol ([handleLeaseRequest]). The scheduler selects an eligible, fitting
+// batch of ready tasks, leases each atomically, and returns the marshaled
+// payloads built here in the reply. The server never pushes assignments to a
+// worker address; a worker only ever runs what it explicitly leased.
 
 import (
 	"context"

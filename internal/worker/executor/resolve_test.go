@@ -31,7 +31,7 @@ func TestExecutor_Dispatch_EmbeddedFileDataResolved(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:    protocol.ProtocolVersion,
@@ -71,7 +71,7 @@ func TestExecutor_Dispatch_TaskFileArg(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -110,7 +110,7 @@ func TestExecutor_Dispatch_EmbeddedFileDataUnknownVarFails(t *testing.T) {
 		t.Skip("test uses POSIX shell commands")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -153,7 +153,7 @@ func TestExecutor_Dispatch_ResolvesFormatStringsInArgs(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:       protocol.ProtocolVersion,
@@ -191,7 +191,7 @@ func TestExecutor_Dispatch_ResolvesSessionWorkingDirectory(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, dataDir := newTestExecutor(t, 1, capture)
+	exec, nc, dataDir := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -238,7 +238,7 @@ func TestExecutor_Dispatch_ResolvesEnvironmentVariableValues(t *testing.T) {
 	}
 
 	capture := &captureOutput{}
-	exec, nc, _ := newTestExecutor(t, 1, capture)
+	exec, nc, _ := newTestExecutor(t, capture)
 
 	msg := &protocol.AssignMsg{
 		Version:       protocol.ProtocolVersion,
@@ -277,7 +277,7 @@ func TestExecutor_Dispatch_UnknownVariableFailsTask(t *testing.T) {
 		t.Skip("test uses POSIX shell commands")
 	}
 
-	exec, nc, _ := newTestExecutor(t, 1, nil)
+	exec, nc, _ := newTestExecutor(t, nil)
 
 	msg := &protocol.AssignMsg{
 		Version:   protocol.ProtocolVersion,
@@ -316,7 +316,7 @@ func TestExecutor_Dispatch_EnvVarTaskParamFails(t *testing.T) {
 		t.Skip("test uses POSIX shell commands")
 	}
 
-	exec, _, _ := newTestExecutor(t, 1, nil)
+	exec, _, _ := newTestExecutor(t, nil)
 
 	msg := &protocol.AssignMsg{
 		Version:    protocol.ProtocolVersion,

@@ -18,11 +18,9 @@
 //
 // # Concurrency
 //
-// A buffered channel semaphore of size [Config.MaxConcurrentTasks] is the
-// authoritative concurrency gate.  The pull loop already checks available
-// slots before calling Dispatch; the semaphore provides a second, race-safe
-// enforcement layer for cases where multiple queue consumer goroutines call
-// Dispatch concurrently.
+// The server gates how many tasks a worker receives via CPU-core accounting;
+// the worker runs whatever it is leased without an additional local cap.
+// Multiple leases are dispatched in separate goroutines and run concurrently.
 //
 // # Output handling
 //
@@ -142,11 +140,6 @@ func (l LogOutput) HandleLine(ctx context.Context, taskID, attemptID, sessionID,
 
 // Config holds the tunable parameters for an [Executor].
 type Config struct {
-	// MaxConcurrentTasks is the maximum number of task processes that may
-	// execute simultaneously.  Must be ≥ 1; enforced via a buffered channel
-	// semaphore.
-	MaxConcurrentTasks int
-
 	// KillGracePeriod is the time the executor waits after sending SIGTERM
 	// before escalating to SIGKILL when forcibly terminating a process during
 	// worker force-shutdown (DrainAndShutdown). Defaults to 10 s when zero or
@@ -226,11 +219,6 @@ type Executor struct {
 	logger        *slog.Logger
 	cfg           Config
 
-	// sem is a counting semaphore implemented as a buffered channel.
-	// A goroutine must receive a token from sem before starting a task and
-	// must return it when the task terminates.  Buffer size = MaxConcurrentTasks.
-	sem chan struct{}
-
 	mu               sync.Mutex
 	activeTasks      map[string]*taskRun
 	lastAssignmentAt *time.Time
@@ -268,7 +256,6 @@ type Executor struct {
 // output to the structured logger.
 //
 // cfg.KillGracePeriod defaults to 10 s if zero or negative.
-// cfg.MaxConcurrentTasks is clamped to a minimum of 1.
 func New(
 	statusPub *status.Publisher,
 	sessionMgr *session.Manager,
@@ -277,21 +264,11 @@ func New(
 	cfg Config,
 	logger *slog.Logger,
 ) *Executor {
-	if cfg.MaxConcurrentTasks < 1 {
-		cfg.MaxConcurrentTasks = 1
-	}
 	if cfg.KillGracePeriod <= 0 {
 		cfg.KillGracePeriod = 10 * time.Second
 	}
 	if outputHandler == nil {
 		outputHandler = LogOutput{Logger: logger}
-	}
-
-	// Pre-fill the semaphore so the first MaxConcurrentTasks acquires succeed
-	// without blocking.
-	sem := make(chan struct{}, cfg.MaxConcurrentTasks)
-	for range cfg.MaxConcurrentTasks {
-		sem <- struct{}{}
 	}
 
 	execCtx, execCancel := context.WithCancel(context.Background())
@@ -303,7 +280,6 @@ func New(
 		outputHandler: outputHandler,
 		logger:        logger,
 		cfg:           cfg,
-		sem:           sem,
 		activeTasks:   make(map[string]*taskRun),
 		execCtx:       execCtx,
 		execCancel:    execCancel,
@@ -314,25 +290,14 @@ func New(
 
 // Dispatch implements [pull.TaskDispatcher].
 //
-// It acquires a concurrency slot (non-blocking — returns an error that causes
-// the pull loop to nack the message if at capacity), creates a session, and
-// launches a goroutine that executes the task process.  Dispatch itself
-// returns quickly; the task goroutine runs independently.
+// It creates a session and launches a goroutine that executes the task
+// process.  Dispatch itself returns quickly; the task goroutine runs
+// independently.  The server gates concurrency by CPU cores; the worker
+// runs whatever it is leased.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
-	// Acquire a concurrency slot.
-	select {
-	case <-e.sem:
-		// Slot acquired.
-	default:
-		return fmt.Errorf("executor: at capacity (%d/%d tasks running)",
-			e.ActiveTaskCount(), e.cfg.MaxConcurrentTasks)
-	}
-
-	// Create the session. On failure, release the slot before
-	// returning so the pull loop can nack and another worker can try.
+	// Create the session.
 	sess, err := e.sessionMgr.Create(ctx, msg)
 	if err != nil {
-		e.sem <- struct{}{} // release slot
 		return fmt.Errorf("executor: create session: %w", err)
 	}
 
@@ -401,15 +366,13 @@ func (e *Executor) addActiveTask(run *taskRun) {
 	e.m.ActiveTasks.Inc()
 }
 
-// removeActiveTask removes taskID from the active-tasks map, decrements the
-// Prometheus gauge, and returns the concurrency slot to the semaphore so the
-// pull loop can fetch another assignment.
+// removeActiveTask removes taskID from the active-tasks map and decrements
+// the Prometheus gauge.
 func (e *Executor) removeActiveTask(taskID string) {
 	e.mu.Lock()
 	delete(e.activeTasks, taskID)
 	e.mu.Unlock()
 	e.m.ActiveTasks.Dec()
-	e.sem <- struct{}{} // release slot
 }
 
 // applyCancelFunc stores taskCancel in run (under e.mu) and calls it

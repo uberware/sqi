@@ -151,11 +151,6 @@ type WorkerSettings struct {
 	// Env: SQI_WORKER_COMPUTE_LOCATION
 	ComputeLocation string `yaml:"compute_location"`
 
-	// MaxConcurrentTasks is the maximum number of tasks this worker will
-	// execute simultaneously.
-	// Env: SQI_WORKER_MAX_CONCURRENT_TASKS
-	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"`
-
 	// CapabilityTags is a list of arbitrary capability tags merged with
 	// auto-detected capabilities at registration time, e.g. ["maya-2025",
 	// "gpu", "highram"].
@@ -273,7 +268,6 @@ func Default() WorkerConfig {
 		Worker: WorkerSettings{
 			Name:                hostname,
 			DataDir:             defaultDataDir(),
-			MaxConcurrentTasks:  4,
 			HeartbeatInterval:   15 * time.Second,
 			ShutdownGracePeriod: 30 * time.Second,
 			PullIdleBackoff:     2 * time.Second,
@@ -456,11 +450,6 @@ func applyWorkerEnv(c *WorkerSettings) {
 	if v := os.Getenv("SQI_WORKER_COMPUTE_LOCATION"); v != "" {
 		c.ComputeLocation = v
 	}
-	if v := os.Getenv("SQI_WORKER_MAX_CONCURRENT_TASKS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.MaxConcurrentTasks = n
-		}
-	}
 	if v := os.Getenv("SQI_WORKER_CAPABILITY_TAGS"); v != "" {
 		c.CapabilityTags = splitTags(v)
 	}
@@ -579,12 +568,6 @@ func Validate(cfg WorkerConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field:   "nats.url",
 			Message: "must be set when discovery.enable_mdns is false",
-		})
-	}
-	if cfg.Worker.MaxConcurrentTasks < 1 {
-		errs = append(errs, ValidationError{
-			Field:   "worker.max_concurrent_tasks",
-			Message: "must be at least 1",
 		})
 	}
 	if cfg.Worker.DataDir == "" {

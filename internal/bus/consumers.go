@@ -5,25 +5,12 @@ package bus
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ── Consumer name helpers ─────────────────────────────────────────────────────
-
-// workConsumerName returns the durable JetStream consumer name for
-// task-assignment messages targeting a specific queue.
-//
-// All workers serving queueID share this single durable pull consumer.
-// JetStream delivers each assignment message to exactly one caller of
-// Consumer.Fetch regardless of how many workers are pulling concurrently —
-// no distributed locking needed.  This is the "consumer group" pattern for
-// JetStream WorkQueuePolicy streams.
-func workConsumerName(queueID string) string {
-	return "sqi-work-" + sanitizeConsumerToken(queueID)
-}
 
 // taskStatusConsumerName is the durable name for the server-side push consumer
 // that processes task-status transitions.  One server process runs this
@@ -37,68 +24,6 @@ const taskLogsConsumerName = "sqi-task-logs-srv"
 // workerConsumerName is the durable name for the server-side push consumer
 // that processes worker-registration and heartbeat messages.
 const workerConsumerName = "sqi-worker-srv"
-
-// sanitizeConsumerToken replaces characters not allowed in JetStream consumer
-// names (alphanumeric, dash, underscore, dot) with underscores.  In practice
-// sqi IDs are UUIDs (hex + dashes), and all those characters are already
-// allowed — the function exists to enforce the invariant explicitly.
-func sanitizeConsumerToken(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '-', r == '_', r == '.':
-			return r
-		default:
-			return '_'
-		}
-	}, s)
-}
-
-// ── Work assignment — pull consumer ─────────────────────────────────
-
-// EnsureWorkConsumer creates or updates the durable pull consumer for
-// task-assignment messages on the given queue, then returns it.
-//
-// Consumer group semantics:
-// All workers serving queueID call EnsureWorkConsumer with the same ID.
-// They all receive the same durable consumer name, so each SQI_WORK message
-// is delivered to exactly one worker — whichever calls Consumer.Fetch first.
-// Workers then loop calling Fetch (or FetchNoWait) to pull their next
-// assignment.
-//
-// Ack / redelivery policy:
-//   - AckWait 30 s — worker must acknowledge within 30 s of fetching.
-//     The worker protocol sends an explicit nack immediately on
-//     rejection so this is a safety net, not the normal path.
-//   - MaxDeliver 5 — unacknowledged assignments are retried up to 5 times.
-//     After that the stream's MaxAge (5 min) discards the message.  The
-//     scheduler's heartbeat sweep reclaims the task and re-publishes
-//     a fresh assignment, so an exhausted consumer entry never causes permanent
-//     loss.
-//   - DeliverAllPolicy — required by NATS WorkQueuePolicy streams; DeliverNew
-//     is rejected with error code 10101.  Stale assignments are prevented
-//     naturally: messages are removed from the stream once acknowledged, and
-//     the scheduler's heartbeat sweep reclaims and re-publishes any that were
-//     never acked.
-func (c *Client) EnsureWorkConsumer(ctx context.Context, queueID string) (jetstream.Consumer, error) {
-	cfg := jetstream.ConsumerConfig{
-		Durable:       workConsumerName(queueID),
-		FilterSubject: WorkAssignSubject(queueID),
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       30 * time.Second,
-		MaxDeliver:    5,
-		DeliverPolicy: jetstream.DeliverAllPolicy,
-		Description:   "Work-assignment pull consumer for queue " + queueID,
-	}
-
-	consumer, err := c.js.CreateOrUpdateConsumer(ctx, StreamWork, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("bus: ensure work consumer %q: %w", queueID, err)
-	}
-	return consumer, nil
-}
 
 // ── Task status — server-side push consumer ───────────────────────────────────
 

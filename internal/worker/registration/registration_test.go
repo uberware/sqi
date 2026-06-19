@@ -87,9 +87,8 @@ func connectNATS(tb testing.TB, url string) *nats.Conn {
 // minimalCfg returns a WorkerSettings with sensible defaults for tests.
 func minimalCfg() workerconfig.WorkerSettings {
 	return workerconfig.WorkerSettings{
-		Name:               "test-worker",
-		MaxConcurrentTasks: 1,
-		HeartbeatInterval:  15 * time.Second,
+		Name:              "test-worker",
+		HeartbeatInterval: 15 * time.Second,
 	}
 }
 

@@ -14,11 +14,6 @@ import (
 // "SQI_" prefix so they are clearly identifiable if the embedded NATS instance
 // is ever inspected externally.
 const (
-	// StreamWork captures task-assignment messages sent by the scheduler to
-	// waiting workers.  WorkQueuePolicy ensures each assignment is delivered to
-	// exactly one worker consumer.
-	StreamWork = "SQI_WORK"
-
 	// StreamTask captures task-status transitions reported by workers back to
 	// the server.  WorkQueuePolicy ensures each update is processed exactly once
 	// by the server-side status consumer.
@@ -36,7 +31,7 @@ const (
 
 	// StreamCancel captures task-cancellation signals published by the server
 	// to assigned workers. WorkQueuePolicy ensures each signal is
-	// delivered exactly once; MaxAge of 5 min matches StreamWork so stale
+	// delivered exactly once; MaxAge of 5 min keeps the stream small so stale
 	// signals for already-completed tasks are discarded automatically.
 	StreamCancel = "SQI_CANCEL"
 )
@@ -46,27 +41,6 @@ const (
 // tests can assert stream shape without booting a real broker.
 func streamDefs() []jetstream.StreamConfig {
 	return []jetstream.StreamConfig{
-		{
-			// SQI_WORK — work.assign.<queue>
-			//
-			// The scheduler publishes one message per task assignment.  Workers
-			// consume via a durable pull consumer bound to their queue(s).
-			// WorkQueuePolicy removes the message once it is acknowledged so the
-			// same assignment is never delivered twice.
-			//
-			// MaxAge of 5 min: if no worker picks up an assignment within that
-			// window the scheduler's heartbeat sweep will reclaim the task and
-			// re-publish, so stale messages are discarded rather than delivered
-			// to a late-waking worker.
-			Name:        StreamWork,
-			Description: "Task-assignment payloads delivered to workers per queue.",
-			Subjects:    []string{SubjectWorkAssignPrefix + ".>"},
-			Retention:   jetstream.WorkQueuePolicy,
-			Storage:     jetstream.FileStorage,
-			MaxAge:      5 * time.Minute,
-			Discard:     jetstream.DiscardOld,
-			Replicas:    1,
-		},
 		{
 			// SQI_TASK — task.status.<job>
 			//

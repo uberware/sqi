@@ -81,14 +81,6 @@ func NewClient(url string, logger *slog.Logger) (*Client, error) {
 
 // ── Publish methods ──────────────────────────────────────────────────────────
 
-// PublishWorkAssign publishes a task-assignment payload to the
-// work.assign.<queueID> subject.  The scheduler calls this when it selects a
-// task for a specific queue; waiting workers pull it via their per-queue
-// durable consumer (see [Client.EnsureWorkConsumer]).
-func (c *Client) PublishWorkAssign(ctx context.Context, queueID string, data []byte) error {
-	return c.publish(ctx, WorkAssignSubject(queueID), data)
-}
-
 // PublishTaskStatus publishes a task-status transition to the
 // task.status.<jobID> subject.  Workers call this when a task transitions
 // to running, succeeded, failed, or canceled.

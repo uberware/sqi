@@ -13,14 +13,14 @@ import (
 
 const taskCols = `
 	id, job_id, step_id, name, parameters, status,
-	assigned_worker_id, assigned_at, created_at, updated_at`
+	assigned_worker_id, assigned_at, created_at, updated_at, required_cores`
 
 const (
 	sqlInsertTask = `
 INSERT INTO tasks (
 	id, job_id, step_id, name, parameters, status,
-	assigned_worker_id, assigned_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	assigned_worker_id, assigned_at, created_at, updated_at, required_cores)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
@@ -48,7 +48,7 @@ WHERE id = ?`
 	// one for the value filter.
 	sqlListReadyTasks = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
-       t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at
+       t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
@@ -131,6 +131,17 @@ UPDATE tasks
 SET    status = ?, updated_at = ?
 WHERE  step_id = ? AND status = 'pending'
 RETURNING ` + taskCols
+
+	sqlCommittedCores = `
+SELECT COALESCE(SUM(COALESCE(required_cores, ?)), 0)
+FROM   tasks
+WHERE  assigned_worker_id = ?
+  AND  status IN ('assigned', 'running')`
+
+	sqlLeaseReadyTask = `
+UPDATE tasks
+SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?
+WHERE  id = ? AND status = 'ready'`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -138,10 +149,11 @@ func scanTask(row scanner) (store.Task, error) {
 	var paramsJSON, status string
 	var assignedWorkerID, assignedAt sql.NullString
 	var createdAt, updatedAt string
+	var reqCores sql.NullInt64
 
 	if err := row.Scan(
 		&t.ID, &t.JobID, &t.StepID, &t.Name, &paramsJSON, &status,
-		&assignedWorkerID, &assignedAt, &createdAt, &updatedAt,
+		&assignedWorkerID, &assignedAt, &createdAt, &updatedAt, &reqCores,
 	); err != nil {
 		return store.Task{}, err
 	}
@@ -151,6 +163,10 @@ func scanTask(row scanner) (store.Task, error) {
 	t.AssignedAt = nullTextToTime(assignedAt)
 	t.CreatedAt = mustTime(createdAt)
 	t.UpdatedAt = mustTime(updatedAt)
+	if reqCores.Valid {
+		v := int(reqCores.Int64)
+		t.RequiredCores = &v
+	}
 
 	params, err := unmarshalJSON(paramsJSON, map[string]string{})
 	if err != nil {
@@ -167,10 +183,14 @@ func (s *Store) CreateTask(ctx context.Context, task store.Task) (store.Task, er
 	if err != nil {
 		return store.Task{}, err
 	}
+	var reqCores sql.NullInt64
+	if task.RequiredCores != nil {
+		reqCores = sql.NullInt64{Int64: int64(*task.RequiredCores), Valid: true}
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertTask.QueryRowContext(ctx,
 		task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
-		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now)
+		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores)
 	out, err := scanTask(row)
 	return out, mapErr(err)
 }
@@ -424,7 +444,7 @@ func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time)
 	active, err := func() ([]store.Task, error) {
 		rows, queryErr := tx.QueryContext(ctx, `
 SELECT id, job_id, step_id, name, parameters, status,
-       assigned_worker_id, assigned_at, created_at, updated_at
+       assigned_worker_id, assigned_at, created_at, updated_at, required_cores
 FROM   tasks
 WHERE  job_id = ?
   AND  status IN ('assigned', 'running')`, jobID)
@@ -501,4 +521,25 @@ func (s *Store) CountTasksByJob(ctx context.Context, jobID string) (map[store.Ta
 		counts[status] = n
 	}
 	return counts, rows.Err()
+}
+
+// CommittedCores implements [store.TaskStore].
+func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
+	return n, mapErr(err)
+}
+
+// LeaseReadyTask implements [store.TaskStore].
+func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error) {
+	nowText := timeToText(now.UTC())
+	res, err := s.db.ExecContext(ctx, sqlLeaseReadyTask, workerID, nowText, nowText, taskID)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }

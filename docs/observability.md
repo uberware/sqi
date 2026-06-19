@@ -50,6 +50,44 @@ operational logs.
 
 ---
 
+## Task-state health signals
+
+### `assigned` as an anomaly
+
+Under the lease model, `assigned` is a brief handoff window: the worker that
+just requested work is expected to transition the task to `running` within
+seconds. A task that lingers in `assigned` is a genuine anomaly — the worker
+leased it but never reported `running`.
+
+The scheduler's **stale-assigned reaper** runs on every heartbeat-sweep tick
+and returns tasks that have been `assigned` for longer than
+`scheduler.assigned_task_timeout` (default **30 s**) to the `ready` queue.
+If the task's job is now idle (no other tasks in flight), the job is demoted
+from `running` back to `pending` so it does not appear stuck.
+
+Frequent reaper activity on a particular worker is a sign that the worker is
+taking leases but failing to start them — look for WARN-level lines in the
+worker's diagnostic panel (see [Worker diagnostics panel](#worker-diagnostics-panel)).
+
+### Per-worker health from heartbeat + running state
+
+The server infers worker health from two signals:
+
+1. **Heartbeat staleness.** Heartbeats are retained (busy workers holding
+   tasks do not issue lease requests, so the long-poll itself is not a
+   liveness signal). A worker whose last heartbeat is older than
+   `scheduler.heartbeat_timeout` (default 30 s) is marked offline and its
+   tasks are reclaimed.
+
+2. **Missing `running` within the tight window.** A task in `assigned` that
+   does not transition to `running` within `assigned_task_timeout` is reclaimed
+   by the stale-assigned reaper. No worker self-report is needed — the
+   server's ledger is authoritative. The only possible divergence is a
+   server-side phantom (the server assigned the task but the reply was lost),
+   which the tight reaper window already catches.
+
+---
+
 ## In-UI diagnostics
 
 ### Worker diagnostics panel

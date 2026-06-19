@@ -13,8 +13,8 @@ task assignments from NATS JetStream, executing them as bare-metal OS processes.
 - **Registers** its capabilities at startup — OS, CPU count, RAM, GPU (where
   detectable), plus any manual tags from configuration such as `maya-2025` or
   `arnold-7`.
-- **Pulls** task assignments over NATS JetStream, executing up to
-  `max_concurrent_tasks` processes simultaneously.
+- **Pulls** task assignments over NATS JetStream and executes them concurrently;
+  the server gates concurrency via CPU-core accounting.
 - **Streams** task stdout and stderr back to `sqi-server` in real time so the
   web UI log viewer feels live.
 - **Interprets** OpenJD progress directives (`openjd_progress`,

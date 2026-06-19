@@ -136,7 +136,6 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	cfg.QueueIDs = []string{"render-q"}
 	cfg.FarmID = "farm-1"
 	cfg.ComputeLocation = "onprem"
-	cfg.MaxConcurrentTasks = 4
 
 	caps := capabilities.Capabilities{
 		OS:        "linux",
@@ -174,7 +173,6 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 		OSVersion       string            `json:"os_version"`
 		CPUCount        int               `json:"cpu_count"`
 		RAMMb           int               `json:"ram_mb"`
-		MaxConcurrent   int               `json:"max_concurrent_tasks"`
 		Tags            map[string]string `json:"tags"`
 		GPUInfo         struct {
 			Vendor string `json:"vendor"`
@@ -204,9 +202,6 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 	}
 	if rm.CPUCount != 16 || rm.RAMMb != 32000 {
 		t.Errorf("CPUCount/RAMMb = %d/%d, want 16/32000", rm.CPUCount, rm.RAMMb)
-	}
-	if rm.MaxConcurrent != 4 {
-		t.Errorf("MaxConcurrentTasks = %d, want 4", rm.MaxConcurrent)
 	}
 	if rm.Tags["role"] != "gpu" {
 		t.Errorf("Tags[role] = %q, want %q", rm.Tags["role"], "gpu")

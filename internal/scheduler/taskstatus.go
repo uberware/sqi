@@ -281,6 +281,10 @@ func (s *Scheduler) handleTaskTerminal(
 		return err
 	}
 
+	// Wake any parked lease waiters: a completed task frees the worker's cores
+	// so pending tasks may now fit.
+	s.notifyQueueForJob(ctx, task.JobID)
+
 	// Notify WebSocket hub of the terminal status change.
 	s.notifier.NotifyTask(ws.TaskEvent{
 		JobID:     task.JobID,
@@ -404,6 +408,8 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 				slog.String("job_id", jobID),
 				slog.Int("steps_promoted", n),
 			)
+			// Wake parked lease waiters: newly ready tasks may fit waiting workers.
+			s.notifyQueueForJob(ctx, jobID)
 		}
 		return nil
 	}

@@ -144,7 +144,7 @@ func (b *Broker) Start(ctx context.Context) error {
 
 	b.logger.InfoContext(
 		ctx, "bus: jetstream streams provisioned",
-		slog.String("streams", StreamWork+","+StreamTask+","+StreamLogs+","+StreamWorker),
+		slog.String("streams", StreamTask+","+StreamLogs+","+StreamWorker+","+StreamCancel),
 	)
 	return nil
 }

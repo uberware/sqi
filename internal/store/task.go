@@ -45,6 +45,11 @@ type Task struct {
 	AssignedAt       *time.Time // nil when unassigned
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+
+	// RequiredCores is the task's declared CPU reservation (OpenJD
+	// amount.worker.vcpu min). Nil means undeclared — the scheduler treats the
+	// cost as the running worker's full CPUCount (one such task per worker).
+	RequiredCores *int
 }
 
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.
@@ -156,6 +161,19 @@ type TaskStore interface {
 	// status. Statuses with zero tasks are omitted from the returned map.
 	// Used by the REST layer to include aggregate task counts in job responses.
 	CountTasksByJob(ctx context.Context, jobID string) (map[TaskStatus]int, error)
+
+	// CommittedCores returns the sum of CPU-core reservations held by the worker
+	// across its assigned and running tasks: Σ COALESCE(required_cores,
+	// fullMachineCost). Callers pass the worker's CPUCount as fullMachineCost so
+	// an undeclared task (required_cores NULL) counts as the whole machine.
+	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
+
+	// LeaseReadyTask atomically transitions a task from [TaskStatusReady] to
+	// [TaskStatusAssigned], setting assigned_worker_id and assigned_at. It
+	// returns true iff the task was still ready (exactly one row changed); a
+	// false return means another worker leased it first. This is the race guard
+	// for concurrent lease requests.
+	LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

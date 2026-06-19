@@ -44,7 +44,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -183,18 +182,16 @@ func startLoadServer(tb testing.TB) *testServer {
 // runs a heartbeat goroutine, and drains task assignments as fast as possible
 // by immediately publishing running → succeeded.
 type loadWorker struct {
-	id       string
-	farmID   string
-	queueID  string
-	nc       *nats.Conn
-	js       jetstream.JetStream
-	consumer jetstream.Consumer
+	id      string
+	farmID  string
+	queueID string
+	nc      *nats.Conn
+	js      jetstream.JetStream
 }
 
-// newLoadWorker dials NATS and attaches to the shared durable pull consumer
-// for queueID.  Multiple load workers share the same durable consumer and
-// naturally round-robin assignments among themselves — matching real worker
-// pull semantics.
+// newLoadWorker dials NATS and returns a load worker that requests work leases
+// on work.lease.<queue>.  Multiple load workers request independently; the
+// server's atomic LeaseReadyTask distributes ready tasks among them.
 func newLoadWorker(tb testing.TB, natsURL, workerID, farmID, queueID string) *loadWorker {
 	tb.Helper()
 
@@ -213,20 +210,6 @@ func newLoadWorker(tb testing.TB, natsURL, workerID, farmID, queueID string) *lo
 		tb.Fatalf("newLoadWorker %s: jetstream.New: %v", workerID, err)
 	}
 
-	consumer, err := js.CreateOrUpdateConsumer(context.Background(), bus.StreamWork, jetstream.ConsumerConfig{
-		Durable:       "sqi-work-" + sanitize(queueID),
-		FilterSubject: bus.WorkAssignSubject(queueID),
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       30 * time.Second,
-		MaxDeliver:    5,
-		DeliverPolicy: jetstream.DeliverAllPolicy,
-		Description:   "load test pull consumer for queue " + queueID,
-	})
-	if err != nil {
-		nc.Close()
-		tb.Fatalf("newLoadWorker %s: create consumer: %v", workerID, err)
-	}
-
 	tb.Cleanup(func() {
 		if !nc.IsClosed() {
 			nc.Close()
@@ -234,12 +217,11 @@ func newLoadWorker(tb testing.TB, natsURL, workerID, farmID, queueID string) *lo
 	})
 
 	return &loadWorker{
-		id:       workerID,
-		farmID:   farmID,
-		queueID:  queueID,
-		nc:       nc,
-		js:       js,
-		consumer: consumer,
+		id:      workerID,
+		farmID:  farmID,
+		queueID: queueID,
+		nc:      nc,
+		js:      js,
 	}
 }
 
@@ -300,39 +282,46 @@ func (w *loadWorker) heartbeatLoop(ctx context.Context, interval time.Duration, 
 	}
 }
 
-// drainLoop pulls assignments and immediately completes them (running →
-// succeeded).  For each assignment it calls assignedAt(jobID, receivedAt).
-// Runs until ctx is canceled, then signals wg.Done.
+// drainLoop requests work leases and immediately completes each leased task
+// (running → succeeded).  For each assignment it calls assignedAt(jobID,
+// receivedAt).  Runs until ctx is canceled, then signals wg.Done.
 //
-// assignedAt is called with the first recorded time for each job; the guard
-// prevents double-counting if the scheduler redelivers a message.
+// The request timeout exceeds the server's long-poll hold so a parked request
+// is never abandoned (which would strand a leased task).  assignedAt is called
+// with the first recorded time for each job; the guard prevents double-counting.
 func (w *loadWorker) drainLoop(ctx context.Context, wg *sync.WaitGroup, assignedAt func(jobID string, at time.Time)) {
 	defer wg.Done()
 	exitCode := 0
+	reqBytes, err := json.Marshal(struct {
+		WorkerID string `json:"worker_id"`
+	}{w.id})
+	if err != nil {
+		return
+	}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		msgs, err := w.consumer.Fetch(4, jetstream.FetchMaxWait(300*time.Millisecond))
-		if err != nil {
+		reqCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.queueID), reqBytes)
+		cancel()
+		if reqErr != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			// Transient fetch error (e.g. window expiry) — retry.
+			// Transient request error (timeout / no responders) — retry.
 			continue
 		}
-		for msg := range msgs.Messages() {
+		var rep struct {
+			Assignments []json.RawMessage `json:"assignments"`
+		}
+		if err := json.Unmarshal(msg.Data, &rep); err != nil {
+			continue
+		}
+		for _, raw := range rep.Assignments {
 			now := time.Now()
 			var assign protocol.AssignMsg
-			if err := json.Unmarshal(msg.Data(), &assign); err != nil {
-				if nakErr := msg.Nak(); nakErr != nil {
-					// Non-fatal; redelivery will handle it.
-					_ = nakErr
-				}
-				continue
-			}
-			if err := msg.Ack(); err != nil {
-				// Non-fatal during teardown.
+			if err := json.Unmarshal(raw, &assign); err != nil {
 				continue
 			}
 			if assignedAt != nil {
@@ -340,15 +329,6 @@ func (w *loadWorker) drainLoop(ctx context.Context, wg *sync.WaitGroup, assigned
 			}
 			w.publishStatus(assign, "running", nil)
 			w.publishStatus(assign, "succeeded", &exitCode)
-		}
-		// Log batch-level errors so stalls are diagnosable, but keep draining.
-		if batchErr := msgs.Error(); batchErr != nil &&
-			!errors.Is(batchErr, context.DeadlineExceeded) &&
-			!errors.Is(batchErr, nats.ErrTimeout) {
-			// Best-effort — we cannot call tb.Log here since drainLoop runs in
-			// a goroutine started after the test may have ended.  The error
-			// will surface as a timeout in waitAllJobsTerminal.
-			_ = batchErr
 		}
 	}
 }

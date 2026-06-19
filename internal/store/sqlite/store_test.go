@@ -1509,3 +1509,135 @@ func TestDemoteStalledJobs(t *testing.T) {
 		t.Errorf("second sweep demoted %v, want none", again)
 	}
 }
+
+func TestCommittedCores(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+
+	mk := func(id string, status store.TaskStatus, cores *int, worker string) {
+		tk, err := s.CreateTask(ctx, store.Task{
+			ID: id, JobID: "j1", StepID: step.ID, Name: id,
+			Status: store.TaskStatusPending, Parameters: map[string]string{},
+			RequiredCores: cores,
+		})
+		if err != nil {
+			t.Fatalf("CreateTask %s: %v", id, err)
+		}
+		if worker != "" {
+			if err := s.AssignTask(ctx, tk.ID, worker, time.Now().UTC()); err != nil {
+				t.Fatalf("AssignTask %s: %v", id, err)
+			}
+			if err := s.UpdateTaskStatus(ctx, tk.ID, status); err != nil {
+				t.Fatalf("UpdateTaskStatus %s: %v", id, err)
+			}
+		}
+	}
+	insertWorker(t, s, "w1", "f1")
+	insertWorker(t, s, "w2", "f1")
+
+	one, two := 1, 2
+	mk("a", store.TaskStatusRunning, &two, "w1")   // 2 cores
+	mk("b", store.TaskStatusAssigned, &one, "w1")  // 1 core
+	mk("c", store.TaskStatusRunning, nil, "w1")    // undeclared -> fullMachineCost (4)
+	mk("d", store.TaskStatusSucceeded, &two, "w1") // terminal -> not counted
+	mk("e", store.TaskStatusRunning, &one, "w2")   // other worker -> not counted
+
+	got, err := s.CommittedCores(ctx, "w1", 4)
+	if err != nil {
+		t.Fatalf("CommittedCores: %v", err)
+	}
+	if got != 2+1+4 { // 7
+		t.Errorf("CommittedCores(w1, full=4) = %d, want 7", got)
+	}
+
+	zero, err := s.CommittedCores(ctx, "idle", 4)
+	if err != nil || zero != 0 {
+		t.Errorf("CommittedCores(idle) = %d, %v, want 0, nil", zero, err)
+	}
+}
+
+func TestTask_RequiredCoresRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+
+	four := 4
+	created, err := s.CreateTask(ctx, store.Task{
+		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
+		Status: store.TaskStatusPending, Parameters: map[string]string{},
+		RequiredCores: &four,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if created.RequiredCores == nil || *created.RequiredCores != 4 {
+		t.Fatalf("created RequiredCores = %v, want 4", created.RequiredCores)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.RequiredCores == nil || *got.RequiredCores != 4 {
+		t.Errorf("GetTask RequiredCores = %v, want 4", got.RequiredCores)
+	}
+
+	// Undeclared stays nil.
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t2", JobID: "j1", StepID: step.ID, Name: "t2",
+		Status: store.TaskStatusPending, Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t2: %v", err)
+	}
+	got2, err := s.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask t2: %v", err)
+	}
+	if got2.RequiredCores != nil {
+		t.Errorf("undeclared RequiredCores = %v, want nil", got2.RequiredCores)
+	}
+}
+
+func TestLeaseReadyTask(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+	insertWorker(t, s, "w1", "f1")
+	insertWorker(t, s, "w2", "f1")
+	tk, err := s.CreateTask(ctx, store.Task{
+		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
+		Status: store.TaskStatusReady, Parameters: map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask t1: %v", err)
+	}
+
+	now := time.Now().UTC()
+	ok, err := s.LeaseReadyTask(ctx, tk.ID, "w1", now)
+	if err != nil || !ok {
+		t.Fatalf("first lease = %v, %v, want true, nil", ok, err)
+	}
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask t1: %v", err)
+	}
+	if got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w1" || got.AssignedAt == nil {
+		t.Fatalf("after lease: status=%q worker=%q at=%v", got.Status, got.AssignedWorkerID, got.AssignedAt)
+	}
+
+	// Second lease loses the race (no longer ready).
+	ok2, err := s.LeaseReadyTask(ctx, tk.ID, "w2", now)
+	if err != nil || ok2 {
+		t.Errorf("second lease = %v, %v, want false, nil", ok2, err)
+	}
+}

@@ -407,7 +407,32 @@ describe('JobDetail', () => {
       expect(screen.getByText('camera')).toBeInTheDocument()
     })
 
-    it('renders worker name with link for assigned tasks', async () => {
+    it('renders the worker name (not hostname) with link for assigned tasks', async () => {
+      const task = makeTask({ assigned_worker_id: 'worker-abcdef12' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(
+        okJson(
+          makeWorkerListResponse([
+            makeWorker({
+              id: 'worker-abcdef12',
+              name: 'gpu-box-01',
+              hostname: 'render-node-42',
+            }),
+          ]),
+        ),
+      )
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('gpu-box-01'))
+      // The human-readable name is shown in preference to the hostname.
+      expect(screen.queryByText('render-node-42')).not.toBeInTheDocument()
+      const link = screen.getByText('gpu-box-01').closest('a')
+      expect(link).toHaveAttribute('href', '/workers/worker-abcdef12')
+    })
+
+    it('falls back to hostname when the worker has no name', async () => {
       const task = makeTask({ assigned_worker_id: 'worker-abcdef12' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
