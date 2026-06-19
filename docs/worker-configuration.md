@@ -252,14 +252,18 @@ worker:
 | **Default** | `4` |
 | **Env var** | `SQI_WORKER_MAX_CONCURRENT_TASKS` |
 
-Maximum number of tasks this worker will execute simultaneously. Set to the
-number of parallel render slots on this host — typically `1` for GPU
-rendering or the logical CPU count ÷ cores-per-task for CPU rendering. Must
+Defensive upper bound on the number of tasks the worker will run at once.
+This is a local safety cap, not the primary concurrency control: the server
+gates how many tasks a worker receives by tracking committed CPU cores
+(`CPUCount − committed`). In practice this limit is rarely hit — the server
+will not lease more tasks than the worker's CPU capacity allows. Lower this
+value only if you need a hard local ceiling for reasons outside the server's
+view (e.g., memory pressure not expressed as an OpenJD host requirement). Must
 be `≥ 1`.
 
 ```yaml
 worker:
-  max_concurrent_tasks: 1
+  max_concurrent_tasks: 4
 ```
 
 ---
@@ -383,17 +387,14 @@ worker:
 | | |
 |---|---|
 | **Type** | `[]string` |
-| **Default** | `[]` (all queues via wildcard consumer) |
+| **Default** | `[]` (all queues) |
 | **Env var** | `SQI_WORKER_QUEUE_IDS` (comma-separated) |
 
-Restrict this worker to serving specific queue IDs. When empty (the default),
-the worker accepts assignments from all queues via a wildcard JetStream
-consumer. Set this on heterogeneous farms where some workers specialise in a
-subset of queues.
-
-**Important:** Do not mix wildcard (empty `queue_ids`) and per-queue workers
-on the same SQI_WORK JetStream stream — both consumer types would race on
-overlapping messages. Choose one strategy for your farm.
+Restrict this worker to serving specific queue IDs. The worker keeps one
+outstanding lease request per listed queue (`work.lease.<queueID>`). When
+empty (the default), the worker issues a single lease request using an empty
+queue ID, which the server treats as a wildcard. Set this on heterogeneous
+farms where some workers specialise in a subset of queues.
 
 ```yaml
 worker:
@@ -412,15 +413,11 @@ worker:
 | **Default** | `"2s"` |
 | **Env var** | `SQI_WORKER_PULL_IDLE_BACKOFF` |
 
-Wait duration between pull attempts when the work queue is empty. Prevents
-tight polling on idle queues. Resets to zero immediately when a task is
-received. Increase if many idle workers are generating NATS traffic; decrease
-for lower task start latency on bursty queues. Must be `≥ 0`.
-
-```yaml
-worker:
-  pull_idle_backoff: "2s"
-```
+> **Deprecated.** This field is accepted by the config loader for backwards
+> compatibility but has no effect in the current lease-based worker. Idle
+> backoff is no longer needed: the worker's lease request long-polls on the
+> server (~30 s hold) and re-issues immediately on return — there is no tight
+> polling loop to throttle.
 
 ---
 
@@ -432,14 +429,10 @@ worker:
 | **Default** | `"5s"` |
 | **Env var** | `SQI_WORKER_PULL_NACK_DELAY` |
 
-Redelivery delay applied to an assignment when pre-execution validation fails
-(e.g., compute location mismatch). The delay gives other workers a window to
-claim the assignment before NATS redelivers it to this worker. Must be `≥ 0`.
-
-```yaml
-worker:
-  pull_nack_delay: "5s"
-```
+> **Deprecated.** This field is accepted by the config loader for backwards
+> compatibility but has no effect in the current lease-based worker.
+> Pre-execution NACKs no longer apply: the server validates eligibility before
+> leasing, so the worker runs what it is given.
 
 ---
 
@@ -669,8 +662,8 @@ log_streamer:
 | `worker.allow_root` | bool | `false` | `SQI_WORKER_ALLOW_ROOT` | — |
 | `worker.keep_failed_sessions` | bool | `false` | `SQI_WORKER_KEEP_FAILED_SESSIONS` | — |
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
-| `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — |
-| `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — |
+| `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
+| `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |
 | `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |
 | `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |
@@ -701,7 +694,7 @@ worker:
   farm_id: "studio-main"
   data_dir: "/var/lib/sqi-worker"
   compute_location: "nas-studio"
-  max_concurrent_tasks: 1      # GPU renders saturate the card; one at a time
+  max_concurrent_tasks: 1      # defensive cap; server gates by CPU cores (undeclared vcpu = full machine)
   capability_tags:
     - houdini-20.5
     - karma-renderer
@@ -721,9 +714,12 @@ metrics:
 
 ## Running multiple workers on one host
 
-A single worker already executes tasks in parallel — see
-[`worker.max_concurrent_tasks`](#workermax_concurrent_tasks) (default 4). Raise
-that value when you simply want more throughput from one machine.
+A single worker already executes tasks in parallel — the server leases as many
+tasks as fit the worker's CPU cores (see [CPU reservations in OpenJD
+templates](openjd-submission.md#5-cpu-reservations)). The local
+[`worker.max_concurrent_tasks`](#workermax_concurrent_tasks) cap (default 4) is
+a defensive ceiling. Raise it only when the server would otherwise be capped
+below what the host can actually run.
 
 Run *separate* worker processes when you want distinct worker identities:
 independent heartbeats and registrations, different capability sets, or

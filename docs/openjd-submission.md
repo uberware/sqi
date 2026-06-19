@@ -389,6 +389,62 @@ The optional `server_hint` field on a pool records a license server address
 
 ---
 
+## 5. CPU reservations
+
+`amount.worker.vcpu` `min` is a per-task CPU-core reservation. The scheduler
+co-schedules tasks on a worker only while their combined reservations fit the
+worker's total core count. This is the same consumable-amount mechanism as
+usage pools, applied at the host level.
+
+**Declaring CPU cores:**
+
+```yaml
+steps:
+  - name: Transcode
+    hostRequirements:
+      amounts:
+        - name: amount.worker.vcpu
+          min: 4          # reserve 4 cores per task on the assigned worker
+    script:
+      actions:
+        onRun:
+          command: ffmpeg
+          args: ["-threads", "4", "-i", "input.mov", "output.mp4"]
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Chunk
+          type: INT
+          range: "1-10"
+```
+
+With `min: 4` on a 16-core worker, four tasks run in parallel (4 × 4 = 16
+cores committed). A 4-core worker runs one task at a time (4 × 1 = 4 cores).
+
+**Omitting `amount.worker.vcpu` reserves the whole machine.** A step with no
+`amount.worker.vcpu` amount is treated as requiring all of the worker's cores —
+one such task runs per worker at a time. This is the safe default: jobs that
+do not declare CPU requirements never oversubscribe a host.
+
+Example — a 4-core worker running one undeclared task vs. four 1-core tasks:
+
+```yaml
+# One task at a time (reserves whole machine):
+hostRequirements: {}   # or omit hostRequirements entirely
+
+# Four tasks in parallel on a 4-core worker:
+hostRequirements:
+  amounts:
+    - name: amount.worker.vcpu
+      min: 1
+```
+
+> **Note on `max`:** Only `min` is used as a reservation. If your step
+> declares only `max` without `min`, there is no declared floor and the step
+> is treated as undeclared (full-machine reservation). Declare `min` to opt
+> into fine-grained CPU scheduling.
+
+---
+
 ## Parameter reference syntax
 
 Inside `command`, `args`, step `variables`, and environment `variables`, use

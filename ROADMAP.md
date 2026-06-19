@@ -184,6 +184,25 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Usage pool tracking (count-based)
 - Simple all-in-one deployment
 - Docker image for worker
+- **CPU-aware lease scheduling** — replaced the eager push model with a
+  lazy, worker-requested lease design (see
+  [`docs/superpowers/specs/2026-06-18-cpu-aware-lease-scheduling-design.md`](docs/superpowers/specs/2026-06-18-cpu-aware-lease-scheduling-design.md)):
+  - *Motivation:* the previous model stamped `assigned` and `assigned_at` before
+    any worker had the task; workers sharing a JetStream pull consumer could
+    steal each other's assignments; and `amount.worker.vcpu` was checked only as
+    a static capability filter, never as live per-worker consumption.
+  - *Design:* ready tasks remain `ready` until a worker sends a core-NATS
+    request to `work.lease.<queue>`. The server computes free cores
+    (`CPUCount − Σ committed`), selects a priority-ordered batch that fits,
+    atomically transitions the batch `ready → assigned` (stamping `assigned_at`
+    only now), and replies. The `SQI_WORK` JetStream stream, `work.assign.<queue>`
+    subject, and server dispatch loop are removed.
+  - *CPU capacity:* `amount.worker.vcpu` `min` is now a consumable per-task
+    reservation; omitting it reserves the whole machine (one task per worker).
+    The server tracks committed cores in the database; the ledger rebuilds
+    instantly on restart.
+  - *Deferred:* worker drain/headroom signal, head-of-line reservation for
+    large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
 ### Phase 2: Products and Presets (v0.2)
 
