@@ -27,7 +27,7 @@ through scheduling, worker execution, and final state.
 │                                    └──────┬───────────────┘                 │
 │                                           │                                 │
 │             ┌─────────────────────────────▼──────────────────────────────┐ │
-│             │           embedded NATS JetStream                          │ │
+│             │           embedded NATS (JetStream + core NATS)            │ │
 │             │                                                            │ │
 │             │  work.lease.<queue>    task.status.<job>                   │ │
 │             │  task.logs.<task>      worker.heartbeat                    │ │
@@ -236,7 +236,7 @@ bus fanout goroutine (internal/ws/hub.go)
                      ┌─────────────────┐
                      │      ready      │  (eligible for assignment)
                      └────────┬────────┘
-                              │ scheduler assigns to worker
+                              │ worker requests work; scheduler leases task
                               ▼
                      ┌─────────────────┐
                      │    assigned     │  (worker leased; brief window before running)
