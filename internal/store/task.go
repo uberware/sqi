@@ -45,6 +45,11 @@ type Task struct {
 	AssignedAt       *time.Time // nil when unassigned
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+
+	// RequiredCores is the task's declared CPU reservation (OpenJD
+	// amount.worker.vcpu min). Nil means undeclared — the scheduler treats the
+	// cost as the running worker's full CPUCount (one such task per worker).
+	RequiredCores *int
 }
 
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.

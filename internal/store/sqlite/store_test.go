@@ -1509,3 +1509,45 @@ func TestDemoteStalledJobs(t *testing.T) {
 		t.Errorf("second sweep demoted %v, want none", again)
 	}
 }
+
+func TestTask_RequiredCoresRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+
+	four := 4
+	created, err := s.CreateTask(ctx, store.Task{
+		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
+		Status: store.TaskStatusPending, Parameters: map[string]string{},
+		RequiredCores: &four,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if created.RequiredCores == nil || *created.RequiredCores != 4 {
+		t.Fatalf("created RequiredCores = %v, want 4", created.RequiredCores)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.RequiredCores == nil || *got.RequiredCores != 4 {
+		t.Errorf("GetTask RequiredCores = %v, want 4", got.RequiredCores)
+	}
+
+	// Undeclared stays nil.
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t2", JobID: "j1", StepID: step.ID, Name: "t2",
+		Status: store.TaskStatusPending, Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t2: %v", err)
+	}
+	got2, _ := s.GetTask(ctx, "t2")
+	if got2.RequiredCores != nil {
+		t.Errorf("undeclared RequiredCores = %v, want nil", got2.RequiredCores)
+	}
+}
