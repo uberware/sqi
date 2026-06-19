@@ -107,6 +107,7 @@ function makeWorker(overrides: Partial<WorkerDetailType> = {}): WorkerDetailType
     gpu: {},
     registered_at: BASE_REGISTERED_AT,
     updated_at: '2024-01-01T10:00:00Z',
+    current_tasks: [],
     ...overrides,
   }
 }
@@ -356,7 +357,7 @@ describe('WorkerDetail', () => {
   // ── Assigned tasks ──────────────────────────────────────────────────
 
   describe('active tasks section', () => {
-    it('shows "No active tasks" when current_task is absent', async () => {
+    it('shows "No active tasks" when current_tasks is empty', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker()))
 
       render(<WorkerDetail />, { wrapper: Wrapper })
@@ -365,15 +366,17 @@ describe('WorkerDetail', () => {
       expect(screen.getByText('No active tasks.')).toBeInTheDocument()
     })
 
-    it('renders the current task card when current_task is present', async () => {
+    it('renders the current task card when current_tasks is present', async () => {
       const worker = makeWorker({
-        current_task: {
-          id: 'task-11111111',
-          job_id: 'job-99999999',
-          name: 'render-frame-001',
-          status: 'running',
-          assigned_at: new Date(Date.now() - 90_000).toISOString(),
-        },
+        current_tasks: [
+          {
+            id: 'task-11111111',
+            job_id: 'job-99999999',
+            name: 'render-frame-001',
+            status: 'running',
+            assigned_at: new Date(Date.now() - 90_000).toISOString(),
+          },
+        ],
       })
       fetchMock.mockResolvedValue(okJson(worker))
 
@@ -383,14 +386,35 @@ describe('WorkerDetail', () => {
       expect(screen.getByText('render-frame-001')).toBeInTheDocument()
     })
 
+    it('renders one card per task when several are active', async () => {
+      const worker = makeWorker({
+        current_tasks: [
+          { id: 'task-1', job_id: 'job-1', name: 'render-frame-001', status: 'running' },
+          { id: 'task-2', job_id: 'job-2', name: 'render-frame-002', status: 'assigned' },
+          { id: 'task-3', job_id: 'job-3', name: 'render-frame-003', status: 'running' },
+        ],
+      })
+      fetchMock.mockResolvedValue(okJson(worker))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('render-frame-001'))
+      expect(screen.getByText('render-frame-001')).toBeInTheDocument()
+      expect(screen.getByText('render-frame-002')).toBeInTheDocument()
+      expect(screen.getByText('render-frame-003')).toBeInTheDocument()
+      expect(screen.getByRole('list', { name: /active tasks/i }).children).toHaveLength(3)
+    })
+
     it('renders a link to the job detail page for the current task', async () => {
       const worker = makeWorker({
-        current_task: {
-          id: 'task-abc',
-          job_id: 'job-xyz12345',
-          name: 'some-task',
-          status: 'running',
-        },
+        current_tasks: [
+          {
+            id: 'task-abc',
+            job_id: 'job-xyz12345',
+            name: 'some-task',
+            status: 'running',
+          },
+        ],
       })
       fetchMock.mockResolvedValue(okJson(worker))
 
@@ -403,12 +427,14 @@ describe('WorkerDetail', () => {
 
     it('renders a status badge for the current task', async () => {
       const worker = makeWorker({
-        current_task: {
-          id: 'task-aaa',
-          job_id: 'job-bbb',
-          name: 'active-task',
-          status: 'running',
-        },
+        current_tasks: [
+          {
+            id: 'task-aaa',
+            job_id: 'job-bbb',
+            name: 'active-task',
+            status: 'running',
+          },
+        ],
       })
       fetchMock.mockResolvedValue(okJson(worker))
 
@@ -420,13 +446,15 @@ describe('WorkerDetail', () => {
 
     it('renders the Start Time label for the current task', async () => {
       const worker = makeWorker({
-        current_task: {
-          id: 'task-t1',
-          job_id: 'job-j1',
-          name: 'task-name',
-          status: 'assigned',
-          assigned_at: '2024-01-01T09:00:00Z',
-        },
+        current_tasks: [
+          {
+            id: 'task-t1',
+            job_id: 'job-j1',
+            name: 'task-name',
+            status: 'assigned',
+            assigned_at: '2024-01-01T09:00:00Z',
+          },
+        ],
       })
       fetchMock.mockResolvedValue(okJson(worker))
 
@@ -438,13 +466,15 @@ describe('WorkerDetail', () => {
 
     it('renders the Elapsed label for the current task', async () => {
       const worker = makeWorker({
-        current_task: {
-          id: 'task-t2',
-          job_id: 'job-j2',
-          name: 'another-task',
-          status: 'running',
-          assigned_at: new Date(Date.now() - 5000).toISOString(),
-        },
+        current_tasks: [
+          {
+            id: 'task-t2',
+            job_id: 'job-j2',
+            name: 'another-task',
+            status: 'running',
+            assigned_at: new Date(Date.now() - 5000).toISOString(),
+          },
+        ],
       })
       fetchMock.mockResolvedValue(okJson(worker))
 
@@ -603,6 +633,40 @@ describe('WorkerDetail', () => {
       // Our worker's badge should remain Online
       expect(screen.getAllByLabelText('Status: Online').length).toBeGreaterThan(0)
       expect(screen.queryByLabelText('Status: Disabled')).not.toBeInTheDocument()
+    })
+  })
+
+  // ── Live task polling ──────────────────────────────────────────────────────────
+
+  describe('live task polling', () => {
+    it('refetches on an interval so a completed task clears from Active Tasks', async () => {
+      const busy = makeWorker({
+        current_tasks: [
+          {
+            id: 'task-live',
+            job_id: 'job-live',
+            name: 'live-render',
+            status: 'running',
+            assigned_at: new Date(Date.now() - 5000).toISOString(),
+          },
+        ],
+      })
+      fetchMock.mockResolvedValue(okJson(busy))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('live-render'))
+
+      // The task finishes server-side: subsequent fetches report no current
+      // task. A fresh Response per call is required — a Response body can only
+      // be read once, and the interval may fire more than once.
+      fetchMock.mockImplementation(() => Promise.resolve(okJson(makeWorker())))
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000)
+      })
+
+      await waitFor(() => screen.getByText('No active tasks.'))
+      expect(screen.queryByText('live-render')).not.toBeInTheDocument()
     })
   })
 

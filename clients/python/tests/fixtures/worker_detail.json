@@ -23,11 +23,13 @@
   "last_heartbeat_at": "2026-01-15T10:05:00Z",
   "registered_at": "2026-01-15T09:00:00Z",
   "updated_at": "2026-01-15T10:05:00Z",
-  "current_task": {
-    "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1b001",
-    "job_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345",
-    "name": "Render-1001",
-    "status": "running",
-    "assigned_at": "2026-01-15T10:02:00Z"
-  }
+  "current_tasks": [
+    {
+      "id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1b001",
+      "job_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345",
+      "name": "Render-1001",
+      "status": "running",
+      "assigned_at": "2026-01-15T10:02:00Z"
+    }
+  ]
 }

@@ -23,6 +23,16 @@ import type {
  */
 const USAGE_POOL_REFETCH_MS = 5000
 
+/**
+ * How often (ms) the worker-detail query refetches while the page is open. The
+ * worker's `current_tasks` are derived server-side from its assigned/running
+ * tasks, but no WebSocket event fires when those assignments change (the
+ * `workers` subject only carries online/offline transitions). Polling keeps the
+ * Active Tasks list current — picking up new tasks and, crucially, clearing
+ * finished ones so their live "Elapsed" stops ticking.
+ */
+const WORKER_DETAIL_REFETCH_MS = 5000
+
 // ── Query key factory ─────────────────────────────────────────────────────────
 // Keys are structured arrays enabling prefix-based invalidation.
 // Use queryKeys.jobs.all to invalidate every job query (list + detail).
@@ -291,6 +301,7 @@ export function useGetWorker(id: string) {
   return useQuery({
     queryKey: queryKeys.workers.detail(id),
     queryFn: () => fetchGetWorker(id),
+    refetchInterval: WORKER_DETAIL_REFETCH_MS,
   })
 }
 

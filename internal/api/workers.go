@@ -43,10 +43,10 @@ type gpuInfoResponse struct {
 	Count  int    `json:"count,omitempty"`
 }
 
-// currentTaskResponse carries the minimal fields callers need to identify the
-// task a worker is currently executing. Included in workerDetailResponse only
-// when the worker has a task in [store.TaskStatusAssigned] or
-// [store.TaskStatusRunning] state.
+// currentTaskResponse carries the minimal fields callers need to identify a
+// task a worker is currently executing. One entry appears in
+// workerDetailResponse.CurrentTasks for every task in [store.TaskStatusAssigned]
+// or [store.TaskStatusRunning] state on the worker.
 type currentTaskResponse struct {
 	ID         string     `json:"id"`
 	JobID      string     `json:"job_id"`
@@ -77,12 +77,13 @@ type workerResponse struct {
 	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
-// workerDetailResponse extends [workerResponse] with the current-task detail
-// returned by GET /api/v1/workers/{id}.
+// workerDetailResponse extends [workerResponse] with the active-task detail
+// returned by GET /api/v1/workers/{id}. CurrentTasks is always present (an empty
+// array when the worker has no active tasks).
 type workerDetailResponse struct {
 	workerResponse
 
-	CurrentTask *currentTaskResponse `json:"current_task,omitempty"`
+	CurrentTasks []currentTaskResponse `json:"current_tasks"`
 }
 
 // workerListResponse is the paginated result returned by GET /api/v1/workers.
@@ -173,32 +174,38 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 
 	resp := workerDetailResponse{
 		workerResponse: toWorkerResponse(wk),
+		CurrentTasks:   []currentTaskResponse{},
 	}
 
-	// Attach current-task detail when the worker has an active task. We look
-	// for any task in the assigned or running state that points to this worker.
-	// ListTasks is reused here; a small overhead but avoids adding a new Store
-	// method for a single-row lookup that only fires on the detail path.
+	// Attach active-task detail: every task in the assigned or running state that
+	// points to this worker. A worker can execute several tasks at once (bounded
+	// by its core count), so we return all of them ordered oldest-first.
+	// ListTasks is reused here to avoid adding a Store method for a path that
+	// only fires on the detail view.
 	taskPage, err := h.store.ListTasks(ctx, store.ListTasksOptions{
 		WorkerID: id,
 		Statuses: []store.TaskStatus{
 			store.TaskStatusAssigned,
 			store.TaskStatusRunning,
 		},
-		Pagination: store.Pagination{Limit: 1, Offset: 0},
+		SortBy:     store.TaskSortByCreatedAt,
+		SortDir:    store.SortAsc,
+		Pagination: store.Pagination{Limit: store.MaxLimit, Offset: 0},
 	})
 	if err != nil {
 		h.logger.ErrorContext(ctx, "workers: list active tasks failed",
 			slog.String("worker_id", id), slog.Any("error", err))
-		// Non-fatal: return the worker without current-task rather than 500.
-	} else if len(taskPage.Items) > 0 {
-		t := taskPage.Items[0]
-		resp.CurrentTask = &currentTaskResponse{
-			ID:         t.ID,
-			JobID:      t.JobID,
-			Name:       t.Name,
-			Status:     string(t.Status),
-			AssignedAt: t.AssignedAt,
+		// Non-fatal: return the worker without active tasks rather than 500.
+	} else {
+		resp.CurrentTasks = make([]currentTaskResponse, len(taskPage.Items))
+		for i, t := range taskPage.Items {
+			resp.CurrentTasks[i] = currentTaskResponse{
+				ID:         t.ID,
+				JobID:      t.JobID,
+				Name:       t.Name,
+				Status:     string(t.Status),
+				AssignedAt: t.AssignedAt,
+			}
 		}
 	}
 

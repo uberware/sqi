@@ -61,6 +61,33 @@ func seedWorker(t *testing.T, st *fake.Store, status store.WorkerStatus) store.W
 	return created
 }
 
+func seedWorkerTask(
+	t *testing.T,
+	st *fake.Store,
+	workerID string,
+	status store.TaskStatus,
+	name string,
+) store.Task {
+	t.Helper()
+	now := time.Now()
+	task := store.Task{
+		ID:               uuid.NewString(),
+		JobID:            "job-" + uuid.NewString()[:8],
+		StepID:           "step-" + uuid.NewString()[:8],
+		Name:             name,
+		Status:           status,
+		AssignedWorkerID: workerID,
+		AssignedAt:       &now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	created, err := st.CreateTask(t.Context(), task)
+	if err != nil {
+		t.Fatalf("seedWorkerTask: %v", err)
+	}
+	return created
+}
+
 // ── GET /api/v1/workers ───────────────────────────────────────────────────────
 
 func TestListWorkers(t *testing.T) {
@@ -221,9 +248,46 @@ func TestGetWorker(t *testing.T) {
 		if resp.OS != "linux" {
 			t.Errorf("os = %q, want linux", resp.OS)
 		}
-		// No active task seeded — current_task should be nil.
-		if resp.CurrentTask != nil {
-			t.Errorf("expected nil current_task, got %+v", resp.CurrentTask)
+		// No active task seeded — current_tasks should be empty.
+		if len(resp.CurrentTasks) != 0 {
+			t.Errorf("expected empty current_tasks, got %+v", resp.CurrentTasks)
+		}
+	})
+
+	t.Run("returns all assigned and running tasks in current_tasks", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorker(t, st, store.WorkerStatusOnline)
+
+		// Two active tasks on this worker (one assigned, one running) plus a
+		// finished one that must be excluded, and one on another worker.
+		seedWorkerTask(t, st, w.ID, store.TaskStatusRunning, "render-001")
+		seedWorkerTask(t, st, w.ID, store.TaskStatusAssigned, "render-002")
+		seedWorkerTask(t, st, w.ID, store.TaskStatusSucceeded, "render-done")
+		seedWorkerTask(t, st, "other-worker", store.TaskStatusRunning, "elsewhere")
+
+		req := newReq(t, http.MethodGet, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp workerDetailResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.CurrentTasks) != 2 {
+			t.Fatalf("current_tasks len = %d, want 2 — got %+v", len(resp.CurrentTasks), resp.CurrentTasks)
+		}
+		names := map[string]bool{}
+		for _, ct := range resp.CurrentTasks {
+			names[ct.Name] = true
+		}
+		if !names["render-001"] || !names["render-002"] {
+			t.Errorf("expected render-001 and render-002, got %+v", resp.CurrentTasks)
+		}
+		if names["render-done"] || names["elsewhere"] {
+			t.Errorf("current_tasks leaked an excluded task: %+v", resp.CurrentTasks)
 		}
 	})
 

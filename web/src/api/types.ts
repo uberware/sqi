@@ -192,7 +192,7 @@ export interface Worker {
   updated_at: string
 }
 
-/** Minimal current-task info embedded in {@link WorkerDetail}. */
+/** Minimal active-task info embedded in {@link WorkerDetail}. */
 export interface CurrentTask {
   id: string
   job_id: string
@@ -203,7 +203,8 @@ export interface CurrentTask {
 
 /** Wire shape returned by GET /api/v1/workers/{id}. */
 export interface WorkerDetail extends Worker {
-  current_task?: CurrentTask
+  /** Every task the worker is currently executing; empty when idle. */
+  current_tasks: CurrentTask[]
 }
 
 /** Wire shape returned by POST /api/v1/workers/{id}/disable|enable. */

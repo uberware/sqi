@@ -516,10 +516,15 @@ components:
       allOf:
         - $ref: "#/components/schemas/Worker"
         - type: object
+          required: [current_tasks]
           properties:
-            current_task:
-              $ref: "#/components/schemas/CurrentTask"
-              nullable: true
+            current_tasks:
+              type: array
+              description: >-
+                Every task the worker is currently executing (assigned or
+                running). Empty when the worker is idle.
+              items:
+                $ref: "#/components/schemas/CurrentTask"
 
     WorkerList:
       type: object

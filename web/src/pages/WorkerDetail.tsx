@@ -191,46 +191,48 @@ function CapabilitiesSection({ worker }: { worker: WorkerDetailType }) {
 // ── Assigned Tasks ───────────────────────────────────────────────────
 
 function AssignedTasksSection({ worker, now }: { worker: WorkerDetailType; now: number }) {
-  const task = worker.current_task
+  const tasks = worker.current_tasks
 
   return (
     <section className={styles.tasksSection} aria-label="Assigned tasks">
       <h2 className={styles.sectionTitle}>Active Tasks</h2>
 
-      {!task ? (
+      {tasks.length === 0 ? (
         <p className={styles.empty}>No active tasks.</p>
       ) : (
-        <ul className={styles.taskCardList}>
-          <li className={styles.taskCard}>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Job</span>
-              <Link to={`/jobs/${task.job_id}`} className={styles.taskCardJobLink}>
-                {truncateId(task.job_id)}
-              </Link>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Task</span>
-              <span className={styles.taskCardValue}>{task.name}</span>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Task ID</span>
-              <span className={styles.taskCardMono}>{truncateId(task.id)}</span>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Status</span>
-              <StatusBadge status={task.status} />
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Start Time</span>
-              <span className={styles.taskCardValue}>{formatDateTime(task.assigned_at)}</span>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Elapsed</span>
-              <span className={styles.taskCardValue}>
-                {formatTimespan(task.assigned_at, undefined, now)}
-              </span>
-            </div>
-          </li>
+        <ul className={styles.taskCardList} aria-label="Active tasks">
+          {tasks.map((task) => (
+            <li key={task.id} className={styles.taskCard}>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Job</span>
+                <Link to={`/jobs/${task.job_id}`} className={styles.taskCardJobLink}>
+                  {truncateId(task.job_id)}
+                </Link>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Task</span>
+                <span className={styles.taskCardValue}>{task.name}</span>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Task ID</span>
+                <span className={styles.taskCardMono}>{truncateId(task.id)}</span>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Status</span>
+                <StatusBadge status={task.status} />
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Start Time</span>
+                <span className={styles.taskCardValue}>{formatDateTime(task.assigned_at)}</span>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Elapsed</span>
+                <span className={styles.taskCardValue}>
+                  {formatTimespan(task.assigned_at, undefined, now)}
+                </span>
+              </div>
+            </li>
+          ))}
         </ul>
       )}
     </section>
@@ -338,9 +340,9 @@ export default function WorkerDetail() {
   }, [queryClient, workerId])
 
   // ── Live clock ────────────────────────────────────────────────────────────
-  // Tick every second while the worker has an active task so its Elapsed and
-  // Uptime stay alive; otherwise 30s.
-  const now = useLiveNow(worker?.current_task != null)
+  // Tick every second while the worker has any active task so their Elapsed and
+  // the Uptime stay alive; otherwise 30s.
+  const now = useLiveNow((worker?.current_tasks?.length ?? 0) > 0)
 
   // ── Loading / error states ────────────────────────────────────────────────
 

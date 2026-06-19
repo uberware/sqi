@@ -229,7 +229,7 @@ for chunk in sqi.tail_task_logs(task_id, follow=True):
 |---|---|
 | `list_workers(*, farm_id, queue_id, compute_location, status, sort_by, sort_dir, limit, offset) -> Page[Worker]` | One page of workers. |
 | `iter_workers(...) -> Iterator[Worker]` | Auto-paged companion. |
-| `get_worker(worker_id) -> Worker` | Worker detail, including `current_task`. |
+| `get_worker(worker_id) -> Worker` | Worker detail, including `current_tasks`. |
 | `disable_worker(worker_id) -> WorkerAction \| None` | Drain and stop new assignments. |
 | `enable_worker(worker_id) -> WorkerAction \| None` | Re-enable a disabled worker. |
 
