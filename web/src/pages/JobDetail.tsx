@@ -9,6 +9,8 @@ import TaskProgressBar from '@/components/TaskProgressBar'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
 import { useRetryTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
+import { useLiveNow } from '@/hooks/useLiveNow'
+import { formatTimespan } from '@/lib/time'
 import { isJobEvent, isTaskEvent } from '@/ws/events'
 import type { JobDetail as JobDetailType, Step, Task, TaskStatus, ListResponse } from '@/api/types'
 import styles from './JobDetail.module.css'
@@ -33,20 +35,6 @@ function formatDateTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-/** Computes a human-readable duration between two ISO timestamps.
- *  If endIso is undefined the duration is measured from startIso to now. */
-function durationLabel(startIso: string | undefined, endIso: string | undefined): string {
-  if (!startIso) return '—'
-  const start = new Date(startIso).getTime()
-  const end = endIso ? new Date(endIso).getTime() : Date.now()
-  const s = Math.floor((end - start) / 1000)
-  if (s < 0) return '—'
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 function isTerminalTask(status: TaskStatus): boolean {
@@ -231,9 +219,10 @@ interface TaskRowProps {
   retryError: string | undefined
   onRetry: (taskId: string) => void
   workerNamesById: ReadonlyMap<string, string>
+  now: number
 }
 
-function TaskRow({ task, jobId, isRetrying, retryError, onRetry, workerNamesById }: TaskRowProps) {
+function TaskRow({ task, jobId, isRetrying, retryError, onRetry, workerNamesById, now }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
   const canRetry = RETRYABLE.has(task.status) && !isRetrying
@@ -265,7 +254,7 @@ function TaskRow({ task, jobId, isRetrying, retryError, onRetry, workerNamesById
           )}
         </td>
         <td>{formatDateTime(task.assigned_at)}</td>
-        <td>{durationLabel(task.assigned_at, endTime)}</td>
+        <td>{formatTimespan(task.assigned_at, endTime, now)}</td>
         <td>
           <div className={styles.actionCell}>
             {canRetry && (
@@ -325,6 +314,7 @@ interface StepSectionProps {
   retryErrors: ReadonlyMap<string, string>
   onRetry: (taskId: string) => void
   workerNamesById: ReadonlyMap<string, string>
+  now: number
 }
 
 function StepSection({
@@ -335,6 +325,7 @@ function StepSection({
   retryErrors,
   onRetry,
   workerNamesById,
+  now,
 }: StepSectionProps) {
   const counts = stepCountsFromTasks(tasks)
   const deps = step.depends_on ?? []
@@ -389,6 +380,7 @@ function StepSection({
                   retryError={retryErrors.get(task.id)}
                   onRetry={onRetry}
                   workerNamesById={workerNamesById}
+                  now={now}
                 />
               ))}
             </tbody>
@@ -511,13 +503,11 @@ export default function JobDetail() {
     )
   })
 
-  // ── Last-updated timestamp ──────────────────────────────────────
-
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(id)
-  }, [])
+  // ── Live clock ──────────────────────────────────────────────────
+  // Tick every second while the job is active so task durations and the
+  // "Updated X ago" label stay alive; otherwise 30s.
+  const jobActive = job?.status === 'running' || job?.status === 'pending'
+  const now = useLiveNow(jobActive)
 
   const lastUpdated = Math.max(jobUpdatedAt, tasksUpdatedAt)
 
@@ -619,6 +609,7 @@ export default function JobDetail() {
             retryErrors={retryErrors}
             onRetry={(taskId) => void handleRetry(taskId)}
             workerNamesById={workerNamesById}
+            now={now}
           />
         ))}
         {sortedSteps.length === 0 && !tasksLoading && (
