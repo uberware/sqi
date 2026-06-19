@@ -11,6 +11,8 @@ import { useDisableWorker, useEnableWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { isWorkerEvent } from '@/ws/events'
 import type { WorkerDetail as WorkerDetailType } from '@/api/types'
+import { useLiveNow } from '@/hooks/useLiveNow'
+import { formatTimespan, formatUptime } from '@/lib/time'
 import styles from './WorkerDetail.module.css'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -24,30 +26,6 @@ function formatDateTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function formatUptime(registeredAt: string): string {
-  const ms = Date.now() - new Date(registeredAt).getTime()
-  if (ms < 0) return '—'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ${m % 60}m`
-  const d = Math.floor(h / 24)
-  return `${d}d ${h % 24}h`
-}
-
-function formatElapsed(assignedAt: string | undefined): string {
-  if (!assignedAt) return '—'
-  const ms = Date.now() - new Date(assignedAt).getTime()
-  if (ms < 0) return '—'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 function truncateId(id: string): string {
@@ -212,7 +190,7 @@ function CapabilitiesSection({ worker }: { worker: WorkerDetailType }) {
 
 // ── Assigned Tasks ───────────────────────────────────────────────────
 
-function AssignedTasksSection({ worker }: { worker: WorkerDetailType }) {
+function AssignedTasksSection({ worker, now }: { worker: WorkerDetailType; now: number }) {
   const task = worker.current_task
 
   return (
@@ -248,7 +226,7 @@ function AssignedTasksSection({ worker }: { worker: WorkerDetailType }) {
             </div>
             <div className={styles.taskCardRow}>
               <span className={styles.taskCardLabel}>Elapsed</span>
-              <span className={styles.taskCardValue}>{formatElapsed(task.assigned_at)}</span>
+              <span className={styles.taskCardValue}>{formatTimespan(task.assigned_at, undefined, now)}</span>
             </div>
           </li>
         </ul>
@@ -357,12 +335,10 @@ export default function WorkerDetail() {
     void queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(workerId) })
   }, [queryClient, workerId])
 
-  // ── Uptime ticker ─────────────────────────────────────────────────────────
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), 60_000)
-    return () => clearInterval(id)
-  }, [])
+  // ── Live clock ────────────────────────────────────────────────────────────
+  // Tick every second while the worker has an active task so its Elapsed and
+  // Uptime stay alive; otherwise 30s.
+  const now = useLiveNow(worker?.current_task != null)
 
   // ── Loading / error states ────────────────────────────────────────────────
 
@@ -474,7 +450,7 @@ export default function WorkerDetail() {
           </div>
           <div className={styles.metaField}>
             <dt>Uptime</dt>
-            <dd className={styles.metaValue}>{formatUptime(worker.registered_at)}</dd>
+            <dd className={styles.metaValue}>{formatUptime(worker.registered_at, now)}</dd>
           </div>
         </dl>
       </div>
@@ -484,7 +460,7 @@ export default function WorkerDetail() {
         <CapabilitiesSection worker={worker} />
 
         {/* Assigned tasks */}
-        <AssignedTasksSection worker={worker} />
+        <AssignedTasksSection worker={worker} now={now} />
 
         {/* Worker diagnostic logs */}
         <DiagnosticsPanel component={`worker:${workerId}`} title="Worker diagnostics" />
