@@ -11,6 +11,7 @@ import { useCancelJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useLiveNow } from '@/hooks/useLiveNow'
+import { formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
 import { isJobEvent, isTaskEvent } from '@/ws/events'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
@@ -49,19 +50,6 @@ function formatTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-// eslint-disable-next-line react-refresh/only-export-components
-export function elapsedLabel(job: Job, now: number): string {
-  const start = job.started_at ? new Date(job.started_at).getTime() : null
-  const end = job.completed_at ? new Date(job.completed_at).getTime() : null
-  if (!start) return '—'
-  const ms = (end ?? now) - start
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 /** Returns a human-readable age string for a past timestamp. */
@@ -549,7 +537,7 @@ export default function JobList() {
                     <ProgressCell job={job} />
                   </td>
                   <td>{formatTime(job.created_at)}</td>
-                  <td>{elapsedLabel(job, now)}</td>
+                  <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
                   <td>
                     {canCancel && (
                       <button
