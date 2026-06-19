@@ -131,6 +131,12 @@ UPDATE tasks
 SET    status = ?, updated_at = ?
 WHERE  step_id = ? AND status = 'pending'
 RETURNING ` + taskCols
+
+	sqlCommittedCores = `
+SELECT COALESCE(SUM(COALESCE(required_cores, ?)), 0)
+FROM   tasks
+WHERE  assigned_worker_id = ?
+  AND  status IN ('assigned', 'running')`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -510,4 +516,11 @@ func (s *Store) CountTasksByJob(ctx context.Context, jobID string) (map[store.Ta
 		counts[status] = n
 	}
 	return counts, rows.Err()
+}
+
+// CommittedCores implements [store.TaskStore].
+func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
+	return n, mapErr(err)
 }

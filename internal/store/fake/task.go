@@ -372,6 +372,28 @@ func (s *Store) CountTasksByJob(_ context.Context, jobID string) (map[store.Task
 	return counts, nil
 }
 
+// CommittedCores implements [store.TaskStore].
+func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCost int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := 0
+	for _, t := range s.tasks {
+		if t.AssignedWorkerID != workerID {
+			continue
+		}
+		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
+			continue
+		}
+		if t.RequiredCores != nil {
+			total += *t.RequiredCores
+		} else {
+			total += fullMachineCost
+		}
+	}
+	return total, nil
+}
+
 // cmpReadyTask orders tasks by job priority descending, then CreatedAt ascending.
 func cmpReadyTask(a, b store.Task, jobPriority map[string]int) int {
 	if n := cmp.Compare(jobPriority[b.JobID], jobPriority[a.JobID]); n != 0 {

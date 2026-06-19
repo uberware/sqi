@@ -161,6 +161,12 @@ type TaskStore interface {
 	// status. Statuses with zero tasks are omitted from the returned map.
 	// Used by the REST layer to include aggregate task counts in job responses.
 	CountTasksByJob(ctx context.Context, jobID string) (map[TaskStatus]int, error)
+
+	// CommittedCores returns the sum of CPU-core reservations held by the worker
+	// across its assigned and running tasks: Σ COALESCE(required_cores,
+	// fullMachineCost). Callers pass the worker's CPUCount as fullMachineCost so
+	// an undeclared task (required_cores NULL) counts as the whole machine.
+	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

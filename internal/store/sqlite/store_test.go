@@ -1510,6 +1510,56 @@ func TestDemoteStalledJobs(t *testing.T) {
 	}
 }
 
+func TestCommittedCores(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+
+	mk := func(id string, status store.TaskStatus, cores *int, worker string) {
+		tk, err := s.CreateTask(ctx, store.Task{
+			ID: id, JobID: "j1", StepID: step.ID, Name: id,
+			Status: store.TaskStatusPending, Parameters: map[string]string{},
+			RequiredCores: cores,
+		})
+		if err != nil {
+			t.Fatalf("CreateTask %s: %v", id, err)
+		}
+		if worker != "" {
+			if err := s.AssignTask(ctx, tk.ID, worker, time.Now().UTC()); err != nil {
+				t.Fatalf("AssignTask %s: %v", id, err)
+			}
+			if err := s.UpdateTaskStatus(ctx, tk.ID, status); err != nil {
+				t.Fatalf("UpdateTaskStatus %s: %v", id, err)
+			}
+		}
+	}
+	insertWorker(t, s, "w1", "f1")
+	insertWorker(t, s, "w2", "f1")
+
+	one, two := 1, 2
+	mk("a", store.TaskStatusRunning, &two, "w1")   // 2 cores
+	mk("b", store.TaskStatusAssigned, &one, "w1")  // 1 core
+	mk("c", store.TaskStatusRunning, nil, "w1")    // undeclared -> fullMachineCost (4)
+	mk("d", store.TaskStatusSucceeded, &two, "w1") // terminal -> not counted
+	mk("e", store.TaskStatusRunning, &one, "w2")   // other worker -> not counted
+
+	got, err := s.CommittedCores(ctx, "w1", 4)
+	if err != nil {
+		t.Fatalf("CommittedCores: %v", err)
+	}
+	if got != 2+1+4 { // 7
+		t.Errorf("CommittedCores(w1, full=4) = %d, want 7", got)
+	}
+
+	zero, err := s.CommittedCores(ctx, "idle", 4)
+	if err != nil || zero != 0 {
+		t.Errorf("CommittedCores(idle) = %d, %v, want 0, nil", zero, err)
+	}
+}
+
 func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
