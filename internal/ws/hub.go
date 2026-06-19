@@ -66,8 +66,17 @@ const clientSendBuf = 64
 // ── Push payload types ────────────────────────────────────────────────────────
 
 // JobSummaryPush is the TypePush payload for [SubjectJobs] subscriptions.
+//
+// The same payload type carries two kinds of event on the jobs subject,
+// distinguished by TaskID:
+//   - Job-status changes (from NotifyJob) leave TaskID empty; Status is the job
+//     status.
+//   - Task-status changes (from NotifyTask) set TaskID; Status is the task
+//     status. List subscribers use TaskID to apply task-count deltas to the
+//     parent job row instead of treating it as a job-status change.
 type JobSummaryPush struct {
 	JobID     string    `json:"job_id"`
+	TaskID    string    `json:"task_id,omitempty"`
 	Name      string    `json:"name,omitempty"`
 	Owner     string    `json:"owner,omitempty"`
 	QueueID   string    `json:"queue_id,omitempty"`
@@ -338,6 +347,7 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	if h.hasSubscribers(SubjectJobs) {
 		if env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
 			JobID:     e.JobID,
+			TaskID:    e.TaskID,
 			Status:    e.Status,
 			UpdatedAt: now,
 		}); err == nil {
