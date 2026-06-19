@@ -33,6 +33,17 @@ const USAGE_POOL_REFETCH_MS = 5000
  */
 const WORKER_DETAIL_REFETCH_MS = 5000
 
+/**
+ * How often (ms) the worker-list query refetches while the page is open. The
+ * `workers` WebSocket subject only carries online/offline status transitions —
+ * no event fires for routine heartbeats — so an idle online worker would never
+ * refresh its "Last Heartbeat" cell (and the page's "Updated …" timestamp would
+ * climb forever) without polling. Aligned with the worker's default 15 s
+ * heartbeat interval: polling faster gains no freshness since no new heartbeat
+ * has arrived.
+ */
+export const WORKER_LIST_REFETCH_MS = 15_000
+
 // ── Query key factory ─────────────────────────────────────────────────────────
 // Keys are structured arrays enabling prefix-based invalidation.
 // Use queryKeys.jobs.all to invalidate every job query (list + detail).
@@ -293,6 +304,7 @@ export function useListWorkers(params?: ListWorkersParams) {
   return useQuery({
     queryKey: queryKeys.workers.list(params),
     queryFn: () => fetchListWorkers(params),
+    refetchInterval: WORKER_LIST_REFETCH_MS,
   })
 }
 

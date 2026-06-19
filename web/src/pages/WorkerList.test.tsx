@@ -7,6 +7,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import WorkerList from './WorkerList'
+import { WORKER_LIST_REFETCH_MS } from '@/api/queries'
 import { WebSocketProvider } from '@/ws/context'
 import type { Worker, ListResponse } from '@/api/types'
 
@@ -578,6 +579,33 @@ describe('WorkerList', () => {
       await waitFor(() => {
         expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore)
       })
+    })
+  })
+
+  // ── Background polling ──────────────────────────────────────────────────────
+  // Heartbeat freshness depends on polling: the `workers` WS subject only carries
+  // online/offline transitions, so an idle online worker emits no events. Without
+  // a refetch interval the list (and its "Last Heartbeat" column) goes stale.
+
+  describe('background polling', () => {
+    it('refetches the worker list on an interval while no events arrive', async () => {
+      fetchMock.mockResolvedValue(okJson(makeListResponse([makeWorker()])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('render-node-01'))
+
+      // Count only main-list fetches (limit=50); the count queries use limit=1.
+      const mainListCalls = () =>
+        (fetchMock.mock.calls.flat() as string[]).filter(
+          (u) => typeof u === 'string' && u.includes('/workers?') && !u.includes('limit=1'),
+        ).length
+
+      const before = mainListCalls()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORKER_LIST_REFETCH_MS + 100)
+      })
+
+      await waitFor(() => expect(mainListCalls()).toBeGreaterThan(before))
     })
   })
 })
