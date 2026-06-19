@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
+import TaskProgressBar from '@/components/TaskProgressBar'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
 import { useRetryTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -169,18 +170,16 @@ function MetadataCard({ job }: { job: JobDetailType }) {
           </dd>
         </div>
         <div className={styles.metaField}>
+          <dt>Progress</dt>
+          <dd>
+            <TaskProgressBar counts={job.task_counts} />
+          </dd>
+        </div>
+        <div className={styles.metaField}>
           <dt>Status</dt>
           <dd>
             <StatusBadge status={job.status} />
           </dd>
-        </div>
-        <div className={styles.metaField}>
-          <dt>Owner</dt>
-          <dd>{job.owner}</dd>
-        </div>
-        <div className={styles.metaField}>
-          <dt>Submitter</dt>
-          <dd>{job.submitter}</dd>
         </div>
         <div className={styles.metaField}>
           <dt>Priority</dt>
@@ -191,6 +190,14 @@ function MetadataCard({ job }: { job: JobDetailType }) {
           <dd>
             <Link to="/queues">{job.queue_name ?? job.queue_id}</Link>
           </dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Owner</dt>
+          <dd>{job.owner}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Submitter</dt>
+          <dd>{job.submitter}</dd>
         </div>
         {job.project !== undefined && (
           <div className={styles.metaField}>

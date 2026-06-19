@@ -291,6 +291,17 @@ describe('JobDetail', () => {
       await waitFor(() => screen.getAllByText('abcdef12'))
       expect(screen.getAllByText('abcdef12').length).toBeGreaterThan(0)
     })
+
+    it('renders a task progress bar in the metadata', async () => {
+      // Fixture: total 3, succeeded 1 + failed 1 + canceled 0 = 2 done.
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByRole('progressbar', { name: /task progress/i })
+      expect(screen.getByText('2/3')).toBeInTheDocument()
+    })
   })
 
   describe('step breakdown', () => {

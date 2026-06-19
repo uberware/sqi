@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
+import TaskProgressBar from '@/components/TaskProgressBar'
 import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
@@ -172,26 +173,7 @@ function IdCell({ id }: { id: string }) {
 function ProgressCell({ job }: { job: Job }) {
   const counts = job.task_counts
   if (!counts) return <span>—</span>
-  const done = counts.succeeded + counts.failed + counts.canceled
-  const total = counts.total
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0
-  return (
-    <div className={styles.progressCell}>
-      <div className={styles.progressFrac}>
-        {done}/{total}
-      </div>
-      <div
-        className={styles.progressBar}
-        role="progressbar"
-        aria-label="Task progress"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div className={styles.progressFill} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
+  return <TaskProgressBar counts={counts} />
 }
 
 // ── Task-count delta helper ───────────────────────────────────────────────────
