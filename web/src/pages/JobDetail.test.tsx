@@ -881,11 +881,11 @@ describe('JobDetail', () => {
       const tasks = makeTaskListResponse([])
       // The component fires three initial queries: job, tasks, workers. Workers is mocked
       // separately so subsequent mocks are consumed in the expected order.
-      fetchMock.mockResolvedValueOnce(okJson(job))                          // initial job
-      fetchMock.mockResolvedValueOnce(okJson(tasks))                        // initial tasks
-      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))   // initial workers
-      fetchMock.mockResolvedValueOnce(okJson(job))                          // refetch job
-      fetchMock.mockResolvedValueOnce(okJson(tasks))                        // refetch tasks
+      fetchMock.mockResolvedValueOnce(okJson(job)) // initial job
+      fetchMock.mockResolvedValueOnce(okJson(tasks)) // initial tasks
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([]))) // initial workers
+      fetchMock.mockResolvedValueOnce(okJson(job)) // refetch job
+      fetchMock.mockResolvedValueOnce(okJson(tasks)) // refetch tasks
 
       render(<JobDetail />, { wrapper: Wrapper })
       await waitFor(() => screen.getByRole('button', { name: 'Refresh job data' }))

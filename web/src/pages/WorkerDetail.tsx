@@ -226,7 +226,9 @@ function AssignedTasksSection({ worker, now }: { worker: WorkerDetailType; now: 
             </div>
             <div className={styles.taskCardRow}>
               <span className={styles.taskCardLabel}>Elapsed</span>
-              <span className={styles.taskCardValue}>{formatTimespan(task.assigned_at, undefined, now)}</span>
+              <span className={styles.taskCardValue}>
+                {formatTimespan(task.assigned_at, undefined, now)}
+              </span>
             </div>
           </li>
         </ul>

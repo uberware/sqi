@@ -222,7 +222,15 @@ interface TaskRowProps {
   now: number
 }
 
-function TaskRow({ task, jobId, isRetrying, retryError, onRetry, workerNamesById, now }: TaskRowProps) {
+function TaskRow({
+  task,
+  jobId,
+  isRetrying,
+  retryError,
+  onRetry,
+  workerNamesById,
+  now,
+}: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
   const canRetry = RETRYABLE.has(task.status) && !isRetrying
