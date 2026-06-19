@@ -1051,20 +1051,25 @@ func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hos
 
 // WakeQueue wakes any parked lease waiters on queueID. Called by the API job
 // handler after a successful submission so newly-ready tasks are leased without
-// waiting out the long-poll hold.
+// waiting out the long-poll hold. It also wakes queue-unaffiliated workers
+// parked under [bus.WildcardQueueToken], since they are eligible for any queue's
+// work.
 func (s *Scheduler) WakeQueue(queueID string) {
 	s.waiters.notify(queueID)
+	if queueID != bus.WildcardQueueToken {
+		s.waiters.notify(bus.WildcardQueueToken)
+	}
 }
 
-// notifyQueueForJob wakes any parked lease waiters on the job's queue.
-// Best-effort: a missed wake is self-correcting because the worker's outstanding
-// lease request re-issues after leaseHoldTimeout.
+// notifyQueueForJob wakes any parked lease waiters on the job's queue (and any
+// queue-unaffiliated workers). Best-effort: a missed wake is self-correcting
+// because the worker's outstanding lease request re-issues after leaseHoldTimeout.
 func (s *Scheduler) notifyQueueForJob(ctx context.Context, jobID string) {
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
 		return
 	}
-	s.waiters.notify(job.QueueID)
+	s.WakeQueue(job.QueueID)
 }
 
 // refreshWorkerGauge reads current worker counts from the store and sets the

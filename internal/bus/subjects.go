@@ -54,6 +54,16 @@ const (
 	// Full subject: SubjectWorkLeasePrefix + "." + queueID. Core NATS
 	// request/reply — workers ask for work; the server replies with a batch.
 	SubjectWorkLeasePrefix = "work.lease"
+
+	// WildcardQueueToken is the lease-subject leaf a queue-unaffiliated worker
+	// (empty QueueIDs — "serve any queue") uses in place of a real queue ID, so
+	// it requests on a valid subject (work.lease._any) that the server's
+	// work.lease.> subscription actually receives. An empty leaf would produce
+	// the invalid subject "work.lease." (no responders). The leaf is reserved
+	// (underscore prefix) so it cannot collide with a real UUID queue ID; the
+	// server selects tasks farm-wide and gates by worker eligibility, so the
+	// token's only role is subject routing and wake-up bucketing.
+	WildcardQueueToken = "_any"
 )
 
 // TaskStatusSubject returns the full NATS subject for task-status messages

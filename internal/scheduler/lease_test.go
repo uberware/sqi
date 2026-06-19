@@ -12,9 +12,59 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
+
+// TestHandleLeaseRequest_QueuelessWorkerWildcardToken reproduces the
+// queueless-worker bug at the scheduler layer: a worker with no queue affinity
+// requests on bus.WildcardQueueToken and must still be leased the farm's ready
+// tasks (selection is farm-wide + eligibility, and an empty-QueueID worker is
+// eligible for any queue).
+func TestHandleLeaseRequest_QueuelessWorkerWildcardToken(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	one := 1
+	w, _ := seedLeaseFixture(t, st, []*int{&one, &one}) // worker has empty QueueID
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	reply := s.handleLeaseRequest(bus.WildcardQueueToken, req)
+
+	var got leaseReply
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if len(got.Assignments) != 2 {
+		t.Fatalf("queueless worker on wildcard token leased %d tasks, want 2", len(got.Assignments))
+	}
+}
+
+// TestWakeQueue_WakesWildcardParkedWorkers verifies a per-queue wake also wakes
+// queue-unaffiliated workers parked under the wildcard token, so a queueless
+// worker is leased newly-submitted work promptly rather than after a full hold.
+func TestWakeQueue_WakesWildcardParkedWorkers(t *testing.T) {
+	s := newMetricsScheduler(fake.New(), &recordBus{}, "f1")
+
+	woke := make(chan bool, 1)
+	go func() { woke <- s.waiters.wait(context.Background(), bus.WildcardQueueToken, time.Second) }()
+	time.Sleep(20 * time.Millisecond) // let the wildcard waiter park
+
+	s.WakeQueue("some-real-queue-id") // wake a specific queue
+
+	select {
+	case got := <-woke:
+		if !got {
+			t.Error("wildcard-parked waiter returned false; want woken by per-queue WakeQueue")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wildcard-parked waiter was not woken by WakeQueue")
+	}
+}
 
 // minimalRenderJSON is a minimal OpenJD template with a step named "render".
 const minimalRenderJSON = `{

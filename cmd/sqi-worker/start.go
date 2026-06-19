@@ -334,7 +334,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		leaseTransport{nc: nc}, // adapts *nats.Conn to lease.Transport
 		exec,                   // *executor.Executor implements lease.Dispatcher
 		lease.Config{
-			QueueIDs: cfg.Worker.QueueIDs,
+			QueueIDs: leaseQueueIDs(cfg.Worker.QueueIDs),
 			WorkerID: workerID,
 		},
 		logger,
@@ -564,6 +564,19 @@ func (t leaseTransport) RequestLease(ctx context.Context, queueID string, data [
 		return nil, fmt.Errorf("worker: request lease for queue %q: %w", queueID, err)
 	}
 	return msg.Data, nil
+}
+
+// leaseQueueIDs maps the worker's configured queue list to the queues it
+// requests leases on. A worker with no configured queues serves any queue; it
+// must still request on a valid subject, so it uses [bus.WildcardQueueToken]
+// (work.lease._any) rather than an empty leaf (work.lease., which routes to no
+// responder). The server selects tasks farm-wide and gates by eligibility, so a
+// queue-unaffiliated worker is matched to any queue's ready work.
+func leaseQueueIDs(configured []string) []string {
+	if len(configured) == 0 {
+		return []string{bus.WildcardQueueToken}
+	}
+	return configured
 }
 
 // flagOverrides returns a [workerconfig.FlagOverrides] populated only from
