@@ -1596,7 +1596,10 @@ func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateTask t2: %v", err)
 	}
-	got2, _ := s.GetTask(ctx, "t2")
+	got2, err := s.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask t2: %v", err)
+	}
 	if got2.RequiredCores != nil {
 		t.Errorf("undeclared RequiredCores = %v, want nil", got2.RequiredCores)
 	}
@@ -1611,17 +1614,23 @@ func TestLeaseReadyTask(t *testing.T) {
 	step := insertStep(t, s, "s1", "j1", "render", 0)
 	insertWorker(t, s, "w1", "f1")
 	insertWorker(t, s, "w2", "f1")
-	tk, _ := s.CreateTask(ctx, store.Task{
+	tk, err := s.CreateTask(ctx, store.Task{
 		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
 		Status: store.TaskStatusReady, Parameters: map[string]string{},
 	})
+	if err != nil {
+		t.Fatalf("CreateTask t1: %v", err)
+	}
 
 	now := time.Now().UTC()
 	ok, err := s.LeaseReadyTask(ctx, tk.ID, "w1", now)
 	if err != nil || !ok {
 		t.Fatalf("first lease = %v, %v, want true, nil", ok, err)
 	}
-	got, _ := s.GetTask(ctx, "t1")
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask t1: %v", err)
+	}
 	if got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w1" || got.AssignedAt == nil {
 		t.Fatalf("after lease: status=%q worker=%q at=%v", got.Status, got.AssignedWorkerID, got.AssignedAt)
 	}

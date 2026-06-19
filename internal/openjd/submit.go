@@ -534,10 +534,7 @@ func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {
 		if err != nil || f <= 0 {
 			return nil
 		}
-		n := int(f) // floor; a 2.5-core reservation reserves whole cores conservatively
-		if n < 1 {
-			n = 1
-		}
+		n := max(int(f), 1) // floor; a 2.5-core reservation reserves whole cores conservatively
 		return &n
 	}
 	return nil

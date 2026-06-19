@@ -8,7 +8,7 @@
 // Each subject class follows a hierarchical naming scheme so that JetStream
 // stream subject-filters and consumer subject-bindings are intuitive:
 //
-//	work.assign.<queue>    — server → worker(s): task assignment payload
+//	work.lease.<queue>     — worker → server: request/reply work-lease batch
 //	task.status.<job>      — worker → server: task state transitions
 //	task.logs.<task>       — worker → server: log chunk ingestion
 //	worker.heartbeat       — worker → server: periodic liveness pings
@@ -23,10 +23,6 @@ package bus
 
 // Subject prefix and fixed-subject constants.
 const (
-	// SubjectWorkAssignPrefix is the prefix for task-assignment subjects.
-	// Full subject: SubjectWorkAssignPrefix + "." + queueID.
-	SubjectWorkAssignPrefix = "work.assign"
-
 	// SubjectTaskStatusPrefix is the prefix for task-status subjects.
 	// Full subject: SubjectTaskStatusPrefix + "." + jobID.
 	SubjectTaskStatusPrefix = "task.status"
@@ -59,12 +55,6 @@ const (
 	// request/reply — workers ask for work; the server replies with a batch.
 	SubjectWorkLeasePrefix = "work.lease"
 )
-
-// WorkAssignSubject returns the full NATS subject for task-assignment messages
-// targeting workers subscribed to the given queue.
-func WorkAssignSubject(queueID string) string {
-	return SubjectWorkAssignPrefix + "." + queueID
-}
 
 // TaskStatusSubject returns the full NATS subject for task-status messages
 // belonging to the given job.

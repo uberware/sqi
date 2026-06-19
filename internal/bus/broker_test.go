@@ -165,94 +165,10 @@ func TestStreamsProvisioned(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, name := range []string{StreamWork, StreamTask, StreamLogs, StreamWorker, StreamCancel} {
+	for _, name := range []string{StreamTask, StreamLogs, StreamWorker, StreamCancel} {
 		if _, err := c.js.Stream(ctx, name); err != nil {
 			t.Errorf("stream %s not provisioned: %v", name, err)
 		}
-	}
-}
-
-// ── Publish / pull-consumer round trip (work assignment) ──────────────────────
-
-func TestWorkAssignPullAndAck(t *testing.T) {
-	b := startBroker(t)
-	c := newClient(t, b)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	const queueID = "default"
-	want := payload{ID: "task-1", Body: "render frame 1"}
-	if err := c.PublishWorkAssign(ctx, queueID, mustJSON(t, want)); err != nil {
-		t.Fatalf("PublishWorkAssign: %v", err)
-	}
-
-	consumer, err := c.EnsureWorkConsumer(ctx, queueID)
-	if err != nil {
-		t.Fatalf("EnsureWorkConsumer: %v", err)
-	}
-
-	msg := fetchOne(t, consumer)
-	var got payload
-	if err := json.Unmarshal(msg.Data(), &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got != want {
-		t.Fatalf("payload = %+v, want %+v", got, want)
-	}
-	if err := msg.Ack(); err != nil {
-		t.Fatalf("Ack: %v", err)
-	}
-
-	// At-most-once: after ack, the WorkQueuePolicy stream removes the message,
-	// so a second fetch must come back empty within the wait window.
-	batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(time.Second))
-	if err != nil {
-		t.Fatalf("second Fetch: %v", err)
-	}
-	for range batch.Messages() {
-		t.Fatal("second fetch delivered a message; expected none after ack")
-	}
-	if err := batch.Error(); err != nil {
-		t.Fatalf("second fetch batch error: %v", err)
-	}
-}
-
-func TestWorkAssignNackRedelivers(t *testing.T) {
-	b := startBroker(t)
-	c := newClient(t, b)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	const queueID = "render"
-	want := payload{ID: "task-9", Body: "needs retry"}
-	if err := c.PublishWorkAssign(ctx, queueID, mustJSON(t, want)); err != nil {
-		t.Fatalf("PublishWorkAssign: %v", err)
-	}
-
-	consumer, err := c.EnsureWorkConsumer(ctx, queueID)
-	if err != nil {
-		t.Fatalf("EnsureWorkConsumer: %v", err)
-	}
-
-	// First delivery: nack to request immediate redelivery.
-	msg := fetchOne(t, consumer)
-	if err := msg.Nak(); err != nil {
-		t.Fatalf("Nak: %v", err)
-	}
-
-	// Redelivery must carry the same payload; ack it to finish.
-	redelivered := fetchOne(t, consumer)
-	var got payload
-	if err := json.Unmarshal(redelivered.Data(), &got); err != nil {
-		t.Fatalf("unmarshal redelivered: %v", err)
-	}
-	if got != want {
-		t.Fatalf("redelivered payload = %+v, want %+v", got, want)
-	}
-	if err := redelivered.Ack(); err != nil {
-		t.Fatalf("Ack redelivered: %v", err)
 	}
 }
 

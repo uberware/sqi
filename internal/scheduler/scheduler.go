@@ -6,12 +6,13 @@
 //
 // The [Scheduler] runs three concurrent loops:
 //
-//  1. Assignment loop: a goroutine pool that periodically polls the store for
-//     ready tasks ([store.TaskStore.ListReadyTasks], pre-sorted by job
-//     priority, job submission time, step order, then task creation time) and,
-//     for each task, selects an eligible online worker, records the assignment
-//     via [store.TaskStore.AssignTask], and publishes a [protocol.AssignMsg] to
-//     the worker's NATS work-assignment subject.
+//  1. Lease subscriber: a core-NATS request/reply subscriber on work.lease.>
+//     ([handleLeaseRequest]). Idle workers ask for work; the scheduler selects a
+//     priority-ordered batch of ready tasks the worker is eligible for that fits
+//     its free CPU cores ([selectLeaseBatch]), atomically leases each
+//     ([store.TaskStore.LeaseReadyTask]), and replies with the assignment
+//     payloads. When no work is available the request parks in the waiter
+//     registry until new work appears or the hold elapses, then replies.
 //
 //  2. Worker registry: a NATS push-consumer for worker.register messages that
 //     persists capability data via [store.WorkerStore.RegisterWorker] and keeps
@@ -23,6 +24,8 @@
 //     ([store.WorkerStore.ListStaleWorkers]), terminates their open attempts
 //     ([store.TaskAttemptStore.TerminateWorkerAttempts]), and returns their
 //     in-flight tasks to the ready queue ([store.TaskStore.ReclaimWorkerTasks]).
+//     The same tick refreshes the queue-depth, idle-worker, and usage-claim
+//     Prometheus gauges.
 //
 // Worker selection. A task is matched to a worker by capability tags,
 // compute-location affinity, and queue/farm filtering ([WorkerEligible]),
@@ -59,9 +62,9 @@
 // Wire protocol and metrics. All worker messages use the versioned JSON types
 // in [worker/protocol] ([protocol.RegisterMsg], [protocol.HeartbeatMsg],
 // [protocol.AssignMsg], [protocol.TaskStatusMsg], [protocol.LogChunkMsg]). Each
-// dispatch tick refreshes the scheduler's Prometheus metrics ([metrics.Metrics]):
-// queue depth by queue, idle workers by farm, the assignment-duration histogram
-// by result, and active usage-pool claims per pool.
+// heartbeat-sweep tick refreshes the scheduler's Prometheus metrics
+// ([metrics.Metrics]): queue depth by queue, idle workers by farm, and active
+// usage-pool claims per pool.
 package scheduler
 
 import (
@@ -127,12 +130,10 @@ type Config struct {
 
 	// AssignedTaskTimeout is the maximum time a task may sit in 'assigned'
 	// without transitioning to 'running' before the reaper returns it to the
-	// ready queue. It guards against assignments that are lost between the store
-	// and a live worker — e.g. the work-stream message expiring (SQI_WORK MaxAge)
-	// while the worker is busy — which the heartbeat sweep cannot recover because
-	// the worker is still online. Must exceed the SQI_WORK stream MaxAge (5 min)
-	// so a still-deliverable assignment is never reaped out from under a worker.
-	// Runs on the heartbeat sweep tick. Default: 10 min.
+	// ready queue. It guards against a leased assignment that is lost after the
+	// lease reply — e.g. the worker crashes between leasing and starting the
+	// process — which the heartbeat sweep cannot recover while the worker is
+	// still online. Runs on the heartbeat sweep tick. Default: 10 min.
 	AssignedTaskTimeout time.Duration
 }
 
@@ -142,7 +143,6 @@ type busClient interface {
 	ConsumeWorker(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	ConsumeTaskStatus(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
-	PublishWorkAssign(ctx context.Context, queueID string, data []byte) error
 	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
 	SubscribeLease(handler func(queueID string, data []byte) []byte) (*nats.Subscription, error)
@@ -176,11 +176,6 @@ type Scheduler struct {
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
-
-	// taskCh carries ready tasks from the dispatch goroutine to the assignment
-	// worker pool. Sized to AssignBatchSize so a full batch can be queued
-	// without blocking the dispatch loop.
-	taskCh chan store.Task
 
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
@@ -236,7 +231,6 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		diagBuf:          diagBuf,
 		waiters:          newWaiterRegistry(),
 		leaseHoldTimeout: 30 * time.Second,
-		taskCh:           make(chan store.Task, cfg.AssignBatchSize),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).
@@ -311,18 +305,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.leaseSub = leaseSub
 	s.logger.InfoContext(ctx, "scheduler: lease subscriber started")
 
-	// ── Assignment worker pool ───────────────────────────────────
-	for i := range s.cfg.AssignWorkers {
-		s.wg.Go(func() {
-			s.runAssignWorker(ctx, i)
-		})
-	}
-
-	// ── Dispatch loop ─────────────────────────────────────────────
-	s.wg.Go(func() {
-		s.runDispatchLoop(ctx)
-	})
-
 	// ── Heartbeat sweep ───────────────────────────────────────────
 	s.wg.Go(func() {
 		s.runHeartbeatSweep(ctx)
@@ -350,8 +332,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		}
 	}
 
-	// Close taskCh so assignment workers exit their range loop.
-	close(s.taskCh)
 	s.wg.Wait()
 
 	s.logger.InfoContext(ctx, "scheduler: stopped")
@@ -366,189 +346,17 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// ── Dispatch loop ────────────────────────────────────────────────────
-
-// runDispatchLoop ticks on AssignInterval, fetches a batch of ready tasks from
-// the store, and pushes each task onto taskCh for the worker pool to process.
-func (s *Scheduler) runDispatchLoop(ctx context.Context) {
-	ticker := time.NewTicker(s.cfg.AssignInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.dispatchBatch(ctx)
-		}
-	}
-}
-
-// dispatchBatch fetches ready tasks and fans them out to the assignment workers.
-// It also refreshes the per-queue depth and idle-worker gauges on every tick so
-// Prometheus always reflects current farm state.
-func (s *Scheduler) dispatchBatch(ctx context.Context) {
-	tasks, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, s.cfg.AssignBatchSize)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: list ready tasks failed", slog.Any("error", err))
-		}
-		return
-	}
-
-	// Refresh instrumentation gauges regardless of whether there are tasks to
-	// dispatch.  Errors are non-fatal — stale gauge values are preferable to a
-	// crash.
-	s.refreshQueueDepthGauge(ctx)
-	s.refreshIdleWorkerGauge(ctx)
-	s.refreshUsageClaimGauge(ctx)
-
-	if len(tasks) == 0 {
-		return
-	}
-	s.logger.DebugContext(ctx, "scheduler: dispatching ready tasks", slog.Int("count", len(tasks)))
-
-	for _, t := range tasks {
-		select {
-		case s.taskCh <- t:
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// ── Assignment worker pool ───────────────────────────────────────────
-
-// runAssignWorker pulls tasks from taskCh and attempts to assign each one to
-// an available online worker.
-//
-// Tasks arrive pre-sorted by [store.TaskStore.ListReadyTasks]: highest job
-// priority first, then earlier job submission time, then lower step order,
-// then task creation time. [tryAssign] applies capability-tag
-// matching and compute-location affinity, queue/farm concurrency
-// policy, and atomic usage pool claiming.
-func (s *Scheduler) runAssignWorker(ctx context.Context, id int) {
-	s.logger.DebugContext(ctx, "scheduler: assignment worker started", slog.Int("worker_id", id))
-
-	for task := range s.taskCh {
-		if ctx.Err() != nil {
-			return
-		}
-		start := time.Now()
-		err := s.tryAssign(ctx, task)
-		s.observeAssignment(err, time.Since(start))
-		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errNoWorkerAvailable) {
-			s.logger.WarnContext(
-				ctx, "scheduler: assignment failed",
-				slog.String("task_id", task.ID),
-				slog.Any("error", err),
-			)
-		}
-	}
-	s.logger.DebugContext(ctx, "scheduler: assignment worker stopped", slog.Int("worker_id", id))
-}
-
-// errNoWorkerAvailable is returned by tryAssign when no eligible online worker
-// exists. It is not logged as a warning — the task simply stays ready until
-// the next dispatch tick.
+// errNoWorkerAvailable signals that a task could not be leased because no
+// eligible worker/capacity was available (or a usage pool was saturated). It is
+// a skip signal, not a logged warning — the task simply stays ready for the next
+// lease request. Used by the lease path (lease.go) and the usage-claim helper.
 var errNoWorkerAvailable = errors.New("no worker available")
-
-// tryAssign selects an eligible online worker for task using full capability
-// matching, policy gates, and atomic usage pool claiming, then updates the store
-// and publishes the assignment to NATS.
-func (s *Scheduler) tryAssign(ctx context.Context, task store.Task) error {
-	job, err := s.store.GetJob(ctx, task.JobID)
-	if err != nil {
-		return fmt.Errorf("get job %s: %w", task.JobID, err)
-	}
-
-	step, err := s.store.GetStep(ctx, task.StepID)
-	if err != nil {
-		return fmt.Errorf("get step %s: %w", task.StepID, err)
-	}
-
-	// ── Queue and farm policy gate ───────────────────────────────
-	queue, err := s.store.GetQueue(ctx, job.QueueID)
-	if err != nil {
-		return fmt.Errorf("get queue %s: %w", job.QueueID, err)
-	}
-	farm, err := s.store.GetFarm(ctx, job.FarmID)
-	if err != nil {
-		return fmt.Errorf("get farm %s: %w", job.FarmID, err)
-	}
-
-	if err := policyGate(ctx, s.store, job, queue, farm); err != nil {
-		if errors.Is(err, errPolicyBlocked) {
-			s.logger.DebugContext(
-				ctx, "scheduler: assignment deferred by policy",
-				slog.String("task_id", task.ID),
-				slog.String("queue_id", job.QueueID),
-				slog.String("farm_id", job.FarmID),
-				slog.String("reason", err.Error()),
-			)
-			return errNoWorkerAvailable // silent; retry on next tick
-		}
-		return err
-	}
-
-	// Build the usage pool context needed by the matcher.
-	pools, activeCounts, err := s.buildUsageContext(ctx, step)
-	if err != nil {
-		return fmt.Errorf("build usage context for step %s: %w", step.ID, err)
-	}
-
-	// Find the first eligible online worker using capability matching.
-	worker, err := s.pickWorker(ctx, job, step, pools, activeCounts)
-	if err != nil {
-		return err // includes errNoWorkerAvailable
-	}
-
-	now := time.Now().UTC()
-	if err := s.store.AssignTask(ctx, task.ID, worker.ID, now); err != nil {
-		return fmt.Errorf("assign task %s to worker %s: %w", task.ID, worker.ID, err)
-	}
-
-	// ── Provisional attempt + atomic usage pool claim ────────────
-	attempt, err := s.createAttemptAndClaimUsage(ctx, task, worker, step, pools, now)
-	if err != nil {
-		return err // already reverted task status inside helper
-	}
-
-	// Publish the assignment to NATS so the worker can pull it.
-	// buildAssignPayload includes the full step execution spec so
-	// the worker does not need to make additional API calls.
-	payload, err := buildAssignPayload(ctx, task, worker, job, step, attempt.ID, s.store)
-	if err != nil {
-		return fmt.Errorf("build assign payload: %w", err)
-	}
-	if err := s.bus.PublishWorkAssign(ctx, job.QueueID, payload); err != nil {
-		// The task is already marked assigned in the store; the worker will
-		// pick it up when the heartbeat sweep eventually requeues it if the
-		// NATS publish fails. Log and continue.
-		s.logger.WarnContext(
-			ctx, "scheduler: publish work assign failed",
-			slog.String("task_id", task.ID),
-			slog.String("worker_id", worker.ID),
-			slog.Any("error", err),
-		)
-		return err
-	}
-
-	s.logger.InfoContext(
-		ctx, "scheduler: task assigned",
-		slog.String("task_id", task.ID),
-		slog.String("worker_id", worker.ID),
-		slog.String("queue_id", job.QueueID),
-		slog.String("attempt_id", attempt.ID),
-	)
-	return nil
-}
 
 // createAttemptAndClaimUsage creates a provisional [store.TaskAttempt] for
 // the assignment and atomically claims any required usage pool slots.
 //
 // If either operation fails the task's status is reverted to
-// [store.TaskStatusReady] so it is re-queued on the next dispatch tick.
+// [store.TaskStatusReady] so it is re-queued on the next lease request.
 // [errNoWorkerAvailable] is returned when a usage pool is at capacity so
 // the caller skips logging a warning.
 func (s *Scheduler) createAttemptAndClaimUsage(
@@ -697,68 +505,6 @@ func (s *Scheduler) buildUsageContext(
 	}
 
 	return pools, activeCounts, nil
-}
-
-// matchCandidateLimit is the maximum number of online workers fetched per
-// assignment attempt. Large enough to find an eligible worker in most farms
-// without loading the entire worker table.
-const matchCandidateLimit = 50
-
-// pickWorker returns the first online worker in job's farm that passes
-// [WorkerEligible] checks for the given step and usage pool state.
-//
-// Filtering strategy:
-//   - SQL-level pre-filter: farm, status=online, optional compute-location.
-//   - Go-level post-filter: queue affinity, capability tags, usage pools.
-//
-// If no eligible worker is found within [matchCandidateLimit] candidates,
-// [errNoWorkerAvailable] is returned and the task remains ready for the next
-// dispatch tick.
-func (s *Scheduler) pickWorker(
-	ctx context.Context,
-	job store.Job,
-	step store.Step,
-	pools map[string]store.UsagePool,
-	activeCounts map[string]int,
-) (store.Worker, error) {
-	opts := store.ListWorkersOptions{
-		FarmID:              job.FarmID,
-		Status:              store.WorkerStatusOnline,
-		IncludeUnaffiliated: true,
-		Pagination: store.Pagination{
-			Limit:  matchCandidateLimit,
-			Offset: 0,
-		},
-	}
-
-	// Apply SQL-level compute-location pre-filter when the step requires one.
-	// This narrows the candidate set cheaply before in-memory matching.
-	if step.ComputeLocation != "" {
-		opts.ComputeLocation = step.ComputeLocation
-	}
-
-	opts.Pagination.Validate() //nolint:errcheck // Validate only clamps values; it never returns a non-nil error
-
-	page, err := s.store.ListWorkers(ctx, opts)
-	if err != nil {
-		return store.Worker{}, fmt.Errorf("list workers: %w", err)
-	}
-
-	for _, w := range page.Items {
-		reason, eligible := WorkerEligibleWithReason(w, job, step, pools, activeCounts)
-		if eligible {
-			return w, nil
-		}
-		s.logger.DebugContext(
-			ctx, "scheduler: worker ineligible",
-			slog.String("worker_id", w.ID),
-			slog.String("hostname", w.Hostname),
-			slog.String("task_step_id", step.ID),
-			slog.String("reason", reason),
-		)
-	}
-
-	return store.Worker{}, errNoWorkerAvailable
 }
 
 // buildAssignPayload is implemented in assign.go.
@@ -1057,7 +803,9 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 
 // runHeartbeatSweep periodically finds workers whose last heartbeat is older
 // than WorkerTimeout, marks them offline, and reclaims their in-flight tasks.
-// On the same tick it reaps tasks stranded in 'assigned' on still-live workers.
+// On the same tick it reaps tasks stranded in 'assigned' on still-live workers,
+// demotes stalled jobs, and refreshes the queue-depth, idle-worker, and
+// usage-claim Prometheus gauges.
 func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.HeartbeatSweepInterval)
 	defer ticker.Stop()
@@ -1070,6 +818,11 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			s.sweepStaleWorkers(ctx)
 			s.reapStaleAssignedTasks(ctx)
 			s.demoteStalledJobs(ctx)
+			// Refresh instrumentation gauges on the same tick so Prometheus
+			// reflects current farm state without a dedicated metrics loop.
+			s.refreshQueueDepthGauge(ctx)
+			s.refreshIdleWorkerGauge(ctx)
+			s.refreshUsageClaimGauge(ctx)
 		}
 	}
 }
@@ -1327,30 +1080,12 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 
 // ── Instrumentation helpers ─────────────────────────────────────────
 
-// observeAssignment records a single assignment attempt's outcome and duration
-// in the SchedulerAssignmentDuration Prometheus histogram.
-//
-// result labels:
-//   - "assigned"  — tryAssign succeeded (task dispatched to a worker).
-//   - "deferred"  — no eligible worker or policy blocked; task stays ready.
-//   - "error"     — an unexpected error aborted the attempt.
-func (s *Scheduler) observeAssignment(err error, dur time.Duration) {
-	result := "assigned"
-	switch {
-	case errors.Is(err, errNoWorkerAvailable):
-		result = "deferred"
-	case err != nil:
-		result = "error"
-	}
-	s.metrics.SchedulerAssignmentDuration.WithLabelValues(result).Observe(dur.Seconds())
-}
-
 // refreshQueueDepthGauge queries the store for the current number of ready
 // tasks per queue in the scheduler's farm and updates the
 // SchedulerQueueDepth Prometheus gauge.
 //
-// Called on every dispatch tick so the gauge stays current.  Errors are
-// logged at WARN level and do not abort the dispatch loop.
+// Called on every heartbeat-sweep tick so the gauge stays current.  Errors are
+// logged at WARN level and do not abort the sweep.
 func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID)
 	if err != nil {
@@ -1368,8 +1103,8 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 // the active claim count for each, then updates the UsageActiveClaims Prometheus
 // gauge.
 //
-// Called on every dispatch tick. Errors are non-fatal — a stale gauge is
-// preferable to aborting the assignment loop.
+// Called on every heartbeat-sweep tick. Errors are non-fatal — a stale gauge is
+// preferable to aborting the sweep.
 func (s *Scheduler) refreshUsageClaimGauge(ctx context.Context) {
 	pools, err := s.store.ListUsagePools(ctx)
 	if err != nil {
@@ -1400,7 +1135,7 @@ func (s *Scheduler) refreshUsageClaimGauge(ctx context.Context) {
 // in the scheduler's farm that have no active task, and updates the
 // SchedulerIdleWorkers Prometheus gauge.
 //
-// Called on every dispatch tick and after any worker-status change event.
+// Called on every heartbeat-sweep tick and after any worker-status change event.
 // Errors are logged at WARN level and do not abort the caller.
 func (s *Scheduler) refreshIdleWorkerGauge(ctx context.Context) {
 	n, err := s.store.CountIdleWorkers(ctx, s.cfg.FarmID)

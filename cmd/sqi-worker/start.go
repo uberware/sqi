@@ -12,12 +12,13 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/cancel"
@@ -27,12 +28,12 @@ import (
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
+	"github.com/uberware/sqi/internal/worker/lease"
 	"github.com/uberware/sqi/internal/worker/logstreamer"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/natsclient"
 	"github.com/uberware/sqi/internal/worker/obs"
 	"github.com/uberware/sqi/internal/worker/openjd"
-	"github.com/uberware/sqi/internal/worker/pull"
 	"github.com/uberware/sqi/internal/worker/registration"
 	"github.com/uberware/sqi/internal/worker/session"
 	"github.com/uberware/sqi/internal/worker/status"
@@ -51,7 +52,7 @@ var startCmd = &cobra.Command{
 
 The worker discovers and connects to a running sqi-server (via explicit NATS
 URL or mDNS auto-discovery), registers itself with its capability tags and
-compute location, and begins pulling task assignments over NATS JetStream.
+compute location, and begins requesting task leases over NATS.
 
 The worker runs until it receives SIGINT or SIGTERM, at which point it
 performs a graceful shutdown: it stops accepting new task assignments and
@@ -278,9 +279,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Task executor ───────────────────────────────────────────
 	//
 	// The Executor starts OS processes for assigned tasks and reports their
-	// status back to sqi-server via NATS.  It implements pull.TaskDispatcher,
-	// pull.StateSource, and heartbeat.StateSource, replacing the no-op stubs
-	// that were used during earlier tasks.
+	// status back to sqi-server via NATS.  It implements lease.Dispatcher (via
+	// Dispatch) and heartbeat.StateSource.
 	exec := executor.New(
 		statusPub,
 		sessionMgr,
@@ -326,12 +326,22 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	)
 	go hbPublisher.Run(ctx)
 
-	// ── Work assignment pull loop ───────────────────────────────
-	puller, err := newPuller(nc, cfg, exec, exec, logger)
-	if err != nil {
-		return err
-	}
-	go puller.Run(ctx)
+	// ── Work-lease loop ─────────────────────────────────────────
+	//
+	// The worker asks the server for work on work.lease.<queue> and dispatches
+	// whatever the server leases it. The server gates capacity (CPU-core fit,
+	// policy, usage pools), so the worker simply runs what it is given; the
+	// executor's own MaxConcurrentTasks semaphore remains as a defensive cap.
+	leaseLoop := lease.New(
+		leaseTransport{nc: nc}, // adapts *nats.Conn to lease.Transport
+		exec,                   // *executor.Executor implements lease.Dispatcher
+		lease.Config{
+			QueueIDs: cfg.Worker.QueueIDs,
+			WorkerID: workerID,
+		},
+		logger,
+	)
+	go leaseLoop.Run(ctx)
 
 	logger.InfoContext(
 		ctx, "sqi-worker starting",
@@ -538,33 +548,26 @@ func withDiagnosticSink(
 	return l, nil
 }
 
-// newPuller creates a JetStream context from nc and returns a configured
-// [pull.Puller]. Extracted from [runStart] to keep that function's cyclomatic
-// complexity within the project limit.
-func newPuller(
-	nc *nats.Conn,
-	cfg workerconfig.WorkerConfig,
-	state pull.StateSource,
-	dispatcher pull.TaskDispatcher,
-	logger *slog.Logger,
-) (*pull.Puller, error) {
-	js, err := jetstream.New(nc)
+// leaseTransport adapts a raw *nats.Conn to [lease.Transport], issuing
+// core-NATS request/reply work-lease requests on the work.lease.<queue>
+// subject. The worker connects via natsclient (which yields a *nats.Conn), so
+// this thin wrapper provides the same RequestLease behavior as
+// [bus.Client.RequestLease] without a second client connection.
+type leaseTransport struct {
+	nc *nats.Conn
+}
+
+// RequestLease sends a work-lease request for queueID and waits up to timeout
+// for the server's reply. It returns the raw reply bytes (a marshaled
+// leaseReply) for the lease loop to decode.
+func (t leaseTransport) RequestLease(ctx context.Context, queueID string, data []byte, timeout time.Duration) ([]byte, error) {
+	reqCtx, cancelReq := context.WithTimeout(ctx, timeout)
+	defer cancelReq()
+	msg, err := t.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(queueID), data)
 	if err != nil {
-		return nil, fmt.Errorf("worker: jetstream context: %w", err)
+		return nil, fmt.Errorf("worker: request lease for queue %q: %w", queueID, err)
 	}
-	return pull.New(
-		js,
-		pull.Config{
-			QueueIDs:           cfg.Worker.QueueIDs,
-			MaxConcurrentTasks: cfg.Worker.MaxConcurrentTasks,
-			ComputeLocation:    cfg.Worker.ComputeLocation,
-			IdleBackoff:        cfg.Worker.PullIdleBackoff,
-			NackDelay:          cfg.Worker.PullNackDelay,
-		},
-		state,
-		dispatcher,
-		logger,
-	), nil
+	return msg.Data, nil
 }
 
 // flagOverrides returns a [workerconfig.FlagOverrides] populated only from

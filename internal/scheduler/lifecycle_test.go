@@ -2,13 +2,13 @@
 
 package scheduler
 
-// Lifecycle test for Run/Stop and the three background loops (runDispatchLoop,
-// runHeartbeatSweep, runAssignWorker). The recordBus stub returns a nil
-// jetstream.ConsumeContext with no error from every Consume* call so Run can
-// start its consumers without a real NATS broker. The loops are driven to their
-// ctx.Done() / channel-close exit paths by canceling the parent context — no
-// shared scheduler state is read from the test goroutine, so the run is
-// race-clean.
+// Lifecycle test for Run/Stop and the background loops (the lease subscriber
+// and runHeartbeatSweep). The recordBus stub returns a nil
+// jetstream.ConsumeContext with no error from every Consume* call and a nil
+// subscription from SubscribeLease, so Run can start its consumers without a
+// real NATS broker. The loops are driven to their ctx.Done() exit paths by
+// canceling the parent context — no shared scheduler state is read from the
+// test goroutine, so the run is race-clean.
 
 import (
 	"context"
@@ -21,9 +21,9 @@ import (
 func TestRun_StartAndStop(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
-	// Tiny intervals so the dispatch/sweep tickers fire at least once before the
-	// context is canceled, exercising the loop bodies as well as the exit paths.
-	s.cfg.AssignInterval = time.Millisecond
+	// Tiny interval so the heartbeat-sweep ticker (which also refreshes the
+	// metric gauges) fires at least once before the context is canceled,
+	// exercising the loop body as well as the exit path.
 	s.cfg.HeartbeatSweepInterval = time.Millisecond
 
 	ctx, cancel := context.WithCancel(t.Context())
