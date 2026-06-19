@@ -202,6 +202,36 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 	}
 }
 
+// TestSelectLeaseBatch_OversizedTaskNotLeased verifies that a ready task whose
+// RequiredCores exceeds the worker's total CPUCount is not leased (it can never
+// fit on this worker regardless of current load).
+func TestSelectLeaseBatch_OversizedTaskNotLeased(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	// Worker has 4 cores; task requires 8 — permanently unschedulable here.
+	eight := 8
+	_, ids := seedLeaseFixture(t, st, []*int{&eight})
+
+	batch, err := s.selectLeaseBatch(t.Context(), store.Worker{
+		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
+		CPUCount: 4,
+	})
+	if err != nil {
+		t.Fatalf("selectLeaseBatch: %v", err)
+	}
+	if len(batch) != 0 {
+		t.Fatalf("batch len = %d, want 0 (task requires more cores than worker has)", len(batch))
+	}
+	// Task must still be ready — not consumed.
+	tk, err := st.GetTask(t.Context(), ids[0])
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if tk.Status != store.TaskStatusReady {
+		t.Errorf("task status = %q, want ready (oversized, not leased)", tk.Status)
+	}
+}
+
 func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "f1")

@@ -188,6 +188,15 @@ func (s *Scheduler) tryLeaseTask(
 	worker store.Worker,
 	free int,
 ) (payload []byte, cost int, ok bool, err error) {
+	// Log once when a task's declared core requirement exceeds the worker's total
+	// capacity — it can never run here regardless of current load. Best-effort
+	// observability only; does not change scheduling behavior.
+	if task.RequiredCores != nil && *task.RequiredCores > worker.CPUCount {
+		s.logger.InfoContext(ctx, "scheduler: task may be unschedulable on this worker",
+			slog.String("task_id", task.ID),
+			slog.Int("required_cores", *task.RequiredCores),
+			slog.Int("worker_cores", worker.CPUCount))
+	}
 	cost = fullMachineCost(task, worker)
 	if cost > free {
 		return nil, 0, false, nil

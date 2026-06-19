@@ -247,6 +247,15 @@ func (*listStaleErrSt) ListStaleWorkers(_ context.Context, _ time.Time) ([]store
 	return nil, context.DeadlineExceeded
 }
 
+// TestDefaultConfig_AssignedTaskTimeoutTightened verifies that AssignedTaskTimeout
+// is now <= 60 s, since "assigned" is a brief leased->running window and no longer
+// needs to accommodate the removed SQI_WORK stream's MaxAge.
+func TestDefaultConfig_AssignedTaskTimeoutTightened(t *testing.T) {
+	if got := DefaultConfig().AssignedTaskTimeout; got > 60*time.Second {
+		t.Errorf("AssignedTaskTimeout = %v, want <= 60s after lease cutover", got)
+	}
+}
+
 func TestSweepStaleWorkers_ListError_ReturnsQuietly(t *testing.T) {
 	st := &listStaleErrSt{Store: fake.New()}
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")

@@ -96,7 +96,7 @@ func DefaultConfig() Config {
 		AssignWorkers:          4,
 		WorkerTimeout:          30 * time.Second,
 		HeartbeatSweepInterval: 15 * time.Second,
-		AssignedTaskTimeout:    10 * time.Minute,
+		AssignedTaskTimeout:    30 * time.Second,
 	}
 }
 
@@ -130,10 +130,11 @@ type Config struct {
 
 	// AssignedTaskTimeout is the maximum time a task may sit in 'assigned'
 	// without transitioning to 'running' before the reaper returns it to the
-	// ready queue. It guards against a leased assignment that is lost after the
-	// lease reply — e.g. the worker crashes between leasing and starting the
-	// process — which the heartbeat sweep cannot recover while the worker is
-	// still online. Runs on the heartbeat sweep tick. Default: 10 min.
+	// ready queue. It guards the brief leased→running window: a task a worker
+	// leased but never reported running (e.g. the worker crashed between lease
+	// and process start). The heartbeat sweep cannot recover such tasks while the
+	// worker is still heartbeating, so this reaper runs independently on the
+	// heartbeat sweep tick. Default: 30 s.
 	AssignedTaskTimeout time.Duration
 }
 
