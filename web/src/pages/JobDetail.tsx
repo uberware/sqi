@@ -407,12 +407,14 @@ export default function JobDetail() {
     dataUpdatedAt: tasksUpdatedAt,
   } = useListTasks(jobId, { limit: 1000 })
 
-  // Worker hostnames for the task list (tasks only carry assigned_worker_id).
+  // Worker display names for the task list (tasks only carry assigned_worker_id).
+  // Prefer the human-readable name, falling back to hostname — matching the
+  // worker list/detail pages.
   const { data: workersPage } = useListWorkers({ limit: 1000 })
   const workerNamesById = useMemo(() => {
     const map = new Map<string, string>()
     for (const worker of workersPage?.items ?? []) {
-      map.set(worker.id, worker.hostname)
+      map.set(worker.id, worker.name || worker.hostname)
     }
     return map
   }, [workersPage])
