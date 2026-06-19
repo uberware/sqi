@@ -67,3 +67,19 @@ func (r *waiterRegistry) notify(queueID string) {
 		close(ch)
 	}
 }
+
+// notifyAll wakes every parked waiter on every queue. Used for infrequent bulk
+// events (e.g. offline-worker reclaim) where the affected queues are not known;
+// a broadcast is acceptable because a missed wake is only a leaseHoldTimeout
+// latency issue.
+func (r *waiterRegistry) notifyAll() {
+	r.mu.Lock()
+	sets := r.waiters
+	r.waiters = make(map[string]map[chan struct{}]struct{})
+	r.mu.Unlock()
+	for _, set := range sets {
+		for ch := range set {
+			close(ch)
+		}
+	}
+}

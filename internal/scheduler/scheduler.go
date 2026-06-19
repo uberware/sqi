@@ -174,6 +174,13 @@ type Scheduler struct {
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
 
+	// leaseLocks serializes lease selection per worker. Concurrent lease
+	// requests for the SAME worker (one outstanding request per queue it
+	// serves, plus retry overlap) must not both read the same committed-core
+	// count and each lease up to free, over-committing the worker. The lock is
+	// held only around selectLeaseBatch, never across the long-poll park.
+	leaseLocks sync.Map // workerID -> *sync.Mutex
+
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
@@ -1030,6 +1037,9 @@ func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hos
 			slog.String("hostname", hostname),
 			slog.Int("tasks_reclaimed", n),
 		)
+		// Reclaimed tasks are back to ready but we have no jobIDs to scope a
+		// per-queue wake; broadcast so parked workers re-lease promptly.
+		s.waiters.notifyAll()
 	default:
 		s.logger.InfoContext(
 			ctx, "scheduler: worker marked offline (no tasks to reclaim)",
@@ -1037,6 +1047,13 @@ func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hos
 			slog.String("hostname", hostname),
 		)
 	}
+}
+
+// WakeQueue wakes any parked lease waiters on queueID. Called by the API job
+// handler after a successful submission so newly-ready tasks are leased without
+// waiting out the long-poll hold.
+func (s *Scheduler) WakeQueue(queueID string) {
+	s.waiters.notify(queueID)
 }
 
 // notifyQueueForJob wakes any parked lease waiters on the job's queue.

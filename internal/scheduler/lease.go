@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -44,9 +45,10 @@ func (s *Scheduler) handleLeaseRequest(queueID string, data []byte) []byte {
 		return marshalLeaseReply(nil)
 	}
 
-	batch, err := s.selectLeaseBatch(ctx, worker)
+	batch, err := s.selectLeaseBatchLocked(ctx, worker)
 	if err != nil {
-		s.logger.WarnContext(ctx, "scheduler: lease selection failed",
+		s.logger.WarnContext(
+			ctx, "scheduler: lease selection failed",
 			slog.String("worker_id", req.WorkerID),
 			slog.Any("error", err),
 		)
@@ -57,14 +59,34 @@ func (s *Scheduler) handleLeaseRequest(queueID string, data []byte) []byte {
 	}
 
 	// Park until work appears or the hold elapses, then try exactly once more.
+	// The park happens OUTSIDE the per-worker lock; only the selection below is
+	// serialized, so a re-woken request reads the up-to-date committed cores.
 	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
 		if w2, err2 := s.store.GetWorker(ctx, req.WorkerID); err2 == nil {
-			if batch2, err2 := s.selectLeaseBatch(ctx, w2); err2 == nil {
+			if batch2, err2 := s.selectLeaseBatchLocked(ctx, w2); err2 == nil {
 				return marshalLeaseReply(batch2)
 			}
 		}
 	}
 	return marshalLeaseReply(nil)
+}
+
+// selectLeaseBatchLocked runs selectLeaseBatch while holding the per-worker
+// lease lock so concurrent requests for the same worker select one-at-a-time
+// (the loser then reads the committed cores the winner already claimed).
+// Requests for different workers proceed in parallel.
+func (s *Scheduler) selectLeaseBatchLocked(ctx context.Context, worker store.Worker) ([][]byte, error) {
+	mu := s.workerLeaseLock(worker.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	return s.selectLeaseBatch(ctx, worker)
+}
+
+// workerLeaseLock returns the per-worker mutex for lease selection, creating it
+// on first use.
+func (s *Scheduler) workerLeaseLock(workerID string) *sync.Mutex {
+	mu, _ := s.leaseLocks.LoadOrStore(workerID, &sync.Mutex{})
+	return mu.(*sync.Mutex) //nolint:errcheck,forcetypeassert // value type is always *sync.Mutex
 }
 
 func marshalLeaseReply(batch [][]byte) []byte {

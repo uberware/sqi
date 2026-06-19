@@ -28,9 +28,14 @@ func (c *Client) RequestLease(ctx context.Context, queueID string, data []byte, 
 // own long-poll blocking before returning; it must respect no work by returning
 // an empty/again-marker payload of the caller's choosing.
 func (c *Client) SubscribeLease(handler func(queueID string, data []byte) []byte) (*nats.Subscription, error) {
+	// Spawn a goroutine per message so a parked handler (a long-poll lease that
+	// blocks up to leaseHoldTimeout) never stalls delivery of other workers'
+	// requests — NATS delivers one-at-a-time per subscription callback.
 	return c.nc.Subscribe(SubjectWorkLeasePrefix+".>", func(msg *nats.Msg) {
-		queueID := strings.TrimPrefix(msg.Subject, SubjectWorkLeasePrefix+".")
-		reply := handler(queueID, msg.Data)
-		_ = msg.Respond(reply) //nolint:errcheck // best-effort reply; worker retries on timeout
+		go func() {
+			queueID := strings.TrimPrefix(msg.Subject, SubjectWorkLeasePrefix+".")
+			reply := handler(queueID, msg.Data)
+			_ = msg.Respond(reply) //nolint:errcheck // best-effort reply; worker retries on timeout
+		}()
 	})
 }

@@ -33,6 +33,9 @@ import (
 // Keeping it as an interface makes the handler testable without a live NATS instance.
 type jobCanceler interface {
 	CancelJob(ctx context.Context, jobID string) error
+	// WakeQueue wakes parked lease waiters on queueID so a newly-submitted
+	// job's ready tasks are leased without waiting out the long-poll hold.
+	WakeQueue(queueID string)
 }
 
 // jobHandler handles all job-related REST endpoints.
@@ -206,6 +209,10 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create job")
 		return
 	}
+
+	// Wake any workers parked on this queue so the new ready tasks are leased
+	// promptly rather than after the long-poll hold elapses.
+	h.sched.WakeQueue(result.Job.QueueID)
 
 	writeJSON(w, http.StatusCreated, toJobResponse(result.Job))
 }

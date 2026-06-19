@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,6 +200,74 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 	}
 	if len(got.Assignments) != 2 {
 		t.Fatalf("assignments = %d, want 2", len(got.Assignments))
+	}
+}
+
+// TestHandleLeaseRequest_ConcurrentSameWorkerDoesNotOverLease verifies the
+// per-worker selection lock: two concurrent lease requests for the SAME worker
+// on a fixture with more ready cores than the worker can hold must not both read
+// the same committed-core count and each lease up to free, over-committing the
+// worker. Total leased cores must stay ≤ worker.CPUCount. Run with -race.
+func TestHandleLeaseRequest_ConcurrentSameWorkerDoesNotOverLease(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 50 * time.Millisecond
+	// 4-core worker, six 1-core ready tasks (6 cores of demand > 4 capacity).
+	one := 1
+	w, _ := seedLeaseFixture(t, st, []*int{&one, &one, &one, &one, &one, &one})
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			_ = s.handleLeaseRequest("q1", req)
+		}()
+	}
+	wg.Wait()
+
+	// Sum cores across every task now committed to the worker.
+	committed, err := st.CommittedCores(t.Context(), w.ID, w.CPUCount)
+	if err != nil {
+		t.Fatalf("CommittedCores: %v", err)
+	}
+	if committed > w.CPUCount {
+		t.Fatalf("committed cores = %d, want ≤ %d (over-lease)", committed, w.CPUCount)
+	}
+}
+
+// TestReclaimOfflineWorkerTasks_WakesParkedWaiters verifies Fix 2b: a bulk
+// reclaim that returns tasks to ready broadcasts a wake so parked workers
+// re-lease without waiting out leaseHoldTimeout.
+func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	one := 1
+	w, _ := seedLeaseFixture(t, st, []*int{&one, &one})
+
+	// Assign the worker's tasks so reclaim has work to return (n > 0).
+	if _, err := s.selectLeaseBatch(t.Context(), w); err != nil {
+		t.Fatalf("selectLeaseBatch: %v", err)
+	}
+
+	woke := make(chan bool, 1)
+	go func() { woke <- s.waiters.wait(context.Background(), "q1", time.Second) }()
+	time.Sleep(20 * time.Millisecond) // let the waiter park
+
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname)
+
+	select {
+	case got := <-woke:
+		if !got {
+			t.Error("parked waiter not woken by reclaim (want notifyAll broadcast)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter did not return after reclaim")
 	}
 }
 

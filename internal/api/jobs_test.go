@@ -31,11 +31,16 @@ import (
 // fakeScheduler implements [jobCanceler] for tests so cancelJob can run
 // without a live NATS/scheduler instance.
 type fakeScheduler struct {
-	cancelErr error // non-nil forces CancelJob to return this error
+	cancelErr  error    // non-nil forces CancelJob to return this error
+	wokenQueue []string // queue IDs passed to WakeQueue, in call order
 }
 
 func (f *fakeScheduler) CancelJob(_ context.Context, _ string) error {
 	return f.cancelErr
+}
+
+func (f *fakeScheduler) WakeQueue(queueID string) {
+	f.wokenQueue = append(f.wokenQueue, queueID)
 }
 
 // ── router helpers ────────────────────────────────────────────────────────────
@@ -239,6 +244,35 @@ steps:
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 	})
+}
+
+// TestSubmitJobWakesQueue verifies Fix 2a: a successful submission wakes parked
+// lease waiters on the created job's queue.
+func TestSubmitJobWakesQueue(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+
+	sched := &fakeScheduler{}
+	r := newJobRouter(st, sched)
+
+	body := strings.NewReader(minimalOpenJDJSON("WakeTest"))
+	req := newReq(t, http.MethodPost, "/api/v1/jobs?farm_id=farm-1&queue_id=queue-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+	}
+	if len(sched.wokenQueue) != 1 || sched.wokenQueue[0] != "queue-1" {
+		t.Errorf("WakeQueue calls = %v, want [queue-1]", sched.wokenQueue)
+	}
 }
 
 // ── GET /api/v1/jobs ──────────────────────────────────────────────────────────
