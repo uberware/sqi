@@ -31,11 +31,23 @@ func (c *Client) SubscribeLease(handler func(queueID string, data []byte) []byte
 	// Spawn a goroutine per message so a parked handler (a long-poll lease that
 	// blocks up to leaseHoldTimeout) never stalls delivery of other workers'
 	// requests — NATS delivers one-at-a-time per subscription callback.
-	return c.nc.Subscribe(SubjectWorkLeasePrefix+".>", func(msg *nats.Msg) {
+	sub, err := c.nc.Subscribe(SubjectWorkLeasePrefix+".>", func(msg *nats.Msg) {
 		go func() {
 			queueID := strings.TrimPrefix(msg.Subject, SubjectWorkLeasePrefix+".")
 			reply := handler(queueID, msg.Data)
 			_ = msg.Respond(reply) //nolint:errcheck // best-effort reply; worker retries on timeout
 		}()
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Flush so the interest is registered on the server before we return.
+	// Otherwise a RequestLease published immediately afterwards can outrace the
+	// SUB and fail with nats.ErrNoResponders (a request/reply race the worker
+	// would have to time out and retry through).
+	if err := c.nc.Flush(); err != nil {
+		_ = sub.Unsubscribe() //nolint:errcheck // best-effort cleanup on a failed setup
+		return nil, err
+	}
+	return sub, nil
 }
