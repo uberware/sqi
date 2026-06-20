@@ -490,8 +490,14 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 	shr := &store.StepHostRequirements{}
 
 	for _, a := range hr.Amounts {
-		if poolName, ok := strings.CutPrefix(a.Name, usagePoolPrefix); ok && poolName != "" {
-			shr.UsagePools = append(shr.UsagePools, poolName)
+		// Capability names are case-insensitive (OpenJD jobtemplate-2023-09), so
+		// detect the usagepool namespace prefix case-insensitively. The pool name
+		// after the prefix keeps its original case — it identifies an
+		// operator-registered usage pool.
+		if hasPrefixFold(a.Name, usagePoolPrefix) {
+			if poolName := a.Name[len(usagePoolPrefix):]; poolName != "" {
+				shr.UsagePools = append(shr.UsagePools, poolName)
+			}
 		}
 		shr.Amounts = append(shr.Amounts, store.StepAmountRequirement{
 			Name: a.Name,
@@ -503,7 +509,7 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 	for _, a := range hr.Attributes {
 		// Extract compute-location from the well-known attribute, if present,
 		// and mirror it as a plain string for SQL pre-filtering.
-		if a.Name == computeLocationAttr {
+		if strings.EqualFold(a.Name, computeLocationAttr) {
 			switch {
 			case len(a.AnyOf) == 1:
 				computeLoc = a.AnyOf[0]
@@ -521,13 +527,18 @@ func toStoreHostRequirements(hr *HostRequirements) (reqs *store.StepHostRequirem
 	return shr, computeLoc
 }
 
+// hasPrefixFold reports whether s begins with prefix, compared case-insensitively.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
 // requiredCoresFromAmounts extracts the task CPU reservation from a step's host
 // requirements: the floor of amount.worker.vcpu min, parsed as an int. Returns
 // nil when no vcpu min is declared (undeclared = full machine at lease time) or
 // when the value cannot be parsed as a positive number.
 func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {
 	for _, a := range amts {
-		if a.Name != "amount.worker.vcpu" || a.Min == nil {
+		if !strings.EqualFold(a.Name, "amount.worker.vcpu") || a.Min == nil {
 			continue
 		}
 		f, err := strconv.ParseFloat(*a.Min, 64)

@@ -73,6 +73,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -459,7 +460,7 @@ func buildUsageClaims(step store.Step, pools map[string]store.UsagePool) []store
 	}
 	claims := make([]store.UsagePoolClaim, 0, len(step.HostRequirements.UsagePools))
 	for _, name := range step.HostRequirements.UsagePools {
-		pool, ok := pools[name]
+		pool, ok := pools[strings.ToLower(name)] // pools keyed by lowercased name
 		if !ok {
 			continue
 		}
@@ -488,20 +489,25 @@ func (s *Scheduler) buildUsageContext(
 		return pools, activeCounts, nil
 	}
 
-	// Fetch all pools once and key them by name.
+	// Fetch all pools once and key them by lowercased name. Usage-pool names are
+	// the trailing segment of a case-insensitive capability name (OpenJD
+	// jobtemplate-2023-09), so the returned maps are keyed case-insensitively and
+	// every consumer ([checkUsagePools], [buildUsageClaims]) looks up by
+	// strings.ToLower(name).
 	allPools, err := s.store.ListUsagePools(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list usage pools: %w", err)
 	}
 	for _, p := range allPools {
-		pools[p.Name] = p
+		pools[strings.ToLower(p.Name)] = p
 	}
 
 	// Fetch active claim count only for pools the step actually requires.
 	for _, name := range step.HostRequirements.UsagePools {
-		pool, ok := pools[name]
+		lk := strings.ToLower(name)
+		pool, ok := pools[lk]
 		if !ok {
-			// Pool not found; leave activeCounts[name] as zero so the matcher
+			// Pool not found; leave activeCounts[lk] as zero so the matcher
 			// rejects due to missing pool (capacity = 0).
 			continue
 		}
@@ -509,7 +515,7 @@ func (s *Scheduler) buildUsageContext(
 		if err != nil {
 			return nil, nil, fmt.Errorf("active claim count for pool %q: %w", name, err)
 		}
-		activeCounts[name] = count
+		activeCounts[lk] = count
 	}
 
 	return pools, activeCounts, nil

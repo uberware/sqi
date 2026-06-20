@@ -1026,6 +1026,22 @@ func TestCreateClaim_ConflictOnDuplicate(t *testing.T) {
 	}
 }
 
+// Usage-pool names are case-insensitive (OpenJD jobtemplate-2023-09), so the
+// fake store must reject a case-only duplicate just as the SQLite NOCASE unique
+// index does.
+func TestCreateUsagePool_ConflictCaseInsensitive(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	if _, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p1", Name: "maya", MaxConcurrent: 1}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	_, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p2", Name: "Maya", MaxConcurrent: 2})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("want ErrConflict for case-insensitive duplicate, got %v", err)
+	}
+}
+
 func TestReleaseClaim(t *testing.T) {
 	s := New()
 	defer s.Close()
