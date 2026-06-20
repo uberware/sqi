@@ -447,7 +447,10 @@
 
 .checkCell {
   width: 2.5rem;
-  padding-right: 0 !important;
+}
+
+.taskTable .checkCell {
+  padding-right: 0;
 }
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */

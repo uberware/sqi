@@ -642,6 +642,11 @@ export default function JobDetail() {
           n.delete(taskId)
           return n
         })
+        setSelectedTaskIds((prev) => {
+          const n = new Set(prev)
+          n.delete(taskId)
+          return n
+        })
       }
     },
     [retryTask],
@@ -670,6 +675,11 @@ export default function JobDetail() {
           n.delete(taskId)
           return n
         })
+        setSelectedTaskIds((prev) => {
+          const n = new Set(prev)
+          n.delete(taskId)
+          return n
+        })
       }
     },
     [cancelTask],
@@ -681,21 +691,32 @@ export default function JobDetail() {
     () => (tasksPage?.items ?? []).filter((t) => selectedTaskIds.has(t.id)),
     [tasksPage, selectedTaskIds],
   )
-  const selectedCancelable = selectedTasks.filter((t) => CANCELABLE.has(t.status))
-  const selectedRetryable = selectedTasks.filter((t) => RETRYABLE.has(t.status))
+  const selectedCancelable = useMemo(
+    () => selectedTasks.filter((t) => CANCELABLE.has(t.status)),
+    [selectedTasks],
+  )
+  const selectedRetryable = useMemo(
+    () => selectedTasks.filter((t) => RETRYABLE.has(t.status)),
+    [selectedTasks],
+  )
+
+  // Count of selected tasks that are still actionable (excludes ghost selections
+  // for tasks that have since transitioned to a non-selectable terminal state).
+  const activeSelectedCount = useMemo(
+    () => selectedTasks.filter((t) => isSelectable(t.status)).length,
+    [selectedTasks],
+  )
 
   const handleBulkCancel = useCallback(async () => {
     for (const t of selectedCancelable) {
       await handleCancel(t.id)
     }
-    setSelectedTaskIds(new Set())
   }, [selectedCancelable, handleCancel])
 
   const handleBulkRetry = useCallback(async () => {
     for (const t of selectedRetryable) {
       await handleRetry(t.id)
     }
-    setSelectedTaskIds(new Set())
   }, [selectedRetryable, handleRetry])
 
   if (isLoading) {
@@ -790,9 +811,9 @@ export default function JobDetail() {
         )}
       </div>
 
-      {selectedTaskIds.size > 0 && (
+      {activeSelectedCount > 0 && (
         <div className={styles.bulkBar}>
-          <span className={styles.bulkBarCount}>{selectedTaskIds.size} selected</span>
+          <span className={styles.bulkBarCount}>{activeSelectedCount} selected</span>
           <button
             className={styles.bulkCancelBtn}
             onClick={() => void handleBulkCancel()}

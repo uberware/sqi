@@ -6,10 +6,11 @@ package api
 //
 // Route summary:
 //
-//	GET /api/v1/jobs/{id}/tasks — list tasks for a job
-//	GET /api/v1/tasks/{id} — task detail
-//	GET /api/v1/tasks/{id}/logs — task logs, offset-based or tail-streaming
-//	POST /api/v1/tasks/{id}/retry — queue a new attempt for a failed/canceled task
+//	GET  /api/v1/jobs/{id}/tasks    — list tasks for a job
+//	GET  /api/v1/tasks/{id}         — task detail
+//	GET  /api/v1/tasks/{id}/logs    — task logs, offset-based or tail-streaming
+//	POST /api/v1/tasks/{id}/retry   — queue a new attempt for a failed/canceled task
+//	POST /api/v1/tasks/{id}/cancel  — cancel a non-terminal task
 
 import (
 	"context"

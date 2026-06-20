@@ -5,10 +5,11 @@ package api
 // Unit tests for the task REST handlers.
 //
 // Route coverage:
-//   GET  /api/v1/jobs/{id}/tasks   — listJobTasks
-//   GET  /api/v1/tasks/{id}        — getTask
-//   GET  /api/v1/tasks/{id}/logs   — getTaskLogs (non-streaming path)
-//   POST /api/v1/tasks/{id}/retry  — retryTask
+//   GET  /api/v1/jobs/{id}/tasks    — listJobTasks
+//   GET  /api/v1/tasks/{id}         — getTask
+//   GET  /api/v1/tasks/{id}/logs    — getTaskLogs (non-streaming path)
+//   POST /api/v1/tasks/{id}/retry   — retryTask
+//   POST /api/v1/tasks/{id}/cancel  — cancelTask
 
 import (
 	"context"
