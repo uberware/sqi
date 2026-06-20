@@ -23,6 +23,12 @@ type TaskEvent struct {
 // from their views rather than update it in place.
 const WorkerStatusRemoved = "removed"
 
+// JobStatusRemoved is a synthetic JobEvent.Status value (not a persisted
+// [store.JobStatus]) signaling that a job row was hard-deleted — by a manual
+// delete or the job-retention sweep — so subscribers should drop it from their
+// views rather than update it in place.
+const JobStatusRemoved = "removed"
+
 // WorkerEvent is published when a worker registers, sends a heartbeat,
 // deregisters, has its status changed by the heartbeat sweep, or is removed.
 // The Hub fans this out to clients subscribed to [SubjectWorkers].

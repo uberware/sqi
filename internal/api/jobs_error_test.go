@@ -239,7 +239,7 @@ func TestCancelJob_TerminalAndConflict(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		j := seedJob(t, st, store.JobStatusCompleted)
 
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusConflict {
@@ -252,7 +252,7 @@ func TestCancelJob_TerminalAndConflict(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		j := seedJob(t, st, store.JobStatusFailed)
 
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusConflict {
@@ -265,7 +265,7 @@ func TestCancelJob_TerminalAndConflict(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		j := seedJob(t, st, store.JobStatusCanceled)
 
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNoContent {
@@ -294,7 +294,7 @@ func TestCancelJob_TerminalAndConflict(t *testing.T) {
 		est := &storeErr{Store: inner, cancelJobErr: store.ErrConflict}
 		r := newJobRouter(est, &fakeScheduler{})
 
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusConflict {

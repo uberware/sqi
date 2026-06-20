@@ -194,7 +194,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	}
 
 	// ── REST API ────────────────────────────────────────────────
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
+	var jobNotifier ws.Notifier
+	if deps.Hub != nil {
+		jobNotifier = deps.Hub
+	}
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger)
 	tasks := newTaskHandler(deps.Store, logger)
 	// Pass the hub as a notifier only when non-nil so the worker handler's
 	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
@@ -229,7 +233,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/jobs", jobs.listJobs)
 		api.Get("/jobs/{id}", jobs.getJob)
 		api.Patch("/jobs/{id}", jobs.patchJob)
-		api.Delete("/jobs/{id}", jobs.cancelJob)
+		api.Post("/jobs/{id}/cancel", jobs.cancelJob)
+		api.Delete("/jobs/{id}", jobs.deleteJob)
 
 		// ── Task endpoints ──────────────────────────────────
 		api.Get("/jobs/{id}/tasks", tasks.listJobTasks)

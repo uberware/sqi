@@ -10,7 +10,8 @@ package api
 //	GET /api/v1/jobs — list jobs with pagination + filters
 //	GET /api/v1/jobs/{id} — job detail with steps and task counts
 //	PATCH /api/v1/jobs/{id} — priority, queue move, pause/resume
-//	DELETE /api/v1/jobs/{id} — cancel job
+//	POST /api/v1/jobs/{id}/cancel — cancel job
+//	DELETE /api/v1/jobs/{id} — delete job and all data
 
 import (
 	"context"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // jobCanceler is the subset of [scheduler.Scheduler] used by the job handler.
@@ -43,7 +45,10 @@ type jobHandler struct {
 	store     store.Store
 	submitter *openjd.Submitter
 	sched     jobCanceler
-	logger    *slog.Logger
+	// notifier pushes a removed event when a job is deleted so other connected
+	// clients drop it live. May be nil (no push).
+	notifier ws.Notifier
+	logger   *slog.Logger
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -129,18 +134,20 @@ type patchJobRequest struct {
 
 // ── Handler constructors ──────────────────────────────────────────────────────
 
-// newJobHandler returns a jobHandler wired to the given store, submitter, and
-// scheduler.
+// newJobHandler returns a jobHandler wired to the given store, submitter,
+// scheduler, and optional notifier.
 func newJobHandler(
 	st store.Store,
 	sub *openjd.Submitter,
 	sched jobCanceler,
+	notifier ws.Notifier,
 	logger *slog.Logger,
 ) *jobHandler {
 	return &jobHandler{
 		store:     st,
 		submitter: sub,
 		sched:     sched,
+		notifier:  notifier,
 		logger:    logger,
 	}
 }
@@ -482,7 +489,7 @@ func handleStoreError(w http.ResponseWriter, r *http.Request, err error, logger 
 	writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
 }
 
-// ── DELETE /api/v1/jobs/{id} ──────────────────────────────────────────────────
+// ── POST /api/v1/jobs/{id}/cancel ────────────────────────────────────────────
 
 // cancelJob cancels the job and propagates the cancellation to any assigned
 // workers via the scheduler.
@@ -533,6 +540,60 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		h.logger.ErrorContext(ctx, "jobs: cancel status update failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update job status")
 		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── DELETE /api/v1/jobs/{id} ──────────────────────────────────────────────────
+
+// deleteJob hard-deletes a job and all of its data. If the job is still active
+// (not in a terminal state) its tasks are canceled first via the scheduler so
+// assigned workers stop work, exactly as cancelJob does. The delete itself is
+// always permitted regardless of job state.
+func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	job, err := h.store.GetJob(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "job not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "jobs: delete get failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	// Active job → cancel its tasks immediately so workers stop. Terminal jobs
+	// have nothing in flight, so the cancel is skipped.
+	if !isTerminalJob(job.Status) {
+		if err := h.sched.CancelJob(ctx, id); err != nil {
+			h.logger.ErrorContext(ctx, "jobs: delete cancel failed", slog.String("id", id), slog.Any("error", err))
+			writeProblem(w, r, http.StatusInternalServerError, "failed to cancel job tasks")
+			return
+		}
+	}
+
+	if err := h.store.DeleteJob(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "job not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "jobs: delete failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+
+	if h.notifier != nil {
+		h.notifier.NotifyJob(ws.JobEvent{
+			JobID:     job.ID,
+			Name:      job.Name,
+			QueueID:   job.QueueID,
+			Status:    ws.JobStatusRemoved,
+			UpdatedAt: time.Now().UTC(),
+		})
 	}
 
 	w.WriteHeader(http.StatusNoContent)
