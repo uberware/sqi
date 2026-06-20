@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -76,6 +77,37 @@ WHERE status = 'running'
         SELECT 1 FROM tasks t
         WHERE t.job_id = jobs.id AND t.status IN ('ready', 'pending'))
 RETURNING id`
+
+	// Job-deletion cascade. Each statement scopes to one job via job_id (or a
+	// task subquery for grandchild tables). Run inside a single transaction in
+	// this exact order so enforced foreign keys never block a delete.
+	sqlDeleteJobCheckouts = `
+DELETE FROM usage_claims
+WHERE task_attempt_id IN (
+	SELECT ta.id FROM task_attempts ta
+	JOIN tasks t ON t.id = ta.task_id
+	WHERE t.job_id = ?)`
+
+	sqlDeleteJobTaskLogs = `
+DELETE FROM task_logs
+WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
+
+	sqlDeleteJobAttempts = `
+DELETE FROM task_attempts
+WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
+
+	sqlDeleteJobTasks = `DELETE FROM tasks WHERE job_id = ?`
+	sqlDeleteJobSteps = `DELETE FROM steps WHERE job_id = ?`
+	sqlDeleteJobRow   = `DELETE FROM jobs WHERE id = ?`
+
+	// Selects terminal jobs whose effective completion time is before the
+	// cutoff. The status set is closed by the caller appending 'failed'. The
+	// {STATUS} and time predicate are assembled in Go with bound parameters.
+	sqlSelectExpiredJobsPrefix = `
+SELECT id, name, farm_id, queue_id FROM jobs
+WHERE status IN (`
+	sqlSelectExpiredJobsSuffix = `)
+  AND COALESCE(completed_at, updated_at) < ?`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -317,4 +349,98 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 		ids = append(ids, id)
 	}
 	return ids, mapErr(rows.Err())
+}
+
+// DeleteTerminalJobsBefore implements [store.JobStore]. It selects the eligible
+// job IDs first, then deletes each via the shared cascade, all inside one
+// transaction so a partially-applied sweep can never leave orphaned child rows.
+func (s *Store) DeleteTerminalJobsBefore(
+	ctx context.Context, cutoff time.Time, includeFailed bool,
+) ([]store.DeletedJob, error) {
+	statuses := []any{string(store.JobStatusCompleted), string(store.JobStatusCanceled)}
+	if includeFailed {
+		statuses = append(statuses, string(store.JobStatusFailed))
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+	// placeholders is "?,?[,?]" — only ? marks; status values are bound.
+	query := sqlSelectExpiredJobsPrefix + placeholders + sqlSelectExpiredJobsSuffix //nolint:gosec // see comment
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	args := append([]any(nil), statuses...)
+	args = append(args, timeToText(cutoff.UTC()))
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var deleted []store.DeletedJob
+	for rows.Next() {
+		var d store.DeletedJob
+		if err := rows.Scan(&d.ID, &d.Name, &d.FarmID, &d.QueueID); err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	for _, d := range deleted {
+		for _, q := range []string{
+			sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
+			sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobRow,
+		} {
+			if _, err := tx.ExecContext(ctx, q, d.ID); err != nil {
+				return nil, mapErr(err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, mapErr(err)
+	}
+	return deleted, nil
+}
+
+// DeleteJob implements [store.JobStore]. The cascade runs in a single
+// transaction; if the jobs-row delete affects zero rows the job did not exist
+// and the transaction is rolled back with [store.ErrNotFound].
+func (s *Store) DeleteJob(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, q := range []string{
+		sqlDeleteJobCheckouts,
+		sqlDeleteJobTaskLogs,
+		sqlDeleteJobAttempts,
+		sqlDeleteJobTasks,
+		sqlDeleteJobSteps,
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return mapErr(err)
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return mapErr(tx.Commit())
 }

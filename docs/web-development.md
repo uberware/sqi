@@ -216,6 +216,14 @@ Subjects mirror the server's hub (e.g. `jobs`, `jobs/{jobId}/tasks`, `workers`,
 connection state in the header so operators can tell whether live updates are
 flowing.
 
+The `jobs` subject carries a synthetic `status: "removed"` event when a job is
+hard-deleted — either by a per-row or bulk **Delete** action in `JobList`, or
+automatically by the server's retention sweep. `JobList` handles this by
+removing the row from the displayed list immediately on receipt. Bulk delete
+shows a confirmation dialog before issuing the requests. When adding components
+that display job data from the `jobs` subject, handle the `removed` status to
+avoid stale rows lingering in the UI.
+
 ---
 
 ## TypeScript conventions

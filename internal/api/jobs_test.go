@@ -24,6 +24,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // ── fakeScheduler ─────────────────────────────────────────────────────────────
@@ -31,11 +32,13 @@ import (
 // fakeScheduler implements [jobCanceler] for tests so cancelJob can run
 // without a live NATS/scheduler instance.
 type fakeScheduler struct {
-	cancelErr  error    // non-nil forces CancelJob to return this error
-	wokenQueue []string // queue IDs passed to WakeQueue, in call order
+	cancelErr    error    // non-nil forces CancelJob to return this error
+	wokenQueue   []string // queue IDs passed to WakeQueue, in call order
+	canceledJobs []string // job IDs passed to CancelJob, in call order
 }
 
-func (f *fakeScheduler) CancelJob(_ context.Context, _ string) error {
+func (f *fakeScheduler) CancelJob(_ context.Context, id string) error {
+	f.canceledJobs = append(f.canceledJobs, id)
 	return f.cancelErr
 }
 
@@ -49,13 +52,14 @@ func (f *fakeScheduler) WakeQueue(queueID string) {
 // router.go, using the provided store and fakeScheduler.
 func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	sub := openjd.NewSubmitter(st)
-	h := newJobHandler(st, sub, sched, newTestLogger())
+	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger())
 	r := chi.NewRouter()
 	r.Post("/api/v1/jobs", h.submitJob)
 	r.Get("/api/v1/jobs", h.listJobs)
 	r.Get("/api/v1/jobs/{id}", h.getJob)
 	r.Patch("/api/v1/jobs/{id}", h.patchJob)
-	r.Delete("/api/v1/jobs/{id}", h.cancelJob)
+	r.Post("/api/v1/jobs/{id}/cancel", h.cancelJob)
+	r.Delete("/api/v1/jobs/{id}", h.deleteJob)
 	return r
 }
 
@@ -695,14 +699,14 @@ func TestPatchJob(t *testing.T) {
 	})
 }
 
-// ── DELETE /api/v1/jobs/{id} ──────────────────────────────────────────────────
+// ── POST /api/v1/jobs/{id}/cancel ────────────────────────────────────────────
 
 func TestCancelJob(t *testing.T) {
 	t.Run("existing job returns 204 and is marked canceled in store", func(t *testing.T) {
 		st := fake.New()
 		r := newJobRouter(st, &fakeScheduler{})
 		j := seedJob(t, st, store.JobStatusRunning)
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNoContent {
@@ -720,7 +724,7 @@ func TestCancelJob(t *testing.T) {
 	t.Run("unknown id returns 404", func(t *testing.T) {
 		st := fake.New()
 		r := newJobRouter(st, &fakeScheduler{})
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/ghost", nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/ghost/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
@@ -733,13 +737,104 @@ func TestCancelJob(t *testing.T) {
 		sched := &fakeScheduler{cancelErr: errors.New("nats unavailable")}
 		r := newJobRouter(st, sched)
 		j := seedJob(t, st, store.JobStatusRunning)
-		req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
+		req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusInternalServerError {
 			t.Fatalf("expected 500 when scheduler errors, got %d — body: %s", rr.Code, rr.Body)
 		}
 	})
+}
+
+// ── DELETE /api/v1/jobs/{id} ──────────────────────────────────────────────────
+
+func TestJobHandler_DeleteJob_RemovesJob(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := context.Background()
+
+	// Seed farm + queue + a terminal job with a known ID.
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-1",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "test-job",
+		Owner:          "alice",
+		Priority:       50,
+		Status:         store.JobStatusCompleted,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-1", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+	if _, err := st.GetJob(ctx, "job-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job still present after delete: err=%v", err)
+	}
+}
+
+func TestJobHandler_DeleteJob_NotFound(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/missing", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestJobHandler_CancelJob_NewRoute(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := context.Background()
+
+	// Seed farm + queue + a running job with a known ID.
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-run",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "running-job",
+		Owner:          "alice",
+		Priority:       50,
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/job-run/cancel", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("cancel status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
 }
 
 // ── parseParamQueryParams unit tests ─────────────────────────────────────────
@@ -897,4 +992,99 @@ func TestSubmitJobWithParams(t *testing.T) {
 			t.Fatalf("expected 422 for unknown param, got %d — body: %s", rr.Code, rr.Body)
 		}
 	})
+}
+
+// ── DELETE /api/v1/jobs/{id} — active-job cancel-then-delete ─────────────────
+
+// newJobRouterWithSched is like newJobRouter but returns the fakeScheduler
+// pointer so tests can inspect recorded CancelJob calls.
+func newJobRouterWithSched(st store.Store) (chi.Router, *fakeScheduler) {
+	sched := &fakeScheduler{}
+	return newJobRouter(st, sched), sched
+}
+
+// TestJobHandler_DeleteJob_ActiveJobCancelsAndDeletes verifies that deleting a
+// non-terminal job calls CancelJob on the scheduler before hard-deleting the row.
+func TestJobHandler_DeleteJob_ActiveJobCancelsAndDeletes(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-active",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "active-job",
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	r, sched := newJobRouterWithSched(st)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-active", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+	if _, err := st.GetJob(ctx, "job-active"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job still present after active-job delete: err=%v", err)
+	}
+	if len(sched.canceledJobs) != 1 || sched.canceledJobs[0] != "job-active" {
+		t.Errorf("CancelJob calls = %v, want [job-active]", sched.canceledJobs)
+	}
+}
+
+// TestJobHandler_DeleteJob_CancelFailureReturns500 verifies that when the
+// scheduler's CancelJob returns an error the handler responds 500 and does not
+// delete the job.
+func TestJobHandler_DeleteJob_CancelFailureReturns500(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-run-fail",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "running-job",
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	sched := &fakeScheduler{cancelErr: errors.New("scheduler unavailable")}
+	r := newJobRouter(st, sched)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-run-fail", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("DELETE status = %d, want 500 when CancelJob fails; body=%s", rr.Code, rr.Body)
+	}
+	// Job must not have been deleted.
+	if _, err := st.GetJob(ctx, "job-run-fail"); err != nil {
+		t.Fatalf("job should still exist after cancel failure: err=%v", err)
+	}
 }

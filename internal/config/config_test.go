@@ -514,3 +514,31 @@ func TestValidate_DiagnosticsZeroBufferSizeAllowed(t *testing.T) {
 		}
 	}
 }
+
+// ── Scheduler: job_retention defaults and env overrides ──────────────────────
+
+func TestDefaultConfig_JobRetention(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Scheduler.JobRetention != 7*24*time.Hour {
+		t.Fatalf("JobRetention default = %v, want 168h", cfg.Scheduler.JobRetention)
+	}
+	if cfg.Scheduler.JobRetentionIncludeFailed {
+		t.Fatalf("JobRetentionIncludeFailed default = true, want false")
+	}
+}
+
+func TestLoad_JobRetentionEnvOverride(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_SCHEDULER_JOB_RETENTION", "48h")
+	t.Setenv("SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED", "true")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Scheduler.JobRetention != 48*time.Hour {
+		t.Fatalf("JobRetention = %v, want 48h", cfg.Scheduler.JobRetention)
+	}
+	if !cfg.Scheduler.JobRetentionIncludeFailed {
+		t.Fatalf("JobRetentionIncludeFailed = false, want true")
+	}
+}

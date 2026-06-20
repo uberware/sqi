@@ -177,6 +177,114 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 	return nil
 }
 
+// DeleteTerminalJobsBefore implements [store.JobStore]. completed and canceled
+// jobs are always eligible; failed jobs only when includeFailed. Effective
+// completion time is CompletedAt, falling back to UpdatedAt when nil.
+func (s *Store) DeleteTerminalJobsBefore(
+	ctx context.Context, cutoff time.Time, includeFailed bool,
+) ([]store.DeletedJob, error) {
+	s.mu.Lock()
+	var ids []string
+	for id, j := range s.jobs {
+		if !terminalJobEligible(j.Status, includeFailed) {
+			continue
+		}
+		completed := j.UpdatedAt
+		if j.CompletedAt != nil {
+			completed = *j.CompletedAt
+		}
+		if !completed.Before(cutoff) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+
+	var deleted []store.DeletedJob
+	for _, id := range ids {
+		s.mu.Lock()
+		j := s.jobs[id]
+		s.mu.Unlock()
+		if err := s.DeleteJob(ctx, id); err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, store.DeletedJob{
+			ID: j.ID, Name: j.Name, FarmID: j.FarmID, QueueID: j.QueueID,
+		})
+	}
+	return deleted, nil
+}
+
+// terminalJobEligible reports whether a job in the given status is eligible for
+// retention deletion. completed and canceled always qualify; failed only when
+// includeFailed is set.
+func terminalJobEligible(status store.JobStatus, includeFailed bool) bool {
+	switch status {
+	case store.JobStatusCompleted, store.JobStatusCanceled:
+		return true
+	case store.JobStatusFailed:
+		return includeFailed
+	default:
+		return false
+	}
+}
+
+// DeleteJob implements [store.JobStore]. It removes the job and every in-memory
+// row that belongs to it: usage claims (by attempt), task logs (by task), task
+// attempts, tasks, and steps, mirroring the SQLite cascade. Returns
+// [store.ErrNotFound] when the job is absent.
+func (s *Store) DeleteJob(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.jobs[id]; !ok {
+		return store.ErrNotFound
+	}
+
+	// Collect this job's task IDs, then its attempt IDs.
+	taskIDs := make(map[string]struct{})
+	for tid, t := range s.tasks {
+		if t.JobID == id {
+			taskIDs[tid] = struct{}{}
+		}
+	}
+	attemptIDs := make(map[string]struct{})
+	for aid, a := range s.taskAttempts {
+		if _, ok := taskIDs[a.TaskID]; ok {
+			attemptIDs[aid] = struct{}{}
+		}
+	}
+
+	// Usage claims referencing this job's attempts.
+	for cid, c := range s.usageClaims {
+		if _, ok := attemptIDs[c.TaskAttemptID]; ok {
+			delete(s.usageClaims, cid)
+		}
+	}
+	// Task logs for this job's tasks (taskLogs is a slice).
+	kept := s.taskLogs[:0:0]
+	for _, l := range s.taskLogs {
+		if _, ok := taskIDs[l.TaskID]; !ok {
+			kept = append(kept, l)
+		}
+	}
+	s.taskLogs = kept
+	// Attempts, tasks, steps, job.
+	for aid := range attemptIDs {
+		delete(s.taskAttempts, aid)
+	}
+	for tid := range taskIDs {
+		delete(s.tasks, tid)
+	}
+	for sid, st := range s.steps {
+		if st.JobID == id {
+			delete(s.steps, sid)
+		}
+	}
+	delete(s.jobs, id)
+	return nil
+}
+
 // filterJob reports whether j matches all non-zero filter fields in opts.
 func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 	if opts.FarmID != "" && j.FarmID != opts.FarmID {

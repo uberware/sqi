@@ -579,4 +579,104 @@ describe('JobList', () => {
       })
     })
   })
+
+  // ── Per-row and bulk delete ───────────────────────────────────────────
+
+  describe('per-row and bulk delete', () => {
+    /**
+     * Render the job list seeded with a single completed job (id "job-1",
+     * name "job-1") and wait for the name link to appear.  Using status
+     * "completed" avoids rendering a Cancel button so /^cancel$/i queries are
+     * unambiguous.  We wait for `getByRole('link', { name: 'job-1' })` rather
+     * than `getByText('job-1')` because RTL's getByText matches the IdCell
+     * span's direct text node too (it only checks direct child text nodes, not
+     * the concatenated textContent of the whole subtree).
+     */
+    async function renderJobList(overrides: Partial<Job> = {}) {
+      const job = makeJob({ id: 'job-1', name: 'job-1', status: 'completed', ...overrides })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByRole('link', { name: 'job-1' }))
+    }
+
+    /** Fire a WS push event on the given subject via the first MockWebSocket. */
+    function emitWsEvent(subject: string, payload: unknown) {
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({ type: 'push', subject, payload, seq: 1 })
+      })
+    }
+
+    it('deletes a job after confirmation', async () => {
+      await renderJobList()
+      // Mock the DELETE response and the subsequent invalidation re-fetch.
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
+
+      fireEvent.click(screen.getByRole('button', { name: /delete job job-1/i }))
+      expect(screen.getByRole('dialog', { name: /confirm delete/i })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/jobs/job-1'),
+          expect.objectContaining({ method: 'DELETE' }),
+        )
+      })
+    })
+
+    it('cancel in the confirm dialog aborts the delete', async () => {
+      await renderJobList()
+
+      fireEvent.click(screen.getByRole('button', { name: /delete job job-1/i }))
+      expect(screen.getByRole('dialog', { name: /confirm delete/i })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        expect.stringContaining('/jobs/job-1'),
+        expect.objectContaining({ method: 'DELETE' }),
+      )
+    })
+
+    it('drops a row on a job removed WS event', async () => {
+      await renderJobList()
+      // Use the name link (role="link") to be unambiguous — the IdCell also has
+      // a direct text node 'job-1' which confuses queryByText.
+      expect(screen.getByRole('link', { name: 'job-1' })).toBeInTheDocument()
+
+      emitWsEvent('jobs', {
+        job_id: 'job-1',
+        status: 'removed',
+        updated_at: new Date().toISOString(),
+      })
+
+      await waitFor(() =>
+        expect(screen.queryByRole('link', { name: 'job-1' })).not.toBeInTheDocument(),
+      )
+    })
+
+    it('bulk delete selected confirms and deletes the job', async () => {
+      await renderJobList()
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
+
+      fireEvent.click(screen.getByLabelText('Select job job-1'))
+      expect(screen.getByText('1 selected')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /delete selected/i }))
+      expect(screen.getByRole('dialog', { name: /confirm delete/i })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/jobs/job-1'),
+          expect.objectContaining({ method: 'DELETE' }),
+        )
+      })
+    })
+  })
 })

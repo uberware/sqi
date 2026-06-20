@@ -7,13 +7,13 @@ import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import { useListJobs, queryKeys } from '@/api/queries'
-import { useCancelJob } from '@/api/mutations'
+import { useCancelJob, useDeleteJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
-import { isJobEvent, isTaskEvent } from '@/ws/events'
+import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
 import type { JobSortField, SortDirection } from '@/hooks/useJobListFilters'
 import styles from './JobList.module.css'
@@ -217,6 +217,15 @@ export default function JobList() {
 
   const queryClient = useQueryClient()
   const cancelJob = useCancelJob()
+  const deleteJob = useDeleteJob()
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  // Pending confirmation: either a single job id or the selected-bulk set.
+  const [confirm, setConfirm] = useState<{ ids: string[]; bulk: boolean } | null>(null)
+
+  // ── Selection state ── declared early so the WS callback below can reference
+  // setSelectedIds without a forward-declaration lint error.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
 
   // ── WS-driven in-place updates ───────────────────────────────────
 
@@ -245,7 +254,24 @@ export default function JobList() {
   // WS subscription — updates job rows in-place without a full list re-fetch.
   useWebSocket('jobs', (payload) => {
     if (isJobEvent(payload)) {
+      if (payload.status === JOB_REMOVED_STATUS) {
+        // Hard-deleted: evict the job row from every cached list page immediately.
+        queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
+          if (!old) return old
+          const items = old.items.filter((j) => j.id !== payload.job_id)
+          if (items.length === old.items.length) return old
+          return { ...old, items, total: Math.max(0, old.total - 1) }
+        })
+        setSelectedIds((prev) => {
+          if (!prev.has(payload.job_id)) return prev
+          const next = new Set(prev)
+          next.delete(payload.job_id)
+          return next
+        })
+        return
+      }
       // Patch this job's status immediately in every cached list page.
+      const { status, updated_at } = payload
       queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
         if (!old) return old
         const idx = old.items.findIndex((j) => j.id === payload.job_id)
@@ -253,7 +279,7 @@ export default function JobList() {
         const newItems = [...old.items]
         const prev = newItems[idx]
         if (!prev) return old
-        newItems[idx] = { ...prev, status: payload.status, updated_at: payload.updated_at }
+        newItems[idx] = { ...prev, status, updated_at }
         return { ...old, items: newItems }
       })
     } else if (isTaskEvent(payload)) {
@@ -295,10 +321,7 @@ export default function JobList() {
     void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
   }, [queryClient])
 
-  // ── Selection state ───────────────────────────────────────────────────────
-
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
+  // ── Derived selection values ──────────────────────────────────────────────
 
   const cancelableJobs = jobs.filter((j) => CANCELABLE.has(j.status))
   const cancelableIds = new Set(cancelableJobs.map((j) => j.id))
@@ -352,6 +375,40 @@ export default function JobList() {
       await handleCancelRow(id)
     }
   }, [selectedCancelable, handleCancelRow])
+
+  // ── Per-row and bulk delete ───────────────────────────────────────────────
+
+  const runDelete = useCallback(
+    async (id: string) => {
+      setDeletingIds((prev) => new Set(prev).add(id))
+      try {
+        await deleteJob.mutateAsync(id)
+      } catch {
+        // Surfaced via deleteJob.isError; continue past individual failures.
+      } finally {
+        setDeletingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [deleteJob],
+  )
+
+  const confirmDelete = useCallback(async () => {
+    if (!confirm) return
+    const ids = confirm.ids
+    setConfirm(null)
+    for (const id of ids) {
+      await runDelete(id)
+    }
+  }, [confirm, runDelete])
 
   // ── Sort handler ──────────────────────────────────────────────────────────
 
@@ -435,6 +492,12 @@ export default function JobList() {
           {cancelJob.error instanceof Error ? cancelJob.error.message : 'Unknown error'}
         </div>
       )}
+      {deleteJob.isError && (
+        <div className={styles.errorBanner} role="alert">
+          Delete failed:{' '}
+          {deleteJob.error instanceof Error ? deleteJob.error.message : 'Unknown error'}
+        </div>
+      )}
 
       {/* Job table */}
       <div className={styles.tableWrap}>
@@ -491,7 +554,7 @@ export default function JobList() {
                 />
               </th>
               <th>Elapsed</th>
-              <th aria-label="Actions" />
+              <th aria-label="Actions" className={styles.actionsCell} />
             </tr>
           </thead>
           <tbody>
@@ -538,7 +601,7 @@ export default function JobList() {
                   </td>
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
-                  <td>
+                  <td className={styles.actionsCell}>
                     {canCancel && (
                       <button
                         className={styles.cancelBtn}
@@ -550,6 +613,15 @@ export default function JobList() {
                         {isCanceling ? '…' : 'Cancel'}
                       </button>
                     )}
+                    <button
+                      className={styles.deleteBtn}
+                      onClick={() => setConfirm({ ids: [job.id], bulk: false })}
+                      disabled={deletingIds.has(job.id)}
+                      type="button"
+                      aria-label={`Delete job ${job.name}`}
+                    >
+                      {deletingIds.has(job.id) ? '…' : 'Delete'}
+                    </button>
                   </td>
                 </tr>
               )
@@ -571,12 +643,50 @@ export default function JobList() {
             Cancel selected ({selectedCancelable.length})
           </button>
           <button
+            className={styles.bulkDeleteBtn}
+            onClick={() => setConfirm({ ids: [...selectedIds], bulk: true })}
+            disabled={selectedIds.size === 0 || deleteJob.isPending}
+            type="button"
+          >
+            Delete selected ({selectedIds.size})
+          </button>
+          <button
             className={styles.filterPill}
             onClick={() => setSelectedIds(new Set())}
             type="button"
           >
             Clear
           </button>
+        </div>
+      )}
+
+      {confirm && (
+        <div className={styles.dialogBackdrop} role="presentation" onClick={() => setConfirm(null)}>
+          <div
+            className={styles.dialog}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm delete"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p>
+              {confirm.bulk
+                ? `Delete ${confirm.ids.length} job${confirm.ids.length === 1 ? '' : 's'} and all their data? This cannot be undone.`
+                : 'Delete this job and all its data? This cannot be undone.'}
+            </p>
+            <div className={styles.dialogActions}>
+              <button className={styles.filterPill} type="button" onClick={() => setConfirm(null)}>
+                Cancel
+              </button>
+              <button
+                className={styles.bulkDeleteBtn}
+                type="button"
+                onClick={() => void confirmDelete()}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

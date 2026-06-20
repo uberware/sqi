@@ -176,7 +176,8 @@ can show it to the artist.
 | `get_job(job_id) -> Job` | Detailed job with `steps` and `task_counts`; 404 → `NotFoundError`. |
 | `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause/resume; returns the updated job. |
 | `set_job_priority(job_id, priority) -> Job` | Validates `priority >= 1` client-side before sending. |
-| `cancel_job(job_id) -> None` | DELETE; returns `None` on `204`. |
+| `cancel_job(job_id) -> None` | POST `/jobs/{id}/cancel`; returns `None` on `204`. |
+| `delete_job(job_id) -> None` | DELETE; permanently deletes the job and all data (cancels active tasks first); returns `None` on `204`. |
 
 ```python
 job = sqi.get_job(job_id)
@@ -185,7 +186,8 @@ print(job.status, job.task_counts.succeeded, "/", job.task_counts.total)
 sqi.pause_job(job_id)
 sqi.set_job_priority(job_id, 75)
 sqi.resume_job(job_id)
-sqi.cancel_job(job_id)
+sqi.cancel_job(job_id)   # soft-cancel; job data is retained
+sqi.delete_job(job_id)   # hard-delete; all data permanently removed
 ```
 
 ## Tasks and logs

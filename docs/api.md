@@ -240,9 +240,24 @@ curl -s "$BASE/jobs/$JOB_ID/tasks?status=failed" | jq .items[]
 
 ### Cancel a job
 
-`DELETE /api/v1/jobs/{id}`
+`POST /api/v1/jobs/{id}/cancel`
 
 Cancels the job and propagates cancel signals to all assigned workers.
+
+```sh
+curl -s -X POST "$BASE/jobs/$JOB_ID/cancel"
+# Returns 204 No Content on success
+```
+
+---
+
+### Delete a job
+
+`DELETE /api/v1/jobs/{id}`
+
+Permanently deletes the job and all of its data (steps, tasks, attempts, logs).
+Active tasks are canceled first. Returns `204` on success, `404` if the job does
+not exist.
 
 ```sh
 curl -s -X DELETE "$BASE/jobs/$JOB_ID"

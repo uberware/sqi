@@ -91,14 +91,16 @@ import (
 // DefaultConfig returns a [Config] with conservative production-safe defaults.
 func DefaultConfig() Config {
 	return Config{
-		FarmID:                 "",
-		AssignInterval:         time.Second,
-		AssignBatchSize:        50,
-		AssignWorkers:          4,
-		WorkerTimeout:          30 * time.Second,
-		HeartbeatSweepInterval: 15 * time.Second,
-		AssignedTaskTimeout:    30 * time.Second,
-		OfflineWorkerRetention: 24 * time.Hour,
+		FarmID:                    "",
+		AssignInterval:            time.Second,
+		AssignBatchSize:           50,
+		AssignWorkers:             4,
+		WorkerTimeout:             30 * time.Second,
+		HeartbeatSweepInterval:    15 * time.Second,
+		AssignedTaskTimeout:       30 * time.Second,
+		OfflineWorkerRetention:    24 * time.Hour,
+		JobRetention:              7 * 24 * time.Hour,
+		JobRetentionIncludeFailed: false,
 	}
 }
 
@@ -145,6 +147,17 @@ type Config struct {
 	// Disabled and online workers are never auto-removed. A value <= 0 disables
 	// the sweep entirely. Default: 24 h.
 	OfflineWorkerRetention time.Duration
+
+	// JobRetention is how long a terminal job is kept before the retention
+	// sweep hard-deletes it and all of its data (steps, tasks, attempts, logs).
+	// completed and canceled jobs are always eligible; failed jobs only when
+	// JobRetentionIncludeFailed is set. A value <= 0 disables the sweep.
+	// Default: 168 h (7 days).
+	JobRetention time.Duration
+
+	// JobRetentionIncludeFailed extends the retention sweep to failed jobs.
+	// Default: false (failed jobs are kept for debugging).
+	JobRetentionIncludeFailed bool
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -278,6 +291,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		slog.Duration("worker_timeout", s.cfg.WorkerTimeout),
 		slog.Duration("heartbeat_sweep_interval", s.cfg.HeartbeatSweepInterval),
 		slog.Duration("offline_worker_retention", s.cfg.OfflineWorkerRetention),
+		slog.Duration("job_retention", s.cfg.JobRetention),
+		slog.Bool("job_retention_include_failed", s.cfg.JobRetentionIncludeFailed),
 	)
 
 	// ── Worker NATS consumer ────────────────────────────────
@@ -847,6 +862,7 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 		case <-ticker.C:
 			s.sweepStaleWorkers(ctx)
 			s.sweepRetiredWorkers(ctx)
+			s.sweepRetiredJobs(ctx)
 			s.reapStaleAssignedTasks(ctx)
 			s.demoteStalledJobs(ctx)
 			// Refresh instrumentation gauges on the same tick so Prometheus
@@ -1054,6 +1070,44 @@ func (s *Scheduler) sweepRetiredWorkers(ctx context.Context) {
 	}
 
 	s.refreshWorkerGauge(ctx)
+}
+
+// sweepRetiredJobs hard-deletes terminal jobs older than JobRetention along with
+// all of their data, bounding table growth. completed and canceled jobs are
+// always eligible; failed jobs only when JobRetentionIncludeFailed is set.
+// Active jobs are never touched. A non-positive retention disables the sweep.
+func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
+	if s.cfg.JobRetention <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-s.cfg.JobRetention)
+	removed, err := s.store.DeleteTerminalJobsBefore(ctx, cutoff, s.cfg.JobRetentionIncludeFailed)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: job retention sweep failed", slog.Any("error", err))
+		}
+		return
+	}
+	if len(removed) == 0 {
+		return
+	}
+
+	s.logger.InfoContext(
+		ctx, "scheduler: retention sweep removed terminal jobs",
+		slog.Int("count", len(removed)),
+		slog.Duration("retention", s.cfg.JobRetention),
+	)
+
+	now := time.Now().UTC()
+	for _, j := range removed {
+		s.notifier.NotifyJob(ws.JobEvent{
+			JobID:     j.ID,
+			Name:      j.Name,
+			QueueID:   j.QueueID,
+			Status:    ws.JobStatusRemoved,
+			UpdatedAt: now,
+		})
+	}
 }
 
 // reclaimOfflineWorkerTasks closes any running attempt records for workerID and
