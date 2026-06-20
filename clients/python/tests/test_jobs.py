@@ -260,19 +260,19 @@ def test_set_job_priority_rejects_below_minimum(make_client: ClientFactory) -> N
 
 @respx.mock
 def test_cancel_job_returns_none_on_204(make_client: ClientFactory) -> None:
-    route = respx.delete(f"{_JOBS_URL}/j1").mock(return_value=httpx.Response(204))
+    route = respx.post(f"{_JOBS_URL}/j1/cancel").mock(return_value=httpx.Response(204))
     client = make_client()
 
-    # Returns None on a 204 and issues exactly one DELETE.
+    # Returns None on a 204 and issues exactly one POST to /cancel.
     client.cancel_job("j1")
 
     assert route.called
-    assert route.calls.last.request.method == "DELETE"
+    assert route.calls.last.request.method == "POST"
 
 
 @respx.mock
 def test_cancel_job_missing_raises_not_found(make_client: ClientFactory) -> None:
-    respx.delete(f"{_JOBS_URL}/nope").mock(
+    respx.post(f"{_JOBS_URL}/nope/cancel").mock(
         return_value=httpx.Response(
             404,
             json={
@@ -293,7 +293,7 @@ def test_cancel_job_missing_raises_not_found(make_client: ClientFactory) -> None
 @respx.mock
 def test_cancel_job_terminal_raises_conflict(make_client: ClientFactory) -> None:
     # A completed/failed job cannot be canceled — the server returns 409.
-    respx.delete(f"{_JOBS_URL}/done").mock(
+    respx.post(f"{_JOBS_URL}/done/cancel").mock(
         return_value=httpx.Response(
             409,
             json={
@@ -309,3 +309,25 @@ def test_cancel_job_terminal_raises_conflict(make_client: ClientFactory) -> None
 
     with pytest.raises(ConflictError):
         client.cancel_job("done")
+
+
+@respx.mock
+def test_cancel_job_posts_to_cancel_route(make_client: ClientFactory) -> None:
+    route = respx.post(f"{_JOBS_URL}/job-1/cancel").mock(return_value=httpx.Response(204))
+    client = make_client()
+
+    client.cancel_job("job-1")
+
+    assert route.called
+    assert route.calls.last.request.method == "POST"
+
+
+@respx.mock
+def test_delete_job_issues_delete(make_client: ClientFactory) -> None:
+    route = respx.delete(f"{_JOBS_URL}/job-1").mock(return_value=httpx.Response(204))
+    client = make_client()
+
+    client.delete_job("job-1")
+
+    assert route.called
+    assert route.calls.last.request.method == "DELETE"

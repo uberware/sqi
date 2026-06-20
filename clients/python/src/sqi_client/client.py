@@ -610,6 +610,19 @@ class SqiClient:
             ConflictError: The job has already completed or failed and cannot be
                 canceled (HTTP 409). Canceling an already-canceled job succeeds.
         """
+        self._request("POST", f"/jobs/{quote(job_id, safe='')}/cancel")
+
+    def delete_job(self, job_id: str) -> None:
+        """Hard-delete a job and all of its data. Returns ``None`` on success
+        (HTTP 204).
+
+        If the job is still active its tasks are canceled immediately before the
+        job and all associated data (steps, tasks, attempts, logs) are removed.
+        Deleting a job is always permitted regardless of state.
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+        """
         self._request("DELETE", f"/jobs/{quote(job_id, safe='')}")
 
     def _patch_job(self, job_id: str, body: Mapping[str, Any]) -> Job:
