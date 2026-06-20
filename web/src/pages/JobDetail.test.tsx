@@ -901,6 +901,32 @@ describe('JobDetail', () => {
     })
   })
 
+  // ── Task bulk operations ─────────────────────────────────────────────────
+
+  describe('task bulk operations', () => {
+    it('selecting a running task enables Cancel selected and triggers cancel', async () => {
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
+      fetchMock.mockResolvedValueOnce(okJson({ task_id: task.id, status: 'canceled' }))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Select task/i })
+      fireEvent.click(checkbox)
+
+      const bulkCancel = screen.getByRole('button', { name: /Cancel selected/i })
+      expect(bulkCancel).toBeEnabled()
+      fireEvent.click(bulkCancel)
+
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(true)
+      })
+    })
+  })
+
   // ── Manual refresh ───────────────────────────────────────────────────
 
   describe('manual refresh button', () => {

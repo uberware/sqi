@@ -44,6 +44,10 @@ function isTerminalTask(status: TaskStatus): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'canceled'
 }
 
+function isSelectable(status: TaskStatus): boolean {
+  return CANCELABLE.has(status) || RETRYABLE.has(status)
+}
+
 /** Returns a human-readable age string for a past timestamp. */
 function formatAge(ts: number, now: number): string {
   if (ts === 0) return '—'
@@ -226,6 +230,8 @@ interface TaskRowProps {
   onCancel: (taskId: string) => void
   workerNamesById: ReadonlyMap<string, string>
   now: number
+  isSelected: boolean
+  onToggleSelect: (id: string) => void
 }
 
 function TaskRow({
@@ -239,6 +245,8 @@ function TaskRow({
   onCancel,
   workerNamesById,
   now,
+  isSelected,
+  onToggleSelect,
 }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
@@ -249,6 +257,16 @@ function TaskRow({
   return (
     <>
       <tr className={[isRetrying ? styles.retryingRow : '', isCanceling ? styles.cancelingRow : ''].filter(Boolean).join(' ') || undefined}>
+        <td className={styles.checkCell}>
+          {isSelectable(task.status) && (
+            <input
+              type="checkbox"
+              aria-label={`Select task ${task.name}`}
+              checked={isSelected}
+              onChange={() => onToggleSelect(task.id)}
+            />
+          )}
+        </td>
         <td>
           <IdCell id={task.id} />
         </td>
@@ -319,8 +337,9 @@ function TaskRow({
       </tr>
       {(retryError !== undefined || cancelError !== undefined) && (
         <tr className={styles.inlineError}>
-          <td colSpan={7}>
+          <td colSpan={8}>
             {retryError !== undefined && <>Retry failed: {retryError}</>}
+            {retryError !== undefined && cancelError !== undefined && ' '}
             {cancelError !== undefined && <>Cancel failed: {cancelError}</>}
           </td>
         </tr>
@@ -355,6 +374,9 @@ interface StepSectionProps {
   onCancel: (taskId: string) => void
   workerNamesById: ReadonlyMap<string, string>
   now: number
+  selectedTaskIds: ReadonlySet<string>
+  onToggleSelect: (id: string) => void
+  onToggleStep: () => void
 }
 
 function StepSection({
@@ -369,9 +391,13 @@ function StepSection({
   onCancel,
   workerNamesById,
   now,
+  selectedTaskIds,
+  onToggleSelect,
+  onToggleStep,
 }: StepSectionProps) {
   const counts = stepCountsFromTasks(tasks)
   const deps = step.depends_on ?? []
+  const selectableInStep = tasks.filter((t) => isSelectable(t.status))
 
   return (
     <section className={styles.stepSection} aria-label={`Step: ${step.name}`}>
@@ -404,6 +430,15 @@ function StepSection({
           <table className={styles.taskTable} aria-label={`Tasks for step ${step.name}`}>
             <thead>
               <tr>
+                <th className={styles.checkCell}>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select all tasks in step ${step.name}`}
+                    checked={selectableInStep.length > 0 && selectableInStep.every((t) => selectedTaskIds.has(t.id))}
+                    disabled={selectableInStep.length === 0}
+                    onChange={onToggleStep}
+                  />
+                </th>
                 <th>Task ID</th>
                 <th>Parameters</th>
                 <th>Status</th>
@@ -427,6 +462,8 @@ function StepSection({
                   onCancel={onCancel}
                   workerNamesById={workerNamesById}
                   now={now}
+                  isSelected={selectedTaskIds.has(task.id)}
+                  onToggleSelect={onToggleSelect}
                 />
               ))}
             </tbody>
@@ -471,6 +508,17 @@ export default function JobDetail() {
   const cancelTask = useCancelTask()
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
   const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
+
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set())
+
+  const toggleTask = useCallback((id: string) => {
+    setSelectedTaskIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
   // Group tasks by step_id so each StepSection can access its tasks directly.
   const tasksByStepId = useMemo(() => {
@@ -627,6 +675,29 @@ export default function JobDetail() {
     [cancelTask],
   )
 
+  // ── Bulk selection ────────────────────────────────────────────────────────
+
+  const selectedTasks = useMemo(
+    () => (tasksPage?.items ?? []).filter((t) => selectedTaskIds.has(t.id)),
+    [tasksPage, selectedTaskIds],
+  )
+  const selectedCancelable = selectedTasks.filter((t) => CANCELABLE.has(t.status))
+  const selectedRetryable = selectedTasks.filter((t) => RETRYABLE.has(t.status))
+
+  const handleBulkCancel = useCallback(async () => {
+    for (const t of selectedCancelable) {
+      await handleCancel(t.id)
+    }
+    setSelectedTaskIds(new Set())
+  }, [selectedCancelable, handleCancel])
+
+  const handleBulkRetry = useCallback(async () => {
+    for (const t of selectedRetryable) {
+      await handleRetry(t.id)
+    }
+    setSelectedTaskIds(new Set())
+  }, [selectedRetryable, handleRetry])
+
   if (isLoading) {
     return (
       <div className={styles.page}>
@@ -680,26 +751,69 @@ export default function JobDetail() {
       <div className={styles.stepsContainer}>
         <h2 className={styles.sectionTitle}>Steps</h2>
         {tasksLoading && <p className={styles.muted}>Loading tasks…</p>}
-        {sortedSteps.map((step) => (
-          <StepSection
-            key={step.id}
-            step={step}
-            tasks={tasksByStepId.get(step.id) ?? []}
-            jobId={jobId}
-            retryingIds={retryingIds}
-            retryErrors={retryErrors}
-            onRetry={(taskId) => void handleRetry(taskId)}
-            cancelingIds={cancelingIds}
-            cancelErrors={cancelErrors}
-            onCancel={(taskId) => void handleCancel(taskId)}
-            workerNamesById={workerNamesById}
-            now={now}
-          />
-        ))}
+        {sortedSteps.map((step) => {
+          const stepTasks = tasksByStepId.get(step.id) ?? []
+          const selectable = stepTasks.filter((t) => isSelectable(t.status))
+          const allSelected = selectable.length > 0 && selectable.every((t) => selectedTaskIds.has(t.id))
+          return (
+            <StepSection
+              key={step.id}
+              step={step}
+              tasks={stepTasks}
+              jobId={jobId}
+              retryingIds={retryingIds}
+              retryErrors={retryErrors}
+              onRetry={(taskId) => void handleRetry(taskId)}
+              cancelingIds={cancelingIds}
+              cancelErrors={cancelErrors}
+              onCancel={(taskId) => void handleCancel(taskId)}
+              workerNamesById={workerNamesById}
+              now={now}
+              selectedTaskIds={selectedTaskIds}
+              onToggleSelect={toggleTask}
+              onToggleStep={() => {
+                setSelectedTaskIds((prev) => {
+                  const next = new Set(prev)
+                  if (allSelected) {
+                    selectable.forEach((t) => next.delete(t.id))
+                  } else {
+                    selectable.forEach((t) => next.add(t.id))
+                  }
+                  return next
+                })
+              }}
+            />
+          )
+        })}
         {sortedSteps.length === 0 && !tasksLoading && (
           <p className={styles.muted}>No steps found.</p>
         )}
       </div>
+
+      {selectedTaskIds.size > 0 && (
+        <div className={styles.bulkBar}>
+          <span className={styles.bulkBarCount}>{selectedTaskIds.size} selected</span>
+          <button
+            className={styles.bulkCancelBtn}
+            onClick={() => void handleBulkCancel()}
+            disabled={selectedCancelable.length === 0 || cancelTask.isPending}
+            type="button"
+          >
+            Cancel selected ({selectedCancelable.length})
+          </button>
+          <button
+            className={styles.bulkRetryBtn}
+            onClick={() => void handleBulkRetry()}
+            disabled={selectedRetryable.length === 0 || retryTask.isPending}
+            type="button"
+          >
+            Retry selected ({selectedRetryable.length})
+          </button>
+          <button className={styles.clearBtn} onClick={() => setSelectedTaskIds(new Set())} type="button">
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   )
 }
