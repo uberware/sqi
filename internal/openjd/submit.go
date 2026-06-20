@@ -533,13 +533,22 @@ func hasPrefixFold(s, prefix string) bool {
 }
 
 // requiredCoresFromAmounts extracts the task CPU reservation from a step's host
-// requirements: the floor of amount.worker.vcpu min, parsed as an int. Returns
-// nil when no vcpu min is declared (undeclared = full machine at lease time) or
-// when the value cannot be parsed as a positive number.
+// requirements: the floor of amount.worker.vcpu min, parsed as an int.
+//
+// A present amount.worker.vcpu with no explicit min defaults to a 1-core
+// reservation: per OpenJD jobtemplate-2023-09, an omitted min defaults to the
+// capability's reserved minimum, which is 1 for amount.worker.vcpu (see
+// reservedAmountMinimums in validate.go). Returns nil only when the step
+// declares no amount.worker.vcpu at all (undeclared = full machine at lease
+// time) or when an explicit min cannot be parsed as a positive number.
 func requiredCoresFromAmounts(amts []store.StepAmountRequirement) *int {
 	for _, a := range amts {
-		if !strings.EqualFold(a.Name, "amount.worker.vcpu") || a.Min == nil {
+		if !strings.EqualFold(a.Name, "amount.worker.vcpu") {
 			continue
+		}
+		if a.Min == nil {
+			n := 1 // spec default: reserved minimum for amount.worker.vcpu
+			return &n
 		}
 		f, err := strconv.ParseFloat(*a.Min, 64)
 		if err != nil || f <= 0 {
