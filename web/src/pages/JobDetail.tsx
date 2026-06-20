@@ -7,7 +7,7 @@ import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
-import { useRetryTask } from '@/api/mutations'
+import { useRetryTask, useCancelTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
@@ -19,6 +19,9 @@ import styles from './JobDetail.module.css'
 
 /** Task statuses that can be retried. */
 const RETRYABLE: ReadonlySet<TaskStatus> = new Set(['failed', 'canceled'])
+
+/** Task statuses that can be canceled (all non-terminal). */
+const CANCELABLE: ReadonlySet<TaskStatus> = new Set(['pending', 'ready', 'assigned', 'running'])
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -218,6 +221,9 @@ interface TaskRowProps {
   isRetrying: boolean
   retryError: string | undefined
   onRetry: (taskId: string) => void
+  isCanceling: boolean
+  cancelError: string | undefined
+  onCancel: (taskId: string) => void
   workerNamesById: ReadonlyMap<string, string>
   now: number
 }
@@ -228,17 +234,21 @@ function TaskRow({
   isRetrying,
   retryError,
   onRetry,
+  isCanceling,
+  cancelError,
+  onCancel,
   workerNamesById,
   now,
 }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
   const canRetry = RETRYABLE.has(task.status) && !isRetrying
+  const canCancel = CANCELABLE.has(task.status) && !isCanceling
   const endTime = isTerminalTask(task.status) ? task.updated_at : undefined
 
   return (
     <>
-      <tr className={isRetrying ? styles.retryingRow : undefined}>
+      <tr className={[isRetrying ? styles.retryingRow : '', isCanceling ? styles.cancelingRow : ''].filter(Boolean).join(' ') || undefined}>
         <td>
           <IdCell id={task.id} />
         </td>
@@ -281,6 +291,22 @@ function TaskRow({
                 …
               </button>
             )}
+            {canCancel && (
+              <button
+                className={styles.cancelBtn}
+                onClick={() => onCancel(task.id)}
+                disabled={isCanceling}
+                type="button"
+                aria-label={`Cancel task ${task.name}`}
+              >
+                Cancel
+              </button>
+            )}
+            {isCanceling && (
+              <button className={styles.cancelBtn} disabled type="button">
+                …
+              </button>
+            )}
             <Link
               to={`/jobs/${jobId}/tasks/${task.id}/logs`}
               className={styles.logsLink}
@@ -291,9 +317,12 @@ function TaskRow({
           </div>
         </td>
       </tr>
-      {retryError !== undefined && (
+      {(retryError !== undefined || cancelError !== undefined) && (
         <tr className={styles.inlineError}>
-          <td colSpan={7}>Retry failed: {retryError}</td>
+          <td colSpan={7}>
+            {retryError !== undefined && <>Retry failed: {retryError}</>}
+            {cancelError !== undefined && <>Cancel failed: {cancelError}</>}
+          </td>
         </tr>
       )}
     </>
@@ -321,6 +350,9 @@ interface StepSectionProps {
   retryingIds: ReadonlySet<string>
   retryErrors: ReadonlyMap<string, string>
   onRetry: (taskId: string) => void
+  cancelingIds: ReadonlySet<string>
+  cancelErrors: ReadonlyMap<string, string>
+  onCancel: (taskId: string) => void
   workerNamesById: ReadonlyMap<string, string>
   now: number
 }
@@ -332,6 +364,9 @@ function StepSection({
   retryingIds,
   retryErrors,
   onRetry,
+  cancelingIds,
+  cancelErrors,
+  onCancel,
   workerNamesById,
   now,
 }: StepSectionProps) {
@@ -387,6 +422,9 @@ function StepSection({
                   isRetrying={retryingIds.has(task.id)}
                   retryError={retryErrors.get(task.id)}
                   onRetry={onRetry}
+                  isCanceling={cancelingIds.has(task.id)}
+                  cancelError={cancelErrors.get(task.id)}
+                  onCancel={onCancel}
                   workerNamesById={workerNamesById}
                   now={now}
                 />
@@ -430,6 +468,9 @@ export default function JobDetail() {
   const retryTask = useRetryTask()
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
   const [retryErrors, setRetryErrors] = useState<Map<string, string>>(new Map())
+  const cancelTask = useCancelTask()
+  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
+  const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
 
   // Group tasks by step_id so each StepSection can access its tasks directly.
   const tasksByStepId = useMemo(() => {
@@ -558,6 +599,34 @@ export default function JobDetail() {
     [retryTask],
   )
 
+  // ── Cancel ────────────────────────────────────────────────────────────────
+
+  const handleCancel = useCallback(
+    async (taskId: string) => {
+      setCancelingIds((prev) => new Set(prev).add(taskId))
+      setCancelErrors((prev) => {
+        const n = new Map(prev)
+        n.delete(taskId)
+        return n
+      })
+
+      try {
+        await cancelTask.mutateAsync(taskId)
+      } catch (err) {
+        setCancelErrors((prev) =>
+          new Map(prev).set(taskId, err instanceof Error ? err.message : 'Cancel failed'),
+        )
+      } finally {
+        setCancelingIds((prev) => {
+          const n = new Set(prev)
+          n.delete(taskId)
+          return n
+        })
+      }
+    },
+    [cancelTask],
+  )
+
   if (isLoading) {
     return (
       <div className={styles.page}>
@@ -620,6 +689,9 @@ export default function JobDetail() {
             retryingIds={retryingIds}
             retryErrors={retryErrors}
             onRetry={(taskId) => void handleRetry(taskId)}
+            cancelingIds={cancelingIds}
+            cancelErrors={cancelErrors}
+            onCancel={(taskId) => void handleCancel(taskId)}
             workerNamesById={workerNamesById}
             now={now}
           />

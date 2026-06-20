@@ -864,6 +864,43 @@ describe('JobDetail', () => {
     })
   })
 
+  // ── Task cancel ──────────────────────────────────────────────────────
+
+  describe('task cancel', () => {
+    it('shows a Cancel button for a running task and calls the cancel endpoint', async () => {
+      // Arrange: a running task is present in the mocked tasks response.
+      const task = makeTask({ id: 'task-cancelable', status: 'running', name: 'task.running' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson({ task_id: task.id, status: 'canceled' }))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const cancelBtn = await screen.findByRole('button', { name: /Cancel task/i })
+      expect(cancelBtn).toBeInTheDocument()
+
+      fireEvent.click(cancelBtn)
+
+      await waitFor(() => {
+        expect(
+          fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel')),
+        ).toBe(true)
+      })
+    })
+
+    it('does not show a Cancel button for a succeeded task', async () => {
+      const task = makeTask({ status: 'succeeded', name: 'task.done' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByText('Logs'))
+      // The succeeded-task row exposes Retry/Logs but not Cancel.
+      expect(screen.queryByRole('button', { name: /Cancel task/i })).not.toBeInTheDocument()
+    })
+  })
+
   // ── Manual refresh ───────────────────────────────────────────────────
 
   describe('manual refresh button', () => {
