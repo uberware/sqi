@@ -30,6 +30,17 @@ type jobRecordingNotifier struct {
 
 func (n *jobRecordingNotifier) NotifyJob(e ws.JobEvent) { n.jobs = append(n.jobs, e) }
 
+// hasJobStatus reports whether the notifier recorded a JobEvent for jobID with
+// the given status — mirrors hasWorkerStatus on workerRecordingNotifier.
+func (n *jobRecordingNotifier) hasJobStatus(jobID, status string) bool {
+	for _, e := range n.jobs {
+		if e.JobID == jobID && e.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
 // seedStaleWorkerWithTask registers an online worker whose last heartbeat is
 // older than the given cutoff age, plus an assigned task and a running attempt
 // on that worker. Returns the worker and task IDs.
@@ -335,6 +346,77 @@ func TestSweepRetiredWorkers_DisabledByZeroRetention(t *testing.T) {
 	}
 	if len(rec.workers) != 0 {
 		t.Errorf("no events expected when retention disabled, got %+v", rec.workers)
+	}
+}
+
+// newJobRetentionScheduler builds a Scheduler with the given job-retention
+// config and a job-recording notifier, mirroring newRetentionScheduler.
+func newJobRetentionScheduler(st store.Store, retention time.Duration, includeFailed bool, n ws.Notifier) *Scheduler {
+	cfg := DefaultConfig()
+	cfg.FarmID = "farm-1"
+	cfg.JobRetention = retention
+	cfg.JobRetentionIncludeFailed = includeFailed
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), n, nil)
+	s.ctx = context.Background()
+	return s
+}
+
+// TestScheduler_SweepRetiredJobs verifies that a terminal job older than
+// JobRetention is hard-deleted and a "removed" WS event is emitted.
+func TestScheduler_SweepRetiredJobs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	st := fake.New()
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	c := old
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID: "old-completed", Status: store.JobStatusCompleted, CompletedAt: &c, UpdatedAt: old,
+		TemplateFormat: store.TemplateFormatJSON,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	rec := &jobRecordingNotifier{}
+	s := newJobRetentionScheduler(st, 24*time.Hour, false, rec)
+
+	s.sweepRetiredJobs(ctx)
+
+	if _, err := st.GetJob(ctx, "old-completed"); err != store.ErrNotFound {
+		t.Fatalf("job not deleted: %v", err)
+	}
+	if !rec.hasJobStatus("old-completed", ws.JobStatusRemoved) {
+		t.Fatalf("expected JobRemoved WS event for old-completed")
+	}
+}
+
+// TestScheduler_SweepRetiredJobs_DisabledWhenZero verifies that a non-positive
+// JobRetention disables the sweep entirely — the job survives and no WS event
+// is emitted.
+func TestScheduler_SweepRetiredJobs_DisabledWhenZero(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	st := fake.New()
+	old := time.Now().UTC().Add(-720 * time.Hour)
+	c := old
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID: "old-completed", Status: store.JobStatusCompleted, CompletedAt: &c, UpdatedAt: old,
+		TemplateFormat: store.TemplateFormatJSON,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	rec := &jobRecordingNotifier{}
+	s := newJobRetentionScheduler(st, 0, false, rec)
+
+	s.sweepRetiredJobs(ctx)
+
+	if _, err := st.GetJob(ctx, "old-completed"); err != nil {
+		t.Errorf("old-completed should survive when retention is disabled: %v", err)
+	}
+	if len(rec.jobs) != 0 {
+		t.Errorf("no events expected when retention disabled, got %+v", rec.jobs)
 	}
 }
 
