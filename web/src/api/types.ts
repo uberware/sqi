@@ -187,6 +187,13 @@ export interface Worker {
   gpu: GPUInfo
   tags?: Record<string, string>
   status: WorkerStatus
+  /**
+   * Server-authoritative flag: true when the worker may be hard-deleted via
+   * DELETE /workers/{id} — offline workers, and disabled workers whose last
+   * heartbeat is older than the heartbeat-timeout window (the machine is gone).
+   * Online and live-disabled workers are never removable.
+   */
+  removable: boolean
   last_heartbeat_at?: string
   registered_at: string
   updated_at: string

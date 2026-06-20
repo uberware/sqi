@@ -20,6 +20,7 @@
     "gpu": "true"
   },
   "status": "online",
+  "removable": false,
   "last_heartbeat_at": "2026-01-15T10:05:00Z",
   "registered_at": "2026-01-15T09:00:00Z",
   "updated_at": "2026-01-15T10:05:00Z",

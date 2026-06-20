@@ -65,6 +65,11 @@ export function fetchEnableWorker(id: string): Promise<WorkerActionResponse> {
   })
 }
 
+/** Hard-delete a removable worker via `DELETE /workers/{id}`. */
+export async function fetchRemoveWorker(id: string): Promise<void> {
+  await apiFetch(`/workers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 // ── Mutation hooks ────────────────────────────────────────────────────────────
 
 /** Submit a new OpenJD job. Invalidates the job list on success. */
@@ -121,6 +126,17 @@ export function useEnableWorker() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => fetchEnableWorker(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workers.all })
+    },
+  })
+}
+
+/** Hard-delete a removable worker. Invalidates all worker queries. */
+export function useRemoveWorker() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchRemoveWorker(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workers.all })
     },

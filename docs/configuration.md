@@ -276,6 +276,30 @@ scheduler:
 
 ---
 
+### `scheduler.offline_worker_retention`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `24h` |
+| **Env var** | `SQI_SCHEDULER_OFFLINE_WORKER_RETENTION` |
+
+How long a worker may remain offline before the retention sweep hard-deletes its
+record, bounding the growth of the worker list on farms with ephemeral nodes
+(e.g. cloud workers that spin up for a burst of work and are then destroyed). The
+sweep runs on the heartbeat-sweep tick and only removes workers in the `offline`
+state — `online` and administratively `disabled` workers are never auto-removed.
+A worker that reconnects after removal simply re-registers. Set to `0` to disable
+automatic removal entirely (workers can still be removed manually from the web
+UI).
+
+```yaml
+scheduler:
+  offline_worker_retention: "24h"
+```
+
+---
+
 ## `discovery` — mDNS service advertisement
 
 ### `discovery.enabled`

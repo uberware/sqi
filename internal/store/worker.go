@@ -121,6 +121,20 @@ type WorkerStore interface {
 	// Used by the scheduler to update the [SchedulerIdleWorkers] Prometheus
 	// gauge.
 	CountIdleWorkers(ctx context.Context, farmID string) (int, error)
+
+	// DeleteWorker hard-deletes the worker record with the given ID. Returns
+	// [ErrNotFound] if no such worker exists. Task and task-attempt rows that
+	// reference the worker by ID are left intact (the ID lives on as a
+	// snapshot); callers are responsible for ensuring the worker has no
+	// in-flight work before removing it.
+	DeleteWorker(ctx context.Context, id string) error
+
+	// DeleteOfflineWorkersBefore hard-deletes every worker in
+	// [WorkerStatusOffline] whose LastHeartbeatAt is strictly before cutoff,
+	// and returns the deleted records. Workers in any other status (including
+	// administratively disabled) are never touched. Used by the scheduler's
+	// offline-retention sweep to bound the growth of the worker table.
+	DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]Worker, error)
 }
 
 // ListWorkersOptions filters and orders [WorkerStore.ListWorkers] results.

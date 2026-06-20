@@ -16,6 +16,7 @@ import (
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/diag"
 	sqilog "github.com/uberware/sqi/internal/log"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 )
 
@@ -105,6 +106,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer stop()
 
 	// ── Run ───────────────────────────────────────────────────────────────────
+	// Map the layered config into the scheduler's tuning parameters. Other
+	// scheduler fields keep their normalized defaults.
+	schedCfg := scheduler.DefaultConfig()
+	schedCfg.WorkerTimeout = cfg.Scheduler.HeartbeatTimeout
+	schedCfg.OfflineWorkerRetention = cfg.Scheduler.OfflineWorkerRetention
+
 	srv := server.New(server.Config{
 		HTTPAddr:              cfg.HTTP.Addr,
 		NATSAddr:              cfg.NATS.Addr,
@@ -116,6 +123,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		DiscoveryEnabled:      cfg.Discovery.Enabled,
 		DiscoveryInstanceName: cfg.Discovery.InstanceName,
 		EnforceOpenJDLimits:   cfg.OpenJD.EnforceLimits,
+		Scheduler:             schedCfg,
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
 		SeedDefaults: true,

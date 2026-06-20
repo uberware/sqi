@@ -500,6 +500,78 @@ func TestUpdateWorkerStatus_NotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteWorker(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOffline)
+
+	if err := s.DeleteWorker(ctx(), "w1"); err != nil {
+		t.Fatalf("DeleteWorker: %v", err)
+	}
+	if _, err := s.GetWorker(ctx(), "w1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetWorker after delete: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestDeleteWorker_NotFound(t *testing.T) {
+	s := New()
+	defer s.Close()
+	if err := s.DeleteWorker(ctx(), "ghost"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestDeleteOfflineWorkersBefore(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	old := time.Now().Add(-2 * time.Hour)
+	recent := time.Now().Add(-time.Minute)
+
+	// w1: offline + stale → removed.
+	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOnline)
+	mustHeartbeat(t, s, "w1", old)
+	mustStatus(t, s, "w1", store.WorkerStatusOffline)
+	// w2: offline + recent → kept.
+	mustCreateWorker(t, s, "w2", "f1", store.WorkerStatusOnline)
+	mustHeartbeat(t, s, "w2", recent)
+	mustStatus(t, s, "w2", store.WorkerStatusOffline)
+	// w3: disabled + stale → kept (status filter).
+	mustCreateWorker(t, s, "w3", "f1", store.WorkerStatusOnline)
+	mustHeartbeat(t, s, "w3", old)
+	mustStatus(t, s, "w3", store.WorkerStatusDisabled)
+
+	removed, err := s.DeleteOfflineWorkersBefore(ctx(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOfflineWorkersBefore: %v", err)
+	}
+	if len(removed) != 1 || removed[0].ID != "w1" {
+		t.Fatalf("removed: got %v, want [w1]", removed)
+	}
+	if _, err := s.GetWorker(ctx(), "w1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("w1 should be gone, got %v", err)
+	}
+	for _, id := range []string{"w2", "w3"} {
+		if _, err := s.GetWorker(ctx(), id); err != nil {
+			t.Errorf("worker %s should survive: %v", id, err)
+		}
+	}
+}
+
+func mustHeartbeat(t *testing.T, s *Store, id string, at time.Time) {
+	t.Helper()
+	if err := s.UpdateWorkerHeartbeat(ctx(), id, at); err != nil {
+		t.Fatalf("UpdateWorkerHeartbeat(%q): %v", id, err)
+	}
+}
+
+func mustStatus(t *testing.T, s *Store, id string, status store.WorkerStatus) {
+	t.Helper()
+	if err := s.UpdateWorkerStatus(ctx(), id, status); err != nil {
+		t.Fatalf("UpdateWorkerStatus(%q): %v", id, err)
+	}
+}
+
 func TestUpdateWorkerHeartbeat(t *testing.T) {
 	s := New()
 	defer s.Close()

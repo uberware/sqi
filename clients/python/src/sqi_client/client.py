@@ -950,6 +950,22 @@ class SqiClient:
         data = self._request_json("POST", f"/workers/{quote(worker_id, safe='')}/{action}")
         return WorkerAction.from_dict(data) if data is not None else None
 
+    def remove_worker(self, worker_id: str) -> None:
+        """Hard-delete a worker. Returns ``None`` on success (HTTP 204).
+
+        Only removable workers are accepted: offline workers, or disabled
+        workers whose last heartbeat is older than the heartbeat-timeout window
+        (the machine is gone). Check :attr:`Worker.removable` first to avoid a
+        ``ConflictError``. Task and attempt history referencing the worker is
+        preserved by ID; a removed worker that reconnects simply re-registers.
+
+        Raises:
+            NotFoundError: No worker with that ID exists (HTTP 404).
+            ConflictError: The worker is not removable — it is online or a
+                still-heartbeating disabled worker (HTTP 409).
+        """
+        self._request("DELETE", f"/workers/{quote(worker_id, safe='')}")
+
     # ── Farms ─────────────────────────────────────────────────────────────────
 
     def create_farm(

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import { useListWorkers, queryKeys } from '@/api/queries'
-import { useDisableWorker, useEnableWorker } from '@/api/mutations'
+import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
-import { isWorkerEvent } from '@/ws/events'
+import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
 import type { Worker, WorkerStatus, ListResponse } from '@/api/types'
 import styles from './WorkerList.module.css'
 
@@ -172,7 +172,7 @@ export default function WorkerList() {
     limit: PAGE_SIZE,
   })
 
-  const workers = data?.items ?? []
+  const workers = useMemo(() => data?.items ?? [], [data])
   const total = data?.total ?? 0
 
   // ── Per-status count queries (limit=1 to get totals cheaply) ────
@@ -192,11 +192,45 @@ export default function WorkerList() {
     disabled: disabledCount,
   }
 
-  // ── Enable/disable mutations ────────────────────────────────────
+  // ── Enable/disable/remove mutations ─────────────────────────────
   const queryClient = useQueryClient()
   const disableWorker = useDisableWorker()
   const enableWorker = useEnableWorker()
+  const removeWorker = useRemoveWorker()
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set())
+
+  // ── Multi-select state ──────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Eligible subsets for each bulk action (ineligible selections are skipped).
+  const disableableIds = new Set(workers.filter((w) => w.status === 'online').map((w) => w.id))
+  const removableIds = new Set(workers.filter((w) => w.removable).map((w) => w.id))
+  const selectedDisableable = [...selectedIds].filter((id) => disableableIds.has(id))
+  const selectedRemovable = [...selectedIds].filter((id) => removableIds.has(id))
+
+  const toggleRow = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleAll = useCallback(() => {
+    if (workers.length === 0) return
+    const allSelected = workers.every((w) => selectedIds.has(w.id))
+    setSelectedIds(allSelected ? new Set() : new Set(workers.map((w) => w.id)))
+  }, [workers, selectedIds])
+
+  const deselect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
 
   const handleDisable = useCallback(
     async (id: string) => {
@@ -236,26 +270,85 @@ export default function WorkerList() {
     [enableWorker, disableWorker],
   )
 
-  // ── WS-driven in-place worker updates ───────────────────────────
+  const handleRemove = useCallback(
+    async (id: string) => {
+      setTogglingIds((prev) => new Set(prev).add(id))
+      try {
+        await removeWorker.mutateAsync(id)
+      } catch {
+        // Error visible via removeWorker.isError; do not re-throw so a bulk
+        // remove continues past individual failures (e.g. a 409 race).
+      } finally {
+        setTogglingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        deselect(id)
+      }
+    },
+    [removeWorker, deselect],
+  )
+
+  // ── Bulk actions ────────────────────────────────────────────────
+  // Each applies only to its eligible subset; ineligible selections are
+  // silently skipped. Runs sequentially so one failure doesn't abort the rest.
+  const handleBulkDisable = useCallback(async () => {
+    for (const id of selectedDisableable) {
+      await handleDisable(id)
+      deselect(id)
+    }
+  }, [selectedDisableable, handleDisable, deselect])
+
+  const handleBulkRemove = useCallback(async () => {
+    for (const id of selectedRemovable) {
+      await handleRemove(id)
+    }
+  }, [selectedRemovable, handleRemove])
+
+  // ── WS-driven worker updates ────────────────────────────────────
   useWebSocket('workers', (payload) => {
     if (!isWorkerEvent(payload)) return
 
-    queryClient.setQueriesData<ListResponse<Worker>>({ queryKey: ['workers', 'list'] }, (old) => {
-      if (!old) return old
-      const idx = old.items.findIndex((w) => w.id === payload.worker_id)
-      if (idx === -1) return old
-      const newItems = [...old.items]
-      const prev = newItems[idx]
-      if (!prev) return old
-      newItems[idx] = {
-        ...prev,
-        status: payload.status,
-        // Update name/hostname if provided by the event
-        ...(payload.name !== undefined ? { name: payload.name } : {}),
-        ...(payload.hostname !== undefined ? { hostname: payload.hostname } : {}),
+    const workerId = payload.worker_id
+
+    if (payload.status === WORKER_REMOVED_STATUS) {
+      // A removed worker (manual remove or retention sweep) is dropped from the
+      // list rather than updated in place, and cleared from the selection.
+      queryClient.setQueriesData<ListResponse<Worker>>({ queryKey: ['workers', 'list'] }, (old) => {
+        if (!old) return old
+        const items = old.items.filter((w) => w.id !== workerId)
+        if (items.length === old.items.length) return old
+        return { ...old, items, total: Math.max(0, old.total - 1) }
+      })
+      deselect(workerId)
+    } else {
+      const status = payload.status
+      let patched = false
+      queryClient.setQueriesData<ListResponse<Worker>>({ queryKey: ['workers', 'list'] }, (old) => {
+        if (!old) return old
+        const idx = old.items.findIndex((w) => w.id === workerId)
+        if (idx === -1) return old
+        const newItems = [...old.items]
+        const prev = newItems[idx]
+        if (!prev) return old
+        patched = true
+        newItems[idx] = {
+          ...prev,
+          status,
+          // Update name/hostname if provided by the event
+          ...(payload.name !== undefined ? { name: payload.name } : {}),
+          ...(payload.hostname !== undefined ? { hostname: payload.hostname } : {}),
+        }
+        return { ...old, items: newItems }
+      })
+      // A worker we don't have yet (e.g. one that just (re)registered) can't be
+      // patched in place — refetch the list so it appears immediately instead of
+      // waiting for the next background poll.
+      if (!patched) {
+        void queryClient.invalidateQueries({ queryKey: ['workers', 'list'] })
       }
-      return { ...old, items: newItems }
-    })
+    }
 
     // Invalidate count queries so filter pill counts stay accurate
     void queryClient.invalidateQueries({
@@ -335,11 +428,11 @@ export default function WorkerList() {
           Failed to load workers: {error instanceof Error ? error.message : 'Unknown error'}
         </div>
       )}
-      {(disableWorker.isError || enableWorker.isError) && (
+      {(disableWorker.isError || enableWorker.isError || removeWorker.isError) && (
         <div className={styles.errorBanner} role="alert">
           Action failed:{' '}
-          {(disableWorker.error ?? enableWorker.error) instanceof Error
-            ? ((disableWorker.error ?? enableWorker.error) as Error).message
+          {(disableWorker.error ?? enableWorker.error ?? removeWorker.error) instanceof Error
+            ? ((disableWorker.error ?? enableWorker.error ?? removeWorker.error) as Error).message
             : 'Unknown error'}
         </div>
       )}
@@ -349,6 +442,15 @@ export default function WorkerList() {
         <table className={styles.table} aria-label="Workers">
           <thead>
             <tr>
+              <th className={styles.checkCell}>
+                <input
+                  type="checkbox"
+                  aria-label="Select all workers"
+                  checked={workers.length > 0 && workers.every((w) => selectedIds.has(w.id))}
+                  onChange={toggleAll}
+                  disabled={workers.length === 0}
+                />
+              </th>
               <th>Name</th>
               <th>ID</th>
               <th>Location</th>
@@ -362,18 +464,27 @@ export default function WorkerList() {
           <tbody>
             {isLoading && (
               <tr className={styles.emptyRow}>
-                <td colSpan={8}>Loading…</td>
+                <td colSpan={9}>Loading…</td>
               </tr>
             )}
             {!isLoading && workers.length === 0 && (
               <tr className={styles.emptyRow}>
-                <td colSpan={8}>No workers found.</td>
+                <td colSpan={9}>No workers found.</td>
               </tr>
             )}
             {workers.map((worker) => {
               const isToggling = togglingIds.has(worker.id)
+              const isSelected = selectedIds.has(worker.id)
               return (
-                <tr key={worker.id}>
+                <tr key={worker.id} className={isSelected ? styles.rowSelected : undefined}>
+                  <td className={styles.checkCell}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select worker ${worker.name || worker.hostname}`}
+                      checked={isSelected}
+                      onChange={() => toggleRow(worker.id)}
+                    />
+                  </td>
                   <td>
                     <Link to={`/workers/${worker.id}`}>{worker.name || worker.hostname}</Link>
                   </td>
@@ -428,6 +539,17 @@ export default function WorkerList() {
                         {isToggling ? '…' : 'Enable'}
                       </button>
                     )}
+                    {worker.removable && (
+                      <button
+                        className={`${styles.toggleBtn} ${styles['toggleBtn--remove']}`}
+                        onClick={() => void handleRemove(worker.id)}
+                        disabled={isToggling}
+                        type="button"
+                        aria-label={`Remove worker ${worker.name || worker.hostname}`}
+                      >
+                        {isToggling ? '…' : 'Remove'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               )
@@ -435,6 +557,36 @@ export default function WorkerList() {
           </tbody>
         </table>
       </div>
+
+      {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
+      {selectedIds.size > 0 && (
+        <div className={styles.bulkBar}>
+          <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
+          <button
+            className={`${styles.bulkBtn} ${styles['bulkBtn--disable']}`}
+            onClick={() => void handleBulkDisable()}
+            disabled={selectedDisableable.length === 0 || disableWorker.isPending}
+            type="button"
+          >
+            Disable selected ({selectedDisableable.length})
+          </button>
+          <button
+            className={`${styles.bulkBtn} ${styles['bulkBtn--remove']}`}
+            onClick={() => void handleBulkRemove()}
+            disabled={selectedRemovable.length === 0 || removeWorker.isPending}
+            type="button"
+          >
+            Remove selected ({selectedRemovable.length})
+          </button>
+          <button
+            className={styles.filterPill}
+            onClick={() => setSelectedIds(new Set())}
+            type="button"
+          >
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   )
 }

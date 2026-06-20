@@ -9,6 +9,7 @@ package api
 //   GET  /api/v1/workers/{id}         — getWorker
 //   POST /api/v1/workers/{id}/disable — disableWorker
 //   POST /api/v1/workers/{id}/enable  — enableWorker
+//   DELETE /api/v1/workers/{id}       — removeWorker
 
 import (
 	"encoding/json"
@@ -22,17 +23,36 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/ws"
 )
+
+// testOfflineThreshold is the heartbeat-timeout window used by the worker
+// handler under test to decide whether a disabled worker is dead.
+const testOfflineThreshold = 30 * time.Second
+
+// recordingNotifier captures NotifyWorker events for assertions.
+type recordingNotifier struct {
+	ws.NoopNotifier
+
+	events []ws.WorkerEvent
+}
+
+func (n *recordingNotifier) NotifyWorker(e ws.WorkerEvent) { n.events = append(n.events, e) }
 
 // ── router helper ─────────────────────────────────────────────────────────────
 
 func newWorkerRouter(st store.Store) chi.Router {
-	h := newWorkerHandler(st, newTestLogger())
+	return newWorkerRouterWithNotifier(st, nil)
+}
+
+func newWorkerRouterWithNotifier(st store.Store, notifier ws.Notifier) chi.Router {
+	h := newWorkerHandler(st, notifier, testOfflineThreshold, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/workers", h.listWorkers)
 	r.Get("/api/v1/workers/{id}", h.getWorker)
 	r.Post("/api/v1/workers/{id}/disable", h.disableWorker)
 	r.Post("/api/v1/workers/{id}/enable", h.enableWorker)
+	r.Delete("/api/v1/workers/{id}", h.removeWorker)
 	return r
 }
 
@@ -416,4 +436,137 @@ func TestEnableWorker(t *testing.T) {
 			t.Fatalf("expected 404, got %d", rr.Code)
 		}
 	})
+}
+
+// ── DELETE /api/v1/workers/{id} ──────────────────────────────────────────────
+
+// seedWorkerWithHeartbeat seeds a worker in the given status with a heartbeat
+// aged by age (0 = none).
+func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, status store.WorkerStatus, age time.Duration) store.Worker {
+	t.Helper()
+	w := seedWorker(t, st, status)
+	if age > 0 {
+		if err := st.UpdateWorkerHeartbeat(t.Context(), w.ID, time.Now().Add(-age)); err != nil {
+			t.Fatalf("UpdateWorkerHeartbeat: %v", err)
+		}
+		// UpdateWorkerHeartbeat does not change status; keep the seeded one.
+		if err := st.UpdateWorkerStatus(t.Context(), w.ID, status); err != nil {
+			t.Fatalf("UpdateWorkerStatus: %v", err)
+		}
+	}
+	return w
+}
+
+func TestRemoveWorker(t *testing.T) {
+	t.Run("offline worker is removed (204) and emits a removed event", func(t *testing.T) {
+		st := fake.New()
+		notifier := &recordingNotifier{}
+		r := newWorkerRouterWithNotifier(st, notifier)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+		if _, err := st.GetWorker(t.Context(), w.ID); err == nil {
+			t.Error("worker should be deleted")
+		}
+		if len(notifier.events) != 1 || notifier.events[0].WorkerID != w.ID ||
+			notifier.events[0].Status != ws.WorkerStatusRemoved {
+			t.Errorf("events = %+v, want one removed event for %s", notifier.events, w.ID)
+		}
+	})
+
+	t.Run("dead disabled worker is removed (204)", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorkerWithHeartbeat(t, st, store.WorkerStatusDisabled, time.Hour)
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	t.Run("online worker returns 409", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorker(t, st, store.WorkerStatusOnline)
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", rr.Code)
+		}
+		if _, err := st.GetWorker(t.Context(), w.ID); err != nil {
+			t.Error("worker should survive a rejected remove")
+		}
+	})
+
+	t.Run("live disabled worker returns 409", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		// Heartbeat well within the threshold → still alive.
+		w := seedWorkerWithHeartbeat(t, st, store.WorkerStatusDisabled, time.Second)
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", rr.Code)
+		}
+	})
+
+	t.Run("unknown worker returns 404", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/ghost", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+}
+
+// TestWorkerResponse_Removable verifies the server-authoritative removable flag
+// for each status/liveness combination via the detail endpoint.
+func TestWorkerResponse_Removable(t *testing.T) {
+	cases := []struct {
+		name   string
+		status store.WorkerStatus
+		age    time.Duration
+		want   bool
+	}{
+		{"offline", store.WorkerStatusOffline, 0, true},
+		{"online", store.WorkerStatusOnline, 0, false},
+		{"disabled dead", store.WorkerStatusDisabled, time.Hour, true},
+		{"disabled live", store.WorkerStatusDisabled, time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerRouter(st)
+			w := seedWorkerWithHeartbeat(t, st, tc.status, tc.age)
+
+			req := newReq(t, http.MethodGet, "/api/v1/workers/"+w.ID, nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rr.Code)
+			}
+			var resp workerDetailResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Removable != tc.want {
+				t.Errorf("removable = %v, want %v", resp.Removable, tc.want)
+			}
+		})
+	}
 }

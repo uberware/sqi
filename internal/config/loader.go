@@ -114,9 +114,10 @@ type fileConfig struct {
 	} `yaml:"log"`
 
 	Scheduler *struct {
-		HeartbeatTimeout  *string `yaml:"heartbeat_timeout"`
-		TickInterval      *string `yaml:"tick_interval"`
-		MaxTasksPerWorker *int    `yaml:"max_tasks_per_worker"`
+		HeartbeatTimeout       *string `yaml:"heartbeat_timeout"`
+		TickInterval           *string `yaml:"tick_interval"`
+		MaxTasksPerWorker      *int    `yaml:"max_tasks_per_worker"`
+		OfflineWorkerRetention *string `yaml:"offline_worker_retention"`
 	} `yaml:"scheduler"`
 
 	Discovery *struct {
@@ -257,6 +258,11 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler.MaxTasksPerWorker != nil {
 		cfg.Scheduler.MaxTasksPerWorker = *fc.Scheduler.MaxTasksPerWorker
 	}
+	if fc.Scheduler.OfflineWorkerRetention != nil {
+		if d, err := time.ParseDuration(*fc.Scheduler.OfflineWorkerRetention); err == nil {
+			cfg.Scheduler.OfflineWorkerRetention = d
+		}
+	}
 }
 
 func mergeDiscoveryFile(cfg *Config, fc fileConfig) {
@@ -308,6 +314,7 @@ func applyEnv(cfg *Config) {
 	setDuration(&cfg.Scheduler.HeartbeatTimeout, "SQI_SCHEDULER_HEARTBEAT_TIMEOUT")
 	setDuration(&cfg.Scheduler.TickInterval, "SQI_SCHEDULER_TICK_INTERVAL")
 	setInt(&cfg.Scheduler.MaxTasksPerWorker, "SQI_SCHEDULER_MAX_TASKS_PER_WORKER")
+	setDuration(&cfg.Scheduler.OfflineWorkerRetention, "SQI_SCHEDULER_OFFLINE_WORKER_RETENTION")
 
 	setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED")
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")

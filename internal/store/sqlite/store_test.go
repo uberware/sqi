@@ -447,6 +447,125 @@ func TestWorker_ListStale(t *testing.T) {
 	}
 }
 
+func TestWorker_Delete(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertWorker(t, s, "w1", "f1")
+
+	if err := s.DeleteWorker(ctx, "w1"); err != nil {
+		t.Fatalf("DeleteWorker: %v", err)
+	}
+	if _, err := s.GetWorker(ctx, "w1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetWorker after delete: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestWorker_Delete_NotFound(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.DeleteWorker(context.Background(), "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteWorker(missing): got %v, want ErrNotFound", err)
+	}
+}
+
+// TestWorker_Delete_WithAttemptHistory proves migration 00012 relaxed the
+// foreign keys: a worker referenced by tasks (assigned_worker_id) and
+// task_attempts (worker_id) can still be hard-deleted, and those rows survive.
+func TestWorker_Delete_WithAttemptHistory(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertWorker(t, s, "w1", "f1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "step", 0)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t1", JobID: "j1", StepID: "s1", Name: "task-t1",
+		Status: store.TaskStatusReady, Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Point a task (assigned_worker_id) and an attempt (worker_id) at the worker.
+	if err := s.AssignTask(ctx, "t1", "w1", time.Now().UTC()); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+	if _, err := s.CreateTaskAttempt(ctx, store.TaskAttempt{
+		ID:            "a1",
+		TaskID:        "t1",
+		WorkerID:      "w1",
+		AttemptNumber: 1,
+		Status:        store.AttemptStatusRunning,
+		StartedAt:     time.Now().UTC(),
+		CreatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
+	if err := s.DeleteWorker(ctx, "w1"); err != nil {
+		t.Fatalf("DeleteWorker with attempt history: %v", err)
+	}
+
+	// The attempt row (and its worker_id snapshot) must survive the deletion.
+	att, err := s.GetTaskAttempt(ctx, "a1")
+	if err != nil {
+		t.Fatalf("GetTaskAttempt after worker delete: %v", err)
+	}
+	if att.WorkerID != "w1" {
+		t.Errorf("attempt WorkerID snapshot: got %q, want w1", att.WorkerID)
+	}
+}
+
+func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+
+	old := time.Now().Add(-2 * time.Hour)
+	recent := time.Now().Add(-1 * time.Minute)
+
+	// w1: offline + stale heartbeat → removed.
+	insertWorker(t, s, "w1", "f1")
+	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old); err != nil {
+		t.Fatalf("heartbeat w1: %v", err)
+	}
+	if err := s.UpdateWorkerStatus(ctx, "w1", store.WorkerStatusOffline); err != nil {
+		t.Fatalf("status w1: %v", err)
+	}
+	// w2: offline but recent heartbeat → kept.
+	insertWorker(t, s, "w2", "f1")
+	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent); err != nil {
+		t.Fatalf("heartbeat w2: %v", err)
+	}
+	if err := s.UpdateWorkerStatus(ctx, "w2", store.WorkerStatusOffline); err != nil {
+		t.Fatalf("status w2: %v", err)
+	}
+	// w3: disabled + stale heartbeat → kept (status filter protects it).
+	insertWorker(t, s, "w3", "f1")
+	if err := s.UpdateWorkerHeartbeat(ctx, "w3", old); err != nil {
+		t.Fatalf("heartbeat w3: %v", err)
+	}
+	if err := s.UpdateWorkerStatus(ctx, "w3", store.WorkerStatusDisabled); err != nil {
+		t.Fatalf("status w3: %v", err)
+	}
+
+	removed, err := s.DeleteOfflineWorkersBefore(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOfflineWorkersBefore: %v", err)
+	}
+	if len(removed) != 1 || removed[0].ID != "w1" {
+		t.Fatalf("removed: got %v, want [w1]", removed)
+	}
+	for _, id := range []string{"w2", "w3"} {
+		if _, err := s.GetWorker(ctx, id); err != nil {
+			t.Errorf("worker %s should survive: %v", id, err)
+		}
+	}
+	if _, err := s.GetWorker(ctx, "w1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("worker w1 should be gone: got %v", err)
+	}
+}
+
 func TestWorker_CountIdleWorkers(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

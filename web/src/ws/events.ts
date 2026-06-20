@@ -32,13 +32,20 @@ export interface WsTaskEvent {
   updated_at: string
 }
 
+/**
+ * Synthetic status value delivered on the "workers" subject when a worker row
+ * is hard-deleted (manual remove or the offline-retention sweep). Not a real
+ * {@link WorkerStatus}; subscribers should drop the worker rather than update it.
+ */
+export const WORKER_REMOVED_STATUS = 'removed'
+
 /** Payload received on the "workers" subject when a worker status changes. */
 export interface WsWorkerEvent {
   worker_id: string
   name?: string
   hostname?: string
   farm_id?: string
-  status: WorkerStatus
+  status: WorkerStatus | typeof WORKER_REMOVED_STATUS
 }
 
 /** Returns true when payload is a WsJobEvent (has job_id but no task_id). */

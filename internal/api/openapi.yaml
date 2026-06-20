@@ -443,7 +443,7 @@ components:
 
     Worker:
       type: object
-      required: [id, farm_id, hostname, gpu, status, registered_at, updated_at]
+      required: [id, farm_id, hostname, gpu, status, removable, registered_at, updated_at]
       properties:
         id:
           type: string
@@ -483,6 +483,14 @@ components:
         status:
           type: string
           enum: [online, offline, disabled]
+        removable:
+          type: boolean
+          description: >-
+            Server-authoritative flag indicating the worker may be hard-deleted
+            via DELETE /workers/{id}: true for offline workers and for disabled
+            workers whose last heartbeat is older than the heartbeat-timeout
+            window (the machine is gone). Online and live-disabled workers are
+            never removable.
         last_heartbeat_at:
           type: string
           format: date-time
@@ -1356,6 +1364,27 @@ paths:
                 $ref: "#/components/schemas/WorkerDetail"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: removeWorker
+      summary: Remove a worker
+      tags: [workers]
+      description: |
+        Hard-deletes a worker record. Only removable workers are accepted:
+        offline workers, or disabled workers whose last heartbeat is older than
+        the heartbeat-timeout window (the machine is gone). Online and
+        live-disabled workers are rejected with `409`. Task and attempt history
+        referencing the worker is preserved by ID. A removed worker that
+        reconnects simply re-registers.
+      responses:
+        "204":
+          description: Worker removed.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
