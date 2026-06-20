@@ -417,3 +417,21 @@ def test_log_page_wraps_chunks_with_cursor() -> None:
     # Items preserve server order (ascending nats_seq).
     assert [c.nats_seq for c in page.items] == [1001, 1002]
     assert page.items[1].stream == "stderr"
+
+
+# ── CancelResult ────────────────────────────────────────────────────
+
+
+def test_cancel_result_from_dict() -> None:
+    from sqi_client.models import CancelResult, TaskStatus
+
+    result = CancelResult.from_dict({"task_id": "t1", "status": "canceled"})
+    assert result.task_id == "t1"
+    assert result.status is TaskStatus.CANCELED
+
+
+def test_cancel_result_tolerates_missing_fields() -> None:
+    from sqi_client.models import CancelResult
+
+    result = CancelResult.from_dict({})
+    assert result.task_id == ""

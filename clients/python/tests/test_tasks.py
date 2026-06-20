@@ -16,7 +16,7 @@ import pytest
 import respx
 
 from sqi_client.errors import ConflictError, NotFoundError
-from sqi_client.models import LogChunk, LogPage, Page, RetryResult, Task, TaskStatus
+from sqi_client.models import CancelResult, LogChunk, LogPage, Page, RetryResult, Task, TaskStatus
 from tests.conftest import BASE_URL, ClientFactory
 
 _API = f"{BASE_URL}/api/v1"
@@ -204,6 +204,59 @@ def test_retry_task_invalid_state_raises_conflict(make_client: ClientFactory) ->
 
     with pytest.raises(ConflictError):
         client.retry_task("t1")
+
+
+# ── cancel_task ─────────────────────────────────────────────────────
+
+
+@respx.mock
+def test_cancel_task_returns_result(make_client: ClientFactory) -> None:
+    route = respx.post(f"{_API}/tasks/t1/cancel").mock(
+        return_value=httpx.Response(202, json={"task_id": "t1", "status": "canceled"})
+    )
+    client = make_client()
+
+    result = client.cancel_task("t1")
+
+    assert isinstance(result, CancelResult)
+    assert result.task_id == "t1"
+    assert result.status is TaskStatus.CANCELED
+    assert route.calls.last.request.method == "POST"
+
+
+@respx.mock
+def test_cancel_task_terminal_raises_conflict(make_client: ClientFactory) -> None:
+    respx.post(f"{_API}/tasks/t1/cancel").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "type": "about:blank",
+                "title": "Conflict",
+                "status": 409,
+                "detail": "only non-terminal tasks may be canceled",
+            },
+            headers={"Content-Type": "application/problem+json"},
+        )
+    )
+    client = make_client()
+
+    with pytest.raises(ConflictError):
+        client.cancel_task("t1")
+
+
+@respx.mock
+def test_cancel_task_missing_raises_not_found(make_client: ClientFactory) -> None:
+    respx.post(f"{_API}/tasks/ghost/cancel").mock(
+        return_value=httpx.Response(
+            404,
+            json={"type": "about:blank", "title": "Not Found", "status": 404},
+            headers={"Content-Type": "application/problem+json"},
+        )
+    )
+    client = make_client()
+
+    with pytest.raises(NotFoundError):
+        client.cancel_task("ghost")
 
 
 # ── get_task_logs ───────────────────────────────────────────────────

@@ -47,6 +47,10 @@ def main(argv: list[str]) -> int:
         sqi.cancel_job(job_id)
         print("  cancel    ->", sqi.get_job(job_id).status)
 
+        # Cancel a single running task (signals its worker, releases usage slots):
+        # result = sqi.cancel_task(task_id)
+        # print(f"task {result.task_id} -> {result.status}")
+
     return 0
 
 
