@@ -1190,6 +1190,21 @@ func TestUsagePool_Conflict(t *testing.T) {
 	}
 }
 
+// Usage-pool names are the trailing segment of a case-insensitive capability
+// name (OpenJD jobtemplate-2023-09), so two names differing only in case are the
+// same capability and must conflict.
+func TestUsagePool_ConflictCaseInsensitive(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateUsagePool(ctx, store.UsagePool{ID: "p1", Name: "maya", MaxConcurrent: 1}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	_, err := s.CreateUsagePool(ctx, store.UsagePool{ID: "p2", Name: "Maya", MaxConcurrent: 2})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("expected ErrConflict for case-insensitive duplicate name, got %v", err)
+	}
+}
+
 func TestUsagePool_DeleteNotFound(t *testing.T) {
 	s := openTestStore(t)
 	err := s.DeleteUsagePool(context.Background(), "nope")

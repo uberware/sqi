@@ -216,6 +216,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Capabilities ──────────────────────────────────────────────────────────
 	caps := capabilities.Detect(nil)
 	caps.MergeManualTags(cfg.Worker.CapabilityTags)
+	if err := capabilities.ValidateTagKeys(caps.Tags); err != nil {
+		return fmt.Errorf("invalid capability tags: %w", err)
+	}
 
 	// ── Registration ────────────────────────────────────────────
 	//
@@ -458,6 +461,9 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 
 	caps := capabilities.Detect(nil)
 	caps.MergeManualTags(cfg.Worker.CapabilityTags)
+	if err := capabilities.ValidateTagKeys(caps.Tags); err != nil {
+		return fmt.Errorf("invalid capability tags: %w", err)
+	}
 
 	fmt.Fprintf(w, "os:          %s\n", caps.OS)
 	if caps.OSVersion != "" {

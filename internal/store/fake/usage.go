@@ -5,6 +5,7 @@ package fake
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -12,14 +13,16 @@ import (
 
 // ── UsagePoolStore ────────────────────────────────────────────────────────────
 
-// CreateUsagePool inserts a new pool. Returns [store.ErrConflict] if a pool
-// with the same name already exists.
+// CreateUsagePool inserts a new pool. Returns [store.ErrConflict] if a pool with
+// the same name (compared case-insensitively) already exists.
 func (s *Store) CreateUsagePool(_ context.Context, pool store.UsagePool) (store.UsagePool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Pool names are case-insensitive (OpenJD jobtemplate-2023-09), mirroring the
+	// SQLite NOCASE unique index.
 	for _, existing := range s.usagePools {
-		if existing.Name == pool.Name {
+		if strings.EqualFold(existing.Name, pool.Name) {
 			return store.UsagePool{}, store.ErrConflict
 		}
 	}
@@ -106,10 +109,11 @@ func (s *Store) UpdateUsagePool(_ context.Context, pool store.UsagePool) (store.
 		return store.UsagePool{}, store.ErrNotFound
 	}
 
-	// Check name uniqueness, excluding self.
-	if pool.Name != existing.Name {
-		for _, p := range s.usagePools {
-			if p.Name == pool.Name {
+	// Check name uniqueness case-insensitively, excluding self by ID (a pool may
+	// rename itself between cases). Mirrors the SQLite NOCASE unique index.
+	if !strings.EqualFold(pool.Name, existing.Name) {
+		for id, p := range s.usagePools {
+			if id != pool.ID && strings.EqualFold(p.Name, pool.Name) {
 				return store.UsagePool{}, store.ErrConflict
 			}
 		}

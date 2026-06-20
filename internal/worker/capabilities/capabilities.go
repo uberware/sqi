@@ -17,6 +17,11 @@
 //	// caps is now ready to embed in a protocol.RegisterMsg
 package capabilities
 
+import (
+	"fmt"
+	"strings"
+)
+
 // GPUInfo describes GPU hardware available on a worker host.
 // It mirrors [protocol.GPUInfo] so callers can convert directly; defined here
 // to avoid an import cycle between the capabilities and protocol packages.
@@ -99,6 +104,27 @@ func Detect(p Probe) Capabilities {
 		c.Tags["os_version"] = c.OSVersion
 	}
 	return c
+}
+
+// ValidateTagKeys returns an error if any two capability tag keys collide
+// case-insensitively. Tag keys are the trailing segment of an OpenJD capability
+// name (attr.worker.tag.<key>), which the spec defines as case-insensitive, so
+// two keys differing only in case are the same capability and would match
+// ambiguously. Rejecting them at registration keeps the advertised tag set
+// unambiguous.
+func ValidateTagKeys(tags map[string]string) error {
+	seen := make(map[string]string, len(tags))
+	for k := range tags {
+		lk := strings.ToLower(k)
+		if prev, ok := seen[lk]; ok {
+			return fmt.Errorf(
+				"capability tag keys %q and %q differ only in case; tag keys are case-insensitive",
+				prev, k,
+			)
+		}
+		seen[lk] = k
+	}
+	return nil
 }
 
 // MergeManualTags merges manual capability tags from
