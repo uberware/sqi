@@ -883,9 +883,7 @@ describe('JobDetail', () => {
       fireEvent.click(cancelBtn)
 
       await waitFor(() => {
-        expect(
-          fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel')),
-        ).toBe(true)
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(true)
       })
     })
 
@@ -942,7 +940,8 @@ describe('JobDetail', () => {
       fetchMock.mockImplementation((url) => {
         const u = String(url)
         if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
-        if (u.includes('/tasks')) return Promise.resolve(okJson(makeTaskListResponse([runningTask, failedTask])))
+        if (u.includes('/tasks'))
+          return Promise.resolve(okJson(makeTaskListResponse([runningTask, failedTask])))
         return Promise.resolve(okJson(makeJob()))
       })
 

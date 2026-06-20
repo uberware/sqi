@@ -256,7 +256,13 @@ function TaskRow({
 
   return (
     <>
-      <tr className={[isRetrying ? styles.retryingRow : '', isCanceling ? styles.cancelingRow : ''].filter(Boolean).join(' ') || undefined}>
+      <tr
+        className={
+          [isRetrying ? styles.retryingRow : '', isCanceling ? styles.cancelingRow : '']
+            .filter(Boolean)
+            .join(' ') || undefined
+        }
+      >
         <td className={styles.checkCell}>
           {isSelectable(task.status) && (
             <input
@@ -293,6 +299,13 @@ function TaskRow({
         <td>{formatTimespan(task.assigned_at, endTime, now)}</td>
         <td>
           <div className={styles.actionCell}>
+            <Link
+              to={`/jobs/${jobId}/tasks/${task.id}/logs`}
+              className={styles.logsLink}
+              aria-label={`View logs for task ${task.name}`}
+            >
+              Logs
+            </Link>
             {canRetry && (
               <button
                 className={styles.retryBtn}
@@ -325,13 +338,6 @@ function TaskRow({
                 …
               </button>
             )}
-            <Link
-              to={`/jobs/${jobId}/tasks/${task.id}/logs`}
-              className={styles.logsLink}
-              aria-label={`View logs for task ${task.name}`}
-            >
-              Logs
-            </Link>
           </div>
         </td>
       </tr>
@@ -434,7 +440,10 @@ function StepSection({
                   <input
                     type="checkbox"
                     aria-label={`Select all tasks in step ${step.name}`}
-                    checked={selectableInStep.length > 0 && selectableInStep.every((t) => selectedTaskIds.has(t.id))}
+                    checked={
+                      selectableInStep.length > 0 &&
+                      selectableInStep.every((t) => selectedTaskIds.has(t.id))
+                    }
                     disabled={selectableInStep.length === 0}
                     onChange={onToggleStep}
                   />
@@ -775,7 +784,8 @@ export default function JobDetail() {
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
           const selectable = stepTasks.filter((t) => isSelectable(t.status))
-          const allSelected = selectable.length > 0 && selectable.every((t) => selectedTaskIds.has(t.id))
+          const allSelected =
+            selectable.length > 0 && selectable.every((t) => selectedTaskIds.has(t.id))
           return (
             <StepSection
               key={step.id}
@@ -830,7 +840,11 @@ export default function JobDetail() {
           >
             Retry selected ({selectedRetryable.length})
           </button>
-          <button className={styles.clearBtn} onClick={() => setSelectedTaskIds(new Set())} type="button">
+          <button
+            className={styles.clearBtn}
+            onClick={() => setSelectedTaskIds(new Set())}
+            type="button"
+          >
             Clear
           </button>
         </div>
