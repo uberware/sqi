@@ -32,11 +32,13 @@ import (
 // fakeScheduler implements [jobCanceler] for tests so cancelJob can run
 // without a live NATS/scheduler instance.
 type fakeScheduler struct {
-	cancelErr  error    // non-nil forces CancelJob to return this error
-	wokenQueue []string // queue IDs passed to WakeQueue, in call order
+	cancelErr    error    // non-nil forces CancelJob to return this error
+	wokenQueue   []string // queue IDs passed to WakeQueue, in call order
+	canceledJobs []string // job IDs passed to CancelJob, in call order
 }
 
-func (f *fakeScheduler) CancelJob(_ context.Context, _ string) error {
+func (f *fakeScheduler) CancelJob(_ context.Context, id string) error {
+	f.canceledJobs = append(f.canceledJobs, id)
 	return f.cancelErr
 }
 
@@ -990,4 +992,99 @@ func TestSubmitJobWithParams(t *testing.T) {
 			t.Fatalf("expected 422 for unknown param, got %d — body: %s", rr.Code, rr.Body)
 		}
 	})
+}
+
+// ── DELETE /api/v1/jobs/{id} — active-job cancel-then-delete ─────────────────
+
+// newJobRouterWithSched is like newJobRouter but returns the fakeScheduler
+// pointer so tests can inspect recorded CancelJob calls.
+func newJobRouterWithSched(st store.Store) (chi.Router, *fakeScheduler) {
+	sched := &fakeScheduler{}
+	return newJobRouter(st, sched), sched
+}
+
+// TestJobHandler_DeleteJob_ActiveJobCancelsAndDeletes verifies that deleting a
+// non-terminal job calls CancelJob on the scheduler before hard-deleting the row.
+func TestJobHandler_DeleteJob_ActiveJobCancelsAndDeletes(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-active",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "active-job",
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	r, sched := newJobRouterWithSched(st)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-active", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+	if _, err := st.GetJob(ctx, "job-active"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job still present after active-job delete: err=%v", err)
+	}
+	if len(sched.canceledJobs) != 1 || sched.canceledJobs[0] != "job-active" {
+		t.Errorf("CancelJob calls = %v, want [job-active]", sched.canceledJobs)
+	}
+}
+
+// TestJobHandler_DeleteJob_CancelFailureReturns500 verifies that when the
+// scheduler's CancelJob returns an error the handler responds 500 and does not
+// delete the job.
+func TestJobHandler_DeleteJob_CancelFailureReturns500(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-run-fail",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "running-job",
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	sched := &fakeScheduler{cancelErr: errors.New("scheduler unavailable")}
+	r := newJobRouter(st, sched)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-run-fail", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("DELETE status = %d, want 500 when CancelJob fails; body=%s", rr.Code, rr.Body)
+	}
+	// Job must not have been deleted.
+	if _, err := st.GetJob(ctx, "job-run-fail"); err != nil {
+		t.Fatalf("job should still exist after cancel failure: err=%v", err)
+	}
 }

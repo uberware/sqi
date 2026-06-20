@@ -32,7 +32,7 @@ type jobRecordingNotifier struct {
 func (n *jobRecordingNotifier) NotifyJob(e ws.JobEvent) { n.jobs = append(n.jobs, e) }
 
 // hasJobStatus reports whether the notifier recorded a JobEvent for jobID with
-// the given status — mirrors hasWorkerStatus on workerRecordingNotifier.
+// the given status — mirrors the status-check pattern used by workerRecordingNotifier.
 func (n *jobRecordingNotifier) hasJobStatus(jobID, status string) bool {
 	for _, e := range n.jobs {
 		if e.JobID == jobID && e.Status == status {

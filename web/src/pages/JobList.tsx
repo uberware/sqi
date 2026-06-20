@@ -258,7 +258,9 @@ export default function JobList() {
         // Hard-deleted: evict the job row from every cached list page immediately.
         queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
           if (!old) return old
-          return { ...old, items: old.items.filter((j) => j.id !== payload.job_id) }
+          const items = old.items.filter((j) => j.id !== payload.job_id)
+          if (items.length === old.items.length) return old
+          return { ...old, items, total: Math.max(0, old.total - 1) }
         })
         setSelectedIds((prev) => {
           if (!prev.has(payload.job_id)) return prev

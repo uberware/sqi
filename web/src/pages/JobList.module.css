@@ -367,7 +367,7 @@ tr.rowSelected .deleteBtn {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: var(--z-modal, 1000);
+  z-index: 1000; /* sits above all page content; no z-index token defined in tokens.css */
 }
 
 .dialog {
