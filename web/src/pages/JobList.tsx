@@ -554,7 +554,7 @@ export default function JobList() {
                 />
               </th>
               <th>Elapsed</th>
-              <th aria-label="Actions" />
+              <th aria-label="Actions" className={styles.actionsCell} />
             </tr>
           </thead>
           <tbody>
@@ -601,7 +601,7 @@ export default function JobList() {
                   </td>
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
-                  <td>
+                  <td className={styles.actionsCell}>
                     {canCancel && (
                       <button
                         className={styles.cancelBtn}

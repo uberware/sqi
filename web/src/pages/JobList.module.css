@@ -306,7 +306,7 @@ tr.rowSelected .cancelBtn {
   color: var(--color-text-primary);
 }
 
-/* ── Delete button (per-row, always visible) ─────────────────────────────────── */
+/* ── Delete button (per-row, visible on hover) ───────────────────────────────── */
 
 .deleteBtn {
   padding: 2px var(--space-2);
@@ -318,7 +318,10 @@ tr.rowSelected .cancelBtn {
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   margin-left: var(--space-1);
-  transition: background 80ms;
+  opacity: 0;
+  transition:
+    opacity 80ms,
+    background 80ms;
 }
 
 tr:hover .deleteBtn,
@@ -333,6 +336,20 @@ tr.rowSelected .deleteBtn {
 .deleteBtn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── Actions cell ────────────────────────────────────────────────────────────── */
+
+/*
+ * Reserve room for both the Cancel and Delete buttons side by side so the
+ * column width never shifts — whether the buttons are revealed on hover, hidden
+ * while the pointer is away, or absent entirely (terminal jobs render no Cancel
+ * button). The buttons themselves fade in/out via opacity, which keeps them in
+ * layout, so only the missing-Cancel case needs this floor.
+ */
+.actionsCell {
+  min-width: 9rem;
+  white-space: nowrap;
 }
 
 /* ── Bulk delete button ──────────────────────────────────────────────────────── */
