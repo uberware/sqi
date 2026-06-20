@@ -7,6 +7,7 @@ import {
   fetchSubmitJob,
   fetchCancelJob,
   fetchRetryTask,
+  fetchCancelTask,
   fetchDisableWorker,
   fetchEnableWorker,
   fetchRemoveWorker,
@@ -14,6 +15,7 @@ import {
   useSubmitJob,
   useCancelJob,
   useRetryTask,
+  useCancelTask,
   useDisableWorker,
   useEnableWorker,
   useRemoveWorker,
@@ -170,6 +172,17 @@ describe('fetchRetryTask', () => {
   })
 })
 
+// ── fetchCancelTask ───────────────────────────────────────────────────────────
+
+describe('fetchCancelTask', () => {
+  it('sends POST to /api/v1/tasks/:id/cancel', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ task_id: 'task-1', status: 'canceled' }))
+    await fetchCancelTask('task-1')
+    expect(calledUrl()).toBe('/api/v1/tasks/task-1/cancel')
+    expect(calledInit().method).toBe('POST')
+  })
+})
+
 // ── fetchDisableWorker ────────────────────────────────────────────────────────
 
 describe('fetchDisableWorker', () => {
@@ -294,6 +307,22 @@ describe('useRetryTask', () => {
 
     const { result } = renderHook(() => useRetryTask(), { wrapper: wrapper(client) })
 
+    await act(async () => {
+      await result.current.mutateAsync('task-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.tasks.all })
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+  })
+})
+
+describe('useCancelTask', () => {
+  it('invalidates tasks and jobs on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ task_id: 'task-1', status: 'canceled' }))
+
+    const { result } = renderHook(() => useCancelTask(), { wrapper: wrapper(client) })
     await act(async () => {
       await result.current.mutateAsync('task-1')
     })
