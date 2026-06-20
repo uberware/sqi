@@ -7,7 +7,7 @@ import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import { useListJobs, queryKeys } from '@/api/queries'
-import { useCancelJob } from '@/api/mutations'
+import { useCancelJob, useDeleteJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useLiveNow } from '@/hooks/useLiveNow'
@@ -217,6 +217,15 @@ export default function JobList() {
 
   const queryClient = useQueryClient()
   const cancelJob = useCancelJob()
+  const deleteJob = useDeleteJob()
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  // Pending confirmation: either a single job id or the selected-bulk set.
+  const [confirm, setConfirm] = useState<{ ids: string[]; bulk: boolean } | null>(null)
+
+  // ── Selection state ── declared early so the WS callback below can reference
+  // setSelectedIds without a forward-declaration lint error.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
 
   // ── WS-driven in-place updates ───────────────────────────────────
 
@@ -250,6 +259,12 @@ export default function JobList() {
         queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
           if (!old) return old
           return { ...old, items: old.items.filter((j) => j.id !== payload.job_id) }
+        })
+        setSelectedIds((prev) => {
+          if (!prev.has(payload.job_id)) return prev
+          const next = new Set(prev)
+          next.delete(payload.job_id)
+          return next
         })
         return
       }
@@ -304,10 +319,7 @@ export default function JobList() {
     void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
   }, [queryClient])
 
-  // ── Selection state ───────────────────────────────────────────────────────
-
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
+  // ── Derived selection values ──────────────────────────────────────────────
 
   const cancelableJobs = jobs.filter((j) => CANCELABLE.has(j.status))
   const cancelableIds = new Set(cancelableJobs.map((j) => j.id))
@@ -361,6 +373,40 @@ export default function JobList() {
       await handleCancelRow(id)
     }
   }, [selectedCancelable, handleCancelRow])
+
+  // ── Per-row and bulk delete ───────────────────────────────────────────────
+
+  const runDelete = useCallback(
+    async (id: string) => {
+      setDeletingIds((prev) => new Set(prev).add(id))
+      try {
+        await deleteJob.mutateAsync(id)
+      } catch {
+        // Surfaced via deleteJob.isError; continue past individual failures.
+      } finally {
+        setDeletingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [deleteJob],
+  )
+
+  const confirmDelete = useCallback(async () => {
+    if (!confirm) return
+    const ids = confirm.ids
+    setConfirm(null)
+    for (const id of ids) {
+      await runDelete(id)
+    }
+  }, [confirm, runDelete])
 
   // ── Sort handler ──────────────────────────────────────────────────────────
 
@@ -442,6 +488,12 @@ export default function JobList() {
         <div className={styles.errorBanner} role="alert">
           Cancel failed:{' '}
           {cancelJob.error instanceof Error ? cancelJob.error.message : 'Unknown error'}
+        </div>
+      )}
+      {deleteJob.isError && (
+        <div className={styles.errorBanner} role="alert">
+          Delete failed:{' '}
+          {deleteJob.error instanceof Error ? deleteJob.error.message : 'Unknown error'}
         </div>
       )}
 
@@ -559,6 +611,15 @@ export default function JobList() {
                         {isCanceling ? '…' : 'Cancel'}
                       </button>
                     )}
+                    <button
+                      className={styles.deleteBtn}
+                      onClick={() => setConfirm({ ids: [job.id], bulk: false })}
+                      disabled={deletingIds.has(job.id)}
+                      type="button"
+                      aria-label={`Delete job ${job.name}`}
+                    >
+                      {deletingIds.has(job.id) ? '…' : 'Delete'}
+                    </button>
                   </td>
                 </tr>
               )
@@ -580,12 +641,50 @@ export default function JobList() {
             Cancel selected ({selectedCancelable.length})
           </button>
           <button
+            className={styles.bulkDeleteBtn}
+            onClick={() => setConfirm({ ids: [...selectedIds], bulk: true })}
+            disabled={selectedIds.size === 0 || deleteJob.isPending}
+            type="button"
+          >
+            Delete selected ({selectedIds.size})
+          </button>
+          <button
             className={styles.filterPill}
             onClick={() => setSelectedIds(new Set())}
             type="button"
           >
             Clear
           </button>
+        </div>
+      )}
+
+      {confirm && (
+        <div className={styles.dialogBackdrop} role="presentation" onClick={() => setConfirm(null)}>
+          <div
+            className={styles.dialog}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm delete"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p>
+              {confirm.bulk
+                ? `Delete ${confirm.ids.length} job${confirm.ids.length === 1 ? '' : 's'} and all their data? This cannot be undone.`
+                : 'Delete this job and all its data? This cannot be undone.'}
+            </p>
+            <div className={styles.dialogActions}>
+              <button className={styles.filterPill} type="button" onClick={() => setConfirm(null)}>
+                Cancel
+              </button>
+              <button
+                className={styles.bulkDeleteBtn}
+                type="button"
+                onClick={() => void confirmDelete()}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

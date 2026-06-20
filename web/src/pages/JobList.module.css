@@ -305,3 +305,83 @@ tr.rowSelected .cancelBtn {
   border-color: var(--color-text-muted);
   color: var(--color-text-primary);
 }
+
+/* ── Delete button (per-row, always visible) ─────────────────────────────────── */
+
+.deleteBtn {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error);
+  background: transparent;
+  color: var(--color-error);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  margin-left: var(--space-1);
+  transition: background 80ms;
+}
+
+tr:hover .deleteBtn,
+tr.rowSelected .deleteBtn {
+  opacity: 1;
+}
+
+.deleteBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.deleteBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Bulk delete button ──────────────────────────────────────────────────────── */
+
+.bulkDeleteBtn {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-error);
+  background: transparent;
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.bulkDeleteBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.bulkDeleteBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Confirmation dialog ─────────────────────────────────────────────────────── */
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal, 1000);
+}
+
+.dialog {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  max-width: 28rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.dialogActions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
