@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -181,5 +182,79 @@ func TestStore_DeleteJob_NotFound(t *testing.T) {
 	st := openTestStoreWB(t)
 	if err := st.DeleteJob(context.Background(), "missing"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("DeleteJob(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+// seedTerminalJobAt creates a job, drives it to the given terminal status, then
+// backdates both completed_at and updated_at to ts so the COALESCE cutoff
+// comparison is deterministic.
+func seedTerminalJobAt(t *testing.T, st *Store, id string, status store.JobStatus, ts time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	seedJob(t, st, id)
+	if err := st.UpdateJobStatus(ctx, id, status); err != nil {
+		t.Fatalf("seedTerminalJobAt UpdateJobStatus(%q, %v): %v", id, status, err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`UPDATE jobs SET completed_at = ?, updated_at = ? WHERE id = ?`,
+		timeToText(ts.UTC()), timeToText(ts.UTC()), id,
+	); err != nil {
+		t.Fatalf("seedTerminalJobAt backdate(%q): %v", id, err)
+	}
+}
+
+// deletedJobIDs collects the IDs from a []store.DeletedJob slice, sorts them,
+// and returns them so callers can compare against a pre-sorted want slice.
+func deletedJobIDs(deleted []store.DeletedJob) []string {
+	ids := make([]string, len(deleted))
+	for i, d := range deleted {
+		ids[i] = d.ID
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func TestStore_DeleteTerminalJobsBefore(t *testing.T) {
+	ctx := context.Background()
+
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+	recent := cutoff.Add(time.Hour)
+
+	tests := []struct {
+		name          string
+		includeFailed bool
+		wantDeleted   []string // job IDs expected removed (sorted)
+	}{
+		{name: "excludes failed by default", includeFailed: false, wantDeleted: []string{"canceled-old", "completed-old"}},
+		{name: "includes failed when set", includeFailed: true, wantDeleted: []string{"canceled-old", "completed-old", "failed-old"}},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			st := openTestStoreWB(t)
+			// Seed: <status>-old at `old`, plus a recent completed and a running job that must survive.
+			seedTerminalJobAt(t, st, "completed-old", store.JobStatusCompleted, old)
+			seedTerminalJobAt(t, st, "canceled-old", store.JobStatusCanceled, old)
+			seedTerminalJobAt(t, st, "failed-old", store.JobStatusFailed, old)
+			seedTerminalJobAt(t, st, "completed-recent", store.JobStatusCompleted, recent)
+			seedJob(t, st, "running-active") // status pending; never terminal
+
+			got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, tt.includeFailed)
+			if err != nil {
+				t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+			}
+			gotIDs := deletedJobIDs(got)
+			if !slices.Equal(gotIDs, tt.wantDeleted) {
+				t.Fatalf("deleted = %v, want %v", gotIDs, tt.wantDeleted)
+			}
+			// Survivors still present.
+			for _, id := range []string{"completed-recent", "running-active"} {
+				if _, err := st.GetJob(ctx, id); err != nil {
+					t.Fatalf("GetJob(%s): %v", id, err)
+				}
+			}
+		})
 	}
 }

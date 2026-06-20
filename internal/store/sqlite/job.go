@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -98,6 +99,15 @@ WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
 	sqlDeleteJobTasks = `DELETE FROM tasks WHERE job_id = ?`
 	sqlDeleteJobSteps = `DELETE FROM steps WHERE job_id = ?`
 	sqlDeleteJobRow   = `DELETE FROM jobs WHERE id = ?`
+
+	// Selects terminal jobs whose effective completion time is before the
+	// cutoff. The status set is closed by the caller appending 'failed'. The
+	// {STATUS} and time predicate are assembled in Go with bound parameters.
+	sqlSelectExpiredJobsPrefix = `
+SELECT id, name, farm_id, queue_id FROM jobs
+WHERE status IN (`
+	sqlSelectExpiredJobsSuffix = `)
+  AND COALESCE(completed_at, updated_at) < ?`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -339,6 +349,62 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 		ids = append(ids, id)
 	}
 	return ids, mapErr(rows.Err())
+}
+
+// DeleteTerminalJobsBefore implements [store.JobStore]. It selects the eligible
+// job IDs first, then deletes each via the shared cascade, all inside one
+// transaction so a partially-applied sweep can never leave orphaned child rows.
+func (s *Store) DeleteTerminalJobsBefore(
+	ctx context.Context, cutoff time.Time, includeFailed bool,
+) ([]store.DeletedJob, error) {
+	statuses := []any{string(store.JobStatusCompleted), string(store.JobStatusCanceled)}
+	if includeFailed {
+		statuses = append(statuses, string(store.JobStatusFailed))
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+	// placeholders is "?,?[,?]" — only ? marks; status values are bound.
+	query := sqlSelectExpiredJobsPrefix + placeholders + sqlSelectExpiredJobsSuffix //nolint:gosec // see comment
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	args := append(statuses, timeToText(cutoff.UTC()))
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	var deleted []store.DeletedJob
+	for rows.Next() {
+		var d store.DeletedJob
+		if err := rows.Scan(&d.ID, &d.Name, &d.FarmID, &d.QueueID); err != nil {
+			rows.Close() //nolint:errcheck // scan already failing
+			return nil, err
+		}
+		deleted = append(deleted, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close() //nolint:errcheck // err already set
+		return nil, err
+	}
+	rows.Close() //nolint:errcheck // done iterating before further writes
+
+	for _, d := range deleted {
+		for _, q := range []string{
+			sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
+			sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobRow,
+		} {
+			if _, err := tx.ExecContext(ctx, q, d.ID); err != nil {
+				return nil, mapErr(err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, mapErr(err)
+	}
+	return deleted, nil
 }
 
 // DeleteJob implements [store.JobStore]. The cascade runs in a single

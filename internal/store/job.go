@@ -80,6 +80,15 @@ const (
 	JobSortByName JobSortField = "name"
 )
 
+// DeletedJob is the summary of a job removed by [JobStore.DeleteTerminalJobsBefore],
+// carrying the fields a WebSocket "removed" event needs.
+type DeletedJob struct {
+	ID      string
+	Name    string
+	FarmID  string
+	QueueID string
+}
+
 // JobStore is the persistence interface for [Job] records.
 type JobStore interface {
 	// CreateJob inserts a new job with all fields populated by the caller.
@@ -138,6 +147,14 @@ type JobStore interface {
 	// Returns [ErrNotFound] when the job does not exist. The audit_log is left
 	// intact (it references entities by id, not by foreign key).
 	DeleteJob(ctx context.Context, id string) error
+
+	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time
+	// (completed_at, falling back to updated_at when NULL) is before cutoff, and
+	// returns a summary of each removed job. completed and canceled jobs are
+	// always eligible; failed jobs are included only when includeFailed is true.
+	// Active jobs are never removed. Each removed job's children are deleted via
+	// the same cascade as [DeleteJob].
+	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

@@ -177,6 +177,58 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 	return nil
 }
 
+// DeleteTerminalJobsBefore implements [store.JobStore]. completed and canceled
+// jobs are always eligible; failed jobs only when includeFailed. Effective
+// completion time is CompletedAt, falling back to UpdatedAt when nil.
+func (s *Store) DeleteTerminalJobsBefore(
+	ctx context.Context, cutoff time.Time, includeFailed bool,
+) ([]store.DeletedJob, error) {
+	s.mu.Lock()
+	var ids []string
+	for id, j := range s.jobs {
+		if !terminalJobEligible(j.Status, includeFailed) {
+			continue
+		}
+		completed := j.UpdatedAt
+		if j.CompletedAt != nil {
+			completed = *j.CompletedAt
+		}
+		if !completed.Before(cutoff) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+
+	var deleted []store.DeletedJob
+	for _, id := range ids {
+		s.mu.Lock()
+		j := s.jobs[id]
+		s.mu.Unlock()
+		if err := s.DeleteJob(ctx, id); err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, store.DeletedJob{
+			ID: j.ID, Name: j.Name, FarmID: j.FarmID, QueueID: j.QueueID,
+		})
+	}
+	return deleted, nil
+}
+
+// terminalJobEligible reports whether a job in the given status is eligible for
+// retention deletion. completed and canceled always qualify; failed only when
+// includeFailed is set.
+func terminalJobEligible(status store.JobStatus, includeFailed bool) bool {
+	switch status {
+	case store.JobStatusCompleted, store.JobStatusCanceled:
+		return true
+	case store.JobStatusFailed:
+		return includeFailed
+	default:
+		return false
+	}
+}
+
 // DeleteJob implements [store.JobStore]. It removes the job and every in-memory
 // row that belongs to it: usage claims (by attempt), task logs (by task), task
 // attempts, tasks, and steps, mirroring the SQLite cascade. Returns

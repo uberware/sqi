@@ -25,6 +25,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -1382,5 +1383,41 @@ func TestFakeStore_DeleteJob(t *testing.T) {
 	// Deleting a missing job returns ErrNotFound.
 	if err := st.DeleteJob(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("DeleteJob(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+// deletedFakeIDs collects IDs from a []store.DeletedJob and returns them sorted.
+func deletedFakeIDs(deleted []store.DeletedJob) []string {
+	ids := make([]string, len(deleted))
+	for i, d := range deleted {
+		ids[i] = d.ID
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func TestFakeStore_DeleteTerminalJobsBefore(t *testing.T) {
+	ctx := context.Background()
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+
+	st := New()
+	mkJob := func(id string, status store.JobStatus, completed time.Time) {
+		c := completed
+		_, _ = st.CreateJob(ctx, store.Job{ID: id, Status: status, CompletedAt: &c, UpdatedAt: completed})
+	}
+	mkJob("c", store.JobStatusCompleted, old)
+	mkJob("x", store.JobStatusCanceled, old)
+	mkJob("f", store.JobStatusFailed, old)
+
+	got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+	}
+	if ids := deletedFakeIDs(got); !slices.Equal(ids, []string{"c", "x"}) {
+		t.Fatalf("deleted = %v, want [c x]", ids)
+	}
+	if _, err := st.GetJob(ctx, "f"); err != nil {
+		t.Fatalf("failed job should survive without includeFailed: %v", err)
 	}
 }
