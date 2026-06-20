@@ -109,6 +109,15 @@ strict = true
 files = ["src"]
 warn_unused_configs = true
 
+# httpx pulls in anyio transitively, and modern anyio (>= 4.x) uses 3.10+ `match`
+# statements internally. mypy parses followed imports with the 3.9 target grammar,
+# so following anyio's source makes `mypy src` fail to parse it (a [syntax] error)
+# even though our code never touches anyio directly. Skip following it — the public
+# httpx surface we depend on stays fully typed. Drop this when the floor is 3.10+.
+[[tool.mypy.overrides]]
+module = ["anyio.*"]
+follow_imports = "skip"
+
 # ── Pytest + coverage ─────────────────────────────────────────────────────────
 
 [tool.pytest.ini_options]
