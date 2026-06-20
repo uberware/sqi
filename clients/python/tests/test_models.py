@@ -309,8 +309,15 @@ def test_worker_fields() -> None:
     assert worker.ram_mb == 131072
     assert worker.tags == {"arnold": "7.2.1", "gpu": "true"}
     assert worker.status is WorkerStatus.ONLINE
+    assert worker.removable is False
     assert worker.last_heartbeat_at is not None
     assert worker.current_tasks == []
+
+
+def test_worker_removable_defaults_false_when_absent() -> None:
+    raw = load("worker")
+    del raw["removable"]
+    assert Worker.from_dict(raw).removable is False
 
 
 def test_worker_gpu_nested() -> None:

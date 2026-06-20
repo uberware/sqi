@@ -8,11 +8,13 @@ package scheduler
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/ws"
@@ -245,6 +247,95 @@ type listStaleErrSt struct {
 
 func (*listStaleErrSt) ListStaleWorkers(_ context.Context, _ time.Time) ([]store.Worker, error) {
 	return nil, context.DeadlineExceeded
+}
+
+// workerRecordingNotifier captures NotifyWorker events.
+type workerRecordingNotifier struct {
+	ws.NoopNotifier
+
+	workers []ws.WorkerEvent
+}
+
+func (n *workerRecordingNotifier) NotifyWorker(e ws.WorkerEvent) {
+	n.workers = append(n.workers, e)
+}
+
+// seedWorkerWithHeartbeat registers a worker with the given status and a last
+// heartbeat aged by age (0 = never).
+func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, id string, status store.WorkerStatus, age time.Duration) {
+	t.Helper()
+	w := store.Worker{ID: id, FarmID: "farm-1", Hostname: id, Status: status}
+	if age > 0 {
+		at := time.Now().UTC().Add(-age)
+		w.LastHeartbeatAt = &at
+	}
+	if _, err := st.RegisterWorker(t.Context(), w); err != nil {
+		t.Fatalf("RegisterWorker(%q): %v", id, err)
+	}
+	// RegisterWorker forces status online; set the intended status explicitly.
+	if status != store.WorkerStatusOnline {
+		if err := st.UpdateWorkerStatus(t.Context(), id, status); err != nil {
+			t.Fatalf("UpdateWorkerStatus(%q): %v", id, err)
+		}
+	}
+}
+
+// newRetentionScheduler builds a Scheduler with the given offline-worker
+// retention and a worker-recording notifier.
+func newRetentionScheduler(st store.Store, retention time.Duration, n ws.Notifier) *Scheduler {
+	cfg := DefaultConfig()
+	cfg.FarmID = "farm-1"
+	cfg.OfflineWorkerRetention = retention
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), n, nil)
+	s.ctx = context.Background()
+	return s
+}
+
+// TestSweepRetiredWorkers_RemovesStaleOffline verifies the retention sweep
+// hard-deletes offline workers older than the retention window, leaves recent
+// offline and stale disabled workers alone, and emits a "removed" WS event.
+func TestSweepRetiredWorkers_RemovesStaleOffline(t *testing.T) {
+	st := fake.New()
+	rec := &workerRecordingNotifier{}
+	s := newRetentionScheduler(st, time.Hour, rec)
+
+	seedWorkerWithHeartbeat(t, st, "w-old", store.WorkerStatusOffline, 2*time.Hour)       // removed
+	seedWorkerWithHeartbeat(t, st, "w-recent", store.WorkerStatusOffline, time.Minute)    // kept
+	seedWorkerWithHeartbeat(t, st, "w-disabled", store.WorkerStatusDisabled, 2*time.Hour) // kept
+
+	s.sweepRetiredWorkers(t.Context())
+
+	if _, err := st.GetWorker(t.Context(), "w-old"); err == nil {
+		t.Error("w-old should have been removed")
+	}
+	for _, id := range []string{"w-recent", "w-disabled"} {
+		if _, err := st.GetWorker(t.Context(), id); err != nil {
+			t.Errorf("worker %s should survive: %v", id, err)
+		}
+	}
+	if len(rec.workers) != 1 || rec.workers[0].WorkerID != "w-old" ||
+		rec.workers[0].Status != ws.WorkerStatusRemoved {
+		t.Errorf("notify events = %+v, want one removed event for w-old", rec.workers)
+	}
+}
+
+// TestSweepRetiredWorkers_DisabledByZeroRetention verifies a non-positive
+// retention disables the sweep entirely.
+func TestSweepRetiredWorkers_DisabledByZeroRetention(t *testing.T) {
+	st := fake.New()
+	rec := &workerRecordingNotifier{}
+	s := newRetentionScheduler(st, 0, rec)
+
+	seedWorkerWithHeartbeat(t, st, "w-old", store.WorkerStatusOffline, 720*time.Hour)
+
+	s.sweepRetiredWorkers(t.Context())
+
+	if _, err := st.GetWorker(t.Context(), "w-old"); err != nil {
+		t.Errorf("w-old should survive when retention is disabled: %v", err)
+	}
+	if len(rec.workers) != 0 {
+		t.Errorf("no events expected when retention disabled, got %+v", rec.workers)
+	}
 }
 
 // TestDefaultConfig_AssignedTaskTimeoutTightened verifies that AssignedTaskTimeout

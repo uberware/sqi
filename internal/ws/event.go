@@ -17,8 +17,14 @@ type TaskEvent struct {
 	UpdatedAt time.Time
 }
 
+// WorkerStatusRemoved is a synthetic WorkerEvent.Status value (not a persisted
+// [store.WorkerStatus]) signaling that a worker row was hard-deleted — by a
+// manual remove or the offline-retention sweep — so subscribers should drop it
+// from their views rather than update it in place.
+const WorkerStatusRemoved = "removed"
+
 // WorkerEvent is published when a worker registers, sends a heartbeat,
-// deregisters, or has its status changed by the heartbeat sweep.
+// deregisters, has its status changed by the heartbeat sweep, or is removed.
 // The Hub fans this out to clients subscribed to [SubjectWorkers].
 type WorkerEvent struct {
 	WorkerID string

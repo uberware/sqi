@@ -39,6 +39,7 @@ import (
 	"context"
 	"log/slog"
 	httppprof "net/http/pprof"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -69,6 +70,12 @@ type Config struct {
 	// Use in tests and benchmarks where the loopback address would cause all
 	// concurrent requests to share one bucket and trigger 429s.
 	DisableRateLimit bool
+
+	// WorkerOfflineThreshold is the heartbeat-timeout window used to decide
+	// whether a disabled worker is dead (and thus removable). It mirrors the
+	// scheduler's WorkerTimeout. Zero is treated as "no grace" (a disabled
+	// worker with any past heartbeat is considered dead).
+	WorkerOfflineThreshold time.Duration
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -189,7 +196,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	// ── REST API ────────────────────────────────────────────────
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, logger)
 	tasks := newTaskHandler(deps.Store, logger)
-	workers := newWorkerHandler(deps.Store, logger)
+	// Pass the hub as a notifier only when non-nil so the worker handler's
+	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
+	var workerNotifier ws.Notifier
+	if deps.Hub != nil {
+		workerNotifier = deps.Hub
+	}
+	workers := newWorkerHandler(deps.Store, workerNotifier, cfg.WorkerOfflineThreshold, logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
@@ -229,6 +242,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/workers/{id}", workers.getWorker)
 		api.Post("/workers/{id}/disable", workers.disableWorker)
 		api.Post("/workers/{id}/enable", workers.enableWorker)
+		api.Delete("/workers/{id}", workers.removeWorker)
 
 		// ── Farm endpoints ──────────────────────────────────────
 		api.Post("/farms", farms.createFarm)

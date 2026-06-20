@@ -228,7 +228,13 @@
   color: var(--color-success);
 }
 
-tr:hover .toggleBtn {
+.toggleBtn--remove {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+tr:hover .toggleBtn,
+tr.rowSelected .toggleBtn {
   opacity: 1;
 }
 
@@ -244,8 +250,70 @@ tr:hover .toggleBtn {
   background: var(--color-success-muted);
 }
 
+.toggleBtn--remove:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
 .toggleBtn:disabled {
   opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Selection + bulk actions ────────────────────────────────────────────────── */
+
+.checkCell {
+  width: 36px;
+  padding-right: 0 !important;
+}
+
+.table tbody tr.rowSelected {
+  background: var(--color-accent-muted);
+}
+
+.bulkBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-8);
+  background: var(--color-accent-muted);
+  border-top: 1px solid var(--color-accent);
+  font-size: var(--font-size-sm);
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.bulkBarCount {
+  font-weight: var(--font-weight-medium);
+}
+
+.bulkBtn {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.bulkBtn--disable {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.bulkBtn--remove {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.bulkBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.bulkBtn:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 

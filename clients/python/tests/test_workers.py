@@ -15,7 +15,7 @@ import httpx
 import pytest
 import respx
 
-from sqi_client.errors import NotFoundError
+from sqi_client.errors import ConflictError, NotFoundError
 from sqi_client.models import Page, Worker, WorkerAction, WorkerStatus
 from tests.conftest import BASE_URL, ClientFactory
 
@@ -258,3 +258,57 @@ def test_disable_worker_missing_raises_not_found(make_client: ClientFactory) -> 
 
     with pytest.raises(NotFoundError):
         client.disable_worker("nope")
+
+
+# ── remove_worker ───────────────────────────────────────────────────
+
+
+@respx.mock
+def test_remove_worker_deletes(make_client: ClientFactory) -> None:
+    route = respx.delete(f"{_WORKERS_URL}/w1").mock(return_value=httpx.Response(204))
+    client = make_client()
+
+    client.remove_worker("w1")
+
+    assert route.calls.last.request.method == "DELETE"
+    assert route.calls.last.request.url.path.endswith("/workers/w1")
+
+
+@respx.mock
+def test_remove_worker_not_removable_raises_conflict(make_client: ClientFactory) -> None:
+    respx.delete(f"{_WORKERS_URL}/w1").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "type": "about:blank",
+                "title": "Conflict",
+                "status": 409,
+                "detail": "worker is not removable",
+            },
+            headers={"Content-Type": "application/problem+json"},
+        )
+    )
+    client = make_client()
+
+    with pytest.raises(ConflictError):
+        client.remove_worker("w1")
+
+
+@respx.mock
+def test_remove_worker_missing_raises_not_found(make_client: ClientFactory) -> None:
+    respx.delete(f"{_WORKERS_URL}/nope").mock(
+        return_value=httpx.Response(
+            404,
+            json={
+                "type": "about:blank",
+                "title": "Not Found",
+                "status": 404,
+                "detail": "worker not found",
+            },
+            headers={"Content-Type": "application/problem+json"},
+        )
+    )
+    client = make_client()
+
+    with pytest.raises(NotFoundError):
+        client.remove_worker("nope")

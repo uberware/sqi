@@ -84,6 +84,7 @@ function makeWorker(overrides: Partial<Worker> = {}): Worker {
     farm_id: 'farm-1',
     hostname: 'render-node-01',
     status: 'online',
+    removable: false,
     gpu: {},
     registered_at: '2024-01-01T08:00:00Z',
     updated_at: '2024-01-01T10:00:00Z',
@@ -404,6 +405,146 @@ describe('WorkerList', () => {
     })
   })
 
+  // ── Per-row Remove button ─────────────────────────────────────────────
+
+  describe('per-row remove', () => {
+    it('shows Remove for a removable (offline) worker', async () => {
+      const worker = makeWorker({ status: 'offline', removable: true, hostname: 'offline-node' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Remove worker offline-node'))
+      expect(screen.getByLabelText('Remove worker offline-node')).toBeInTheDocument()
+    })
+
+    it('shows both Enable and Remove for a dead disabled worker', async () => {
+      const worker = makeWorker({ status: 'disabled', removable: true, hostname: 'dead-node' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Remove worker dead-node'))
+      expect(screen.getByLabelText('Enable worker dead-node')).toBeInTheDocument()
+      expect(screen.getByLabelText('Remove worker dead-node')).toBeInTheDocument()
+    })
+
+    it('does not show Remove for an online (non-removable) worker', async () => {
+      const worker = makeWorker({ status: 'online', removable: false, hostname: 'online-node' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('online-node'))
+      expect(screen.queryByLabelText('Remove worker online-node')).not.toBeInTheDocument()
+    })
+
+    it('Remove button calls DELETE /workers/{id}', async () => {
+      const worker = makeWorker({
+        id: 'w-rm',
+        status: 'offline',
+        removable: true,
+        hostname: 'rm-node',
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByLabelText('Remove worker rm-node'))
+
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      fetchMock.mockResolvedValue(okJson(makeListResponse([])))
+
+      fireEvent.click(screen.getByLabelText('Remove worker rm-node'))
+
+      await waitFor(() => {
+        const deleteCall = fetchMock.mock.calls.find(([url, init]) => {
+          const u = typeof url === 'string' ? url : (url as Request).url
+          return (
+            u.includes('/workers/w-rm') && (init as RequestInit | undefined)?.method === 'DELETE'
+          )
+        })
+        expect(deleteCall).toBeTruthy()
+      })
+    })
+  })
+
+  // ── Multi-select bulk actions ─────────────────────────────────────────
+
+  describe('bulk actions', () => {
+    function methodOf(call: readonly unknown[]): string | undefined {
+      return (call[1] as RequestInit | undefined)?.method
+    }
+
+    it('Remove selected deletes only the removable workers in the selection', async () => {
+      const online = makeWorker({ id: 'w-on', status: 'online', removable: false, hostname: 'on' })
+      const offline = makeWorker({
+        id: 'w-off',
+        status: 'offline',
+        removable: true,
+        hostname: 'off',
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([online, offline])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByLabelText('Select all workers'))
+
+      fireEvent.click(screen.getByLabelText('Select all workers'))
+
+      // The Remove-selected button reflects only the 1 removable worker.
+      const removeBtn = await screen.findByRole('button', { name: /Remove selected \(1\)/ })
+
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      fetchMock.mockResolvedValue(okJson(makeListResponse([online])))
+
+      fireEvent.click(removeBtn)
+
+      await waitFor(() => {
+        const deletes = fetchMock.mock.calls.filter((c) => {
+          const u = typeof c[0] === 'string' ? c[0] : (c[0] as Request).url
+          return methodOf(c) === 'DELETE' && u.includes('/workers/')
+        })
+        // Exactly one DELETE, targeting the offline (removable) worker only.
+        expect(deletes).toHaveLength(1)
+        const u = typeof deletes[0]?.[0] === 'string' ? (deletes[0][0] as string) : ''
+        expect(u).toContain('/workers/w-off')
+      })
+    })
+
+    it('Disable selected disables only the online workers in the selection', async () => {
+      const online = makeWorker({ id: 'w-on', status: 'online', removable: false, hostname: 'on' })
+      const offline = makeWorker({
+        id: 'w-off',
+        status: 'offline',
+        removable: true,
+        hostname: 'off',
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([online, offline])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByLabelText('Select all workers'))
+
+      fireEvent.click(screen.getByLabelText('Select all workers'))
+
+      const disableBtn = await screen.findByRole('button', { name: /Disable selected \(1\)/ })
+
+      fetchMock.mockResolvedValueOnce(okJson({ id: 'w-on', status: 'disabled' }))
+      fetchMock.mockResolvedValue(okJson(makeListResponse([offline])))
+
+      fireEvent.click(disableBtn)
+
+      await waitFor(() => {
+        const calls = fetchMock.mock.calls.flat() as string[]
+        expect(
+          calls.some((u) => typeof u === 'string' && u.includes('/workers/w-on/disable')),
+        ).toBe(true)
+        // The offline worker is never disabled.
+        expect(
+          calls.some((u) => typeof u === 'string' && u.includes('/workers/w-off/disable')),
+        ).toBe(false)
+      })
+    })
+  })
+
   // ── +N more capability tag overflow ──────────────────────────────────
 
   describe('capability tag overflow', () => {
@@ -552,6 +693,58 @@ describe('WorkerList', () => {
 
       // Visible worker badge should remain Online
       expect(screen.getAllByLabelText('Status: Online').length).toBeGreaterThan(0)
+    })
+
+    it('drops a worker row when a removed event arrives', async () => {
+      const a = makeWorker({ id: 'w-keep', status: 'online', hostname: 'keep-node' })
+      const b = makeWorker({
+        id: 'w-gone',
+        status: 'offline',
+        removable: true,
+        hostname: 'gone-node',
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([a, b])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('gone-node'))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'workers',
+          payload: { worker_id: 'w-gone', status: 'removed' },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(screen.queryByText('gone-node')).not.toBeInTheDocument())
+      expect(screen.getByText('keep-node')).toBeInTheDocument()
+    })
+
+    it('refetches the list when an event arrives for a worker not yet shown', async () => {
+      const existing = makeWorker({ id: 'w-old', status: 'online', hostname: 'old-node' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([existing])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('old-node'))
+
+      // A new worker (re)registers: its event isn't in the list yet, so the list
+      // must refetch rather than wait for the poll.
+      const fresh = makeWorker({ id: 'w-new', status: 'online', hostname: 'new-node' })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([existing, fresh])))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'workers',
+          payload: { worker_id: 'w-new', status: 'online', hostname: 'new-node' },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(screen.getByText('new-node')).toBeInTheDocument())
     })
   })
 

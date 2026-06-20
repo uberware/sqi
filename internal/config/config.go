@@ -116,6 +116,13 @@ type SchedulerConfig struct {
 	// assigned to a single worker. Must be ≥ 1.
 	// Env: SQI_SCHEDULER_MAX_TASKS_PER_WORKER
 	MaxTasksPerWorker int `yaml:"max_tasks_per_worker"`
+
+	// OfflineWorkerRetention is how long a worker may stay offline before the
+	// retention sweep hard-deletes it, bounding worker-table growth on farms
+	// with ephemeral nodes. Disabled and online workers are never auto-removed.
+	// Set to 0 to disable automatic removal. Default: 24h.
+	// Env: SQI_SCHEDULER_OFFLINE_WORKER_RETENTION
+	OfflineWorkerRetention time.Duration `yaml:"offline_worker_retention"`
 }
 
 // DiscoveryConfig controls mDNS service advertisement.
@@ -175,9 +182,10 @@ func DefaultConfig() Config {
 			Format: "json",
 		},
 		Scheduler: SchedulerConfig{
-			HeartbeatTimeout:  30 * time.Second,
-			TickInterval:      500 * time.Millisecond,
-			MaxTasksPerWorker: 1,
+			HeartbeatTimeout:       30 * time.Second,
+			TickInterval:           500 * time.Millisecond,
+			MaxTasksPerWorker:      1,
+			OfflineWorkerRetention: 24 * time.Hour,
 		},
 		Discovery: DiscoveryConfig{
 			Enabled:      true,

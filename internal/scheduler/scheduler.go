@@ -98,6 +98,7 @@ func DefaultConfig() Config {
 		WorkerTimeout:          30 * time.Second,
 		HeartbeatSweepInterval: 15 * time.Second,
 		AssignedTaskTimeout:    30 * time.Second,
+		OfflineWorkerRetention: 24 * time.Hour,
 	}
 }
 
@@ -137,6 +138,13 @@ type Config struct {
 	// worker is still heartbeating, so this reaper runs independently on the
 	// heartbeat sweep tick. Default: 30 s.
 	AssignedTaskTimeout time.Duration
+
+	// OfflineWorkerRetention is how long a worker may remain in
+	// [store.WorkerStatusOffline] before the retention sweep hard-deletes it,
+	// bounding the growth of the worker table on farms with ephemeral nodes.
+	// Disabled and online workers are never auto-removed. A value <= 0 disables
+	// the sweep entirely. Default: 24 h.
+	OfflineWorkerRetention time.Duration
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -247,6 +255,13 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	}
 }
 
+// WorkerTimeout returns the effective heartbeat-timeout threshold after
+// normalization. The API layer uses it to decide whether a disabled worker is
+// dead (and therefore removable) from its last-heartbeat age.
+func (s *Scheduler) WorkerTimeout() time.Duration {
+	return s.cfg.WorkerTimeout
+}
+
 // Run starts all scheduler goroutines and blocks until ctx is canceled.
 // It returns after all goroutines have exited cleanly.
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -262,6 +277,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		slog.Int("assign_workers", s.cfg.AssignWorkers),
 		slog.Duration("worker_timeout", s.cfg.WorkerTimeout),
 		slog.Duration("heartbeat_sweep_interval", s.cfg.HeartbeatSweepInterval),
+		slog.Duration("offline_worker_retention", s.cfg.OfflineWorkerRetention),
 	)
 
 	// ── Worker NATS consumer ────────────────────────────────
@@ -830,6 +846,7 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.sweepStaleWorkers(ctx)
+			s.sweepRetiredWorkers(ctx)
 			s.reapStaleAssignedTasks(ctx)
 			s.demoteStalledJobs(ctx)
 			// Refresh instrumentation gauges on the same tick so Prometheus
@@ -994,6 +1011,46 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		// Close out running attempts and return the worker's in-flight tasks to
 		// the ready queue so they can be reassigned.
 		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname)
+	}
+
+	s.refreshWorkerGauge(ctx)
+}
+
+// sweepRetiredWorkers hard-deletes workers that have been offline longer than
+// OfflineWorkerRetention, bounding the worker table's growth on farms with
+// ephemeral nodes. Offline workers already had their in-flight tasks reclaimed
+// when they went offline, so no reclaim is needed here. Disabled and online
+// workers are never auto-removed. A non-positive retention disables the sweep.
+func (s *Scheduler) sweepRetiredWorkers(ctx context.Context) {
+	if s.cfg.OfflineWorkerRetention <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-s.cfg.OfflineWorkerRetention)
+	removed, err := s.store.DeleteOfflineWorkersBefore(ctx, cutoff)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: retention sweep failed", slog.Any("error", err))
+		}
+		return
+	}
+	if len(removed) == 0 {
+		return
+	}
+
+	s.logger.InfoContext(
+		ctx, "scheduler: retention sweep removed offline workers",
+		slog.Int("count", len(removed)),
+		slog.Duration("retention", s.cfg.OfflineWorkerRetention),
+	)
+
+	for _, w := range removed {
+		s.notifier.NotifyWorker(ws.WorkerEvent{
+			WorkerID: w.ID,
+			Name:     w.Name,
+			Hostname: w.Hostname,
+			FarmID:   w.FarmID,
+			Status:   ws.WorkerStatusRemoved,
+		})
 	}
 
 	s.refreshWorkerGauge(ctx)

@@ -104,6 +104,7 @@ function makeWorker(overrides: Partial<WorkerDetailType> = {}): WorkerDetailType
     farm_id: 'farm-001',
     hostname: 'render-node-01',
     status: 'online',
+    removable: false,
     gpu: {},
     registered_at: BASE_REGISTERED_AT,
     updated_at: '2024-01-01T10:00:00Z',

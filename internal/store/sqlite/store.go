@@ -116,6 +116,8 @@ type Store struct {
 	stmtListStaleWorkers         *sql.Stmt
 	stmtCountIdleWorkers         *sql.Stmt
 	stmtCountIdleWorkersAllFarms *sql.Stmt
+	stmtDeleteWorker             *sql.Stmt
+	stmtDeleteOfflineWorkers     *sql.Stmt
 
 	// ── jobs ─────────────────────────────────────────────────────────────
 	stmtInsertJob       *sql.Stmt
@@ -364,6 +366,12 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtCountIdleWorkersAllFarms, err = s.prepare(ctx, sqlCountIdleWorkersAllFarms); err != nil {
+		return err
+	}
+	if s.stmtDeleteWorker, err = s.prepare(ctx, sqlDeleteWorker); err != nil {
+		return err
+	}
+	if s.stmtDeleteOfflineWorkers, err = s.prepare(ctx, sqlDeleteOfflineWorkersBefore); err != nil {
 		return err
 	}
 

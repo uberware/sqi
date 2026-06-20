@@ -20,17 +20,47 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // workerHandler handles all worker-related REST endpoints.
 type workerHandler struct {
-	store  store.Store
-	logger *slog.Logger
+	store store.Store
+	// notifier pushes a removed event when a worker is deleted so other
+	// connected clients drop it live. May be nil (no push).
+	notifier ws.Notifier
+	// offlineThreshold is the heartbeat-timeout window used to decide whether a
+	// disabled worker is dead — and therefore removable — from its last
+	// heartbeat age. It mirrors the scheduler's WorkerTimeout.
+	offlineThreshold time.Duration
+	logger           *slog.Logger
 }
 
-// newWorkerHandler returns a workerHandler wired to the given store.
-func newWorkerHandler(st store.Store, logger *slog.Logger) *workerHandler {
-	return &workerHandler{store: st, logger: logger}
+// newWorkerHandler returns a workerHandler wired to the given store. notifier
+// may be nil in tests that do not exercise WebSocket push.
+func newWorkerHandler(st store.Store, notifier ws.Notifier, offlineThreshold time.Duration, logger *slog.Logger) *workerHandler {
+	return &workerHandler{
+		store:            st,
+		notifier:         notifier,
+		offlineThreshold: offlineThreshold,
+		logger:           logger,
+	}
+}
+
+// workerRemovable reports whether a worker may be hard-deleted: it is offline,
+// or it is administratively disabled but its last heartbeat is older than the
+// offline threshold (i.e. the machine is actually gone, not merely paused). A
+// live disabled worker is never removable — removing it would let it
+// re-register as online, silently undoing the operator's Disable.
+func workerRemovable(wk store.Worker, threshold time.Duration, now time.Time) bool {
+	switch wk.Status {
+	case store.WorkerStatusOffline:
+		return true
+	case store.WorkerStatusDisabled:
+		return wk.LastHeartbeatAt != nil && wk.LastHeartbeatAt.Before(now.Add(-threshold))
+	default:
+		return false
+	}
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -72,6 +102,7 @@ type workerResponse struct {
 	GPU             gpuInfoResponse   `json:"gpu"`
 	Tags            map[string]string `json:"tags,omitempty"`
 	Status          string            `json:"status"`
+	Removable       bool              `json:"removable"`
 	LastHeartbeatAt *time.Time        `json:"last_heartbeat_at,omitempty"`
 	RegisteredAt    time.Time         `json:"registered_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -147,7 +178,7 @@ func (h *workerHandler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		Offset: page.Offset,
 	}
 	for i, wk := range page.Items {
-		resp.Items[i] = toWorkerResponse(wk)
+		resp.Items[i] = h.toWorkerResponse(wk)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -173,7 +204,7 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := workerDetailResponse{
-		workerResponse: toWorkerResponse(wk),
+		workerResponse: h.toWorkerResponse(wk),
 		CurrentTasks:   []currentTaskResponse{},
 	}
 
@@ -273,10 +304,77 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
+// ── DELETE /api/v1/workers/{id} ──────────────────────────────────────────────
+
+// removeWorker hard-deletes a worker record. Only removable workers are
+// accepted: offline workers, or disabled workers whose last heartbeat is older
+// than the offline threshold (the machine is gone). Online and live-disabled
+// workers return 409 Conflict. Offline workers already had their in-flight tasks
+// reclaimed when they went offline, so no reclaim is needed here.
+func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	wk, err := h.store.GetWorker(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "worker not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "workers: get for remove failed",
+			slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve worker")
+		return
+	}
+
+	if !workerRemovable(wk, h.offlineThreshold, time.Now()) {
+		writeProblem(w, r, http.StatusConflict,
+			"worker is not removable: only offline or dead disabled workers can be removed")
+		return
+	}
+
+	if err := h.store.DeleteWorker(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "worker not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "workers: delete failed",
+			slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to remove worker")
+		return
+	}
+
+	if h.notifier != nil {
+		h.notifier.NotifyWorker(ws.WorkerEvent{
+			WorkerID: wk.ID,
+			Name:     wk.Name,
+			Hostname: wk.Hostname,
+			FarmID:   wk.FarmID,
+			Status:   ws.WorkerStatusRemoved,
+		})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
-// toWorkerResponse converts a [store.Worker] into the API wire type.
-func toWorkerResponse(wk store.Worker) workerResponse {
+// toWorkerResponse converts a [store.Worker] into the API wire type, stamping
+// the server-authoritative Removable flag from the worker's current liveness.
+func (h *workerHandler) toWorkerResponse(wk store.Worker) workerResponse {
+	return h.toWorkerResponseAt(wk, time.Now())
+}
+
+// toWorkerResponseAt is toWorkerResponse with an explicit clock, for tests.
+func (h *workerHandler) toWorkerResponseAt(wk store.Worker, now time.Time) workerResponse {
+	resp := buildWorkerResponse(wk)
+	resp.Removable = workerRemovable(wk, h.offlineThreshold, now)
+	return resp
+}
+
+// buildWorkerResponse maps the static worker fields; the Removable flag is
+// stamped by the handler since it depends on the configured threshold.
+func buildWorkerResponse(wk store.Worker) workerResponse {
 	return workerResponse{
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,

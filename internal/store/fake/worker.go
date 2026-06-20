@@ -167,6 +167,40 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 	return count, nil
 }
 
+// DeleteWorker hard-deletes the worker with the given ID.
+func (s *Store) DeleteWorker(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.workers[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(s.workers, id)
+	return nil
+}
+
+// DeleteOfflineWorkersBefore hard-deletes every offline worker last seen before
+// cutoff and returns the removed records. Non-offline workers (including
+// disabled) and workers that have never sent a heartbeat are left untouched.
+func (s *Store) DeleteOfflineWorkersBefore(_ context.Context, cutoff time.Time) ([]store.Worker, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var removed []store.Worker
+	for id, w := range s.workers {
+		if w.Status != store.WorkerStatusOffline {
+			continue
+		}
+		if w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) {
+			continue
+		}
+		w.Tags = copyMap(w.Tags)
+		removed = append(removed, w)
+		delete(s.workers, id)
+	}
+	return removed, nil
+}
+
 // filterWorker reports whether w matches all non-zero filter fields in opts.
 func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	if opts.FarmID != "" && w.FarmID != opts.FarmID {

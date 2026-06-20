@@ -9,7 +9,7 @@ import StatusBadge from '@/components/StatusBadge'
 import { useGetWorker, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
-import { isWorkerEvent } from '@/ws/events'
+import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
 import type { WorkerDetail as WorkerDetailType } from '@/api/types'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan, formatUptime } from '@/lib/time'
@@ -323,11 +323,20 @@ export default function WorkerDetail() {
   useWebSocket('workers', (payload) => {
     if (!isWorkerEvent(payload) || payload.worker_id !== workerId) return
 
+    // The worker being viewed was removed (manual remove or retention sweep):
+    // drop the cached detail and invalidate so the view reflects its absence.
+    if (payload.status === WORKER_REMOVED_STATUS) {
+      queryClient.removeQueries({ queryKey: queryKeys.workers.detail(workerId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workers.all })
+      return
+    }
+
+    const status = payload.status
     queryClient.setQueryData<WorkerDetailType>(queryKeys.workers.detail(workerId), (old) => {
       if (!old) return old
       return {
         ...old,
-        status: payload.status,
+        status,
         ...(payload.name !== undefined ? { name: payload.name } : {}),
         ...(payload.hostname !== undefined ? { hostname: payload.hostname } : {}),
       }

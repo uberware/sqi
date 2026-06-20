@@ -599,6 +599,12 @@ class Worker:
     tags: dict[str, str] = field(default_factory=dict)
     last_heartbeat_at: datetime | None = None
     current_tasks: list[CurrentTask] = field(default_factory=list)
+    removable: bool = False
+    """Whether the worker may be removed via
+    :meth:`~sqi_client.client.SqiClient.remove_worker`. Server-authoritative:
+    true for offline workers and for disabled workers whose last heartbeat is
+    older than the heartbeat-timeout window; online and live-disabled workers
+    are never removable."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Worker:
@@ -632,6 +638,7 @@ class Worker:
             tags=_str_dict(data.get("tags")),
             last_heartbeat_at=_opt_datetime(data.get("last_heartbeat_at")),
             current_tasks=current_tasks,
+            removable=_as_bool(data.get("removable")),
         )
 
 

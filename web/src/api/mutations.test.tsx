@@ -9,11 +9,13 @@ import {
   fetchRetryTask,
   fetchDisableWorker,
   fetchEnableWorker,
+  fetchRemoveWorker,
   useSubmitJob,
   useCancelJob,
   useRetryTask,
   useDisableWorker,
   useEnableWorker,
+  useRemoveWorker,
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
   fetchDeleteStorageLocation,
@@ -177,6 +179,17 @@ describe('fetchEnableWorker', () => {
   })
 })
 
+// ── fetchRemoveWorker ─────────────────────────────────────────────────────────
+
+describe('fetchRemoveWorker', () => {
+  it('sends DELETE to /api/v1/workers/:id', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await fetchRemoveWorker('w-1')
+    expect(calledUrl()).toBe('/api/v1/workers/w-1')
+    expect(calledInit().method).toBe('DELETE')
+  })
+})
+
 // ── mutation hooks ────────────────────────────────────────────────────────────
 
 describe('useSubmitJob', () => {
@@ -240,6 +253,22 @@ describe('useDisableWorker', () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'w-1', status: 'disabled' }))
 
     const { result } = renderHook(() => useDisableWorker(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('w-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.workers.all })
+  })
+})
+
+describe('useRemoveWorker', () => {
+  it('invalidates workers on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useRemoveWorker(), { wrapper: wrapper(client) })
 
     await act(async () => {
       await result.current.mutateAsync('w-1')

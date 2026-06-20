@@ -321,9 +321,10 @@ func (s *Server) start(ctx context.Context) error {
 	}
 	router := api.NewRouter(
 		api.Config{
-			CORSOrigins:      s.cfg.CORSOrigins,
-			EnablePprof:      s.cfg.EnablePprof,
-			DisableRateLimit: s.cfg.DisableRateLimit,
+			CORSOrigins:            s.cfg.CORSOrigins,
+			EnablePprof:            s.cfg.EnablePprof,
+			DisableRateLimit:       s.cfg.DisableRateLimit,
+			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
 		},
 		deps,
 		s.logger,

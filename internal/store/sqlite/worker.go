@@ -82,6 +82,16 @@ WHERE  w.status = 'online'
          WHERE  t.assigned_worker_id = w.id
            AND  t.status IN ('assigned', 'running')
        )`
+
+	sqlDeleteWorker = `DELETE FROM workers WHERE id = ?`
+
+	// Deletes offline workers last seen before the cutoff and returns the
+	// removed rows so the caller can emit notifications. NULL last_heartbeat_at
+	// never matches (NULL < ? is NULL), so a never-seen worker is left alone.
+	sqlDeleteOfflineWorkersBefore = `
+DELETE FROM workers
+WHERE status = 'offline' AND last_heartbeat_at < ?
+RETURNING ` + workerCols
 )
 
 func scanWorker(row scanner) (store.Worker, error) {
@@ -306,4 +316,32 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 		err = s.stmtCountIdleWorkers.QueryRowContext(ctx, farmID).Scan(&n)
 	}
 	return n, mapErr(err)
+}
+
+// DeleteWorker implements [store.WorkerStore].
+func (s *Store) DeleteWorker(ctx context.Context, id string) error {
+	res, err := s.stmtDeleteWorker.ExecContext(ctx, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	return checkRowsAffected(res)
+}
+
+// DeleteOfflineWorkersBefore implements [store.WorkerStore].
+func (s *Store) DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]store.Worker, error) {
+	rows, err := s.stmtDeleteOfflineWorkers.QueryContext(ctx, timeToText(cutoff))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	var workers []store.Worker
+	for rows.Next() {
+		w, err := scanWorker(rows)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
 }

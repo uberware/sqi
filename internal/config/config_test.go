@@ -45,6 +45,7 @@ func TestDefaultConfig(t *testing.T) {
 	checkDur("scheduler.heartbeat_timeout", cfg.Scheduler.HeartbeatTimeout, 30*time.Second)
 	checkDur("scheduler.tick_interval", cfg.Scheduler.TickInterval, 500*time.Millisecond)
 	checkInt("scheduler.max_tasks_per_worker", cfg.Scheduler.MaxTasksPerWorker, 1)
+	checkDur("scheduler.offline_worker_retention", cfg.Scheduler.OfflineWorkerRetention, 24*time.Hour)
 	if !cfg.Discovery.Enabled {
 		t.Error("discovery.enabled: got false, want true")
 	}
