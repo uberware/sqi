@@ -168,4 +168,26 @@ describe('DiagnosticsPanel', () => {
     renderPanel('server')
     expect(await screen.findByText(/no diagnostic logs/i)).toBeInTheDocument()
   })
+
+  it('renders its own heading by default', () => {
+    vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
+      makeQueryResult({ data: { records: [] }, isSuccess: true, status: 'success' }),
+    )
+    renderPanel('server')
+    expect(screen.getByRole('heading', { name: 'Server log' })).toBeInTheDocument()
+  })
+
+  it('omits its own heading when showTitle is false but keeps the accessible label', () => {
+    vi.mocked(api.useDiagnosticsLogs).mockReturnValue(
+      makeQueryResult({ data: { records: [] }, isSuccess: true, status: 'success' }),
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <DiagnosticsPanel component="server" title="Server log" showTitle={false} />
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByRole('heading', { name: 'Server log' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Server log' })).toBeInTheDocument()
+  })
 })

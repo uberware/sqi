@@ -11,6 +11,8 @@ import { useDisableWorker, useEnableWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { isWorkerEvent } from '@/ws/events'
 import type { WorkerDetail as WorkerDetailType } from '@/api/types'
+import { useLiveNow } from '@/hooks/useLiveNow'
+import { formatTimespan, formatUptime } from '@/lib/time'
 import styles from './WorkerDetail.module.css'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -24,30 +26,6 @@ function formatDateTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function formatUptime(registeredAt: string): string {
-  const ms = Date.now() - new Date(registeredAt).getTime()
-  if (ms < 0) return '—'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ${m % 60}m`
-  const d = Math.floor(h / 24)
-  return `${d}d ${h % 24}h`
-}
-
-function formatElapsed(assignedAt: string | undefined): string {
-  if (!assignedAt) return '—'
-  const ms = Date.now() - new Date(assignedAt).getTime()
-  if (ms < 0) return '—'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 function truncateId(id: string): string {
@@ -212,45 +190,49 @@ function CapabilitiesSection({ worker }: { worker: WorkerDetailType }) {
 
 // ── Assigned Tasks ───────────────────────────────────────────────────
 
-function AssignedTasksSection({ worker }: { worker: WorkerDetailType }) {
-  const task = worker.current_task
+function AssignedTasksSection({ worker, now }: { worker: WorkerDetailType; now: number }) {
+  const tasks = worker.current_tasks
 
   return (
     <section className={styles.tasksSection} aria-label="Assigned tasks">
       <h2 className={styles.sectionTitle}>Active Tasks</h2>
 
-      {!task ? (
+      {tasks.length === 0 ? (
         <p className={styles.empty}>No active tasks.</p>
       ) : (
-        <ul className={styles.taskCardList}>
-          <li className={styles.taskCard}>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Job</span>
-              <Link to={`/jobs/${task.job_id}`} className={styles.taskCardJobLink}>
-                {truncateId(task.job_id)}
-              </Link>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Task</span>
-              <span className={styles.taskCardValue}>{task.name}</span>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Task ID</span>
-              <span className={styles.taskCardMono}>{truncateId(task.id)}</span>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Status</span>
-              <StatusBadge status={task.status} />
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Start Time</span>
-              <span className={styles.taskCardValue}>{formatDateTime(task.assigned_at)}</span>
-            </div>
-            <div className={styles.taskCardRow}>
-              <span className={styles.taskCardLabel}>Elapsed</span>
-              <span className={styles.taskCardValue}>{formatElapsed(task.assigned_at)}</span>
-            </div>
-          </li>
+        <ul className={styles.taskCardList} aria-label="Active tasks">
+          {tasks.map((task) => (
+            <li key={task.id} className={styles.taskCard}>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Job</span>
+                <Link to={`/jobs/${task.job_id}`} className={styles.taskCardJobLink}>
+                  {truncateId(task.job_id)}
+                </Link>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Task</span>
+                <span className={styles.taskCardValue}>{task.name}</span>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Task ID</span>
+                <span className={styles.taskCardMono}>{truncateId(task.id)}</span>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Status</span>
+                <StatusBadge status={task.status} />
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Start Time</span>
+                <span className={styles.taskCardValue}>{formatDateTime(task.assigned_at)}</span>
+              </div>
+              <div className={styles.taskCardRow}>
+                <span className={styles.taskCardLabel}>Elapsed</span>
+                <span className={styles.taskCardValue}>
+                  {formatTimespan(task.assigned_at, undefined, now)}
+                </span>
+              </div>
+            </li>
+          ))}
         </ul>
       )}
     </section>
@@ -357,12 +339,10 @@ export default function WorkerDetail() {
     void queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(workerId) })
   }, [queryClient, workerId])
 
-  // ── Uptime ticker ─────────────────────────────────────────────────────────
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), 60_000)
-    return () => clearInterval(id)
-  }, [])
+  // ── Live clock ────────────────────────────────────────────────────────────
+  // Tick every second while the worker has any active task so their Elapsed and
+  // the Uptime stay alive; otherwise 30s.
+  const now = useLiveNow((worker?.current_tasks?.length ?? 0) > 0)
 
   // ── Loading / error states ────────────────────────────────────────────────
 
@@ -474,7 +454,7 @@ export default function WorkerDetail() {
           </div>
           <div className={styles.metaField}>
             <dt>Uptime</dt>
-            <dd className={styles.metaValue}>{formatUptime(worker.registered_at)}</dd>
+            <dd className={styles.metaValue}>{formatUptime(worker.registered_at, now)}</dd>
           </div>
         </dl>
       </div>
@@ -484,10 +464,18 @@ export default function WorkerDetail() {
         <CapabilitiesSection worker={worker} />
 
         {/* Assigned tasks */}
-        <AssignedTasksSection worker={worker} />
+        <AssignedTasksSection worker={worker} now={now} />
 
-        {/* Worker diagnostic logs */}
-        <DiagnosticsPanel component={`worker:${workerId}`} title="Worker diagnostics" />
+        {/* Worker diagnostic logs — heading sits outside the log box to match
+            the Capabilities and Active Tasks sections. */}
+        <section className={styles.diagSection} aria-label="Worker diagnostics">
+          <h2 className={styles.sectionTitle}>Worker diagnostics</h2>
+          <DiagnosticsPanel
+            component={`worker:${workerId}`}
+            title="Worker diagnostics"
+            showTitle={false}
+          />
+        </section>
       </div>
     </div>
   )

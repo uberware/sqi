@@ -291,6 +291,17 @@ describe('JobDetail', () => {
       await waitFor(() => screen.getAllByText('abcdef12'))
       expect(screen.getAllByText('abcdef12').length).toBeGreaterThan(0)
     })
+
+    it('renders a task progress bar in the metadata', async () => {
+      // Fixture: total 3, succeeded 1 + failed 1 + canceled 0 = 2 done.
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByRole('progressbar', { name: /task progress/i })
+      expect(screen.getByText('2/3')).toBeInTheDocument()
+    })
   })
 
   describe('step breakdown', () => {
@@ -868,11 +879,13 @@ describe('JobDetail', () => {
     it('clicking Refresh triggers a re-fetch of both job detail and task list', async () => {
       const job = makeJob()
       const tasks = makeTaskListResponse([])
-      // Initial load (job + tasks) + refetch responses after Refresh
-      fetchMock.mockResolvedValueOnce(okJson(job))
-      fetchMock.mockResolvedValueOnce(okJson(tasks))
-      fetchMock.mockResolvedValueOnce(okJson(job))
-      fetchMock.mockResolvedValueOnce(okJson(tasks))
+      // The component fires three initial queries: job, tasks, workers. Workers is mocked
+      // separately so subsequent mocks are consumed in the expected order.
+      fetchMock.mockResolvedValueOnce(okJson(job)) // initial job
+      fetchMock.mockResolvedValueOnce(okJson(tasks)) // initial tasks
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([]))) // initial workers
+      fetchMock.mockResolvedValueOnce(okJson(job)) // refetch job
+      fetchMock.mockResolvedValueOnce(okJson(tasks)) // refetch tasks
 
       render(<JobDetail />, { wrapper: Wrapper })
       await waitFor(() => screen.getByRole('button', { name: 'Refresh job data' }))

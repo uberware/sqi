@@ -172,6 +172,13 @@
   flex-direction: column;
 }
 
+/* ── Diagnostics section ──────────────────────────────────────────────────────── */
+
+.diagSection {
+  display: flex;
+  flex-direction: column;
+}
+
 .taskCardList {
   list-style: none;
   padding: 0;

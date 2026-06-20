@@ -5,10 +5,13 @@ import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
+import TaskProgressBar from '@/components/TaskProgressBar'
 import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useLiveNow } from '@/hooks/useLiveNow'
+import { formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
 import { isJobEvent, isTaskEvent } from '@/ws/events'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
@@ -47,18 +50,6 @@ function formatTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function elapsedLabel(job: Job): string {
-  const start = job.started_at ? new Date(job.started_at).getTime() : null
-  const end = job.completed_at ? new Date(job.completed_at).getTime() : null
-  if (!start) return '—'
-  const ms = (end ?? Date.now()) - start
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 /** Returns a human-readable age string for a past timestamp. */
@@ -172,26 +163,7 @@ function IdCell({ id }: { id: string }) {
 function ProgressCell({ job }: { job: Job }) {
   const counts = job.task_counts
   if (!counts) return <span>—</span>
-  const done = counts.succeeded + counts.failed + counts.canceled
-  const total = counts.total
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0
-  return (
-    <div className={styles.progressCell}>
-      <div className={styles.progressFrac}>
-        {done}/{total}
-      </div>
-      <div
-        className={styles.progressBar}
-        role="progressbar"
-        aria-label="Task progress"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div className={styles.progressFill} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
+  return <TaskProgressBar counts={counts} />
 }
 
 // ── Task-count delta helper ───────────────────────────────────────────────────
@@ -311,14 +283,11 @@ export default function JobList() {
     }
   })
 
-  // ── Last-updated timestamp ──────────────────────────────────────
-
-  // Tick every 30 s so the "X ago" label stays reasonably current.
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(id)
-  }, [])
+  // ── Live clock ──────────────────────────────────────────────────
+  // Tick every second while a job on this page is active so the
+  // "Elapsed" column and "Updated X ago" label stay alive; otherwise 30s.
+  const hasActiveJob = jobs.some((j) => j.status === 'running' || j.status === 'pending')
+  const now = useLiveNow(hasActiveJob)
 
   // ── Manual refresh ───────────────────────────────────────────────
 
@@ -568,7 +537,7 @@ export default function JobList() {
                     <ProgressCell job={job} />
                   </td>
                   <td>{formatTime(job.created_at)}</td>
-                  <td>{elapsedLabel(job)}</td>
+                  <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
                   <td>
                     {canCancel && (
                       <button

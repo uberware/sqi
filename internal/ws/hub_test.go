@@ -20,6 +20,7 @@ package ws
 //   - subjectRing.since edge cases.
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -199,6 +200,66 @@ func TestHub_NotifyTask_FansToJobsAndTaskSubject(t *testing.T) {
 	}
 	if env.Subject != taskSubject {
 		t.Fatalf("tasks subscriber: expected subject %q, got %q", taskSubject, env.Subject)
+	}
+}
+
+// The SubjectJobs push emitted by NotifyTask must carry the task_id so list
+// subscribers can distinguish a task-level event from a job-status event and
+// apply task-count deltas. Without it, the web JobList misclassifies the event
+// as a job-status change, re-rendering the row without updating progress.
+func TestHub_NotifyTask_JobsPushCarriesTaskID(t *testing.T) {
+	h := newTestHub()
+	const jobID, taskID = "job-abc", "t1"
+
+	jobsCh := h.Register("c-jobs")
+	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe jobs: %v", err)
+	}
+
+	h.NotifyTask(TaskEvent{JobID: jobID, TaskID: taskID, Status: "running"})
+
+	env, ok := drainOrTimeout(jobsCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("jobs subscriber did not receive NotifyTask push")
+	}
+
+	var push JobSummaryPush
+	if err := json.Unmarshal(env.Payload, &push); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if push.TaskID != taskID {
+		t.Fatalf("expected task_id %q in jobs push, got %q", taskID, push.TaskID)
+	}
+	if push.JobID != jobID {
+		t.Fatalf("expected job_id %q, got %q", jobID, push.JobID)
+	}
+	if push.Status != "running" {
+		t.Fatalf("expected status %q, got %q", "running", push.Status)
+	}
+}
+
+// NotifyJob (a genuine job-status change) must NOT carry a task_id, so list
+// subscribers classify it as a job-status event rather than a task event.
+func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {
+	h := newTestHub()
+	jobsCh := h.Register("c-jobs")
+	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe jobs: %v", err)
+	}
+
+	h.NotifyJob(JobEvent{JobID: "j1", Status: "completed"})
+
+	env, ok := drainOrTimeout(jobsCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("jobs subscriber did not receive NotifyJob push")
+	}
+
+	var push JobSummaryPush
+	if err := json.Unmarshal(env.Payload, &push); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if push.TaskID != "" {
+		t.Fatalf("expected no task_id on job-status push, got %q", push.TaskID)
 	}
 }
 

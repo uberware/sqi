@@ -9,8 +9,14 @@ import styles from './DiagnosticsPanel.module.css'
 interface Props {
   /** Component filter, e.g. "server" or "worker:w1". */
   component: string
-  /** Heading shown above the log lines. */
+  /** Heading shown above the log lines, and the panel's accessible label. */
   title: string
+  /**
+   * When false, the panel renders no internal heading (the caller supplies its
+   * own section heading outside the box). The `title` is still used as the
+   * panel's accessible label. Defaults to true.
+   */
+  showTitle?: boolean
   /** Optional task_id filter (used by the task-detail fallback). */
   taskId?: string
   /**
@@ -38,7 +44,13 @@ function orderedAttrs(attrs: Record<string, string> | undefined): Array<[string,
   })
 }
 
-export default function DiagnosticsPanel({ component, title, taskId, fill = false }: Props) {
+export default function DiagnosticsPanel({
+  component,
+  title,
+  showTitle = true,
+  taskId,
+  fill = false,
+}: Props) {
   // An empty component means "all components" — omit it from the query so the
   // backend returns diagnostics across every component (used by the task-detail
   // fallback when the failing task has no recorded worker id).
@@ -93,7 +105,7 @@ export default function DiagnosticsPanel({ component, title, taskId, fill = fals
 
   return (
     <section className={fill ? `${styles.panel} ${styles.fill}` : styles.panel} aria-label={title}>
-      <h3 className={styles.title}>{title}</h3>
+      {showTitle && <h3 className={styles.title}>{title}</h3>}
       {isLoading && <p className={styles.muted}>Loading…</p>}
       {isError && <p className={styles.muted}>Diagnostics unavailable.</p>}
       {!isLoading && !isError && records.length === 0 && (

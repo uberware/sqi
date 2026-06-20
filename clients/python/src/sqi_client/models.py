@@ -547,7 +547,8 @@ class GPUInfo:
 
 @dataclass(frozen=True)
 class CurrentTask:
-    """The task a worker is currently executing (``WorkerDetail.current_task``)."""
+    """A task a worker is currently executing (an entry in
+    ``WorkerDetail.current_tasks``)."""
 
     id: str
     job_id: str
@@ -576,9 +577,9 @@ class CurrentTask:
 class Worker:
     """A registered worker node.
 
-    The ``current_task`` field is populated only by
+    The ``current_tasks`` field is populated only by
     :meth:`~sqi_client.client.SqiClient.get_worker` (the ``WorkerDetail``
-    response); on a list-level worker it is ``None``.
+    response); on a list-level worker it is an empty list.
     """
 
     id: str
@@ -597,7 +598,7 @@ class Worker:
     ram_mb: int | None = None
     tags: dict[str, str] = field(default_factory=dict)
     last_heartbeat_at: datetime | None = None
-    current_task: CurrentTask | None = None
+    current_tasks: list[CurrentTask] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Worker:
@@ -607,7 +608,12 @@ class Worker:
         type-appropriate defaults; see the module docstring for the full
         tolerant-parsing contract.
         """
-        raw_current = data.get("current_task")
+        raw_current = data.get("current_tasks")
+        current_tasks = (
+            [CurrentTask.from_dict(t) for t in raw_current if isinstance(t, dict)]
+            if isinstance(raw_current, list)
+            else []
+        )
         return cls(
             id=_as_str(data.get("id")),
             farm_id=_as_str(data.get("farm_id")),
@@ -625,9 +631,7 @@ class Worker:
             ram_mb=_opt_int(data.get("ram_mb")),
             tags=_str_dict(data.get("tags")),
             last_heartbeat_at=_opt_datetime(data.get("last_heartbeat_at")),
-            current_task=(
-                CurrentTask.from_dict(raw_current) if isinstance(raw_current, dict) else None
-            ),
+            current_tasks=current_tasks,
         )
 
 

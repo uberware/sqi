@@ -310,7 +310,7 @@ def test_worker_fields() -> None:
     assert worker.tags == {"arnold": "7.2.1", "gpu": "true"}
     assert worker.status is WorkerStatus.ONLINE
     assert worker.last_heartbeat_at is not None
-    assert worker.current_task is None
+    assert worker.current_tasks == []
 
 
 def test_worker_gpu_nested() -> None:
@@ -322,9 +322,10 @@ def test_worker_gpu_nested() -> None:
     assert worker.gpu.count == 2
 
 
-def test_worker_detail_current_task() -> None:
+def test_worker_detail_current_tasks() -> None:
     worker = Worker.from_dict(load("worker_detail"))
-    current = worker.current_task
+    assert len(worker.current_tasks) == 1
+    current = worker.current_tasks[0]
     assert isinstance(current, CurrentTask)
     assert current.id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1b001"
     assert current.job_id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345"

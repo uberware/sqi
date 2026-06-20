@@ -154,9 +154,9 @@ def test_get_worker_returns_detail(make_client: ClientFactory) -> None:
     assert isinstance(worker, Worker)
     assert worker.id == detail["id"]
     assert worker.status is WorkerStatus.ONLINE
-    # Detail includes the currently-executing task.
-    assert worker.current_task is not None
-    assert worker.current_task.id == detail["current_task"]["id"]
+    # Detail includes the currently-executing tasks.
+    assert len(worker.current_tasks) == 1
+    assert worker.current_tasks[0].id == detail["current_tasks"][0]["id"]
 
 
 @respx.mock

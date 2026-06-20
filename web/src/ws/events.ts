@@ -17,9 +17,11 @@ export interface WsJobEvent {
 }
 
 /**
- * Payload received on the "jobs/{jobId}/tasks" subject when a task changes
- * status. (The "jobs" subject carries the aggregate {@link WsJobEvent}, not
- * this per-task event.)
+ * Payload received when a task changes status. Delivered on the
+ * "jobs/{jobId}/tasks" subject (per-job detail view) and, with the same shape,
+ * on the aggregate "jobs" subject so list subscribers can update progress
+ * without subscribing to every job. Distinguished from {@link WsJobEvent} by
+ * the presence of `task_id`.
  */
 export interface WsTaskEvent {
   job_id: string
