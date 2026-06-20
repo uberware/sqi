@@ -13,7 +13,7 @@ import { useDebounce } from '@/hooks/useDebounce'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
-import { isJobEvent, isTaskEvent } from '@/ws/events'
+import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
 import type { JobSortField, SortDirection } from '@/hooks/useJobListFilters'
 import styles from './JobList.module.css'
@@ -245,7 +245,16 @@ export default function JobList() {
   // WS subscription — updates job rows in-place without a full list re-fetch.
   useWebSocket('jobs', (payload) => {
     if (isJobEvent(payload)) {
+      if (payload.status === JOB_REMOVED_STATUS) {
+        // Hard-deleted: evict the job row from every cached list page immediately.
+        queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
+          if (!old) return old
+          return { ...old, items: old.items.filter((j) => j.id !== payload.job_id) }
+        })
+        return
+      }
       // Patch this job's status immediately in every cached list page.
+      const { status, updated_at } = payload
       queryClient.setQueriesData<ListResponse<Job>>({ queryKey: ['jobs', 'list'] }, (old) => {
         if (!old) return old
         const idx = old.items.findIndex((j) => j.id === payload.job_id)
@@ -253,7 +262,7 @@ export default function JobList() {
         const newItems = [...old.items]
         const prev = newItems[idx]
         if (!prev) return old
-        newItems[idx] = { ...prev, status: payload.status, updated_at: payload.updated_at }
+        newItems[idx] = { ...prev, status, updated_at }
         return { ...old, items: newItems }
       })
     } else if (isTaskEvent(payload)) {

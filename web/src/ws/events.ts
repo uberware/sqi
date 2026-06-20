@@ -12,7 +12,7 @@ export interface WsJobEvent {
   name?: string
   owner?: string
   queue_id?: string
-  status: JobStatus
+  status: JobStatus | typeof JOB_REMOVED_STATUS
   updated_at: string
 }
 
@@ -31,6 +31,13 @@ export interface WsTaskEvent {
   worker_id?: string
   updated_at: string
 }
+
+/**
+ * Synthetic status value delivered on the "jobs" subject when a job row is
+ * hard-deleted (manual delete or the job-retention sweep). Not a real
+ * {@link JobStatus}; subscribers should drop the job rather than update it.
+ */
+export const JOB_REMOVED_STATUS = 'removed'
 
 /**
  * Synthetic status value delivered on the "workers" subject when a worker row

@@ -10,12 +10,14 @@ import {
   fetchDisableWorker,
   fetchEnableWorker,
   fetchRemoveWorker,
+  fetchDeleteJob,
   useSubmitJob,
   useCancelJob,
   useRetryTask,
   useDisableWorker,
   useEnableWorker,
   useRemoveWorker,
+  useDeleteJob,
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
   fetchDeleteStorageLocation,
@@ -138,9 +140,20 @@ describe('fetchSubmitJob', () => {
 // ── fetchCancelJob ────────────────────────────────────────────────────────────
 
 describe('fetchCancelJob', () => {
-  it('sends DELETE to /api/v1/jobs/:id', async () => {
+  it('sends POST to /api/v1/jobs/:id/cancel', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
     await fetchCancelJob('job-1')
+    expect(calledUrl()).toBe('/api/v1/jobs/job-1/cancel')
+    expect(calledInit().method).toBe('POST')
+  })
+})
+
+// ── fetchDeleteJob ────────────────────────────────────────────────────────────
+
+describe('fetchDeleteJob', () => {
+  it('sends DELETE to /api/v1/jobs/:id', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await fetchDeleteJob('job-1')
     expect(calledUrl()).toBe('/api/v1/jobs/job-1')
     expect(calledInit().method).toBe('DELETE')
   })
@@ -226,6 +239,50 @@ describe('useCancelJob', () => {
     })
 
     expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+  })
+
+  it('issues POST /jobs/{id}/cancel', async () => {
+    const client = makeClient()
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useCancelJob(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('job-1')
+    })
+
+    expect(calledUrl()).toContain('/jobs/job-1/cancel')
+    expect(calledInit().method).toBe('POST')
+  })
+})
+
+describe('useDeleteJob', () => {
+  it('invalidates jobs on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useDeleteJob(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('job-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+  })
+
+  it('issues DELETE /jobs/{id}', async () => {
+    const client = makeClient()
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useDeleteJob(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('job-1')
+    })
+
+    expect(calledUrl()).toContain('/jobs/job-1')
+    expect(calledInit().method).toBe('DELETE')
   })
 })
 

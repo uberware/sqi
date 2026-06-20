@@ -39,8 +39,13 @@ export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   })
 }
 
-/** Cancel a job via `DELETE /jobs/{id}`. Resolves on the server's 2xx/204. */
+/** Cancel a job via `POST /jobs/{id}/cancel`. Resolves on the server's 2xx/204. */
 export async function fetchCancelJob(id: string): Promise<void> {
+  await apiFetch(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+}
+
+/** Hard-delete a job and all its data via `DELETE /jobs/{id}`. */
+export async function fetchDeleteJob(id: string): Promise<void> {
   await apiFetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
@@ -92,6 +97,17 @@ export function useCancelJob() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => fetchCancelJob(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    },
+  })
+}
+
+/** Hard-delete a job and all its data. Invalidates all job queries on success. */
+export function useDeleteJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteJob(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
     },

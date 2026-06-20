@@ -11,7 +11,7 @@ import { useRetryTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
-import { isJobEvent, isTaskEvent } from '@/ws/events'
+import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type { JobDetail as JobDetailType, Step, Task, TaskStatus, ListResponse } from '@/api/types'
 import styles from './JobDetail.module.css'
 
@@ -501,12 +501,16 @@ export default function JobDetail() {
   // (e.g. the job transitioning from running → completed).
   useWebSocket('jobs', (payload) => {
     if (!isJobEvent(payload) || payload.job_id !== jobId) return
+    // 'removed' means the job was hard-deleted; skip the optimistic patch and
+    // let the query invalidation (triggered by the delete mutation) handle it.
+    if (payload.status === JOB_REMOVED_STATUS) return
 
+    const { status, updated_at } = payload
     queryClient.setQueriesData<JobDetailType>(
       { queryKey: queryKeys.jobs.detail(jobId), exact: true },
       (old) => {
         if (!old) return old
-        return { ...old, status: payload.status, updated_at: payload.updated_at }
+        return { ...old, status, updated_at }
       },
     )
   })
