@@ -123,6 +123,17 @@ type SchedulerConfig struct {
 	// Set to 0 to disable automatic removal. Default: 24h.
 	// Env: SQI_SCHEDULER_OFFLINE_WORKER_RETENTION
 	OfflineWorkerRetention time.Duration `yaml:"offline_worker_retention"`
+
+	// JobRetention is how long a terminal job is kept before the retention
+	// sweep hard-deletes it and all of its data. completed and canceled jobs
+	// are always eligible; failed jobs only when JobRetentionIncludeFailed is
+	// set. Set to 0 to disable automatic deletion. Default: 168h (7 days).
+	// Env: SQI_SCHEDULER_JOB_RETENTION
+	JobRetention time.Duration `yaml:"job_retention"`
+
+	// JobRetentionIncludeFailed extends the retention sweep to failed jobs.
+	// Default: false. Env: SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED
+	JobRetentionIncludeFailed bool `yaml:"job_retention_include_failed"`
 }
 
 // DiscoveryConfig controls mDNS service advertisement.
@@ -182,10 +193,12 @@ func DefaultConfig() Config {
 			Format: "json",
 		},
 		Scheduler: SchedulerConfig{
-			HeartbeatTimeout:       30 * time.Second,
-			TickInterval:           500 * time.Millisecond,
-			MaxTasksPerWorker:      1,
-			OfflineWorkerRetention: 24 * time.Hour,
+			HeartbeatTimeout:          30 * time.Second,
+			TickInterval:              500 * time.Millisecond,
+			MaxTasksPerWorker:         1,
+			OfflineWorkerRetention:    24 * time.Hour,
+			JobRetention:              7 * 24 * time.Hour,
+			JobRetentionIncludeFailed: false,
 		},
 		Discovery: DiscoveryConfig{
 			Enabled:      true,

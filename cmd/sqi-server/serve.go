@@ -111,6 +111,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	schedCfg := scheduler.DefaultConfig()
 	schedCfg.WorkerTimeout = cfg.Scheduler.HeartbeatTimeout
 	schedCfg.OfflineWorkerRetention = cfg.Scheduler.OfflineWorkerRetention
+	schedCfg.JobRetention = cfg.Scheduler.JobRetention
+	schedCfg.JobRetentionIncludeFailed = cfg.Scheduler.JobRetentionIncludeFailed
 
 	srv := server.New(server.Config{
 		HTTPAddr:              cfg.HTTP.Addr,
