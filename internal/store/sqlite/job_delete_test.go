@@ -195,7 +195,8 @@ func seedTerminalJobAt(t *testing.T, st *Store, id string, status store.JobStatu
 	if err := st.UpdateJobStatus(ctx, id, status); err != nil {
 		t.Fatalf("seedTerminalJobAt UpdateJobStatus(%q, %v): %v", id, status, err)
 	}
-	if _, err := st.db.ExecContext(ctx,
+	if _, err := st.db.ExecContext(
+		ctx,
 		`UPDATE jobs SET completed_at = ?, updated_at = ? WHERE id = ?`,
 		timeToText(ts.UTC()), timeToText(ts.UTC()), id,
 	); err != nil {
@@ -231,7 +232,6 @@ func TestStore_DeleteTerminalJobsBefore(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			st := openTestStoreWB(t)
 			// Seed: <status>-old at `old`, plus a recent completed and a running job that must survive.

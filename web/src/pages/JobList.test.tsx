@@ -647,9 +647,15 @@ describe('JobList', () => {
       // a direct text node 'job-1' which confuses queryByText.
       expect(screen.getByRole('link', { name: 'job-1' })).toBeInTheDocument()
 
-      emitWsEvent('jobs', { job_id: 'job-1', status: 'removed', updated_at: new Date().toISOString() })
+      emitWsEvent('jobs', {
+        job_id: 'job-1',
+        status: 'removed',
+        updated_at: new Date().toISOString(),
+      })
 
-      await waitFor(() => expect(screen.queryByRole('link', { name: 'job-1' })).not.toBeInTheDocument())
+      await waitFor(() =>
+        expect(screen.queryByRole('link', { name: 'job-1' })).not.toBeInTheDocument(),
+      )
     })
 
     it('bulk delete selected confirms and deletes the job', async () => {

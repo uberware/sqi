@@ -371,25 +371,27 @@ func (s *Store) DeleteTerminalJobsBefore(
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	args := append(statuses, timeToText(cutoff.UTC()))
+	args := append([]any(nil), statuses...)
+	args = append(args, timeToText(cutoff.UTC()))
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, mapErr(err)
 	}
+	defer rows.Close()
 	var deleted []store.DeletedJob
 	for rows.Next() {
 		var d store.DeletedJob
 		if err := rows.Scan(&d.ID, &d.Name, &d.FarmID, &d.QueueID); err != nil {
-			rows.Close() //nolint:errcheck // scan already failing
 			return nil, err
 		}
 		deleted = append(deleted, d)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close() //nolint:errcheck // err already set
 		return nil, err
 	}
-	rows.Close() //nolint:errcheck // done iterating before further writes
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
 	for _, d := range deleted {
 		for _, q := range []string{

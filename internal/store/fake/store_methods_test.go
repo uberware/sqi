@@ -1404,7 +1404,9 @@ func TestFakeStore_DeleteTerminalJobsBefore(t *testing.T) {
 	st := New()
 	mkJob := func(id string, status store.JobStatus, completed time.Time) {
 		c := completed
-		_, _ = st.CreateJob(ctx, store.Job{ID: id, Status: status, CompletedAt: &c, UpdatedAt: completed})
+		if _, err := st.CreateJob(ctx, store.Job{ID: id, Status: status, CompletedAt: &c, UpdatedAt: completed}); err != nil {
+			t.Fatalf("mkJob %q: %v", id, err)
+		}
 	}
 	mkJob("c", store.JobStatusCompleted, old)
 	mkJob("x", store.JobStatusCanceled, old)

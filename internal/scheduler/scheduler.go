@@ -91,13 +91,13 @@ import (
 // DefaultConfig returns a [Config] with conservative production-safe defaults.
 func DefaultConfig() Config {
 	return Config{
-		FarmID:                 "",
-		AssignInterval:         time.Second,
-		AssignBatchSize:        50,
-		AssignWorkers:          4,
-		WorkerTimeout:          30 * time.Second,
-		HeartbeatSweepInterval: 15 * time.Second,
-		AssignedTaskTimeout:    30 * time.Second,
+		FarmID:                    "",
+		AssignInterval:            time.Second,
+		AssignBatchSize:           50,
+		AssignWorkers:             4,
+		WorkerTimeout:             30 * time.Second,
+		HeartbeatSweepInterval:    15 * time.Second,
+		AssignedTaskTimeout:       30 * time.Second,
 		OfflineWorkerRetention:    24 * time.Hour,
 		JobRetention:              7 * 24 * time.Hour,
 		JobRetentionIncludeFailed: false,

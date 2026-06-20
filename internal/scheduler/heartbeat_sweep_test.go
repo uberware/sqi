@@ -8,6 +8,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -382,7 +383,7 @@ func TestScheduler_SweepRetiredJobs(t *testing.T) {
 
 	s.sweepRetiredJobs(ctx)
 
-	if _, err := st.GetJob(ctx, "old-completed"); err != store.ErrNotFound {
+	if _, err := st.GetJob(ctx, "old-completed"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("job not deleted: %v", err)
 	}
 	if !rec.hasJobStatus("old-completed", ws.JobStatusRemoved) {
