@@ -438,10 +438,12 @@ hostRequirements:
       min: 1
 ```
 
-> **Note on `max`:** Only `min` is used as a reservation. If your step
-> declares only `max` without `min`, there is no declared floor and the step
-> is treated as undeclared (full-machine reservation). Declare `min` to opt
-> into fine-grained CPU scheduling.
+> **Note on `min` defaults:** Only `min` is used as a reservation. A step that
+> declares `amount.worker.vcpu` but omits `min` (including a `max`-only
+> declaration) defaults to a 1-core reservation — per OpenJD jobtemplate-2023-09,
+> an omitted `min` defaults to the capability's reserved minimum, which is 1 for
+> `amount.worker.vcpu`. Only omitting `amount.worker.vcpu` entirely reserves the
+> whole machine. Declare an explicit `min` to reserve more than one core.
 
 ---
 
