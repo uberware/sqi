@@ -37,6 +37,7 @@ def test_key_public_names_are_exported() -> None:
         "SqiError",
         "NotFoundError",
         "ValidationError",
+        "CancelResult",
         "Page",
         "SqiEventStream",
         "Event",

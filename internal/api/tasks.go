@@ -6,12 +6,14 @@ package api
 //
 // Route summary:
 //
-//	GET /api/v1/jobs/{id}/tasks — list tasks for a job
-//	GET /api/v1/tasks/{id} — task detail
-//	GET /api/v1/tasks/{id}/logs — task logs, offset-based or tail-streaming
-//	POST /api/v1/tasks/{id}/retry — queue a new attempt for a failed/canceled task
+//	GET  /api/v1/jobs/{id}/tasks    — list tasks for a job
+//	GET  /api/v1/tasks/{id}         — task detail
+//	GET  /api/v1/tasks/{id}/logs    — task logs, offset-based or tail-streaming
+//	POST /api/v1/tasks/{id}/retry   — queue a new attempt for a failed/canceled task
+//	POST /api/v1/tasks/{id}/cancel  — cancel a non-terminal task
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,15 +26,23 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
+// taskCanceler is the subset of [scheduler.Scheduler] used by the task handler
+// to cancel a single running task (close its attempt, signal the worker, and
+// release usage-pool slots).
+type taskCanceler interface {
+	CancelTask(ctx context.Context, taskID string) error
+}
+
 // taskHandler handles all task-related REST endpoints.
 type taskHandler struct {
 	store  store.Store
+	sched  taskCanceler
 	logger *slog.Logger
 }
 
-// newTaskHandler returns a taskHandler wired to the given store.
-func newTaskHandler(st store.Store, logger *slog.Logger) *taskHandler {
-	return &taskHandler{store: st, logger: logger}
+// newTaskHandler returns a taskHandler wired to the given store and scheduler.
+func newTaskHandler(st store.Store, sched taskCanceler, logger *slog.Logger) *taskHandler {
+	return &taskHandler{store: st, sched: sched, logger: logger}
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -81,6 +91,12 @@ type taskLogsResponse struct {
 
 // retryResponse is returned by POST /api/v1/tasks/{id}/retry.
 type retryResponse struct {
+	TaskID string `json:"task_id"`
+	Status string `json:"status"`
+}
+
+// cancelResponse is returned by POST /api/v1/tasks/{id}/cancel.
+type cancelResponse struct {
 	TaskID string `json:"task_id"`
 	Status string `json:"status"`
 }
@@ -435,4 +451,45 @@ func toTaskSortField(s string) store.TaskSortField {
 	default:
 		return store.TaskSortByCreatedAt
 	}
+}
+
+// ── POST /api/v1/tasks/{id}/cancel ────────────────────────────────────────────
+
+// cancelTask transitions a single non-terminal task to canceled via the
+// scheduler, which closes its attempt, signals the assigned worker, and
+// releases held usage-pool slots.
+//
+// Tasks already in a terminal state (succeeded, failed, canceled) are rejected
+// with 409 Conflict.
+func (h *taskHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	task, err := h.store.GetTask(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "task not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "tasks: cancel get failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task")
+		return
+	}
+
+	if isTerminalTask(task.Status) {
+		writeProblem(w, r, http.StatusConflict,
+			fmt.Sprintf("task cannot be canceled in status %q; only non-terminal tasks are eligible", task.Status))
+		return
+	}
+
+	if err = h.sched.CancelTask(ctx, id); err != nil {
+		h.logger.ErrorContext(ctx, "tasks: cancel failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to cancel task")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, cancelResponse{
+		TaskID: id,
+		Status: string(store.TaskStatusCanceled),
+	})
 }

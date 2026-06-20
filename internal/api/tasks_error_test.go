@@ -200,3 +200,33 @@ func TestRetryTask_StoreErrors(t *testing.T) {
 		}
 	})
 }
+
+// ── cancelTask: store and scheduler error paths ───────────────────────────────
+
+func TestCancelTask_Errors(t *testing.T) {
+	t.Run("GetTask internal error returns 500", func(t *testing.T) {
+		inner := fake.New()
+		est := &storeErr{Store: inner, getTaskErr: errInjected}
+		r := newTaskRouterCanceler(est, &fakeTaskCanceler{})
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/any-id/cancel", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", rr.Code)
+		}
+	})
+
+	t.Run("scheduler CancelTask error returns 500", func(t *testing.T) {
+		st := fake.New()
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+		r := newTaskRouterCanceler(st, &fakeTaskCanceler{cancelErr: errInjected})
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/cancel", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 on CancelTask error, got %d", rr.Code)
+		}
+	})
+}

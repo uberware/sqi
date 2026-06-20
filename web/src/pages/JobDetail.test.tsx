@@ -864,6 +864,116 @@ describe('JobDetail', () => {
     })
   })
 
+  // ── Task cancel ──────────────────────────────────────────────────────
+
+  describe('task cancel', () => {
+    it('shows a Cancel button for a running task and calls the cancel endpoint', async () => {
+      // Arrange: a running task is present in the mocked tasks response.
+      const task = makeTask({ id: 'task-cancelable', status: 'running', name: 'task.running' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson({ task_id: task.id, status: 'canceled' }))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const cancelBtn = await screen.findByRole('button', { name: /Cancel task/i })
+      expect(cancelBtn).toBeInTheDocument()
+
+      fireEvent.click(cancelBtn)
+
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(true)
+      })
+    })
+
+    it('does not show a Cancel button for a succeeded task', async () => {
+      const task = makeTask({ status: 'succeeded', name: 'task.done' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByText('Logs'))
+      // The succeeded-task row exposes Retry/Logs but not Cancel.
+      expect(screen.queryByRole('button', { name: /Cancel task/i })).not.toBeInTheDocument()
+    })
+  })
+
+  // ── Task bulk operations ─────────────────────────────────────────────────
+
+  describe('task bulk operations', () => {
+    it('selecting a running task enables Cancel selected and triggers cancel', async () => {
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
+      fetchMock.mockResolvedValueOnce(okJson({ task_id: task.id, status: 'canceled' }))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Select task/i })
+      fireEvent.click(checkbox)
+
+      const bulkCancel = screen.getByRole('button', { name: /Cancel selected/i })
+      expect(bulkCancel).toBeEnabled()
+      fireEvent.click(bulkCancel)
+
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(true)
+      })
+    })
+
+    it('bulk-cancel removes acted tasks from selection but keeps non-acted tasks selected', async () => {
+      // Select a cancelable (running) task and a retryable (failed) task.
+      // After bulk-cancel, only the cancelable task should be deselected;
+      // the failed task must remain selected so the user can retry it next.
+      const runningTask = makeTask({ id: 'task-running-x', status: 'running', name: 'task.run' })
+      const failedTask = makeTask({ id: 'task-failed-x', status: 'failed', name: 'task.fail' })
+      // The cancel mutation invalidates both tasks.all and jobs.all, triggering
+      // concurrent refetches. Use mockImplementation (URL-routed) so each call
+      // gets a fresh Response body rather than reusing a spent one.
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([runningTask, failedTask])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
+      fetchMock.mockResolvedValueOnce(okJson({ task_id: runningTask.id, status: 'canceled' }))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        if (u.includes('/tasks'))
+          return Promise.resolve(okJson(makeTaskListResponse([runningTask, failedTask])))
+        return Promise.resolve(okJson(makeJob()))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      // Select both tasks individually (the "Select all" header checkbox would
+      // also work, but per-task selection is more explicit for this scenario).
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select task task.run' }))
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select task task.fail' }))
+
+      // Bulk-cancel should show count = 1 (only the running task is cancelable).
+      const bulkCancel = screen.getByRole('button', { name: /Cancel selected \(1\)/i })
+      expect(bulkCancel).toBeEnabled()
+      fireEvent.click(bulkCancel)
+
+      // Wait for the cancel network call to complete.
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(true)
+      })
+
+      // The failed task's checkbox must still be checked — it was not acted on.
+      await waitFor(() => {
+        expect(screen.getByRole('checkbox', { name: 'Select task task.fail' })).toBeChecked()
+      })
+
+      // The running task's checkbox must be unchecked — it was removed from selection.
+      await waitFor(() => {
+        expect(screen.getByRole('checkbox', { name: 'Select task task.run' })).not.toBeChecked()
+      })
+    })
+  })
+
   // ── Manual refresh ───────────────────────────────────────────────────
 
   describe('manual refresh button', () => {

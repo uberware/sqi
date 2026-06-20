@@ -367,6 +367,24 @@ curl -s -X POST "$BASE/tasks/$TASK_ID/retry" | jq .
 
 ---
 
+### Cancel a task
+
+`POST /api/v1/tasks/{id}/cancel`
+
+Cancels a single non-terminal task: closes its running attempt, signals the
+assigned worker to stop, and releases any held usage-pool slots. Only
+non-terminal tasks (`pending`, `ready`, `assigned`, `running`) may be canceled.
+
+```sh
+curl -s -X POST "$BASE/tasks/$TASK_ID/cancel" | jq .
+```
+
+Returns `202` with `{ "task_id": "...", "status": "canceled" }`. Returns `404`
+if no task with that ID exists, or `409` if the task is already terminal
+(`succeeded`, `failed`, `canceled`).
+
+---
+
 ### Worker endpoints
 
 ```sh

@@ -29,6 +29,7 @@ from .errors import (
     ValidationError,
 )
 from .models import (
+    CancelResult,
     CurrentTask,
     Farm,
     GPUInfo,
@@ -55,6 +56,7 @@ from .models import (
 __all__ = [
     "APIError",
     "BadRequestError",
+    "CancelResult",
     "ConflictError",
     "CurrentTask",
     "Farm",

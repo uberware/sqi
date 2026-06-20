@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Any, Generic, TypeVar, cast
 
 __all__ = [
+    "CancelResult",
     "CurrentTask",
     "Farm",
     "GPUInfo",
@@ -505,6 +506,31 @@ class RetryResult:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RetryResult:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            task_id=_as_str(data.get("task_id")),
+            status=TaskStatus.parse(_as_str(data.get("status"))),
+        )
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    """Outcome of canceling a task (OpenAPI ``CancelResponse``).
+
+    Returned by :meth:`~sqi_client.client.SqiClient.cancel_task`: the task that
+    was canceled and the status it was set to (``canceled``).
+    """
+
+    task_id: str
+    status: TaskStatus
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CancelResult:
         """Build an instance from a decoded JSON response object.
 
         Unknown fields are ignored and missing or mistyped fields fall back to

@@ -198,6 +198,7 @@ sqi.delete_job(job_id)   # hard-delete; all data permanently removed
 | `iter_job_tasks(job_id, ...) -> Iterator[Task]` | Auto-paged companion. |
 | `get_task(task_id) -> Task` | A single task. |
 | `retry_task(task_id) -> RetryResult` | Retry a failed/canceled task; invalid state → `ConflictError`. |
+| `cancel_task(task_id) -> CancelResult` | Cancel a non-terminal task; terminal task → `ConflictError`. |
 | `get_task_logs(task_id, limit=100, after_nats_seq=0) -> LogPage` | One page of log chunks plus the cursor. |
 | `tail_task_logs(task_id, poll_interval=1.0, from_seq=0, follow=True) -> Iterator[LogChunk]` | Polling log tail. |
 

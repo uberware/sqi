@@ -38,6 +38,7 @@ from .errors import (
     api_error_from_response,
 )
 from .models import (
+    CancelResult,
     Farm,
     Job,
     JobStatus,
@@ -751,6 +752,21 @@ class SqiClient:
         """
         data = self._request_json("POST", f"/tasks/{quote(task_id, safe='')}/retry")
         return RetryResult.from_dict(data)
+
+    def cancel_task(self, task_id: str) -> CancelResult:
+        """Cancel a single non-terminal task, signaling its assigned worker.
+
+        Returns:
+            A :class:`CancelResult` describing the canceled task and its new
+            status (``canceled``).
+
+        Raises:
+            NotFoundError: No task with that ID exists (HTTP 404).
+            ConflictError: The task is already terminal (succeeded/failed/
+                canceled) and so cannot be canceled (HTTP 409).
+        """
+        data = self._request_json("POST", f"/tasks/{quote(task_id, safe='')}/cancel")
+        return CancelResult.from_dict(data)
 
     def get_task_logs(
         self,

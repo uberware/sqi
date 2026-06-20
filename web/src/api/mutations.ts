@@ -11,6 +11,7 @@ import type {
   UsagePool,
   Queue,
   RetryResponse,
+  CancelResponse,
   SubmitJobInput,
   WorkerActionResponse,
 } from './types'
@@ -52,6 +53,13 @@ export async function fetchDeleteJob(id: string): Promise<void> {
 /** Retry a failed or canceled task via `POST /tasks/{id}/retry`. */
 export function fetchRetryTask(id: string): Promise<RetryResponse> {
   return apiFetch<RetryResponse>(`/tasks/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  })
+}
+
+/** Cancel a non-terminal task via `POST /tasks/{id}/cancel`. */
+export function fetchCancelTask(id: string): Promise<CancelResponse> {
+  return apiFetch<CancelResponse>(`/tasks/${encodeURIComponent(id)}/cancel`, {
     method: 'POST',
   })
 }
@@ -119,6 +127,18 @@ export function useRetryTask() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => fetchRetryTask(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    },
+  })
+}
+
+/** Cancel a non-terminal task. Invalidates all task and job queries. */
+export function useCancelTask() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchCancelTask(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })

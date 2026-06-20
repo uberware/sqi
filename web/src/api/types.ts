@@ -118,6 +118,12 @@ export interface RetryResponse {
   status: TaskStatus
 }
 
+/** Wire shape returned by POST /api/v1/tasks/{id}/cancel. */
+export interface CancelResponse {
+  task_id: string
+  status: TaskStatus
+}
+
 // ── Task log ──────────────────────────────────────────────────────────────────
 
 /** Wire shape for a single log chunk. */
