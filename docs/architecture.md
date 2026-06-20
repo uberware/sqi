@@ -223,6 +223,14 @@ bus fanout goroutine (internal/ws/hub.go)
   └─ WebSocket write loop drains the send channel to the client
 ```
 
+The `jobs` WebSocket subject carries normal job-status updates and also a
+synthetic `removed` status event when a job is hard-deleted — either manually
+via `DELETE /api/v1/jobs/{id}` or by the retention sweep. Clients that display
+a job list (including the web UI `JobList`) should remove the row when they
+receive `status: "removed"` for a job ID. The retention sweep runs on the same
+heartbeat-sweep tick that handles offline-worker cleanup, controlled by
+`scheduler.job_retention` and `scheduler.job_retention_include_failed`.
+
 ---
 
 ## State machine: task status

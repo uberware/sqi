@@ -300,6 +300,47 @@ scheduler:
 
 ---
 
+### `scheduler.job_retention`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `168h` (7 days) |
+| **Env var** | `SQI_SCHEDULER_JOB_RETENTION` |
+
+How long a terminal job is retained before the retention sweep hard-deletes it
+and all of its data (steps, tasks, attempts, logs). The sweep runs on the
+heartbeat-sweep tick and removes completed and canceled jobs whose completion
+time is older than this window; failed jobs are governed by
+`job_retention_include_failed`. Active jobs are never auto-deleted. Set to `0`
+to disable automatic deletion (jobs can still be deleted manually).
+
+```yaml
+scheduler:
+  job_retention: "168h"
+```
+
+---
+
+### `scheduler.job_retention_include_failed`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED` |
+
+When `true`, the retention sweep also removes failed jobs older than
+`job_retention`. Default keeps failed jobs for post-mortem debugging. No effect
+when `job_retention` is `0`.
+
+```yaml
+scheduler:
+  job_retention_include_failed: false
+```
+
+---
+
 ## `discovery` — mDNS service advertisement
 
 ### `discovery.enabled`
