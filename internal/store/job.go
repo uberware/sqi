@@ -131,6 +131,13 @@ type JobStore interface {
 	// completion logic can finalize them to completed/failed. StartedAt is
 	// preserved (the job did start). Returns the IDs of the demoted jobs.
 	DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error)
+
+	// DeleteJob hard-deletes a job and every row that belongs to it, in one
+	// transaction and FK-safe order: usage_claims (for the job's task attempts),
+	// task_logs, task_attempts, tasks, steps, then the jobs row.
+	// Returns [ErrNotFound] when the job does not exist. The audit_log is left
+	// intact (it references entities by id, not by foreign key).
+	DeleteJob(ctx context.Context, id string) error
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

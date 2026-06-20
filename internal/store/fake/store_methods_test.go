@@ -1298,3 +1298,89 @@ func TestDeleteUsagePool_NotFound(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+// ── job.go (DeleteJob) ────────────────────────────────────────────────────────
+
+func TestFakeStore_DeleteJob(t *testing.T) {
+	ctx := context.Background()
+	st := New()
+	defer st.Close()
+
+	const jobID = "j-del"
+
+	// Seed job + children.
+	mustCreateFarm(t, st, "f1")
+	mustCreateQueue(t, st, "farm-f1", "q1", "q1")
+	mustCreateJob(t, st, jobID, "farm-f1", "q1")
+
+	if _, err := st.CreateStep(ctx, store.Step{
+		ID: "s1", JobID: jobID, Name: "s1",
+		Status: store.StepStatusPending, DependsOn: []string{},
+	}); err != nil {
+		t.Fatalf("CreateStep: %v", err)
+	}
+
+	mustCreateTask(t, st, "t1", jobID, "s1", store.TaskStatusPending)
+	mustCreateAttempt(t, st, "a1", "t1", 1, store.AttemptStatusRunning)
+
+	if _, err := st.CreateTaskLog(ctx, store.TaskLog{
+		ID: "log1", TaskID: "t1", AttemptID: "a1",
+		SeqNum: 1, NATSSeq: 1, Stream: store.LogStreamStdout,
+	}); err != nil {
+		t.Fatalf("CreateTaskLog: %v", err)
+	}
+
+	mustCreateClaim(t, st, store.UsageClaim{
+		ID: "cl1", PoolID: "pool1", TaskAttemptID: "a1",
+		ClaimedAt: time.Now(),
+	})
+
+	// Delete the job.
+	if err := st.DeleteJob(ctx, jobID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+
+	// Job row is gone.
+	if _, err := st.GetJob(ctx, jobID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob = %v, want ErrNotFound", err)
+	}
+
+	// Child rows are gone.
+	tasks, err := st.ListTasks(ctx, store.ListTasksOptions{JobID: jobID, Pagination: store.Pagination{Limit: 100}})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks.Items) != 0 {
+		t.Errorf("tasks not deleted: %d remaining", len(tasks.Items))
+	}
+
+	attempts, err := st.ListTaskAttempts(ctx, "t1")
+	if err != nil {
+		t.Fatalf("ListTaskAttempts: %v", err)
+	}
+	if len(attempts) != 0 {
+		t.Errorf("task_attempts not deleted: %d remaining", len(attempts))
+	}
+
+	logs, err := st.ListTaskLogs(ctx, "a1", 0, 100)
+	if err != nil {
+		t.Fatalf("ListTaskLogs: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Errorf("task_logs not deleted: %d remaining", len(logs))
+	}
+
+	// Active claim count for pool1 should be 0.
+	n, err := st.ActiveClaimCount(ctx, "pool1")
+	if err != nil {
+		t.Fatalf("ActiveClaimCount: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("usage_claims not deleted: active count = %d, want 0", n)
+	}
+
+	// Deleting a missing job returns ErrNotFound.
+	if err := st.DeleteJob(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteJob(missing) = %v, want ErrNotFound", err)
+	}
+}

@@ -76,6 +76,28 @@ WHERE status = 'running'
         SELECT 1 FROM tasks t
         WHERE t.job_id = jobs.id AND t.status IN ('ready', 'pending'))
 RETURNING id`
+
+	// Job-deletion cascade. Each statement scopes to one job via job_id (or a
+	// task subquery for grandchild tables). Run inside a single transaction in
+	// this exact order so enforced foreign keys never block a delete.
+	sqlDeleteJobCheckouts = `
+DELETE FROM usage_claims
+WHERE task_attempt_id IN (
+	SELECT ta.id FROM task_attempts ta
+	JOIN tasks t ON t.id = ta.task_id
+	WHERE t.job_id = ?)`
+
+	sqlDeleteJobTaskLogs = `
+DELETE FROM task_logs
+WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
+
+	sqlDeleteJobAttempts = `
+DELETE FROM task_attempts
+WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
+
+	sqlDeleteJobTasks = `DELETE FROM tasks WHERE job_id = ?`
+	sqlDeleteJobSteps = `DELETE FROM steps WHERE job_id = ?`
+	sqlDeleteJobRow   = `DELETE FROM jobs WHERE id = ?`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -317,4 +339,40 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 		ids = append(ids, id)
 	}
 	return ids, mapErr(rows.Err())
+}
+
+// DeleteJob implements [store.JobStore]. The cascade runs in a single
+// transaction; if the jobs-row delete affects zero rows the job did not exist
+// and the transaction is rolled back with [store.ErrNotFound].
+func (s *Store) DeleteJob(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, q := range []string{
+		sqlDeleteJobCheckouts,
+		sqlDeleteJobTaskLogs,
+		sqlDeleteJobAttempts,
+		sqlDeleteJobTasks,
+		sqlDeleteJobSteps,
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return mapErr(err)
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return mapErr(tx.Commit())
 }
