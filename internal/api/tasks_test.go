@@ -11,6 +11,7 @@ package api
 //   POST /api/v1/tasks/{id}/retry  — retryTask
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,13 +27,29 @@ import (
 
 // ── router helper ─────────────────────────────────────────────────────────────
 
+// fakeTaskCanceler implements [taskCanceler] for tests.
+type fakeTaskCanceler struct {
+	cancelErr     error    // non-nil forces CancelTask to return this error
+	canceledTasks []string // task IDs passed to CancelTask, in call order
+}
+
+func (f *fakeTaskCanceler) CancelTask(_ context.Context, id string) error {
+	f.canceledTasks = append(f.canceledTasks, id)
+	return f.cancelErr
+}
+
 func newTaskRouter(st store.Store) chi.Router {
-	h := newTaskHandler(st, newTestLogger())
+	return newTaskRouterCanceler(st, &fakeTaskCanceler{})
+}
+
+func newTaskRouterCanceler(st store.Store, sched taskCanceler) chi.Router {
+	h := newTaskHandler(st, sched, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/jobs/{id}/tasks", h.listJobTasks)
 	r.Get("/api/v1/tasks/{id}", h.getTask)
 	r.Get("/api/v1/tasks/{id}/logs", h.getTaskLogs)
 	r.Post("/api/v1/tasks/{id}/retry", h.retryTask)
+	r.Post("/api/v1/tasks/{id}/cancel", h.cancelTask)
 	return r
 }
 
@@ -451,6 +468,82 @@ func TestRetryTask(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		req := newReq(t, http.MethodPost, "/api/v1/tasks/ghost/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+}
+
+// ── POST /api/v1/tasks/{id}/cancel ────────────────────────────────────────────
+
+func TestCancelTask(t *testing.T) {
+	cancelable := []store.TaskStatus{
+		store.TaskStatusPending,
+		store.TaskStatusReady,
+		store.TaskStatusAssigned,
+		store.TaskStatusRunning,
+	}
+	for _, status := range cancelable {
+		t.Run("non-terminal "+string(status)+" → 202", func(t *testing.T) {
+			st := fake.New()
+			sched := &fakeTaskCanceler{}
+			r := newTaskRouterCanceler(st, sched)
+			_, tk := seedTask(t, st, status)
+
+			req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/cancel", nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+			}
+			var resp cancelResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Status != "canceled" {
+				t.Errorf("status = %q, want canceled", resp.Status)
+			}
+			if resp.TaskID != tk.ID {
+				t.Errorf("task_id = %q, want %q", resp.TaskID, tk.ID)
+			}
+			if len(sched.canceledTasks) != 1 || sched.canceledTasks[0] != tk.ID {
+				t.Errorf("CancelTask calls = %v, want [%s]", sched.canceledTasks, tk.ID)
+			}
+		})
+	}
+
+	terminal := []store.TaskStatus{
+		store.TaskStatusSucceeded,
+		store.TaskStatusFailed,
+		store.TaskStatusCanceled,
+	}
+	for _, status := range terminal {
+		t.Run("terminal "+string(status)+" → 409", func(t *testing.T) {
+			st := fake.New()
+			sched := &fakeTaskCanceler{}
+			r := newTaskRouterCanceler(st, sched)
+			_, tk := seedTask(t, st, status)
+
+			req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/cancel", nil)
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("expected 409 for %s, got %d", status, rr.Code)
+			}
+			if len(sched.canceledTasks) != 0 {
+				t.Errorf("CancelTask should not be called for terminal task, got %v", sched.canceledTasks)
+			}
+		})
+	}
+
+	t.Run("unknown task → 404", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouterCanceler(st, &fakeTaskCanceler{})
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/ghost/cancel", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {

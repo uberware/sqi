@@ -199,7 +199,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		jobNotifier = deps.Hub
 	}
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger)
-	tasks := newTaskHandler(deps.Store, logger)
+	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	// Pass the hub as a notifier only when non-nil so the worker handler's
 	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
 	var workerNotifier ws.Notifier
@@ -241,6 +241,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/tasks/{id}", tasks.getTask)
 		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)
 		api.Post("/tasks/{id}/retry", tasks.retryTask)
+		api.Post("/tasks/{id}/cancel", tasks.cancelTask)
 
 		// ── Worker endpoints ───────────────────────────────
 		api.Get("/workers", workers.listWorkers)

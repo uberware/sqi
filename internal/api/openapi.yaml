@@ -428,6 +428,16 @@ components:
           type: string
           example: ready
 
+    CancelResponse:
+      type: object
+      required: [task_id, status]
+      properties:
+        task_id:
+          type: string
+        status:
+          type: string
+          example: canceled
+
     # ── Workers ───────────────────────────────────────────────────────────────
     GPUInfo:
       type: object
@@ -1313,6 +1323,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RetryResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tasks/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: cancelTask
+      summary: Cancel a task
+      tags: [tasks]
+      description: |
+        Cancels a single non-terminal task: closes its running attempt, signals
+        the assigned worker, and releases any held usage-pool slots.
+
+        Only non-terminal tasks (pending, ready, assigned, running) may be
+        canceled; terminal tasks are rejected with 409 Conflict.
+      responses:
+        "202":
+          description: Task canceled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelResponse"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
