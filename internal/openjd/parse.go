@@ -5,6 +5,7 @@ package openjd
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -120,15 +121,18 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 	}
 
 	// default
-	if v, ok := raw["default"]; ok && v != nil {
-		s := anyToString(v)
+	if s, ok, err := scalarFieldStrict(raw, "default", "default"); err != nil {
+		return p, err
+	} else if ok {
 		p.Default = &s
 	}
 
 	// Constraint fields (allowedValues, minValue/maxValue, minLength/maxLength)
 	// are decoded by a helper to keep this function's cyclomatic complexity
 	// within bounds.
-	decodeJobParamConstraints(raw, &p)
+	if err := decodeJobParamConstraints(raw, &p); err != nil {
+		return p, err
+	}
 
 	// objectType / dataFlow (PATH only; stored verbatim — validation enforces
 	// the allowed values and the PATH-only constraint).
@@ -144,7 +148,7 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 
 // decodeJobParamConstraints populates the allowedValues, minValue/maxValue, and
 // minLength/maxLength fields of p from the raw decoded map.
-func decodeJobParamConstraints(raw map[string]any, p *JobParameter) {
+func decodeJobParamConstraints(raw map[string]any, p *JobParameter) error {
 	// allowedValues
 	if v, ok := raw["allowedValues"]; ok && v != nil {
 		items, _ := toAnySlice(v)
@@ -153,7 +157,9 @@ func decodeJobParamConstraints(raw map[string]any, p *JobParameter) {
 		}
 	}
 
-	// minValue / maxValue (INT, FLOAT)
+	// minValue / maxValue (INT, FLOAT) — left lenient: validate.go re-checks these
+	// as numbers, so a non-scalar coercion cannot slip through. Strict scalar
+	// decoding is reserved for fields with no such downstream type check.
 	if v, ok := raw["minValue"]; ok && v != nil {
 		s := anyToString(v)
 		p.MinValue = &s
@@ -164,14 +170,18 @@ func decodeJobParamConstraints(raw map[string]any, p *JobParameter) {
 	}
 
 	// minLength / maxLength (STRING, PATH)
-	if v, ok := raw["minLength"]; ok && v != nil {
-		n := anyToInt(v)
+	if n, ok, err := intFieldStrict(raw, "minLength", "minLength"); err != nil {
+		return err
+	} else if ok {
 		p.MinLength = &n
 	}
-	if v, ok := raw["maxLength"]; ok && v != nil {
-		n := anyToInt(v)
+	if n, ok, err := intFieldStrict(raw, "maxLength", "maxLength"); err != nil {
+		return err
+	} else if ok {
 		p.MaxLength = &n
 	}
+
+	return nil
 }
 
 // ─── environment decoder ─────────────────────────────────────────────────────
@@ -184,19 +194,11 @@ func decodeEnvironment(raw map[string]any) (Environment, error) {
 
 	// variables
 	if v, ok := raw["variables"]; ok && v != nil {
-		switch m := v.(type) {
-		case map[string]any:
-			e.Variables = make(map[string]string, len(m))
-			for k, val := range m {
-				e.Variables[k] = anyToString(val)
-			}
-		case map[any]any:
-			// yaml.v3 may produce this for non-string keys
-			e.Variables = make(map[string]string, len(m))
-			for k, val := range m {
-				e.Variables[fmt.Sprintf("%v", k)] = anyToString(val)
-			}
+		vars, err := decodeEnvVars(v, e.Name)
+		if err != nil {
+			return e, err
 		}
+		e.Variables = vars
 	}
 
 	// script
@@ -215,17 +217,37 @@ func decodeEnvironment(raw map[string]any) (Environment, error) {
 	return e, nil
 }
 
+// decodeEnvVars decodes an environment's variables mapping, rejecting a
+// non-scalar value rather than stringifying it into a "map[...]" environment
+// value that the worker would export into the running task's session. envName
+// labels the owning environment in error messages.
+func decodeEnvVars(v any, envName string) (map[string]string, error) {
+	m, ok := toMapOK(v) // normalizes yaml.v3 map[any]any to map[string]any
+	if !ok {
+		return nil, fmt.Errorf("openjd: environment %q variables must be a mapping", envName)
+	}
+	out := make(map[string]string, len(m))
+	for k, val := range m {
+		s, ok := scalarToString(val)
+		if !ok {
+			return nil, fmt.Errorf(
+				"openjd: environment %q variable %q must be a string, number, or boolean", envName, k,
+			)
+		}
+		out[k] = s
+	}
+	return out, nil
+}
+
 func decodeEnvironmentScript(raw map[string]any) (EnvironmentScript, error) {
 	s := EnvironmentScript{}
 
 	if ef, ok := raw["embeddedFiles"]; ok && ef != nil {
-		items, err := toSliceOfMaps(ef, "embeddedFiles")
+		files, err := decodeEmbeddedFiles(ef)
 		if err != nil {
 			return s, err
 		}
-		for _, item := range items {
-			s.EmbeddedFiles = append(s.EmbeddedFiles, decodeEmbeddedFile(item))
-		}
+		s.EmbeddedFiles = files
 	}
 
 	// actions (required)
@@ -251,7 +273,10 @@ func decodeEnvironmentActions(raw map[string]any) (EnvironmentActions, error) {
 		if err != nil {
 			return a, err
 		}
-		action := decodeAction(m)
+		action, err := decodeAction(m)
+		if err != nil {
+			return a, err
+		}
 		a.OnEnter = &action
 	}
 	if v, ok := raw["onExit"]; ok && v != nil {
@@ -259,7 +284,10 @@ func decodeEnvironmentActions(raw map[string]any) (EnvironmentActions, error) {
 		if err != nil {
 			return a, err
 		}
-		action := decodeAction(m)
+		action, err := decodeAction(m)
+		if err != nil {
+			return a, err
+		}
 		a.OnExit = &action
 	}
 	return a, nil
@@ -369,13 +397,11 @@ func decodeStepScript(raw map[string]any) (StepScript, error) {
 	s := StepScript{}
 
 	if v, ok := raw["embeddedFiles"]; ok && v != nil {
-		items, err := toSliceOfMaps(v, "embeddedFiles")
+		files, err := decodeEmbeddedFiles(v)
 		if err != nil {
 			return s, err
 		}
-		for _, item := range items {
-			s.EmbeddedFiles = append(s.EmbeddedFiles, decodeEmbeddedFile(item))
-		}
+		s.EmbeddedFiles = files
 	}
 
 	// actions (required)
@@ -401,7 +427,11 @@ func decodeStepActions(raw map[string]any) (StepActions, error) {
 		if err != nil {
 			return a, err
 		}
-		a.OnRun = decodeAction(m)
+		act, err := decodeAction(m)
+		if err != nil {
+			return a, err
+		}
+		a.OnRun = act
 	}
 	return a, nil
 }
@@ -416,15 +446,15 @@ func decodeHostRequirements(raw map[string]any) (HostRequirements, error) {
 		if err != nil {
 			return hr, err
 		}
-		for _, item := range items {
+		for i, item := range items {
 			a := AmountRequirement{Name: getString(item, "name")}
-			if mv, ok := item["min"]; ok && mv != nil {
-				s := anyToString(mv)
-				a.Min = &s
+			field := fmt.Sprintf("hostRequirements.amounts[%d]", i)
+			var err error
+			if a.Min, err = decodeAmountBound(item, "min", field+".min"); err != nil {
+				return hr, err
 			}
-			if mv, ok := item["max"]; ok && mv != nil {
-				s := anyToString(mv)
-				a.Max = &s
+			if a.Max, err = decodeAmountBound(item, "max", field+".max"); err != nil {
+				return hr, err
 			}
 			hr.Amounts = append(hr.Amounts, a)
 		}
@@ -435,10 +465,16 @@ func decodeHostRequirements(raw map[string]any) (HostRequirements, error) {
 		if err != nil {
 			return hr, err
 		}
-		for _, item := range items {
+		for i, item := range items {
 			a := AttributeRequirement{Name: getString(item, "name")}
-			a.AnyOf = getStringSlice(item, "anyOf")
-			a.AllOf = getStringSlice(item, "allOf")
+			field := fmt.Sprintf("hostRequirements.attributes[%d]", i)
+			var err error
+			if a.AnyOf, err = getStringSliceStrict(item, "anyOf", field+".anyOf"); err != nil {
+				return hr, err
+			}
+			if a.AllOf, err = getStringSliceStrict(item, "allOf", field+".allOf"); err != nil {
+				return hr, err
+			}
 			hr.Attributes = append(hr.Attributes, a)
 		}
 	}
@@ -485,45 +521,84 @@ func decodeTaskParamDefinition(raw map[string]any) (TaskParamDefinition, error) 
 		case string:
 			tp.RangeExpr = &rv
 		default:
-			items, _ := toAnySlice(v)
-			for _, item := range items {
-				tp.RangeList = append(tp.RangeList, anyToString(item))
+			list, err := strictStringSlice(v, "range")
+			if err != nil {
+				return tp, err
 			}
+			tp.RangeList = list
 		}
 	}
 
 	// chunks (CHUNK[INT] only)
 	if v, ok := raw["chunks"]; ok && v != nil {
-		m, err := toMap(v, "chunks")
+		chunks, err := decodeTaskChunks(v)
 		if err != nil {
 			return tp, err
 		}
-		chunks := TaskChunks{
-			RangeConstraint: "CONTIGUOUS", // spec default
-		}
-		if dc, ok := m["defaultTaskCount"]; ok {
-			chunks.DefaultTaskCount = anyToInt(dc)
-		}
-		if trs, ok := m["targetRuntimeSeconds"]; ok && trs != nil {
-			n := anyToInt(trs)
-			chunks.TargetRuntimeSeconds = &n
-		}
-		if rc, ok := m["rangeConstraint"]; ok && rc != nil {
-			chunks.RangeConstraint = anyToString(rc)
-		}
-		tp.Chunks = &chunks
+		tp.Chunks = chunks
 	}
 
 	return tp, nil
 }
 
+// decodeTaskChunks decodes a CHUNK[INT] parameter's chunks block, rejecting a
+// non-integer defaultTaskCount or targetRuntimeSeconds rather than silently
+// coercing it to 0.
+func decodeTaskChunks(v any) (*TaskChunks, error) {
+	m, err := toMap(v, "chunks")
+	if err != nil {
+		return nil, err
+	}
+	chunks := TaskChunks{
+		RangeConstraint: "CONTIGUOUS", // spec default
+	}
+	if n, ok, err := intFieldStrict(m, "defaultTaskCount", "chunks.defaultTaskCount"); err != nil {
+		return nil, err
+	} else if ok {
+		chunks.DefaultTaskCount = n
+	}
+	if n, ok, err := intFieldStrict(m, "targetRuntimeSeconds", "chunks.targetRuntimeSeconds"); err != nil {
+		return nil, err
+	} else if ok {
+		chunks.TargetRuntimeSeconds = &n
+	}
+	if rc, ok := m["rangeConstraint"]; ok && rc != nil {
+		chunks.RangeConstraint = anyToString(rc)
+	}
+	return &chunks, nil
+}
+
 // ─── embedded file decoder ───────────────────────────────────────────────────
 
-func decodeEmbeddedFile(raw map[string]any) EmbeddedFile {
+// decodeEmbeddedFiles decodes an embeddedFiles sequence (shared by step and
+// environment scripts).
+func decodeEmbeddedFiles(v any) ([]EmbeddedFile, error) {
+	items, err := toSliceOfMaps(v, "embeddedFiles")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EmbeddedFile, 0, len(items))
+	for i, item := range items {
+		ef, err := decodeEmbeddedFile(item, i)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ef)
+	}
+	return out, nil
+}
+
+func decodeEmbeddedFile(raw map[string]any, idx int) (EmbeddedFile, error) {
+	// data is the file's content, which becomes the script the task executes;
+	// reject a non-scalar rather than coercing it to a "map[...]" body.
+	data, _, err := scalarFieldStrict(raw, "data", fmt.Sprintf("embeddedFiles[%d].data", idx))
+	if err != nil {
+		return EmbeddedFile{}, err
+	}
 	ef := EmbeddedFile{
 		Name:      getString(raw, "name"),
 		Filename:  getString(raw, "filename"),
-		Data:      getString(raw, "data"),
+		Data:      data,
 		Type:      EmbeddedFileType(getString(raw, "type")),
 		EndOfLine: getString(raw, "endOfLine"),
 	}
@@ -532,25 +607,28 @@ func decodeEmbeddedFile(raw map[string]any) EmbeddedFile {
 			ef.Runnable = b
 		}
 	}
-	return ef
+	return ef, nil
 }
 
 // ─── action decoder ───────────────────────────────────────────────────────────
 
-func decodeAction(raw map[string]any) Action {
+func decodeAction(raw map[string]any) (Action, error) {
 	a := Action{
 		Command: getString(raw, "command"),
 	}
 
 	if v, ok := raw["args"]; ok && v != nil {
-		items, _ := toAnySlice(v)
-		for _, item := range items {
-			a.Args = append(a.Args, anyToString(item))
+		args, err := strictStringSlice(v, "args")
+		if err != nil {
+			return a, err
 		}
+		a.Args = args
 	}
 
-	if v, ok := raw["timeout"]; ok && v != nil {
-		a.TimeoutSeconds = anyToInt(v)
+	if n, ok, err := intFieldStrict(raw, "timeout", "timeout"); err != nil {
+		return a, err
+	} else if ok {
+		a.TimeoutSeconds = n
 	}
 
 	if v, ok := raw["cancelation"]; ok && v != nil {
@@ -558,14 +636,16 @@ func decodeAction(raw map[string]any) Action {
 			cm := &CancelationMethod{
 				Mode: CancelationMode(getString(m, "mode")),
 			}
-			if np, ok := m["notifyPeriodInSeconds"]; ok && np != nil {
-				cm.NotifyPeriodSeconds = anyToInt(np)
+			if n, ok, err := intFieldStrict(m, "notifyPeriodInSeconds", "notifyPeriodInSeconds"); err != nil {
+				return a, err
+			} else if ok {
+				cm.NotifyPeriodSeconds = n
 			}
 			a.Cancelation = cm
 		}
 	}
 
-	return a
+	return a, nil
 }
 
 // ─── low-level helpers ────────────────────────────────────────────────────────
@@ -594,6 +674,134 @@ func getStringSlice(m map[string]any, key string) []string {
 		out = append(out, anyToString(item))
 	}
 	return out
+}
+
+// intFieldStrict reads an integer field key from m, returning (value, present,
+// error). An absent or nil value yields (0, false, nil). A present value that is
+// not an integer (a mapping, sequence, boolean, fractional number, or
+// non-numeric string) is an error rather than a silent coercion to 0 — these
+// fields are typed integers carrying no template references, so a non-integer is
+// malformed. field names the document path for error messages.
+func intFieldStrict(m map[string]any, key, field string) (value int, present bool, err error) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return 0, false, nil
+	}
+	n, ok := scalarToInt(v)
+	if !ok {
+		return 0, false, fmt.Errorf("openjd: %s must be an integer", field)
+	}
+	return n, true, nil
+}
+
+// scalarToInt converts a scalar integer value (int, int64, an integral float, or
+// a base-10 integer string) to an int, reporting ok=false for any other value:
+// a mapping, sequence, boolean, fractional number, or non-numeric string.
+func scalarToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		if n != math.Trunc(n) {
+			return 0, false
+		}
+		return int(n), true
+	case string:
+		if i, err := strconv.Atoi(n); err == nil {
+			return i, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// decodeAmountBound reads a scalar min/max bound from item[key], rejecting a
+// non-scalar value (a nested mapping or sequence) instead of stringifying it
+// via fmt. A coerced bound like "map[nested:1]" is stored verbatim and — for a
+// non-reserved capability name — never numerically validated, silently
+// corrupting the reservation. field names the document path for error messages.
+// Absent or nil values yield (nil, nil); a numeric or template-reference string
+// bound is returned as-is.
+func decodeAmountBound(item map[string]any, key, field string) (*string, error) {
+	s, ok, err := scalarFieldStrict(item, key, field)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// scalarFieldStrict reads a scalar string field key from m, rejecting a
+// non-scalar value (a mapping or sequence) instead of stringifying it via fmt.
+// Such a coerced value (e.g. a "map[...]" default, env value, or embedded-file
+// data) would otherwise be substituted verbatim into a running task's command,
+// script, or environment. Absent or nil values yield ("", false, nil); a scalar
+// is returned in string form. field names the document path for error messages.
+func scalarFieldStrict(m map[string]any, key, field string) (value string, present bool, err error) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return "", false, nil
+	}
+	s, ok := scalarToString(v)
+	if !ok {
+		return "", false, fmt.Errorf("openjd: %s must be a string, number, or boolean", field)
+	}
+	return s, true, nil
+}
+
+// getStringSliceStrict returns a []string for key in m, rejecting a non-scalar
+// element instead of stringifying it. Absent or nil values yield (nil, nil).
+func getStringSliceStrict(m map[string]any, key, field string) ([]string, error) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	return strictStringSlice(v, field)
+}
+
+// strictStringSlice converts a sequence value into a []string, rejecting a
+// non-scalar element rather than coercing it via fmt — a silent coercion that
+// turns e.g. anyOf: [{min: 1}] into the meaningless value "map[min:1]". A value
+// that is not a sequence is itself an error. field names the document path.
+func strictStringSlice(v any, field string) ([]string, error) {
+	items, ok := toAnySlice(v)
+	if !ok {
+		return nil, fmt.Errorf("openjd: %s must be a sequence", field)
+	}
+	out := make([]string, 0, len(items))
+	for i, item := range items {
+		s, ok := scalarToString(item)
+		if !ok {
+			return nil, fmt.Errorf("openjd: %s[%d] must be a string, number, or boolean", field, i)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// scalarToString converts a scalar value (string, integer, float, or boolean)
+// to its string form, reporting ok=false for any other type (mapping,
+// sequence, or nil).
+func scalarToString(v any) (string, bool) {
+	switch s := v.(type) {
+	case string:
+		return s, true
+	case int:
+		return strconv.Itoa(s), true
+	case int64:
+		return strconv.FormatInt(s, 10), true
+	case float64:
+		return strconv.FormatFloat(s, 'g', -1, 64), true
+	case bool:
+		if s {
+			return "true", true
+		}
+		return "false", true
+	default:
+		return "", false
+	}
 }
 
 // toSliceOfMaps converts v to []map[string]any, returning an error
@@ -650,44 +858,15 @@ func toAnySlice(v any) ([]any, bool) {
 	}
 }
 
-// anyToString converts an arbitrary value to its string representation.
+// anyToString converts an arbitrary value to its string representation. It is
+// the lenient counterpart of [scalarToString]: scalars are formatted the same
+// way, but a mapping or sequence falls back to fmt rather than being rejected.
 func anyToString(v any) string {
+	if s, ok := scalarToString(v); ok {
+		return s
+	}
 	if v == nil {
 		return ""
 	}
-	switch s := v.(type) {
-	case string:
-		return s
-	case int:
-		return strconv.Itoa(s)
-	case int64:
-		return strconv.FormatInt(s, 10)
-	case float64:
-		// Use %g to avoid trailing zeros while preserving precision.
-		return strconv.FormatFloat(s, 'g', -1, 64)
-	case bool:
-		if s {
-			return "true"
-		}
-		return "false"
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
-// anyToInt converts an arbitrary value to an int, returning 0 on failure.
-func anyToInt(v any) int {
-	switch n := v.(type) {
-	case int:
-		return n
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	case string:
-		if i, err := strconv.Atoi(n); err == nil {
-			return i
-		}
-	}
-	return 0
+	return fmt.Sprintf("%v", v)
 }

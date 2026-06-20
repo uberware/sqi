@@ -251,15 +251,16 @@ func TestValidate_ReservedNames_Gated(t *testing.T) {
 			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/0",
 		},
 
-		// Attribute VALUES are compared case-sensitively: "Linux" != "linux".
+		// Attribute VALUES are compared case-insensitively (OpenJD
+		// jobtemplate-2023-09: "This comparison is case-insensitive"), matching the
+		// matcher's EqualFold value comparison: "Linux" is accepted as "linux".
 		{
-			name: "attr.worker.os.family anyOf Linux (uppercase) error (values are case-sensitive)",
+			name: "attr.worker.os.family anyOf Linux (uppercase) ok (values are case-insensitive)",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
 					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.os.family", AnyOf: []string{"Linux"}}},
 				}
 			},
-			wantPtr: "/steps/0/hostRequirements/attributes/0/anyOf/0",
 		},
 
 		// ── NaN/Inf escape in reserved amounts ─────────────────────────────────

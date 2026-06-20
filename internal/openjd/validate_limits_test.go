@@ -241,7 +241,7 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			name: "amount name 100 ok",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Amounts: []openjd.AmountRequirement{{Name: strings.Repeat("a", 100), Min: new("1")}},
+					Amounts: []openjd.AmountRequirement{{Name: "amount." + strings.Repeat("a", 93), Min: new("1")}},
 				}
 			},
 		},
@@ -249,7 +249,7 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			name: "amount name 101 error",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Amounts: []openjd.AmountRequirement{{Name: strings.Repeat("a", 101), Min: new("1")}},
+					Amounts: []openjd.AmountRequirement{{Name: "amount." + strings.Repeat("a", 94), Min: new("1")}},
 				}
 			},
 			wantPtr: "/steps/0/hostRequirements/amounts/0/name",
@@ -267,7 +267,7 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			name: "attribute name 101 error",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Attributes: []openjd.AttributeRequirement{{Name: strings.Repeat("a", 101), AnyOf: []string{"x"}}},
+					Attributes: []openjd.AttributeRequirement{{Name: "attr." + strings.Repeat("a", 96), AnyOf: []string{"x"}}},
 				}
 			},
 			wantPtr: "/steps/0/hostRequirements/attributes/0/name",

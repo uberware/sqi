@@ -280,10 +280,11 @@ var reservedAmountMinimums = map[string]float64{
 // set of allowed string values. Every entry in anyOf and allOf for a matching
 // attribute must be present in the corresponding set.
 //
-// Attribute names are matched CASE-INSENSITIVELY (per spec); attribute VALUES
-// are compared CASE-SENSITIVELY. The spec defines values as exact lowercase
-// tokens (e.g. "linux", not "Linux") and gives no indication that value
-// matching is case-insensitive, so we enforce the exact casing.
+// Attribute names AND values are both matched CASE-INSENSITIVELY, per OpenJD
+// jobtemplate-2023-09 (capability names: "comparisons ... must be
+// case-insensitive"; attribute values: "This comparison is case-insensitive").
+// The allowed-value sets are stored as lowercase tokens; values are lowercased
+// before lookup.
 //
 // Spec reference: OpenJD jobtemplate-2023-09 §hostRequirements.attributes —
 // Reserved Attribute Names.
@@ -468,11 +469,13 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 	for i, a := range hr.Amounts {
 		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
 		errs = append(errs, validateCapabilityName(a.Name, ptr)...)
+		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
 	}
 
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
 		errs = append(errs, validateCapabilityName(a.Name, ptr+"/name")...)
+		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
 
 		if len(a.AnyOf) > maxAttributeValues {
 			errs = append(errs, ValidationError{
@@ -561,8 +564,10 @@ func checkReservedBound(val *string, minReq float64, capName, ptr string) Valida
 // allowed set defined by the OpenJD spec. Attributes with non-reserved names
 // are unconstrained.
 //
-// Attribute VALUES are compared CASE-SENSITIVELY: the spec defines them as
-// exact lowercase tokens (e.g. "linux", not "Linux").
+// Attribute VALUES are compared CASE-INSENSITIVELY, per OpenJD
+// jobtemplate-2023-09 ("This comparison is case-insensitive") and matching the
+// matcher's EqualFold value comparison. The allowed-set keys are lowercase, so
+// each value is lowercased before lookup.
 func validateReservedAttributes(attrs []AttributeRequirement, base string) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range attrs {
@@ -573,7 +578,7 @@ func validateReservedAttributes(attrs []AttributeRequirement, base string) Valid
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
 		allowedList := sortedMapKeys(allowed)
 		for m, v := range a.AnyOf {
-			if !allowed[v] {
+			if !allowed[strings.ToLower(v)] {
 				errs = append(errs, ValidationError{
 					Pointer: fmt.Sprintf("%s/anyOf/%d", ptr, m),
 					Message: fmt.Sprintf(
@@ -584,7 +589,7 @@ func validateReservedAttributes(attrs []AttributeRequirement, base string) Valid
 			}
 		}
 		for m, v := range a.AllOf {
-			if !allowed[v] {
+			if !allowed[strings.ToLower(v)] {
 				errs = append(errs, ValidationError{
 					Pointer: fmt.Sprintf("%s/allOf/%d", ptr, m),
 					Message: fmt.Sprintf(
@@ -602,6 +607,25 @@ func validateReservedAttributes(attrs []AttributeRequirement, base string) Valid
 // comma-separated string — used to produce deterministic error messages.
 func sortedMapKeys(m map[string]bool) string {
 	return strings.Join(slices.Sorted(maps.Keys(m)), ", ")
+}
+
+// validateCapabilityPrefix checks that a non-empty capability name uses the
+// spec-mandated namespace prefix for its section — "amount." for amounts,
+// "attr." for attributes. The match is case-insensitive, since OpenJD
+// jobtemplate-2023-09 defines capability names as case-insensitive and the
+// scheduler resolves them case-insensitively (see internal/scheduler/matcher.go).
+// An empty name is left to [validateCapabilityName]'s "name is required" check.
+func validateCapabilityPrefix(name, wantPrefix, ptr string) ValidationErrors {
+	if name == "" {
+		return nil
+	}
+	if !hasPrefixFold(name, wantPrefix) {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("capability name %q must begin with %q", name, wantPrefix),
+		}}
+	}
+	return nil
 }
 
 // validateCapabilityName checks that an amount/attribute capability name has a

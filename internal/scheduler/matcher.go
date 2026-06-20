@@ -180,12 +180,14 @@ func checkAmounts(
 	_ map[string]int,
 ) (matchRejection, bool) {
 	for _, req := range amts {
-		// Usage pool amounts are handled by checkUsagePools.
-		if strings.HasPrefix(req.Name, "amount.worker.usagepool.") {
+		// Usage pool amounts are handled by checkUsagePools. Capability names are
+		// case-insensitive (OpenJD jobtemplate-2023-09), so match the prefix and
+		// look up the well-known name case-insensitively.
+		if hasPrefixFold(req.Name, "amount.worker.usagepool.") {
 			continue
 		}
 
-		fn, known := workerAmountValue[req.Name]
+		fn, known := workerAmountValue[strings.ToLower(req.Name)]
 		var val int
 		if known {
 			val = fn(worker)
@@ -225,8 +227,11 @@ func satisfiesAmount(req store.StepAmountRequirement, workerVal int) bool {
 // workerAttributeValue returns the value of the named attribute on worker.
 // Handles well-known names and falls back to the worker's Tags map for custom
 // attributes declared via the "attr.worker.tag.<key>" convention.
+// Capability names are case-insensitive in full (OpenJD jobtemplate-2023-09), so
+// the well-known names, the tag namespace prefix, AND the tag key are all matched
+// case-insensitively.
 func workerAttributeValue(worker store.Worker, name string) string {
-	switch name {
+	switch strings.ToLower(name) {
 	case "attr.worker.os.family":
 		return strings.ToLower(worker.OS)
 	case "attr.worker.os.version":
@@ -234,11 +239,40 @@ func workerAttributeValue(worker store.Worker, name string) string {
 	case "attr.worker.computelocation":
 		return worker.ComputeLocation
 	default:
-		if key, ok := strings.CutPrefix(name, "attr.worker.tag."); ok {
-			return worker.Tags[key]
+		if key, ok := cutPrefixFold(name, "attr.worker.tag."); ok {
+			return tagValueFold(worker.Tags, key)
 		}
 		return ""
 	}
+}
+
+// tagValueFold returns the value of the worker tag whose key matches key
+// case-insensitively, or "" if none. An exact match is preferred; otherwise keys
+// are compared with EqualFold.
+func tagValueFold(tags map[string]string, key string) string {
+	if v, ok := tags[key]; ok {
+		return v
+	}
+	for k, v := range tags {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
+// hasPrefixFold reports whether s begins with prefix, compared case-insensitively.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// cutPrefixFold removes a case-insensitive prefix from s, returning the remainder
+// (with its original case preserved) and whether the prefix was present.
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if hasPrefixFold(s, prefix) {
+		return s[len(prefix):], true
+	}
+	return "", false
 }
 
 // checkAttributes evaluates all attribute requirements against the worker,
@@ -280,7 +314,10 @@ func checkUsagePools(
 	activeCounts map[string]int,
 ) (matchRejection, bool) {
 	for _, name := range poolNames {
-		pool, ok := pools[name]
+		// pools and activeCounts are keyed by lowercased pool name (see
+		// buildUsageContext); pool names are case-insensitive per OpenJD.
+		lk := strings.ToLower(name)
+		pool, ok := pools[lk]
 		if !ok {
 			// Pool not configured — treat as at capacity to prevent over-subscription.
 			return rejectUsagePool, false
@@ -289,7 +326,7 @@ func checkUsagePools(
 			// MaxConcurrent == 0 means unlimited; any positive active count is fine.
 			continue
 		}
-		active := activeCounts[name]
+		active := activeCounts[lk]
 		if active >= pool.MaxConcurrent {
 			return rejectUsagePool, false
 		}
