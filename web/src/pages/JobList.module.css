@@ -284,9 +284,9 @@ tr.rowSelected .cancelBtn {
   justify-content: center;
   padding: var(--space-1);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--color-error);
+  border: 1px solid var(--color-warning);
   background: transparent;
-  color: var(--color-error);
+  color: var(--color-warning);
   cursor: pointer;
   opacity: 0;
   transition:
@@ -300,7 +300,7 @@ tr.rowSelected .retryBtn {
 }
 
 .retryBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
+  background: var(--color-warning-muted);
 }
 
 .retryBtn:disabled {

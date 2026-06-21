@@ -587,6 +587,139 @@ describe('JobDetail', () => {
       resolveRetry(okJson({ task_id: task.id, status: 'ready' }))
     })
 
+    it('does NOT show retry button for a canceled task whose upstream step has not completed', async () => {
+      // step-2 (ComposeVideo) depends_on step-1 (RenderFrames), and step-1 is
+      // 'failed' (not 'completed'), so depsSatisfied = false for step-2.
+      const job = makeJob({
+        steps: [
+          {
+            id: 'step-1',
+            name: 'RenderFrames',
+            step_order: 0,
+            status: 'failed',
+            created_at: '2024-01-15T10:00:00Z',
+            updated_at: '2024-01-15T10:05:00Z',
+          },
+          {
+            id: 'step-2',
+            name: 'ComposeVideo',
+            step_order: 1,
+            status: 'canceled',
+            depends_on: ['RenderFrames'],
+            created_at: '2024-01-15T10:00:00Z',
+            updated_at: '2024-01-15T10:05:00Z',
+          },
+        ],
+      })
+      const cascadeCanceled = makeTask({
+        id: 'task-cascade',
+        step_id: 'step-2',
+        status: 'canceled',
+        name: 'task.cascade',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([cascadeCanceled])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      // Wait for table to render (logs link is always present)
+      await waitFor(() => screen.getAllByRole('link', { name: /view logs/i }))
+      // The cascade-canceled dep-blocked task must NOT have a retry button.
+      expect(screen.queryByLabelText('Retry task task.cascade')).not.toBeInTheDocument()
+      // And it must not have a checkbox (not selectable).
+      expect(
+        screen.queryByRole('checkbox', { name: 'Select task task.cascade' }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('does NOT include dep-blocked canceled tasks in bulk selectedRetryable', async () => {
+      // step-1 is failed → step-2's dep (RenderFrames) is not completed.
+      const job = makeJob({
+        steps: [
+          {
+            id: 'step-1',
+            name: 'RenderFrames',
+            step_order: 0,
+            status: 'failed',
+            created_at: '',
+            updated_at: '',
+          },
+          {
+            id: 'step-2',
+            name: 'ComposeVideo',
+            step_order: 1,
+            status: 'canceled',
+            depends_on: ['RenderFrames'],
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      })
+      // A cancelable running task in step-1 (selectable via CANCELABLE path).
+      const runningTask = makeTask({
+        id: 'task-running-dep',
+        step_id: 'step-1',
+        status: 'running',
+        name: 'task.run',
+      })
+      // A cascade-canceled task in step-2 — not selectable because deps unsatisfied.
+      const blockedTask = makeTask({
+        id: 'task-blocked-dep',
+        step_id: 'step-2',
+        status: 'canceled',
+        name: 'task.blocked',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([runningTask, blockedTask])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      // The running task is cancelable → checkbox present.
+      await screen.findByRole('checkbox', { name: 'Select task task.run' })
+      // The blocked task is NOT selectable → no checkbox.
+      expect(
+        screen.queryByRole('checkbox', { name: 'Select task task.blocked' }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows retry button for a failed task in a step whose deps ARE satisfied', async () => {
+      // step-1 completed → step-2 deps ARE satisfied → retry button visible for failed task.
+      const job = makeJob({
+        steps: [
+          {
+            id: 'step-1',
+            name: 'RenderFrames',
+            step_order: 0,
+            status: 'completed',
+            created_at: '',
+            updated_at: '',
+          },
+          {
+            id: 'step-2',
+            name: 'ComposeVideo',
+            step_order: 1,
+            status: 'failed',
+            depends_on: ['RenderFrames'],
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      })
+      const failedTask = makeTask({
+        id: 'task-deps-ok',
+        step_id: 'step-2',
+        status: 'failed',
+        name: 'task.depsfail',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([failedTask])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.depsfail'))
+      expect(screen.getByLabelText('Retry task task.depsfail')).toBeInTheDocument()
+    })
+
     it('shows inline error and reverts status when retry fails', async () => {
       const task = makeTask({ status: 'failed', name: 'task.0' })
       fetchMock.mockResolvedValueOnce(okJson(makeJob()))
