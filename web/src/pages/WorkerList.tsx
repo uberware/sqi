@@ -170,7 +170,10 @@ function CapabilityTags({ worker }: { worker: Worker }) {
 
 export default function WorkerList() {
   // ── URL-driven filters ──────────────────────────────────────────────────────
-  const filters = useListFilters<WorkerStatus, 'hostname' | 'status' | 'registered_at' | 'last_heartbeat_at'>({
+  const filters = useListFilters<
+    WorkerStatus,
+    'hostname' | 'status' | 'registered_at' | 'last_heartbeat_at'
+  >({
     statuses: WORKER_STATUSES,
     sortFields: WORKER_SORT_FIELDS,
     defaultSortField: 'hostname',

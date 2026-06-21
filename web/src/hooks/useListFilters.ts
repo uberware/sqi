@@ -50,10 +50,13 @@ export function useListFilters<S extends string, F extends string>(
   const search = searchParams.get(SEARCH_PARAM) ?? ''
 
   const rawSort = searchParams.get(SORT_FIELD_PARAM)
-  const sortField = (rawSort && config.sortFields.has(rawSort) ? rawSort : config.defaultSortField) as F
+  const sortField = (
+    rawSort && config.sortFields.has(rawSort) ? rawSort : config.defaultSortField
+  ) as F
 
   const rawDir = searchParams.get(SORT_DIR_PARAM)
-  const sortDir: SortDirection = rawDir === 'asc' || rawDir === 'desc' ? rawDir : config.defaultSortDir
+  const sortDir: SortDirection =
+    rawDir === 'asc' || rawDir === 'desc' ? rawDir : config.defaultSortDir
 
   const parsedPage = parseInt(searchParams.get(PAGE_PARAM) ?? '1', 10)
   const page = !isNaN(parsedPage) && parsedPage >= 1 ? parsedPage : 1

@@ -53,7 +53,10 @@ export default function FilterToolbar({
         {statuses.map(({ label, value, count }) => (
           <button
             key={value}
-            className={[styles.filterPill, activeStatus === value ? styles['filterPill--active'] : '']
+            className={[
+              styles.filterPill,
+              activeStatus === value ? styles['filterPill--active'] : '',
+            ]
               .filter(Boolean)
               .join(' ')}
             onClick={() => onStatusChange(value)}
