@@ -61,11 +61,12 @@ export default function FilterToolbar({
               .join(' ')}
             onClick={() => onStatusChange(value)}
             aria-pressed={activeStatus === value}
+            aria-label={count !== undefined ? `${label} (${count})` : undefined}
             type="button"
           >
             {label}
             {count !== undefined && (
-              <span className={styles.filterCount} aria-label={`${count}`}>
+              <span className={styles.filterCount} aria-hidden="true">
                 {count}
               </span>
             )}

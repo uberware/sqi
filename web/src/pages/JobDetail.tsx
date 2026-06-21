@@ -854,7 +854,7 @@ export default function JobDetail() {
               : stepMatchesByName(step)
                 ? stepTasks
                 : stepTasks.filter((t) => taskMatches(t, term))
-          if (term !== '' && visibleTasks.length === 0) return null
+          if (term !== '' && !stepMatchesByName(step) && visibleTasks.length === 0) return null
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
           // select-all is scoped to the tasks visible under the active search filter
           const selectable = visibleTasks.filter(
