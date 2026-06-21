@@ -252,6 +252,38 @@ tr.rowSelected .cancelBtn {
   cursor: not-allowed;
 }
 
+/* ── Retry button (per-row, visible on hover) ────────────────────────────────── */
+
+.retryBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error);
+  background: transparent;
+  color: var(--color-error);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 80ms,
+    background 80ms;
+}
+
+tr:hover .retryBtn,
+tr.rowSelected .retryBtn {
+  opacity: 1;
+}
+
+.retryBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
+}
+
+.retryBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ── Empty / error / loading ─────────────────────────────────────────────────── */
 
 .emptyRow td {

@@ -9,7 +9,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobList from './JobList'
 import { WebSocketProvider } from '@/ws/context'
-import type { Job, ListResponse } from '@/api/types'
+import type { Job, ListResponse, TaskCounts } from '@/api/types'
 
 // ── Mock WebSocket ────────────────────────────────────────────────────────────
 
@@ -675,6 +675,63 @@ describe('JobList', () => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('/jobs/job-1'),
           expect.objectContaining({ method: 'DELETE' }),
+        )
+      })
+    })
+  })
+
+  // ── Per-row retry ─────────────────────────────────────────────────────────────
+
+  describe('per-row retry', () => {
+    /** Build a full TaskCounts with defaults of 0 for unspecified fields. */
+    function taskCounts(overrides: Partial<TaskCounts> = {}): TaskCounts {
+      return {
+        total: 0,
+        pending: 0,
+        ready: 0,
+        assigned: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        canceled: 0,
+        ...overrides,
+      }
+    }
+
+    it('shows a retry button only for jobs with failed/canceled tasks and calls retry', async () => {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) })
+
+      const failedJob = makeJob({
+        id: 'j-failed',
+        name: 'Failed Job',
+        status: 'failed',
+        task_counts: taskCounts({ total: 2, failed: 2 }),
+      })
+      const doneJob = makeJob({
+        id: 'j-ok',
+        name: 'Done Job',
+        status: 'completed',
+        task_counts: taskCounts({ total: 3, succeeded: 3 }),
+      })
+
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([failedJob, doneJob])))
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('link', { name: 'Failed Job' }))
+
+      expect(screen.getByRole('button', { name: /Retry job Failed Job/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Retry job Done Job/i })).not.toBeInTheDocument()
+
+      // Mock retry POST response and subsequent invalidation re-fetch
+      fetchMock.mockResolvedValueOnce(okJson({ job_id: 'j-failed', retried: 2 }))
+      fetchMock.mockResolvedValue(okJson(makeListResponse([failedJob, doneJob])))
+
+      await user.click(screen.getByRole('button', { name: /Retry job Failed Job/i }))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/jobs/j-failed/retry'),
+          expect.objectContaining({ method: 'POST' }),
         )
       })
     })

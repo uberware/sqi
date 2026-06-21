@@ -13,12 +13,13 @@ import {
   ChevronUpDown,
   Copy,
   Refresh,
+  Rotate,
   Spinner,
   Trash,
   X,
 } from '@/components/icons'
 import { useListJobs, queryKeys } from '@/api/queries'
-import { useCancelJob, useDeleteJob } from '@/api/mutations'
+import { useCancelJob, useDeleteJob, useRetryJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useLiveNow } from '@/hooks/useLiveNow'
@@ -35,6 +36,13 @@ const PAGE_SIZE = 50
 
 /** Job statuses that can still be canceled. */
 const CANCELABLE: ReadonlySet<JobStatus> = new Set(['pending', 'running', 'paused'])
+
+/** Number of a job's tasks eligible for retry (failed or canceled). */
+function retryableCount(job: Job): number {
+  const c = job.task_counts
+  if (!c) return 0
+  return c.failed + c.canceled
+}
 
 /** Status filter groups shown above the table. */
 const STATUS_FILTERS: { label: string; value: JobStatus | '' }[] = [
@@ -237,6 +245,7 @@ export default function JobList() {
   const queryClient = useQueryClient()
   const cancelJob = useCancelJob()
   const deleteJob = useDeleteJob()
+  const retryJob = useRetryJob()
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   // Pending confirmation: either a single job id or the selected-bulk set.
   const [confirm, setConfirm] = useState<{ ids: string[]; bulk: boolean } | null>(null)
@@ -245,6 +254,7 @@ export default function JobList() {
   // setSelectedIds without a forward-declaration lint error.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
 
   // ── WS-driven in-place updates ───────────────────────────────────
 
@@ -387,6 +397,31 @@ export default function JobList() {
     [cancelJob],
   )
 
+  // ── Per-row retry ─────────────────────────────────────────────────────────────
+
+  const handleRetryRow = useCallback(
+    async (id: string) => {
+      setRetryingIds((prev) => new Set(prev).add(id))
+      try {
+        await retryJob.mutateAsync(id)
+      } catch {
+        // Surfaced via retryJob.isError below; swallow so bulk retry continues.
+      } finally {
+        setRetryingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [retryJob],
+  )
+
   // ── Bulk cancel ───────────────────────────────────────────────────────────
 
   const handleBulkCancel = useCallback(async () => {
@@ -518,6 +553,12 @@ export default function JobList() {
           {deleteJob.error instanceof Error ? deleteJob.error.message : 'Unknown error'}
         </div>
       )}
+      {retryJob.isError && (
+        <div className={styles.errorBanner} role="alert">
+          Retry failed:{' '}
+          {retryJob.error instanceof Error ? retryJob.error.message : 'Unknown error'}
+        </div>
+      )}
 
       {/* Job table */}
       <div className={styles.tableWrap}>
@@ -632,6 +673,18 @@ export default function JobList() {
                         aria-label={`Cancel job ${job.name}`}
                       >
                         {isCanceling ? <Spinner /> : <X />}
+                      </button>
+                    )}
+                    {retryableCount(job) > 0 && (
+                      <button
+                        className={styles.retryBtn}
+                        onClick={() => void handleRetryRow(job.id)}
+                        disabled={retryingIds.has(job.id)}
+                        type="button"
+                        title="Retry failed and canceled tasks"
+                        aria-label={`Retry job ${job.name}`}
+                      >
+                        {retryingIds.has(job.id) ? <Spinner /> : <Rotate />}
                       </button>
                     )}
                     <button
