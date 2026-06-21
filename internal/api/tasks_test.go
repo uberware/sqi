@@ -30,11 +30,12 @@ import (
 
 // fakeTaskCanceler implements [taskCanceler] for tests.
 type fakeTaskCanceler struct {
-	cancelErr     error       // non-nil forces CancelTask to return this error
-	canceledTasks []string    // task IDs passed to CancelTask, in call order
-	retryErr      error       // non-nil forces RetryTask to return this error
-	retriedTasks  []string    // task IDs passed to RetryTask, in call order
-	retryStore    store.Store // if set, RetryTask updates the task to ready in the store
+	cancelErr     error            // non-nil forces CancelTask to return this error
+	canceledTasks []string         // task IDs passed to CancelTask, in call order
+	retryErr      error            // non-nil forces RetryTask to return this error
+	retriedTasks  []string         // task IDs passed to RetryTask, in call order
+	retryStore    store.Store      // if set, RetryTask updates the task status in the store
+	retryStatus   store.TaskStatus // status to set via retryStore (defaults to TaskStatusReady)
 }
 
 func (f *fakeTaskCanceler) CancelTask(_ context.Context, id string) error {
@@ -48,7 +49,11 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 		return f.retryErr
 	}
 	if f.retryStore != nil {
-		return f.retryStore.UpdateTaskStatus(ctx, id, store.TaskStatusReady)
+		status := f.retryStatus
+		if status == "" {
+			status = store.TaskStatusReady
+		}
+		return f.retryStore.UpdateTaskStatus(ctx, id, status)
 	}
 	return nil
 }
@@ -468,6 +473,31 @@ func TestRetryTask(t *testing.T) {
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusConflict {
 			t.Fatalf("expected 409 for succeeded task, got %d", rr.Code)
+		}
+	})
+
+	t.Run("retry with unsatisfied deps returns pending status", func(t *testing.T) {
+		st := fake.New()
+		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
+		r := newTaskRouterCanceler(st, sched)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp retryResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "pending" {
+			t.Errorf("status = %q, want pending", resp.Status)
+		}
+		if resp.TaskID != tk.ID {
+			t.Errorf("task_id = %q, want %q", resp.TaskID, tk.ID)
 		}
 	})
 

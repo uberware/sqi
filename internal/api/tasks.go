@@ -407,6 +407,8 @@ func (h *taskHandler) retryTask(w http.ResponseWriter, r *http.Request) {
 	status := string(store.TaskStatusPending)
 	if updated, gErr := h.store.GetTask(ctx, id); gErr == nil {
 		status = string(updated.Status)
+	} else {
+		h.logger.WarnContext(ctx, "tasks: retry status re-fetch failed", slog.String("id", id), slog.Any("error", gErr))
 	}
 
 	writeJSON(w, http.StatusAccepted, retryResponse{
