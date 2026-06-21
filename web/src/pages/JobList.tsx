@@ -570,8 +570,7 @@ export default function JobList() {
       )}
       {retryJob.isError && (
         <div className={styles.errorBanner} role="alert">
-          Retry failed:{' '}
-          {retryJob.error instanceof Error ? retryJob.error.message : 'Unknown error'}
+          Retry failed: {retryJob.error instanceof Error ? retryJob.error.message : 'Unknown error'}
         </div>
       )}
 
