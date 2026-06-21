@@ -1347,8 +1347,10 @@ paths:
       summary: Retry a task
       tags: [tasks]
       description: |
-        Resets a failed or canceled task to `ready` so the scheduler can
-        pick it up on the next dispatch cycle.
+        Revives a failed or canceled task, resetting it (and its step and the
+        job, when terminal) so the scheduler re-runs it in dependency order. The
+        response `status` is the task's resulting state (`ready` when its step's
+        dependencies are satisfied, otherwise `pending`).
 
         Only tasks in `failed` or `canceled` state may be retried; all other
         states are rejected with 409 Conflict.
