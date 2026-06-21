@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
+import { Check, Copy, Pause, Play, Refresh, Spinner, Trash } from '@/components/icons'
 import { useListWorkers, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -91,7 +92,7 @@ function IdCell({ id }: { id: string }) {
       }}
     >
       {truncateId(id)}
-      <span className={styles.copyHint}>{copied ? '✓' : '⎘'}</span>
+      <span className={styles.copyHint}>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
     </span>
   )
 }
@@ -392,7 +393,8 @@ export default function WorkerList() {
               type="button"
               aria-label="Refresh workers"
             >
-              ↻ Refresh
+              <Refresh />
+              Refresh
             </button>
           </div>
         }
@@ -523,9 +525,10 @@ export default function WorkerList() {
                         onClick={() => void handleDisable(worker.id)}
                         disabled={isToggling}
                         type="button"
+                        title="Disable"
                         aria-label={`Disable worker ${worker.name || worker.hostname}`}
                       >
-                        {isToggling ? '…' : 'Disable'}
+                        {isToggling ? <Spinner /> : <Pause />}
                       </button>
                     )}
                     {worker.status === 'disabled' && (
@@ -534,9 +537,10 @@ export default function WorkerList() {
                         onClick={() => void handleEnable(worker.id)}
                         disabled={isToggling}
                         type="button"
+                        title="Enable"
                         aria-label={`Enable worker ${worker.name || worker.hostname}`}
                       >
-                        {isToggling ? '…' : 'Enable'}
+                        {isToggling ? <Spinner /> : <Play />}
                       </button>
                     )}
                     {worker.removable && (
@@ -545,9 +549,10 @@ export default function WorkerList() {
                         onClick={() => void handleRemove(worker.id)}
                         disabled={isToggling}
                         type="button"
+                        title="Remove"
                         aria-label={`Remove worker ${worker.name || worker.hostname}`}
                       >
-                        {isToggling ? '…' : 'Remove'}
+                        {isToggling ? <Spinner /> : <Trash />}
                       </button>
                     )}
                   </td>
@@ -567,16 +572,20 @@ export default function WorkerList() {
             onClick={() => void handleBulkDisable()}
             disabled={selectedDisableable.length === 0 || disableWorker.isPending}
             type="button"
+            aria-label={`Disable selected (${selectedDisableable.length})`}
           >
-            Disable selected ({selectedDisableable.length})
+            <Pause />
+            Disable {selectedDisableable.length}
           </button>
           <button
             className={`${styles.bulkBtn} ${styles['bulkBtn--remove']}`}
             onClick={() => void handleBulkRemove()}
             disabled={selectedRemovable.length === 0 || removeWorker.isPending}
             type="button"
+            aria-label={`Remove selected (${selectedRemovable.length})`}
           >
-            Remove selected ({selectedRemovable.length})
+            <Trash />
+            Remove {selectedRemovable.length}
           </button>
           <button
             className={styles.filterPill}

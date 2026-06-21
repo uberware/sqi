@@ -105,6 +105,9 @@
 }
 
 .bulkCancelBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-error);
@@ -187,7 +190,8 @@
 }
 
 .sortIcon {
-  font-size: var(--font-size-xs);
+  display: inline-flex;
+  align-items: center;
   opacity: 0.6;
 }
 
@@ -209,8 +213,9 @@
 }
 
 .copyHint {
+  display: inline-flex;
+  align-items: center;
   opacity: 0;
-  font-size: 10px;
   color: var(--color-text-muted);
   transition: opacity 100ms;
 }
@@ -218,13 +223,14 @@
 /* ── Cancel button (per-row, visible on hover) ───────────────────────────────── */
 
 .cancelBtn {
-  padding: 2px var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-error);
   background: transparent;
   color: var(--color-error);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
   cursor: pointer;
   opacity: 0;
   transition:
@@ -285,6 +291,9 @@ tr.rowSelected .cancelBtn {
 }
 
 .refreshBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
@@ -309,13 +318,14 @@ tr.rowSelected .cancelBtn {
 /* ── Delete button (per-row, visible on hover) ───────────────────────────────── */
 
 .deleteBtn {
-  padding: 2px var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-error);
   background: transparent;
   color: var(--color-error);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
   cursor: pointer;
   margin-left: var(--space-1);
   opacity: 0;
@@ -348,13 +358,16 @@ tr.rowSelected .deleteBtn {
  * layout, so only the missing-Cancel case needs this floor.
  */
 .actionsCell {
-  min-width: 9rem;
+  min-width: 4.5rem;
   white-space: nowrap;
 }
 
 /* ── Bulk delete button ──────────────────────────────────────────────────────── */
 
 .bulkDeleteBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-error);

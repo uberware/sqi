@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { Check, Copy } from '@/components/icons'
 import styles from './CopyButton.module.css'
 
 interface CopyButtonProps {
@@ -57,7 +58,7 @@ export default function CopyButton({ value, display, className }: CopyButtonProp
     >
       <span className={styles.text}>{label}</span>
       <span className={styles.icon} aria-hidden="true">
-        {copied ? '✓' : '⎘'}
+        {copied ? <Check size={13} /> : <Copy size={13} />}
       </span>
       {copied && (
         <span className={styles.tooltip} role="tooltip">

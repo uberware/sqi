@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
+import { Check, Copy, Document, Refresh, Rotate, Spinner, X } from '@/components/icons'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
 import { useRetryTask, useCancelTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -102,7 +103,7 @@ function IdCell({ id }: { id: string }) {
       }}
     >
       {truncateId(id)}
-      <span className={styles.copyHint}>{copied ? '✓' : '⎘'}</span>
+      <span className={styles.copyHint}>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
     </span>
   )
 }
@@ -302,40 +303,33 @@ function TaskRow({
             <Link
               to={`/jobs/${jobId}/tasks/${task.id}/logs`}
               className={styles.logsLink}
+              title="Logs"
               aria-label={`View logs for task ${task.name}`}
             >
-              Logs
+              <Document />
             </Link>
-            {canRetry && (
+            {(canRetry || isRetrying) && (
               <button
                 className={styles.retryBtn}
                 onClick={() => onRetry(task.id)}
                 disabled={isRetrying}
                 type="button"
+                title="Retry"
                 aria-label={`Retry task ${task.name}`}
               >
-                Retry
+                {isRetrying ? <Spinner /> : <Rotate />}
               </button>
             )}
-            {isRetrying && (
-              <button className={styles.retryBtn} disabled type="button">
-                …
-              </button>
-            )}
-            {canCancel && (
+            {(canCancel || isCanceling) && (
               <button
                 className={styles.cancelBtn}
                 onClick={() => onCancel(task.id)}
                 disabled={isCanceling}
                 type="button"
+                title="Cancel"
                 aria-label={`Cancel task ${task.name}`}
               >
-                Cancel
-              </button>
-            )}
-            {isCanceling && (
-              <button className={styles.cancelBtn} disabled type="button">
-                …
+                {isCanceling ? <Spinner /> : <X />}
               </button>
             )}
           </div>
@@ -766,7 +760,8 @@ export default function JobDetail() {
               type="button"
               aria-label="Refresh job data"
             >
-              ↻ Refresh
+              <Refresh />
+              Refresh
             </button>
           </div>
         }
@@ -829,16 +824,20 @@ export default function JobDetail() {
             onClick={() => void handleBulkCancel()}
             disabled={selectedCancelable.length === 0 || cancelTask.isPending}
             type="button"
+            aria-label={`Cancel selected (${selectedCancelable.length})`}
           >
-            Cancel selected ({selectedCancelable.length})
+            <X />
+            Cancel {selectedCancelable.length}
           </button>
           <button
             className={styles.bulkRetryBtn}
             onClick={() => void handleBulkRetry()}
             disabled={selectedRetryable.length === 0 || retryTask.isPending}
             type="button"
+            aria-label={`Retry selected (${selectedRetryable.length})`}
           >
-            Retry selected ({selectedRetryable.length})
+            <Rotate />
+            Retry {selectedRetryable.length}
           </button>
           <button
             className={styles.clearBtn}

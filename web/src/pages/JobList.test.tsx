@@ -417,7 +417,7 @@ describe('JobList', () => {
       fireEvent.click(screen.getByLabelText('Select all cancelable jobs'))
       expect(screen.getByText('2 selected')).toBeInTheDocument()
 
-      fireEvent.click(screen.getByText(/Cancel selected/))
+      fireEvent.click(screen.getByRole('button', { name: /Cancel selected/i }))
 
       await waitFor(() => {
         const urls = fetchMock.mock.calls

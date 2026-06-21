@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import DiagnosticsPanel from '@/components/DiagnosticsPanel'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
+import { Check, Copy, Refresh } from '@/components/icons'
 import { useGetWorker, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -74,7 +75,15 @@ function IdDisplay({ id }: { id: string }) {
       }}
     >
       <span className={styles.idFull}>{id}</span>
-      <span className={styles.idCopyHint}>{copied ? '✓ Copied' : '⎘'}</span>
+      <span className={styles.idCopyHint}>
+        {copied ? (
+          <>
+            <Check size={12} /> Copied
+          </>
+        ) : (
+          <Copy size={12} />
+        )}
+      </span>
     </span>
   )
 }
@@ -395,7 +404,8 @@ export default function WorkerDetail() {
               type="button"
               aria-label="Refresh worker"
             >
-              ↻ Refresh
+              <Refresh />
+              Refresh
             </button>
           </div>
         }
