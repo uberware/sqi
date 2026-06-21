@@ -78,6 +78,9 @@ func (s *Scheduler) retry(ctx context.Context, jobID string, taskIDs []string) (
 		status := string(store.TaskStatusPending)
 		if cur, err := s.store.GetTask(ctx, rt.ID); err == nil {
 			status = string(cur.Status)
+		} else {
+			s.logger.WarnContext(ctx, "scheduler: retry: get task for notify failed",
+				slog.String("task_id", rt.ID), slog.Any("error", err))
 		}
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     jobID,

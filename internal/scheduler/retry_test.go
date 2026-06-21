@@ -191,3 +191,56 @@ func TestRetryJob_NoEligibleTasks(t *testing.T) {
 		t.Errorf("revived = %d, want 0", n)
 	}
 }
+
+// ── RetryTask tests ───────────────────────────────────────────────────────────
+
+func TestRetryTask_RevivesSingleTask(t *testing.T) {
+	st := fakestore.New()
+	defer st.Close()
+	ctx := context.Background()
+
+	// Two-step fixture: s1 (failed, no deps) → t1 (failed); s2 (canceled, deps s1) → t2 (canceled).
+	seedRetryFixture(t, st)
+
+	sched, notifier := newTestSchedulerWithNotifier(t, st)
+
+	if err := sched.RetryTask(ctx, "t1"); err != nil {
+		t.Fatalf("RetryTask: %v", err)
+	}
+
+	// t1's step has no unmet deps, so ResolveDependencies should promote it to ready.
+	t1, err := st.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask(t1): %v", err)
+	}
+	if t1.Status != store.TaskStatusReady {
+		t.Errorf("t1 = %v, want ready", t1.Status)
+	}
+
+	// t2 was not targeted by RetryTask — it must remain canceled.
+	t2, err := st.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask(t2): %v", err)
+	}
+	if t2.Status != store.TaskStatusCanceled {
+		t.Errorf("t2 = %v, want canceled", t2.Status)
+	}
+
+	// A task event was emitted for t1.
+	if notifier.TaskEventCount() == 0 {
+		t.Error("expected at least one task event for the revived task")
+	}
+}
+
+func TestRetryTask_GetTaskError(t *testing.T) {
+	st := fakestore.New()
+	defer st.Close()
+	ctx := context.Background()
+
+	sched, _ := newTestSchedulerWithNotifier(t, st)
+
+	err := sched.RetryTask(ctx, "does-not-exist")
+	if err == nil {
+		t.Fatal("expected non-nil error for unknown task ID, got nil")
+	}
+}
