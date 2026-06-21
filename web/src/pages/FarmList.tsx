@@ -3,6 +3,8 @@
 import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
+import IconButton from '@/components/IconButton'
+import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useListFarms } from '@/api/queries'
 import { useDeleteFarm } from '@/api/mutations'
@@ -85,15 +87,14 @@ export default function FarmList() {
                 <td>{farm.description ?? '—'}</td>
                 <td>{farm.max_concurrent_tasks === 0 ? 'Unlimited' : farm.max_concurrent_tasks}</td>
                 <td>
-                  <button
-                    type="button"
+                  <IconButton
+                    icon={<Trash />}
                     className={styles.deleteBtn}
-                    disabled={deletingIds.has(farm.id)}
+                    busy={deletingIds.has(farm.id)}
                     onClick={() => void handleDelete(farm.id, farm.name)}
-                    aria-label={`Delete farm ${farm.name}`}
-                  >
-                    {deletingIds.has(farm.id) ? '…' : 'Delete'}
-                  </button>
+                    title="Delete"
+                    label={`Delete farm ${farm.name}`}
+                  />
                 </td>
               </tr>
             ))}

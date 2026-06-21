@@ -3,6 +3,8 @@
 import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
+import IconButton from '@/components/IconButton'
+import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useListStorageLocations } from '@/api/queries'
 import { useDeleteStorageLocation } from '@/api/mutations'
@@ -103,15 +105,14 @@ export default function StorageLocationList() {
                   <td>{defaultRoot ? defaultRoot : '—'}</td>
                   <td>{rootCount}</td>
                   <td>
-                    <button
-                      type="button"
+                    <IconButton
+                      icon={<Trash />}
                       className={styles.deleteBtn}
-                      disabled={deletingIds.has(location.id)}
+                      busy={deletingIds.has(location.id)}
                       onClick={() => void handleDelete(location.id, location.name)}
-                      aria-label={`Delete storage location ${location.name}`}
-                    >
-                      {deletingIds.has(location.id) ? '…' : 'Delete'}
-                    </button>
+                      title="Delete"
+                      label={`Delete storage location ${location.name}`}
+                    />
                   </td>
                 </tr>
               )

@@ -4,9 +4,10 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
+import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import { Check, Copy, Document, Refresh, Rotate, Spinner, X } from '@/components/icons'
+import { Check, Copy, Document, Refresh, Rotate, X } from '@/components/icons'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
 import { useRetryTask, useCancelTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -320,28 +321,24 @@ function TaskRow({
               <Document />
             </Link>
             {(canRetry || isRetrying) && (
-              <button
+              <IconButton
+                icon={<Rotate />}
                 className={styles.retryBtn}
                 onClick={() => onRetry(task.id)}
-                disabled={isRetrying}
-                type="button"
+                busy={isRetrying}
                 title="Retry"
-                aria-label={`Retry task ${task.name}`}
-              >
-                {isRetrying ? <Spinner /> : <Rotate />}
-              </button>
+                label={`Retry task ${task.name}`}
+              />
             )}
             {(canCancel || isCanceling) && (
-              <button
+              <IconButton
+                icon={<X />}
                 className={styles.cancelBtn}
                 onClick={() => onCancel(task.id)}
-                disabled={isCanceling}
-                type="button"
+                busy={isCanceling}
                 title="Cancel"
-                aria-label={`Cancel task ${task.name}`}
-              >
-                {isCanceling ? <Spinner /> : <X />}
-              </button>
+                label={`Cancel task ${task.name}`}
+              />
             )}
           </div>
         </td>

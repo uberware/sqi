@@ -4,8 +4,9 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
+import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
-import { Check, Copy, Pause, Play, Refresh, Spinner, Trash } from '@/components/icons'
+import { Check, Copy, Pause, Play, Refresh, Trash } from '@/components/icons'
 import { useListWorkers, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -520,40 +521,34 @@ export default function WorkerList() {
                   {/* Per-row enable/disable */}
                   <td>
                     {worker.status === 'online' && (
-                      <button
+                      <IconButton
+                        icon={<Pause />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--disable']}`}
                         onClick={() => void handleDisable(worker.id)}
-                        disabled={isToggling}
-                        type="button"
+                        busy={isToggling}
                         title="Disable"
-                        aria-label={`Disable worker ${worker.name || worker.hostname}`}
-                      >
-                        {isToggling ? <Spinner /> : <Pause />}
-                      </button>
+                        label={`Disable worker ${worker.name || worker.hostname}`}
+                      />
                     )}
                     {worker.status === 'disabled' && (
-                      <button
+                      <IconButton
+                        icon={<Play />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--enable']}`}
                         onClick={() => void handleEnable(worker.id)}
-                        disabled={isToggling}
-                        type="button"
+                        busy={isToggling}
                         title="Enable"
-                        aria-label={`Enable worker ${worker.name || worker.hostname}`}
-                      >
-                        {isToggling ? <Spinner /> : <Play />}
-                      </button>
+                        label={`Enable worker ${worker.name || worker.hostname}`}
+                      />
                     )}
                     {worker.removable && (
-                      <button
+                      <IconButton
+                        icon={<Trash />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--remove']}`}
                         onClick={() => void handleRemove(worker.id)}
-                        disabled={isToggling}
-                        type="button"
+                        busy={isToggling}
                         title="Remove"
-                        aria-label={`Remove worker ${worker.name || worker.hostname}`}
-                      >
-                        {isToggling ? <Spinner /> : <Trash />}
-                      </button>
+                        label={`Remove worker ${worker.name || worker.hostname}`}
+                      />
                     )}
                   </td>
                 </tr>
