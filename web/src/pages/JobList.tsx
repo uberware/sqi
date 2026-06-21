@@ -6,6 +6,17 @@ import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  ChevronUpDown,
+  Copy,
+  Refresh,
+  Spinner,
+  Trash,
+  X,
+} from '@/components/icons'
 import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob, useDeleteJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
@@ -98,7 +109,15 @@ function SortableHeader({
     >
       {label}
       <span className={styles.sortIcon} aria-hidden="true">
-        {active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+        {active ? (
+          sortDir === 'asc' ? (
+            <ChevronUp size={12} />
+          ) : (
+            <ChevronDown size={12} />
+          )
+        ) : (
+          <ChevronUpDown size={12} />
+        )}
       </span>
     </span>
   )
@@ -155,7 +174,7 @@ function IdCell({ id }: { id: string }) {
       }}
     >
       {truncateId(id)}
-      <span className={styles.copyHint}>{copied ? '✓' : '⎘'}</span>
+      <span className={styles.copyHint}>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
     </span>
   )
 }
@@ -441,7 +460,8 @@ export default function JobList() {
               type="button"
               aria-label="Refresh jobs"
             >
-              ↻ Refresh
+              <Refresh />
+              Refresh
             </button>
           </div>
         }
@@ -608,9 +628,10 @@ export default function JobList() {
                         onClick={() => void handleCancelRow(job.id)}
                         disabled={isCanceling}
                         type="button"
+                        title="Cancel"
                         aria-label={`Cancel job ${job.name}`}
                       >
-                        {isCanceling ? '…' : 'Cancel'}
+                        {isCanceling ? <Spinner /> : <X />}
                       </button>
                     )}
                     <button
@@ -618,9 +639,10 @@ export default function JobList() {
                       onClick={() => setConfirm({ ids: [job.id], bulk: false })}
                       disabled={deletingIds.has(job.id)}
                       type="button"
+                      title="Delete"
                       aria-label={`Delete job ${job.name}`}
                     >
-                      {deletingIds.has(job.id) ? '…' : 'Delete'}
+                      {deletingIds.has(job.id) ? <Spinner /> : <Trash />}
                     </button>
                   </td>
                 </tr>
@@ -639,16 +661,20 @@ export default function JobList() {
             onClick={() => void handleBulkCancel()}
             disabled={selectedCancelable.length === 0 || cancelJob.isPending}
             type="button"
+            aria-label={`Cancel selected (${selectedCancelable.length})`}
           >
-            Cancel selected ({selectedCancelable.length})
+            <X />
+            Cancel {selectedCancelable.length}
           </button>
           <button
             className={styles.bulkDeleteBtn}
             onClick={() => setConfirm({ ids: [...selectedIds], bulk: true })}
             disabled={selectedIds.size === 0 || deleteJob.isPending}
             type="button"
+            aria-label={`Delete selected (${selectedIds.size})`}
           >
-            Delete selected ({selectedIds.size})
+            <Trash />
+            Delete {selectedIds.size}
           </button>
           <button
             className={styles.filterPill}

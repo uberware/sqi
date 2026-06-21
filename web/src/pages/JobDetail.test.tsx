@@ -521,7 +521,7 @@ describe('JobDetail', () => {
 
       render(<JobDetail />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getAllByText('Logs'))
+      await waitFor(() => screen.getAllByRole('link', { name: /view logs/i }))
       expect(screen.queryByLabelText('Retry task task.0')).not.toBeInTheDocument()
     })
 
@@ -532,7 +532,7 @@ describe('JobDetail', () => {
 
       render(<JobDetail />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getAllByText('Logs'))
+      await waitFor(() => screen.getAllByRole('link', { name: /view logs/i }))
       expect(screen.queryByLabelText('Retry task task.0')).not.toBeInTheDocument()
     })
 
@@ -620,8 +620,8 @@ describe('JobDetail', () => {
 
       render(<JobDetail />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getAllByText('Logs'))
-      const logsLinks = screen.getAllByText('Logs')
+      await waitFor(() => screen.getAllByRole('link', { name: /view logs/i }))
+      const logsLinks = screen.getAllByRole('link', { name: /view logs/i })
       expect(logsLinks).toHaveLength(2)
     })
 
@@ -893,7 +893,7 @@ describe('JobDetail', () => {
       fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
 
       render(<JobDetail />, { wrapper: Wrapper })
-      await waitFor(() => screen.getAllByText('Logs'))
+      await waitFor(() => screen.getAllByRole('link', { name: /view logs/i }))
       // The succeeded-task row exposes Retry/Logs but not Cancel.
       expect(screen.queryByRole('button', { name: /Cancel task/i })).not.toBeInTheDocument()
     })

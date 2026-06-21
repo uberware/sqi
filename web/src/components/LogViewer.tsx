@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, memo, useLayoutEffect } from 'react'
 import AnsiToHtml from 'ansi-to-html'
+import { Check } from '@/components/icons'
 import { fetchTaskLogs } from '@/api/queries'
 import { useWebSocket } from '@/ws/context'
 import type { TaskLog, TaskStatus } from '@/api/types'
@@ -308,7 +309,13 @@ export default function LogViewer({ taskId, taskStatus }: LogViewerProps) {
             aria-label="Copy log text to clipboard"
             disabled={lines.length === 0}
           >
-            {copied ? '✓ Copied' : 'Copy'}
+            {copied ? (
+              <>
+                <Check size={13} /> Copied
+              </>
+            ) : (
+              'Copy'
+            )}
           </button>
         </div>
       </div>
