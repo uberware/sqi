@@ -244,3 +244,42 @@ func TestRetryTask_GetTaskError(t *testing.T) {
 		t.Fatal("expected non-nil error for unknown task ID, got nil")
 	}
 }
+
+// TestRetryTask_BlockedDownstreamReconcilesToFailed verifies that retrying ONLY
+// a downstream task (t2/s2) when the upstream (t1/s1) remains failed does NOT
+// strand the job in pending. CancelDependents must re-cancel t2 (whose step
+// is still blocked on the failed s1), and checkJobCompletion must finalize the
+// job back to failed.
+func TestRetryTask_BlockedDownstreamReconcilesToFailed(t *testing.T) {
+	st := fakestore.New()
+	defer st.Close()
+	ctx := context.Background()
+
+	// Seed: s1 failed (no deps) → t1 failed; s2 canceled (depends_on s1) → t2 canceled; job failed.
+	seedRetryFixture(t, st)
+
+	sched, _ := newTestSchedulerWithNotifier(t, st)
+
+	// Retry ONLY the downstream task — the upstream t1/s1 remains failed.
+	if err := sched.RetryTask(ctx, "t2"); err != nil {
+		t.Fatalf("RetryTask(t2): %v", err)
+	}
+
+	// t2 must be re-canceled (its step's upstream s1 is still failed).
+	t2, err := st.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask(t2): %v", err)
+	}
+	if t2.Status != store.TaskStatusCanceled {
+		t.Errorf("t2 = %v, want canceled (re-canceled by CancelDependents)", t2.Status)
+	}
+
+	// The job must be finalized to failed, NOT stranded in pending.
+	job, err := st.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob(j1): %v", err)
+	}
+	if job.Status != store.JobStatusFailed {
+		t.Errorf("job = %v, want failed (finalized by checkJobCompletion)", job.Status)
+	}
+}

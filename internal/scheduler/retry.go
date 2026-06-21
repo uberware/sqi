@@ -58,22 +58,27 @@ func (s *Scheduler) retry(ctx context.Context, jobID string, taskIDs []string) (
 		return 0, fmt.Errorf("scheduler: resolve dependencies for job %s: %w", jobID, err)
 	}
 
-	// Notify the job's new status.
-	if job, err := s.store.GetJob(ctx, jobID); err == nil {
-		s.notifier.NotifyJob(ws.JobEvent{
-			JobID:     jobID,
-			Name:      job.Name,
-			Owner:     job.Owner,
-			QueueID:   job.QueueID,
-			Status:    string(job.Status),
-			UpdatedAt: now,
-		})
-	} else {
-		s.logger.WarnContext(ctx, "scheduler: retry: get job for notify failed",
-			slog.String("job_id", jobID), slog.Any("error", err))
+	// Re-cancel tasks whose step is still blocked on a failed/canceled upstream.
+	// This handles the case where only a downstream task is retried but its
+	// upstream step remains failed — without this the downstream strands in
+	// pending forever (ListReadyTasks ignores pending, checkJobCompletion never fires).
+	_, canceledTasks, err := openjd.CancelDependents(ctx, s.store, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("scheduler: cancel dependents for job %s: %w", jobID, err)
 	}
 
-	// Notify each revived task with its actual post-resolution status.
+	// Finalize the job if every task has now reached a terminal state.
+	if err := s.checkJobCompletion(ctx, jobID); err != nil {
+		return 0, fmt.Errorf("scheduler: check job completion for job %s: %w", jobID, err)
+	}
+
+	// Build a set of revived task IDs so we can deduplicate notifications below.
+	revivedIDs := make(map[string]bool, len(revived))
+	for _, rt := range revived {
+		revivedIDs[rt.ID] = true
+	}
+
+	// Notify each revived task with its actual post-reconciliation status.
 	for _, rt := range revived {
 		status := string(store.TaskStatusPending)
 		if cur, err := s.store.GetTask(ctx, rt.ID); err == nil {
@@ -89,6 +94,35 @@ func (s *Scheduler) retry(ctx context.Context, jobID string, taskIDs []string) (
 			Status:    status,
 			UpdatedAt: now,
 		})
+	}
+
+	// Notify re-canceled dependents that were not already in the revived set.
+	for _, ct := range canceledTasks {
+		if revivedIDs[ct.ID] {
+			continue
+		}
+		s.notifier.NotifyTask(ws.TaskEvent{
+			JobID:     jobID,
+			TaskID:    ct.ID,
+			Name:      ct.Name,
+			Status:    string(ct.Status),
+			UpdatedAt: now,
+		})
+	}
+
+	// Notify the job's current status (after checkJobCompletion may have finalized it).
+	if job, err := s.store.GetJob(ctx, jobID); err == nil {
+		s.notifier.NotifyJob(ws.JobEvent{
+			JobID:     jobID,
+			Name:      job.Name,
+			Owner:     job.Owner,
+			QueueID:   job.QueueID,
+			Status:    string(job.Status),
+			UpdatedAt: now,
+		})
+	} else {
+		s.logger.WarnContext(ctx, "scheduler: retry: get job for notify failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
 	}
 
 	// Wake parked lease waiters: newly ready tasks may fit waiting workers.
