@@ -238,6 +238,34 @@ func TestListWorkers(t *testing.T) {
 	})
 }
 
+func TestListWorkers_SearchParam(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	for _, w := range []store.Worker{
+		{ID: "w1", Hostname: "alpha.local", Status: store.WorkerStatusOnline, Tags: map[string]string{}},
+		{ID: "w2", Hostname: "beta.local", Status: store.WorkerStatusOnline, Tags: map[string]string{}},
+	} {
+		if _, err := st.RegisterWorker(ctx, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := newWorkerRouter(st)
+
+	req := newReq(t, http.MethodGet, "/api/v1/workers?search=alpha", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp workerListResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 1 {
+		t.Errorf("total = %d, want 1", resp.Total)
+	}
+}
+
 // ── GET /api/v1/workers/{id} ──────────────────────────────────────────────────
 
 func TestGetWorker(t *testing.T) {

@@ -159,6 +159,7 @@ func (h *workerHandler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		QueueID:         q.Get("queue_id"),
 		ComputeLocation: q.Get("compute_location"),
 		Status:          store.WorkerStatus(q.Get("status")),
+		Search:          q.Get("search"),
 		SortBy:          toWorkerSortField(q.Get("sort_by")),
 		SortDir:         toSortDir(q.Get("sort_dir")),
 		Pagination:      pg,

@@ -806,6 +806,28 @@ func TestListWorkers_SortAndFilter(t *testing.T) {
 	}
 }
 
+func TestListWorkers_Search(t *testing.T) {
+	st := New()
+	mk := func(id, name, host, loc string) {
+		if _, err := st.RegisterWorker(ctx(), store.Worker{
+			ID: id, Name: name, Hostname: host, ComputeLocation: loc,
+			Status: store.WorkerStatusOnline, Tags: map[string]string{},
+		}); err != nil {
+			t.Fatalf("RegisterWorker(%q): %v", id, err)
+		}
+	}
+	mk("w-render01", "render-node-01", "render01.local", "us-west")
+	mk("w-comp02", "comp-node-02", "comp02.local", "eu-central")
+
+	page, err := st.ListWorkers(ctx(), store.ListWorkersOptions{Search: "EU-CENTRAL"})
+	if err != nil {
+		t.Fatalf("ListWorkers: %v", err)
+	}
+	if page.Total != 1 {
+		t.Errorf("Total: got %d, want 1", page.Total)
+	}
+}
+
 // ── job.go ────────────────────────────────────────────────────────────────────
 
 func TestUpdateJob(t *testing.T) {

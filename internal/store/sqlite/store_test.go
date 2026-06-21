@@ -1584,6 +1584,47 @@ func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {
 	}
 }
 
+func TestWorker_ListWorkers_Search(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	mk := func(id, name, host, loc string) {
+		if _, err := s.RegisterWorker(ctx, store.Worker{
+			ID: id, FarmID: "f1", Name: name, Hostname: host,
+			ComputeLocation: loc, Status: store.WorkerStatusOnline,
+			Tags: map[string]string{},
+		}); err != nil {
+			t.Fatalf("RegisterWorker(%q): %v", id, err)
+		}
+	}
+	mk("w-render01", "render-node-01", "render01.local", "us-west")
+	mk("w-comp02", "comp-node-02", "comp02.local", "eu-central")
+
+	cases := []struct {
+		name, search string
+		wantTotal    int
+	}{
+		{"by name", "render-node", 1},
+		{"by hostname", "comp02.local", 1},
+		{"by id", "w-render01", 1},
+		{"by compute location", "eu-central", 1},
+		{"case-insensitive", "US-WEST", 1},
+		{"no match", "zzz", 0},
+		{"empty matches all", "", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := s.ListWorkers(ctx, store.ListWorkersOptions{Search: tc.search})
+			if err != nil {
+				t.Fatalf("ListWorkers: %v", err)
+			}
+			if page.Total != tc.wantTotal {
+				t.Errorf("Total: got %d, want %d", page.Total, tc.wantTotal)
+			}
+		})
+	}
+}
+
 // ── DemoteStalledJobs ─────────────────────────────────────────────────────────
 
 // seedJobWithTasks creates a job (in the given status) with one step and a task
