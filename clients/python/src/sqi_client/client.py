@@ -46,6 +46,7 @@ from .models import (
     LogPage,
     Page,
     Queue,
+    RetryJobResult,
     RetryResult,
     StorageLocation,
     Task,
@@ -613,6 +614,24 @@ class SqiClient:
         """
         self._request("POST", f"/jobs/{quote(job_id, safe='')}/cancel")
 
+    def retry_job(self, job_id: str) -> RetryJobResult:
+        """Retry a job's failed and canceled tasks, reviving them for re-dispatch.
+
+        Resets every ``failed``/``canceled`` task in the job — together with the
+        job and the affected steps — back to ``pending`` so the scheduler
+        re-runs them in dependency order. Idempotent: a job with no eligible
+        tasks returns ``retried=0``.
+
+        Returns:
+            A :class:`RetryJobResult` with the job ID and the number of tasks
+            revived.
+
+        Raises:
+            NotFoundError: No job with that ID exists (HTTP 404).
+        """
+        data = self._request_json("POST", f"/jobs/{quote(job_id, safe='')}/retry")
+        return RetryJobResult.from_dict(data)
+
     def delete_job(self, job_id: str) -> None:
         """Hard-delete a job and all of its data. Returns ``None`` on success
         (HTTP 204).
@@ -743,7 +762,8 @@ class SqiClient:
 
         Returns:
             A :class:`RetryResult` describing the retried task and its new status
-            (typically ``ready``).
+            (``ready`` when the task's step dependencies are satisfied, otherwise
+            ``pending``).
 
         Raises:
             NotFoundError: No task with that ID exists (HTTP 404).

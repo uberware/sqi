@@ -38,6 +38,7 @@ __all__ = [
     "LogPage",
     "Page",
     "Queue",
+    "RetryJobResult",
     "RetryResult",
     "Step",
     "StorageLocation",
@@ -540,6 +541,31 @@ class CancelResult:
         return cls(
             task_id=_as_str(data.get("task_id")),
             status=TaskStatus.parse(_as_str(data.get("status"))),
+        )
+
+
+@dataclass(frozen=True)
+class RetryJobResult:
+    """Outcome of retrying a job's failed/canceled tasks (OpenAPI ``RetryJobResponse``).
+
+    Returned by :meth:`~sqi_client.client.SqiClient.retry_job`: the job and the
+    number of tasks revived (``0`` when none were eligible).
+    """
+
+    job_id: str
+    retried: int
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RetryJobResult:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            job_id=_as_str(data.get("job_id")),
+            retried=_as_int(data.get("retried")),
         )
 
 
