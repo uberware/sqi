@@ -128,6 +128,30 @@
   cursor: not-allowed;
 }
 
+.bulkRetryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-warning);
+  background: transparent;
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.bulkRetryBtn:hover:not(:disabled) {
+  background: var(--color-warning-muted);
+}
+
+.bulkRetryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Table wrapper ───────────────────────────────────────────────────────────── */
 
 .tableWrap {

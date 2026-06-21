@@ -377,14 +377,29 @@ describe('JobList', () => {
     })
 
     it('bulk cancel button is disabled when no cancelable rows selected', async () => {
-      const job = makeJob({ status: 'completed', name: 'Done' })
+      // Use a completed job with only succeeded tasks — neither cancelable nor retryable —
+      // so that selectableJobs is empty and the select-all checkbox is disabled.
+      const job = makeJob({
+        status: 'completed',
+        name: 'Done',
+        task_counts: {
+          total: 3,
+          pending: 0,
+          ready: 0,
+          assigned: 0,
+          running: 0,
+          succeeded: 3,
+          failed: 0,
+          canceled: 0,
+        },
+      })
       fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
 
       render(<JobList />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByText('Done'))
-      // Completed jobs cannot be selected for cancel — select-all checkbox should be disabled
-      const selectAll = screen.getByLabelText('Select all cancelable jobs')
+      // No selectable jobs → select-all checkbox must be disabled
+      const selectAll = screen.getByLabelText('Select all jobs')
       expect(selectAll).toBeDisabled()
     })
 
@@ -398,7 +413,7 @@ describe('JobList', () => {
       render(<JobList />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByText('Job 1'))
-      fireEvent.click(screen.getByLabelText('Select all cancelable jobs'))
+      fireEvent.click(screen.getByLabelText('Select all jobs'))
 
       expect(screen.getByText('2 selected')).toBeInTheDocument()
     })
@@ -414,7 +429,7 @@ describe('JobList', () => {
       render(<JobList />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByText('Job 1'))
-      fireEvent.click(screen.getByLabelText('Select all cancelable jobs'))
+      fireEvent.click(screen.getByLabelText('Select all jobs'))
       expect(screen.getByText('2 selected')).toBeInTheDocument()
 
       fireEvent.click(screen.getByRole('button', { name: /Cancel selected/i }))
@@ -677,6 +692,67 @@ describe('JobList', () => {
           expect.objectContaining({ method: 'DELETE' }),
         )
       })
+    })
+  })
+
+  // ── Bulk retry ────────────────────────────────────────────────────────────────
+
+  describe('bulk retry', () => {
+    function counts(overrides: Partial<TaskCounts> = {}): TaskCounts {
+      return {
+        total: 0,
+        pending: 0,
+        ready: 0,
+        assigned: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        canceled: 0,
+        ...overrides,
+      }
+    }
+
+    function renderJobList(jobs: Job[]) {
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse(jobs)))
+      render(<JobList />, { wrapper: Wrapper })
+    }
+
+    it('bulk-retries selected retryable jobs', async () => {
+      const user = userEvent.setup()
+      renderJobList([
+        makeJob({ id: 'jf', name: 'F', status: 'failed', task_counts: counts({ failed: 1 }) }),
+        makeJob({ id: 'jc', name: 'C', status: 'canceled', task_counts: counts({ canceled: 1 }) }),
+      ])
+      fetchMock.mockResolvedValue(okJson({ job_id: 'x', retried: 1 }))
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select job F/i }))
+
+      await user.click(screen.getByRole('checkbox', { name: /Select job F/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select job C/i }))
+
+      await user.click(screen.getByRole('button', { name: /Retry selected \(2\)/i }))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/jobs/jf/retry'),
+          expect.objectContaining({ method: 'POST' }),
+        )
+      })
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/jobs/jc/retry'),
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+
+    it('select-all includes retryable (terminal) jobs', async () => {
+      const user = userEvent.setup()
+      renderJobList([
+        makeJob({ id: 'jf', name: 'F', status: 'failed', task_counts: counts({ failed: 1 }) }),
+      ])
+
+      await waitFor(() => screen.getByRole('checkbox', { name: /Select all/i }))
+      await user.click(screen.getByRole('checkbox', { name: /Select all/i }))
+      expect(screen.getByRole('checkbox', { name: /Select job F/i })).toBeChecked()
     })
   })
 

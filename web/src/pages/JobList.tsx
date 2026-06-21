@@ -356,6 +356,13 @@ export default function JobList() {
   const cancelableIds = new Set(cancelableJobs.map((j) => j.id))
   const selectedCancelable = [...selectedIds].filter((id) => cancelableIds.has(id))
 
+  const retryableJobs = jobs.filter((j) => retryableCount(j) > 0)
+  const retryableIds = new Set(retryableJobs.map((j) => j.id))
+  const selectedRetryable = [...selectedIds].filter((id) => retryableIds.has(id))
+
+  // A job is selectable if any bulk action applies to it.
+  const selectableJobs = jobs.filter((j) => CANCELABLE.has(j.status) || retryableCount(j) > 0)
+
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -366,10 +373,10 @@ export default function JobList() {
   }, [])
 
   const toggleAll = useCallback(() => {
-    if (cancelableJobs.length === 0) return
-    const allSelected = cancelableJobs.every((j) => selectedIds.has(j.id))
-    setSelectedIds(allSelected ? new Set() : new Set(cancelableJobs.map((j) => j.id)))
-  }, [cancelableJobs, selectedIds])
+    if (selectableJobs.length === 0) return
+    const allSelected = selectableJobs.every((j) => selectedIds.has(j.id))
+    setSelectedIds(allSelected ? new Set() : new Set(selectableJobs.map((j) => j.id)))
+  }, [selectableJobs, selectedIds])
 
   // ── Per-row cancel ────────────────────────────────────────────────────────
 
@@ -430,6 +437,14 @@ export default function JobList() {
     }
   }, [selectedCancelable, handleCancelRow])
 
+  // ── Bulk retry ────────────────────────────────────────────────────────────
+
+  const handleBulkRetry = useCallback(async () => {
+    for (const id of selectedRetryable) {
+      await handleRetryRow(id)
+    }
+  }, [selectedRetryable, handleRetryRow])
+
   // ── Per-row and bulk delete ───────────────────────────────────────────────
 
   const runDelete = useCallback(
@@ -474,8 +489,8 @@ export default function JobList() {
     [setSortFieldAndDir],
   )
 
-  const allCancelableSelected =
-    cancelableJobs.length > 0 && cancelableJobs.every((j) => selectedIds.has(j.id))
+  const allSelectableSelected =
+    selectableJobs.length > 0 && selectableJobs.every((j) => selectedIds.has(j.id))
 
   return (
     <div className={styles.page}>
@@ -568,10 +583,10 @@ export default function JobList() {
               <th className={styles.checkCell}>
                 <input
                   type="checkbox"
-                  aria-label="Select all cancelable jobs"
-                  checked={allCancelableSelected}
+                  aria-label="Select all jobs"
+                  checked={allSelectableSelected}
                   onChange={toggleAll}
-                  disabled={cancelableJobs.length === 0}
+                  disabled={selectableJobs.length === 0}
                 />
               </th>
               <th aria-sort={sortAriaValue('name', filters.sortField, filters.sortDir)}>
@@ -718,6 +733,16 @@ export default function JobList() {
           >
             <X />
             Cancel {selectedCancelable.length}
+          </button>
+          <button
+            className={styles.bulkRetryBtn}
+            onClick={() => void handleBulkRetry()}
+            disabled={selectedRetryable.length === 0 || retryJob.isPending}
+            type="button"
+            aria-label={`Retry selected (${selectedRetryable.length})`}
+          >
+            <Rotate />
+            Retry {selectedRetryable.length}
           </button>
           <button
             className={styles.bulkDeleteBtn}
