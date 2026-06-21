@@ -1148,4 +1148,33 @@ describe('JobDetail', () => {
       })
     })
   })
+
+  // ── Task search ───────────────────────────────────────────────────────────
+
+  describe('task search', () => {
+    it('filters tasks and steps by name', async () => {
+      const task1 = makeTask({
+        id: 'task-filter-001',
+        step_id: 'step-1',
+        name: 'frame-001',
+        status: 'running',
+      })
+      const task2 = makeTask({
+        id: 'task-filter-099',
+        step_id: 'step-2',
+        name: 'frame-099',
+        status: 'running',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task1, task2])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const input = await screen.findByLabelText('Search tasks')
+      fireEvent.change(input, { target: { value: 'frame-001' } })
+
+      expect(screen.getByLabelText('View logs for task frame-001')).toBeInTheDocument()
+      expect(screen.queryByLabelText('View logs for task frame-099')).not.toBeInTheDocument()
+    })
+  })
 })
