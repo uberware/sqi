@@ -514,9 +514,14 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	nowText := timeToText(now.UTC())
 
 	// Build the optional "AND id IN (?, …)" suffix and its bound args.
+	// A non-nil but empty slice means "filter to exactly these (zero) IDs" →
+	// nothing to revive. Short-circuit so we never emit "AND id IN ()".
 	inSuffix := ""
 	idArgs := make([]any, 0, len(taskIDs))
 	if taskIDs != nil {
+		if len(taskIDs) == 0 {
+			return nil, nil
+		}
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
 		inSuffix = " AND id IN (" + placeholders + ")"
 		for _, id := range taskIDs {

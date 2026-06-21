@@ -44,6 +44,11 @@ func TestRetryTasks_SQLite(t *testing.T) {
 	if len(revived) != 2 {
 		t.Fatalf("revived = %d, want 2", len(revived))
 	}
+	for _, rt := range revived {
+		if rt.Status != store.TaskStatusPending {
+			t.Errorf("returned revived task %q has status %v, want pending", rt.ID, rt.Status)
+		}
+	}
 
 	for _, id := range []string{"t-failed", "t-canceled"} {
 		tk, err := s.GetTask(ctx, id)
@@ -86,6 +91,46 @@ func TestRetryTasks_SQLite(t *testing.T) {
 	}
 }
 
+// TestRetryTasks_EmptySliceRevivesNothing asserts that a non-nil but empty
+// taskIDs slice revives nothing and leaves failed tasks untouched.
+func TestRetryTasks_EmptySliceRevivesNothing(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	if err := s.UpdateStepStatus(ctx, "s1", store.StepStatusFailed); err != nil {
+		t.Fatalf("UpdateStepStatus: %v", err)
+	}
+	insertTask(t, s, "t-failed", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t-failed", store.TaskStatusFailed); err != nil {
+		t.Fatalf("UpdateTaskStatus t-failed: %v", err)
+	}
+
+	// Non-nil but empty slice: "filter to exactly these (zero) IDs" → revive nothing.
+	revived, err := s.RetryTasks(ctx, "j1", []string{}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("RetryTasks(empty slice): unexpected error: %v", err)
+	}
+	if len(revived) != 0 {
+		t.Errorf("revived = %d, want 0 (empty filter must revive nothing)", len(revived))
+	}
+
+	// The failed task must remain failed.
+	tk, err := s.GetTask(ctx, "t-failed")
+	if err != nil {
+		t.Fatalf("GetTask(t-failed): %v", err)
+	}
+	if tk.Status != store.TaskStatusFailed {
+		t.Errorf("t-failed = %v, want failed (must not be revived)", tk.Status)
+	}
+}
+
 // TestRetryTasks_MixedStateStep tests the documented behavior when a subset
 // taskIDs filter is applied to a step that has both failed and non-failed tasks:
 // only the requested task is revived, the sibling stays failed, and the step is
@@ -123,6 +168,9 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 	}
 	if revived[0].ID != "ta" {
 		t.Errorf("revived[0].ID = %q, want ta", revived[0].ID)
+	}
+	if revived[0].Status != store.TaskStatusPending {
+		t.Errorf("revived[0].Status = %v, want pending", revived[0].Status)
 	}
 
 	ta, err := s.GetTask(ctx, "ta")
