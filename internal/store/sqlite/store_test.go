@@ -764,6 +764,47 @@ func TestJob_ListJobs_FilterByStatus(t *testing.T) {
 	}
 }
 
+func TestJob_ListJobs_Search(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	mk := func(id, name, owner, project string) {
+		if _, err := s.CreateJob(ctx, store.Job{
+			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
+			Project: project, Status: store.JobStatusPending, Priority: 50,
+			TemplateFormat: store.TemplateFormatYAML,
+		}); err != nil {
+			t.Fatalf("CreateJob(%q): %v", id, err)
+		}
+	}
+	mk("render-night", "Nightly Render", "alice", "moonshot")
+	mk("comp-day", "Daytime Comp", "bob", "sunrise")
+
+	cases := []struct {
+		name, search string
+		wantTotal    int
+	}{
+		{"by name (case-insensitive)", "nightly", 1},
+		{"by owner", "bob", 1},
+		{"by project", "moonshot", 1},
+		{"by id substring", "comp-", 1},
+		{"no match", "zzz", 0},
+		{"empty matches all", "", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := s.ListJobs(ctx, store.ListJobsOptions{Search: tc.search})
+			if err != nil {
+				t.Fatalf("ListJobs: %v", err)
+			}
+			if page.Total != tc.wantTotal {
+				t.Errorf("Total: got %d, want %d", page.Total, tc.wantTotal)
+			}
+		})
+	}
+}
+
 // ── Step CRUD ─────────────────────────────────────────────────────────────────
 
 func TestStep_CreateAndGet(t *testing.T) {

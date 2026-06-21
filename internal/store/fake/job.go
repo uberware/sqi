@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -285,6 +286,16 @@ func (s *Store) DeleteJob(_ context.Context, id string) error {
 	return nil
 }
 
+// jobMatchesSearch reports whether j contains the given query string
+// (case-insensitive) in any of its name, id, owner, or project fields.
+func jobMatchesSearch(j store.Job, query string) bool {
+	q := strings.ToLower(query)
+	return strings.Contains(strings.ToLower(j.Name), q) ||
+		strings.Contains(strings.ToLower(j.ID), q) ||
+		strings.Contains(strings.ToLower(j.Owner), q) ||
+		strings.Contains(strings.ToLower(j.Project), q)
+}
+
 // filterJob reports whether j matches all non-zero filter fields in opts.
 func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 	if opts.FarmID != "" && j.FarmID != opts.FarmID {
@@ -300,6 +311,9 @@ func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 		return false
 	}
 	if opts.Project != "" && j.Project != opts.Project {
+		return false
+	}
+	if opts.Search != "" && !jobMatchesSearch(j, opts.Search) {
 		return false
 	}
 	return true

@@ -166,6 +166,9 @@ type ListJobsOptions struct {
 	Status  JobStatus // empty = all statuses
 	Owner   string
 	Project string
+	// Search is a case-insensitive substring matched against name, id, owner,
+	// and project. Empty = no search filter.
+	Search string
 
 	// Ordering — zero values use JobSortByCreatedAt / SortAsc.
 	SortBy  JobSortField

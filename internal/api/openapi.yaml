@@ -1079,6 +1079,11 @@ paths:
           schema:
             type: string
           description: Filter by project label.
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Case-insensitive substring over name, id, owner, project.
         - name: sort_by
           in: query
           schema:

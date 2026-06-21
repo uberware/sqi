@@ -236,6 +236,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 //   - farm_id   — filter by farm ID
 //   - queue_id  — filter by queue ID
 //   - project   — filter by project label
+//   - search    — case-insensitive substring over name, id, owner, project
 //   - sort_by   — created_at | priority | status | updated_at | name  (default: created_at)
 //   - sort_dir  — asc | desc  (default: asc)
 //   - limit     — page size, 1–1000  (default: 50)
@@ -256,6 +257,7 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Status:  store.JobStatus(q.Get("status")),
 		Owner:   q.Get("owner"),
 		Project: q.Get("project"),
+		Search:  q.Get("search"),
 		SortBy:  toJobSortField(q.Get("sort_by")),
 		SortDir: toSortDir(q.Get("sort_dir")),
 

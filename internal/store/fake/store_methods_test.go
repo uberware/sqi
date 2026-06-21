@@ -970,6 +970,36 @@ func TestListJobs_SortAndFilter(t *testing.T) {
 	}
 }
 
+func TestListJobs_Search(t *testing.T) {
+	st := New()
+	ctx := context.Background()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "f"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id, name, owner, project string) {
+		if _, err := st.CreateJob(ctx, store.Job{
+			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
+			Project: project, Status: store.JobStatusPending, Priority: 50,
+			TemplateFormat: store.TemplateFormatYAML,
+		}); err != nil {
+			t.Fatalf("CreateJob(%q): %v", id, err)
+		}
+	}
+	mk("render-night", "Nightly Render", "alice", "moonshot")
+	mk("comp-day", "Daytime Comp", "bob", "sunrise")
+
+	page, err := st.ListJobs(ctx, store.ListJobsOptions{Search: "NIGHTLY"})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if page.Total != 1 {
+		t.Errorf("Total: got %d, want 1", page.Total)
+	}
+}
+
 // ── task_attempt.go ───────────────────────────────────────────────────────────
 
 func TestGetTaskAttempt(t *testing.T) {
