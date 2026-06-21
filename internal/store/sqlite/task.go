@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -477,6 +478,12 @@ WHERE  job_id = ?
 		return nil, fmt.Errorf("sqlite: commit cancel job tasks: %w", err)
 	}
 	return active, nil
+}
+
+// RetryTasks implements [store.TaskStore]. Full implementation added in a
+// follow-up task; this stub satisfies the interface until then.
+func (*Store) RetryTasks(_ context.Context, _ string, _ []string, _ time.Time) ([]store.Task, error) {
+	return nil, errors.New("sqlite: RetryTasks: not yet implemented")
 }
 
 // TransitionStepPendingTasks implements [store.TaskStore].
