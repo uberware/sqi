@@ -234,6 +234,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/jobs/{id}", jobs.getJob)
 		api.Patch("/jobs/{id}", jobs.patchJob)
 		api.Post("/jobs/{id}/cancel", jobs.cancelJob)
+		api.Post("/jobs/{id}/retry", jobs.retryJob)
 		api.Delete("/jobs/{id}", jobs.deleteJob)
 
 		// ── Task endpoints ──────────────────────────────────
