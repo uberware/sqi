@@ -6,84 +6,16 @@
   height: 100%;
 }
 
-/* ── Toolbar ─────────────────────────────────────────────────────────────────── */
+/* ── Clear button (bulk bar + dialog cancel) ─────────────────────────────────── */
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-8);
-  background: var(--color-surface);
-  border-bottom: 1px solid var(--color-border-subtle);
-  flex-wrap: wrap;
-}
-
-/* ── Status filter pills ─────────────────────────────────────────────────────── */
-
-.filterBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.filterPill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
+.clearBtn {
   padding: 4px var(--space-3);
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
   cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background 120ms,
-    color 120ms,
-    border-color 120ms;
-}
-
-.filterPill:hover {
-  background: var(--color-surface-raised);
-  border-color: var(--color-text-muted);
-}
-
-.filterPill--active {
-  background: var(--color-accent-muted);
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-}
-
-.filterCount {
-  font-size: var(--font-size-xs);
-  opacity: 0.75;
-}
-
-/* ── Search ──────────────────────────────────────────────────────────────────── */
-
-.searchWrap {
-  position: relative;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-.searchInput {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
-  width: 220px;
-  outline: none;
-  transition: border-color 120ms;
-}
-
-.searchInput:focus {
-  border-color: var(--color-accent);
 }
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */

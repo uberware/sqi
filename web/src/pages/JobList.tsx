@@ -5,6 +5,8 @@ import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import IconButton from '@/components/IconButton'
+import FilterToolbar from '@/components/FilterToolbar'
+import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import {
@@ -20,19 +22,21 @@ import {
 } from '@/components/icons'
 import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob, useDeleteJob, useRetryJob } from '@/api/mutations'
-import { useJobListFilters } from '@/hooks/useJobListFilters'
-import { useDebounce } from '@/hooks/useDebounce'
+import { useListFilters } from '@/hooks/useListFilters'
+import type { SortDirection } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
-import type { JobSortField, SortDirection } from '@/hooks/useJobListFilters'
 import styles from './JobList.module.css'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 50
+type JobSortField = 'name' | 'priority' | 'created_at' | 'status'
+
+const JOB_STATUSES = new Set(['pending', 'running', 'paused', 'completed', 'failed', 'canceled'])
+const JOB_SORT_FIELDS = new Set(['name', 'priority', 'created_at', 'status'])
 
 /** Job statuses that can still be canceled. */
 const CANCELABLE: ReadonlySet<JobStatus> = new Set(['pending', 'running', 'paused'])
@@ -211,31 +215,20 @@ function applyTaskStatusDelta(
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function JobList() {
-  const filters = useJobListFilters()
-  const [inputSearch, setInputSearch] = useState(filters.search)
-  const debouncedSearch = useDebounce(inputSearch, 300)
-
-  // Sync debounced search value into URL params once it settles.
-  // Skip the initial mount run so that existing page= params are not discarded
-  // when the component first renders with a pre-set search value in the URL.
-  const didMountRef = useRef(false)
-  useEffect(() => {
-    if (!didMountRef.current) {
-      didMountRef.current = true
-      return
-    }
-    filters.setSearch(debouncedSearch)
-    // filters.setSearch is stable (useCallback wrapping a stable setSearchParams)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch])
+  const filters = useListFilters<JobStatus, JobSortField>({
+    statuses: JOB_STATUSES,
+    sortFields: JOB_SORT_FIELDS,
+    defaultSortField: 'created_at',
+    defaultSortDir: 'desc',
+  })
 
   const queryParams: Parameters<typeof useListJobs>[0] = {
     ...(filters.status ? { status: filters.status } : {}),
-    ...(debouncedSearch ? { search: debouncedSearch } : {}),
+    ...(filters.search ? { search: filters.search } : {}),
     sort_by: filters.sortField,
     sort_dir: filters.sortDir,
-    limit: PAGE_SIZE,
-    offset: (filters.page - 1) * PAGE_SIZE,
+    limit: filters.pageSize,
+    offset: (filters.page - 1) * filters.pageSize,
   }
 
   const { data, isLoading, isError, error, dataUpdatedAt } = useListJobs(queryParams)
@@ -517,39 +510,15 @@ export default function JobList() {
         }
       />
 
-      {/* Status filter bar */}
-      <div className={styles.toolbar}>
-        <div className={styles.filterBar} role="toolbar" aria-label="Filter by status">
-          {STATUS_FILTERS.map(({ label, value }) => (
-            <button
-              key={value}
-              className={[
-                styles.filterPill,
-                filters.status === value ? styles['filterPill--active'] : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              onClick={() => filters.setStatus(value)}
-              aria-pressed={filters.status === value}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Search input */}
-        <div className={styles.searchWrap}>
-          <input
-            className={styles.searchInput}
-            type="search"
-            placeholder="Search by name, ID, or owner…"
-            value={inputSearch}
-            onChange={(e) => setInputSearch(e.target.value)}
-            aria-label="Search jobs"
-          />
-        </div>
-      </div>
+      <FilterToolbar
+        statuses={STATUS_FILTERS}
+        activeStatus={filters.status}
+        onStatusChange={(v) => filters.setStatus(v as JobStatus | '')}
+        search={filters.search}
+        onSearchChange={filters.setSearch}
+        searchPlaceholder="Search by name, ID, or owner…"
+        searchLabel="Search jobs"
+      />
 
       {isError && (
         <div className={styles.errorBanner} role="alert">
@@ -713,6 +682,21 @@ export default function JobList() {
         </table>
       </div>
 
+      {total > 0 && (
+        <Pagination
+          page={filters.page}
+          totalPages={Math.max(1, Math.ceil(total / filters.pageSize))}
+          pageSize={filters.pageSize}
+          total={total}
+          hasNextPage={filters.page * filters.pageSize < total}
+          hasPrevPage={filters.page > 1}
+          onGoToPage={filters.setPage}
+          onGoToNextPage={() => filters.setPage(filters.page + 1)}
+          onGoToPrevPage={() => filters.setPage(filters.page - 1)}
+          onSetPageSize={filters.setPageSize}
+        />
+      )}
+
       {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
       {selectedIds.size > 0 && (
         <div className={styles.bulkBar}>
@@ -748,7 +732,7 @@ export default function JobList() {
             Delete {selectedIds.size}
           </button>
           <button
-            className={styles.filterPill}
+            className={styles.clearBtn}
             onClick={() => setSelectedIds(new Set())}
             type="button"
           >
@@ -772,7 +756,7 @@ export default function JobList() {
                 : 'Delete this job and all its data? This cannot be undone.'}
             </p>
             <div className={styles.dialogActions}>
-              <button className={styles.filterPill} type="button" onClick={() => setConfirm(null)}>
+              <button className={styles.clearBtn} type="button" onClick={() => setConfirm(null)}>
                 Cancel
               </button>
               <button
