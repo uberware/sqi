@@ -802,6 +802,9 @@ export default function JobDetail() {
     )
   }
 
+  const term = taskSearch.trim().toLowerCase()
+  const stepMatchesByName = (step: Step) => step.name.toLowerCase().includes(term)
+
   return (
     <div className={styles.page}>
       <PageHeader
@@ -844,8 +847,6 @@ export default function JobDetail() {
           className={styles.taskSearch ?? ''}
         />
         {sortedSteps.map((step) => {
-          const term = taskSearch.trim().toLowerCase()
-          const stepMatchesByName = (s: Step) => s.name.toLowerCase().includes(term)
           const stepTasks = tasksByStepId.get(step.id) ?? []
           const visibleTasks =
             term === ''
@@ -855,6 +856,7 @@ export default function JobDetail() {
                 : stepTasks.filter((t) => taskMatches(t, term))
           if (term !== '' && visibleTasks.length === 0) return null
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
+          // select-all is scoped to the tasks visible under the active search filter
           const selectable = visibleTasks.filter(
             (t) => CANCELABLE.has(t.status) || (RETRYABLE.has(t.status) && depsSatisfied),
           )
