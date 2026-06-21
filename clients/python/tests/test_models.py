@@ -435,3 +435,15 @@ def test_cancel_result_tolerates_missing_fields() -> None:
 
     result = CancelResult.from_dict({})
     assert result.task_id == ""
+
+
+# ── RetryJobResult ──────────────────────────────────────────────────
+
+
+def test_retry_job_result_from_dict_tolerant() -> None:
+    from sqi_client.models import RetryJobResult
+
+    r = RetryJobResult.from_dict({"job_id": "j1", "retried": 2, "extra": "ignored"})
+    assert r == RetryJobResult(job_id="j1", retried=2)
+    # Missing fields fall back to type defaults.
+    assert RetryJobResult.from_dict({}) == RetryJobResult(job_id="", retried=0)

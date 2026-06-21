@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -142,6 +143,35 @@ WHERE  assigned_worker_id = ?
 UPDATE tasks
 SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?
 WHERE  id = ? AND status = 'ready'`
+
+	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
+	// that a retry will revive. The optional "AND id IN (?, …)" suffix is
+	// appended at call time when a task-ID subset is supplied.
+	sqlSelectRetryableTasksPrefix = `
+SELECT ` + taskCols + `
+FROM   tasks
+WHERE  job_id = ? AND status IN ('failed', 'canceled')`
+
+	// sqlRetryTasksPrefix reverts the selected tasks to pending.
+	// The optional "AND id IN (?, …)" suffix is appended at call time.
+	sqlRetryTasksPrefix = `
+UPDATE tasks
+SET    status = 'pending', updated_at = ?
+WHERE  job_id = ? AND status IN ('failed', 'canceled')`
+
+	// sqlRetryResetSteps resets any terminal step that now owns a pending task
+	// (i.e. a task this retry just revived) back to pending.
+	sqlRetryResetSteps = `
+UPDATE steps
+SET    status = 'pending', updated_at = ?
+WHERE  job_id = ? AND status IN ('failed', 'canceled')
+  AND  EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'pending')`
+
+	// sqlRetryResetJob resets the job to pending when it is currently terminal.
+	sqlRetryResetJob = `
+UPDATE jobs
+SET    status = 'pending', completed_at = NULL, updated_at = ?
+WHERE  id = ? AND status IN ('failed', 'canceled')`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -477,6 +507,79 @@ WHERE  job_id = ?
 		return nil, fmt.Errorf("sqlite: commit cancel job tasks: %w", err)
 	}
 	return active, nil
+}
+
+// RetryTasks implements [store.TaskStore].
+func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]store.Task, error) {
+	nowText := timeToText(now.UTC())
+
+	// Build the optional "AND id IN (?, …)" suffix and its bound args.
+	// A non-nil but empty slice means "filter to exactly these (zero) IDs" →
+	// nothing to revive. Short-circuit so we never emit "AND id IN ()".
+	inSuffix := ""
+	idArgs := make([]any, 0, len(taskIDs))
+	if taskIDs != nil {
+		if len(taskIDs) == 0 {
+			return nil, nil
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
+		inSuffix = " AND id IN (" + placeholders + ")"
+		for _, id := range taskIDs {
+			idArgs = append(idArgs, id)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: begin tx for retry tasks: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+
+	// Capture the tasks to revive before the UPDATE so we can return them.
+	revived, err := func() ([]store.Task, error) {
+		args := append([]any{jobID}, idArgs...)
+		rows, qErr := tx.QueryContext(ctx, sqlSelectRetryableTasksPrefix+inSuffix, args...)
+		if qErr != nil {
+			return nil, fmt.Errorf("sqlite: select retryable tasks for job %s: %w", jobID, mapErr(qErr))
+		}
+		defer rows.Close()
+
+		var out []store.Task
+		for rows.Next() {
+			t, sErr := scanTask(rows)
+			if sErr != nil {
+				return nil, sErr
+			}
+			t.Status = store.TaskStatusPending // reflect the post-update state
+			out = append(out, t)
+		}
+		return out, rows.Err()
+	}()
+	if err != nil {
+		return nil, err
+	}
+	if len(revived) == 0 {
+		if err = tx.Commit(); err != nil {
+			return nil, fmt.Errorf("sqlite: commit retry tasks (no-op): %w", err)
+		}
+		return nil, nil
+	}
+
+	updArgs := append([]any{nowText, jobID}, idArgs...)
+	if _, err = tx.ExecContext(ctx, sqlRetryTasksPrefix+inSuffix, updArgs...); err != nil {
+		return nil, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, mapErr(err))
+	}
+	if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: reset steps for job %s: %w", jobID, mapErr(err))
+	}
+	if _, err = tx.ExecContext(ctx, sqlRetryResetJob, nowText, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: reset job %s: %w", jobID, mapErr(err))
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sqlite: commit retry tasks: %w", err)
+	}
+	return revived, nil
 }
 
 // TransitionStepPendingTasks implements [store.TaskStore].

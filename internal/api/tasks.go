@@ -28,9 +28,11 @@ import (
 
 // taskCanceler is the subset of [scheduler.Scheduler] used by the task handler
 // to cancel a single running task (close its attempt, signal the worker, and
-// release usage-pool slots).
+// release usage-pool slots), and to retry a failed or canceled task with full
+// graph revival.
 type taskCanceler interface {
 	CancelTask(ctx context.Context, taskID string) error
+	RetryTask(ctx context.Context, taskID string) error
 }
 
 // taskHandler handles all task-related REST endpoints.
@@ -364,8 +366,11 @@ func isTerminalTask(s store.TaskStatus) bool {
 
 // ── POST /api/v1/tasks/{id}/retry ─────────────────────────────────────────────
 
-// retryTask resets a failed or canceled task to [store.TaskStatusReady] so
-// the scheduler can pick it up on the next dispatch cycle.
+// retryTask revives a failed or canceled task through the scheduler, which
+// resets the task (and its step and job when terminal) and re-resolves
+// dependencies. The response status reflects the task's actual post-revival
+// state, which is [store.TaskStatusReady] when the step's dependencies are
+// already satisfied, or [store.TaskStatusPending] when they are not.
 //
 // Only tasks in the [store.TaskStatusFailed] or [store.TaskStatusCanceled]
 // state may be retried. Tasks that are pending, ready, assigned, running, or
@@ -391,15 +396,24 @@ func (h *taskHandler) retryTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = h.store.UpdateTaskStatus(ctx, id, store.TaskStatusReady); err != nil {
-		h.logger.ErrorContext(ctx, "tasks: retry status update failed", slog.String("id", id), slog.Any("error", err))
+	if err = h.sched.RetryTask(ctx, id); err != nil {
+		h.logger.ErrorContext(ctx, "tasks: retry failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to queue task retry")
 		return
 	}
 
+	// Report the task's actual post-revival status (ready when its step's deps
+	// are satisfied, otherwise pending).
+	status := string(store.TaskStatusPending)
+	if updated, gErr := h.store.GetTask(ctx, id); gErr == nil {
+		status = string(updated.Status)
+	} else {
+		h.logger.WarnContext(ctx, "tasks: retry status re-fetch failed", slog.String("id", id), slog.Any("error", gErr))
+	}
+
 	writeJSON(w, http.StatusAccepted, retryResponse{
 		TaskID: id,
-		Status: string(store.TaskStatusReady),
+		Status: status,
 	})
 }
 

@@ -13,7 +13,14 @@ import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
-import type { JobDetail as JobDetailType, Step, Task, TaskStatus, ListResponse } from '@/api/types'
+import type {
+  JobDetail as JobDetailType,
+  Step,
+  StepStatus,
+  Task,
+  TaskStatus,
+  ListResponse,
+} from '@/api/types'
 import styles from './JobDetail.module.css'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -45,8 +52,9 @@ function isTerminalTask(status: TaskStatus): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'canceled'
 }
 
-function isSelectable(status: TaskStatus): boolean {
-  return CANCELABLE.has(status) || RETRYABLE.has(status)
+/** Returns true when all of the step's declared dependencies have status "completed". */
+function stepDepsSatisfied(step: Step, statusByName: Map<string, StepStatus>): boolean {
+  return (step.depends_on ?? []).every((name) => statusByName.get(name) === 'completed')
 }
 
 /** Returns a human-readable age string for a past timestamp. */
@@ -233,6 +241,8 @@ interface TaskRowProps {
   now: number
   isSelected: boolean
   onToggleSelect: (id: string) => void
+  /** True when this task's enclosing step has all its dependencies completed. */
+  depsSatisfied: boolean
 }
 
 function TaskRow({
@@ -248,10 +258,11 @@ function TaskRow({
   now,
   isSelected,
   onToggleSelect,
+  depsSatisfied,
 }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
-  const canRetry = RETRYABLE.has(task.status) && !isRetrying
+  const canRetry = RETRYABLE.has(task.status) && !isRetrying && depsSatisfied
   const canCancel = CANCELABLE.has(task.status) && !isCanceling
   const endTime = isTerminalTask(task.status) ? task.updated_at : undefined
 
@@ -265,7 +276,7 @@ function TaskRow({
         }
       >
         <td className={styles.checkCell}>
-          {isSelectable(task.status) && (
+          {(CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
             <input
               type="checkbox"
               aria-label={`Select task ${task.name}`}
@@ -377,6 +388,8 @@ interface StepSectionProps {
   selectedTaskIds: ReadonlySet<string>
   onToggleSelect: (id: string) => void
   onToggleStep: () => void
+  /** True when all of this step's declared dependencies have status "completed". */
+  depsSatisfied: boolean
 }
 
 function StepSection({
@@ -394,10 +407,13 @@ function StepSection({
   selectedTaskIds,
   onToggleSelect,
   onToggleStep,
+  depsSatisfied,
 }: StepSectionProps) {
   const counts = stepCountsFromTasks(tasks)
   const deps = step.depends_on ?? []
-  const selectableInStep = tasks.filter((t) => isSelectable(t.status))
+  const selectableInStep = tasks.filter(
+    (t) => CANCELABLE.has(t.status) || (RETRYABLE.has(t.status) && depsSatisfied),
+  )
 
   return (
     <section className={styles.stepSection} aria-label={`Step: ${step.name}`}>
@@ -467,6 +483,7 @@ function StepSection({
                   now={now}
                   isSelected={selectedTaskIds.has(task.id)}
                   onToggleSelect={onToggleSelect}
+                  depsSatisfied={depsSatisfied}
                 />
               ))}
             </tbody>
@@ -539,6 +556,36 @@ export default function JobDetail() {
     () => [...(job?.steps ?? [])].sort((a, b) => a.step_order - b.step_order),
     [job?.steps],
   )
+
+  // Map of step name → step status, used to evaluate cross-step dependency satisfaction.
+  const stepStatusByName = useMemo(() => {
+    const map = new Map<string, StepStatus>()
+    for (const step of job?.steps ?? []) {
+      map.set(step.name, step.status)
+    }
+    return map
+  }, [job?.steps])
+
+  // Per-step: whether all declared dependencies are completed (mirrors backend allDepsCompleted).
+  const depsSatisfiedByStepId = useMemo(() => {
+    const map = new Map<string, boolean>()
+    for (const step of sortedSteps) {
+      map.set(step.id, stepDepsSatisfied(step, stepStatusByName))
+    }
+    return map
+  }, [sortedSteps, stepStatusByName])
+
+  // Per-task: inherit the enclosing step's dependency-satisfied flag.
+  const depsSatisfiedByTaskId = useMemo(() => {
+    const map = new Map<string, boolean>()
+    for (const [stepId, tasks] of tasksByStepId) {
+      const sat = depsSatisfiedByStepId.get(stepId) ?? true
+      for (const t of tasks) {
+        map.set(t.id, sat)
+      }
+    }
+    return map
+  }, [tasksByStepId, depsSatisfiedByStepId])
 
   // ── WS-driven task-level updates ─────────────────────────────────
 
@@ -699,15 +746,24 @@ export default function JobDetail() {
     [selectedTasks],
   )
   const selectedRetryable = useMemo(
-    () => selectedTasks.filter((t) => RETRYABLE.has(t.status)),
-    [selectedTasks],
+    () =>
+      selectedTasks.filter(
+        (t) => RETRYABLE.has(t.status) && (depsSatisfiedByTaskId.get(t.id) ?? true),
+      ),
+    [selectedTasks, depsSatisfiedByTaskId],
   )
 
   // Count of selected tasks that are still actionable (excludes ghost selections
-  // for tasks that have since transitioned to a non-selectable terminal state).
+  // for tasks that have since transitioned to a non-selectable terminal state,
+  // and dep-blocked retryable tasks that can't meaningfully run in isolation).
   const activeSelectedCount = useMemo(
-    () => selectedTasks.filter((t) => isSelectable(t.status)).length,
-    [selectedTasks],
+    () =>
+      selectedTasks.filter(
+        (t) =>
+          CANCELABLE.has(t.status) ||
+          (RETRYABLE.has(t.status) && (depsSatisfiedByTaskId.get(t.id) ?? true)),
+      ).length,
+    [selectedTasks, depsSatisfiedByTaskId],
   )
 
   const handleBulkCancel = useCallback(async () => {
@@ -778,7 +834,10 @@ export default function JobDetail() {
         {tasksLoading && <p className={styles.muted}>Loading tasks…</p>}
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
-          const selectable = stepTasks.filter((t) => isSelectable(t.status))
+          const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
+          const selectable = stepTasks.filter(
+            (t) => CANCELABLE.has(t.status) || (RETRYABLE.has(t.status) && depsSatisfied),
+          )
           const allSelected =
             selectable.length > 0 && selectable.every((t) => selectedTaskIds.has(t.id))
           return (
@@ -808,6 +867,7 @@ export default function JobDetail() {
                   return next
                 })
               }}
+              depsSatisfied={depsSatisfied}
             />
           )
         })}

@@ -65,7 +65,7 @@ with SqiClient("http://localhost:8080") as sqi:
 - **Submit** raw OpenJD job templates (`submit_job`, `submit_and_wait`).
 - **Query** jobs, tasks, workers, and logs with typed models and automatic
   pagination (`list_*` returns a `Page`; `iter_*` walks every page lazily).
-- **Manage** jobs (pause, resume, set priority, cancel) and tasks (cancel, retry) and workers
+- **Manage** jobs (pause, resume, set priority, cancel, retry) and tasks (cancel, retry) and workers
   (enable, disable).
 - **CRUD** farms, queues, storage locations, and usage pools.
 - **Tail logs** by polling (`tail_task_logs`) or live over WebSocket with the

@@ -11,6 +11,7 @@ package api
 //	GET /api/v1/jobs/{id} — job detail with steps and task counts
 //	PATCH /api/v1/jobs/{id} — priority, queue move, pause/resume
 //	POST /api/v1/jobs/{id}/cancel — cancel job
+//	POST /api/v1/jobs/{id}/retry — retry failed/canceled tasks
 //	DELETE /api/v1/jobs/{id} — delete job and all data
 
 import (
@@ -35,6 +36,7 @@ import (
 // Keeping it as an interface makes the handler testable without a live NATS instance.
 type jobCanceler interface {
 	CancelJob(ctx context.Context, jobID string) error
+	RetryJob(ctx context.Context, jobID string) (int, error)
 	// WakeQueue wakes parked lease waiters on queueID so a newly-submitted
 	// job's ready tasks are leased without waiting out the long-poll hold.
 	WakeQueue(queueID string)
@@ -543,6 +545,41 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── POST /api/v1/jobs/{id}/retry ──────────────────────────────────────────────
+
+// retryJobResponse is returned by POST /api/v1/jobs/{id}/retry.
+type retryJobResponse struct {
+	JobID   string `json:"job_id"`
+	Retried int    `json:"retried"`
+}
+
+// retryJob revives every failed/canceled task of the job (and the job/step
+// status) so the scheduler re-runs them. It is idempotent: a job with no
+// eligible tasks returns 200 with retried=0.
+func (h *jobHandler) retryJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	if _, err := h.store.GetJob(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "job not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "jobs: retry get failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	n, err := h.sched.RetryJob(ctx, id)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "jobs: retry failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retry job tasks")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, retryJobResponse{JobID: id, Retried: n})
 }
 
 // ── DELETE /api/v1/jobs/{id} ──────────────────────────────────────────────────

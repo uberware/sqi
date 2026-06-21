@@ -30,8 +30,12 @@ import (
 
 // fakeTaskCanceler implements [taskCanceler] for tests.
 type fakeTaskCanceler struct {
-	cancelErr     error    // non-nil forces CancelTask to return this error
-	canceledTasks []string // task IDs passed to CancelTask, in call order
+	cancelErr     error            // non-nil forces CancelTask to return this error
+	canceledTasks []string         // task IDs passed to CancelTask, in call order
+	retryErr      error            // non-nil forces RetryTask to return this error
+	retriedTasks  []string         // task IDs passed to RetryTask, in call order
+	retryStore    store.Store      // if set, RetryTask updates the task status in the store
+	retryStatus   store.TaskStatus // status to set via retryStore (defaults to TaskStatusReady)
 }
 
 func (f *fakeTaskCanceler) CancelTask(_ context.Context, id string) error {
@@ -39,8 +43,23 @@ func (f *fakeTaskCanceler) CancelTask(_ context.Context, id string) error {
 	return f.cancelErr
 }
 
+func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
+	f.retriedTasks = append(f.retriedTasks, id)
+	if f.retryErr != nil {
+		return f.retryErr
+	}
+	if f.retryStore != nil {
+		status := f.retryStatus
+		if status == "" {
+			status = store.TaskStatusReady
+		}
+		return f.retryStore.UpdateTaskStatus(ctx, id, status)
+	}
+	return nil
+}
+
 func newTaskRouter(st store.Store) chi.Router {
-	return newTaskRouterCanceler(st, &fakeTaskCanceler{})
+	return newTaskRouterCanceler(st, &fakeTaskCanceler{retryStore: st})
 }
 
 func newTaskRouterCanceler(st store.Store, sched taskCanceler) chi.Router {
@@ -393,7 +412,7 @@ func TestGetTaskLogs(t *testing.T) {
 // ── POST /api/v1/tasks/{id}/retry ─────────────────────────────────────────────
 
 func TestRetryTask(t *testing.T) {
-	t.Run("failed task is reset to ready", func(t *testing.T) {
+	t.Run("failed task is revived via scheduler", func(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		_, tk := seedTask(t, st, store.TaskStatusFailed)
@@ -409,19 +428,11 @@ func TestRetryTask(t *testing.T) {
 		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if resp.Status != "ready" {
-			t.Errorf("status = %q, want ready", resp.Status)
+		if resp.Status != "ready" && resp.Status != "pending" {
+			t.Errorf("status = %q, want ready or pending", resp.Status)
 		}
 		if resp.TaskID != tk.ID {
 			t.Errorf("task_id = %q, want %q", resp.TaskID, tk.ID)
-		}
-		// Verify store was updated.
-		stored, err := st.GetTask(t.Context(), tk.ID)
-		if err != nil {
-			t.Fatalf("GetTask: %v", err)
-		}
-		if stored.Status != store.TaskStatusReady {
-			t.Errorf("stored status = %q, want ready", stored.Status)
 		}
 	})
 
@@ -462,6 +473,31 @@ func TestRetryTask(t *testing.T) {
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusConflict {
 			t.Fatalf("expected 409 for succeeded task, got %d", rr.Code)
+		}
+	})
+
+	t.Run("retry with unsatisfied deps returns pending status", func(t *testing.T) {
+		st := fake.New()
+		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
+		r := newTaskRouterCanceler(st, sched)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp retryResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "pending" {
+			t.Errorf("status = %q, want pending", resp.Status)
+		}
+		if resp.TaskID != tk.ID {
+			t.Errorf("task_id = %q, want %q", resp.TaskID, tk.ID)
 		}
 	})
 

@@ -16,7 +16,7 @@ import pytest
 import respx
 
 from sqi_client.errors import ConflictError, NotFoundError
-from sqi_client.models import Job, JobStatus, Page
+from sqi_client.models import Job, JobStatus, Page, RetryJobResult
 from tests.conftest import BASE_URL, ClientFactory
 
 _JOBS_URL = f"{BASE_URL}/api/v1/jobs"
@@ -331,3 +331,32 @@ def test_delete_job_issues_delete(make_client: ClientFactory) -> None:
 
     assert route.called
     assert route.calls.last.request.method == "DELETE"
+
+
+# ── retry_job ───────────────────────────────────────────────────────
+
+
+@respx.mock
+def test_retry_job_returns_result(make_client: ClientFactory) -> None:
+    route = respx.post(f"{_JOBS_URL}/j1/retry").mock(
+        return_value=httpx.Response(200, json={"job_id": "j1", "retried": 3})
+    )
+    client = make_client()
+
+    result = client.retry_job("j1")
+
+    assert isinstance(result, RetryJobResult)
+    assert result.job_id == "j1"
+    assert result.retried == 3
+    assert route.calls.last.request.method == "POST"
+
+
+@respx.mock
+def test_retry_job_not_found_raises(make_client: ClientFactory) -> None:
+    respx.post(f"{_JOBS_URL}/missing/retry").mock(
+        return_value=httpx.Response(404, json={"detail": "job not found"})
+    )
+    client = make_client()
+
+    with pytest.raises(NotFoundError):
+        client.retry_job("missing")

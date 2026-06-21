@@ -29,17 +29,25 @@ import (
 
 // ── fakeScheduler ─────────────────────────────────────────────────────────────
 
-// fakeScheduler implements [jobCanceler] for tests so cancelJob can run
-// without a live NATS/scheduler instance.
+// fakeScheduler implements [jobCanceler] for tests so cancelJob and retryJob
+// can run without a live NATS/scheduler instance.
 type fakeScheduler struct {
 	cancelErr    error    // non-nil forces CancelJob to return this error
+	retryCount   int      // value returned by RetryJob
+	retryErr     error    // non-nil forces RetryJob to return this error
 	wokenQueue   []string // queue IDs passed to WakeQueue, in call order
 	canceledJobs []string // job IDs passed to CancelJob, in call order
+	retriedJobs  []string // job IDs passed to RetryJob, in call order
 }
 
 func (f *fakeScheduler) CancelJob(_ context.Context, id string) error {
 	f.canceledJobs = append(f.canceledJobs, id)
 	return f.cancelErr
+}
+
+func (f *fakeScheduler) RetryJob(_ context.Context, id string) (int, error) {
+	f.retriedJobs = append(f.retriedJobs, id)
+	return f.retryCount, f.retryErr
 }
 
 func (f *fakeScheduler) WakeQueue(queueID string) {
@@ -59,6 +67,7 @@ func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	r.Get("/api/v1/jobs/{id}", h.getJob)
 	r.Patch("/api/v1/jobs/{id}", h.patchJob)
 	r.Post("/api/v1/jobs/{id}/cancel", h.cancelJob)
+	r.Post("/api/v1/jobs/{id}/retry", h.retryJob)
 	r.Delete("/api/v1/jobs/{id}", h.deleteJob)
 	return r
 }
@@ -834,6 +843,105 @@ func TestJobHandler_CancelJob_NewRoute(t *testing.T) {
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("cancel status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+}
+
+// ── POST /api/v1/jobs/{id}/retry ─────────────────────────────────────────────
+
+// TestRetryJob_OK verifies that retrying a failed job returns 200 with the
+// number of tasks revived.
+func TestRetryJob_OK(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID: "j1", FarmID: "farm-1", QueueID: "queue-1",
+		Name: "failed-job", Owner: "alice", Priority: 50,
+		Status:         store.JobStatusFailed,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	sched := &fakeScheduler{retryCount: 1}
+	r := newJobRouter(st, sched)
+	rr := httptest.NewRecorder()
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/j1/retry", nil)
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		JobID   string `json:"job_id"`
+		Retried int    `json:"retried"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.JobID != "j1" || resp.Retried != 1 {
+		t.Errorf("resp = %+v, want {j1 1}", resp)
+	}
+}
+
+// TestRetryJob_NotFound verifies that retrying a non-existent job returns 404.
+func TestRetryJob_NotFound(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	rr := httptest.NewRecorder()
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/missing/retry", nil)
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
+// TestRetryJob_NoEligibleTasks verifies that retrying a job with no
+// failed/canceled tasks is idempotent and returns 200 with retried=0.
+func TestRetryJob_NoEligibleTasks(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID: "j1", FarmID: "farm-1", QueueID: "queue-1",
+		Name: "completed-job", Owner: "alice", Priority: 50,
+		Status:         store.JobStatusCompleted,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{}) // retryCount defaults to 0
+	rr := httptest.NewRecorder()
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/j1/retry", nil)
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp struct {
+		Retried int `json:"retried"`
+	}
+	//nolint:errcheck // best-effort decode; zero value is the right fallback on failure
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.Retried != 0 {
+		t.Errorf("retried = %d, want 0", resp.Retried)
 	}
 }
 

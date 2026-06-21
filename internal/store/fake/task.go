@@ -320,6 +320,76 @@ func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time) (
 	return active, nil
 }
 
+// RetryTasks reverts failed/canceled tasks (and their terminal steps and the
+// terminal job) to pending. See [store.TaskStore.RetryTasks].
+func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, now time.Time) ([]store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var only map[string]struct{}
+	if taskIDs != nil {
+		only = make(map[string]struct{}, len(taskIDs))
+		for _, id := range taskIDs {
+			only[id] = struct{}{}
+		}
+	}
+
+	var revived []store.Task
+	affectedSteps := make(map[string]struct{})
+	for id, t := range s.tasks {
+		if t.JobID != jobID {
+			continue
+		}
+		if t.Status != store.TaskStatusFailed && t.Status != store.TaskStatusCanceled {
+			continue
+		}
+		if only != nil {
+			if _, ok := only[id]; !ok {
+				continue
+			}
+		}
+		t.Status = store.TaskStatusPending
+		t.UpdatedAt = now
+		s.tasks[id] = t
+		affectedSteps[t.StepID] = struct{}{}
+
+		out := t
+		out.Parameters = copyMap(t.Parameters)
+		revived = append(revived, out)
+	}
+
+	if len(revived) == 0 {
+		return nil, nil
+	}
+
+	// Reset any terminal steps that owned a revived task.
+	for stepID := range affectedSteps {
+		st, ok := s.steps[stepID]
+		if !ok {
+			continue
+		}
+		switch st.Status {
+		case store.StepStatusFailed, store.StepStatusCanceled:
+			st.Status = store.StepStatusPending
+			st.UpdatedAt = now
+			s.steps[stepID] = st
+		}
+	}
+
+	// Reset the job when it is currently terminal.
+	if job, ok := s.jobs[jobID]; ok {
+		switch job.Status {
+		case store.JobStatusFailed, store.JobStatusCanceled:
+			job.Status = store.JobStatusPending
+			job.CompletedAt = nil
+			job.UpdatedAt = now
+			s.jobs[jobID] = job
+		}
+	}
+
+	return revived, nil
+}
+
 // CountReadyTasksByQueue returns the number of tasks in [store.TaskStatusReady]
 // state for each queue in the given farm, keyed by queue ID.
 func (s *Store) CountReadyTasksByQueue(_ context.Context, farmID string) (map[string]int, error) {

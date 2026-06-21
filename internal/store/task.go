@@ -146,6 +146,22 @@ type TaskStore interface {
 	// modified.
 	CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]Task, error)
 
+	// RetryTasks revives failed/canceled tasks so they can run again. It
+	// transitions every task of jobID in [TaskStatusFailed] or
+	// [TaskStatusCanceled] — or, when taskIDs is non-nil, only those of the
+	// given IDs that are failed/canceled — back to [TaskStatusPending]. Any of
+	// their enclosing steps that are currently in a terminal status are reset to
+	// [StepStatusPending], and the job itself is reset to [JobStatusPending]
+	// when it is currently terminal (failed/canceled); a non-terminal job is
+	// left unchanged. All updates run in a single transaction.
+	//
+	// Resetting to pending (rather than ready) lets the caller re-run
+	// [openjd.ResolveDependencies] to re-gate the revived tasks in dependency
+	// order. Tasks not in a terminal-retryable state are not modified. Returns
+	// the revived task rows (each with Status == pending), or an empty slice
+	// when nothing matched.
+	RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]Task, error)
+
 	// TransitionStepPendingTasks transitions every task of the given step that is
 	// currently in [TaskStatusPending] to status `to`, updates UpdatedAt, and
 	// returns the affected task rows. It is used to promote a step's tasks to

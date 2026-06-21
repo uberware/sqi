@@ -13,12 +13,13 @@ import {
   ChevronUpDown,
   Copy,
   Refresh,
+  Rotate,
   Spinner,
   Trash,
   X,
 } from '@/components/icons'
 import { useListJobs, queryKeys } from '@/api/queries'
-import { useCancelJob, useDeleteJob } from '@/api/mutations'
+import { useCancelJob, useDeleteJob, useRetryJob } from '@/api/mutations'
 import { useJobListFilters } from '@/hooks/useJobListFilters'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useLiveNow } from '@/hooks/useLiveNow'
@@ -35,6 +36,13 @@ const PAGE_SIZE = 50
 
 /** Job statuses that can still be canceled. */
 const CANCELABLE: ReadonlySet<JobStatus> = new Set(['pending', 'running', 'paused'])
+
+/** Number of a job's tasks eligible for retry (failed or canceled). */
+function retryableCount(job: Job): number {
+  const c = job.task_counts
+  if (!c) return 0
+  return c.failed + c.canceled
+}
 
 /** Status filter groups shown above the table. */
 const STATUS_FILTERS: { label: string; value: JobStatus | '' }[] = [
@@ -237,6 +245,7 @@ export default function JobList() {
   const queryClient = useQueryClient()
   const cancelJob = useCancelJob()
   const deleteJob = useDeleteJob()
+  const retryJob = useRetryJob()
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   // Pending confirmation: either a single job id or the selected-bulk set.
   const [confirm, setConfirm] = useState<{ ids: string[]; bulk: boolean } | null>(null)
@@ -245,6 +254,7 @@ export default function JobList() {
   // setSelectedIds without a forward-declaration lint error.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
 
   // ── WS-driven in-place updates ───────────────────────────────────
 
@@ -346,6 +356,13 @@ export default function JobList() {
   const cancelableIds = new Set(cancelableJobs.map((j) => j.id))
   const selectedCancelable = [...selectedIds].filter((id) => cancelableIds.has(id))
 
+  const retryableJobs = jobs.filter((j) => retryableCount(j) > 0)
+  const retryableIds = new Set(retryableJobs.map((j) => j.id))
+  const selectedRetryable = [...selectedIds].filter((id) => retryableIds.has(id))
+
+  // A job is selectable if any bulk action applies to it.
+  const selectableJobs = jobs.filter((j) => CANCELABLE.has(j.status) || retryableCount(j) > 0)
+
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -356,10 +373,10 @@ export default function JobList() {
   }, [])
 
   const toggleAll = useCallback(() => {
-    if (cancelableJobs.length === 0) return
-    const allSelected = cancelableJobs.every((j) => selectedIds.has(j.id))
-    setSelectedIds(allSelected ? new Set() : new Set(cancelableJobs.map((j) => j.id)))
-  }, [cancelableJobs, selectedIds])
+    if (selectableJobs.length === 0) return
+    const allSelected = selectableJobs.every((j) => selectedIds.has(j.id))
+    setSelectedIds(allSelected ? new Set() : new Set(selectableJobs.map((j) => j.id)))
+  }, [selectableJobs, selectedIds])
 
   // ── Per-row cancel ────────────────────────────────────────────────────────
 
@@ -387,6 +404,31 @@ export default function JobList() {
     [cancelJob],
   )
 
+  // ── Per-row retry ─────────────────────────────────────────────────────────────
+
+  const handleRetryRow = useCallback(
+    async (id: string) => {
+      setRetryingIds((prev) => new Set(prev).add(id))
+      try {
+        await retryJob.mutateAsync(id)
+      } catch {
+        // Surfaced via retryJob.isError below; swallow so bulk retry continues.
+      } finally {
+        setRetryingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [retryJob],
+  )
+
   // ── Bulk cancel ───────────────────────────────────────────────────────────
 
   const handleBulkCancel = useCallback(async () => {
@@ -394,6 +436,14 @@ export default function JobList() {
       await handleCancelRow(id)
     }
   }, [selectedCancelable, handleCancelRow])
+
+  // ── Bulk retry ────────────────────────────────────────────────────────────
+
+  const handleBulkRetry = useCallback(async () => {
+    for (const id of selectedRetryable) {
+      await handleRetryRow(id)
+    }
+  }, [selectedRetryable, handleRetryRow])
 
   // ── Per-row and bulk delete ───────────────────────────────────────────────
 
@@ -439,8 +489,8 @@ export default function JobList() {
     [setSortFieldAndDir],
   )
 
-  const allCancelableSelected =
-    cancelableJobs.length > 0 && cancelableJobs.every((j) => selectedIds.has(j.id))
+  const allSelectableSelected =
+    selectableJobs.length > 0 && selectableJobs.every((j) => selectedIds.has(j.id))
 
   return (
     <div className={styles.page}>
@@ -518,6 +568,11 @@ export default function JobList() {
           {deleteJob.error instanceof Error ? deleteJob.error.message : 'Unknown error'}
         </div>
       )}
+      {retryJob.isError && (
+        <div className={styles.errorBanner} role="alert">
+          Retry failed: {retryJob.error instanceof Error ? retryJob.error.message : 'Unknown error'}
+        </div>
+      )}
 
       {/* Job table */}
       <div className={styles.tableWrap}>
@@ -527,10 +582,10 @@ export default function JobList() {
               <th className={styles.checkCell}>
                 <input
                   type="checkbox"
-                  aria-label="Select all cancelable jobs"
-                  checked={allCancelableSelected}
+                  aria-label="Select all jobs"
+                  checked={allSelectableSelected}
                   onChange={toggleAll}
-                  disabled={cancelableJobs.length === 0}
+                  disabled={selectableJobs.length === 0}
                 />
               </th>
               <th aria-sort={sortAriaValue('name', filters.sortField, filters.sortDir)}>
@@ -634,6 +689,18 @@ export default function JobList() {
                         {isCanceling ? <Spinner /> : <X />}
                       </button>
                     )}
+                    {retryableCount(job) > 0 && (
+                      <button
+                        className={styles.retryBtn}
+                        onClick={() => void handleRetryRow(job.id)}
+                        disabled={retryingIds.has(job.id)}
+                        type="button"
+                        title="Retry failed and canceled tasks"
+                        aria-label={`Retry job ${job.name}`}
+                      >
+                        {retryingIds.has(job.id) ? <Spinner /> : <Rotate />}
+                      </button>
+                    )}
                     <button
                       className={styles.deleteBtn}
                       onClick={() => setConfirm({ ids: [job.id], bulk: false })}
@@ -665,6 +732,16 @@ export default function JobList() {
           >
             <X />
             Cancel {selectedCancelable.length}
+          </button>
+          <button
+            className={styles.bulkRetryBtn}
+            onClick={() => void handleBulkRetry()}
+            disabled={selectedRetryable.length === 0 || retryJob.isPending}
+            type="button"
+            aria-label={`Retry selected (${selectedRetryable.length})`}
+          >
+            <Rotate />
+            Retry {selectedRetryable.length}
           </button>
           <button
             className={styles.bulkDeleteBtn}

@@ -428,6 +428,17 @@ components:
           type: string
           example: ready
 
+    RetryJobResponse:
+      type: object
+      required: [job_id, retried]
+      properties:
+        job_id:
+          type: string
+        retried:
+          type: integer
+          description: Number of tasks revived.
+          example: 3
+
     CancelResponse:
       type: object
       required: [task_id, status]
@@ -1180,6 +1191,31 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /jobs/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    post:
+      operationId: retryJob
+      summary: Retry a job's failed and canceled tasks
+      tags: [jobs]
+      description: |
+        Revives every `failed` or `canceled` task in the job, resetting their
+        steps and the job back to `pending` so the scheduler re-runs them in
+        dependency order. Idempotent: a job with no eligible tasks returns 200
+        with `retried: 0`.
+      responses:
+        "200":
+          description: Tasks queued for retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryJobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /jobs/{id}/tasks:
     parameters:
       - $ref: "#/components/parameters/id"
@@ -1311,8 +1347,10 @@ paths:
       summary: Retry a task
       tags: [tasks]
       description: |
-        Resets a failed or canceled task to `ready` so the scheduler can
-        pick it up on the next dispatch cycle.
+        Revives a failed or canceled task, resetting it (and its step and the
+        job, when terminal) so the scheduler re-runs it in dependency order. The
+        response `status` is the task's resulting state (`ready` when its step's
+        dependencies are satisfied, otherwise `pending`).
 
         Only tasks in `failed` or `canceled` state may be retried; all other
         states are rejected with 409 Conflict.

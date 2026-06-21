@@ -165,6 +165,17 @@ func mustUpdateTaskAttempt(t *testing.T, s *Store, a store.TaskAttempt) store.Ta
 	return updated
 }
 
+func mustCreateStep(t *testing.T, s *Store, id, jobID string, status store.StepStatus, dependsOn ...string) store.Step {
+	t.Helper()
+	st, err := s.CreateStep(ctx(), store.Step{
+		ID: id, JobID: jobID, Name: id, Status: status, DependsOn: dependsOn,
+	})
+	if err != nil {
+		t.Fatalf("CreateStep(%q): %v", id, err)
+	}
+	return st
+}
+
 // ── task.go ───────────────────────────────────────────────────────────────────
 
 func TestAssignTask(t *testing.T) {
@@ -448,6 +459,95 @@ func TestListTasks_FilterByStatuses(t *testing.T) {
 	}
 	if len(page.Items) != 2 {
 		t.Errorf("want 2, got %d", len(page.Items))
+	}
+}
+
+func TestRetryTasks_AllInJob(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	j := mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	// Mark the job terminal to prove revival resets it.
+	if err := s.UpdateJobStatus(ctx(), j.ID, store.JobStatusFailed); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	mustCreateStep(t, s, "s1", "j1", store.StepStatusFailed)
+	mustCreateTask(t, s, "t-failed", "j1", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "t-canceled", "j1", "s1", store.TaskStatusCanceled)
+	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusSucceeded)
+
+	revived, err := s.RetryTasks(ctx(), "j1", nil, time.Now())
+	if err != nil {
+		t.Fatalf("RetryTasks: %v", err)
+	}
+	if len(revived) != 2 {
+		t.Fatalf("revived = %d, want 2", len(revived))
+	}
+	if got := mustGetTask(t, s, "t-failed").Status; got != store.TaskStatusPending {
+		t.Errorf("t-failed = %v, want pending", got)
+	}
+	if got := mustGetTask(t, s, "t-canceled").Status; got != store.TaskStatusPending {
+		t.Errorf("t-canceled = %v, want pending", got)
+	}
+	if got := mustGetTask(t, s, "t-ok").Status; got != store.TaskStatusSucceeded {
+		t.Errorf("t-ok = %v, want succeeded (untouched)", got)
+	}
+	if got := mustGetJob(t, s, "j1").Status; got != store.JobStatusPending {
+		t.Errorf("job = %v, want pending", got)
+	}
+	st, err := s.GetStep(ctx(), "s1")
+	if err != nil {
+		t.Fatalf("GetStep: %v", err)
+	}
+	if st.Status != store.StepStatusPending {
+		t.Errorf("step = %v, want pending", st.Status)
+	}
+}
+
+func TestRetryTasks_SubsetAndNonTerminalJobUntouched(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1") // stays running (non-terminal)
+	mustCreateStep(t, s, "s1", "j1", store.StepStatusFailed)
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusFailed)
+
+	revived, err := s.RetryTasks(ctx(), "j1", []string{"t1"}, time.Now())
+	if err != nil {
+		t.Fatalf("RetryTasks: %v", err)
+	}
+	if len(revived) != 1 || revived[0].ID != "t1" {
+		t.Fatalf("revived = %+v, want [t1]", revived)
+	}
+	if got := mustGetTask(t, s, "t1").Status; got != store.TaskStatusPending {
+		t.Errorf("t1 = %v, want pending", got)
+	}
+	if got := mustGetTask(t, s, "t2").Status; got != store.TaskStatusFailed {
+		t.Errorf("t2 = %v, want failed (not in subset)", got)
+	}
+	if got := mustGetJob(t, s, "j1").Status; got != store.JobStatusRunning {
+		t.Errorf("job = %v, want running (already non-terminal)", got)
+	}
+}
+
+func TestRetryTasks_NothingEligible(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateStep(t, s, "s1", "j1", store.StepStatusCompleted)
+	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusSucceeded)
+
+	revived, err := s.RetryTasks(ctx(), "j1", nil, time.Now())
+	if err != nil {
+		t.Fatalf("RetryTasks: %v", err)
+	}
+	if len(revived) != 0 {
+		t.Errorf("revived = %d, want 0", len(revived))
 	}
 }
 
