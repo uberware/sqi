@@ -4,6 +4,8 @@ import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import UsageBar from '@/components/UsageBar'
+import IconButton from '@/components/IconButton'
+import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useListUsagePools } from '@/api/queries'
 import { useDeleteUsagePool } from '@/api/mutations'
@@ -100,15 +102,14 @@ export default function UsagePoolList() {
                   </div>
                 </td>
                 <td>
-                  <button
-                    type="button"
+                  <IconButton
+                    icon={<Trash />}
                     className={styles.deleteBtn}
-                    disabled={deletingIds.has(pool.id)}
+                    busy={deletingIds.has(pool.id)}
                     onClick={() => void handleDelete(pool.id, pool.name)}
-                    aria-label={`Delete usage pool ${pool.name}`}
-                  >
-                    {deletingIds.has(pool.id) ? '…' : 'Delete'}
-                  </button>
+                    title="Delete"
+                    label={`Delete usage pool ${pool.name}`}
+                  />
                 </td>
               </tr>
             ))}

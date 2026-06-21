@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
+import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import {
@@ -14,7 +15,6 @@ import {
   Copy,
   Refresh,
   Rotate,
-  Spinner,
   Trash,
   X,
 } from '@/components/icons'
@@ -678,39 +678,33 @@ export default function JobList() {
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
                   <td className={styles.actionsCell}>
                     {canCancel && (
-                      <button
+                      <IconButton
+                        icon={<X />}
                         className={styles.cancelBtn}
                         onClick={() => void handleCancelRow(job.id)}
-                        disabled={isCanceling}
-                        type="button"
+                        busy={isCanceling}
                         title="Cancel"
-                        aria-label={`Cancel job ${job.name}`}
-                      >
-                        {isCanceling ? <Spinner /> : <X />}
-                      </button>
+                        label={`Cancel job ${job.name}`}
+                      />
                     )}
                     {retryableCount(job) > 0 && (
-                      <button
+                      <IconButton
+                        icon={<Rotate />}
                         className={styles.retryBtn}
                         onClick={() => void handleRetryRow(job.id)}
-                        disabled={retryingIds.has(job.id)}
-                        type="button"
+                        busy={retryingIds.has(job.id)}
                         title="Retry failed and canceled tasks"
-                        aria-label={`Retry job ${job.name}`}
-                      >
-                        {retryingIds.has(job.id) ? <Spinner /> : <Rotate />}
-                      </button>
+                        label={`Retry job ${job.name}`}
+                      />
                     )}
-                    <button
+                    <IconButton
+                      icon={<Trash />}
                       className={styles.deleteBtn}
                       onClick={() => setConfirm({ ids: [job.id], bulk: false })}
-                      disabled={deletingIds.has(job.id)}
-                      type="button"
+                      busy={deletingIds.has(job.id)}
                       title="Delete"
-                      aria-label={`Delete job ${job.name}`}
-                    >
-                      {deletingIds.has(job.id) ? <Spinner /> : <Trash />}
-                    </button>
+                      label={`Delete job ${job.name}`}
+                    />
                   </td>
                 </tr>
               )

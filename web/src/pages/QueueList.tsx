@@ -3,6 +3,8 @@
 import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
+import IconButton from '@/components/IconButton'
+import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useDeleteQueue } from '@/api/mutations'
@@ -97,15 +99,14 @@ export default function QueueList() {
                 </td>
                 <td>{queue.paused ? 'Yes' : 'No'}</td>
                 <td>
-                  <button
-                    type="button"
+                  <IconButton
+                    icon={<Trash />}
                     className={styles.deleteBtn}
-                    disabled={deletingIds.has(queue.id)}
+                    busy={deletingIds.has(queue.id)}
                     onClick={() => void handleDelete(queue.id, queue.name)}
-                    aria-label={`Delete queue ${queue.name}`}
-                  >
-                    {deletingIds.has(queue.id) ? '…' : 'Delete'}
-                  </button>
+                    title="Delete"
+                    label={`Delete queue ${queue.name}`}
+                  />
                 </td>
               </tr>
             ))}
