@@ -264,8 +264,12 @@ heartbeat-sweep tick that handles offline-worker cleanup, controlled by
 Transitions are validated — only the arrows above are permitted. Any other
 transition returns an error from `store.TransitionTask`.
 
-`failed` tasks can be retried via `POST /api/v1/tasks/{id}/retry`, which creates
-a new `task_attempt` row and moves the task back to `ready`.
+`failed` and `canceled` tasks can be retried — individually via
+`POST /api/v1/tasks/{id}/retry` or in bulk via `POST /api/v1/jobs/{id}/retry`.
+On retry the task resets to `pending`, and its step and the job also reset to
+`pending` when they were terminal; `ResolveDependencies` then re-gates
+`pending`→`ready`, so tasks whose step dependencies are already met land in
+`ready` immediately.
 
 ---
 

@@ -177,6 +177,7 @@ can show it to the artist.
 | `pause_job(job_id) -> Job` / `resume_job(job_id) -> Job` | Pause/resume; returns the updated job. |
 | `set_job_priority(job_id, priority) -> Job` | Validates `priority >= 1` client-side before sending. |
 | `cancel_job(job_id) -> None` | POST `/jobs/{id}/cancel`; returns `None` on `204`. |
+| `retry_job(job_id) -> RetryJobResult` | POST `/jobs/{id}/retry`; revives all `failed`/`canceled` tasks; returns `RetryJobResult(job_id, retried)`. |
 | `delete_job(job_id) -> None` | DELETE; permanently deletes the job and all data (cancels active tasks first); returns `None` on `204`. |
 
 ```python
@@ -187,6 +188,7 @@ sqi.pause_job(job_id)
 sqi.set_job_priority(job_id, 75)
 sqi.resume_job(job_id)
 sqi.cancel_job(job_id)   # soft-cancel; job data is retained
+result = sqi.retry_job(job_id)   # revive all failed/canceled tasks; result.retried = count
 sqi.delete_job(job_id)   # hard-delete; all data permanently removed
 ```
 
@@ -197,7 +199,7 @@ sqi.delete_job(job_id)   # hard-delete; all data permanently removed
 | `list_job_tasks(job_id, *, status, sort_by, sort_dir, limit, offset) -> Page[Task]` | One page of a job's tasks. |
 | `iter_job_tasks(job_id, ...) -> Iterator[Task]` | Auto-paged companion. |
 | `get_task(task_id) -> Task` | A single task. |
-| `retry_task(task_id) -> RetryResult` | Retry a failed/canceled task; invalid state → `ConflictError`. |
+| `retry_task(task_id) -> RetryResult` | Retry a failed/canceled task; revives the task, its step, and the job (when terminal); response `status` is `ready` or `pending` depending on step dependencies; invalid state → `ConflictError`. |
 | `cancel_task(task_id) -> CancelResult` | Cancel a non-terminal task; terminal task → `ConflictError`. |
 | `get_task_logs(task_id, limit=100, after_nats_seq=0) -> LogPage` | One page of log chunks plus the cursor. |
 | `tail_task_logs(task_id, poll_interval=1.0, from_seq=0, follow=True) -> Iterator[LogChunk]` | Polling log tail. |

@@ -184,7 +184,7 @@ the wire type, a raw fetch function, and a TanStack Query hook.
 
 For a write endpoint, add a `useMutation` hook in `src/api/mutations.ts` that
 calls `apiFetch` with the appropriate method and invalidates the affected query
-keys in `onSuccess` (see `useCancelJob` / `useSubmitJob` for the pattern). Add
+keys in `onSuccess` (see `useCancelJob` / `useRetryJob` / `useSubmitJob` for the pattern). Add
 unit tests next to the code, mirroring `client.test.ts`, `queries.test.ts`, and
 `mutations.test.tsx`.
 
@@ -215,6 +215,13 @@ Subjects mirror the server's hub (e.g. `jobs`, `jobs/{jobId}/tasks`, `workers`,
 (`WebSocketProvider` in `main.tsx`), and `ConnectionStatusBadge` surfaces the
 connection state in the header so operators can tell whether live updates are
 flowing.
+
+`JobList` exposes per-row and bulk retry affordances: each row for a job with
+`failed` or `canceled` tasks shows a **Retry** button (backed by `POST
+/api/v1/jobs/{id}/retry` via the `useRetryJob` mutation); the bulk toolbar
+shows a **Retry M** button when retryable jobs are selected alongside (or
+instead of) cancelable ones. The select-all header includes retryable jobs in
+its scope.
 
 The `jobs` subject carries a synthetic `status: "removed"` event when a job is
 hard-deleted — either by a per-row or bulk **Delete** action in `JobList`, or

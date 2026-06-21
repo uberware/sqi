@@ -251,6 +251,23 @@ curl -s -X POST "$BASE/jobs/$JOB_ID/cancel"
 
 ---
 
+### Retry a job's failed and canceled tasks
+
+`POST /api/v1/jobs/{id}/retry`
+
+Revives every `failed` or `canceled` task in the job — resetting those tasks,
+their steps, and the job back to `pending` so the scheduler re-runs them in
+dependency order. Idempotent: a job with no eligible tasks returns `retried: 0`.
+
+```sh
+curl -s -X POST "$BASE/jobs/$JOB_ID/retry" | jq .
+```
+
+Returns `200` with `{ "job_id": "...", "retried": N }`. Returns `404` if the job
+does not exist.
+
+---
+
 ### Delete a job
 
 `DELETE /api/v1/jobs/{id}`
@@ -359,11 +376,18 @@ EOF
 
 `POST /api/v1/tasks/{id}/retry`
 
-Creates a new attempt for a task in `failed` or `canceled` state.
+Revives a `failed` or `canceled` task, resetting it and its step and the job
+(when terminal) back to `pending`, then re-gates `pending`→`ready` in dependency
+order. Only tasks in `failed` or `canceled` state may be retried.
 
 ```sh
 curl -s -X POST "$BASE/tasks/$TASK_ID/retry" | jq .
 ```
+
+Returns `202` with `{ "task_id": "...", "status": "ready" }` when the task's
+step dependencies are satisfied, or `{ ..., "status": "pending" }` when they are
+not yet met. Returns `404` if the task does not exist, or `409` if the task is
+not in `failed` or `canceled` state.
 
 ---
 
