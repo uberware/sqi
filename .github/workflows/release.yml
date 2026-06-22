@@ -218,21 +218,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── PyPI publish (trusted publishing) — DISABLED BY DEFAULT ────────────────
-      # This publishes sqi-client to PyPI via OIDC trusted publishing (no API
-      # token needed; uses the id-token: write permission already granted above).
-      #
-      # It is gated on the `PUBLISH_TO_PYPI` repository variable, which is unset
-      # (so this step is skipped) until a maintainer opts in. Do NOT set it until
-      # the `sqi-client` PyPI project exists with a configured trusted publisher
-      # pointing at this repository + workflow — registering the PyPI project is a
-      # maintainer action and is deliberately NOT automated here.
-      #
-      # To enable, after registering the project + trusted publisher on PyPI:
-      # create a repository variable `PUBLISH_TO_PYPI` with the value `true`
-      # (Settings → Secrets and variables → Actions → Variables).
+      # Publish sqi-client to PyPI via OIDC trusted publishing (no API token;
+      # uses the id-token: write permission granted above). Gated on the
+      # PUBLISH_TO_PYPI repository variable so it only runs once the PyPI
+      # project + trusted publisher are configured (see release runbook).
       - name: Publish sqi-client to PyPI (trusted publishing)
-        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }} # DISABLED until the PyPI project + trusted publisher exist
+        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: clients/python/dist
