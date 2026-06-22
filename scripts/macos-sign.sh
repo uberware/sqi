@@ -12,8 +12,8 @@ case "$TARGET" in
   *) echo "macos-sign: skip non-darwin target $TARGET"; exit 0 ;;
 esac
 
-if [[ -z "${MACOS_CERT_P12:-}" ]]; then
-  echo "macos-sign: MACOS_CERT_P12 unset, skipping (snapshot build)"
+if [[ -z "${MACOS_CERT_P12:-}" || ! -s "${MACOS_CERT_P12}" ]]; then
+  echo "macos-sign: no signing cert present, skipping"
   exit 0
 fi
 

@@ -120,10 +120,25 @@ jobs:
           tar -xzf rcodesign.tar.gz --strip-components=1 -C /usr/local/bin "*/rcodesign"
           rcodesign --version
 
+      # Detect whether macOS signing secrets are configured so the signing and
+      # notarization steps below cleanly no-op on a tag pushed before the
+      # maintainer has added the Apple credentials (see release runbook).
+      - name: Check for macOS signing secrets
+        id: macsign_check
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+        run: |
+          if [ -n "$CERT_B64" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::macOS signing secrets not configured; darwin binaries will be unsigned/un-notarized."
+          fi
+
       # Materialize the signing certificate and notarization API key from
       # secrets into temp files for goreleaser's sign hook and the notarize step.
       - name: Prepare macOS signing material
-        id: macsign
+        if: ${{ steps.macsign_check.outputs.enabled == 'true' }}
         run: |
           umask 077
           echo "${{ secrets.MACOS_CERT_P12_BASE64 }}" | base64 -d > "$RUNNER_TEMP/cert.p12"
@@ -164,12 +179,13 @@ jobs:
           GOVERSION: ${{ env.GOVERSION }}
           # Required by cosign keyless signing inside goreleaser's signs block.
           COSIGN_YES: "true"
-          MACOS_CERT_P12: ${{ runner.temp }}/cert.p12
-          MACOS_CERT_PASSWORD_FILE: ${{ runner.temp }}/cert.pass
+          MACOS_CERT_P12: ${{ steps.macsign_check.outputs.enabled == 'true' && format('{0}/cert.p12', runner.temp) || '' }}
+          MACOS_CERT_PASSWORD_FILE: ${{ steps.macsign_check.outputs.enabled == 'true' && format('{0}/cert.pass', runner.temp) || '' }}
 
       # Notarize the signed darwin binaries. goreleaser leaves each built binary
       # under dist/<id>_darwin_<arch>*/; submit each so Gatekeeper accepts them.
       - name: Notarize macOS binaries
+        if: ${{ steps.macsign_check.outputs.enabled == 'true' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
