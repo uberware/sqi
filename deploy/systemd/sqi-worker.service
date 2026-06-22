@@ -1,0 +1,30 @@
+# sqi distributed task worker — single instance.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Install: copy to /etc/systemd/system/, then `systemctl enable --now sqi-worker`.
+[Unit]
+Description=sqi distributed task worker
+Documentation=https://github.com/uberware/sqi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sqiworker
+Group=sqiworker
+ExecStart=/usr/local/bin/sqi-worker start --config /etc/sqi/sqi-worker.yaml
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sqi-worker
+
+StateDirectory=sqi-worker
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sqi-worker
+
+[Install]
+WantedBy=multi-user.target
