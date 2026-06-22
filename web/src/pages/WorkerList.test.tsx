@@ -801,4 +801,42 @@ describe('WorkerList', () => {
       await waitFor(() => expect(mainListCalls()).toBeGreaterThan(before))
     })
   })
+
+  // ── Search + URL-backed status ──────────────────────────────────────────────
+
+  describe('search and URL-backed status', () => {
+    it('sends search param after debounce', async () => {
+      fetchMock.mockResolvedValue(okJson(makeListResponse([])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Search workers'))
+      fireEvent.change(screen.getByLabelText('Search workers'), { target: { value: 'render01' } })
+      act(() => vi.advanceTimersByTime(300))
+
+      await waitFor(() => {
+        const calls = fetchMock.mock.calls.flat() as string[]
+        expect(calls.some((u) => typeof u === 'string' && u.includes('search=render01'))).toBe(true)
+      })
+    })
+
+    it('status filter pill updates the URL (status appears in API calls)', async () => {
+      fetchMock.mockResolvedValue(okJson(makeListResponse([])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Offline'))
+      fireEvent.click(screen.getByRole('button', { name: /^Offline/ }))
+
+      await waitFor(() => {
+        const calls = fetchMock.mock.calls.flat() as string[]
+        // The main list query should now include status=offline (without limit=1)
+        expect(
+          calls.some(
+            (u) => typeof u === 'string' && u.includes('status=offline') && !u.includes('limit=1'),
+          ),
+        ).toBe(true)
+      })
+    })
+  })
 })

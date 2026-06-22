@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -217,7 +218,20 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	if opts.Status != "" && w.Status != opts.Status {
 		return false
 	}
+	if opts.Search != "" && !workerMatchesSearch(w, opts.Search) {
+		return false
+	}
 	return true
+}
+
+// workerMatchesSearch reports whether w matches query as a case-insensitive
+// substring of name, hostname, id, or compute_location.
+func workerMatchesSearch(w store.Worker, query string) bool {
+	q := strings.ToLower(query)
+	return strings.Contains(strings.ToLower(w.Name), q) ||
+		strings.Contains(strings.ToLower(w.Hostname), q) ||
+		strings.Contains(strings.ToLower(w.ID), q) ||
+		strings.Contains(strings.ToLower(w.ComputeLocation), q)
 }
 
 // cmpWorker returns a comparison value for two workers by the given sort field

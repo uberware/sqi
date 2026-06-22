@@ -1079,6 +1079,11 @@ paths:
           schema:
             type: string
           description: Filter by project label.
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Case-insensitive substring over name, id, owner, project.
         - name: sort_by
           in: query
           schema:
@@ -1421,6 +1426,11 @@ paths:
           schema:
             type: string
             enum: [online, offline, disabled]
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Case-insensitive substring over name, hostname, id, compute_location.
         - name: sort_by
           in: query
           schema:

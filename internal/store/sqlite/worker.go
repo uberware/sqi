@@ -203,6 +203,11 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		where += ` AND status = ?`
 		args = append(args, string(opts.Status))
 	}
+	if opts.Search != "" {
+		where += ` AND (name LIKE ? OR hostname LIKE ? OR id LIKE ? OR compute_location LIKE ?)`
+		like := "%" + opts.Search + "%"
+		args = append(args, like, like, like, like)
+	}
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers`+where, args...).Scan(&total); err != nil {

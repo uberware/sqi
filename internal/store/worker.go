@@ -145,6 +145,9 @@ type ListWorkersOptions struct {
 	QueueID         string
 	ComputeLocation string
 	Status          WorkerStatus // empty = all statuses
+	// Search is a case-insensitive substring matched against name, hostname,
+	// id, and compute_location. Empty = no search filter.
+	Search string
 
 	// IncludeUnaffiliated, when true and FarmID is non-empty, also returns
 	// workers whose FarmID is empty (unaffiliated workers that accept tasks

@@ -756,6 +756,52 @@ describe('JobList', () => {
     })
   })
 
+  // ── Pagination ────────────────────────────────────────────────────────────────
+
+  describe('pagination', () => {
+    it('renders pagination when results exceed one page', async () => {
+      const jobs = Array.from({ length: 50 }, (_, i) =>
+        makeJob({ id: `job-pg${i}`, name: `Job ${i}` }),
+      )
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse(jobs, 120)))
+      render(<JobList />, { wrapper: Wrapper })
+      expect(await screen.findByLabelText('Pagination')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Page 2' })).toBeInTheDocument()
+    })
+
+    it('does not render pagination when total is 0', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([])))
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('No jobs found.'))
+      expect(screen.queryByLabelText('Pagination')).not.toBeInTheDocument()
+    })
+  })
+
+  // ── Search label ──────────────────────────────────────────────────────────────
+
+  describe('search label', () => {
+    it('typing in the search box and waiting 300ms issues a request with search param', async () => {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([])))
+
+      render(<JobList />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByLabelText('Search jobs'))
+
+      await user.type(screen.getByLabelText('Search jobs'), 'foo')
+      act(() => vi.advanceTimersByTime(350))
+
+      await waitFor(
+        () => {
+          const calls = fetchMock.mock.calls.flat() as string[]
+          expect(
+            calls.some((u) => typeof u === 'string' && (u as string).includes('search=foo')),
+          ).toBe(true)
+        },
+        { timeout: 3000 },
+      )
+    })
+  })
+
   // ── Per-row retry ─────────────────────────────────────────────────────────────
 
   describe('per-row retry', () => {

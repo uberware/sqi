@@ -56,6 +56,40 @@ func (f *fakeScheduler) WakeQueue(queueID string) {
 
 // ── router helpers ────────────────────────────────────────────────────────────
 
+func TestListJobs_SearchParam(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range []store.Job{
+		{ID: "a", FarmID: "farm-1", QueueID: "queue-1", Name: "Alpha", Status: store.JobStatusPending, Priority: 50, TemplateFormat: store.TemplateFormatYAML},
+		{ID: "b", FarmID: "farm-1", QueueID: "queue-1", Name: "Beta", Status: store.JobStatusPending, Priority: 50, TemplateFormat: store.TemplateFormatYAML},
+	} {
+		if _, err := st.CreateJob(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := newJobRouter(st, &fakeScheduler{})
+
+	req := newReq(t, http.MethodGet, "/api/v1/jobs?search=alpha", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp jobListResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 1 {
+		t.Errorf("total = %d, want 1", resp.Total)
+	}
+}
+
 // newJobRouter wires a jobHandler onto a chi router with the same paths as
 // router.go, using the provided store and fakeScheduler.
 func newJobRouter(st store.Store, sched jobCanceler) chi.Router {

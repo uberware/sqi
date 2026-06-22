@@ -806,6 +806,28 @@ func TestListWorkers_SortAndFilter(t *testing.T) {
 	}
 }
 
+func TestListWorkers_Search(t *testing.T) {
+	st := New()
+	mk := func(id, name, host, loc string) {
+		if _, err := st.RegisterWorker(ctx(), store.Worker{
+			ID: id, Name: name, Hostname: host, ComputeLocation: loc,
+			Status: store.WorkerStatusOnline, Tags: map[string]string{},
+		}); err != nil {
+			t.Fatalf("RegisterWorker(%q): %v", id, err)
+		}
+	}
+	mk("w-render01", "render-node-01", "render01.local", "us-west")
+	mk("w-comp02", "comp-node-02", "comp02.local", "eu-central")
+
+	page, err := st.ListWorkers(ctx(), store.ListWorkersOptions{Search: "EU-CENTRAL"})
+	if err != nil {
+		t.Fatalf("ListWorkers: %v", err)
+	}
+	if page.Total != 1 {
+		t.Errorf("Total: got %d, want 1", page.Total)
+	}
+}
+
 // ── job.go ────────────────────────────────────────────────────────────────────
 
 func TestUpdateJob(t *testing.T) {
@@ -967,6 +989,36 @@ func TestListJobs_SortAndFilter(t *testing.T) {
 		if _, err := s.ListJobs(ctx(), opts); err != nil {
 			t.Errorf("ListJobs(%+v): %v", opts, err)
 		}
+	}
+}
+
+func TestListJobs_Search(t *testing.T) {
+	st := New()
+	ctx := context.Background()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "f"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id, name, owner, project string) {
+		if _, err := st.CreateJob(ctx, store.Job{
+			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
+			Project: project, Status: store.JobStatusPending, Priority: 50,
+			TemplateFormat: store.TemplateFormatYAML,
+		}); err != nil {
+			t.Fatalf("CreateJob(%q): %v", id, err)
+		}
+	}
+	mk("render-night", "Nightly Render", "alice", "moonshot")
+	mk("comp-day", "Daytime Comp", "bob", "sunrise")
+
+	page, err := st.ListJobs(ctx, store.ListJobsOptions{Search: "NIGHTLY"})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if page.Total != 1 {
+		t.Errorf("Total: got %d, want 1", page.Total)
 	}
 }
 

@@ -4,6 +4,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
+import SearchInput from '@/components/SearchInput'
 import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
@@ -66,6 +67,11 @@ function formatAge(ts: number, now: number): string {
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
   return new Date(ts).toLocaleTimeString()
+}
+
+/** Lower-cased substring match of a term against a task's name. */
+function taskMatches(task: Task, term: string): boolean {
+  return task.name.toLowerCase().includes(term)
 }
 
 // ── IdCell ────────────────────────────────────────────────────────────────────
@@ -527,6 +533,7 @@ export default function JobDetail() {
   const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
 
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set())
+  const [taskSearch, setTaskSearch] = useState('')
 
   const toggleTask = useCallback((id: string) => {
     setSelectedTaskIds((prev) => {
@@ -795,6 +802,9 @@ export default function JobDetail() {
     )
   }
 
+  const term = taskSearch.trim().toLowerCase()
+  const stepMatchesByName = (step: Step) => step.name.toLowerCase().includes(term)
+
   return (
     <div className={styles.page}>
       <PageHeader
@@ -827,12 +837,29 @@ export default function JobDetail() {
       <MetadataCard job={job} />
 
       <div className={styles.stepsContainer}>
-        <h2 className={styles.sectionTitle}>Steps</h2>
+        <div className={styles.stepsHeader}>
+          <h2 className={styles.sectionTitle}>Steps</h2>
+          <SearchInput
+            value={taskSearch}
+            onChange={setTaskSearch}
+            placeholder="Search tasks by name…"
+            aria-label="Search tasks"
+            className={styles.taskSearch ?? ''}
+          />
+        </div>
         {tasksLoading && <p className={styles.muted}>Loading tasks…</p>}
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
+          const visibleTasks =
+            term === ''
+              ? stepTasks
+              : stepMatchesByName(step)
+                ? stepTasks
+                : stepTasks.filter((t) => taskMatches(t, term))
+          if (term !== '' && !stepMatchesByName(step) && visibleTasks.length === 0) return null
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
-          const selectable = stepTasks.filter(
+          // select-all is scoped to the tasks visible under the active search filter
+          const selectable = visibleTasks.filter(
             (t) => CANCELABLE.has(t.status) || (RETRYABLE.has(t.status) && depsSatisfied),
           )
           const allSelected =
@@ -841,7 +868,7 @@ export default function JobDetail() {
             <StepSection
               key={step.id}
               step={step}
-              tasks={stepTasks}
+              tasks={visibleTasks}
               jobId={jobId}
               retryingIds={retryingIds}
               retryErrors={retryErrors}

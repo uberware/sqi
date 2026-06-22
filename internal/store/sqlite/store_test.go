@@ -764,6 +764,47 @@ func TestJob_ListJobs_FilterByStatus(t *testing.T) {
 	}
 }
 
+func TestJob_ListJobs_Search(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	mk := func(id, name, owner, project string) {
+		if _, err := s.CreateJob(ctx, store.Job{
+			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
+			Project: project, Status: store.JobStatusPending, Priority: 50,
+			TemplateFormat: store.TemplateFormatYAML,
+		}); err != nil {
+			t.Fatalf("CreateJob(%q): %v", id, err)
+		}
+	}
+	mk("render-night", "Nightly Render", "alice", "moonshot")
+	mk("comp-day", "Daytime Comp", "bob", "sunrise")
+
+	cases := []struct {
+		name, search string
+		wantTotal    int
+	}{
+		{"by name (case-insensitive)", "nightly", 1},
+		{"by owner", "bob", 1},
+		{"by project", "moonshot", 1},
+		{"by id substring", "comp-", 1},
+		{"no match", "zzz", 0},
+		{"empty matches all", "", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := s.ListJobs(ctx, store.ListJobsOptions{Search: tc.search})
+			if err != nil {
+				t.Fatalf("ListJobs: %v", err)
+			}
+			if page.Total != tc.wantTotal {
+				t.Errorf("Total: got %d, want %d", page.Total, tc.wantTotal)
+			}
+		})
+	}
+}
+
 // ── Step CRUD ─────────────────────────────────────────────────────────────────
 
 func TestStep_CreateAndGet(t *testing.T) {
@@ -1540,6 +1581,47 @@ func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {
 	}
 	if page.Items[0].ID != "w1" {
 		t.Errorf("Items[0].ID: got %q", page.Items[0].ID)
+	}
+}
+
+func TestWorker_ListWorkers_Search(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	mk := func(id, name, host, loc string) {
+		if _, err := s.RegisterWorker(ctx, store.Worker{
+			ID: id, FarmID: "f1", Name: name, Hostname: host,
+			ComputeLocation: loc, Status: store.WorkerStatusOnline,
+			Tags: map[string]string{},
+		}); err != nil {
+			t.Fatalf("RegisterWorker(%q): %v", id, err)
+		}
+	}
+	mk("w-render01", "render-node-01", "render01.local", "us-west")
+	mk("w-comp02", "comp-node-02", "comp02.local", "eu-central")
+
+	cases := []struct {
+		name, search string
+		wantTotal    int
+	}{
+		{"by name", "render-node", 1},
+		{"by hostname", "comp02.local", 1},
+		{"by id", "w-render01", 1},
+		{"by compute location", "eu-central", 1},
+		{"case-insensitive", "US-WEST", 1},
+		{"no match", "zzz", 0},
+		{"empty matches all", "", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := s.ListWorkers(ctx, store.ListWorkersOptions{Search: tc.search})
+			if err != nil {
+				t.Fatalf("ListWorkers: %v", err)
+			}
+			if page.Total != tc.wantTotal {
+				t.Errorf("Total: got %d, want %d", page.Total, tc.wantTotal)
+			}
+		})
 	}
 }
 

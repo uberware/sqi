@@ -5,10 +5,13 @@ import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
 import IconButton from '@/components/IconButton'
+import FilterToolbar from '@/components/FilterToolbar'
+import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
 import { Check, Copy, Pause, Play, Refresh, Trash } from '@/components/icons'
 import { useListWorkers, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
+import { useListFilters } from '@/hooks/useListFilters'
 import { useWebSocket } from '@/ws/context'
 import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
 import type { Worker, WorkerStatus, ListResponse } from '@/api/types'
@@ -16,7 +19,8 @@ import styles from './WorkerList.module.css'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 50
+const WORKER_STATUSES = new Set(['online', 'offline', 'disabled'])
+const WORKER_SORT_FIELDS = new Set(['hostname', 'status', 'registered_at', 'last_heartbeat_at'])
 
 const STATUS_FILTERS: { label: string; value: WorkerStatus | '' }[] = [
   { label: 'All', value: '' },
@@ -165,22 +169,44 @@ function CapabilityTags({ worker }: { worker: Worker }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkerList() {
-  // ── URL-driven status filter ────────────────────────────────────
-  const [activeStatus, setActiveStatus] = useState<WorkerStatus | ''>('')
+  // ── URL-driven filters ──────────────────────────────────────────────────────
+  const filters = useListFilters<
+    WorkerStatus,
+    'hostname' | 'status' | 'registered_at' | 'last_heartbeat_at'
+  >({
+    statuses: WORKER_STATUSES,
+    sortFields: WORKER_SORT_FIELDS,
+    defaultSortField: 'hostname',
+    defaultSortDir: 'asc',
+  })
 
   // ── Main data query ───────────────────────────────────────────────────────
   const { data, isLoading, isError, error, dataUpdatedAt } = useListWorkers({
-    ...(activeStatus ? { status: activeStatus } : {}),
-    limit: PAGE_SIZE,
+    ...(filters.status ? { status: filters.status } : {}),
+    ...(filters.search ? { search: filters.search } : {}),
+    limit: filters.pageSize,
+    offset: (filters.page - 1) * filters.pageSize,
   })
 
   const workers = useMemo(() => data?.items ?? [], [data])
   const total = data?.total ?? 0
 
   // ── Per-status count queries (limit=1 to get totals cheaply) ────
-  const { data: onlineCountData } = useListWorkers({ status: 'online', limit: 1 })
-  const { data: offlineCountData } = useListWorkers({ status: 'offline', limit: 1 })
-  const { data: disabledCountData } = useListWorkers({ status: 'disabled', limit: 1 })
+  const { data: onlineCountData } = useListWorkers({
+    status: 'online',
+    limit: 1,
+    ...(filters.search ? { search: filters.search } : {}),
+  })
+  const { data: offlineCountData } = useListWorkers({
+    status: 'offline',
+    limit: 1,
+    ...(filters.search ? { search: filters.search } : {}),
+  })
+  const { data: disabledCountData } = useListWorkers({
+    status: 'disabled',
+    limit: 1,
+    ...(filters.search ? { search: filters.search } : {}),
+  })
 
   // Derive "All" by summing status counts so it remains accurate when a filter
   // is active — data.total reflects the filtered subset, not the grand total.
@@ -193,6 +219,8 @@ export default function WorkerList() {
     offline: offlineCount,
     disabled: disabledCount,
   }
+
+  const statusOptions = STATUS_FILTERS.map((f) => ({ ...f, count: statusCounts[f.value] }))
 
   // ── Enable/disable/remove mutations ─────────────────────────────
   const queryClient = useQueryClient()
@@ -326,7 +354,6 @@ export default function WorkerList() {
       deselect(workerId)
     } else {
       const status = payload.status
-      let patched = false
       queryClient.setQueriesData<ListResponse<Worker>>({ queryKey: ['workers', 'list'] }, (old) => {
         if (!old) return old
         const idx = old.items.findIndex((w) => w.id === workerId)
@@ -334,7 +361,6 @@ export default function WorkerList() {
         const newItems = [...old.items]
         const prev = newItems[idx]
         if (!prev) return old
-        patched = true
         newItems[idx] = {
           ...prev,
           status,
@@ -344,24 +370,13 @@ export default function WorkerList() {
         }
         return { ...old, items: newItems }
       })
-      // A worker we don't have yet (e.g. one that just (re)registered) can't be
-      // patched in place — refetch the list so it appears immediately instead of
-      // waiting for the next background poll.
-      if (!patched) {
-        void queryClient.invalidateQueries({ queryKey: ['workers', 'list'] })
-      }
     }
 
-    // Invalidate count queries so filter pill counts stay accurate
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.workers.list({ status: 'online', limit: 1 }),
-    })
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.workers.list({ status: 'offline', limit: 1 }),
-    })
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.workers.list({ status: 'disabled', limit: 1 }),
-    })
+    // Invalidate all worker list queries (including per-status counts) so
+    // counts stay accurate, and refetch the main list for newly-seen workers.
+    // A single prefix invalidation covers every variant, including those with
+    // a search term embedded in the query key.
+    void queryClient.invalidateQueries({ queryKey: ['workers', 'list'] })
   })
 
   // ── Last-updated timestamp ────────────────────────────────────────────────
@@ -401,30 +416,15 @@ export default function WorkerList() {
         }
       />
 
-      {/* Status filter bar */}
-      <div className={styles.toolbar}>
-        <div className={styles.filterBar} role="toolbar" aria-label="Filter by status">
-          {STATUS_FILTERS.map(({ label, value }) => (
-            <button
-              key={value}
-              className={[
-                styles.filterPill,
-                activeStatus === value ? styles['filterPill--active'] : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              onClick={() => setActiveStatus(value)}
-              aria-pressed={activeStatus === value}
-              type="button"
-            >
-              {label}
-              <span className={styles.filterCount} aria-label={`${statusCounts[value]} workers`}>
-                {statusCounts[value]}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <FilterToolbar
+        statuses={statusOptions}
+        activeStatus={filters.status}
+        onStatusChange={(v) => filters.setStatus(v as WorkerStatus | '')}
+        search={filters.search}
+        onSearchChange={filters.setSearch}
+        searchPlaceholder="Search by name, host, ID, or location…"
+        searchLabel="Search workers"
+      />
 
       {isError && (
         <div className={styles.errorBanner} role="alert">
@@ -558,6 +558,21 @@ export default function WorkerList() {
         </table>
       </div>
 
+      {total > 0 && (
+        <Pagination
+          page={filters.page}
+          totalPages={Math.max(1, Math.ceil(total / filters.pageSize))}
+          pageSize={filters.pageSize}
+          total={total}
+          hasNextPage={filters.page * filters.pageSize < total}
+          hasPrevPage={filters.page > 1}
+          onGoToPage={filters.setPage}
+          onGoToNextPage={() => filters.setPage(filters.page + 1)}
+          onGoToPrevPage={() => filters.setPage(filters.page - 1)}
+          onSetPageSize={filters.setPageSize}
+        />
+      )}
+
       {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
       {selectedIds.size > 0 && (
         <div className={styles.bulkBar}>
@@ -583,7 +598,7 @@ export default function WorkerList() {
             Remove {selectedRemovable.length}
           </button>
           <button
-            className={styles.filterPill}
+            className={styles.clearBtn}
             onClick={() => setSelectedIds(new Set())}
             type="button"
           >

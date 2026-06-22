@@ -76,6 +76,7 @@ export type ListWorkersParams = {
   queue_id?: string
   compute_location?: string
   status?: string
+  search?: string
   sort_by?: 'hostname' | 'status' | 'registered_at' | 'last_heartbeat_at'
   sort_dir?: 'asc' | 'desc'
   limit?: number
@@ -187,6 +188,7 @@ export function fetchListWorkers(params?: ListWorkersParams): Promise<ListRespon
       queue_id: params?.queue_id,
       compute_location: params?.compute_location,
       status: params?.status,
+      search: params?.search,
       sort_by: params?.sort_by,
       sort_dir: params?.sort_dir,
       limit: params?.limit,
