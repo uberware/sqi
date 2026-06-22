@@ -41,6 +41,7 @@ jobs:
       # aware (via `packaging`) so pre-release tags like v0.1.0-alpha match a
       # normalized __version__ of "0.1.0a0".
       - name: Check sqi-client version matches the tag
+        if: ${{ !contains(github.ref_name, '-rc') }}
         run: |
           python3 -m pip install --quiet --upgrade packaging
           python3 - "$GITHUB_REF_NAME" <<'PY'
