@@ -65,11 +65,18 @@
   gap: var(--space-6);
 }
 
+.stepsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
 .sectionTitle {
   font-size: var(--font-size-xl);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
-  margin: 0 0 var(--space-4);
+  margin: 0;
 }
 
 /* ── Step section ────────────────────────────────────────────────────────────── */
@@ -547,5 +554,5 @@
 /* ── Task search ──────────────────────────────────────────────────────────────── */
 
 .taskSearch {
-  margin: var(--space-3) var(--space-8);
+  margin: 0;
 }

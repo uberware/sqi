@@ -837,15 +837,17 @@ export default function JobDetail() {
       <MetadataCard job={job} />
 
       <div className={styles.stepsContainer}>
-        <h2 className={styles.sectionTitle}>Steps</h2>
+        <div className={styles.stepsHeader}>
+          <h2 className={styles.sectionTitle}>Steps</h2>
+          <SearchInput
+            value={taskSearch}
+            onChange={setTaskSearch}
+            placeholder="Search tasks by name…"
+            aria-label="Search tasks"
+            className={styles.taskSearch ?? ''}
+          />
+        </div>
         {tasksLoading && <p className={styles.muted}>Loading tasks…</p>}
-        <SearchInput
-          value={taskSearch}
-          onChange={setTaskSearch}
-          placeholder="Search tasks by name…"
-          aria-label="Search tasks"
-          className={styles.taskSearch ?? ''}
-        />
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
           const visibleTasks =
