@@ -149,13 +149,15 @@ changelog:
 
 # ── Docker images ────────────────────────────────────────────────────────────
 #
-# Builds linux/amd64 images for sqi-server and sqi-worker and pushes them
-# to GHCR.  The pre-built binaries from the builds section above are copied
-# into each image context by goreleaser; the respective Dockerfile.goreleaser
-# files expect them at the context root.
+# Builds linux/amd64 and linux/arm64 images for sqi-server and sqi-worker and
+# pushes them to GHCR.  The pre-built binaries from the builds section above are
+# copied into each image context by goreleaser; the respective
+# Dockerfile.goreleaser files expect them at the context root.  Per-arch images
+# are tagged with an -amd64/-arm64 suffix and combined into multi-arch manifest
+# lists by the docker_manifests block below.
 #
-# Tags published per release:
-#   ghcr.io/uberware/sqi/sqi-server:<full-tag>   e.g. v0.1.0-alpha
+# Tags published per release (manifest lists spanning both arches):
+#   ghcr.io/uberware/sqi/sqi-server:<full-tag>   e.g. v0.1.0
 #   ghcr.io/uberware/sqi/sqi-server:v<major>     e.g. v0
 #   ghcr.io/uberware/sqi/sqi-worker:<full-tag>
 #   ghcr.io/uberware/sqi/sqi-worker:v<major>
