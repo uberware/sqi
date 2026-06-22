@@ -63,6 +63,13 @@ builds:
       - -X github.com/uberware/sqi/internal/version.BuildDate={{ .Date }}
       - -X github.com/uberware/sqi/internal/version.GoVersion={{ .Env.GOVERSION }}
     mod_timestamp: "{{ .CommitTimestamp }}"
+    hooks:
+      post:
+        # Sign only darwin binaries with Developer ID + hardened runtime.
+        # rcodesign and the cert path are provided by the release workflow;
+        # the script no-ops for non-darwin targets and for snapshot builds
+        # where MACOS_CERT_P12 is unset.
+        - cmd: bash scripts/macos-sign.sh "{{ .Path }}" "{{ .Target }}"
 
   - id: sqi-worker
     binary: sqi-worker
@@ -83,6 +90,13 @@ builds:
       - -X github.com/uberware/sqi/internal/version.BuildDate={{ .Date }}
       - -X github.com/uberware/sqi/internal/version.GoVersion={{ .Env.GOVERSION }}
     mod_timestamp: "{{ .CommitTimestamp }}"
+    hooks:
+      post:
+        # Sign only darwin binaries with Developer ID + hardened runtime.
+        # rcodesign and the cert path are provided by the release workflow;
+        # the script no-ops for non-darwin targets and for snapshot builds
+        # where MACOS_CERT_P12 is unset.
+        - cmd: bash scripts/macos-sign.sh "{{ .Path }}" "{{ .Target }}"
 
 # ── Archives ─────────────────────────────────────────────────────────────────
 #

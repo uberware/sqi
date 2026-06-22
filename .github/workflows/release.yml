@@ -110,6 +110,30 @@ jobs:
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0
 
+      # Install rcodesign (apple-codesign) to sign + notarize macOS binaries
+      # from Linux. Pinned to a known-good release.
+      - name: Install rcodesign
+        run: |
+          RC_VER="0.27.0"
+          curl -fsSL -o rcodesign.tar.gz \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RC_VER}/apple-codesign-${RC_VER}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf rcodesign.tar.gz --strip-components=1 -C /usr/local/bin "*/rcodesign"
+          rcodesign --version
+
+      # Materialize the signing certificate and notarization API key from
+      # secrets into temp files for goreleaser's sign hook and the notarize step.
+      - name: Prepare macOS signing material
+        id: macsign
+        run: |
+          umask 077
+          echo "${{ secrets.MACOS_CERT_P12_BASE64 }}" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          printf '%s' "${{ secrets.MACOS_CERT_PASSWORD }}" > "$RUNNER_TEMP/cert.pass"
+          echo "${{ secrets.APPLE_API_KEY_P8_BASE64 }}" | base64 -d > "$RUNNER_TEMP/api.p8"
+          rcodesign encode-app-store-connect-api-key \
+            "${{ secrets.APPLE_API_ISSUER_ID }}" \
+            "${{ secrets.APPLE_API_KEY_ID }}" \
+            "$RUNNER_TEMP/api.p8" > "$RUNNER_TEMP/notary-key.json"
+
       # Install git-cliff for CHANGELOG.md generation from Conventional Commits.
       - name: Install git-cliff
         uses: kenji-miyake/setup-git-cliff@v2
@@ -140,6 +164,22 @@ jobs:
           GOVERSION: ${{ env.GOVERSION }}
           # Required by cosign keyless signing inside goreleaser's signs block.
           COSIGN_YES: "true"
+          MACOS_CERT_P12: ${{ runner.temp }}/cert.p12
+          MACOS_CERT_PASSWORD_FILE: ${{ runner.temp }}/cert.pass
+
+      # Notarize the signed darwin binaries. goreleaser leaves each built binary
+      # under dist/<id>_darwin_<arch>*/; submit each so Gatekeeper accepts them.
+      - name: Notarize macOS binaries
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bin in dist/sqi-*_darwin_*/sqi-server dist/sqi-*_darwin_*/sqi-worker; do
+            echo "Notarizing $bin"
+            rcodesign notary-submit \
+              --api-key-file "$RUNNER_TEMP/notary-key.json" \
+              --wait \
+              "$bin"
+          done
 
       # ── Python client (sqi-client) distributions ──────────────────────────────
       # goreleaser does not build Python artifacts, so the sdist + wheel are built
