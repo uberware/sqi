@@ -37,7 +37,7 @@ sha256sum --check --ignore-missing checksums.txt
 ### Docker
 
 ```sh
-docker pull ghcr.io/uberware/sqi-server:latest
+docker pull ghcr.io/uberware/sqi/sqi-server:latest
 
 docker run -d \
   --name sqi-server \
@@ -45,7 +45,7 @@ docker run -d \
   -v /data/sqi:/data \
   -e SQI_STORE_SQLITE_PATH=/data/sqi.db \
   -e SQI_NATS_DATA_DIR=/data/nats \
-  ghcr.io/uberware/sqi-server:latest serve
+  ghcr.io/uberware/sqi/sqi-server:latest serve
 ```
 
 ### Build from source

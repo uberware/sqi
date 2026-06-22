@@ -372,7 +372,7 @@ route to any Docker logging plugin:
 # Default json-file driver (logs in /var/lib/docker/containers/<id>/<id>-json.log)
 docker run -d --name sqi-server \
   -e SQI_LOG_FORMAT=json \
-  ghcr.io/uberware/sqi-server:latest serve
+  ghcr.io/uberware/sqi/sqi-server:latest serve
 
 # Read live
 docker logs -f sqi-server
@@ -388,7 +388,7 @@ docker run -d --name sqi-server \
   --log-driver fluentd \
   --log-opt fluentd-address=localhost:24224 \
   --log-opt tag="sqi.server" \
-  ghcr.io/uberware/sqi-server:latest serve
+  ghcr.io/uberware/sqi/sqi-server:latest serve
 ```
 
 ### Loki / Promtail
