@@ -168,16 +168,29 @@ dockers:
   - id: sqi-server-amd64
     goos: linux
     goarch: amd64
-    ids:
-      - sqi-server
+    ids: [sqi-server]
     image_templates:
-      - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}"
-      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}"
+      - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-amd64"
+      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-amd64"
     dockerfile: deploy/docker/Dockerfile.goreleaser
     use: buildx
-    push: true
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+
+  - id: sqi-server-arm64
+    goos: linux
+    goarch: arm64
+    ids: [sqi-server]
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-arm64"
+      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-arm64"
+    dockerfile: deploy/docker/Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
@@ -185,19 +198,52 @@ dockers:
   - id: sqi-worker-amd64
     goos: linux
     goarch: amd64
-    ids:
-      - sqi-worker
+    ids: [sqi-worker]
     image_templates:
-      - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}"
-      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}"
+      - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-amd64"
+      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-amd64"
     dockerfile: deploy/docker/worker/Dockerfile.goreleaser
     use: buildx
-    push: true
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.created={{ .Date }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+
+  - id: sqi-worker-arm64
+    goos: linux
+    goarch: arm64
+    ids: [sqi-worker]
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-arm64"
+      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-arm64"
+    dockerfile: deploy/docker/worker/Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+
+# Multi-arch manifest lists tying the per-arch images above into the clean tags
+# that users pull (e.g. :v0.1.0 resolves to amd64 or arm64 automatically).
+docker_manifests:
+  - name_template: "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-amd64"
+      - "ghcr.io/uberware/sqi/sqi-server:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}"
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-amd64"
+      - "ghcr.io/uberware/sqi/sqi-server:v{{ .Major }}-arm64"
+  - name_template: "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-amd64"
+      - "ghcr.io/uberware/sqi/sqi-worker:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}"
+    image_templates:
+      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-amd64"
+      - "ghcr.io/uberware/sqi/sqi-worker:v{{ .Major }}-arm64"
 
 # ── SBOMs ────────────────────────────────────────────────────────────────────
 #

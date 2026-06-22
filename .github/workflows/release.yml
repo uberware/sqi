@@ -83,6 +83,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Required to build linux/arm64 images on the amd64 runner. The worker
+      # Dockerfile.goreleaser has RUN steps (apk add) that execute under
+      # emulation; the distroless server image has none but QEMU is harmless.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       # buildx is required by goreleaser's `use: buildx` docker config.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
