@@ -204,6 +204,8 @@ export interface Worker {
   compute_location?: string
   os?: string
   os_version?: string
+  /** sqi-worker build version the worker self-reports; empty/absent if unknown. */
+  version?: string
   cpu_count?: number
   ram_mb?: number
   gpu: GPUInfo

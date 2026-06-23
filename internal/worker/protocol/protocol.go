@@ -101,6 +101,11 @@ type RegisterMsg struct {
 	OS        string `json:"os"`
 	OSVersion string `json:"os_version,omitempty"`
 
+	// WorkerVersion is the sqi-worker build version (internal/version.Version),
+	// distinct from the protocol Version above. Reported so the UI can show
+	// which worker build is running.
+	WorkerVersion string `json:"worker_version,omitempty"`
+
 	// CPUCount and RAMMb are the worker's hardware capacity.
 	CPUCount int `json:"cpu_count,omitempty"`
 	RAMMb    int `json:"ram_mb,omitempty"`

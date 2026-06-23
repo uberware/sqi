@@ -43,6 +43,7 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 		subject: bus.SubjectWorkerRegister,
 		data: workerMsgJSON(t, RegisterMsg{
 			WorkerID: "w-1", FarmID: "farm-1", Name: "worker-2", Hostname: "node-1", OS: "linux",
+			WorkerVersion: "v0.1.0",
 		}),
 	}
 	s.handleWorkerMessage(msg)
@@ -59,6 +60,9 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	}
 	if w.Name != "worker-2" {
 		t.Errorf("worker name = %q, want worker-2", w.Name)
+	}
+	if w.Version != "v0.1.0" {
+		t.Errorf("worker version = %q, want v0.1.0", w.Version)
 	}
 	if w.LastHeartbeatAt == nil {
 		t.Error("expected LastHeartbeatAt set on registration")

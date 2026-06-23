@@ -22,7 +22,7 @@ func TestGetVersion(t *testing.T) {
 	}
 	h := newVersionHandler(info)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/version", nil)
 	rec := httptest.NewRecorder()
 
 	h.getVersion(rec, req)

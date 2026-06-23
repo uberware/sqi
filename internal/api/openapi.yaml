@@ -492,6 +492,9 @@ components:
           type: string
         os_version:
           type: string
+        version:
+          type: string
+          description: sqi-worker build version the worker self-reports; empty if unknown.
         cpu_count:
           type: integer
         ram_mb:
