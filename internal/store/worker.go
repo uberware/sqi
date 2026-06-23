@@ -56,6 +56,10 @@ type Worker struct {
 	ComputeLocation string
 	OS              string
 	OSVersion       string
+	// Version is the sqi-worker build version the worker self-reports at
+	// registration (the worker binary's internal/version.Version). May be empty
+	// for workers registered before this field existed.
+	Version         string
 	CPUCount        int
 	RAMMb           int
 	GPUInfo         GPUInfo

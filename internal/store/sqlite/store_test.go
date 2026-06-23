@@ -317,6 +317,7 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 		ComputeLocation: "onprem",
 		OS:              "linux",
 		OSVersion:       "6.1",
+		Version:         "v0.1.0",
 		CPUCount:        16,
 		RAMMb:           32768,
 		GPUInfo:         store.GPUInfo{Vendor: "NVIDIA", Model: "RTX4090", VRAMMb: 24576, Count: 1},
@@ -333,6 +334,9 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 	if got.Name != "render-node-alpha" {
 		t.Errorf("Name: got %q, want render-node-alpha", got.Name)
 	}
+	if got.Version != "v0.1.0" {
+		t.Errorf("Version: got %q, want v0.1.0", got.Version)
+	}
 	if got.Tags["env"] != "prod" {
 		t.Errorf("Tags[env]: got %q", got.Tags["env"])
 	}
@@ -343,6 +347,9 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 	}
 	if fetched.Name != "render-node-alpha" {
 		t.Errorf("GetWorker Name: got %q, want render-node-alpha", fetched.Name)
+	}
+	if fetched.Version != "v0.1.0" {
+		t.Errorf("GetWorker Version: got %q, want v0.1.0", fetched.Version)
 	}
 	if fetched.GPUInfo.Model != "RTX4090" {
 		t.Errorf("GPUInfo.Model: got %q", fetched.GPUInfo.Model)

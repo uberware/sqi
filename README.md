@@ -2,7 +2,7 @@
 
 `sqi` (pronounced "sky") is an open source distributed task and render farm manager built for modern production pipelines. It is designed to run simply on a handful of local workstations and scale to hybrid on-premises and cloud infrastructure without changing how you work.
 
-> **Status:** Pre-release. Active development beginning mid-2026. Contributions, feedback, and discussion welcome.
+> **Status:** v0.1.0 (Phase 1) released. Early but functional — core scheduler, pull-based workers, OpenJD job execution, and a basic web UI. Contributions, feedback, and discussion welcome.
 
 ---
 
@@ -65,9 +65,11 @@ sqi-worker          # run on each render node — finds the server automatically
 
 On a local network, workers discover the server via mDNS and connect without any configuration. Open a browser, start submitting. That's it.
 
+See the [Quickstart](docs/quickstart.md) for a full walkthrough (binary or Docker Compose), including creating a farm and queue and submitting your first job.
+
 **Distributed (production mode)**
 
-Separate scheduler, API server, and NATS message broker for high availability. PostgreSQL for durable state. Workers connect to the message broker directly. Deployable via Docker Compose or Kubernetes.
+Separate scheduler, API server, and NATS message broker for high availability. PostgreSQL for durable state. Workers connect to the message broker directly. Deployable via Docker Compose today; Kubernetes manifests are planned for a later phase.
 
 Both modes run the same software. The difference is configuration.
 
@@ -75,7 +77,7 @@ Both modes run the same software. The difference is configuration.
 
 ## Status and roadmap
 
-`sqi` is in early development. The immediate focus is the working core: scheduler, pull-based workers, OpenJD job execution, basic web UI, and the product/preset system. Authentication, distributed deployment, cloud worker support, and the community preset library follow.
+`sqi` v0.1.0 delivers the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. Products and presets, S3 storage, DCC submitters, authentication, and the community preset library follow in later phases.
 
 This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose). 
 

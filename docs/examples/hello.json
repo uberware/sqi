@@ -1,0 +1,17 @@
+{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "hello-sqi",
+  "steps": [
+    {
+      "name": "Greet",
+      "script": {
+        "actions": {
+          "onRun": {
+            "command": "echo",
+            "args": ["Hello from sqi v0.1.0"]
+          }
+        }
+      }
+    }
+  ]
+}

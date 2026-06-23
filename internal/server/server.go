@@ -31,6 +31,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -312,6 +313,7 @@ func (s *Server) start(ctx context.Context) error {
 		}),
 		Scheduler: s.sched,
 		Hub:       s.wsHub,
+		Version:   version.Get(),
 	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes

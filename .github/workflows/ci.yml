@@ -290,6 +290,9 @@ jobs:
       - name: Export GOVERSION
         run: echo "GOVERSION=$(go version | awk '{print $3}')" >> "$GITHUB_ENV"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -306,7 +309,7 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/uberware/sqi/sqi-server:latest
           build-args: |
             VERSION=main
@@ -327,7 +330,7 @@ jobs:
           context: .
           file: deploy/docker/worker/Dockerfile
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/uberware/sqi/sqi-worker:latest
           build-args: |
             VERSION=main
