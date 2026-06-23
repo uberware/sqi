@@ -15,6 +15,7 @@ func TestNew_ServesRecordedMetric(t *testing.T) {
 	m := metrics.New()
 	if m == nil {
 		t.Fatal("New returned nil")
+		return // unreachable; explicit so staticcheck SA5011 sees the nil guard
 	}
 	// HTTPRequestsTotal is labeled (method, path, status_code) per metrics.go.
 	m.HTTPRequestsTotal.WithLabelValues("GET", "/api/v1/jobs", "200").Inc()

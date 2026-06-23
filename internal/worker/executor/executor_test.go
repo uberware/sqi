@@ -563,6 +563,7 @@ func TestExecutor_DrainAndShutdown_mixed(t *testing.T) {
 	}
 	if slowTerminal == nil {
 		t.Fatal("no terminal status found for the slow (force-killed) task")
+		return // unreachable; explicit so staticcheck SA5011 sees the nil guard
 	}
 	if slowTerminal.Status != "failed" {
 		t.Errorf("slow task terminal status = %q; want %q", slowTerminal.Status, "failed")
@@ -758,6 +759,7 @@ func TestExecutor_LastAssignmentAt(t *testing.T) {
 	at := exec.LastAssignmentAt()
 	if at == nil {
 		t.Fatal("LastAssignmentAt is nil after dispatch")
+		return // unreachable; explicit so staticcheck SA5011 sees the nil guard
 	}
 	if at.Before(before) {
 		t.Errorf("LastAssignmentAt (%v) is before dispatch time (%v)", at, before)
