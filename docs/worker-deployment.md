@@ -10,12 +10,16 @@ each environment.
 
 ### Pre-built binaries
 
-Download the latest release from the GitHub Releases page. Binaries are
-provided for Linux, macOS, and Windows on `amd64` and `arm64`.
+Download the latest release archive from the GitHub Releases page. One archive
+per platform contains **both** `sqi-server` and `sqi-worker`. Archives are named
+`sqi_<OS>_<arch>` — for example `sqi_Linux_x86_64.tar.gz`,
+`sqi_Linux_arm64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
+`sqi_Windows_x86_64.zip`.
 
 ```sh
-# Linux (amd64)
-curl -Lo sqi-worker https://github.com/uberware/sqi/releases/latest/download/sqi-worker_linux_amd64
+# Linux (x86_64)
+curl -Lo sqi.tar.gz https://github.com/uberware/sqi/releases/latest/download/sqi_Linux_x86_64.tar.gz
+tar -xzf sqi.tar.gz sqi-worker
 chmod +x sqi-worker
 sudo mv sqi-worker /usr/local/bin/
 ```
@@ -26,6 +30,10 @@ Verify the download against the published checksums:
 curl -Lo checksums.txt https://github.com/uberware/sqi/releases/latest/download/checksums.txt
 sha256sum --check --ignore-missing checksums.txt
 ```
+
+> On macOS, extract the matching `sqi_Darwin_<arch>` archive. The binaries are
+> signed with an Apple Developer ID and notarized, so Gatekeeper allows them to
+> run without the quarantine workaround.
 
 ### Build from source
 

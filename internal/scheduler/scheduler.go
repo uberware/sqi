@@ -644,6 +644,10 @@ type RegisterMsg struct {
 	OS        string `json:"os"`
 	OSVersion string `json:"os_version,omitempty"`
 
+	// WorkerVersion is the sqi-worker build version the worker self-reports,
+	// distinct from the protocol Version field above.
+	WorkerVersion string `json:"worker_version,omitempty"`
+
 	// CPUCount and RAMMb are the worker's hardware capacity, used for
 	// resource-aware scheduling in future phases.
 	CPUCount int `json:"cpu_count,omitempty"`
@@ -688,6 +692,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		ComputeLocation: m.ComputeLocation,
 		OS:              m.OS,
 		OSVersion:       m.OSVersion,
+		Version:         m.WorkerVersion,
 		CPUCount:        m.CPUCount,
 		RAMMb:           m.RAMMb,
 		GPUInfo:         m.GPUInfo,

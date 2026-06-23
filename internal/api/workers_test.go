@@ -68,6 +68,7 @@ func seedWorker(t *testing.T, st *fake.Store, status store.WorkerStatus) store.W
 		Hostname:     "node-" + uuid.NewString()[:8],
 		OS:           "linux",
 		OSVersion:    "22.04",
+		Version:      "v0.1.0",
 		CPUCount:     16,
 		RAMMb:        32768,
 		Status:       status,
@@ -295,6 +296,9 @@ func TestGetWorker(t *testing.T) {
 		}
 		if resp.OS != "linux" {
 			t.Errorf("os = %q, want linux", resp.OS)
+		}
+		if resp.Version != "v0.1.0" {
+			t.Errorf("version = %q, want v0.1.0", resp.Version)
 		}
 		// No active task seeded — current_tasks should be empty.
 		if len(resp.CurrentTasks) != 0 {

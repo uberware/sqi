@@ -9,12 +9,16 @@ This document covers installing, running, upgrading, and maintaining
 
 ### Pre-built binaries
 
-Download the latest release from the GitHub Releases page. Binaries are
-provided for Linux, macOS, and Windows on `amd64` and `arm64`.
+Download the latest release archive from the GitHub Releases page. One archive
+per platform contains **both** `sqi-server` and `sqi-worker`. Archives are named
+`sqi_<OS>_<arch>` — for example `sqi_Linux_x86_64.tar.gz`,
+`sqi_Linux_arm64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
+`sqi_Windows_x86_64.zip`.
 
 ```sh
-# Linux (amd64)
-curl -Lo sqi-server https://github.com/uberware/sqi/releases/latest/download/sqi-server_linux_amd64
+# Linux (x86_64)
+curl -Lo sqi.tar.gz https://github.com/uberware/sqi/releases/latest/download/sqi_Linux_x86_64.tar.gz
+tar -xzf sqi.tar.gz sqi-server
 chmod +x sqi-server
 sudo mv sqi-server /usr/local/bin/
 ```
@@ -26,10 +30,14 @@ curl -Lo checksums.txt https://github.com/uberware/sqi/releases/latest/download/
 sha256sum --check --ignore-missing checksums.txt
 ```
 
+> On macOS, extract the matching `sqi_Darwin_<arch>` archive. The binaries are
+> signed with an Apple Developer ID and notarized, so Gatekeeper allows them to
+> run without the quarantine workaround.
+
 ### Docker
 
 ```sh
-docker pull ghcr.io/uberware/sqi-server:latest
+docker pull ghcr.io/uberware/sqi/sqi-server:latest
 
 docker run -d \
   --name sqi-server \
@@ -37,7 +45,7 @@ docker run -d \
   -v /data/sqi:/data \
   -e SQI_STORE_SQLITE_PATH=/data/sqi.db \
   -e SQI_NATS_DATA_DIR=/data/nats \
-  ghcr.io/uberware/sqi-server:latest serve
+  ghcr.io/uberware/sqi/sqi-server:latest serve
 ```
 
 ### Build from source

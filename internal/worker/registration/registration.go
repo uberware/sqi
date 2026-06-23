@@ -45,6 +45,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -115,6 +116,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 		ComputeLocation: r.cfg.ComputeLocation,
 		OS:              r.caps.OS,
 		OSVersion:       r.caps.OSVersion,
+		WorkerVersion:   version.Version,
 		CPUCount:        r.caps.CPUCount,
 		RAMMb:           r.caps.RAMMb,
 		GPUInfo: protocol.GPUInfo{
