@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history is required for goreleaser's changelog generation
           # and for git-cliff to produce a complete CHANGELOG.md.
@@ -41,6 +41,7 @@ jobs:
       # aware (via `packaging`) so pre-release tags like v0.1.0-alpha match a
       # normalized __version__ of "0.1.0a0".
       - name: Check sqi-client version matches the tag
+        if: ${{ !contains(github.ref_name, '-rc') }}
         run: |
           python3 -m pip install --quiet --upgrade packaging
           python3 - "$GITHUB_REF_NAME" <<'PY'
@@ -83,6 +84,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Required to build linux/arm64 images on the amd64 runner. The worker
+      # Dockerfile.goreleaser has RUN steps (apk add) that execute under
+      # emulation; the distroless server image has none but QEMU is harmless.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       # buildx is required by goreleaser's `use: buildx` docker config.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -103,6 +110,45 @@ jobs:
       # goreleaser calls syft automatically when it finds it in PATH.
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0
+
+      # Install rcodesign (apple-codesign) to sign + notarize macOS binaries
+      # from Linux. Pinned to a known-good release.
+      - name: Install rcodesign
+        run: |
+          RC_VER="0.27.0"
+          curl -fsSL -o rcodesign.tar.gz \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RC_VER}/apple-codesign-${RC_VER}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf rcodesign.tar.gz --strip-components=1 -C /usr/local/bin "*/rcodesign"
+          rcodesign --version
+
+      # Detect whether macOS signing secrets are configured so the signing and
+      # notarization steps below cleanly no-op on a tag pushed before the
+      # maintainer has added the Apple credentials (see release runbook).
+      - name: Check for macOS signing secrets
+        id: macsign_check
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+        run: |
+          if [ -n "$CERT_B64" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::macOS signing secrets not configured; darwin binaries will be unsigned/un-notarized."
+          fi
+
+      # Materialize the signing certificate and notarization API key from
+      # secrets into temp files for goreleaser's sign hook and the notarize step.
+      - name: Prepare macOS signing material
+        if: ${{ steps.macsign_check.outputs.enabled == 'true' }}
+        run: |
+          umask 077
+          echo "${{ secrets.MACOS_CERT_P12_BASE64 }}" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          printf '%s' "${{ secrets.MACOS_CERT_PASSWORD }}" > "$RUNNER_TEMP/cert.pass"
+          echo "${{ secrets.APPLE_API_KEY_P8_BASE64 }}" | base64 -d > "$RUNNER_TEMP/api.p8"
+          rcodesign encode-app-store-connect-api-key \
+            "${{ secrets.APPLE_API_ISSUER_ID }}" \
+            "${{ secrets.APPLE_API_KEY_ID }}" \
+            "$RUNNER_TEMP/api.p8" > "$RUNNER_TEMP/notary-key.json"
 
       # Install git-cliff for CHANGELOG.md generation from Conventional Commits.
       - name: Install git-cliff
@@ -134,6 +180,23 @@ jobs:
           GOVERSION: ${{ env.GOVERSION }}
           # Required by cosign keyless signing inside goreleaser's signs block.
           COSIGN_YES: "true"
+          MACOS_CERT_P12: ${{ steps.macsign_check.outputs.enabled == 'true' && format('{0}/cert.p12', runner.temp) || '' }}
+          MACOS_CERT_PASSWORD_FILE: ${{ steps.macsign_check.outputs.enabled == 'true' && format('{0}/cert.pass', runner.temp) || '' }}
+
+      # Notarize the signed darwin binaries. goreleaser leaves each built binary
+      # under dist/<id>_darwin_<arch>*/; submit each so Gatekeeper accepts them.
+      - name: Notarize macOS binaries
+        if: ${{ steps.macsign_check.outputs.enabled == 'true' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bin in dist/sqi-*_darwin_*/sqi-server dist/sqi-*_darwin_*/sqi-worker; do
+            echo "Notarizing $bin"
+            rcodesign notary-submit \
+              --api-key-file "$RUNNER_TEMP/notary-key.json" \
+              --wait \
+              "$bin"
+          done
 
       # ── Python client (sqi-client) distributions ──────────────────────────────
       # goreleaser does not build Python artifacts, so the sdist + wheel are built
@@ -156,21 +219,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── PyPI publish (trusted publishing) — DISABLED BY DEFAULT ────────────────
-      # This publishes sqi-client to PyPI via OIDC trusted publishing (no API
-      # token needed; uses the id-token: write permission already granted above).
-      #
-      # It is gated on the `PUBLISH_TO_PYPI` repository variable, which is unset
-      # (so this step is skipped) until a maintainer opts in. Do NOT set it until
-      # the `sqi-client` PyPI project exists with a configured trusted publisher
-      # pointing at this repository + workflow — registering the PyPI project is a
-      # maintainer action and is deliberately NOT automated here.
-      #
-      # To enable, after registering the project + trusted publisher on PyPI:
-      # create a repository variable `PUBLISH_TO_PYPI` with the value `true`
-      # (Settings → Secrets and variables → Actions → Variables).
+      # Publish sqi-client to PyPI via OIDC trusted publishing (no API token;
+      # uses the id-token: write permission granted above). Gated on the
+      # PUBLISH_TO_PYPI repository variable so it only runs once the PyPI
+      # project + trusted publisher are configured (see release runbook).
       - name: Publish sqi-client to PyPI (trusted publishing)
-        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }} # DISABLED until the PyPI project + trusted publisher exist
+        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: clients/python/dist

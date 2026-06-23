@@ -24,3 +24,23 @@ var BuildDate = "unknown"
 
 // GoVersion is the Go toolchain version used to build the binary.
 var GoVersion = "unknown"
+
+// Info is an immutable snapshot of the build metadata, suitable for injection
+// into consumers (e.g. the API layer) that should not read the package
+// variables directly so they can be tested deterministically.
+type Info struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"build_date"`
+	GoVersion string `json:"go_version"`
+}
+
+// Get returns the current build metadata as an [Info].
+func Get() Info {
+	return Info{
+		Version:   Version,
+		Commit:    Commit,
+		BuildDate: BuildDate,
+		GoVersion: GoVersion,
+	}
+}

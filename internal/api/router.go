@@ -52,6 +52,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ui"
+	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -104,6 +105,10 @@ type Deps struct {
 	// GET /api/v1/diagnostics/logs. It is nil-tolerant: when nil (diagnostics
 	// disabled) the endpoint responds with 503.
 	DiagReader DiagReader
+
+	// Version is the server build metadata reported by GET /api/v1/version.
+	// The zero value is acceptable (fields default to empty strings).
+	Version version.Info
 }
 
 // NewRouter builds and returns the chi router that serves the full sqi-server
@@ -212,6 +217,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
+	versionH := newVersionHandler(deps.Version)
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// 7. Versioning header — X-API-Version: 1 on every response.
@@ -281,6 +287,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 
 		// ── Diagnostics endpoints ───────────────────────────────
 		api.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
+
+		// ── Version endpoint ────────────────────────────────────
+		api.Get("/version", versionH.getVersion)
 
 		// OpenAPI spec.
 		api.Get("/openapi.yaml", serveOpenAPISpec)

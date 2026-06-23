@@ -30,6 +30,16 @@ export type TemplateFormat = 'yaml' | 'json'
 /** Backing storage kind for a storage location. */
 export type StorageLocationType = 'filesystem' | 's3'
 
+// ── Meta ──────────────────────────────────────────────────────────────────────
+
+/** Wire shape returned by GET /api/v1/version. */
+export interface VersionInfo {
+  version: string
+  commit: string
+  build_date: string
+  go_version: string
+}
+
 // ── Pagination ────────────────────────────────────────────────────────────────
 
 /** Generic paginated list response returned by all list endpoints. */
@@ -194,6 +204,8 @@ export interface Worker {
   compute_location?: string
   os?: string
   os_version?: string
+  /** sqi-worker build version the worker self-reports; empty/absent if unknown. */
+  version?: string
   cpu_count?: number
   ram_mb?: number
   gpu: GPUInfo

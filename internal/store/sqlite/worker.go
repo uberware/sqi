@@ -12,7 +12,7 @@ import (
 
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, cpu_count, ram_mb, gpu_info, tags, status,
+	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, status,
 	last_heartbeat_at, registered_at, updated_at`
 
 const (
@@ -20,9 +20,9 @@ const (
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, cpu_count, ram_mb, gpu_info, tags, status,
+	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, status,
 	last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -32,6 +32,7 @@ ON CONFLICT (id) DO UPDATE SET
 	compute_location  = excluded.compute_location,
 	os                = excluded.os,
 	os_version        = excluded.os_version,
+	version           = excluded.version,
 	cpu_count         = excluded.cpu_count,
 	ram_mb            = excluded.ram_mb,
 	gpu_info          = excluded.gpu_info,
@@ -46,7 +47,7 @@ RETURNING ` + workerCols
 	sqlUpdateWorker = `
 UPDATE workers
 SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_location = ?,
-	os = ?, os_version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
+	os = ?, os_version = ?, version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
 	status = ?, last_heartbeat_at = ?, updated_at = ?
 WHERE id = ?
 RETURNING ` + workerCols
@@ -102,7 +103,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
-		&w.OS, &w.OSVersion, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &status,
+		&w.OS, &w.OSVersion, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt,
 	); err != nil {
 		return store.Worker{}, err
@@ -141,7 +142,7 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 	}
 	return []any{
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
-		w.OS, w.OSVersion, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, string(w.Status),
+		w.OS, w.OSVersion, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now,
 	}, nil
 }
@@ -263,7 +264,7 @@ func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Wo
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateWorker.QueryRowContext(ctx,
 		nullString(worker.FarmID), nullString(worker.QueueID), worker.Name, worker.Hostname, worker.IPAddress,
-		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.CPUCount, worker.RAMMb,
+		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.Version, worker.CPUCount, worker.RAMMb,
 		gpuJSON, tagsJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
 		now, worker.ID)
 	out, err := scanWorker(row)

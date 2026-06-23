@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# All-in-one sqi stack: one sqi-server and one sqi-worker.
+#
+# Quick start:
+#   docker compose -f deploy/docker-compose.yml up -d
+#   open http://localhost:8080        # web UI
+#   docker compose -f deploy/docker-compose.yml down      # stop (keeps data)
+#   docker compose -f deploy/docker-compose.yml down -v   # stop and wipe data
+#
+# Pin a release tag for reproducibility; :latest tracks the main branch.
+
+services:
+  sqi-server:
+    image: ghcr.io/uberware/sqi/sqi-server:v0.1.0
+    ports:
+      - "8080:8080" # REST API + web UI
+      - "4222:4222" # embedded NATS (workers connect here)
+    restart: unless-stopped
+    environment:
+      # Bind NATS to all interfaces so the worker container can reach it.
+      SQI_NATS_ADDR: "0.0.0.0:4222"
+      # SQLite state lives under the mounted data dir for persistence.
+      SQI_STORE_SQLITE_PATH: "/var/lib/sqi-server/sqi.db"
+      SQI_NATS_DATA_DIR: "/var/lib/sqi-server/nats"
+      # mDNS is unreliable inside Docker networks; the worker uses an explicit URL.
+      SQI_DISCOVERY_ENABLED: "false"
+    volumes:
+      - server-data:/var/lib/sqi-server
+
+  sqi-worker:
+    image: ghcr.io/uberware/sqi/sqi-worker:v0.1.0
+    depends_on:
+      - sqi-server
+    restart: unless-stopped
+    environment:
+      SQI_WORKER_NATS_URL: "nats://sqi-server:4222"
+      SQI_WORKER_DISCOVERY_ENABLE_MDNS: "false"
+      SQI_WORKER_DATA_DIR: "/var/lib/sqi-worker"
+    volumes:
+      - worker-data:/var/lib/sqi-worker
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:9091/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  server-data:
+  worker-data:

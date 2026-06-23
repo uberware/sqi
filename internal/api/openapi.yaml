@@ -45,6 +45,8 @@ tags:
     description: Named storage-location configuration (CRUD)
   - name: usage-pools
     description: Usage-pool configuration (CRUD)
+  - name: meta
+    description: Server metadata (version/build info)
 
 # ── Reusable components ───────────────────────────────────────────────────────
 
@@ -490,6 +492,9 @@ components:
           type: string
         os_version:
           type: string
+        version:
+          type: string
+          description: sqi-worker build version the worker self-reports; empty if unknown.
         cpu_count:
           type: integer
         ram_mb:
@@ -611,6 +616,24 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DiagnosticRecord"
+
+    # ── Version ───────────────────────────────────────────────────────────────
+    VersionResponse:
+      type: object
+      required: [version, commit, build_date, go_version]
+      properties:
+        version:
+          type: string
+          description: Semantic version tag, e.g. "v0.1.0" or "dev".
+        commit:
+          type: string
+          description: Short git commit hash, or "unknown".
+        build_date:
+          type: string
+          description: UTC build timestamp (RFC 3339), or "unknown".
+        go_version:
+          type: string
+          description: Go toolchain version, or "unknown".
 
     # ── Farms ─────────────────────────────────────────────────────────────────
     Farm:
@@ -1591,6 +1614,24 @@ paths:
                 $ref: "#/components/schemas/DiagnosticLogsResponse"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  # ── Version ────────────────────────────────────────────────────────────────
+
+  /version:
+    get:
+      operationId: getVersion
+      summary: Server build metadata
+      tags: [meta]
+      description: |
+        Returns the running server's version, git commit, build date, and Go
+        runtime version. Development builds report "dev" / "unknown".
+      responses:
+        "200":
+          description: Server build metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
 
   # ── Farms ──────────────────────────────────────────────────────────────────
 

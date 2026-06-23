@@ -34,10 +34,10 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Filter paths
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -57,7 +57,7 @@ jobs:
     if: ${{ needs.changes.outputs.workflows == 'true' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -76,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -157,7 +157,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Read the required Node version from .nvmrc at the repo root.
       # The engines field in web/package.json documents the same constraint.
@@ -221,7 +221,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -280,7 +280,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -289,6 +289,9 @@ jobs:
 
       - name: Export GOVERSION
         run: echo "GOVERSION=$(go version | awk '{print $3}')" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -301,12 +304,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push sqi-server :latest
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/uberware/sqi/sqi-server:latest
           build-args: |
             VERSION=main
@@ -322,12 +325,12 @@ jobs:
           cache-to: type=gha,scope=docker-latest-server,mode=max,ignore-error=true
 
       - name: Build and push sqi-worker :latest
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/worker/Dockerfile
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/uberware/sqi/sqi-worker:latest
           build-args: |
             VERSION=main
@@ -354,7 +357,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -397,7 +400,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -462,7 +465,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -550,7 +553,7 @@ jobs:
         working-directory: clients/python
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -591,7 +594,7 @@ jobs:
         working-directory: clients/python
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
@@ -616,7 +619,7 @@ jobs:
     if: ${{ needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download server/worker binaries
         uses: actions/download-artifact@v8
@@ -657,7 +660,7 @@ jobs:
         working-directory: clients/python
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6

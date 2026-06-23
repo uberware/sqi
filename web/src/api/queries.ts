@@ -12,6 +12,7 @@ import type {
   Queue,
   Task,
   TaskLogsResponse,
+  VersionInfo,
   Worker,
   WorkerDetail,
 } from './types'
@@ -121,6 +122,9 @@ export const queryKeys = {
   storageLocations: {
     all: ['storage-locations'] as const,
     detail: (id: string) => ['storage-locations', 'detail', id] as const,
+  },
+  version: {
+    all: ['version'] as const,
   },
 } as const
 
@@ -240,6 +244,11 @@ export function fetchListStorageLocations(): Promise<StorageLocation[]> {
 /** Fetch one storage location from `GET /storage-locations/{id}`. */
 export function fetchGetStorageLocation(id: string): Promise<StorageLocation> {
   return apiFetch(`/storage-locations/${encodeURIComponent(id)}`)
+}
+
+/** Fetch the server build metadata from `GET /version`. */
+export function fetchVersion(): Promise<VersionInfo> {
+  return apiFetch('/version')
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -388,6 +397,14 @@ export function useGetStorageLocation(id: string) {
     queryKey: queryKeys.storageLocations.detail(id),
     queryFn: () => fetchGetStorageLocation(id),
     enabled: id !== '',
+  })
+}
+
+/** Load the running server's build metadata (version, commit, …). */
+export function useVersion() {
+  return useQuery({
+    queryKey: queryKeys.version.all,
+    queryFn: fetchVersion,
   })
 }
 

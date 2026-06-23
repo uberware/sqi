@@ -192,6 +192,25 @@ describe('WorkerDetail', () => {
       expect(screen.getByText('us-east-1')).toBeInTheDocument()
     })
 
+    it('renders the worker version in the metadata card when present', async () => {
+      fetchMock.mockResolvedValue(okJson(makeWorker({ version: 'v0.1.0' })))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Version'))
+      expect(screen.getByText('Version')).toBeInTheDocument()
+      expect(screen.getByText('v0.1.0')).toBeInTheDocument()
+    })
+
+    it('omits the version row when the worker reports no version', async () => {
+      fetchMock.mockResolvedValue(okJson(makeWorker({ version: '' })))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Farm'))
+      expect(screen.queryByText('Version')).not.toBeInTheDocument()
+    })
+
     it('renders the status badge', async () => {
       fetchMock.mockResolvedValue(okJson(makeWorker({ status: 'online' })))
 

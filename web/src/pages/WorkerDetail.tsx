@@ -441,6 +441,12 @@ export default function WorkerDetail() {
               <dd className={styles.metaValue}>{worker.hostname}</dd>
             </div>
           )}
+          {worker.version && (
+            <div className={styles.metaField}>
+              <dt>Version</dt>
+              <dd className={styles.metaValue}>{worker.version}</dd>
+            </div>
+          )}
           <div className={styles.metaField}>
             <dt>Farm</dt>
             <dd className={styles.metaValue}>{worker.farm_id}</dd>
