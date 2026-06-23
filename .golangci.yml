@@ -163,6 +163,18 @@ linters:
           - funlen
           - gocritic
 
+      # staticcheck SA5011 false-positives in tests. The standard
+      # `if ptr == nil { t.Fatal(...) }` guard followed by a deref is correct,
+      # but on the CI runner staticcheck intermittently loses the fact that
+      # t.Fatal terminates the test and reports a "possible nil pointer
+      # dereference". It is non-deterministic (different sites each run) and not
+      # reproducible locally, so suppress SA5011 in test files rather than
+      # whack-a-mole patching individual call sites.
+      - path: _test\.go
+        text: "SA5011"
+        linters:
+          - staticcheck
+
       # Generated proto / mock files: suppress everything except correctness.
       - path: "(mock_|_mock\\.go|_gen\\.go|\\.pb\\.go)"
         linters:

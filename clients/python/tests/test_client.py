@@ -13,6 +13,7 @@ import respx
 
 from sqi_client import __version__
 from sqi_client.client import SqiClient
+from sqi_client.models import ServerVersion
 from tests.conftest import BASE_URL, ClientFactory
 
 _PROBE = f"{BASE_URL}/api/v1/probe"
@@ -104,6 +105,31 @@ def test_ready_uses_readyz(make_client: ClientFactory) -> None:
     route = respx.get(f"{BASE_URL}/readyz").mock(return_value=httpx.Response(200))
     assert make_client().ready() is True
     assert route.calls.last.request.url.path == "/readyz"
+
+
+@respx.mock
+def test_server_version_returns_build_info(make_client: ClientFactory) -> None:
+    route = respx.get(f"{BASE_URL}/api/v1/version").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "version": "v0.1.0",
+                "commit": "c6ef195",
+                "build_date": "2026-06-22T12:00:00Z",
+                "go_version": "go1.24.0",
+            },
+        )
+    )
+    client = make_client()
+
+    info = client.server_version()
+
+    assert isinstance(info, ServerVersion)
+    assert info.version == "v0.1.0"
+    assert info.commit == "c6ef195"
+    assert info.build_date == "2026-06-22T12:00:00Z"
+    assert info.go_version == "go1.24.0"
+    assert route.calls.last.request.url.path == "/api/v1/version"
 
 
 @respx.mock

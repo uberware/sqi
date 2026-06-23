@@ -48,6 +48,7 @@ from .models import (
     Queue,
     RetryJobResult,
     RetryResult,
+    ServerVersion,
     StorageLocation,
     Task,
     TaskStatus,
@@ -1435,6 +1436,15 @@ class SqiClient:
         return self.wait_for_job(job.id, poll_interval=poll_interval, timeout=timeout)
 
     # ── Health probes ─────────────────────────────────────────────────────────
+
+    def server_version(self) -> ServerVersion:
+        """Return the running server's build metadata (``GET /api/v1/version``).
+
+        Reports the server's semantic version, git commit, build date, and Go
+        runtime version. Unlike :meth:`ping`/:meth:`ready`, this raises on
+        transport or HTTP errors rather than swallowing them.
+        """
+        return ServerVersion.from_dict(self._request_json("GET", "/version"))
 
     def ping(self) -> bool:
         """Return ``True`` if the server's liveness probe (``/healthz``) is OK.
