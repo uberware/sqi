@@ -22,6 +22,7 @@ from sqi_client.models import (
     LogChunk,
     LogPage,
     Queue,
+    ServerVersion,
     Step,
     StorageLocation,
     Task,
@@ -305,6 +306,8 @@ def test_worker_fields() -> None:
     assert worker.ip_address == "10.0.0.5"
     assert worker.compute_location == "on-prem"
     assert worker.os == "linux"
+    assert worker.os_version == "5.15.0-101-generic"
+    assert worker.version == "v0.1.0"
     assert worker.cpu_count == 64
     assert worker.ram_mb == 131072
     assert worker.tags == {"arnold": "7.2.1", "gpu": "true"}
@@ -318,6 +321,12 @@ def test_worker_removable_defaults_false_when_absent() -> None:
     raw = load("worker")
     del raw["removable"]
     assert Worker.from_dict(raw).removable is False
+
+
+def test_worker_version_none_when_absent() -> None:
+    raw = load("worker")
+    del raw["version"]
+    assert Worker.from_dict(raw).version is None
 
 
 def test_worker_gpu_nested() -> None:
@@ -348,6 +357,25 @@ def test_worker_missing_gpu_yields_empty_gpuinfo() -> None:
     assert isinstance(worker.gpu, GPUInfo)
     assert worker.gpu.vendor is None
     assert worker.gpu.count is None
+
+
+# ── ServerVersion ───────────────────────────────────────────────────
+
+
+def test_server_version_fields() -> None:
+    info = ServerVersion.from_dict(load("version"))
+    assert info.version == "v0.1.0"
+    assert info.commit == "c6ef195"
+    assert info.build_date == "2026-06-22T12:00:00Z"
+    assert info.go_version == "go1.24.0"
+
+
+def test_server_version_mistyped_fields_fall_back_to_empty() -> None:
+    info = ServerVersion.from_dict({"version": 1, "commit": None})
+    assert info.version == ""
+    assert info.commit == ""
+    assert info.build_date == ""
+    assert info.go_version == ""
 
 
 # ── Farm, Queue, StorageLocation, UsagePool ─────────────────────────

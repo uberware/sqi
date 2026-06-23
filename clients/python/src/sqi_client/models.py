@@ -40,6 +40,7 @@ __all__ = [
     "Queue",
     "RetryJobResult",
     "RetryResult",
+    "ServerVersion",
     "Step",
     "StorageLocation",
     "Task",
@@ -646,6 +647,9 @@ class Worker:
     compute_location: str | None = None
     os: str | None = None
     os_version: str | None = None
+    version: str | None = None
+    """The sqi-worker build version the worker self-reports at registration;
+    ``None`` if the worker did not report one."""
     cpu_count: int | None = None
     ram_mb: int | None = None
     tags: dict[str, str] = field(default_factory=dict)
@@ -685,6 +689,7 @@ class Worker:
             compute_location=_opt_str(data.get("compute_location")),
             os=_opt_str(data.get("os")),
             os_version=_opt_str(data.get("os_version")),
+            version=_opt_str(data.get("version")),
             cpu_count=_opt_int(data.get("cpu_count")),
             ram_mb=_opt_int(data.get("ram_mb")),
             tags=_str_dict(data.get("tags")),
@@ -923,4 +928,40 @@ class LogPage:
             items=items,
             after_nats_seq=_as_int(data.get("after_nats_seq")),
             limit=_as_int(data.get("limit")),
+        )
+
+
+# ── Server metadata ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ServerVersion:
+    """The running sqi-server's build metadata (OpenAPI ``VersionInfo``).
+
+    Returned by :meth:`~sqi_client.client.SqiClient.server_version`. Development
+    builds report ``"dev"`` for :attr:`version` and ``"unknown"`` for the rest.
+    """
+
+    version: str
+    """Semantic version tag, e.g. ``"v0.1.0"`` or ``"dev"``."""
+    commit: str
+    """Short git commit hash, or ``"unknown"``."""
+    build_date: str
+    """RFC 3339 build timestamp, or ``"unknown"``."""
+    go_version: str
+    """Go toolchain version, or ``"unknown"``."""
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ServerVersion:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            version=_as_str(data.get("version")),
+            commit=_as_str(data.get("commit")),
+            build_date=_as_str(data.get("build_date")),
+            go_version=_as_str(data.get("go_version")),
         )
