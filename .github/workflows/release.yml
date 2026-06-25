@@ -116,12 +116,15 @@ jobs:
       - name: Install rcodesign
         run: |
           RC_VER="0.27.0"
-          curl -fsSL -o rcodesign.tar.gz \
+          # Download/extract under RUNNER_TEMP (not the repo tree) so the tarball
+          # does not leave the working tree dirty — goreleaser aborts the release
+          # on any uncommitted/untracked file.
+          curl -fsSL -o "$RUNNER_TEMP/rcodesign.tar.gz" \
             "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RC_VER}/apple-codesign-${RC_VER}-x86_64-unknown-linux-musl.tar.gz"
           # GNU tar (Linux runners) needs --wildcards to treat */rcodesign as a
           # glob; without it the pattern is matched literally and not found. (BSD
           # tar on macOS globs by default, so this only fails on the CI runner.)
-          tar -xzf rcodesign.tar.gz --strip-components=1 -C /usr/local/bin --wildcards "*/rcodesign"
+          tar -xzf "$RUNNER_TEMP/rcodesign.tar.gz" --strip-components=1 -C /usr/local/bin --wildcards "*/rcodesign"
           rcodesign --version
 
       # Detect whether macOS signing secrets are configured so the signing and
@@ -177,7 +180,12 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: release --clean
+          # --skip=validate disables goreleaser's git-clean / tag checks. The
+          # preceding step regenerates the tracked CHANGELOG.md into the working
+          # tree (to bundle it into the archives), which goreleaser would
+          # otherwise reject as a dirty state. The tag/version is already
+          # validated by the "Check sqi-sdk version matches the tag" step above.
+          args: release --clean --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOVERSION: ${{ env.GOVERSION }}
