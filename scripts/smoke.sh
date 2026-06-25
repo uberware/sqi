@@ -405,7 +405,7 @@ PY
   fi
 else
   log "warning: no websockets-capable python found; WS assertion will be skipped"
-  log "         (install with: make py-install, or pip install 'sqi-client[ws]')"
+  log "         (install with: make py-install, or pip install 'sqi-sdk[ws]')"
 fi
 
 # ── Poll the job to a terminal status ─────────────────────────────────────────

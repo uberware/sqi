@@ -1,9 +1,9 @@
-# sqi-client
+# sqi-sdk
 
 Pure-Python client for [`sqi`](https://github.com/uberware/sqi) — a distributed
 task and render farm manager.
 
-`sqi-client` (import name `sqi_client`) is a pure-Python library for programmatic
+`sqi-sdk` (import name `sqi_client`) is a pure-Python library for programmatic
 job submission, status queries, and management. It covers the same operations as
 the web UI via the REST API, and is the foundation for the Phase 2 DCC
 submitters and for pipeline automation scripts (see [`../../ROADMAP.md`](../../ROADMAP.md)).
@@ -23,18 +23,18 @@ Houdini, Nuke).
 ## Installation
 
 ```sh
-pip install sqi-client            # core (httpx only)
-pip install 'sqi-client[yaml]'    # + PyYAML (for your own YAML handling; not needed to submit)
-pip install 'sqi-client[ws]'      # + websockets for live event streaming
+pip install sqi-sdk            # core (httpx only)
+pip install 'sqi-sdk[yaml]'    # + PyYAML (for your own YAML handling; not needed to submit)
+pip install 'sqi-sdk[ws]'      # + websockets for live event streaming
 ```
 
 Until the package is published to PyPI, install the wheel attached to a
 [GitHub release](https://github.com/uberware/sqi/releases):
 
 ```sh
-pip install https://github.com/uberware/sqi/releases/download/vX.Y.Z/sqi_client-X.Y.Z-py3-none-any.whl
+pip install https://github.com/uberware/sqi/releases/download/vX.Y.Z/sqi_sdk-X.Y.Z-py3-none-any.whl
 # with an extra:
-pip install "sqi_client[ws] @ https://github.com/uberware/sqi/releases/download/vX.Y.Z/sqi_client-X.Y.Z-py3-none-any.whl"
+pip install "sqi-sdk[ws] @ https://github.com/uberware/sqi/releases/download/vX.Y.Z/sqi_sdk-X.Y.Z-py3-none-any.whl"
 ```
 
 The package ships a `py.typed` marker, so type checkers see its annotations.

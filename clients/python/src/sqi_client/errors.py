@@ -31,7 +31,7 @@ __all__ = [
 
 
 class SqiError(Exception):
-    """Base class for every error raised by sqi-client."""
+    """Base class for every error raised by sqi-sdk."""
 
 
 class SqiConnectionError(SqiError):

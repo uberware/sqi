@@ -299,7 +299,7 @@ hooks: ## Install git hooks via lefthook (install: go install github.com/evilmar
 	lefthook install
 
 # ── Python client (clients/python) ────────────────────────────────────────────
-# The sqi-client library lives in clients/python with its own toolchain (ruff,
+# The sqi-sdk library lives in clients/python with its own toolchain (ruff,
 # mypy, pytest). It is developed in an isolated virtualenv at clients/python/.venv
 # so its dependencies never leak into the system interpreter. Targets cd into the
 # project so ruff/mypy/pytest discover the pyproject.toml config there.
@@ -307,7 +307,7 @@ PY_DIR  := clients/python
 PY_VENV := $(PY_DIR)/.venv
 
 .PHONY: py-install
-py-install: ## Create clients/python/.venv and install sqi-client editable with all extras
+py-install: ## Create clients/python/.venv and install sqi-sdk editable with all extras
 	python3 -m venv $(PY_VENV)
 	$(PY_VENV)/bin/python -m pip install --upgrade pip
 	$(PY_VENV)/bin/python -m pip install -e '$(PY_DIR)[yaml,ws,dev]'

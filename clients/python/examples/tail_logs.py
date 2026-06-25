@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tail a task's log output.
 
-With the ``ws`` extra installed (``pip install 'sqi-client[ws]'``) this streams
+With the ``ws`` extra installed (``pip install 'sqi-sdk[ws]'``) this streams
 chunks live over WebSocket until the connection closes or you interrupt it
 (Ctrl-C). Without the extra it falls back to polling, which stops automatically
 once the task reaches a terminal state.

@@ -5,7 +5,7 @@
 This module is importable without ``websockets`` installed — the dependency is
 imported lazily inside the entry points (:meth:`SqiEventStream.connect`), which
 raise an actionable :class:`ImportError` when it is missing. So the core client
-stays dependency-light while ``pip install 'sqi-client[ws]'`` unlocks live
+stays dependency-light while ``pip install 'sqi-sdk[ws]'`` unlocks live
 streaming.
 
 The protocol matches the server's WebSocket contract (``internal/ws`` /
@@ -33,8 +33,8 @@ __all__ = ["Event", "SqiEventStream"]
 
 # Exact remedy surfaced when the optional dependency is missing.
 _WS_EXTRA_HINT = (
-    "the sqi-client WebSocket features require the 'ws' extra; "
-    "install it with: pip install 'sqi-client[ws]'"
+    "the sqi-sdk WebSocket features require the 'ws' extra; "
+    "install it with: pip install 'sqi-sdk[ws]'"
 )
 
 

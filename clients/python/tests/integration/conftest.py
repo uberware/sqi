@@ -170,8 +170,8 @@ def worker_farm(server: Server, client: SqiClient) -> Iterator[WorkerFarm]:
             "build it with `make build` or set SQI_WORKER_BIN"
         )
 
-    farm = client.create_farm(name="sqi-client integration farm")
-    queue = client.create_queue(farm_id=farm.id, name="sqi-client integration queue")
+    farm = client.create_farm(name="sqi-sdk integration farm")
+    queue = client.create_queue(farm_id=farm.id, name="sqi-sdk integration queue")
 
     tmp = Path(tempfile.mkdtemp(prefix="sqi-it-worker-"))
     log_path = tmp / "worker.log"
