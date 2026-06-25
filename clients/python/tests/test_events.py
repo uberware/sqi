@@ -96,14 +96,14 @@ def test_core_client_constructs_without_websockets(no_websockets: None) -> None:
 def test_connect_without_websockets_raises_actionable_error(no_websockets: None) -> None:
     client = SqiClient("http://sqi.test", max_attempts=1)
     stream = client.events()
-    with pytest.raises(ImportError, match=r"sqi-client\[ws\]"):
+    with pytest.raises(ImportError, match=r"sqi-sdk\[ws\]"):
         stream.connect()
     client.close()
 
 
 def test_tail_live_without_websockets_raises_actionable_error(no_websockets: None) -> None:
     client = SqiClient("http://sqi.test", max_attempts=1)
-    with pytest.raises(ImportError, match=r"sqi-client\[ws\]"):
+    with pytest.raises(ImportError, match=r"sqi-sdk\[ws\]"):
         next(client.tail_task_logs_live("t1"))
     client.close()
 

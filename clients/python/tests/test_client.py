@@ -27,7 +27,7 @@ def test_default_headers_are_set(make_client: ClientFactory) -> None:
     client._request("GET", "/probe")
 
     request = route.calls.last.request
-    assert request.headers["User-Agent"] == f"sqi-client/{__version__}"
+    assert request.headers["User-Agent"] == f"sqi-sdk/{__version__}"
     assert request.headers["Accept"] == "application/json"
 
 
@@ -45,7 +45,7 @@ def test_extra_headers_are_merged() -> None:
     request = route.calls.last.request
     assert request.headers["Authorization"] == "Bearer t0ken"
     assert request.headers["Accept"] == "application/yaml"  # caller wins on conflict
-    assert request.headers["User-Agent"] == f"sqi-client/{__version__}"  # default kept
+    assert request.headers["User-Agent"] == f"sqi-sdk/{__version__}"  # default kept
 
 
 @respx.mock
@@ -144,7 +144,7 @@ def test_newer_major_api_version_warns_once(make_client: ClientFactory) -> None:
 
     api_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
     assert len(api_warnings) == 1
-    assert "newer than this sqi-client" in str(api_warnings[0].message)
+    assert "newer than this sqi-sdk" in str(api_warnings[0].message)
 
 
 @respx.mock
@@ -348,7 +348,7 @@ def test_deprecated_and_newer_major_both_warn(make_client: ClientFactory) -> Non
     messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
     assert len(messages) == 2
     assert any("deprecated" in m for m in messages)
-    assert any("newer than this sqi-client" in m for m in messages)
+    assert any("newer than this sqi-sdk" in m for m in messages)
 
 
 @respx.mock

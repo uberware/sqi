@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""sqi-client — a pure-Python client for the sqi distributed task farm manager.
+"""sqi-sdk — a pure-Python client for the sqi distributed task farm manager.
 
 This package wraps the sqi-server REST and WebSocket API for scripted job
 submission, querying, and management. It is the foundation for the Phase 2 DCC

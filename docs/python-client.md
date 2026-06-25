@@ -1,6 +1,6 @@
-# sqi-client (Python client API)
+# sqi-sdk (Python client API)
 
-`sqi-client` is the pure-Python library for driving a `sqi-server` instance from
+`sqi-sdk` is the pure-Python library for driving a `sqi-server` instance from
 scripts and pipeline tooling — the same operations the web UI performs, over the
 REST API (with an optional WebSocket extra for live events). Per the roadmap
 ([`../ROADMAP.md`](../ROADMAP.md)) it is the foundation for the Phase 2 DCC
@@ -10,7 +10,7 @@ This is the reference document. For the project overview and install, see
 [`clients/python/README.md`](../clients/python/README.md); the authoritative wire
 contract is the OpenAPI spec described in [`api.md`](./api.md).
 
-- Import name: `sqi_client` · distribution: `sqi-client`
+- Import name: `sqi_client` · distribution: `sqi-sdk`
 - Python 3.9+ · sync-only in Phase 1 · core dependency `httpx` only
 - Optional extras: `yaml` (PyYAML), `ws` (websockets)
 
@@ -31,9 +31,9 @@ contract is the OpenAPI spec described in [`api.md`](./api.md).
 ## Installation
 
 ```sh
-pip install sqi-client            # core (httpx only)
-pip install 'sqi-client[yaml]'    # + PyYAML
-pip install 'sqi-client[ws]'      # + websockets (live event streaming)
+pip install sqi-sdk            # core (httpx only)
+pip install 'sqi-sdk[yaml]'    # + PyYAML
+pip install 'sqi-sdk[ws]'      # + websockets (live event streaming)
 ```
 
 Until the package is published to PyPI, install the wheel attached to a GitHub
@@ -278,7 +278,7 @@ also carries read-only, server-computed `in_use` (active claims) and
 
 ## Live events (WebSocket, `ws` extra)
 
-With `pip install 'sqi-client[ws]'`, `SqiClient.events()` opens a live event
+With `pip install 'sqi-sdk[ws]'`, `SqiClient.events()` opens a live event
 stream over `GET /api/v1/ws`. The stream is a context manager; subscribe to one
 or more subjects and iterate `Event` objects. It tracks the last `seq` per
 subject and auto-reconnects + resubscribes (resuming from that `seq`) across an
@@ -305,7 +305,7 @@ for chunk in sqi.tail_task_logs_live(task_id):
 ```
 
 Calling `events()`/`tail_task_logs_live` without the `ws` extra installed raises
-`ImportError` naming the exact remedy (`pip install 'sqi-client[ws]'`). The live
+`ImportError` naming the exact remedy (`pip install 'sqi-sdk[ws]'`). The live
 `tasks/{id}/logs` payload omits `id`/`nats_seq`/`received_at`, so those are
 zero-valued on the yielded `LogChunk`; `seq_num` and the content fields are set.
 

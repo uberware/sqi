@@ -51,17 +51,17 @@ provision Apple credentials and add them as GitHub secrets.
 
 ## Step 3: PyPI trusted publisher
 
-This step is required before `sqi-client` can be published to PyPI. It only
+This step is required before `sqi-sdk` can be published to PyPI. It only
 needs to be done once.
 
 **Procedure:**
 
 1. Log in to [pypi.org](https://pypi.org) as the `uberware` account.
 
-2. If the `sqi-client` project does not yet exist on PyPI, create a
+2. If the `sqi-sdk` project does not yet exist on PyPI, create a
    **pending trusted publisher** (no upload needed) via
    Account → Publishing → "Add a new pending publisher":
-   - PyPI project name: `sqi-client`
+   - PyPI project name: `sqi-sdk`
    - Owner: `uberware`
    - Repository name: `sqi`
    - Workflow filename: `release.yml`
@@ -85,7 +85,7 @@ needs to be done once.
 Run a full release pipeline using a throwaway `-rc` tag to confirm that
 notarization is wired up correctly before tagging `v0.1.0`.
 
-The `release.yml` workflow skips the `sqi-client` version check for tags
+The `release.yml` workflow skips the `sqi-sdk` version check for tags
 containing `-rc` (via `if: ${{ !contains(github.ref_name, '-rc') }}`), so the
 dry-run tag `v0.0.1-rc.1` does not require bumping `_version.py`.
 
@@ -167,7 +167,7 @@ build (`-amd64`/`-arm64` per image, plus the manifest tags).
   `sqi_Darwin_x86_64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
   `sqi_Windows_x86_64.zip`, `sqi_Windows_arm64.zip`
 - `checksums.txt`, SBOMs (`.sbom`), cosign signatures (`.sig` / `.pem`)
-- `sqi_client-0.1.0-py3-none-any.whl` and `sqi_client-0.1.0.tar.gz`
+- `sqi_sdk-0.1.0-py3-none-any.whl` and `sqi_sdk-0.1.0.tar.gz`
 
 ---
 
@@ -198,7 +198,7 @@ Expected: each command succeeds and prints a manifest list with both
 ## Step 8: PyPI verification
 
 ```bash
-python -m pip install --no-cache-dir "sqi-client==0.1.0"
+python -m pip install --no-cache-dir "sqi-sdk==0.1.0"
 python -c "import sqi_client; print(sqi_client.__version__)"
 ```
 

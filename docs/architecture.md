@@ -15,7 +15,7 @@ through scheduling, worker execution, and final state.
 │  ┌──────────────┐   HTTP/WS    ┌──────────────────────────────────────────┐ │
 │  │   CLI client │ ──────────► │  REST API + WebSocket gateway            │ │
 │  │   Web UI     │             │  (chi router, middleware stack)           │ │
-│  │   sqi-client │ ◄────────── │  /api/v1/…  /api/v1/ws  /metrics        │ │
+│  │   sqi-sdk │ ◄────────── │  /api/v1/…  /api/v1/ws  /metrics        │ │
 │  └──────────────┘             └───────────────┬──────────────────────────┘ │
 │                                               │                             │
 │                                    ┌──────────▼──────────┐                 │
@@ -322,9 +322,9 @@ attempts reference a session by ID alone.
 
 ---
 
-## sqi-client (Python library)
+## sqi-sdk (Python library)
 
-`sqi-client` (the `sqi-client` box in the component overview, per [`../ROADMAP.md`](../ROADMAP.md))
+`sqi-sdk` (the `sqi-sdk` box in the component overview, per [`../ROADMAP.md`](../ROADMAP.md))
 is a pure-Python client library that talks to `sqi-server` over the same public
 surface as the web UI: the REST API for everything, plus the WebSocket gateway
 for live events. It lives in the repository at `clients/python/` (import name
@@ -346,8 +346,8 @@ for live events. It lives in the repository at `clients/python/` (import name
   later without breaking the public API.
 - **Minimal dependencies.** The only required runtime dependency is `httpx`, so
   the library can be embedded in DCC Python environments (Maya, Houdini, Nuke).
-  `PyYAML` and `websockets` are optional extras (`sqi-client[yaml]`,
-  `sqi-client[ws]`), imported lazily and never required by the core.
+  `PyYAML` and `websockets` are optional extras (`sqi-sdk[yaml]`,
+  `sqi-sdk[ws]`), imported lazily and never required by the core.
 - **Phase 3 auth extension point.** `SqiClient` accepts a `headers` mapping
   merged into every request (and carried onto the WebSocket upgrade); this is the
   forward-compatible hook for injecting authentication tokens once Phase 3 lands,
@@ -361,6 +361,6 @@ See [`docs/python-client.md`](python-client.md) for the full client reference.
 
 - [`docs/configuration.md`](configuration.md) — Every configuration option with defaults and environment variable names.
 - [`docs/api.md`](api.md) — REST API reference with worked examples.
-- [`docs/python-client.md`](python-client.md) — Python client (`sqi-client`) reference.
+- [`docs/python-client.md`](python-client.md) — Python client (`sqi-sdk`) reference.
 - [`docs/development.md`](development.md) — Local setup, test commands, adding a new endpoint.
 - [`internal/store/migrations/`](../internal/store/migrations) — Full schema DDL.

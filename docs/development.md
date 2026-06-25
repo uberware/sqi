@@ -614,7 +614,7 @@ and `probe_other.go`.
    make fmt && make lint
    ```
 
-## sqi-client (Python) development
+## sqi-sdk (Python) development
 
 The Python client lives at `clients/python/` (import name `sqi_client`). It is a
 separate toolchain from the Go code — it has its own virtualenv, dependencies,
@@ -623,7 +623,7 @@ and Make targets — so its commands do not overlap with the Go ones above.
 ### First-time setup
 
 ```sh
-# Create clients/python/.venv and install sqi-client editable with all extras
+# Create clients/python/.venv and install sqi-sdk editable with all extras
 # (yaml, ws, dev — ruff, mypy, pytest, pytest-cov, pytest-timeout, respx,
 # websockets):
 make py-install

@@ -24,7 +24,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
 # A single-step OpenJD job whose echo output we can assert on in the logs.
 _ECHO_JOB = """specificationVersion: "jobtemplate-2023-09"
-name: sqi-client integration echo
+name: sqi-sdk integration echo
 steps:
   - name: Run
     script:
@@ -32,12 +32,12 @@ steps:
         onRun:
           command: echo
           args:
-            - "hello from sqi-client integration"
+            - "hello from sqi-sdk integration"
 """
 
 # A job whose command exits non-zero, so its task ends in the failed state.
 _FAILING_JOB = """specificationVersion: "jobtemplate-2023-09"
-name: sqi-client integration fail
+name: sqi-sdk integration fail
 steps:
   - name: Run
     script:
@@ -55,7 +55,7 @@ steps:
 # usage gating these tasks would run in parallel — the pool's max_concurrent
 # is the only thing that can hold them to a lower concurrency.
 _USAGE_POOL_SLEEP_JOB = """specificationVersion: "jobtemplate-2023-09"
-name: sqi-client integration usage pool sleep
+name: sqi-sdk integration usage pool sleep
 steps:
   - name: Run
     parameterSpace:
@@ -76,7 +76,7 @@ steps:
             - "sleep 2"
 """
 
-_ECHO_TEXT = "hello from sqi-client integration"
+_ECHO_TEXT = "hello from sqi-sdk integration"
 
 
 def _poll_task_logs(client: SqiClient, task_id: str, needle: str, timeout: float) -> str:
@@ -128,8 +128,8 @@ def test_submit_execute_and_fetch_logs(client: SqiClient, worker_farm: WorkerFar
 def test_management_endpoints(client: SqiClient, worker_farm: WorkerFarm) -> None:
     # Pause/resume/priority/cancel need a job that stays pending, so use a fresh
     # farm/queue with no worker bound to it.
-    idle_farm = client.create_farm(name="sqi-client mgmt farm")
-    idle_queue = client.create_queue(farm_id=idle_farm.id, name="sqi-client mgmt queue")
+    idle_farm = client.create_farm(name="sqi-sdk mgmt farm")
+    idle_queue = client.create_queue(farm_id=idle_farm.id, name="sqi-sdk mgmt queue")
 
     job = client.submit_job(_ECHO_JOB, farm_id=idle_farm.id, queue_id=idle_queue.id)
     assert client.get_job(job.id).status is JobStatus.PENDING

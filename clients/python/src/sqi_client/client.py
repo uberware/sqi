@@ -176,7 +176,7 @@ class SqiClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         default_headers = {
-            "User-Agent": f"sqi-client/{__version__}",
+            "User-Agent": f"sqi-sdk/{__version__}",
             "Accept": "application/json",
         }
         if headers:
@@ -250,7 +250,7 @@ class SqiClient:
 
     def _log_retry(self, method: str, url: str, attempt: int, reason: str) -> None:
         logger.warning(
-            "sqi-client retry %d/%d: %s %s (%s)",
+            "sqi-sdk retry %d/%d: %s %s (%s)",
             attempt,
             self._max_attempts - 1,
             method,
@@ -312,13 +312,13 @@ class SqiClient:
         if major is None:
             message = (
                 f"sqi-server reported an unrecognized API version {version!r}; "
-                "this sqi-client may be incompatible"
+                "this sqi-sdk may be incompatible"
             )
         elif major > _SUPPORTED_API_MAJOR:
             message = (
-                f"sqi-server API version {version} is newer than this sqi-client "
+                f"sqi-server API version {version} is newer than this sqi-sdk "
                 f"supports (v{_SUPPORTED_API_MAJOR}.x); behavior may be unreliable "
-                "— upgrade sqi-client"
+                "— upgrade sqi-sdk"
             )
 
         if message is not None:
@@ -1293,7 +1293,7 @@ class SqiClient:
     def events(self, *, reconnect: bool = True) -> SqiEventStream:
         """Open a live WebSocket event stream for this server.
 
-        Requires the optional ``ws`` extra (``pip install 'sqi-client[ws]'``);
+        Requires the optional ``ws`` extra (``pip install 'sqi-sdk[ws]'``);
         the import happens when the returned stream connects, so calling this
         without the extra installed only fails on connection, with an actionable
         :class:`ImportError`.
@@ -1330,7 +1330,7 @@ class SqiClient:
         underlying stream reconnects and resumes from the last seen event.
 
         Requires the optional ``ws`` extra; without it the first iteration
-        raises :class:`ImportError` naming the ``pip install 'sqi-client[ws]'``
+        raises :class:`ImportError` naming the ``pip install 'sqi-sdk[ws]'``
         remedy.
 
         Args:

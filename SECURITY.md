@@ -65,7 +65,7 @@ The following are in scope for security reports:
 
 - `sqi-server` — scheduler, REST API, WebSocket, embedded NATS, SQLite state management
 - `sqi-worker` — task executor and worker agent
-- The Python client library (`sqi-client`)
+- The Python client library (`sqi-sdk`)
 - The authentication and authorisation implementation
 - Dependency vulnerabilities in the Go module graph or npm packages
 

@@ -40,7 +40,7 @@ jobs:
       # aligned with the repo's single version scheme. The comparison is PEP 440
       # aware (via `packaging`) so pre-release tags like v0.1.0-alpha match a
       # normalized __version__ of "0.1.0a0".
-      - name: Check sqi-client version matches the tag
+      - name: Check sqi-sdk version matches the tag
         if: ${{ !contains(github.ref_name, '-rc') }}
         run: |
           python3 -m pip install --quiet --upgrade packaging
@@ -67,7 +67,7 @@ jobs:
                   f"::error::sqi_client.__version__ ({version}) does not match release "
                   f"tag ({tag}); bump clients/python/src/sqi_client/_version.py"
               )
-          print(f"sqi-client version {version} matches tag {tag}")
+          print(f"sqi-sdk version {version} matches tag {tag}")
           PY
 
       - name: Set up Go
@@ -198,7 +198,7 @@ jobs:
               "$bin"
           done
 
-      # ── Python client (sqi-client) distributions ──────────────────────────────
+      # ── Python client (sqi-sdk) distributions ──────────────────────────────
       # goreleaser does not build Python artifacts, so the sdist + wheel are built
       # and attached to the same GitHub release in a separate step.
       - name: Set up Python
@@ -206,7 +206,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build sqi-client sdist + wheel
+      - name: Build sqi-sdk sdist + wheel
         working-directory: clients/python
         run: |
           python -m pip install --upgrade build
@@ -214,16 +214,16 @@ jobs:
 
       # goreleaser already created the GitHub release for this tag above; attach
       # the Python distributions to it alongside the Go binaries.
-      - name: Attach sqi-client distributions to the release
+      - name: Attach sqi-sdk distributions to the release
         run: gh release upload "${GITHUB_REF_NAME}" clients/python/dist/* --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Publish sqi-client to PyPI via OIDC trusted publishing (no API token;
+      # Publish sqi-sdk to PyPI via OIDC trusted publishing (no API token;
       # uses the id-token: write permission granted above). Gated on the
       # PUBLISH_TO_PYPI repository variable so it only runs once the PyPI
       # project + trusted publisher are configured (see release runbook).
-      - name: Publish sqi-client to PyPI (trusted publishing)
+      - name: Publish sqi-sdk to PyPI (trusted publishing)
         if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

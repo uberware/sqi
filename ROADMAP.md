@@ -40,7 +40,7 @@ sqi-worker
 ├── Path resolver      (translates storage location names to paths)
 └── Status reporter    (streams logs and status to server)
 
-sqi-client (Python library)
+sqi-sdk (Python library)
 └── REST API wrapper for scripted submission and pipeline integration
 
 DCC submitters (Python + Qt)
