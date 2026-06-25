@@ -209,9 +209,12 @@ jobs:
             echo "Notarizing $bin"
             zippath="$RUNNER_TEMP/$(echo "$bin" | tr '/' '_').zip"
             zip -j "$zippath" "$bin" >/dev/null
+            # --wait defaults to ~600s, which Apple's notary queue can exceed at
+            # busy times (submission stays "InProgress"); allow up to 30 minutes.
             rcodesign notary-submit \
               --api-key-file "$RUNNER_TEMP/notary-key.json" \
               --wait \
+              --max-wait-seconds 1800 \
               "$zippath"
             rm -f "$zippath"
           done
