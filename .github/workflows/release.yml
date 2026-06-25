@@ -195,7 +195,11 @@ jobs:
           MACOS_CERT_PASSWORD_FILE: ${{ steps.macsign_check.outputs.enabled == 'true' && format('{0}/cert.pass', runner.temp) || '' }}
 
       # Notarize the signed darwin binaries. goreleaser leaves each built binary
-      # under dist/<id>_darwin_<arch>*/; submit each so Gatekeeper accepts them.
+      # under dist/<id>_darwin_<arch>*/. Apple's notary service only accepts
+      # containers (.zip/.dmg/.pkg/.app), not bare Mach-O executables, so each
+      # signed binary is zipped before submission. Stapling is not possible for a
+      # bare binary/zip; the submission still registers the code-signature hash
+      # with Apple so Gatekeeper accepts the extracted binary via its online check.
       - name: Notarize macOS binaries
         if: ${{ steps.macsign_check.outputs.enabled == 'true' }}
         run: |
@@ -203,10 +207,13 @@ jobs:
           shopt -s nullglob
           for bin in dist/sqi-*_darwin_*/sqi-server dist/sqi-*_darwin_*/sqi-worker; do
             echo "Notarizing $bin"
+            zippath="$RUNNER_TEMP/$(echo "$bin" | tr '/' '_').zip"
+            zip -j "$zippath" "$bin" >/dev/null
             rcodesign notary-submit \
               --api-key-file "$RUNNER_TEMP/notary-key.json" \
               --wait \
-              "$bin"
+              "$zippath"
+            rm -f "$zippath"
           done
 
       # ── Python client (sqi-sdk) distributions ──────────────────────────────
