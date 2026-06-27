@@ -621,6 +621,83 @@ func validateCapabilityName(name, ptr string) ValidationErrors {
 	return nil
 }
 
+// ─── userInterface validation ─────────────────────────────────────────────────
+
+// validControls is the set of OpenJD base-spec userInterface control values.
+// Read-only after initialization.
+var validControls = map[ControlType]struct{}{
+	ControlLineEdit:      {},
+	ControlMultilineEdit: {},
+	ControlDropdownList:  {},
+	ControlCheckBox:      {},
+	ControlChipInput:     {},
+	ControlHidden:        {},
+	ControlSpinBox:       {},
+}
+
+// validateUserInterfaceControl checks control-specific constraints for a
+// userInterface hint, extracted to keep [validateUserInterface] complexity <= 15.
+func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ctrlPtr string) ValidationErrors {
+	var errs ValidationErrors
+	switch ui.Control {
+	case ControlDropdownList:
+		if len(p.AllowedValues) == 0 {
+			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "DROPDOWN_LIST requires allowedValues"})
+		}
+	case ControlCheckBox:
+		if len(p.AllowedValues) != 2 {
+			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"})
+		}
+	case ControlSpinBox:
+		if p.Type != JobParamTypeInt && p.Type != JobParamTypeFloat {
+			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "SPIN_BOX is valid only on INT or FLOAT parameters"})
+		}
+	}
+	return errs
+}
+
+// validateUserInterface checks a parameter's optional userInterface hints:
+// the control must be a known value, and control/constraint combinations must
+// be coherent (DROPDOWN_LIST/CHECK_BOX need allowedValues; SPIN_BOX is numeric;
+// decimals/singleStepRemoval pair with their controls). Structural — always runs.
+func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
+	ui := p.UserInterface
+	if ui == nil {
+		return nil
+	}
+	var errs ValidationErrors
+	ctrlPtr := ptr + "/userInterface/control"
+
+	if ui.Control == "" {
+		errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "required"})
+		return errs
+	}
+	if _, ok := validControls[ui.Control]; !ok {
+		errs = append(errs, ValidationError{
+			Pointer: ctrlPtr,
+			Message: fmt.Sprintf("unknown control %q", ui.Control),
+		})
+		return errs
+	}
+
+	errs = append(errs, validateUserInterfaceControl(ui, p, ctrlPtr)...)
+
+	if ui.Decimals != nil && (ui.Control != ControlSpinBox || p.Type != JobParamTypeFloat) {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/userInterface/decimals",
+			Message: "decimals is valid only with SPIN_BOX on a FLOAT parameter",
+		})
+	}
+	if ui.SingleStepRemoval != nil && ui.Control != ControlChipInput {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/userInterface/singleStepRemoval",
+			Message: "singleStepRemoval is valid only with CHIP_INPUT",
+		})
+	}
+
+	return errs
+}
+
 // ─── job parameter validation ─────────────────────────────────────────────────
 
 func validateJobParams(params []JobParameter) ValidationErrors {
@@ -662,6 +739,9 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 		// objectType and dataFlow are structural constraints checked
 		// unconditionally (not gated by EnforceLimits).
 		errs = append(errs, validatePathOnlyFields(p, ptr)...)
+
+		// userInterface validation is also structural, always runs.
+		errs = append(errs, validateUserInterface(p, ptr)...)
 	}
 	return errs
 }
