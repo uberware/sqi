@@ -357,6 +357,15 @@ See [`docs/python-client.md`](python-client.md) for the full client reference.
 
 ---
 
+## OpenJD extensions
+
+sqi validates template `extensions` against a registry and supports a vendor
+(`SQI_`) namespace for sqi-defined extensions, with a promotion path to upstream.
+See `docs/openjd-extensions.md` for the registry, namespacing convention, and the
+contribution-doc pattern.
+
+---
+
 ## Further reading
 
 - [`docs/configuration.md`](configuration.md) — Every configuration option with defaults and environment variable names.
