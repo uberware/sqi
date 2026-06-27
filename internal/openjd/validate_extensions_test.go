@@ -3,7 +3,7 @@
 package openjd_test
 
 // Tests for extension gating (validateExtensions):
-//   - Every entry in JobTemplate.Extensions that is not in supportedExtensions
+//   - Every entry in JobTemplate.Extensions that is not in the extension registry
 //     produces a ValidationError at /extensions/<i> (unconditional).
 //   - CHUNK[INT] usage without declaring TASK_CHUNKING produces a
 //     ValidationError (unconditional).

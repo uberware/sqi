@@ -49,7 +49,7 @@ func (e ValidationErrors) Error() string {
 //  1. Rejects every entry in t.Extensions that does not match the format pattern
 //     [A-Z_0-9]{3,128}. The OpenJD spec defines extension names as uppercase
 //     identifiers matching this pattern.
-//  2. Rejects every entry that is not in supportedExtensions. Silently accepting
+//  2. Rejects every entry that is not in the extension registry. Silently accepting
 //     an unsupported extension would cause the template to mis-run, so this is
 //     structural correctness rather than a quantitative limit.
 //  3. Requires the TASK_CHUNKING extension to be declared when any step uses a

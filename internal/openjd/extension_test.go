@@ -44,7 +44,7 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 		if !nameRE.MatchString(ext.Name) {
 			t.Errorf("extension %q does not match [A-Z_0-9]{3,128}", ext.Name)
 		}
-		if ext.Origin == OriginVendor && len(ext.Name) < 4 || (ext.Origin == OriginVendor && ext.Name[:4] != "SQI_") {
+		if ext.Origin == OriginVendor && (len(ext.Name) < 4 || ext.Name[:4] != "SQI_") {
 			t.Errorf("vendor extension %q must be prefixed SQI_", ext.Name)
 		}
 	}

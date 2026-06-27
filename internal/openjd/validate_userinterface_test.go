@@ -68,6 +68,13 @@ func TestValidateUserInterface(t *testing.T) {
 			wantPointer: "/parameterDefinitions/0/userInterface/control",
 		},
 		{
+			name: "valid spinbox with decimals",
+			param: JobParameter{
+				Name: "Q", Type: JobParamTypeFloat,
+				UserInterface: &ParameterUserInterface{Control: ControlSpinBox, Decimals: new(2)},
+			},
+		},
+		{
 			name: "decimals without spinbox",
 			param: JobParameter{
 				Name: "Q", Type: JobParamTypeFloat,
