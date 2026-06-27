@@ -45,33 +45,11 @@ func (e ValidationErrors) Error() string {
 
 // ─── extension gating ────────────────────────────────────────────────────────
 
-// supportedExtensions is the set of OpenJD extension names that sqi fully
-// implements. Extension names are matched case-sensitively; the OpenJD spec
-// defines them as uppercase identifiers matching [A-Z_0-9]{3,128}.
-//
-//   - TASK_CHUNKING: chunked integer task parameters (CHUNK[INT] type). sqi
-//     fully implements chunked expansion in expand.go.
-//   - REDACTED_ENV_VARS: the openjd_redacted_env stdout directive, which
-//     causes the worker to redact the cleartext value from logs while still
-//     setting the variable in the session environment. sqi implements this in
-//     internal/worker/openjd/envdirective.go and
-//     internal/worker/session/session.go.
-//
-// NOT included: EXPR (expression language — not implemented), FEATURE_BUNDLE_1
-// (extended limits and scripting shorthand — not implemented), and any
-// extension name sqi does not recognize.
-//
-// Read-only after initialisation; never modified at runtime.
-var supportedExtensions = map[string]struct{}{
-	"TASK_CHUNKING":     {},
-	"REDACTED_ENV_VARS": {},
-}
-
 // validateExtensions runs unconditionally (not gated by EnforceLimits) and:
 //  1. Rejects every entry in t.Extensions that does not match the format pattern
 //     [A-Z_0-9]{3,128}. The OpenJD spec defines extension names as uppercase
 //     identifiers matching this pattern.
-//  2. Rejects every entry that is not in supportedExtensions. Silently accepting
+//  2. Rejects every entry that is not in the extension registry. Silently accepting
 //     an unsupported extension would cause the template to mis-run, so this is
 //     structural correctness rather than a quantitative limit.
 //  3. Requires the TASK_CHUNKING extension to be declared when any step uses a
@@ -94,7 +72,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 		}
 
 		// Check if the well-formed name is supported
-		if _, ok := supportedExtensions[ext]; !ok {
+		if _, ok := LookupExtension(ext); !ok {
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/extensions/%d", i),
 				Message: fmt.Sprintf("unsupported extension %q", ext),
@@ -321,6 +299,10 @@ const (
 	maxCapabilityNameLen = 100
 	// maxAttributeValues caps each attribute's anyOf/allOf element count (1–50).
 	maxAttributeValues = 50
+	// maxUILabelLen caps userInterface label length in characters (runes).
+	maxUILabelLen = 256
+	// maxUIGroupLabelLen caps userInterface groupLabel length in characters (runes).
+	maxUIGroupLabelLen = 256
 )
 
 // validateLimits runs every quantitative limit check. It is only invoked when
@@ -344,6 +326,9 @@ func validateLimits(t *JobTemplate) ValidationErrors {
 			Message: fmt.Sprintf("at most %d parameter definitions are allowed (got %d)", maxJobParameterDefinitions, len(t.ParameterDefinitions)),
 		})
 	}
+
+	// userInterface label length limits.
+	errs = append(errs, validateUILimits(t.ParameterDefinitions)...)
 
 	// Job environment name lengths.
 	errs = append(errs, validateEnvNameLimits(t.JobEnvironments, "/jobEnvironments")...)
@@ -643,6 +628,108 @@ func validateCapabilityName(name, ptr string) ValidationErrors {
 	return nil
 }
 
+// validateUILimits enforces length caps on userInterface labels. Gated: callers
+// run it only when EnforceLimits is set.
+func validateUILimits(params []JobParameter) ValidationErrors {
+	var errs ValidationErrors
+	for i, p := range params {
+		if p.UserInterface == nil {
+			continue
+		}
+		base := fmt.Sprintf("/parameterDefinitions/%d/userInterface", i)
+		if utf8.RuneCountInString(p.UserInterface.Label) > maxUILabelLen {
+			errs = append(errs, ValidationError{
+				Pointer: base + "/label",
+				Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
+			})
+		}
+		if utf8.RuneCountInString(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
+			errs = append(errs, ValidationError{
+				Pointer: base + "/groupLabel",
+				Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
+			})
+		}
+	}
+	return errs
+}
+
+// ─── userInterface validation ─────────────────────────────────────────────────
+
+// validControls is the set of OpenJD base-spec userInterface control values.
+// Read-only after initialization.
+var validControls = map[ControlType]struct{}{
+	ControlLineEdit:      {},
+	ControlMultilineEdit: {},
+	ControlDropdownList:  {},
+	ControlCheckBox:      {},
+	ControlChipInput:     {},
+	ControlHidden:        {},
+	ControlSpinBox:       {},
+}
+
+// validateUserInterfaceControl checks control-specific constraints for a
+// userInterface hint, extracted to keep [validateUserInterface] complexity <= 15.
+func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ctrlPtr string) ValidationErrors {
+	var errs ValidationErrors
+	switch ui.Control {
+	case ControlDropdownList:
+		if len(p.AllowedValues) == 0 {
+			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "DROPDOWN_LIST requires allowedValues"})
+		}
+	case ControlCheckBox:
+		if len(p.AllowedValues) != 2 {
+			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"})
+		}
+	case ControlSpinBox:
+		if p.Type != JobParamTypeInt && p.Type != JobParamTypeFloat {
+			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "SPIN_BOX is valid only on INT or FLOAT parameters"})
+		}
+	}
+	return errs
+}
+
+// validateUserInterface checks a parameter's optional userInterface hints:
+// the control must be a known value, and control/constraint combinations must
+// be coherent (DROPDOWN_LIST/CHECK_BOX need allowedValues; SPIN_BOX is numeric;
+// decimals/singleStepRemoval pair with their controls). Structural — always runs.
+func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
+	ui := p.UserInterface
+	if ui == nil {
+		return nil
+	}
+	var errs ValidationErrors
+	ctrlPtr := ptr + "/userInterface/control"
+
+	if ui.Control == "" {
+		errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "required"})
+		return errs
+	}
+	if _, ok := validControls[ui.Control]; !ok {
+		errs = append(errs, ValidationError{
+			Pointer: ctrlPtr,
+			Message: fmt.Sprintf("unknown control %q", ui.Control),
+		})
+		return errs
+	}
+
+	errs = append(errs, validateUserInterfaceControl(ui, p, ctrlPtr)...)
+
+	if ui.Decimals != nil && (ui.Control != ControlSpinBox || p.Type != JobParamTypeFloat) {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/userInterface/decimals",
+			Message: "decimals is valid only with SPIN_BOX on a FLOAT parameter",
+		})
+	}
+	if ui.SingleStepRemoval != nil && ui.Control != ControlChipInput {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/userInterface/singleStepRemoval",
+			Message: "singleStepRemoval is valid only with CHIP_INPUT",
+		})
+	}
+
+	return errs
+}
+
 // ─── job parameter validation ─────────────────────────────────────────────────
 
 func validateJobParams(params []JobParameter) ValidationErrors {
@@ -684,6 +771,9 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 		// objectType and dataFlow are structural constraints checked
 		// unconditionally (not gated by EnforceLimits).
 		errs = append(errs, validatePathOnlyFields(p, ptr)...)
+
+		// userInterface validation is also structural, always runs.
+		errs = append(errs, validateUserInterface(p, ptr)...)
 	}
 	return errs
 }
