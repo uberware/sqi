@@ -299,6 +299,10 @@ const (
 	maxCapabilityNameLen = 100
 	// maxAttributeValues caps each attribute's anyOf/allOf element count (1–50).
 	maxAttributeValues = 50
+	// maxUILabelLen caps userInterface label length.
+	maxUILabelLen = 256
+	// maxUIGroupLabelLen caps userInterface groupLabel length.
+	maxUIGroupLabelLen = 256
 )
 
 // validateLimits runs every quantitative limit check. It is only invoked when
@@ -322,6 +326,9 @@ func validateLimits(t *JobTemplate) ValidationErrors {
 			Message: fmt.Sprintf("at most %d parameter definitions are allowed (got %d)", maxJobParameterDefinitions, len(t.ParameterDefinitions)),
 		})
 	}
+
+	// userInterface label length limits.
+	errs = append(errs, validateUILimits(t.ParameterDefinitions)...)
 
 	// Job environment name lengths.
 	errs = append(errs, validateEnvNameLimits(t.JobEnvironments, "/jobEnvironments")...)
@@ -619,6 +626,31 @@ func validateCapabilityName(name, ptr string) ValidationErrors {
 		}}
 	}
 	return nil
+}
+
+// validateUILimits enforces length caps on userInterface labels. Gated: callers
+// run it only when EnforceLimits is set.
+func validateUILimits(params []JobParameter) ValidationErrors {
+	var errs ValidationErrors
+	for i, p := range params {
+		if p.UserInterface == nil {
+			continue
+		}
+		base := fmt.Sprintf("/parameterDefinitions/%d/userInterface", i)
+		if len(p.UserInterface.Label) > maxUILabelLen {
+			errs = append(errs, ValidationError{
+				Pointer: base + "/label",
+				Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
+			})
+		}
+		if len(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
+			errs = append(errs, ValidationError{
+				Pointer: base + "/groupLabel",
+				Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
+			})
+		}
+	}
+	return errs
 }
 
 // ─── userInterface validation ─────────────────────────────────────────────────

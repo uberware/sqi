@@ -122,3 +122,25 @@ func TestValidateRejectsBadUserInterface(t *testing.T) {
 		t.Fatalf("Validate did not flag userInterface; got %v", errs)
 	}
 }
+
+func TestValidateUILabelLengthLimit(t *testing.T) {
+	long := strings.Repeat("x", 257)
+	tmpl := &JobTemplate{
+		SpecificationVersion: SpecVersion,
+		Name:                 "x",
+		ParameterDefinitions: []JobParameter{{
+			Name: "Q", Type: JobParamTypeString,
+			UserInterface: &ParameterUserInterface{Control: ControlLineEdit, Label: long},
+		}},
+		Steps: []StepTemplate{{Name: "A"}},
+	}
+
+	// Enforced: too-long label is rejected.
+	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: true}); !strings.Contains(errs.Error(), "label") {
+		t.Errorf("EnforceLimits=true did not flag long label; got %v", errs)
+	}
+	// Not enforced: limit check skipped.
+	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: false}); strings.Contains(errs.Error(), "label") {
+		t.Errorf("EnforceLimits=false flagged long label; got %v", errs)
+	}
+}
