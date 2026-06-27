@@ -299,9 +299,9 @@ const (
 	maxCapabilityNameLen = 100
 	// maxAttributeValues caps each attribute's anyOf/allOf element count (1–50).
 	maxAttributeValues = 50
-	// maxUILabelLen caps userInterface label length.
+	// maxUILabelLen caps userInterface label length in characters (runes).
 	maxUILabelLen = 256
-	// maxUIGroupLabelLen caps userInterface groupLabel length.
+	// maxUIGroupLabelLen caps userInterface groupLabel length in characters (runes).
 	maxUIGroupLabelLen = 256
 )
 
@@ -637,13 +637,13 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 			continue
 		}
 		base := fmt.Sprintf("/parameterDefinitions/%d/userInterface", i)
-		if len(p.UserInterface.Label) > maxUILabelLen {
+		if utf8.RuneCountInString(p.UserInterface.Label) > maxUILabelLen {
 			errs = append(errs, ValidationError{
 				Pointer: base + "/label",
 				Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
 			})
 		}
-		if len(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
+		if utf8.RuneCountInString(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
 			errs = append(errs, ValidationError{
 				Pointer: base + "/groupLabel",
 				Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),

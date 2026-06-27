@@ -71,7 +71,7 @@ func TestValidateUserInterface(t *testing.T) {
 			name: "decimals without spinbox",
 			param: JobParameter{
 				Name: "Q", Type: JobParamTypeFloat,
-				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, Decimals: intPtr(2)},
+				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, Decimals: new(2)},
 			},
 			wantPointer: "/parameterDefinitions/0/userInterface/decimals",
 		},
@@ -79,7 +79,7 @@ func TestValidateUserInterface(t *testing.T) {
 			name: "singleStepRemoval without chip input",
 			param: JobParameter{
 				Name: "Q", Type: JobParamTypeString,
-				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, SingleStepRemoval: boolPtr(true)},
+				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, SingleStepRemoval: new(true)},
 			},
 			wantPointer: "/parameterDefinitions/0/userInterface/singleStepRemoval",
 		},
@@ -102,9 +102,6 @@ func TestValidateUserInterface(t *testing.T) {
 		})
 	}
 }
-
-func intPtr(n int) *int    { return &n }
-func boolPtr(b bool) *bool { return &b }
 
 // Confirms the check is wired into the full validate path.
 func TestValidateRejectsBadUserInterface(t *testing.T) {
@@ -142,5 +139,78 @@ func TestValidateUILabelLengthLimit(t *testing.T) {
 	// Not enforced: limit check skipped.
 	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: false}); strings.Contains(errs.Error(), "label") {
 		t.Errorf("EnforceLimits=false flagged long label; got %v", errs)
+	}
+}
+
+// TestValidateUIGroupLabelLengthLimit checks that a GroupLabel exceeding the
+// cap is rejected when EnforceLimits is true.
+func TestValidateUIGroupLabelLengthLimit(t *testing.T) {
+	longGroup := strings.Repeat("x", 257)
+	tmpl := &JobTemplate{
+		SpecificationVersion: SpecVersion,
+		Name:                 "x",
+		ParameterDefinitions: []JobParameter{{
+			Name: "Q", Type: JobParamTypeString,
+			UserInterface: &ParameterUserInterface{Control: ControlLineEdit, GroupLabel: longGroup},
+		}},
+		Steps: []StepTemplate{{Name: "A"}},
+	}
+
+	// Enforced: too-long groupLabel is rejected.
+	errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: true})
+	found := false
+	for _, e := range errs {
+		if e.Pointer == "/parameterDefinitions/0/userInterface/groupLabel" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("EnforceLimits=true did not flag long groupLabel at expected pointer; got %v", errs)
+	}
+
+	// Not enforced: limit check skipped.
+	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: false}); strings.Contains(errs.Error(), "groupLabel") {
+		t.Errorf("EnforceLimits=false flagged long groupLabel; got %v", errs)
+	}
+}
+
+// TestValidateUILabelRuneCounting proves the label limit is counted in Unicode
+// runes (characters), not bytes.  "é" (U+00E9) is 2 bytes but 1 rune.
+//
+// With byte counting (the old len() approach) a 256-rune label of "é" would be
+// 512 bytes and would be wrongly rejected.  With correct rune counting it must
+// be accepted; 257 runes must be rejected.
+func TestValidateUILabelRuneCounting(t *testing.T) {
+	base := func(label string) *JobTemplate {
+		return &JobTemplate{
+			SpecificationVersion: SpecVersion,
+			Name:                 "x",
+			ParameterDefinitions: []JobParameter{{
+				Name: "Q", Type: JobParamTypeString,
+				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, Label: label},
+			}},
+			Steps: []StepTemplate{{Name: "A"}},
+		}
+	}
+
+	// Exactly 256 multibyte runes — must be accepted.
+	label256 := strings.Repeat("é", 256) // 512 bytes, 256 runes
+	if errs := ValidateWithOptions(base(label256), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "label") {
+		t.Errorf("256-rune multibyte label was incorrectly rejected; got %v", errs)
+	}
+
+	// 257 multibyte runes — must be rejected with a pointer on /label.
+	label257 := strings.Repeat("é", 257)
+	errs := ValidateWithOptions(base(label257), ValidateOptions{EnforceLimits: true})
+	found := false
+	for _, e := range errs {
+		if e.Pointer == "/parameterDefinitions/0/userInterface/label" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("257-rune multibyte label was not flagged at expected pointer; got %v", errs)
 	}
 }
