@@ -45,28 +45,6 @@ func (e ValidationErrors) Error() string {
 
 // ─── extension gating ────────────────────────────────────────────────────────
 
-// supportedExtensions is the set of OpenJD extension names that sqi fully
-// implements. Extension names are matched case-sensitively; the OpenJD spec
-// defines them as uppercase identifiers matching [A-Z_0-9]{3,128}.
-//
-//   - TASK_CHUNKING: chunked integer task parameters (CHUNK[INT] type). sqi
-//     fully implements chunked expansion in expand.go.
-//   - REDACTED_ENV_VARS: the openjd_redacted_env stdout directive, which
-//     causes the worker to redact the cleartext value from logs while still
-//     setting the variable in the session environment. sqi implements this in
-//     internal/worker/openjd/envdirective.go and
-//     internal/worker/session/session.go.
-//
-// NOT included: EXPR (expression language — not implemented), FEATURE_BUNDLE_1
-// (extended limits and scripting shorthand — not implemented), and any
-// extension name sqi does not recognize.
-//
-// Read-only after initialisation; never modified at runtime.
-var supportedExtensions = map[string]struct{}{
-	"TASK_CHUNKING":     {},
-	"REDACTED_ENV_VARS": {},
-}
-
 // validateExtensions runs unconditionally (not gated by EnforceLimits) and:
 //  1. Rejects every entry in t.Extensions that does not match the format pattern
 //     [A-Z_0-9]{3,128}. The OpenJD spec defines extension names as uppercase
@@ -94,7 +72,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 		}
 
 		// Check if the well-formed name is supported
-		if _, ok := supportedExtensions[ext]; !ok {
+		if _, ok := LookupExtension(ext); !ok {
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/extensions/%d", i),
 				Message: fmt.Sprintf("unsupported extension %q", ext),
