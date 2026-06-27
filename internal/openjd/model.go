@@ -111,6 +111,45 @@ type JobParameter struct {
 	// Empty means absent; the spec default is NONE.
 	// Only valid for PATH parameters; validation rejects it on other types.
 	DataFlow PathDataFlow
+	// UserInterface carries optional OpenJD base-spec presentation hints.
+	// Nil when the parameter declares no userInterface object.
+	UserInterface *ParameterUserInterface
+}
+
+// ControlType is the OpenJD base-spec userInterface control for a job parameter.
+type ControlType string
+
+const (
+	// ControlLineEdit is a single-line text input.
+	ControlLineEdit ControlType = "LINE_EDIT"
+	// ControlMultilineEdit is a multi-line text input.
+	ControlMultilineEdit ControlType = "MULTILINE_EDIT"
+	// ControlDropdownList is a dropdown; requires allowedValues.
+	ControlDropdownList ControlType = "DROPDOWN_LIST"
+	// ControlCheckBox is a two-state checkbox; requires exactly two allowedValues.
+	ControlCheckBox ControlType = "CHECK_BOX"
+	// ControlChipInput is a multi-value chip/tag input.
+	ControlChipInput ControlType = "CHIP_INPUT"
+	// ControlHidden hides the parameter from the generated form.
+	ControlHidden ControlType = "HIDDEN"
+	// ControlSpinBox is a numeric spinner; valid only on INT/FLOAT.
+	ControlSpinBox ControlType = "SPIN_BOX"
+)
+
+// ParameterUserInterface is the OpenJD base-spec userInterface hint object on a
+// job parameter. It is presentation metadata consumed by submission UIs; the
+// server parses, validates, and carries it but does not act on it.
+type ParameterUserInterface struct {
+	// Control selects the input widget.
+	Control ControlType
+	// Label is the human-readable field label.
+	Label string
+	// GroupLabel groups related fields in the generated form.
+	GroupLabel string
+	// Decimals sets the precision for a SPIN_BOX on a FLOAT parameter.
+	Decimals *int
+	// SingleStepRemoval applies to CHIP_INPUT only.
+	SingleStepRemoval *bool
 }
 
 // ─── Environments ────────────────────────────────────────────────────────────

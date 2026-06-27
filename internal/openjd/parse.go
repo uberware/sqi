@@ -143,6 +143,15 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 		p.DataFlow = PathDataFlow(anyToString(v))
 	}
 
+	// userInterface (base-spec presentation hints)
+	if v, ok := raw["userInterface"]; ok && v != nil {
+		ui, err := decodeParameterUserInterface(v)
+		if err != nil {
+			return p, err
+		}
+		p.UserInterface = ui
+	}
+
 	return p, nil
 }
 
@@ -182,6 +191,30 @@ func decodeJobParamConstraints(raw map[string]any, p *JobParameter) error {
 	}
 
 	return nil
+}
+
+// decodeParameterUserInterface decodes the optional userInterface hint object on
+// a job parameter. Unknown control values are accepted here and rejected during
+// validation, mirroring how parse stays lenient and validate enforces.
+func decodeParameterUserInterface(v any) (*ParameterUserInterface, error) {
+	m, err := toMap(v, "parameterDefinition.userInterface")
+	if err != nil {
+		return nil, err
+	}
+	ui := &ParameterUserInterface{
+		Control:    ControlType(getString(m, "control")),
+		Label:      getString(m, "label"),
+		GroupLabel: getString(m, "groupLabel"),
+	}
+	if n, ok, err := intFieldStrict(m, "decimals", "userInterface.decimals"); err != nil {
+		return nil, err
+	} else if ok {
+		ui.Decimals = &n
+	}
+	if b, ok := m["singleStepRemoval"].(bool); ok {
+		ui.SingleStepRemoval = &b
+	}
+	return ui, nil
 }
 
 // ─── environment decoder ─────────────────────────────────────────────────────
