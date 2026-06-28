@@ -301,6 +301,56 @@ Fix any issues before committing.
 
 ---
 
+## Adding a product
+
+Products are thin catalog entries that wrap an OpenJD template. See
+[`docs/products.md`](products.md) for the full concept and REST surface.
+
+### Built-in products
+
+Built-ins live in `internal/product/builtins/*.yaml` and are compiled into the
+binary via `//go:embed` in `internal/product/builtins.go`. At process init,
+`loadBuiltins` reads every `.yaml` file in that directory, calls
+`ParseDefinition` on each (which re-serializes the inline template and validates
+it via `openjd.Parse` + `openjd.ValidateWithOptions`), and panics if any file is
+malformed. To add a new built-in:
+
+1. Create `internal/product/builtins/<name>.yaml` using the definition file
+   format — metadata fields (`name`, `title`, `description`, `category`,
+   `version`) plus an inline `template:` key containing a full
+   `jobtemplate-2023-09` OpenJD template.
+2. Stamp the file with the SPDX comment header:
+   ```
+   # SPDX-License-Identifier: AGPL-3.0-or-later
+   ```
+3. Run `go test ./internal/product/...` — the `TestBuiltins_LoadValidateAndStamp`
+   test validates every built-in definition and will catch template errors.
+4. Built-in names are reserved; `POST /api/v1/products` rejects names that
+   shadow a built-in.
+
+### Custom products
+
+Custom products are created at runtime through the REST API and stored in
+SQLite (the `products` table). They are mutable (PUT/DELETE) and appear in `GET
+/api/v1/products` merged with the built-ins.
+
+```sh
+curl -X POST http://localhost:8080/api/v1/products \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "my-render",
+    "title": "My Renderer",
+    "version": "1.0.0",
+    "template": "specificationVersion: jobtemplate-2023-09\nname: MyRender\nsteps:\n  - name: Run\n    script:\n      actions:\n        onRun:\n          command: render\n",
+    "format": "yaml"
+  }'
+```
+
+The server validates the template (via `product.ValidateTemplate`) before
+writing; a malformed template returns `400 Bad Request`.
+
+---
+
 ## Local docs
 
 Serve Go package docs locally with `pkgsite`:

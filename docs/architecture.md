@@ -364,6 +364,14 @@ sqi validates template `extensions` against a registry and supports a vendor
 See `docs/openjd-extensions.md` for the registry, namespacing convention, and the
 contribution-doc pattern.
 
+## Product catalog
+
+Products are the catalog layer over OpenJD templates: a named, versioned wrapper
+(metadata + stored template) that lets clients submit jobs without handling raw
+template files. The `internal/product` package overlays embedded built-ins on
+stored `custom`/`installed` products; the REST surface is at `/api/v1/products`.
+See [`docs/products.md`](products.md) for the full reference.
+
 ---
 
 ## Further reading
