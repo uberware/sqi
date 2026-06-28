@@ -45,3 +45,24 @@ func TestFakeProduct_CRUDAndConflict(t *testing.T) {
 		t.Fatalf("after delete: want ErrNotFound, got %v", err)
 	}
 }
+
+func TestFakeProduct_CaseInsensitiveConflict(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+
+	if _, err := st.CreateProduct(ctx, sampleProduct("alpha")); err != nil {
+		t.Fatalf("create alpha: %v", err)
+	}
+	if _, err := st.CreateProduct(ctx, sampleProduct("ALPHA")); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("dup ALPHA: want ErrConflict, got %v", err)
+	}
+}
+
+func TestFakeProduct_UpdateNotFound(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+
+	if _, err := st.UpdateProduct(ctx, sampleProduct("nonexistent")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("update nonexistent: want ErrNotFound, got %v", err)
+	}
+}

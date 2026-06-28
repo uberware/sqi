@@ -5,6 +5,7 @@ package fake
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -14,7 +15,7 @@ func (s *Store) CreateProduct(_ context.Context, p store.Product) (store.Product
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.products {
-		if existing.Name == p.Name {
+		if strings.EqualFold(existing.Name, p.Name) {
 			return store.Product{}, store.ErrConflict
 		}
 	}
@@ -27,7 +28,7 @@ func (s *Store) GetProductByName(_ context.Context, name string) (store.Product,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, p := range s.products {
-		if p.Name == name {
+		if strings.EqualFold(p.Name, name) {
 			return p, nil
 		}
 	}
@@ -59,7 +60,7 @@ func (s *Store) UpdateProduct(_ context.Context, p store.Product) (store.Product
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, existing := range s.products {
-		if existing.Name == p.Name {
+		if strings.EqualFold(existing.Name, p.Name) {
 			p.ID = existing.ID
 			p.CreatedAt = existing.CreatedAt
 			s.products[id] = p
@@ -74,7 +75,7 @@ func (s *Store) DeleteProduct(_ context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, p := range s.products {
-		if p.Name == name {
+		if strings.EqualFold(p.Name, name) {
 			delete(s.products, id)
 			return nil
 		}
