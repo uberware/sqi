@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: python
+title: Run a Python Script
+description: Run a Python script with a chosen interpreter.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Python
+  parameterDefinitions:
+    - name: Interpreter
+      type: STRING
+      default: python3
+      userInterface:
+        control: LINE_EDIT
+        label: Interpreter
+    - name: Script
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Python Script
+  steps:
+    - name: Run
+      script:
+        embeddedFiles:
+          - name: script.py
+            type: TEXT
+            data: "{{Param.Script}}"
+        actions:
+          onRun:
+            command: "{{Param.Interpreter}}"
+            args: ["script.py"]
