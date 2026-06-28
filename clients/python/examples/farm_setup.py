@@ -43,13 +43,20 @@ def main(argv: list[str]) -> int:
         )
         print(f"queue:           {queue.id}  ({queue.name})")
 
+        # A compute location identifies a physical or cloud site where workers run.
+        compute = sqi.create_compute_location(
+            name="on-prem",
+            description="On-premises render hall",
+        )
+        print(f"compute location: {compute.id}  ({compute.name})")
+
         # roots maps each compute-location name to its absolute root path.
         location = sqi.create_storage_location(
             name="project-root",
             type="filesystem",
             roots={"on-prem": "/mnt/farm", "aws-us-east-1": "s3://sqi-bucket/root"},
         )
-        print(f"storage location:{location.id}  ({location.name})")
+        print(f"storage location: {location.id}  ({location.name})")
 
         pool = sqi.create_usage_pool(
             name="arnold-pool",

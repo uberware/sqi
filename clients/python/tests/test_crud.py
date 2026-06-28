@@ -21,7 +21,7 @@ import respx
 
 from sqi_client.client import SqiClient
 from sqi_client.errors import BadRequestError, ConflictError, NotFoundError, ValidationError
-from sqi_client.models import Farm, Page, Queue, StorageLocation, UsagePool
+from sqi_client.models import ComputeLocation, Farm, Page, Queue, StorageLocation, UsagePool
 from tests.conftest import BASE_URL, ClientFactory
 
 _API = f"{BASE_URL}/api/v1"
@@ -315,6 +315,18 @@ _FAMILIES: list[_Family] = [
         lambda c, i: c.get_usage_pool(i),
         lambda c, i: c.update_usage_pool(i, name="l2", max_concurrent=2),
         lambda c, i: c.delete_usage_pool(i),
+    ),
+    _Family(
+        "compute-locations",
+        "compute_location",
+        ComputeLocation,
+        False,
+        lambda c: c.create_compute_location(name="cl"),
+        lambda c: c.list_compute_locations(),
+        lambda c: c.iter_compute_locations(),
+        lambda c, i: c.get_compute_location(i),
+        lambda c, i: c.update_compute_location(i, name="cl2"),
+        lambda c, i: c.delete_compute_location(i),
     ),
 ]
 

@@ -39,6 +39,7 @@ from .errors import (
 )
 from .models import (
     CancelResult,
+    ComputeLocation,
     Farm,
     Job,
     JobStatus,
@@ -202,6 +203,9 @@ class SqiClient:
         self._queues: _CrudResource[Queue] = _CrudResource(self, "/queues", Queue.from_dict)
         self._storage_locations: _CrudResource[StorageLocation] = _CrudResource(
             self, "/storage-locations", StorageLocation.from_dict
+        )
+        self._compute_locations: _CrudResource[ComputeLocation] = _CrudResource(
+            self, "/compute-locations", ComputeLocation.from_dict
         )
         self._usage_pools: _CrudResource[UsagePool] = _CrudResource(
             self, "/usage-pools", UsagePool.from_dict
@@ -1232,6 +1236,50 @@ class SqiClient:
         """Delete a storage location. Raises :class:`NotFoundError` if it is missing."""
         self._storage_locations.delete(location_id)
 
+    # ── Compute locations ─────────────────────────────────────────────────────
+
+    def create_compute_location(
+        self,
+        *,
+        name: str,
+        description: str | None = None,
+    ) -> ComputeLocation:
+        """Create a compute location and return it.
+
+        Args:
+            name: Compute-location name.
+            description: Optional description.
+        """
+        return self._compute_locations.create(_compute_location_body(name, description))
+
+    def list_compute_locations(self) -> list[ComputeLocation]:
+        """Return all compute locations (bare array, no pagination)."""
+        return self._compute_locations.list_all()
+
+    def iter_compute_locations(self) -> Iterator[ComputeLocation]:
+        """Iterate all compute locations (endpoint is not paginated)."""
+        return iter(self._compute_locations.list_all())
+
+    def get_compute_location(self, location_id: str) -> ComputeLocation:
+        """Fetch one compute location by ID. Raises :class:`NotFoundError` if missing."""
+        return self._compute_locations.get(location_id)
+
+    def update_compute_location(
+        self,
+        location_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> ComputeLocation:
+        """Update a compute location's name and/or description and return it."""
+        return self._compute_locations.update(
+            location_id, _compute_location_body(name, description)
+        )
+
+    def delete_compute_location(self, location_id: str) -> None:
+        """Delete a compute location. Raises :class:`NotFoundError` if it is missing."""
+        self._compute_locations.delete(location_id)
+
     # ── Usage pools ───────────────────────────────────────────────────────────
 
     def create_usage_pool(
@@ -1556,6 +1604,18 @@ def _storage_body(
         body["description"] = description
     if roots is not None:
         body["roots"] = dict(roots)
+    return body
+
+
+def _compute_location_body(
+    name: str | None,
+    description: str | None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
     return body
 
 

@@ -29,6 +29,7 @@ from typing import Any, Generic, TypeVar, cast
 
 __all__ = [
     "CancelResult",
+    "ComputeLocation",
     "CurrentTask",
     "Farm",
     "GPUInfo",
@@ -790,6 +791,35 @@ class Queue:
             created_at=_as_datetime(data.get("created_at")),
             updated_at=_as_datetime(data.get("updated_at")),
             description=_opt_str(data.get("description")),
+        )
+
+
+@dataclass(frozen=True)
+class ComputeLocation:
+    """A named, registered compute location."""
+
+    id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    description: str | None = None
+    worker_count: int = 0
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ComputeLocation:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            id=_as_str(data.get("id")),
+            name=_as_str(data.get("name")),
+            created_at=_as_datetime(data.get("created_at")),
+            updated_at=_as_datetime(data.get("updated_at")),
+            description=_opt_str(data.get("description")),
+            worker_count=_as_int(data.get("worker_count")),
         )
 
 

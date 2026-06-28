@@ -30,6 +30,7 @@ from .errors import (
 )
 from .models import (
     CancelResult,
+    ComputeLocation,
     CurrentTask,
     Farm,
     GPUInfo,
@@ -59,6 +60,7 @@ __all__ = [
     "APIError",
     "BadRequestError",
     "CancelResult",
+    "ComputeLocation",
     "ConflictError",
     "CurrentTask",
     "Farm",
