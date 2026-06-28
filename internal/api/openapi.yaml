@@ -43,6 +43,8 @@ tags:
     description: Queue configuration (CRUD)
   - name: storage-locations
     description: Named storage-location configuration (CRUD)
+  - name: products
+    description: Product catalog (built-ins + custom, CRUD)
   - name: usage-pools
     description: Usage-pool configuration (CRUD)
   - name: meta
@@ -845,6 +847,77 @@ components:
           additionalProperties:
             type: string
 
+    # ── Products ──────────────────────────────────────────────────────────────
+    Product:
+      type: object
+      required: [name, title, source, template, format]
+      properties:
+        name:
+          type: string
+          description: Stable slug identity, e.g. "script" or "studio/maya-render".
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        source:
+          type: string
+          enum: [builtin, custom, installed]
+        template:
+          type: string
+          description: Verbatim OpenJD template (YAML or JSON).
+        format:
+          type: string
+          enum: [yaml, json]
+
+    CreateProductRequest:
+      type: object
+      required: [name, title, template, format]
+      properties:
+        name:
+          type: string
+          description: >-
+            Lowercase slug: letters, digits, '-', '_', with at most one '/'
+            namespace separator (e.g. "studio/maya-render").
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        template:
+          type: string
+          description: Verbatim OpenJD template (YAML or JSON).
+        format:
+          type: string
+          enum: [yaml, json]
+          default: yaml
+
+    UpdateProductRequest:
+      type: object
+      required: [title, template, format]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        template:
+          type: string
+          description: Verbatim OpenJD template (YAML or JSON).
+        format:
+          type: string
+          enum: [yaml, json]
+          default: yaml
+
     # ── Usage pools ───────────────────────────────────────────────────────────
     UsagePool:
       type: object
@@ -910,6 +983,13 @@ components:
 
     NotFound:
       description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    Forbidden:
+      description: Forbidden — the operation is not permitted on this resource.
       content:
         application/problem+json:
           schema:
@@ -1950,6 +2030,114 @@ paths:
       responses:
         "204":
           description: Storage location deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Products ───────────────────────────────────────────────────────────────
+
+  /products:
+    post:
+      operationId: createProduct
+      summary: Create a custom product
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "201":
+          description: Product created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listProducts
+      summary: List all products (built-ins + custom)
+      tags: [products]
+      responses:
+        "200":
+          description: Array of products.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Product"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /products/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Product name slug.
+
+    get:
+      operationId: getProduct
+      summary: Get a product by name
+      tags: [products]
+      responses:
+        "200":
+          description: Product.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateProduct
+      summary: Update a custom product
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProductRequest"
+      responses:
+        "200":
+          description: Updated product.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteProduct
+      summary: Delete a custom product
+      tags: [products]
+      responses:
+        "204":
+          description: Product deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":

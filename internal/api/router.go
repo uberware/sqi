@@ -49,6 +49,7 @@ import (
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ui"
@@ -105,6 +106,10 @@ type Deps struct {
 	// GET /api/v1/diagnostics/logs. It is nil-tolerant: when nil (diagnostics
 	// disabled) the endpoint responds with 503.
 	DiagReader DiagReader
+
+	// Products is the product catalog (built-ins + stored), used by the
+	// /api/v1/products endpoints. Required for product routes.
+	Products *product.Catalog
 
 	// Version is the server build metadata reported by GET /api/v1/version.
 	// The zero value is acceptable (fields default to empty strings).
@@ -216,6 +221,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
+	products := newProductHandler(deps.Products, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 
@@ -277,6 +283,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
 		api.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
 		api.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
+
+		// ── Product endpoints ───────────────────────────────────
+		api.Get("/products", products.listProducts)
+		api.Post("/products", products.createProduct)
+		api.Get("/products/{name}", products.getProduct)
+		api.Put("/products/{name}", products.updateProduct)
+		api.Delete("/products/{name}", products.deleteProduct)
 
 		// ── Usage-pool endpoints ────────────────────────────────
 		api.Post("/usage-pools", usagePools.createUsagePool)
