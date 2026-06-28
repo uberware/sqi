@@ -92,6 +92,13 @@ type Store struct {
 	stmtUpdateStorageLoc    *sql.Stmt
 	stmtDeleteStorageLoc    *sql.Stmt
 
+	// ── products ─────────────────────────────────────────────────────────────
+	stmtInsertProduct    *sql.Stmt
+	stmtGetProductByName *sql.Stmt
+	stmtListProducts     *sql.Stmt
+	stmtUpdateProduct    *sql.Stmt
+	stmtDeleteProduct    *sql.Stmt
+
 	// ── usage_pools ──────────────────────────────────────────────────────
 	stmtInsertPool    *sql.Stmt
 	stmtGetPool       *sql.Stmt
@@ -303,6 +310,23 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtDeleteStorageLoc, err = s.prepare(ctx, sqlDeleteStorageLoc); err != nil {
+		return err
+	}
+
+	// ── products ──────────────────────────────────────────────────────────
+	if s.stmtInsertProduct, err = s.prepare(ctx, sqlInsertProduct); err != nil {
+		return err
+	}
+	if s.stmtGetProductByName, err = s.prepare(ctx, sqlGetProductByName); err != nil {
+		return err
+	}
+	if s.stmtListProducts, err = s.prepare(ctx, sqlListProducts); err != nil {
+		return err
+	}
+	if s.stmtUpdateProduct, err = s.prepare(ctx, sqlUpdateProduct); err != nil {
+		return err
+	}
+	if s.stmtDeleteProduct, err = s.prepare(ctx, sqlDeleteProduct); err != nil {
 		return err
 	}
 
