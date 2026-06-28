@@ -17,7 +17,7 @@ var builtinFS embed.FS
 
 var (
 	builtinList   []store.Product
-	builtinByName map[string]store.Product //nolint:unused // consumed by Catalog (Task 4)
+	builtinByName map[string]store.Product
 )
 
 func init() {
