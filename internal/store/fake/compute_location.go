@@ -12,13 +12,13 @@ import (
 )
 
 // CreateComputeLocation inserts a new location. Returns [store.ErrConflict] if a
-// location with the same name (case-insensitive) already exists.
+// location with the same name already exists.
 func (s *Store) CreateComputeLocation(_ context.Context, loc store.ComputeLocation) (store.ComputeLocation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, existing := range s.computeLocations {
-		if strings.EqualFold(existing.Name, loc.Name) {
+		if existing.Name == loc.Name {
 			return store.ComputeLocation{}, store.ErrConflict
 		}
 	}
@@ -38,14 +38,14 @@ func (s *Store) GetComputeLocation(_ context.Context, id string) (store.ComputeL
 	return loc, nil
 }
 
-// GetComputeLocationByName returns the location with the given name
-// (case-insensitive), or [store.ErrNotFound].
+// GetComputeLocationByName returns the location with the given name, or
+// [store.ErrNotFound]. The match is exact (case-sensitive).
 func (s *Store) GetComputeLocationByName(_ context.Context, name string) (store.ComputeLocation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, loc := range s.computeLocations {
-		if strings.EqualFold(loc.Name, name) {
+		if loc.Name == name {
 			return loc, nil
 		}
 	}
@@ -77,15 +77,15 @@ func (s *Store) UpdateComputeLocation(_ context.Context, loc store.ComputeLocati
 	if !ok {
 		return store.ComputeLocation{}, store.ErrNotFound
 	}
-	if !strings.EqualFold(loc.Name, existing.Name) {
+	if loc.Name != existing.Name {
 		for _, l := range s.computeLocations {
-			if strings.EqualFold(l.Name, loc.Name) {
+			if l.Name == loc.Name {
 				return store.ComputeLocation{}, store.ErrConflict
 			}
 		}
 	}
 	loc.CreatedAt = existing.CreatedAt
-	loc.UpdatedAt = time.Now()
+	loc.UpdatedAt = time.Now().UTC()
 	s.computeLocations[loc.ID] = loc
 	return loc, nil
 }

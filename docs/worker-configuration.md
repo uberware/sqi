@@ -233,8 +233,8 @@ worker:
 | **Env var** | `SQI_WORKER_COMPUTE_LOCATION` |
 
 Named compute location for this worker. When non-empty, `sqi-server`
-auto-registers an entry for this name in the compute-location registry the
-first time the worker connects — you do not need to pre-create the entry.
+auto-registers an entry for this name in the compute-location registry if one
+does not already exist — you do not need to pre-create the entry.
 The value is used for two purposes:
 
 - **Storage-location path mapping** — the server resolves `loc://` URI

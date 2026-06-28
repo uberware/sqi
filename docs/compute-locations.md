@@ -51,8 +51,9 @@ Use the REST API (`/api/v1/compute-locations`) or the web UI
 - **Delete** a location that is no longer needed.
 
 Name rules: no whitespace, forward slashes, or quote characters. Names are
-matched case-insensitively throughout sqi (the database column uses
-`COLLATE NOCASE`); `Studio-A` and `studio-a` refer to the same location.
+stored exactly as given and matched case-sensitively by the scheduler and the
+`worker_count` filter — `Studio-A` and `studio-a` are two distinct locations.
+Use consistent casing across worker configuration and step host requirements.
 
 ### Non-blocking deletes and reappearance
 
@@ -95,8 +96,8 @@ hostRequirements:
       anyOf: ["onprem_linux"]
 ```
 
-sqi promotes the first value of that attribute to the step's
-`compute_location` field. The scheduler matcher (`internal/scheduler/matcher.go`)
+sqi promotes the value (when exactly one is declared in anyOf or allOf) to
+the step's `compute_location` field. The scheduler matcher (`internal/scheduler/matcher.go`)
 then checks whether the worker's `compute_location` matches the step's value
 before assigning the task. A step with no `attr.worker.computelocation`
 requirement can run on a worker in any compute location (including workers with

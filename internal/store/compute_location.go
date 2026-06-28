@@ -13,8 +13,9 @@ import (
 // curated catalog used for surfacing and management — it does not gate
 // scheduling (the matcher keys on the raw string).
 //
-// Names are unique case-insensitively, matching the matcher's case-insensitive
-// comparison and the keys used in [StorageLocation.Roots].
+// Names are unique and matched by the scheduler EXACTLY (case-sensitive). A
+// worker's reported compute_location must match a step's declared location
+// string exactly; use consistent casing when naming locations.
 type ComputeLocation struct {
 	ID          string
 	Name        string
@@ -26,14 +27,14 @@ type ComputeLocation struct {
 // ComputeLocationStore is the persistence interface for [ComputeLocation] records.
 type ComputeLocationStore interface {
 	// CreateComputeLocation inserts a new location. Returns [ErrConflict] if a
-	// location with the same name (case-insensitive) already exists.
+	// location with the same name already exists.
 	CreateComputeLocation(ctx context.Context, loc ComputeLocation) (ComputeLocation, error)
 
 	// GetComputeLocation returns the location with the given ID, or [ErrNotFound].
 	GetComputeLocation(ctx context.Context, id string) (ComputeLocation, error)
 
-	// GetComputeLocationByName returns the location with the given name
-	// (case-insensitive), or [ErrNotFound].
+	// GetComputeLocationByName returns the location with the given name, or
+	// [ErrNotFound]. The match is exact (case-sensitive).
 	GetComputeLocationByName(ctx context.Context, name string) (ComputeLocation, error)
 
 	// ListComputeLocations returns all locations ordered by name.

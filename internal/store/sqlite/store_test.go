@@ -1903,10 +1903,15 @@ func TestComputeLocationCRUD_Parity(t *testing.T) {
 				t.Fatalf("name = %q, want on-prem", got.Name)
 			}
 
-			// Duplicate name (case-insensitive) → ErrConflict
-			_, err = st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-2", Name: "ON-PREM"})
+			// Duplicate name (exact match) → ErrConflict
+			_, err = st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-2", Name: "on-prem"})
 			if !errors.Is(err, store.ErrConflict) {
 				t.Fatalf("dup create err = %v, want ErrConflict", err)
+			}
+
+			// Different-cased name is a distinct row (case-sensitive registry)
+			if _, err := st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-2", Name: "ON-PREM"}); err != nil {
+				t.Fatalf("different-case create err = %v, want nil (separate entry)", err)
 			}
 
 			// Get / GetByName
@@ -1920,16 +1925,27 @@ func TestComputeLocationCRUD_Parity(t *testing.T) {
 				t.Fatalf("get missing err = %v, want ErrNotFound", err)
 			}
 
-			// List (ordered by name)
+			// List (ordered by name — binary collation: uppercase before lowercase)
 			if _, err := st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-3", Name: "cloud"}); err != nil {
-				t.Fatalf("create 2: %v", err)
+				t.Fatalf("create cloud: %v", err)
+			}
+			if _, err := st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-4", Name: "Zone-B"}); err != nil {
+				t.Fatalf("create Zone-B: %v", err)
 			}
 			locs, err := st.ListComputeLocations(ctx)
 			if err != nil {
 				t.Fatalf("list: %v", err)
 			}
-			if len(locs) != 2 || locs[0].Name != "cloud" || locs[1].Name != "on-prem" {
-				t.Fatalf("list = %+v, want [cloud, on-prem]", locs)
+			// ASCII binary order: 'O'=79 < 'Z'=90 < 'c'=99 < 'o'=111
+			// → ON-PREM, Zone-B, cloud, on-prem (same order in both SQLite and the fake)
+			wantNames := []string{"ON-PREM", "Zone-B", "cloud", "on-prem"}
+			if len(locs) != len(wantNames) {
+				t.Fatalf("list len = %d, want %d; got %+v", len(locs), len(wantNames), locs)
+			}
+			for i, want := range wantNames {
+				if locs[i].Name != want {
+					t.Fatalf("list[%d].Name = %q, want %q", i, locs[i].Name, want)
+				}
 			}
 
 			// Update
