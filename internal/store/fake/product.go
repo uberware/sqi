@@ -60,13 +60,15 @@ func (s *Store) UpdateProduct(_ context.Context, p store.Product) (store.Product
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, existing := range s.products {
-		if strings.EqualFold(existing.Name, p.Name) {
-			p.ID = existing.ID
-			p.CreatedAt = existing.CreatedAt
-			p.Source = existing.Source
-			s.products[id] = p
-			return p, nil
+		if !strings.EqualFold(existing.Name, p.Name) {
+			continue
 		}
+		// id, created_at and source are server-owned and immutable on update.
+		p.ID = existing.ID
+		p.CreatedAt = existing.CreatedAt
+		p.Source = existing.Source
+		s.products[id] = p
+		return p, nil
 	}
 	return store.Product{}, store.ErrNotFound
 }
