@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
@@ -1862,5 +1863,96 @@ func TestLeaseReadyTask(t *testing.T) {
 	ok2, err := s.LeaseReadyTask(ctx, tk.ID, "w2", now)
 	if err != nil || ok2 {
 		t.Errorf("second lease = %v, %v, want false, nil", ok2, err)
+	}
+}
+
+// ── ComputeLocation CRUD parity ───────────────────────────────────────────────
+
+func TestComputeLocationCRUD_Parity(t *testing.T) {
+	backends := map[string]func(t *testing.T) store.Store{
+		"sqlite": func(t *testing.T) store.Store {
+			db := t.TempDir() + "/test.db"
+			s, err := sqlite.Open(context.Background(), db, sqlite.DefaultOptions())
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			return s
+		},
+		"fake": func(_ *testing.T) store.Store { return fake.New() },
+	}
+
+	for name, mk := range backends {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			st := mk(t)
+
+			// Create
+			in := store.ComputeLocation{
+				ID:          "cl-1",
+				Name:        "on-prem",
+				Description: "main render hall",
+				CreatedAt:   time.Now().UTC(),
+				UpdatedAt:   time.Now().UTC(),
+			}
+			got, err := st.CreateComputeLocation(ctx, in)
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if got.Name != "on-prem" {
+				t.Fatalf("name = %q, want on-prem", got.Name)
+			}
+
+			// Duplicate name (case-insensitive) → ErrConflict
+			_, err = st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-2", Name: "ON-PREM"})
+			if !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("dup create err = %v, want ErrConflict", err)
+			}
+
+			// Get / GetByName
+			if _, err := st.GetComputeLocation(ctx, "cl-1"); err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if _, err := st.GetComputeLocationByName(ctx, "on-prem"); err != nil {
+				t.Fatalf("get by name: %v", err)
+			}
+			if _, err := st.GetComputeLocation(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("get missing err = %v, want ErrNotFound", err)
+			}
+
+			// List (ordered by name)
+			if _, err := st.CreateComputeLocation(ctx, store.ComputeLocation{ID: "cl-3", Name: "cloud"}); err != nil {
+				t.Fatalf("create 2: %v", err)
+			}
+			locs, err := st.ListComputeLocations(ctx)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(locs) != 2 || locs[0].Name != "cloud" || locs[1].Name != "on-prem" {
+				t.Fatalf("list = %+v, want [cloud, on-prem]", locs)
+			}
+
+			// Update
+			upd := got
+			upd.Description = "updated"
+			out, err := st.UpdateComputeLocation(ctx, upd)
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if out.Description != "updated" {
+				t.Fatalf("desc = %q, want updated", out.Description)
+			}
+			if _, err := st.UpdateComputeLocation(ctx, store.ComputeLocation{ID: "missing", Name: "x"}); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("update missing err = %v, want ErrNotFound", err)
+			}
+
+			// Delete
+			if err := st.DeleteComputeLocation(ctx, "cl-1"); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			if err := st.DeleteComputeLocation(ctx, "cl-1"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("delete missing err = %v, want ErrNotFound", err)
+			}
+		})
 	}
 }
