@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { queryKeys } from './queries'
 import type {
+  ComputeLocation,
   Farm,
   Job,
   StorageLocation,
@@ -442,6 +443,67 @@ export function useDeleteStorageLocation() {
     mutationFn: (id: string) => fetchDeleteStorageLocation(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.storageLocations.all })
+    },
+  })
+}
+
+// ── Compute location input ────────────────────────────────────────────────────
+
+export interface ComputeLocationInput {
+  name: string
+  description?: string
+}
+
+export function fetchCreateComputeLocation(input: ComputeLocationInput): Promise<ComputeLocation> {
+  return apiFetch<ComputeLocation>('/compute-locations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateComputeLocation(
+  id: string,
+  input: ComputeLocationInput,
+): Promise<ComputeLocation> {
+  return apiFetch<ComputeLocation>(`/compute-locations/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteComputeLocation(id: string): Promise<void> {
+  await apiFetch(`/compute-locations/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function useCreateComputeLocation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateComputeLocation,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.computeLocations.all })
+    },
+  })
+}
+
+export function useUpdateComputeLocation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: ComputeLocationInput }) =>
+      fetchUpdateComputeLocation(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.computeLocations.all })
+    },
+  })
+}
+
+export function useDeleteComputeLocation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteComputeLocation(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.computeLocations.all })
     },
   })
 }

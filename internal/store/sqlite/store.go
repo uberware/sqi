@@ -92,6 +92,14 @@ type Store struct {
 	stmtUpdateStorageLoc    *sql.Stmt
 	stmtDeleteStorageLoc    *sql.Stmt
 
+	// ── compute_locations ────────────────────────────────────────────────────
+	stmtInsertComputeLoc    *sql.Stmt
+	stmtGetComputeLoc       *sql.Stmt
+	stmtGetComputeLocByName *sql.Stmt
+	stmtListComputeLocs     *sql.Stmt
+	stmtUpdateComputeLoc    *sql.Stmt
+	stmtDeleteComputeLoc    *sql.Stmt
+
 	// ── products ─────────────────────────────────────────────────────────────
 	stmtInsertProduct    *sql.Stmt
 	stmtGetProductByName *sql.Stmt
@@ -310,6 +318,26 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtDeleteStorageLoc, err = s.prepare(ctx, sqlDeleteStorageLoc); err != nil {
+		return err
+	}
+
+	// ── compute_locations ─────────────────────────────────────────────────────
+	if s.stmtInsertComputeLoc, err = s.prepare(ctx, sqlInsertComputeLoc); err != nil {
+		return err
+	}
+	if s.stmtGetComputeLoc, err = s.prepare(ctx, sqlGetComputeLoc); err != nil {
+		return err
+	}
+	if s.stmtGetComputeLocByName, err = s.prepare(ctx, sqlGetComputeLocByName); err != nil {
+		return err
+	}
+	if s.stmtListComputeLocs, err = s.prepare(ctx, sqlListComputeLocs); err != nil {
+		return err
+	}
+	if s.stmtUpdateComputeLoc, err = s.prepare(ctx, sqlUpdateComputeLoc); err != nil {
+		return err
+	}
+	if s.stmtDeleteComputeLoc, err = s.prepare(ctx, sqlDeleteComputeLoc); err != nil {
 		return err
 	}
 

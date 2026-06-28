@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import type {
+  ComputeLocation,
   Farm,
   Job,
   JobDetail,
@@ -123,6 +124,10 @@ export const queryKeys = {
   storageLocations: {
     all: ['storage-locations'] as const,
     detail: (id: string) => ['storage-locations', 'detail', id] as const,
+  },
+  computeLocations: {
+    all: ['compute-locations'] as const,
+    detail: (id: string) => ['compute-locations', 'detail', id] as const,
   },
   products: {
     all: ['products'] as const,
@@ -249,6 +254,16 @@ export function fetchListStorageLocations(): Promise<StorageLocation[]> {
 /** Fetch one storage location from `GET /storage-locations/{id}`. */
 export function fetchGetStorageLocation(id: string): Promise<StorageLocation> {
   return apiFetch(`/storage-locations/${encodeURIComponent(id)}`)
+}
+
+/** Fetch all compute locations from `GET /compute-locations` (bare array, no pagination). */
+export function fetchListComputeLocations(): Promise<ComputeLocation[]> {
+  return apiFetch('/compute-locations')
+}
+
+/** Fetch one compute location from `GET /compute-locations/{id}`. */
+export function fetchGetComputeLocation(id: string): Promise<ComputeLocation> {
+  return apiFetch(`/compute-locations/${encodeURIComponent(id)}`)
 }
 
 /** Fetch the server build metadata from `GET /version`. */
@@ -411,6 +426,23 @@ export function useGetStorageLocation(id: string) {
   return useQuery({
     queryKey: queryKeys.storageLocations.detail(id),
     queryFn: () => fetchGetStorageLocation(id),
+    enabled: id !== '',
+  })
+}
+
+/** List all compute locations (name-sorted by the server, no pagination). */
+export function useListComputeLocations() {
+  return useQuery({
+    queryKey: queryKeys.computeLocations.all,
+    queryFn: fetchListComputeLocations,
+  })
+}
+
+/** Load a single compute location by id. */
+export function useGetComputeLocation(id: string) {
+  return useQuery({
+    queryKey: queryKeys.computeLocations.detail(id),
+    queryFn: () => fetchGetComputeLocation(id),
     enabled: id !== '',
   })
 }

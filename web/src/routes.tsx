@@ -15,6 +15,8 @@ import UsagePoolList from '@/pages/UsagePoolList'
 import UsagePoolForm from '@/pages/UsagePoolForm'
 import StorageLocationList from '@/pages/StorageLocationList'
 import StorageLocationForm from '@/pages/StorageLocationForm'
+import ComputeLocationList from '@/pages/ComputeLocationList'
+import ComputeLocationForm from '@/pages/ComputeLocationForm'
 import Submit from '@/pages/Submit'
 import Admin from '@/pages/Admin'
 import NotFound from '@/pages/NotFound'
@@ -40,6 +42,9 @@ export default function AppRoutes() {
       <Route path="/storage-locations" element={<StorageLocationList />} />
       <Route path="/storage-locations/new" element={<StorageLocationForm mode="create" />} />
       <Route path="/storage-locations/:id/edit" element={<StorageLocationForm mode="edit" />} />
+      <Route path="/compute-locations" element={<ComputeLocationList />} />
+      <Route path="/compute-locations/new" element={<ComputeLocationForm mode="create" />} />
+      <Route path="/compute-locations/:id/edit" element={<ComputeLocationForm mode="edit" />} />
       <Route path="/submit" element={<Submit />} />
       <Route path="/admin" element={<Admin />} />
       <Route path="*" element={<NotFound />} />

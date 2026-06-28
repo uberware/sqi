@@ -19,6 +19,7 @@ const PHASE1_NAV: NavItem[] = [
   { label: 'Queues', to: '/queues' },
   { label: 'Usage Pools', to: '/usage-pools' },
   { label: 'Storage', to: '/storage-locations' },
+  { label: 'Compute', to: '/compute-locations' },
   { label: 'Admin', to: '/admin' },
 ]
 

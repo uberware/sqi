@@ -711,6 +711,8 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		return
 	}
 
+	s.ensureComputeLocation(ctx, m.ComputeLocation)
+
 	s.logger.InfoContext(
 		ctx, "scheduler: worker registered",
 		slog.String("worker_id", m.WorkerID),
@@ -727,6 +729,37 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// ensureComputeLocation idempotently registers a compute location reported by a
+// worker. It is best-effort: errors are logged but never propagated, because the
+// registry is a convenience catalog and must not fail worker registration. An
+// empty name is ignored; a name that already exists is left untouched (including
+// its admin-curated description); a create that races another registration and
+// returns ErrConflict is treated as success.
+func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
+	if name == "" {
+		return
+	}
+	if _, err := s.store.GetComputeLocationByName(ctx, name); err == nil {
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.logger.WarnContext(ctx, "scheduler: lookup compute location failed",
+			slog.String("compute_location", name), slog.Any("error", err))
+		return
+	}
+
+	now := time.Now().UTC()
+	_, err := s.store.CreateComputeLocation(ctx, store.ComputeLocation{
+		ID:        uuid.NewString(),
+		Name:      name,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil && !errors.Is(err, store.ErrConflict) {
+		s.logger.WarnContext(ctx, "scheduler: auto-register compute location failed",
+			slog.String("compute_location", name), slog.Any("error", err))
+	}
 }
 
 // handleWorkerDeregister processes a worker.deregister message published by a

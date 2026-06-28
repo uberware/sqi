@@ -360,6 +360,140 @@ func TestHandleWorkerDeregister_MalformedAndMissingID_Acked(t *testing.T) {
 	}
 }
 
+// ── ensureComputeLocation / auto-registration ─────────────────────────────────
+
+func TestRegistration_AutoRegistersComputeLocation(t *testing.T) {
+	ctx := context.Background()
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
+	// Case 1: end-to-end — register a worker with a new location via
+	// handleWorkerMessage; assert the entity is created in the store.
+	msg := &fakeJSMsg{
+		subject: bus.SubjectWorkerRegister,
+		data: workerMsgJSON(t, RegisterMsg{
+			WorkerID: "w-loc-1", FarmID: "farm-1", Hostname: "n1", OS: "linux",
+			ComputeLocation: "render-hall",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+	if !msg.acked {
+		t.Fatal("valid register should be acked")
+	}
+	got, err := st.GetComputeLocationByName(ctx, "render-hall")
+	if err != nil {
+		t.Fatalf("expected location created: %v", err)
+	}
+	if got.Description != "" {
+		t.Fatalf("auto-registered description = %q, want empty", got.Description)
+	}
+
+	// Case 2: existing location, same name — idempotent; description preserved.
+	_, err = st.UpdateComputeLocation(ctx, store.ComputeLocation{
+		ID: got.ID, Name: got.Name, Description: "curated",
+	})
+	if err != nil {
+		t.Fatalf("seed description: %v", err)
+	}
+	s.ensureComputeLocation(ctx, "render-hall") // same case — must not create a duplicate
+	locs, err := st.ListComputeLocations(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("location count = %d, want 1", len(locs))
+	}
+	if locs[0].Description != "curated" {
+		t.Fatalf("description clobbered: %q", locs[0].Description)
+	}
+
+	// Case 3: empty location → no entity created.
+	s.ensureComputeLocation(ctx, "")
+	locs, err = st.ListComputeLocations(ctx)
+	if err != nil {
+		t.Fatalf("list after empty: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("empty location created an entity: %d", len(locs))
+	}
+}
+
+// TestRegistration_EnsureComputeLocation_StoreError verifies that a store
+// error during ensureComputeLocation does not prevent registration from
+// succeeding (best-effort).
+func TestRegistration_EnsureComputeLocation_StoreError(t *testing.T) {
+	st := &computeLocationErrSt{Store: fake.New()}
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
+	msg := &fakeJSMsg{
+		subject: bus.SubjectWorkerRegister,
+		data: workerMsgJSON(t, RegisterMsg{
+			WorkerID: "w-loc-err", FarmID: "farm-1", Hostname: "n1", OS: "linux",
+			ComputeLocation: "render-hall",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("registration must be acked even when ensureComputeLocation fails")
+	}
+	if msg.nacked {
+		t.Error("registration must not be nacked when only ensureComputeLocation fails")
+	}
+}
+
+// computeLocationErrSt wraps the fake store and makes GetComputeLocationByName
+// return ErrNotFound (so ensureComputeLocation proceeds to Create) and
+// CreateComputeLocation return an error, exercising the create-failure
+// best-effort path.
+type computeLocationErrSt struct {
+	store.Store
+}
+
+func (*computeLocationErrSt) GetComputeLocationByName(_ context.Context, _ string) (store.ComputeLocation, error) {
+	return store.ComputeLocation{}, store.ErrNotFound // proceed to Create
+}
+
+func (*computeLocationErrSt) CreateComputeLocation(_ context.Context, _ store.ComputeLocation) (store.ComputeLocation, error) {
+	return store.ComputeLocation{}, context.DeadlineExceeded
+}
+
+// computeLocationLookupErrSt wraps the fake store and makes
+// GetComputeLocationByName fail with a non-ErrNotFound error, exercising the
+// lookup-failure best-effort path (ensureComputeLocation returns early without
+// calling Create).
+type computeLocationLookupErrSt struct {
+	store.Store
+}
+
+func (*computeLocationLookupErrSt) GetComputeLocationByName(_ context.Context, _ string) (store.ComputeLocation, error) {
+	return store.ComputeLocation{}, context.DeadlineExceeded
+}
+
+// TestRegistration_EnsureComputeLocation_LookupError verifies that a lookup
+// failure in ensureComputeLocation does not prevent the worker registration
+// from succeeding (best-effort).
+func TestRegistration_EnsureComputeLocation_LookupError(t *testing.T) {
+	st := &computeLocationLookupErrSt{Store: fake.New()}
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
+	msg := &fakeJSMsg{
+		subject: bus.SubjectWorkerRegister,
+		data: workerMsgJSON(t, RegisterMsg{
+			WorkerID: "w-loc-err2", FarmID: "farm-1", Hostname: "n1", OS: "linux",
+			ComputeLocation: "render-hall",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("registration must be acked even when compute location lookup fails")
+	}
+	if msg.nacked {
+		t.Error("registration must not be nacked when only ensureComputeLocation fails")
+	}
+}
+
 // ── handleWorkerMessage routing ───────────────────────────────────────────────
 
 func TestHandleWorkerMessage_UnknownSubject_Acked(t *testing.T) {

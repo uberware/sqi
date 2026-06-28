@@ -286,6 +286,18 @@ export interface StorageLocation {
   updated_at: string
 }
 
+// ── Compute location ──────────────────────────────────────────────────────────
+
+/** Wire shape returned by compute location endpoints. */
+export interface ComputeLocation {
+  id: string
+  name: string
+  description?: string
+  worker_count: number
+  created_at: string
+  updated_at: string
+}
+
 // ── Usage pool ────────────────────────────────────────────────────────────────
 
 /** Wire shape returned by usage pool endpoints. */
