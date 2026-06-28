@@ -29,6 +29,8 @@ export type LogStream = 'stdout' | 'stderr'
 export type TemplateFormat = 'yaml' | 'json'
 /** Backing storage kind for a storage location. */
 export type StorageLocationType = 'filesystem' | 's3'
+/** Source/origin of a product in the catalog. */
+export type ProductSource = 'builtin' | 'custom' | 'installed'
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
 
@@ -298,6 +300,20 @@ export interface UsagePool {
   available: number
   created_at: string
   updated_at: string
+}
+
+// ── Product ───────────────────────────────────────────────────────────────────
+
+/** Wire shape returned by GET /api/v1/products and GET /api/v1/products/{name}. */
+export interface Product {
+  name: string
+  title: string
+  description: string
+  category: string
+  version: string
+  source: ProductSource
+  template: string
+  format: TemplateFormat
 }
 
 // ── Job submission ────────────────────────────────────────────────────────────

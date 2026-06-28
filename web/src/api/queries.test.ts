@@ -16,6 +16,8 @@ import {
   fetchGetUsagePool,
   fetchListStorageLocations,
   fetchGetStorageLocation,
+  fetchProducts,
+  fetchProduct,
 } from './queries'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -332,5 +334,53 @@ describe('queryKeys.storageLocations', () => {
       'detail',
       'loc-1',
     ])
+  })
+})
+
+// ── fetchProducts ─────────────────────────────────────────────────────────────
+
+describe('fetchProducts', () => {
+  it('GETs /products and returns the bare array', async () => {
+    const body = [
+      {
+        name: 'script',
+        title: 'Run a Shell Command',
+        description: 'Execute an arbitrary shell script.',
+        category: 'general',
+        version: '1.0.0',
+        source: 'builtin',
+        template: 'x',
+        format: 'yaml',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(makeOkResponse(body))
+    const result = await fetchProducts()
+    expect(result).toHaveLength(1)
+    expect(result[0]?.name).toBe('script')
+  })
+})
+
+// ── fetchProduct ──────────────────────────────────────────────────────────────
+
+describe('fetchProduct', () => {
+  it('calls /api/v1/products/:name', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ name: 'script' }))
+    await fetchProduct('script')
+    expect(calledUrl()).toBe('/api/v1/products/script')
+  })
+
+  it('URL-encodes the product name', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ name: 'my product' }))
+    await fetchProduct('my product')
+    expect(calledUrl()).toBe('/api/v1/products/my%20product')
+  })
+})
+
+// ── queryKeys.products ────────────────────────────────────────────────────────
+
+describe('queryKeys.products', () => {
+  it('exposes stable all + detail keys', () => {
+    expect(queryKeys.products.all).toEqual(['products'])
+    expect(queryKeys.products.detail('script')).toEqual(['products', 'script'])
   })
 })

@@ -6,6 +6,7 @@ import type {
   Farm,
   Job,
   JobDetail,
+  Product,
   StorageLocation,
   UsagePool,
   ListResponse,
@@ -122,6 +123,10 @@ export const queryKeys = {
   storageLocations: {
     all: ['storage-locations'] as const,
     detail: (id: string) => ['storage-locations', 'detail', id] as const,
+  },
+  products: {
+    all: ['products'] as const,
+    detail: (name: string) => ['products', name] as const,
   },
   version: {
     all: ['version'] as const,
@@ -249,6 +254,16 @@ export function fetchGetStorageLocation(id: string): Promise<StorageLocation> {
 /** Fetch the server build metadata from `GET /version`. */
 export function fetchVersion(): Promise<VersionInfo> {
   return apiFetch('/version')
+}
+
+/** Fetch all products from `GET /products` (bare array, no pagination). */
+export function fetchProducts(): Promise<Product[]> {
+  return apiFetch('/products')
+}
+
+/** Fetch one product by name from `GET /products/{name}`. */
+export function fetchProduct(name: string): Promise<Product> {
+  return apiFetch(`/products/${encodeURIComponent(name)}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -397,6 +412,23 @@ export function useGetStorageLocation(id: string) {
     queryKey: queryKeys.storageLocations.detail(id),
     queryFn: () => fetchGetStorageLocation(id),
     enabled: id !== '',
+  })
+}
+
+/** List all products in the catalog (bare array, no pagination). */
+export function useProducts() {
+  return useQuery({
+    queryKey: queryKeys.products.all,
+    queryFn: fetchProducts,
+  })
+}
+
+/** Load a single product by name. Disabled when name is empty. */
+export function useProduct(name: string) {
+  return useQuery({
+    queryKey: queryKeys.products.detail(name),
+    queryFn: () => fetchProduct(name),
+    enabled: name !== '',
   })
 }
 
