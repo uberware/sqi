@@ -76,6 +76,7 @@ export default function ProductDetail() {
                 type="button"
                 className={styles.deleteBtn}
                 onClick={() => void handleDelete()}
+                disabled={deleteProduct.isPending}
               >
                 Delete
               </button>

@@ -39,7 +39,14 @@ function makeProduct(over: Partial<Product> = {}): Product {
 
 function LocationDisplay() {
   const loc = useLocation()
-  return <div data-testid="location">{loc.pathname}</div>
+  const state = loc.state as { duplicateFrom?: { title?: string; template?: string } } | null
+  return (
+    <div>
+      <div data-testid="location">{loc.pathname}</div>
+      <div data-testid="dup-title">{state?.duplicateFrom?.title ?? ''}</div>
+      <div data-testid="dup-template">{state?.duplicateFrom?.template ?? ''}</div>
+    </div>
+  )
 }
 
 function renderDetail(path: string) {
@@ -82,6 +89,10 @@ describe('ProductDetail', () => {
     renderDetail('/products/script')
     await userEvent.click(await screen.findByRole('button', { name: /duplicate to custom/i }))
     expect(screen.getByTestId('location')).toHaveTextContent('/products/new')
+    // The built-in's title + template are carried as duplicate router state so the
+    // create form pre-fills (name is intentionally blank, forcing a fresh slug).
+    expect(screen.getByTestId('dup-title')).toHaveTextContent('My Render')
+    expect(screen.getByTestId('dup-template')).toHaveTextContent('name: my-template')
   })
 
   it('shows Edit and Delete for a custom product and deletes after confirm', async () => {
