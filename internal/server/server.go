@@ -28,6 +28,7 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
@@ -311,6 +312,7 @@ func (s *Server) start(ctx context.Context) error {
 		Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
 			EnforceLimits: s.cfg.EnforceOpenJDLimits,
 		}),
+		Products:  product.NewCatalog(s.store),
 		Scheduler: s.sched,
 		Hub:       s.wsHub,
 		Version:   version.Get(),

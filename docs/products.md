@@ -1,0 +1,235 @@
+# Products
+
+A **product** is a named, versioned wrapper around a verbatim OpenJD template.
+It gives the template a stable identity (`name`), human-readable metadata
+(`title`, `description`, `category`, `version`), and a home in the catalog so
+clients can list and submit jobs without ever handling a raw template file.
+
+Products are thin by design. Parameters, their `userInterface` hints (control,
+label, group), machine requirements, and step-level setup/teardown all live
+**inside** the OpenJD template — not as separate product fields. The product
+layer adds only the catalog envelope on top.
+
+---
+
+## Concept
+
+```
+              ┌────────────────────────────────────────────┐
+              │                  Product                   │
+              │  name · title · description · category     │
+              │  version · source                          │
+              │  ┌──────────────────────────────────────┐  │
+              │  │         OpenJD template (verbatim)   │  │
+              │  │  parameters · steps · requirements   │  │
+              │  └──────────────────────────────────────┘  │
+              └────────────────────────────────────────────┘
+```
+
+When a job is submitted via a product (`POST /api/v1/products/{name}/jobs`), the
+server loads the product's stored template and hands it to the same
+`openjd.Submitter` pipeline as a raw `POST /api/v1/jobs`. The resulting job row
+contains a **snapshot** of the template at submission time, so later edits to the
+product do not affect running or queued jobs.
+
+---
+
+## Definition file format
+
+A product is defined in a YAML file with two sections: metadata fields and an
+inline `template:` key.
+
+```yaml
+name: python
+title: Run a Python Script
+description: Run a Python script with a chosen interpreter.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Python
+  parameterDefinitions:
+    - name: Interpreter
+      type: STRING
+      default: python3
+      userInterface:
+        control: LINE_EDIT
+        label: Interpreter
+    - name: Script
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Python Script
+  steps:
+    - name: Run
+      script:
+        embeddedFiles:
+          - name: script.py
+            type: TEXT
+            data: "{{Param.Script}}"
+        actions:
+          onRun:
+            command: "{{Param.Interpreter}}"
+            args: ["script.py"]
+```
+
+### Metadata fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Stable slug identity. Lowercase letters, digits, `_` and `-`, with at most one `/` namespace separator (e.g. `studio/maya-render`). |
+| `title` | yes | Human-readable display name. |
+| `description` | no | Short summary shown in the catalog. |
+| `category` | no | Free-form group label (e.g. `General`, `Rendering`). |
+| `version` | no | Semver string used for future update-detection. |
+| `template` | yes | Inline OpenJD job template (`specificationVersion: jobtemplate-2023-09`). |
+
+The `name` slug constrains to `^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)?$`.
+The inline template is re-serialized and fully validated (via `openjd.Parse` +
+`openjd.ValidateWithOptions`) when the definition is parsed — a malformed
+template is rejected at load time.
+
+### `userInterface` parameter hints
+
+The `userInterface` block on each parameter is base-spec OpenJD, not a product
+extension. sqi passes these hints through to API clients and the web UI so they
+can render appropriate form controls.
+
+---
+
+## Built-in products
+
+Three products are embedded directly in the `sqi-server` binary. They are
+defined as YAML files under `internal/product/builtins/`, compiled in via
+`//go:embed`, parsed and validated at process init, and served read-only from the
+catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
+
+### `script` — Run a Shell Command
+
+Demonstrates the minimal product shape: one `STRING` parameter with a
+`MULTILINE_EDIT` control. Executes `/bin/sh -c "{{Param.Command}}"`.
+
+### `python` — Run a Python Script
+
+Demonstrates two parameters (`Interpreter` and `Script`), an OpenJD
+`embeddedFiles` block that materialises the script body as a file named
+`script.py`, and a configurable interpreter path defaulting to `python3`.
+
+### `container` — Run a Docker Image
+
+Demonstrates `hostRequirements.attributes` to gate tasks to workers that
+advertise `attr.worker.docker = "true"`. Runs `docker run --rm {{Param.Image}}`.
+
+---
+
+## Sources
+
+Every product carries a `source` field identifying where it came from:
+
+| Source | Value | Description |
+|---|---|---|
+| Built-in | `builtin` | Embedded in the binary. Served read-only; cannot be mutated or deleted. |
+| Custom | `custom` | Authored on this server via `POST /api/v1/products`. Mutable. |
+| Installed | `installed` | Installed from a community preset repository. Mutable. |
+
+Built-in names are reserved: `POST /api/v1/products` rejects a `name` that
+matches an existing built-in.
+
+---
+
+## Version and stable-name identity
+
+`name` is the stable identity of a product across its lifetime. The `version`
+string (e.g. `1.0.0`) is stored alongside the template and is available for
+future tooling to detect when an installed product's template has been
+superseded by a newer release. No automatic update behaviour is implemented in
+Phase 2; `version` is a label only.
+
+---
+
+## REST surface
+
+All endpoints are under `/api/v1/products`.
+
+### `GET /api/v1/products`
+
+Returns all products — built-ins merged with stored products — ordered by name.
+
+Response: `200 OK`, array of `Product` objects.
+
+### `POST /api/v1/products`
+
+Creates a new custom product. The server validates the inline template before
+writing to SQLite. Rejects names that shadow a built-in.
+
+Request body:
+
+```json
+{
+  "name": "my-render",
+  "title": "My Renderer",
+  "description": "Renders a frame range.",
+  "category": "Rendering",
+  "version": "1.0.0",
+  "template": "<OpenJD YAML or JSON string>",
+  "format": "yaml"
+}
+```
+
+`format` is `"yaml"` (default) or `"json"`.
+
+Responses: `201 Created` (product), `400 Bad Request`, `409 Conflict`.
+
+### `GET /api/v1/products/{name}`
+
+Returns the named product, preferring a built-in over a stored product of the
+same name.
+
+Responses: `200 OK` (product), `404 Not Found`.
+
+### `PUT /api/v1/products/{name}`
+
+Replaces the mutable fields of a stored product. Built-ins return
+`403 Forbidden`.
+
+Request body: same shape as `POST /api/v1/products` (name in path takes
+precedence over name in body).
+
+Responses: `200 OK`, `400`, `403`, `404`.
+
+### `DELETE /api/v1/products/{name}`
+
+Deletes a stored product. Built-ins return `403 Forbidden`. Does not affect
+already-submitted jobs (which snapshot their template at submission).
+
+Responses: `204 No Content`, `403`, `404`.
+
+### `POST /api/v1/products/{name}/jobs`
+
+Submits a job using the named product's template. The template is loaded from
+the catalog, the supplied parameters are applied, the parameter space is
+expanded into tasks, and the job is persisted — identical to the `POST
+/api/v1/jobs` path, but driven by the catalog rather than a raw template body.
+
+Request body:
+
+```json
+{
+  "farm_id": "<uuid>",
+  "queue_id": "<uuid>",
+  "owner": "alice",
+  "submitter": "my-tool/1.0",
+  "priority": 50,
+  "project": "my-project",
+  "parameters": {
+    "Script": "print('hello')",
+    "Interpreter": "python3"
+  }
+}
+```
+
+`farm_id` and `queue_id` are required. `parameters` is a flat `string→string`
+map; keys must match the parameter names declared in the product's template.
+
+Responses: `201 Created` (`Job` object, same shape as `POST /api/v1/jobs`),
+`400`, `404`, `422 Unprocessable Entity` (template/parameter validation failure).

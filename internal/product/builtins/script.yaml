@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: script
+title: Run a Shell Command
+description: Run an arbitrary shell command on a worker.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Script
+  parameterDefinitions:
+    - name: Command
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Command
+  steps:
+    - name: Run
+      script:
+        actions:
+          onRun:
+            command: /bin/sh
+            args: ["-c", "{{Param.Command}}"]

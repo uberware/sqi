@@ -47,6 +47,7 @@ type Store interface {
 	FarmStore
 	QueueStore
 	StorageLocationStore
+	ProductStore
 	UsagePoolStore
 	UsageClaimStore
 	WorkerStore

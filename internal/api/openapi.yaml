@@ -43,6 +43,8 @@ tags:
     description: Queue configuration (CRUD)
   - name: storage-locations
     description: Named storage-location configuration (CRUD)
+  - name: products
+    description: Product catalog (built-ins + custom, CRUD)
   - name: usage-pools
     description: Usage-pool configuration (CRUD)
   - name: meta
@@ -845,6 +847,110 @@ components:
           additionalProperties:
             type: string
 
+    # ── Products ──────────────────────────────────────────────────────────────
+    Product:
+      type: object
+      required: [name, title, source, template, format]
+      properties:
+        name:
+          type: string
+          description: Stable slug identity, e.g. "script" or "studio/maya-render".
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        source:
+          type: string
+          enum: [builtin, custom, installed]
+        template:
+          type: string
+          description: Verbatim OpenJD template (YAML or JSON).
+        format:
+          type: string
+          enum: [yaml, json]
+
+    CreateProductRequest:
+      type: object
+      required: [name, title, template, format]
+      properties:
+        name:
+          type: string
+          description: >-
+            Lowercase slug: letters, digits, '-', '_', with at most one '/'
+            namespace separator (e.g. "studio/maya-render").
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        template:
+          type: string
+          description: Verbatim OpenJD template (YAML or JSON).
+        format:
+          type: string
+          enum: [yaml, json]
+          default: yaml
+
+    UpdateProductRequest:
+      type: object
+      required: [title, template, format]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        template:
+          type: string
+          description: Verbatim OpenJD template (YAML or JSON).
+        format:
+          type: string
+          enum: [yaml, json]
+          default: yaml
+
+    SubmitProductJobRequest:
+      type: object
+      required: [farm_id, queue_id]
+      properties:
+        farm_id:
+          type: string
+          description: Farm to submit the job into.
+        queue_id:
+          type: string
+          description: Queue to submit the job into.
+        owner:
+          type: string
+          description: Human-readable owner label.
+        submitter:
+          type: string
+          description: System or tool that submitted the job.
+        priority:
+          type: integer
+          minimum: 1
+          default: 50
+          description: Job scheduling priority (higher = sooner).
+        project:
+          type: string
+          description: Arbitrary project label for filtering.
+        parameters:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Key/value pairs matching the product template's parameterDefinitions.
+            Missing keys with defaults are filled automatically; missing required
+            keys return 422.
+
     # ── Usage pools ───────────────────────────────────────────────────────────
     UsagePool:
       type: object
@@ -910,6 +1016,13 @@ components:
 
     NotFound:
       description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    Forbidden:
+      description: Forbidden — the operation is not permitted on this resource.
       content:
         application/problem+json:
           schema:
@@ -1952,6 +2065,158 @@ paths:
           description: Storage location deleted.
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Products ───────────────────────────────────────────────────────────────
+
+  /products:
+    post:
+      operationId: createProduct
+      summary: Create a custom product
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "201":
+          description: Product created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listProducts
+      summary: List all products (built-ins + custom)
+      tags: [products]
+      responses:
+        "200":
+          description: Array of products.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Product"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /products/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Product name slug.
+
+    get:
+      operationId: getProduct
+      summary: Get a product by name
+      tags: [products]
+      responses:
+        "200":
+          description: Product.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateProduct
+      summary: Update a custom product
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProductRequest"
+      responses:
+        "200":
+          description: Updated product.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteProduct
+      summary: Delete a custom product
+      tags: [products]
+      responses:
+        "204":
+          description: Product deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /products/{name}/jobs:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Product name slug.
+
+    post:
+      operationId: submitProductJob
+      summary: Submit a job using a product template
+      tags: [products]
+      description: |
+        Loads the named product's OpenJD template, applies the supplied
+        parameters, expands the parameter space into tasks, and persists the
+        resulting job — exactly as `POST /api/v1/jobs` does, but driven by a
+        catalog entry rather than a raw template body.
+
+        `farm_id` and `queue_id` are required fields in the request body.
+        `parameters` is a flat string→string map whose keys must match the
+        parameter names declared in the product's template.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitProductJobRequest"
+      responses:
+        "201":
+          description: Job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
