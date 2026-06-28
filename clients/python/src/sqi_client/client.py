@@ -1268,10 +1268,17 @@ class SqiClient:
         self,
         location_id: str,
         *,
-        name: str | None = None,
+        name: str,
         description: str | None = None,
     ) -> ComputeLocation:
-        """Update a compute location's name and/or description and return it."""
+        """Replace a compute location's fields (PUT, full replacement) and return it.
+
+        Args:
+            location_id: The compute location to update.
+            name: New name for the compute location (required — the server
+                rejects a PUT with an empty or missing name).
+            description: Optional description; omit to clear it.
+        """
         return self._compute_locations.update(
             location_id, _compute_location_body(name, description)
         )
@@ -1608,12 +1615,10 @@ def _storage_body(
 
 
 def _compute_location_body(
-    name: str | None,
+    name: str,
     description: str | None,
 ) -> dict[str, Any]:
-    body: dict[str, Any] = {}
-    if name is not None:
-        body["name"] = name
+    body: dict[str, Any] = {"name": name}
     if description is not None:
         body["description"] = description
     return body
