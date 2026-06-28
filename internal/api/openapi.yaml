@@ -43,6 +43,8 @@ tags:
     description: Queue configuration (CRUD)
   - name: storage-locations
     description: Named storage-location configuration (CRUD)
+  - name: compute-locations
+    description: Compute-location configuration (CRUD)
   - name: products
     description: Product catalog (built-ins + custom, CRUD)
   - name: usage-pools
@@ -846,6 +848,40 @@ components:
           type: object
           additionalProperties:
             type: string
+
+    # ── Compute locations ─────────────────────────────────────────────────────
+    ComputeLocation:
+      type: object
+      required: [id, name, worker_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        worker_count:
+          type: integer
+          minimum: 0
+          description: Number of online workers currently reporting this location.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ComputeLocationInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[^/\s"'']+$'
+          description: >-
+            Must be referenceable: no whitespace, "/", or quote characters.
+        description:
+          type: string
 
     # ── Products ──────────────────────────────────────────────────────────────
     Product:
@@ -2063,6 +2099,107 @@ paths:
       responses:
         "204":
           description: Storage location deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Compute locations ─────────────────────────────────────────────────────
+
+  /compute-locations:
+    post:
+      operationId: createComputeLocation
+      summary: Create a compute location
+      tags: [compute-locations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComputeLocationInput"
+      responses:
+        "201":
+          description: Compute location created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComputeLocation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listComputeLocations
+      summary: List all compute locations
+      tags: [compute-locations]
+      responses:
+        "200":
+          description: Array of compute locations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ComputeLocation"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /compute-locations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getComputeLocation
+      summary: Get a compute location
+      tags: [compute-locations]
+      responses:
+        "200":
+          description: Compute location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComputeLocation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateComputeLocation
+      summary: Update a compute location
+      tags: [compute-locations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComputeLocationInput"
+      responses:
+        "200":
+          description: Updated compute location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComputeLocation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteComputeLocation
+      summary: Delete a compute location
+      tags: [compute-locations]
+      responses:
+        "204":
+          description: Compute location deleted.
         "404":
           $ref: "#/components/responses/NotFound"
         "500":

@@ -220,6 +220,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
+	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
 	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
@@ -283,6 +284,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
 		api.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
 		api.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
+
+		// ── Compute-location endpoints ──────────────────────────
+		api.Post("/compute-locations", computeLocs.createComputeLocation)
+		api.Get("/compute-locations", computeLocs.listComputeLocations)
+		api.Get("/compute-locations/{id}", computeLocs.getComputeLocation)
+		api.Put("/compute-locations/{id}", computeLocs.updateComputeLocation)
+		api.Delete("/compute-locations/{id}", computeLocs.deleteComputeLocation)
 
 		// ── Product endpoints ───────────────────────────────────
 		api.Get("/products", products.listProducts)
