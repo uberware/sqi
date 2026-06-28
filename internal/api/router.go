@@ -221,7 +221,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, logger)
+	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 
@@ -290,6 +290,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/products/{name}", products.getProduct)
 		api.Put("/products/{name}", products.updateProduct)
 		api.Delete("/products/{name}", products.deleteProduct)
+		api.Post("/products/{name}/jobs", products.submitProductJob)
 
 		// ── Usage-pool endpoints ────────────────────────────────
 		api.Post("/usage-pools", usagePools.createUsagePool)

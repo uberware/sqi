@@ -10,17 +10,26 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 )
 
 type productHandler struct {
-	catalog *product.Catalog
-	logger  *slog.Logger
+	catalog   *product.Catalog
+	submitter *openjd.Submitter
+	sched     *scheduler.Scheduler
+	logger    *slog.Logger
 }
 
-func newProductHandler(catalog *product.Catalog, logger *slog.Logger) *productHandler {
-	return &productHandler{catalog: catalog, logger: logger}
+func newProductHandler(
+	catalog *product.Catalog,
+	submitter *openjd.Submitter,
+	sched *scheduler.Scheduler,
+	logger *slog.Logger,
+) *productHandler {
+	return &productHandler{catalog: catalog, submitter: submitter, sched: sched, logger: logger}
 }
 
 type productResponse struct {
@@ -132,6 +141,65 @@ func (h *productHandler) deleteProduct(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// submitProductRequest is the JSON body accepted by POST /api/v1/products/{name}/jobs.
+type submitProductRequest struct {
+	FarmID     string            `json:"farm_id"`
+	QueueID    string            `json:"queue_id"`
+	Owner      string            `json:"owner"`
+	Submitter  string            `json:"submitter"`
+	Priority   int               `json:"priority"`
+	Project    string            `json:"project"`
+	Parameters map[string]string `json:"parameters"`
+}
+
+// submitProductJob loads the named product's template and submits a job via
+// the existing openjd.Submitter pipeline.
+func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	p, err := h.catalog.GetByName(ctx, chi.URLParam(r, "name"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "product not found")
+			return
+		}
+		writeProblem(w, r, http.StatusInternalServerError, "failed to load product")
+		return
+	}
+
+	var req submitProductRequest
+	if decErr := json.NewDecoder(r.Body).Decode(&req); decErr != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.FarmID == "" || req.QueueID == "" {
+		writeProblem(w, r, http.StatusBadRequest, "farm_id and queue_id are required")
+		return
+	}
+
+	result, err := h.submitter.Submit(ctx, p.Template, p.Format, openjd.SubmitOptions{
+		FarmID:     req.FarmID,
+		QueueID:    req.QueueID,
+		Owner:      req.Owner,
+		Submitter:  req.Submitter,
+		Priority:   req.Priority,
+		Project:    req.Project,
+		Parameters: req.Parameters,
+	})
+	if err != nil {
+		if isSubmitValidationError(err) {
+			writeProblem(w, r, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		h.logger.ErrorContext(ctx, "products: submit failed", slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to create job")
+		return
+	}
+	if h.sched != nil {
+		h.sched.WakeQueue(result.Job.QueueID)
+	}
+	writeJSON(w, http.StatusCreated, toJobResponse(result.Job))
+}
+
 // decodeProductBody decodes and validates a product create/update body. When
 // nameOverride is non-empty (update), it replaces the body's name with the path
 // name. It writes the error response and returns ok=false on failure.
@@ -144,6 +212,10 @@ func decodeProductBody(w http.ResponseWriter, r *http.Request, nameOverride stri
 	name := req.Name
 	if nameOverride != "" {
 		name = nameOverride
+	}
+	if name == "" {
+		writeProblem(w, r, http.StatusBadRequest, "name is required")
+		return store.Product{}, false
 	}
 	format := store.TemplateFormat(req.Format)
 	if format == "" {

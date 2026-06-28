@@ -5,14 +5,16 @@ package api
 // Unit tests for product REST handlers.
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
@@ -28,15 +30,66 @@ steps:
           command: echo
           args: ["hi"]`
 
-func newProductRouter(st store.Store) chi.Router {
-	h := newProductHandler(product.NewCatalog(st), newTestLogger())
+// productTestSrv bundles the HTTP handler and the underlying fake store so
+// tests can both serve requests and seed the store directly.
+type productTestSrv struct {
+	chi.Router
+
+	st *fake.Store
+}
+
+// newProductTestServer creates a fake-backed product test server with the
+// Submitter wired in (needed for submit-by-product tests).
+func newProductTestServer(t *testing.T) *productTestSrv {
+	t.Helper()
+	st := fake.New()
+	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/products", h.listProducts)
 	r.Post("/api/v1/products", h.createProduct)
 	r.Get("/api/v1/products/{name}", h.getProduct)
 	r.Put("/api/v1/products/{name}", h.updateProduct)
 	r.Delete("/api/v1/products/{name}", h.deleteProduct)
+	r.Post("/api/v1/products/{name}/jobs", h.submitProductJob)
+	return &productTestSrv{Router: r, st: st}
+}
+
+// newProductRouter builds a product router for CRUD-only tests (no Submitter
+// needed). Also registers the submit route so route resolution is consistent.
+func newProductRouter(st store.Store) chi.Router {
+	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, newTestLogger())
+	r := chi.NewRouter()
+	r.Get("/api/v1/products", h.listProducts)
+	r.Post("/api/v1/products", h.createProduct)
+	r.Get("/api/v1/products/{name}", h.getProduct)
+	r.Put("/api/v1/products/{name}", h.updateProduct)
+	r.Delete("/api/v1/products/{name}", h.deleteProduct)
+	r.Post("/api/v1/products/{name}/jobs", h.submitProductJob)
 	return r
+}
+
+// seedProductSubmitPrereqs inserts a farm and queue into the test server's
+// fake store and returns their IDs.
+func seedProductSubmitPrereqs(t *testing.T, srv *productTestSrv) (farmID, queueID string) {
+	t.Helper()
+	ctx := t.Context()
+
+	farm, err := srv.st.CreateFarm(ctx, store.Farm{
+		ID:   uuid.NewString(),
+		Name: "test-farm-" + uuid.NewString()[:8],
+	})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	queue, err := srv.st.CreateQueue(ctx, store.Queue{
+		ID:     uuid.NewString(),
+		FarmID: farm.ID,
+		Name:   "test-queue-" + uuid.NewString()[:8],
+	})
+	if err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	return farm.ID, queue.ID
 }
 
 func TestProducts_ListIncludesBuiltins(t *testing.T) {
@@ -106,5 +159,31 @@ func TestProducts_MutateBuiltinIs403(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
-	_ = context.Background()
+}
+
+func TestProducts_SubmitBuiltin(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+
+	body := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters": map[string]string{"Command": "echo hi"},
+	})
+	req := newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(body.Bytes()))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("submit status = %d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestProducts_SubmitUnknownProductIs404(t *testing.T) {
+	srv := newProductTestServer(t)
+	body := jsonBody(t, map[string]any{"farm_id": "f", "queue_id": "q"})
+	req := newReq(t, http.MethodPost, "/api/v1/products/ghost/jobs", bytes.NewReader(body.Bytes()))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
 }
