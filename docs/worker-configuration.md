@@ -232,15 +232,29 @@ worker:
 | **Default** | `""` (none) |
 | **Env var** | `SQI_WORKER_COMPUTE_LOCATION` |
 
-Named compute location matching a storage location configured in
-`sqi-server`. Used for resolved-mode path mapping: the server substitutes
-named storage locations in job definitions with the concrete paths valid on
-this worker's host. Leave empty if you are not using named storage locations.
+Named compute location for this worker. When non-empty, `sqi-server`
+auto-registers an entry for this name in the compute-location registry the
+first time the worker connects — you do not need to pre-create the entry.
+The value is used for two purposes:
+
+- **Storage-location path mapping** — the server resolves `loc://` URI
+  references using the root keyed by this name in each storage location (see
+  [`docs/storage-locations.md`](storage-locations.md)).
+- **Step affinity matching** — steps that declare
+  `attr.worker.computelocation: [<name>]` in their OpenJD host requirements
+  are only assigned to workers whose `compute_location` matches.
+
+Leave empty if you are not using named storage locations and no steps declare
+a compute-location requirement.
 
 ```yaml
 worker:
   compute_location: "nas-studio-a"
 ```
+
+See [`docs/compute-locations.md`](compute-locations.md) for the full guide,
+including the auto-registration model, non-blocking deletes, and the
+relationship to storage-location roots.
 
 ---
 

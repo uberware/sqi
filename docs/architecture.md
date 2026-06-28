@@ -172,6 +172,17 @@ submitted, task becomes `ready`, task completes freeing cores, or stale-task
 reaper reclaims a task). Unfulfillable requests time out after ~30 s and return
 an empty batch; the worker immediately re-requests.
 
+**Compute-location registry.** sqi maintains a curated, auto-populated catalog
+of named compute locations (`compute_locations` table; served at
+`GET /api/v1/compute-locations`). The catalog is informational only — it does
+not gate scheduling. The matcher (`internal/scheduler/matcher.go`) keys
+directly on the raw `step.ComputeLocation` string (promoted from the step's
+`attr.worker.computelocation` host requirement) and on the worker's
+`ComputeLocation` field; it is unchanged by the registry feature. A worker
+whose location name does not appear in the registry is fully eligible for
+matching tasks, and a registry entry with no matching workers simply reports
+`worker_count: 0`. See [`docs/compute-locations.md`](compute-locations.md).
+
 ### 4. Worker execution
 
 ```
@@ -304,6 +315,7 @@ Full DDL lives in `internal/store/migrations/`. The primary tables are:
 | `tasks` | Atomic work unit; one per expanded parameter combination |
 | `task_attempts` | One row per execution attempt; holds exit code, timing, session_id |
 | `workers` | Registered workers with capabilities and status |
+| `compute_locations` | Named compute-location registry (curated catalog; auto-populated from worker registrations) |
 | `storage_locations` | Named storage locations with per-compute-location root mappings |
 | `usage_pools` | Named concurrency limits (usage pools) with `max_concurrent` cap |
 | `usage_claims` | Active usage claims tied to task attempts |
@@ -380,4 +392,5 @@ See [`docs/products.md`](products.md) for the full reference.
 - [`docs/api.md`](api.md) — REST API reference with worked examples.
 - [`docs/python-client.md`](python-client.md) — Python client (`sqi-sdk`) reference.
 - [`docs/development.md`](development.md) — Local setup, test commands, adding a new endpoint.
+- [`docs/compute-locations.md`](compute-locations.md) — Compute-location registry: auto-registration, curation, step affinity, and storage-location roots.
 - [`internal/store/migrations/`](../internal/store/migrations) — Full schema DDL.
