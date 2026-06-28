@@ -71,7 +71,7 @@ func (s *Store) ListProducts(ctx context.Context) ([]store.Product, error) {
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck // read-only rows
+	defer rows.Close()
 	var out []store.Product
 	for rows.Next() {
 		p, scanErr := scanProduct(rows)

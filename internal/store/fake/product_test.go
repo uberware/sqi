@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
