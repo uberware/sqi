@@ -130,8 +130,8 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
                 {nameFocused && (
                   <p id="pf-name-help" className={styles.hint}>
                     Stable identity, e.g. &quot;maya-render&quot; or &quot;studio/maya-render&quot;.
-                    Lowercase letters, digits, dashes, underscores, and one optional
-                    &quot;/&quot; segment.
+                    Lowercase letters, digits, dashes, underscores, and one optional &quot;/&quot;
+                    segment.
                   </p>
                 )}
                 {nameInvalid && (
@@ -211,9 +211,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
           <div className={styles.errorBlock} role="alert">
             <strong className={styles.errorTitle}>Save failed</strong>
             <pre className={styles.errorDetail}>
-              {mutation.error instanceof ApiError
-                ? mutation.error.detail
-                : String(mutation.error)}
+              {mutation.error instanceof ApiError ? mutation.error.detail : String(mutation.error)}
             </pre>
           </div>
         )}

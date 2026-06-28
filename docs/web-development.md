@@ -126,6 +126,11 @@ Router.
    ```
 
    Keep the catch-all `<Route path="*" element={<NotFound />} />` last.
+
+   The product management pages live at `/products` (list), `/products/new` and
+   `/products/:name/edit` (the create/edit form), and `/products/:name` (read-only
+   detail). Built-in products are read-only and offer "Duplicate to custom".
+
 3. Add a nav entry in `src/components/layout/Sidebar.tsx`. Use a `<NavLink>` so
    the active link highlights based on the URL. Deferred (Phase 2+) views are
    listed there as disabled "coming soon" stubs — promote one by removing the
