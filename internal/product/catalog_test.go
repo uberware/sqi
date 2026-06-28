@@ -84,3 +84,22 @@ func TestCatalog_CreateAssignsIDAndSource(t *testing.T) {
 		t.Fatalf("create did not stamp id/source: %+v", got)
 	}
 }
+
+func TestCatalog_CreateRejectsBuiltinShadowCaseInsensitive(t *testing.T) {
+	c := newCatalog()
+	// "Script" (mixed-case) must still be rejected as shadowing the "script" built-in.
+	if _, err := c.Create(context.Background(), customProduct("Script")); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("shadow create (mixed-case): want ErrConflict, got %v", err)
+	}
+}
+
+func TestCatalog_UpdateDeleteBuiltinCaseInsensitive(t *testing.T) {
+	c := newCatalog()
+	ctx := context.Background()
+	if _, err := c.Update(ctx, customProduct("SCRIPT")); !errors.Is(err, product.ErrReadOnly) {
+		t.Fatalf("update builtin (uppercase): want ErrReadOnly, got %v", err)
+	}
+	if err := c.Delete(ctx, "SCRIPT"); !errors.Is(err, product.ErrReadOnly) {
+		t.Fatalf("delete builtin (uppercase): want ErrReadOnly, got %v", err)
+	}
+}

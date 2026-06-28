@@ -63,6 +63,7 @@ func (s *Store) UpdateProduct(_ context.Context, p store.Product) (store.Product
 		if strings.EqualFold(existing.Name, p.Name) {
 			p.ID = existing.ID
 			p.CreatedAt = existing.CreatedAt
+			p.Source = existing.Source
 			s.products[id] = p
 			return p, nil
 		}

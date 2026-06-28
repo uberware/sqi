@@ -187,3 +187,59 @@ func TestProducts_SubmitUnknownProductIs404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestProducts_UpdatePreservesSource(t *testing.T) {
+	srv := newProductRouter(fake.New())
+
+	// Create a custom product — source is stamped as "custom" by the catalog.
+	createBody := jsonBody(t, map[string]any{
+		"name": "my-product", "title": "Original", "version": "1.0.0",
+		"template": validTemplate, "format": "yaml",
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products", createBody))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body)
+	}
+
+	// PUT with a changed title — source must not change.
+	putBody := jsonBody(t, map[string]any{
+		"title": "Updated", "version": "1.0.0",
+		"template": validTemplate, "format": "yaml",
+	})
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPut, "/api/v1/products/my-product", putBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", rec.Code, rec.Body)
+	}
+
+	// GET and verify: title changed, source still "custom".
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodGet, "/api/v1/products/my-product", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d", rec.Code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["source"] != "custom" {
+		t.Errorf("source = %q, want %q", got["source"], "custom")
+	}
+	if got["title"] != "Updated" {
+		t.Errorf("title = %q, want %q", got["title"], "Updated")
+	}
+}
+
+func TestProducts_UpdateUnknownIs404(t *testing.T) {
+	srv := newProductRouter(fake.New())
+	putBody := jsonBody(t, map[string]any{
+		"title": "X", "version": "1.0.0",
+		"template": validTemplate, "format": "yaml",
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodPut, "/api/v1/products/ghost", putBody))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}

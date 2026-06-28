@@ -25,7 +25,7 @@ FROM products ORDER BY name`
 
 	sqlUpdateProduct = `
 UPDATE products
-SET title = ?, description = ?, category = ?, version = ?, source = ?, template = ?, format = ?, updated_at = ?
+SET title = ?, description = ?, category = ?, version = ?, template = ?, format = ?, updated_at = ?
 WHERE name = ?
 RETURNING id, name, title, description, category, version, source, template, format, created_at, updated_at`
 
@@ -87,7 +87,7 @@ func (s *Store) ListProducts(ctx context.Context) ([]store.Product, error) {
 func (s *Store) UpdateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateProduct.QueryRowContext(ctx,
-		p.Title, p.Description, p.Category, p.Version, string(p.Source),
+		p.Title, p.Description, p.Category, p.Version,
 		p.Template, string(p.Format), now, p.Name)
 	out, err := scanProduct(row)
 	return out, mapErr(err)

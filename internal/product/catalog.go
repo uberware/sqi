@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -26,6 +27,13 @@ func NewCatalog(st store.ProductStore) *Catalog {
 	return &Catalog{store: st}
 }
 
+// lookupBuiltin performs a case-insensitive lookup in builtinByName (whose keys
+// are always lowercase). This ensures "Script" and "SCRIPT" match "script".
+func lookupBuiltin(name string) (store.Product, bool) {
+	b, ok := builtinByName[strings.ToLower(name)]
+	return b, ok
+}
+
 // List returns built-ins merged with stored products, ordered by name.
 func (c *Catalog) List(ctx context.Context) ([]store.Product, error) {
 	stored, err := c.store.ListProducts(ctx)
@@ -39,7 +47,7 @@ func (c *Catalog) List(ctx context.Context) ([]store.Product, error) {
 
 // GetByName returns a built-in (preferred) or stored product, or ErrNotFound.
 func (c *Catalog) GetByName(ctx context.Context, name string) (store.Product, error) {
-	if b, ok := builtinByName[name]; ok {
+	if b, ok := lookupBuiltin(name); ok {
 		return b, nil
 	}
 	return c.store.GetProductByName(ctx, name)
@@ -48,7 +56,7 @@ func (c *Catalog) GetByName(ctx context.Context, name string) (store.Product, er
 // Create stores a new custom/installed product. It rejects names that shadow a
 // built-in. An empty Source defaults to SourceCustom; an empty ID is assigned.
 func (c *Catalog) Create(ctx context.Context, p store.Product) (store.Product, error) {
-	if _, ok := builtinByName[p.Name]; ok {
+	if _, ok := lookupBuiltin(p.Name); ok {
 		return store.Product{}, store.ErrConflict
 	}
 	if p.ID == "" {
@@ -62,7 +70,7 @@ func (c *Catalog) Create(ctx context.Context, p store.Product) (store.Product, e
 
 // Update replaces a stored product. Built-ins are read-only.
 func (c *Catalog) Update(ctx context.Context, p store.Product) (store.Product, error) {
-	if _, ok := builtinByName[p.Name]; ok {
+	if _, ok := lookupBuiltin(p.Name); ok {
 		return store.Product{}, ErrReadOnly
 	}
 	return c.store.UpdateProduct(ctx, p)
@@ -70,7 +78,7 @@ func (c *Catalog) Update(ctx context.Context, p store.Product) (store.Product, e
 
 // Delete removes a stored product. Built-ins are read-only.
 func (c *Catalog) Delete(ctx context.Context, name string) error {
-	if _, ok := builtinByName[name]; ok {
+	if _, ok := lookupBuiltin(name); ok {
 		return ErrReadOnly
 	}
 	return c.store.DeleteProduct(ctx, name)
