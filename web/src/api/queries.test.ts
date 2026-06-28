@@ -381,6 +381,6 @@ describe('fetchProduct', () => {
 describe('queryKeys.products', () => {
   it('exposes stable all + detail keys', () => {
     expect(queryKeys.products.all).toEqual(['products'])
-    expect(queryKeys.products.detail('script')).toEqual(['products', 'script'])
+    expect(queryKeys.products.detail('script')).toEqual(['products', 'detail', 'script'])
   })
 })

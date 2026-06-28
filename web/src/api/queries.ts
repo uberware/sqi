@@ -126,7 +126,7 @@ export const queryKeys = {
   },
   products: {
     all: ['products'] as const,
-    detail: (name: string) => ['products', name] as const,
+    detail: (name: string) => ['products', 'detail', name] as const,
   },
   version: {
     all: ['version'] as const,
