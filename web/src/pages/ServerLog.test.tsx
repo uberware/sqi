@@ -19,13 +19,14 @@ vi.mock('@/api/diagnostics', () => ({
 }))
 
 describe('ServerLog page', () => {
-  it('renders the server diagnostic log', async () => {
+  it('renders a Server Log page header', () => {
     render(
       <MemoryRouter>
         <ServerLog />
       </MemoryRouter>,
     )
-    expect(await screen.findByText('server up')).toBeInTheDocument()
+    // PageHeader applies invertCase to the title, so match case-insensitively.
+    expect(screen.getByRole('heading', { level: 1, name: /server log/i })).toBeInTheDocument()
   })
 
   it('has a back link to the Admin hub', () => {
@@ -36,5 +37,14 @@ describe('ServerLog page', () => {
     )
     const back = screen.getByRole('link', { name: /admin/i })
     expect(back.getAttribute('href')).toBe('/admin')
+  })
+
+  it('renders the server diagnostic log', async () => {
+    render(
+      <MemoryRouter>
+        <ServerLog />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('server up')).toBeInTheDocument()
   })
 })
