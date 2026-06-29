@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import styles from './PageHeader.module.css'
 
 interface PageHeaderProps {
@@ -10,6 +11,13 @@ interface PageHeaderProps {
    * keeps it level with the title; 'end' bottom-aligns it with the subtitle.
    */
   actionAlign?: 'start' | 'end'
+  /**
+   * When set, renders a "← {backLabel}" link in the header's right cluster,
+   * top-aligned with the title and before any action.
+   */
+  backTo?: string
+  /** Label for the back link (default 'Admin'). */
+  backLabel?: string
 }
 
 function invertCase(text: string): string {
@@ -26,6 +34,8 @@ export default function PageHeader({
   subtitle,
   action,
   actionAlign = 'start',
+  backTo,
+  backLabel = 'Admin',
 }: PageHeaderProps) {
   const actionClass = actionAlign === 'end' ? `${styles.action} ${styles.actionEnd}` : styles.action
   return (
@@ -34,7 +44,16 @@ export default function PageHeader({
         <h1 className={styles.title}>{invertCase(title)}</h1>
         {subtitle !== undefined && <p className={styles.subtitle}>{subtitle}</p>}
       </div>
-      {action !== undefined && <div className={actionClass}>{action}</div>}
+      {backTo !== undefined ? (
+        <div className={styles.headerEnd}>
+          <Link to={backTo} className={styles.back}>
+            ← {backLabel}
+          </Link>
+          {action !== undefined && <div className={actionClass}>{action}</div>}
+        </div>
+      ) : (
+        action !== undefined && <div className={actionClass}>{action}</div>
+      )}
     </header>
   )
 }

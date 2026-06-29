@@ -40,3 +40,23 @@
 .actionEnd {
   align-self: flex-end;
 }
+
+/* Right-side cluster: the back link and the action, top-aligned with the title.
+   The back link comes first so it sits to the left of any action button. */
+.headerEnd {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
+.back {
+  align-self: flex-start;
+  color: var(--color-accent);
+  text-decoration: none;
+  font-size: var(--font-size-sm);
+}
+
+.back:hover {
+  text-decoration: underline;
+}

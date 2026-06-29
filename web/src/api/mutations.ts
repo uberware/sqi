@@ -16,6 +16,8 @@ import type {
   CancelResponse,
   SubmitJobInput,
   WorkerActionResponse,
+  Product,
+  TemplateFormat,
 } from './types'
 
 // ── Raw mutation fetch functions ──────────────────────────────────────────────
@@ -504,6 +506,72 @@ export function useDeleteComputeLocation() {
     mutationFn: (id: string) => fetchDeleteComputeLocation(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.computeLocations.all })
+    },
+  })
+}
+
+// ── Product input ─────────────────────────────────────────────────────────────
+
+export interface ProductInput {
+  name: string
+  title: string
+  description: string
+  category: string
+  version: string
+  template: string
+  format: TemplateFormat
+}
+
+export function fetchCreateProduct(input: ProductInput): Promise<Product> {
+  return apiFetch<Product>('/products', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateProduct(name: string, input: ProductInput): Promise<Product> {
+  return apiFetch<Product>(`/products/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchDeleteProduct(name: string): Promise<void> {
+  await apiFetch(`/products/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+/** Create a custom product. Invalidates the product list on success. */
+export function useCreateProduct() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateProduct,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+    },
+  })
+}
+
+/** Update a custom/installed product by its (original) name. Invalidates products. */
+export function useUpdateProduct() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, input }: { name: string; input: ProductInput }) =>
+      fetchUpdateProduct(name, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+    },
+  })
+}
+
+/** Delete a custom/installed product by name. Invalidates the product list. */
+export function useDeleteProduct() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => fetchDeleteProduct(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
     },
   })
 }

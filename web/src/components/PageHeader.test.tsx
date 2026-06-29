@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 
 describe('PageHeader', () => {
@@ -39,5 +40,39 @@ describe('PageHeader', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'sUBMIT jOB' })).toBeInTheDocument()
     expect(screen.getByText('Submit a raw OpenJD template')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Load example' })).toBeInTheDocument()
+  })
+
+  it('renders no back link when backTo is omitted', () => {
+    render(<PageHeader title="Jobs" />)
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
+  it('renders a back link to backTo with the default Admin label', () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="Farms" backTo="/admin" />
+      </MemoryRouter>,
+    )
+    const back = screen.getByRole('link', { name: /admin/i })
+    expect(back.getAttribute('href')).toBe('/admin')
+  })
+
+  it('uses a custom backLabel when provided', () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="X" backTo="/admin" backLabel="Back" />
+      </MemoryRouter>,
+    )
+    expect(screen.getByRole('link', { name: /back/i })).toBeInTheDocument()
+  })
+
+  it('renders the back link alongside an action when both are provided', () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="Farms" backTo="/admin" action={<button>+ New Farm</button>} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByRole('link', { name: /admin/i }).getAttribute('href')).toBe('/admin')
+    expect(screen.getByRole('button', { name: '+ New Farm' })).toBeInTheDocument()
   })
 })

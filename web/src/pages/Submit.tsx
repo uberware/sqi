@@ -8,6 +8,7 @@ import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useSubmitJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
+import { detectFormat } from '@/lib/format'
 import type { TemplateFormat } from '@/api/types'
 import styles from './Submit.module.css'
 
@@ -64,11 +65,6 @@ steps:
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function detectFormat(template: string): TemplateFormat {
-  const first = template.trimStart()[0]
-  return first === '{' || first === '[' ? 'json' : 'yaml'
-}
 
 function readStoredQueueId(): string {
   return localStorage.getItem(QUEUE_STORAGE_KEY) ?? ''
