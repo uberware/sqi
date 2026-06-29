@@ -76,6 +76,63 @@ Errors map to a typed hierarchy rooted at `SqiError` (e.g. `NotFoundError`,
 idempotent GETs with backoff and exposes a per-request header hook for future
 authentication.
 
+## Products
+
+Products are named, versioned wrappers around OpenJD templates that live in the
+server's catalog. The SDK exposes seven methods for working with them:
+
+```python
+with SqiClient("http://localhost:8080") as sqi:
+    # List all products (built-ins + custom), no pagination
+    products = sqi.list_products()
+
+    # Fetch one product by name
+    product = sqi.get_product("python")
+
+    # Create a custom product from a raw OpenJD template
+    custom = sqi.create_product(
+        name="my-render",
+        title="My Renderer",
+        template="specificationVersion: jobtemplate-2023-09\nname: My Renderer\nsteps: []\n",
+        format="yaml",
+        description="Render a frame range.",
+        category="Rendering",
+        version="1.0.0",
+    )
+
+    # Replace a custom product's fields (full PUT replacement)
+    sqi.update_product(
+        "my-render",
+        template=custom.template,
+        format="yaml",
+        title="My Renderer v2",
+    )
+
+    # Delete a custom product (built-ins return 403 Forbidden)
+    sqi.delete_product("my-render")
+
+    # Fetch the parsed job parameters for a product (type, default, UI hints)
+    params = sqi.get_product_parameters("python")
+    for p in params:
+        print(p.name, p.type, p.default)
+
+    # Submit a job from a product; job_name overrides the template's job name
+    job = sqi.submit_product_job(
+        "python",
+        farm_id="<farm-id>",
+        queue_id="<queue-id>",
+        job_name="My Script Run",
+        parameters={"Script": "print('hello')", "Interpreter": "python3"},
+    )
+    print("submitted job", job.id)
+```
+
+`get_product_parameters` raises `NotFoundError` when the product does not exist
+and `ValidationError` when the stored template cannot be parsed (HTTP 422).
+`submit_product_job` uses the keyword argument `job_name=` (not `name=`) to
+avoid shadowing the positional product `name` argument; the wire field sent to
+the server is `"name"`.
+
 ## Documentation
 
 Full reference — construction and configuration, every public method with

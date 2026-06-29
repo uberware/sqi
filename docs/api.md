@@ -165,6 +165,26 @@ Validation failure — `422 Unprocessable Entity`:
 
 ---
 
+### Submit a job from a product
+
+```sh
+# 1. Inspect the product's parameters
+curl -s http://localhost:8080/api/v1/products/python/parameters | jq
+
+# 2. Submit, naming the job and supplying parameter values
+curl -s -X POST http://localhost:8080/api/v1/products/python/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"My Python Job","farm_id":"<farm>","queue_id":"<queue>","parameters":{"Script":"print(1)"}}'
+```
+
+The `name` field overrides the template's job name; when omitted the template's
+own name is used. `farm_id` and `queue_id` are required. `parameters` is a flat
+string→string map matching the template's `parameterDefinitions`. The
+`/parameters` endpoint returns each parameter's type, default, allowed values,
+and `user_interface` hints.
+
+---
+
 ### List jobs
 
 `GET /api/v1/jobs`
