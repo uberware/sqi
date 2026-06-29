@@ -47,7 +47,7 @@ const ADMIN_LINKS: AdminLink[] = [
   },
   {
     id: 'compute',
-    label: 'Compute',
+    label: 'Locations',
     description: 'Compute locations and worker affinity',
     to: '/compute-locations',
   },

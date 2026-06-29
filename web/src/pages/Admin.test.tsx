@@ -22,7 +22,7 @@ describe('Admin hub', () => {
     ['Queues', '/queues'],
     ['Usage Pools', '/usage-pools'],
     ['Storage', '/storage-locations'],
-    ['Compute', '/compute-locations'],
+    ['Locations', '/compute-locations'],
     ['Products', '/products'],
     ['Server Log', '/server-log'],
   ]
@@ -33,7 +33,9 @@ describe('Admin hub', () => {
         <Admin />
       </MemoryRouter>,
     )
-    const card = screen.getByRole('link', { name: new RegExp(label, 'i') })
+    // Anchor at the start so a label (e.g. "Locations") doesn't also match
+    // another card whose description happens to contain the word.
+    const card = screen.getByRole('link', { name: new RegExp('^' + label, 'i') })
     expect(card.getAttribute('href')).toBe(href)
   })
 
