@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { ReactNode } from 'react'
-import DiagnosticsPanel from '@/components/DiagnosticsPanel'
+import { Link } from 'react-router-dom'
 import { useVersion } from '@/api/queries'
 import styles from './Admin.module.css'
 
@@ -18,22 +17,47 @@ function ServerVersion() {
   )
 }
 
-interface AdminSection {
+interface AdminLink {
   id: string
   label: string
-  /** When true, the section grows to fill the remaining page height. */
-  fill?: boolean
-  render: () => ReactNode
+  description: string
+  to: string
 }
 
-// Extensible registry — add future admin tools (settings, licensing, etc.) here.
-const SECTIONS: AdminSection[] = [
+// Extensible registry — add future admin destinations (settings, licensing, …) here.
+const ADMIN_LINKS: AdminLink[] = [
+  { id: 'farms', label: 'Farms', description: 'Render farms and their defaults', to: '/farms' },
   {
-    id: 'server-log',
-    label: 'Server log',
-    fill: true,
-    render: () => <DiagnosticsPanel component="server" title="Server log" fill />,
+    id: 'queues',
+    label: 'Queues',
+    description: 'Job queues and scheduling priority',
+    to: '/queues',
   },
+  {
+    id: 'usage',
+    label: 'Usage Pools',
+    description: 'License / concurrency usage pools',
+    to: '/usage-pools',
+  },
+  {
+    id: 'storage',
+    label: 'Storage',
+    description: 'Named storage locations and roots',
+    to: '/storage-locations',
+  },
+  {
+    id: 'compute',
+    label: 'Compute',
+    description: 'Compute locations and worker affinity',
+    to: '/compute-locations',
+  },
+  {
+    id: 'products',
+    label: 'Products',
+    description: 'Product definitions and presets',
+    to: '/products',
+  },
+  { id: 'log', label: 'Server Log', description: 'Live server diagnostic log', to: '/server-log' },
 ]
 
 export default function Admin() {
@@ -41,15 +65,14 @@ export default function Admin() {
     <div className={styles.page}>
       <h1 className={styles.heading}>Admin</h1>
       <ServerVersion />
-      {SECTIONS.map((s) => (
-        <section
-          key={s.id}
-          className={s.fill ? `${styles.section} ${styles.sectionFill}` : styles.section}
-          aria-label={s.label}
-        >
-          {s.render()}
-        </section>
-      ))}
+      <nav className={styles.grid} aria-label="Admin sections">
+        {ADMIN_LINKS.map((link) => (
+          <Link key={link.id} to={link.to} className={styles.card}>
+            <span className={styles.cardLabel}>{link.label}</span>
+            <span className={styles.cardDescription}>{link.description}</span>
+          </Link>
+        ))}
+      </nav>
     </div>
   )
 }
