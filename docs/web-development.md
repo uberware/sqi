@@ -131,10 +131,18 @@ Router.
    `/products/:name/edit` (the create/edit form), and `/products/:name` (read-only
    detail). Built-in products are read-only and offer "Duplicate to custom".
 
-3. Add a nav entry in `src/components/layout/Sidebar.tsx`. Use a `<NavLink>` so
-   the active link highlights based on the URL. Deferred (Phase 2+) views are
-   listed there as disabled "coming soon" stubs — promote one by removing the
-   disabled state when its view lands.
+3. Surface it in navigation:
+   - **Operational views** (dashboard, submit, jobs, workers) are top-level
+     entries in `src/components/layout/Sidebar.tsx` — add a `<NavLink>` so the
+     active link highlights based on the URL.
+   - **Admin / management views** (farms, queues, usage pools, storage, compute
+     locations, products, server log) are **not** in the sidebar; they live on
+     the **Admin hub** (`/admin`, `src/pages/Admin.tsx`). Add an entry to its
+     `ADMIN_LINKS` registry (`label`, `description`, `to`) and the card grid
+     renders it. The sidebar's only management entry is **Admin** itself; the
+     server log is its own route, `/server-log`.
+   - Deferred (future) views are listed in the sidebar as disabled "coming soon"
+     stubs (`DEFERRED_LABELS`, e.g. `Presets`) — promote one when its view lands.
 
 Use the `@/` path alias (configured in both `vite.config.ts` and
 `tsconfig.app.json`) for imports instead of relative `../../` paths.

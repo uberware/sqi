@@ -99,8 +99,9 @@ assignment problems, or executor errors without leaving the UI.
 
 ### Admin → Server log
 
-A top-level **Admin** nav item provides the **Server log** section showing
-`sqi-server`'s own diagnostic records (component `server`). This is where you
+The top-level **Admin** nav item opens the management hub; its **Server Log**
+card opens the server-log page (`/server-log`) showing `sqi-server`'s own
+diagnostic records (component `server`). This is where you
 look for scheduler errors, NATS broker issues, database connection problems, and
 startup warnings.
 

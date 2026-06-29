@@ -44,7 +44,7 @@ registration.
 ### Curating entries
 
 Use the REST API (`/api/v1/compute-locations`) or the web UI
-(Admin → Compute Locations) to:
+(Admin → Locations) to:
 
 - **Create** a location with a description before deploying workers.
 - **Update** the name or description of an existing location.
