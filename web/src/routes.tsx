@@ -22,6 +22,7 @@ import ProductDetail from '@/pages/ProductDetail'
 import ProductForm from '@/pages/ProductForm'
 import Submit from '@/pages/Submit'
 import Admin from '@/pages/Admin'
+import ServerLog from '@/pages/ServerLog'
 import NotFound from '@/pages/NotFound'
 
 export default function AppRoutes() {
@@ -54,6 +55,7 @@ export default function AppRoutes() {
       <Route path="/products/new" element={<ProductForm mode="create" />} />
       <Route path="/products/:name/edit" element={<ProductForm mode="edit" />} />
       <Route path="/products/:name" element={<ProductDetail />} />
+      <Route path="/server-log" element={<ServerLog />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   )
