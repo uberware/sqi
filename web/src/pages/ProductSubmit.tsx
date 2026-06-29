@@ -7,7 +7,7 @@ import { useToast } from '@/components/Toast'
 import { useProduct, useProductParameters, useFarmsWithQueues } from '@/api/queries'
 import { useSubmitProductJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
-import { initialValue, defaultJobName, paramGroup } from '@/lib/productForm'
+import { initialValue, defaultJobName, paramGroup, selectWidget } from '@/lib/productForm'
 import { validateAll } from '@/lib/productValidation'
 import type { ProductParameter } from '@/api/types'
 import styles from './ProductSubmit.module.css'
@@ -92,11 +92,9 @@ export default function ProductSubmit() {
     // TypeScript guard — paramList is narrowed at render time but closures re-widen it.
     if (!paramList) return
     const errs = validateAll(paramList, values)
-    if (!effectiveQueueId || !farmForQueue) errs.__queue = 'Select a queue'
     setErrors(errs)
     if (Object.keys(errs).length > 0) return
-    // farmForQueue is defined here (we set errs.__queue and returned if it wasn't);
-    // explicit guard for TypeScript's control-flow analysis.
+    // Guard: no queues configured (effectiveQueueId = ''); safe early return.
     if (!farmForQueue) return
 
     try {
@@ -106,7 +104,9 @@ export default function ProductSubmit() {
         // Bug #2 corrected: farm id lives at farmForQueue.farm.id, not farmForQueue.id
         farmId: farmForQueue.farm.id,
         queueId: effectiveQueueId,
-        parameters: values,
+        parameters: Object.fromEntries(
+          paramList.filter((p) => selectWidget(p) !== 'hidden').map((p) => [p.name, values[p.name] ?? '']),
+        ),
       })
       localStorage.setItem(QUEUE_STORAGE_KEY, effectiveQueueId)
       // Bug #1 corrected: showToast(msg, severity) not toast.show(msg)
@@ -129,7 +129,10 @@ export default function ProductSubmit() {
       <div className={styles.row}>
         <label htmlFor="queue">Queue</label>
         <select id="queue" value={effectiveQueueId} onChange={(e) => setQueueId(e.target.value)}>
-          <option value="">Select a queue…</option>
+          {farms.isLoading && <option value="">Loading queues…</option>}
+          {!farms.isLoading && allQueues.length === 0 && (
+            <option value="">No queues available</option>
+          )}
           {farmList.map((f) => (
             <optgroup key={f.farm.id} label={f.farm.name}>
               {f.queues.map((q) => (
@@ -140,14 +143,9 @@ export default function ProductSubmit() {
             </optgroup>
           ))}
         </select>
-        {errors.__queue !== undefined && (
-          <span className={styles.formError} role="alert">
-            {errors.__queue}
-          </span>
-        )}
       </div>
 
-      {groups.map((g) => (
+      {groups.filter((g) => g.items.some((p) => selectWidget(p) !== 'hidden')).map((g) => (
         <section className={styles.group} key={g.heading || '_default'}>
           {g.heading && <h2 className={styles.groupHeading}>{g.heading}</h2>}
           {g.items.map((p) => {

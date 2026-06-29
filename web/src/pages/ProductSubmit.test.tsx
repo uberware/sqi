@@ -37,6 +37,26 @@ vi.mock('@/api/queries', async (orig) => ({
         data_flow: '',
         user_interface: null,
       },
+      {
+        name: 'InternalPath',
+        type: 'PATH' as const,
+        description: '',
+        default: '/internal/default',
+        allowed_values: null,
+        min_value: null,
+        max_value: null,
+        min_length: null,
+        max_length: null,
+        object_type: 'FILE',
+        data_flow: '',
+        user_interface: {
+          control: 'HIDDEN' as const,
+          label: '',
+          group_label: '',
+          decimals: null,
+          single_step_removal: null,
+        },
+      },
     ],
     isLoading: false,
     error: null,
@@ -119,5 +139,16 @@ describe('ProductSubmit', () => {
     expect(arg).toMatchObject({ productName: 'blender', farmId: 'f1', queueId: 'q1', parameters: { Scene: '/proj/a.blend' } })
     expect(arg.name as string).toMatch(/^Blender /)
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/jobs/job-1'))
+  })
+
+  it('omits HIDDEN params from the submitted parameters payload', async () => {
+    renderPage()
+    fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    await waitFor(() => expect(submitMock).toHaveBeenCalled())
+    const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+    const parameters = arg.parameters as Record<string, string>
+    expect(parameters['Scene']).toBe('/proj/a.blend')
+    expect(parameters['InternalPath']).toBeUndefined()
   })
 })
