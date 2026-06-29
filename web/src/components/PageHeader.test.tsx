@@ -65,4 +65,14 @@ describe('PageHeader', () => {
     )
     expect(screen.getByRole('link', { name: /back/i })).toBeInTheDocument()
   })
+
+  it('renders the back link alongside an action when both are provided', () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="Farms" backTo="/admin" action={<button>+ New Farm</button>} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByRole('link', { name: /admin/i }).getAttribute('href')).toBe('/admin')
+    expect(screen.getByRole('button', { name: '+ New Farm' })).toBeInTheDocument()
+  })
 })

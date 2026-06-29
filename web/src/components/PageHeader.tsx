@@ -11,7 +11,10 @@ interface PageHeaderProps {
    * keeps it level with the title; 'end' bottom-aligns it with the subtitle.
    */
   actionAlign?: 'start' | 'end'
-  /** When set, renders a "← {backLabel}" link above the title. */
+  /**
+   * When set, renders a "← {backLabel}" link in the header's right cluster,
+   * top-aligned with the title and before any action.
+   */
   backTo?: string
   /** Label for the back link (default 'Admin'). */
   backLabel?: string
@@ -38,15 +41,19 @@ export default function PageHeader({
   return (
     <header className={styles.header}>
       <div className={styles.text}>
-        {backTo !== undefined && (
-          <Link to={backTo} className={styles.back}>
-            ← {backLabel}
-          </Link>
-        )}
         <h1 className={styles.title}>{invertCase(title)}</h1>
         {subtitle !== undefined && <p className={styles.subtitle}>{subtitle}</p>}
       </div>
-      {action !== undefined && <div className={actionClass}>{action}</div>}
+      {backTo !== undefined ? (
+        <div className={styles.headerEnd}>
+          <Link to={backTo} className={styles.back}>
+            ← {backLabel}
+          </Link>
+          {action !== undefined && <div className={actionClass}>{action}</div>}
+        </div>
+      ) : (
+        action !== undefined && <div className={actionClass}>{action}</div>
+      )}
     </header>
   )
 }
