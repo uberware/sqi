@@ -40,3 +40,14 @@
 .actionEnd {
   align-self: flex-end;
 }
+
+.back {
+  align-self: flex-start;
+  color: var(--color-accent);
+  text-decoration: none;
+  font-size: var(--font-size-sm);
+}
+
+.back:hover {
+  text-decoration: underline;
+}
