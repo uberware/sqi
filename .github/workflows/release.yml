@@ -88,7 +88,7 @@ jobs:
       # Dockerfile.goreleaser has RUN steps (apk add) that execute under
       # emulation; the distroless server image has none but QEMU is harmless.
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       # buildx is required by goreleaser's `use: buildx` docker config.
       - name: Set up Docker Buildx
