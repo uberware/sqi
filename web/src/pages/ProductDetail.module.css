@@ -35,6 +35,26 @@
   cursor: pointer;
 }
 
+.nameArea {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.productName {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.productDescription {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
 .meta {
   display: grid;
   grid-template-columns: max-content 1fr;

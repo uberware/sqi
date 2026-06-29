@@ -57,8 +57,7 @@ export default function ProductDetail() {
   return (
     <div className={styles.page}>
       <PageHeader
-        title={product.title}
-        {...(product.description ? { subtitle: product.description } : {})}
+        title="Product Details"
         action={
           isBuiltin ? (
             <button type="button" className={styles.actionBtn} onClick={handleDuplicate}>
@@ -84,6 +83,11 @@ export default function ProductDetail() {
           )
         }
       />
+
+      <div className={styles.nameArea}>
+        <h2 className={styles.productName}>{product.title}</h2>
+        {product.description && <p className={styles.productDescription}>{product.description}</p>}
+      </div>
 
       <dl className={styles.meta}>
         <dt>Name</dt>

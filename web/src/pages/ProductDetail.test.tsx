@@ -71,8 +71,9 @@ describe('ProductDetail', () => {
   it('renders metadata and the template', async () => {
     fetchMock.mockResolvedValueOnce(ok(makeProduct()))
     renderDetail('/products/my-render')
-    // PageHeader applies invertCase to titles: "My Render" → "mY rENDER"
-    expect(await screen.findByText('mY rENDER')).toBeInTheDocument()
+    // Block-font header reads "Product Details"; the product name renders plain
+    // (sans-serif, not invertCase) as a level-2 heading below it.
+    expect(await screen.findByRole('heading', { level: 2, name: 'My Render' })).toBeInTheDocument()
     expect(screen.getByText('name: my-template')).toBeInTheDocument()
   })
 
