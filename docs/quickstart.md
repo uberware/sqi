@@ -44,38 +44,34 @@ render work, build a custom worker image or bind-mount your tools (see
 
 ## Submit your first job
 
-You need a farm and a queue before submitting. Create them in the web UI
-(**Farms** → create, then **Queues** → create), or via the API:
+On first startup the server seeds a **default** farm and queue, so there's
+nothing to set up first — just open the web UI and submit a built-in product.
 
-```sh
-FARM=$(curl -s -X POST localhost:8080/api/v1/farms \
-  -H 'content-type: application/json' -d '{"name":"demo"}' | jq -r .id)
+1. Open http://localhost:8080 and click **Submit**.
+2. Under **Built In**, pick **Run a Shell Command**.
+3. In the **Command** field, enter:
 
-QUEUE=$(curl -s -X POST localhost:8080/api/v1/queues \
-  -H 'content-type: application/json' \
-  -d "{\"farm_id\":\"$FARM\",\"name\":\"default\"}" | jq -r .id)
-```
+   ```sh
+   echo hello world
+   ```
 
-Grab the sample job template:
+4. The **Queue** is already set to `default` and the job is given a name
+   automatically — adjust either if you like — then click **Submit job**.
+5. You land on the job's page. As soon as a worker picks it up you'll see it run
+   with live logs, and the task output shows `hello world`.
 
-```sh
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.1.0/docs/examples/hello.json
-```
+> If no worker is connected yet, the job waits in **pending** until one starts
+> (Option A, step 3). With a worker running it finishes in seconds.
 
-Submit it (the OpenJD template is the raw request body; farm, queue, and owner
-go as query parameters):
+Need a raw OpenJD template instead of a product? Use **Submit → Advanced:
+submit a raw OpenJD template**.
 
-```sh
-JOB=$(curl -s -X POST \
-  "localhost:8080/api/v1/jobs?farm_id=$FARM&queue_id=$QUEUE&owner=quickstart" \
-  -H 'content-type: application/json' \
-  --data-binary @hello.json | jq -r .id)
+### Prefer the API or Python?
 
-curl -s localhost:8080/api/v1/jobs/$JOB/tasks
-```
-
-Watch it run in the web UI (**Jobs**), including live logs. That's a complete
-farm.
+The default farm and queue already exist, so you can submit straight to the
+built-in `script` product — no farm/queue creation needed. See
+[Submit a job from a product](api.md#submit-a-job-from-a-product) for the REST
+call, or the [Python client](python-client.md) for scripted submission.
 
 ## Next steps
 
