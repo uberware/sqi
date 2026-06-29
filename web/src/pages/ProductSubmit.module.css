@@ -9,21 +9,16 @@
   padding: var(--space-6) var(--space-8);
 }
 
-.section {
-  margin-bottom: var(--space-4);
-}
-
 .group {
   margin-bottom: var(--space-3);
 }
 
 .groupHeading {
   font-size: var(--font-size-lg);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   margin-bottom: var(--space-2);
 }
 
-/* Bug #3 corrected: --color-danger does not exist; use --color-error */
 .formError {
   color: var(--color-error);
 }

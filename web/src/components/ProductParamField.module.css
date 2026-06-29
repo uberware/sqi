@@ -5,13 +5,16 @@
   gap: var(--space-1);
   margin-bottom: var(--space-3);
 }
+
 .label {
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
+
 .required {
   color: var(--color-error);
   margin-left: var(--space-1);
 }
+
 .error {
   color: var(--color-error);
   font-size: var(--font-size-sm);

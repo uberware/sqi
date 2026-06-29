@@ -4,18 +4,22 @@
   flex-direction: column;
   height: 100%;
 }
+
 .content {
   padding: var(--space-6) var(--space-8);
 }
+
 .group {
   margin-bottom: var(--space-6);
 }
+
 .groupHeading {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-4);
 }
+
 .groupLabel {
   font-family: var(--font-family-sans);
   font-weight: var(--font-weight-semibold);
@@ -23,16 +27,19 @@
   color: var(--color-text-primary);
   white-space: nowrap;
 }
+
 .rule {
   flex: 1;
   border: none;
   border-top: 1px solid var(--color-border);
 }
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: var(--space-3);
 }
+
 .card {
   display: block;
   padding: var(--space-3);
@@ -41,6 +48,7 @@
   text-decoration: none;
   color: inherit;
 }
+
 .advanced {
   margin-top: var(--space-4);
 }

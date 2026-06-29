@@ -17,7 +17,6 @@ const QUEUE_STORAGE_KEY = 'sqi:submit:last-queue-id'
 export default function ProductSubmit() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
-  // Bug #1 corrected: real API is { showToast } not toast.show(...)
   const { showToast } = useToast()
   const product = useProduct(name)
   const params = useProductParameters(name)
@@ -61,7 +60,6 @@ export default function ProductSubmit() {
     return <p role="alert">Failed to load this product.</p>
   }
 
-  // Bug #2 corrected: FarmWithQueues shape is { farm, queues } not { id, name, queues }.
   // Fall back to the first available queue when none is stored (mirrors Submit.tsx).
   const farmList = farms.data ?? []
   const allQueues = farmList.flatMap((f) => f.queues)
@@ -101,7 +99,6 @@ export default function ProductSubmit() {
       const job = await submit.mutateAsync({
         productName: name,
         name: jobName,
-        // Bug #2 corrected: farm id lives at farmForQueue.farm.id, not farmForQueue.id
         farmId: farmForQueue.farm.id,
         queueId: effectiveQueueId,
         parameters: Object.fromEntries(
@@ -111,7 +108,6 @@ export default function ProductSubmit() {
         ),
       })
       localStorage.setItem(QUEUE_STORAGE_KEY, effectiveQueueId)
-      // Bug #1 corrected: showToast(msg, severity) not toast.show(msg)
       showToast('Job submitted', 'success')
       navigate(`/jobs/${job.id}`)
     } catch (err) {
