@@ -10,11 +10,7 @@ export type MessageType = 'subscribe' | 'unsubscribe' | 'ping' | 'push' | 'ack' 
  * (e.g. by `ConnectionStatusBadge`).
  */
 export type ConnectionState =
-  | 'connecting'
-  | 'connected'
-  | 'reconnecting'
-  | 'failed'
-  | 'disconnected'
+  'connecting' | 'connected' | 'reconnecting' | 'failed' | 'disconnected'
 
 /** Common message envelope exchanged over the WebSocket in both directions. */
 export interface Envelope {
