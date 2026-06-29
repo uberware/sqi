@@ -835,3 +835,44 @@ func TestSubmitter_Submit_ParamInRangeExpr_UnknownParam(t *testing.T) {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
+
+// ── SubmitOptions.Name override ───────────────────────────────────────────────
+
+func TestSubmit_NameOverride(t *testing.T) {
+	// Arrange a submitter + farm/queue as the existing submit tests do.
+	st := fake.New()
+	sub := openjd.NewSubmitter(st)
+	farmID, queueID := seedSubmitPrereqs(t, st) // reuse the file's existing helper
+
+	tmpl := `specificationVersion: jobtemplate-2023-09
+name: TemplateName
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: echo
+          args: ["hi"]`
+
+	// With an explicit Name, the job uses it.
+	res, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID: farmID, QueueID: queueID, Name: "My Job 2026",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if res.Job.Name != "My Job 2026" {
+		t.Fatalf("Name = %q, want override", res.Job.Name)
+	}
+
+	// Without a Name, it falls back to the template's name.
+	res2, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID: farmID, QueueID: queueID,
+	})
+	if err != nil {
+		t.Fatalf("submit2: %v", err)
+	}
+	if res2.Job.Name != "TemplateName" {
+		t.Fatalf("Name = %q, want template fallback", res2.Job.Name)
+	}
+}

@@ -978,6 +978,9 @@ components:
         project:
           type: string
           description: Arbitrary project label for filtering.
+        name:
+          type: string
+          description: Optional job name; overrides the template's name when set.
         parameters:
           type: object
           additionalProperties:

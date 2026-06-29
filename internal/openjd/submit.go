@@ -71,6 +71,10 @@ type SubmitOptions struct {
 	Priority int
 	// Project is an optional label for grouping jobs in the UI and API.
 	Project string
+	// Name overrides the job name. When empty, the template's own name
+	// (tmpl.Name) is used. Lets callers (e.g. product submissions) give each
+	// job a distinct, human-meaningful name without editing the template.
+	Name string
 	// Parameters holds the caller-supplied values for job-level parameters
 	// declared in the template's parameterDefinitions.  Keys are parameter
 	// names; values are raw strings.  Missing entries are filled from each
@@ -154,11 +158,15 @@ func (s *Submitter) Submit(
 
 	// ── 4. Create Job row (verbatim template stored as-is) ────────────────
 	now := time.Now().UTC()
+	jobName := tmpl.Name
+	if opts.Name != "" {
+		jobName = opts.Name
+	}
 	job := store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         opts.FarmID,
 		QueueID:        opts.QueueID,
-		Name:           tmpl.Name,
+		Name:           jobName,
 		Owner:          opts.Owner,
 		Submitter:      opts.Submitter,
 		Priority:       priority,

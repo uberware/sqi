@@ -349,3 +349,32 @@ func TestProducts_ParametersInvalidTemplateIs422(t *testing.T) {
 		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestProducts_SubmitWithNameOverride(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+	// python built-in requires Script; supply it so submission succeeds.
+	body, err := json.Marshal(map[string]any{
+		"farm_id":    farmID,
+		"queue_id":   queueID,
+		"name":       "Shot010 v3",
+		"parameters": map[string]string{"Script": "print('hello')"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/products/python/jobs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var job jobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.Name != "Shot010 v3" {
+		t.Fatalf("job name = %q, want override", job.Name)
+	}
+}

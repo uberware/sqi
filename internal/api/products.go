@@ -234,6 +234,7 @@ type submitProductRequest struct {
 	Submitter  string            `json:"submitter"`
 	Priority   int               `json:"priority"`
 	Project    string            `json:"project"`
+	Name       string            `json:"name"`
 	Parameters map[string]string `json:"parameters"`
 }
 
@@ -268,6 +269,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		Submitter:  req.Submitter,
 		Priority:   req.Priority,
 		Project:    req.Project,
+		Name:       req.Name,
 		Parameters: req.Parameters,
 	})
 	if err != nil {
