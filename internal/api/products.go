@@ -61,6 +61,91 @@ func toProductResponse(p store.Product) productResponse {
 	}
 }
 
+// parameterUserInterfaceResponse mirrors openjd.ParameterUserInterface for the
+// GET /products/{name}/parameters response.
+type parameterUserInterfaceResponse struct {
+	Control           string `json:"control"`
+	Label             string `json:"label"`
+	GroupLabel        string `json:"group_label"`
+	Decimals          *int   `json:"decimals"`
+	SingleStepRemoval *bool  `json:"single_step_removal"`
+}
+
+// productParameterResponse is one parsed job parameter, including userInterface
+// hints, returned by GET /products/{name}/parameters.
+type productParameterResponse struct {
+	Name          string                          `json:"name"`
+	Type          string                          `json:"type"`
+	Description   string                          `json:"description"`
+	Default       *string                         `json:"default"`
+	AllowedValues []string                        `json:"allowed_values"`
+	MinValue      *string                         `json:"min_value"`
+	MaxValue      *string                         `json:"max_value"`
+	MinLength     *int                            `json:"min_length"`
+	MaxLength     *int                            `json:"max_length"`
+	ObjectType    string                          `json:"object_type"`
+	DataFlow      string                          `json:"data_flow"`
+	UserInterface *parameterUserInterfaceResponse `json:"user_interface"`
+}
+
+func toProductParameterResponse(p openjd.JobParameter) productParameterResponse {
+	out := productParameterResponse{
+		Name:          p.Name,
+		Type:          string(p.Type),
+		Description:   p.Description,
+		Default:       p.Default,
+		AllowedValues: p.AllowedValues,
+		MinValue:      p.MinValue,
+		MaxValue:      p.MaxValue,
+		MinLength:     p.MinLength,
+		MaxLength:     p.MaxLength,
+		ObjectType:    string(p.ObjectType),
+		DataFlow:      string(p.DataFlow),
+	}
+	if p.UserInterface != nil {
+		out.UserInterface = &parameterUserInterfaceResponse{
+			Control:           string(p.UserInterface.Control),
+			Label:             p.UserInterface.Label,
+			GroupLabel:        p.UserInterface.GroupLabel,
+			Decimals:          p.UserInterface.Decimals,
+			SingleStepRemoval: p.UserInterface.SingleStepRemoval,
+		}
+	}
+	return out
+}
+
+// getProductParameters parses the named product's template and returns its job
+// parameters (with userInterface hints) for the submission form. The template is
+// stored verbatim and may be invalid; an unparseable template yields 422.
+func (h *productHandler) getProductParameters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	p, err := h.catalog.GetByName(ctx, chi.URLParam(r, "name"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "product not found")
+			return
+		}
+		writeProblem(w, r, http.StatusInternalServerError, "failed to load product")
+		return
+	}
+
+	parseFormat := openjd.FormatYAML
+	if p.Format == store.TemplateFormatJSON {
+		parseFormat = openjd.FormatJSON
+	}
+	tmpl, parseErr := openjd.Parse([]byte(p.Template), parseFormat)
+	if parseErr != nil {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "product template is invalid: "+parseErr.Error())
+		return
+	}
+
+	out := make([]productParameterResponse, len(tmpl.ParameterDefinitions))
+	for i, param := range tmpl.ParameterDefinitions {
+		out[i] = toProductParameterResponse(param)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (h *productHandler) listProducts(w http.ResponseWriter, r *http.Request) {
 	list, err := h.catalog.List(r.Context())
 	if err != nil {
