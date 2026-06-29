@@ -38,6 +38,9 @@ __all__ = [
     "LogChunk",
     "LogPage",
     "Page",
+    "ParameterUserInterface",
+    "Product",
+    "ProductParameter",
     "Queue",
     "RetryJobResult",
     "RetryResult",
@@ -218,6 +221,10 @@ def _opt_int(value: Any) -> int | None:
 
 def _as_bool(value: Any) -> bool:
     return value if isinstance(value, bool) else False
+
+
+def _opt_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _str_dict(value: Any) -> dict[str, str]:
@@ -994,4 +1001,115 @@ class ServerVersion:
             commit=_as_str(data.get("commit")),
             build_date=_as_str(data.get("build_date")),
             go_version=_as_str(data.get("go_version")),
+        )
+
+
+# ── Products ──────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ParameterUserInterface:
+    """OpenJD base-spec userInterface presentation hints on a job parameter."""
+
+    control: str = ""
+    label: str = ""
+    group_label: str = ""
+    decimals: int | None = None
+    single_step_removal: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ParameterUserInterface:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            control=_as_str(data.get("control")),
+            label=_as_str(data.get("label")),
+            group_label=_as_str(data.get("group_label")),
+            decimals=_opt_int(data.get("decimals")),
+            single_step_removal=_opt_bool(data.get("single_step_removal")),
+        )
+
+
+@dataclass(frozen=True)
+class ProductParameter:
+    """A parsed job parameter from a product's template (with UI hints)."""
+
+    name: str
+    type: str
+    description: str = ""
+    default: str | None = None
+    allowed_values: list[str] | None = None
+    min_value: str | None = None
+    max_value: str | None = None
+    min_length: int | None = None
+    max_length: int | None = None
+    object_type: str = ""
+    data_flow: str = ""
+    user_interface: ParameterUserInterface | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ProductParameter:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        ui = data.get("user_interface")
+        return cls(
+            name=_as_str(data.get("name")),
+            type=_as_str(data.get("type")),
+            description=_as_str(data.get("description")),
+            default=_opt_str(data.get("default")),
+            allowed_values=(
+                [_as_str(v) for v in data["allowed_values"]]
+                if isinstance(data.get("allowed_values"), list)
+                else None
+            ),
+            min_value=_opt_str(data.get("min_value")),
+            max_value=_opt_str(data.get("max_value")),
+            min_length=_opt_int(data.get("min_length")),
+            max_length=_opt_int(data.get("max_length")),
+            object_type=_as_str(data.get("object_type")),
+            data_flow=_as_str(data.get("data_flow")),
+            user_interface=(
+                ParameterUserInterface.from_dict(ui) if isinstance(ui, Mapping) else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class Product:
+    """A product: a thin, friendly catalog entry over an OpenJD template."""
+
+    name: str
+    title: str = ""
+    description: str = ""
+    category: str = ""
+    version: str = ""
+    source: str = ""
+    template: str = ""
+    format: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Product:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            name=_as_str(data.get("name")),
+            title=_as_str(data.get("title")),
+            description=_as_str(data.get("description")),
+            category=_as_str(data.get("category")),
+            version=_as_str(data.get("version")),
+            source=_as_str(data.get("source")),
+            template=_as_str(data.get("template")),
+            format=_as_str(data.get("format")),
         )

@@ -131,6 +131,14 @@ Router.
    `/products/:name/edit` (the create/edit form), and `/products/:name` (read-only
    detail). Built-in products are read-only and offer "Duplicate to custom".
 
+   The product submission flow uses three routes:
+
+   | Route | Component | Description |
+   |---|---|---|
+   | `/submit` | `ProductPicker` | Product picker — lists all catalog products for the user to choose from |
+   | `/submit/product/:name` | `ProductSubmit` | Product submission form — fetches parameters and renders a dynamic form |
+   | `/submit/raw` | `Submit` | Raw OpenJD editor for direct template submission without the catalog |
+
 3. Surface it in navigation:
    - **Operational views** (dashboard, submit, jobs, workers) are top-level
      entries in `src/components/layout/Sidebar.tsx` — add a `<NavLink>` so the

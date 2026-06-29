@@ -51,6 +51,7 @@ func newProductTestServer(t *testing.T) *productTestSrv {
 	r.Put("/api/v1/products/{name}", h.updateProduct)
 	r.Delete("/api/v1/products/{name}", h.deleteProduct)
 	r.Post("/api/v1/products/{name}/jobs", h.submitProductJob)
+	r.Get("/api/v1/products/{name}/parameters", h.getProductParameters)
 	return &productTestSrv{Router: r, st: st}
 }
 
@@ -65,6 +66,7 @@ func newProductRouter(st store.Store) chi.Router {
 	r.Put("/api/v1/products/{name}", h.updateProduct)
 	r.Delete("/api/v1/products/{name}", h.deleteProduct)
 	r.Post("/api/v1/products/{name}/jobs", h.submitProductJob)
+	r.Get("/api/v1/products/{name}/parameters", h.getProductParameters)
 	return r
 }
 
@@ -241,5 +243,138 @@ func TestProducts_UpdateUnknownIs404(t *testing.T) {
 	srv.ServeHTTP(rec, newReq(t, http.MethodPut, "/api/v1/products/ghost", putBody))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestProducts_ParametersForBuiltin(t *testing.T) {
+	srv := newProductTestServer(t)
+	// "python" built-in declares job parameters; assert the endpoint parses them.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/products/python/parameters", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []productParameterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected at least one parameter for the python built-in")
+	}
+}
+
+func TestProducts_ParametersRoundTripUserInterface(t *testing.T) {
+	srv := newProductTestServer(t)
+	tmpl := `specificationVersion: jobtemplate-2023-09
+name: UIDemo
+parameterDefinitions:
+  - name: Quality
+    type: STRING
+    default: final
+    allowedValues: [draft, final]
+    userInterface:
+      control: DROPDOWN_LIST
+      label: Render quality
+      groupLabel: Output
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: echo
+          args: ["{{Param.Quality}}"]`
+	body, err := json.Marshal(map[string]string{"name": "ui-demo", "title": "UI Demo", "template": tmpl, "format": "yaml"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/products", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/products/ui-demo/parameters", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []productParameterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	p := got[0]
+	if p.Name != "Quality" || p.Type != "STRING" || p.Default == nil || *p.Default != "final" {
+		t.Fatalf("param fields wrong: %+v", p)
+	}
+	if p.UserInterface == nil || p.UserInterface.Control != "DROPDOWN_LIST" ||
+		p.UserInterface.Label != "Render quality" || p.UserInterface.GroupLabel != "Output" {
+		t.Fatalf("userInterface wrong: %+v", p.UserInterface)
+	}
+	if len(p.AllowedValues) != 2 {
+		t.Fatalf("allowedValues = %v", p.AllowedValues)
+	}
+}
+
+func TestProducts_ParametersUnknownIs404(t *testing.T) {
+	srv := newProductTestServer(t)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/products/nope/parameters", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestProducts_ParametersInvalidTemplateIs422(t *testing.T) {
+	srv := newProductTestServer(t)
+	// Seed a product whose template is stored but unparseable. createProduct
+	// validates, so insert directly via the fake store to bypass validation.
+	if _, err := srv.st.CreateProduct(t.Context(), store.Product{
+		Name: "broken", Title: "Broken", Source: store.SourceCustom,
+		Template: "::: not yaml :::\n\tbad", Format: store.TemplateFormatYAML,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/products/broken/parameters", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProducts_SubmitWithNameOverride(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+	// python built-in requires Script; supply it so submission succeeds.
+	body, err := json.Marshal(map[string]any{
+		"farm_id":    farmID,
+		"queue_id":   queueID,
+		"name":       "Shot010 v3",
+		"parameters": map[string]string{"Script": "print('hello')"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/products/python/jobs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var job jobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.Name != "Shot010 v3" {
+		t.Fatalf("job name = %q, want override", job.Name)
 	}
 }

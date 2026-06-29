@@ -15,6 +15,7 @@ import type {
   RetryJobResponse,
   CancelResponse,
   SubmitJobInput,
+  SubmitProductJobInput,
   WorkerActionResponse,
   Product,
   TemplateFormat,
@@ -572,6 +573,36 @@ export function useDeleteProduct() {
     mutationFn: (name: string) => fetchDeleteProduct(name),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+    },
+  })
+}
+
+// ── Product job submission ─────────────────────────────────────────────────────
+
+export function fetchSubmitProductJob(input: SubmitProductJobInput): Promise<Job> {
+  const body: Record<string, unknown> = {
+    name: input.name,
+    farm_id: input.farmId,
+    queue_id: input.queueId,
+    parameters: input.parameters,
+  }
+  if (input.owner !== undefined) body.owner = input.owner
+  if (input.priority !== undefined) body.priority = input.priority
+  if (input.project !== undefined) body.project = input.project
+  return apiFetch<Job>(`/products/${encodeURIComponent(input.productName)}/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/** Submit a job via a product. Invalidates the job list on success. */
+export function useSubmitProductJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchSubmitProductJob,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
     },
   })
 }

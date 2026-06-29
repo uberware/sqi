@@ -8,6 +8,7 @@ import type {
   Job,
   JobDetail,
   Product,
+  ProductParameter,
   StorageLocation,
   UsagePool,
   ListResponse,
@@ -132,6 +133,7 @@ export const queryKeys = {
   products: {
     all: ['products'] as const,
     detail: (name: string) => ['products', 'detail', name] as const,
+    parameters: (name: string) => ['products', 'detail', name, 'parameters'] as const,
   },
   version: {
     all: ['version'] as const,
@@ -279,6 +281,11 @@ export function fetchProducts(): Promise<Product[]> {
 /** Fetch one product by name from `GET /products/{name}`. */
 export function fetchProduct(name: string): Promise<Product> {
   return apiFetch(`/products/${encodeURIComponent(name)}`)
+}
+
+/** Fetch a product's parsed parameters from GET /products/{name}/parameters. */
+export function fetchProductParameters(name: string): Promise<ProductParameter[]> {
+  return apiFetch(`/products/${encodeURIComponent(name)}/parameters`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -460,6 +467,15 @@ export function useProduct(name: string) {
   return useQuery({
     queryKey: queryKeys.products.detail(name),
     queryFn: () => fetchProduct(name),
+    enabled: name !== '',
+  })
+}
+
+/** Load a product's parsed parameters. Disabled when name is empty. */
+export function useProductParameters(name: string) {
+  return useQuery({
+    queryKey: queryKeys.products.parameters(name),
+    queryFn: () => fetchProductParameters(name),
     enabled: name !== '',
   })
 }

@@ -328,6 +328,52 @@ export interface Product {
   format: TemplateFormat
 }
 
+export type ControlType =
+  | 'LINE_EDIT'
+  | 'MULTILINE_EDIT'
+  | 'DROPDOWN_LIST'
+  | 'CHECK_BOX'
+  | 'CHIP_INPUT'
+  | 'HIDDEN'
+  | 'SPIN_BOX'
+
+/** OpenJD base-spec userInterface hints on a job parameter. */
+export interface ParameterUserInterface {
+  control: ControlType | ''
+  label: string
+  group_label: string
+  decimals: number | null
+  single_step_removal: boolean | null
+}
+
+/** Parsed job parameter from GET /products/{name}/parameters. */
+export interface ProductParameter {
+  name: string
+  type: 'INT' | 'FLOAT' | 'STRING' | 'PATH'
+  description: string
+  default: string | null
+  allowed_values: string[] | null
+  min_value: string | null
+  max_value: string | null
+  min_length: number | null
+  max_length: number | null
+  object_type: string
+  data_flow: string
+  user_interface: ParameterUserInterface | null
+}
+
+/** Input for the submitProductJob mutation. */
+export interface SubmitProductJobInput {
+  productName: string
+  name: string
+  farmId: string
+  queueId: string
+  owner?: string
+  priority?: number
+  project?: string
+  parameters: Record<string, string>
+}
+
 // ── Job submission ────────────────────────────────────────────────────────────
 
 /** Input for the submitJob mutation. */

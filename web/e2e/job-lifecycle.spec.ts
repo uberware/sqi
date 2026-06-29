@@ -49,8 +49,11 @@ test.describe('job lifecycle', () => {
   test('submit an echo job and watch it run to completion', async ({ page }) => {
     await openApp(page)
 
-    // ── Navigate to the Submit page via the sidebar (client-side routing) ─────
+    // ── Navigate to the raw-template submit form (client-side routing) ────────
+    // /submit is now the product picker; the raw OpenJD form lives behind its
+    // "Advanced" link at /submit/raw.
     await page.getByRole('link', { name: 'Submit', exact: true }).click()
+    await page.getByRole('link', { name: /advanced: submit a raw openjd template/i }).click()
     await expect(page.getByRole('heading', { name: 'Submit Job' })).toBeVisible()
 
     const queueSelect = page.getByRole('combobox', { name: /queue/i })

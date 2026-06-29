@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from sqi_client import JobStatus, SqiClient, TaskStatus, WorkerStatus
+from sqi_client import JobStatus, NotFoundError, SqiClient, TaskStatus, WorkerStatus
 from tests.integration.conftest import WorkerFarm
 
 # These boot real binaries and run real jobs, so they need a wall-clock budget
@@ -228,3 +228,81 @@ def test_usage_pool_caps_concurrent_tasks(client: SqiClient, worker_farm: Worker
 
     # Every seat is released once the job reaches a terminal state — no leak.
     assert client.get_usage_pool(pool.id).in_use == 0
+
+
+# A product template with a parameter that carries a userInterface hint, plus a
+# static template name we expect the submit-time override to beat.
+_PRODUCT_TEMPLATE = """specificationVersion: "jobtemplate-2023-09"
+name: sdk-int-template-name
+parameterDefinitions:
+  - name: Message
+    type: STRING
+    default: hi
+    userInterface:
+      control: LINE_EDIT
+      label: Message to echo
+      groupLabel: Input
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: echo
+          args:
+            - "{{Param.Message}}"
+"""
+
+
+def test_product_create_parameters_and_submit(client: SqiClient) -> None:
+    """create_product → get_product_parameters → submit_product_job (name override).
+
+    A single depth test for the three new product endpoints plus the job-name
+    override, run against the real server and OpenJD parser — the cross-wire
+    contract the respx-mocked unit tests cannot verify. No worker is needed: the
+    job is asserted at creation (PENDING), not execution.
+    """
+    farm = client.create_farm(name=f"sdk-prod-farm-{uuid.uuid4().hex[:8]}")
+    queue = client.create_queue(farm_id=farm.id, name="default")
+    product_name = f"sdk-int-product-{uuid.uuid4().hex[:8]}"
+
+    created = client.create_product(
+        name=product_name,
+        title="SDK Integration Product",
+        template=_PRODUCT_TEMPLATE,
+        format="yaml",
+    )
+    assert created.name == product_name
+    assert created.source == "custom"
+
+    # get_product_parameters: the parsed parameter and its userInterface hint must
+    # round-trip through the real OpenJD parser (Go → wire → Python model).
+    params = client.get_product_parameters(product_name)
+    by_name = {p.name: p for p in params}
+    assert "Message" in by_name
+    message = by_name["Message"]
+    assert message.type == "STRING"
+    assert message.default == "hi"
+    assert message.user_interface is not None
+    assert message.user_interface.control == "LINE_EDIT"
+    assert message.user_interface.label == "Message to echo"
+    assert message.user_interface.group_label == "Input"
+
+    # submit_product_job with a job-name override: the persisted job name must be
+    # the override, not the template's static name, and the parameter must bind.
+    override = "SDK Override Job"
+    job = client.submit_product_job(
+        product_name,
+        farm_id=farm.id,
+        queue_id=queue.id,
+        job_name=override,
+        parameters={"Message": "from-integration"},
+    )
+    assert job.name == override
+    assert job.name != "sdk-int-template-name"
+    # No worker is running, so the job sits PENDING — creation is the assertion.
+    assert client.get_job(job.id).status is JobStatus.PENDING
+
+    # Custom products are deletable; the delete actually removes it.
+    client.delete_product(product_name)
+    with pytest.raises(NotFoundError):
+        client.get_product(product_name)

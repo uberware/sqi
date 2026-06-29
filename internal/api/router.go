@@ -299,6 +299,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Put("/products/{name}", products.updateProduct)
 		api.Delete("/products/{name}", products.deleteProduct)
 		api.Post("/products/{name}/jobs", products.submitProductJob)
+		api.Get("/products/{name}/parameters", products.getProductParameters)
 
 		// ── Usage-pool endpoints ────────────────────────────────
 		api.Post("/usage-pools", usagePools.createUsagePool)
