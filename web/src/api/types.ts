@@ -12,13 +12,7 @@ export type JobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed
 export type StepStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'canceled'
 /** Lifecycle status of an individual task. */
 export type TaskStatus =
-  | 'pending'
-  | 'ready'
-  | 'assigned'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'canceled'
+  'pending' | 'ready' | 'assigned' | 'running' | 'succeeded' | 'failed' | 'canceled'
 /** Terminal/active status of a single task execution attempt. */
 export type AttemptStatus = 'running' | 'succeeded' | 'failed' | 'canceled'
 /** Connectivity/administrative status of a worker node. */
