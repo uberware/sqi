@@ -10,6 +10,16 @@ vi.mock('@/api/queries', async (orig) => ({
   useProducts: () => ({
     data: [
       {
+        name: 'my-tool',
+        title: 'My Tool',
+        category: 'misc',
+        description: '',
+        version: '1',
+        source: 'custom',
+        template: '',
+        format: 'yaml',
+      },
+      {
         name: 'blender',
         title: 'Blender',
         category: 'render',
@@ -44,6 +54,18 @@ describe('ProductPicker', () => {
       'href',
       '/submit/product/blender',
     )
+    expect(screen.getByRole('link', { name: /My Tool/ })).toHaveAttribute(
+      'href',
+      '/submit/product/my-tool',
+    )
     expect(screen.getByRole('link', { name: /raw OpenJD/i })).toHaveAttribute('href', '/submit/raw')
+  })
+
+  it('groups products by source, builtin first, hiding empty groups', () => {
+    renderPage()
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
+    // builtin group precedes custom; no 'installed' product → no 'Installed' group.
+    expect(headings).toEqual(['Built In', 'Custom'])
+    expect(screen.queryByRole('heading', { name: 'Installed' })).not.toBeInTheDocument()
   })
 })
