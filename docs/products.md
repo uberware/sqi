@@ -289,3 +289,43 @@ job name to `"<product title> <timestamp>"` and posts to
 
 The raw OpenJD editor remains reachable at `/submit/raw` for one-off submissions
 that do not use the catalog.
+
+## Limiting product concurrency
+
+There is no separate "product limit" knob. A product is a thin wrapper over an
+OpenJD template, and OpenJD already has a global concurrency mechanism that does
+exactly this job: **usage pools**. A usage pool is a named cap that the
+scheduler enforces by counting active claims across the whole farm — regardless
+of compute location — releasing a slot when a task reaches a terminal state.
+
+To cap how many tasks from a product may run at once, register a pool on the
+**Usage Pools** page (or via `POST /api/v1/usage-pools`) and declare a
+requirement for it on the relevant steps of the product's template:
+
+```yaml
+steps:
+  - name: render
+    hostRequirements:
+      amounts:
+        # "maya" must match a usage pool registered on the server.
+        - name: amount.worker.usagepool.maya
+          min: 1
+    # ...
+```
+
+The same mechanism covers every dimension a "product limit" might mean — a
+renderer version, a show, a client code, or a software license — and pools
+compose, so a step may name several at once (a per-show cap *and* a license
+count enforced together). Capacity lives in the operator-owned pool, not in the
+product, which keeps a single authoritative seat count that a raw submission
+cannot bypass.
+
+> **Note.** Because a product caps itself by referencing a pool *by name*, an
+> installed or duplicated product whose template names a pool that does not
+> exist on this server is treated as zero-capacity — its tasks stay `ready`
+> until an admin registers the pool. This is intentional: the admin owns real
+> capacity.
+
+See the [usage pools section of the OpenJD submission
+guide](openjd-submission.md#4-usage-pools) for the full reference, multi-pool
+behavior, and the live utilization view.
