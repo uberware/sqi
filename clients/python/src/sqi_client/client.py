@@ -212,9 +212,7 @@ class SqiClient:
         self._usage_pools: _CrudResource[UsagePool] = _CrudResource(
             self, "/usage-pools", UsagePool.from_dict
         )
-        self._products: _CrudResource[Product] = _CrudResource(
-            self, "/products", Product.from_dict
-        )
+        self._products: _CrudResource[Product] = _CrudResource(self, "/products", Product.from_dict)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
