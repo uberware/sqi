@@ -18,6 +18,7 @@ import {
   fetchGetStorageLocation,
   fetchProducts,
   fetchProduct,
+  fetchProductParameters,
 } from './queries'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -382,5 +383,18 @@ describe('queryKeys.products', () => {
   it('exposes stable all + detail keys', () => {
     expect(queryKeys.products.all).toEqual(['products'])
     expect(queryKeys.products.detail('script')).toEqual(['products', 'detail', 'script'])
+  })
+})
+
+// ── fetchProductParameters ────────────────────────────────────────────────────
+
+describe('fetchProductParameters', () => {
+  it('requests the parameters path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse([{ name: 'Quality', type: 'STRING', default: 'final', user_interface: null }]),
+    )
+    const params = await fetchProductParameters('blender')
+    expect(calledUrl()).toBe('/api/v1/products/blender/parameters')
+    expect(params[0]?.name).toBe('Quality')
   })
 })

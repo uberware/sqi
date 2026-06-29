@@ -159,9 +159,9 @@ function Wrapper({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={makeQueryClient()}>
       <ToastProvider>
-        <MemoryRouter initialEntries={['/submit']}>
+        <MemoryRouter initialEntries={['/submit/raw']}>
           <Routes>
-            <Route path="/submit" element={children} />
+            <Route path="/submit/raw" element={children} />
             <Route path="/jobs/:id" element={<LocationDisplay />} />
           </Routes>
         </MemoryRouter>

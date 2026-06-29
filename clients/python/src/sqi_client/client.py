@@ -46,6 +46,8 @@ from .models import (
     LogChunk,
     LogPage,
     Page,
+    Product,
+    ProductParameter,
     Queue,
     RetryJobResult,
     RetryResult,
@@ -210,6 +212,7 @@ class SqiClient:
         self._usage_pools: _CrudResource[UsagePool] = _CrudResource(
             self, "/usage-pools", UsagePool.from_dict
         )
+        self._products: _CrudResource[Product] = _CrudResource(self, "/products", Product.from_dict)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -1343,6 +1346,113 @@ class SqiClient:
         """Delete a usage pool. Raises :class:`NotFoundError` if it is missing."""
         self._usage_pools.delete(pool_id)
 
+    # ── Products ──────────────────────────────────────────────────────────────
+
+    def list_products(self) -> list[Product]:
+        """Return all products (built-ins + stored), bare array, no pagination."""
+        return self._products.list_all()
+
+    def iter_products(self) -> Iterator[Product]:
+        """Iterate all products (endpoint is not paginated)."""
+        return iter(self._products.list_all())
+
+    def get_product(self, name: str) -> Product:
+        """Fetch one product by name. Raises :class:`NotFoundError` if missing."""
+        return self._products.get(name)
+
+    def create_product(
+        self,
+        *,
+        name: str,
+        template: str,
+        format: str,
+        title: str | None = None,
+        description: str | None = None,
+        category: str | None = None,
+        version: str | None = None,
+    ) -> Product:
+        """Create a custom product from a raw OpenJD template and return it.
+
+        Args:
+            name: Stable product name (slug).
+            template: Raw OpenJD template text.
+            format: ``yaml`` or ``json``.
+            title, description, category, version: Optional metadata.
+        """
+        return self._products.create(
+            _product_body(name, title, description, category, version, template, format)
+        )
+
+    def update_product(
+        self,
+        name: str,
+        *,
+        template: str,
+        format: str,
+        title: str | None = None,
+        description: str | None = None,
+        category: str | None = None,
+        version: str | None = None,
+    ) -> Product:
+        """Replace a custom product's fields (PUT, full replacement) and return it."""
+        return self._products.update(
+            name, _product_body(name, title, description, category, version, template, format)
+        )
+
+    def delete_product(self, name: str) -> None:
+        """Delete a custom product. Raises :class:`NotFoundError` if missing."""
+        self._products.delete(name)
+
+    def get_product_parameters(self, name: str) -> list[ProductParameter]:
+        """Return the parsed job parameters (with UI hints) for a product.
+
+        Raises:
+            NotFoundError: No such product (HTTP 404).
+            ValidationError: The product's stored template is unparseable (HTTP 422).
+        """
+        data = self._request_json("GET", f"/products/{name}/parameters")
+        return [ProductParameter.from_dict(item) for item in data]
+
+    def submit_product_job(
+        self,
+        name: str,
+        *,
+        farm_id: str,
+        queue_id: str,
+        job_name: str | None = None,
+        owner: str | None = None,
+        submitter: str | None = None,
+        priority: int | None = None,
+        project: str | None = None,
+        parameters: Mapping[str, str] | None = None,
+    ) -> Job:
+        """Submit a job from a product and return the created :class:`Job`.
+
+        Args:
+            name: Product name to submit.
+            farm_id, queue_id: Target farm and queue (required).
+            job_name: Optional job name; overrides the template's name when set.
+                The wire field is ``name``; this parameter is named ``job_name``
+                to avoid shadowing the positional product ``name`` argument.
+            owner, submitter, priority, project: Optional job metadata.
+            parameters: Job-parameter values (name → string).
+        """
+        body: dict[str, Any] = {"farm_id": farm_id, "queue_id": queue_id}
+        if job_name is not None:
+            body["name"] = job_name
+        if owner is not None:
+            body["owner"] = owner
+        if submitter is not None:
+            body["submitter"] = submitter
+        if priority is not None:
+            body["priority"] = priority
+        if project is not None:
+            body["project"] = project
+        if parameters is not None:
+            body["parameters"] = dict(parameters)
+        data = self._request_json("POST", f"/products/{name}/jobs", json=body)
+        return Job.from_dict(data)
+
     # ── Live events (optional ws extra) ───────────────────────────────────────
 
     def events(self, *, reconnect: bool = True) -> SqiEventStream:
@@ -1621,6 +1731,27 @@ def _compute_location_body(
     body: dict[str, Any] = {"name": name}
     if description is not None:
         body["description"] = description
+    return body
+
+
+def _product_body(
+    name: str,
+    title: str | None,
+    description: str | None,
+    category: str | None,
+    version: str | None,
+    template: str,
+    template_format: str,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"name": name, "template": template, "format": template_format}
+    if title is not None:
+        body["title"] = title
+    if description is not None:
+        body["description"] = description
+    if category is not None:
+        body["category"] = category
+    if version is not None:
+        body["version"] = version
     return body
 
 

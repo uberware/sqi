@@ -978,6 +978,9 @@ components:
         project:
           type: string
           description: Arbitrary project label for filtering.
+        name:
+          type: string
+          description: Optional job name; overrides the template's name when set.
         parameters:
           type: object
           additionalProperties:
@@ -986,6 +989,31 @@ components:
             Key/value pairs matching the product template's parameterDefinitions.
             Missing keys with defaults are filled automatically; missing required
             keys return 422.
+
+    ProductParameter:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [INT, FLOAT, STRING, PATH] }
+        description: { type: string }
+        default: { type: string, nullable: true }
+        allowed_values: { type: array, items: { type: string }, nullable: true }
+        min_value: { type: string, nullable: true }
+        max_value: { type: string, nullable: true }
+        min_length: { type: integer, nullable: true }
+        max_length: { type: integer, nullable: true }
+        object_type: { type: string }
+        data_flow: { type: string }
+        user_interface:
+          nullable: true
+          type: object
+          properties:
+            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, CHIP_INPUT, HIDDEN, SPIN_BOX] }
+            label: { type: string }
+            group_label: { type: string }
+            decimals: { type: integer, nullable: true }
+            single_step_removal: { type: boolean, nullable: true }
 
     # ── Usage pools ───────────────────────────────────────────────────────────
     UsagePool:
@@ -2356,6 +2384,27 @@ paths:
           $ref: "#/components/responses/UnprocessableEntity"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  /products/{name}/parameters:
+    get:
+      summary: Parsed job parameters for a product's template
+      operationId: getProductParameters
+      tags: [products]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Parsed parameters in template order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProductParameter' }
+        '404': { description: Product not found }
+        '422': { description: The product's stored template could not be parsed }
 
   # ── Usage pools ────────────────────────────────────────────────────────────
 

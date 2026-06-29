@@ -204,6 +204,43 @@ already-submitted jobs (which snapshot their template at submission).
 
 Responses: `204 No Content`, `403`, `404`.
 
+### `GET /api/v1/products/{name}/parameters`
+
+Returns the parsed job parameters from the named product's template, including
+`userInterface` hints. This is the endpoint the product submission form calls to
+build its field list before the user fills it in.
+
+Response: `200 OK`, array of `ProductParameter` objects in template order:
+
+```json
+[
+  {
+    "name": "Interpreter",
+    "type": "STRING",
+    "description": "",
+    "default": "python3",
+    "allowed_values": null,
+    "min_value": null,
+    "max_value": null,
+    "min_length": null,
+    "max_length": null,
+    "object_type": "",
+    "data_flow": "",
+    "user_interface": {
+      "control": "LINE_EDIT",
+      "label": "Interpreter",
+      "group_label": "",
+      "decimals": null,
+      "single_step_removal": null
+    }
+  }
+]
+```
+
+Responses: `200 OK` (array), `404 Not Found` (product not found),
+`422 Unprocessable Entity` (product's stored template cannot be parsed — the
+template is stored verbatim and its validity is only checked on this call).
+
 ### `POST /api/v1/products/{name}/jobs`
 
 Submits a job using the named product's template. The template is loaded from
@@ -217,6 +254,7 @@ Request body:
 {
   "farm_id": "<uuid>",
   "queue_id": "<uuid>",
+  "name": "My Python Job",
   "owner": "alice",
   "submitter": "my-tool/1.0",
   "priority": 50,
@@ -228,8 +266,26 @@ Request body:
 }
 ```
 
-`farm_id` and `queue_id` are required. `parameters` is a flat `string→string`
-map; keys must match the parameter names declared in the product's template.
+`farm_id` and `queue_id` are required. `name` is optional: when supplied it
+overrides the job name from the product's template; when omitted, the template's
+own name is used. The web submission form defaults it to
+`"<product title> <timestamp>"`. `parameters` is a flat `string→string` map;
+keys must match the parameter names declared in the product's template.
 
 Responses: `201 Created` (`Job` object, same shape as `POST /api/v1/jobs`),
 `400`, `404`, `422 Unprocessable Entity` (template/parameter validation failure).
+
+---
+
+## Submitting from a product (web)
+
+The `/submit` route is the product picker: it lists every available product and
+lets the user choose one. Selecting a product navigates to
+`/submit/product/:name`, which fetches the product's parameters via
+`GET /api/v1/products/{name}/parameters` and renders a dynamic form — one field
+per parameter, styled by its `userInterface` control hint. The form defaults the
+job name to `"<product title> <timestamp>"` and posts to
+`POST /api/v1/products/{name}/jobs` on submit.
+
+The raw OpenJD editor remains reachable at `/submit/raw` for one-off submissions
+that do not use the catalog.

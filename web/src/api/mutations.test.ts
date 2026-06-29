@@ -6,6 +6,7 @@ import {
   fetchCreateProduct,
   fetchUpdateProduct,
   fetchDeleteProduct,
+  fetchSubmitProductJob,
 } from './mutations'
 import type { ProductInput } from './mutations'
 import { apiFetch } from './client'
@@ -66,5 +67,31 @@ describe('product mutations', () => {
     vi.mocked(apiFetch).mockResolvedValue(undefined)
     await fetchDeleteProduct('studio/maya')
     expect(apiFetch).toHaveBeenCalledWith('/products/studio%2Fmaya', { method: 'DELETE' })
+  })
+})
+
+describe('fetchSubmitProductJob', () => {
+  beforeEach(() => vi.mocked(apiFetch).mockReset())
+
+  it('posts name + params to the product jobs path', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1', name: 'Shot010' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: { Scene: '/a.blend' },
+    })
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/products/blender/jobs',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string)
+    expect(body).toMatchObject({
+      name: 'Shot010',
+      farm_id: 'f1',
+      queue_id: 'q1',
+      parameters: { Scene: '/a.blend' },
+    })
   })
 })

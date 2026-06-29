@@ -20,6 +20,8 @@ import ComputeLocationForm from '@/pages/ComputeLocationForm'
 import ProductList from '@/pages/ProductList'
 import ProductDetail from '@/pages/ProductDetail'
 import ProductForm from '@/pages/ProductForm'
+import ProductPicker from '@/pages/ProductPicker'
+import ProductSubmit from '@/pages/ProductSubmit'
 import Submit from '@/pages/Submit'
 import Admin from '@/pages/Admin'
 import ServerLog from '@/pages/ServerLog'
@@ -49,7 +51,9 @@ export default function AppRoutes() {
       <Route path="/compute-locations" element={<ComputeLocationList />} />
       <Route path="/compute-locations/new" element={<ComputeLocationForm mode="create" />} />
       <Route path="/compute-locations/:id/edit" element={<ComputeLocationForm mode="edit" />} />
-      <Route path="/submit" element={<Submit />} />
+      <Route path="/submit" element={<ProductPicker />} />
+      <Route path="/submit/raw" element={<Submit />} />
+      <Route path="/submit/product/:name" element={<ProductSubmit />} />
       <Route path="/admin" element={<Admin />} />
       <Route path="/products" element={<ProductList />} />
       <Route path="/products/new" element={<ProductForm mode="create" />} />
