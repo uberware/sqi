@@ -105,7 +105,9 @@ export default function ProductSubmit() {
         farmId: farmForQueue.farm.id,
         queueId: effectiveQueueId,
         parameters: Object.fromEntries(
-          paramList.filter((p) => selectWidget(p) !== 'hidden').map((p) => [p.name, values[p.name] ?? '']),
+          paramList
+            .filter((p) => selectWidget(p) !== 'hidden')
+            .map((p) => [p.name, values[p.name] ?? '']),
         ),
       })
       localStorage.setItem(QUEUE_STORAGE_KEY, effectiveQueueId)
@@ -145,23 +147,25 @@ export default function ProductSubmit() {
         </select>
       </div>
 
-      {groups.filter((g) => g.items.some((p) => selectWidget(p) !== 'hidden')).map((g) => (
-        <section className={styles.group} key={g.heading || '_default'}>
-          {g.heading && <h2 className={styles.groupHeading}>{g.heading}</h2>}
-          {g.items.map((p) => {
-            const fieldError = errors[p.name]
-            return (
-              <ProductParamField
-                key={p.name}
-                param={p}
-                value={values[p.name] ?? ''}
-                onChange={(v) => setValue(p.name, v)}
-                {...(fieldError !== undefined ? { error: fieldError } : {})}
-              />
-            )
-          })}
-        </section>
-      ))}
+      {groups
+        .filter((g) => g.items.some((p) => selectWidget(p) !== 'hidden'))
+        .map((g) => (
+          <section className={styles.group} key={g.heading || '_default'}>
+            {g.heading && <h2 className={styles.groupHeading}>{g.heading}</h2>}
+            {g.items.map((p) => {
+              const fieldError = errors[p.name]
+              return (
+                <ProductParamField
+                  key={p.name}
+                  param={p}
+                  value={values[p.name] ?? ''}
+                  onChange={(v) => setValue(p.name, v)}
+                  {...(fieldError !== undefined ? { error: fieldError } : {})}
+                />
+              )
+            })}
+          </section>
+        ))}
 
       {formError && (
         <p className={styles.formError} role="alert">

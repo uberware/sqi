@@ -6,10 +6,19 @@ import type { ProductParameter } from '@/api/types'
 
 function param(over: Partial<ProductParameter>): ProductParameter {
   return {
-    name: 'P', type: 'STRING', description: '', default: null,
-    allowed_values: null, min_value: null, max_value: null,
-    min_length: null, max_length: null, object_type: '', data_flow: '',
-    user_interface: null, ...over,
+    name: 'P',
+    type: 'STRING',
+    description: '',
+    default: null,
+    allowed_values: null,
+    min_value: null,
+    max_value: null,
+    min_length: null,
+    max_length: null,
+    object_type: '',
+    data_flow: '',
+    user_interface: null,
+    ...over,
   }
 }
 
@@ -36,7 +45,15 @@ describe('ProductParamField', () => {
   it('omits HIDDEN params', () => {
     const { container } = render(
       <ProductParamField
-        param={param({ user_interface: { control: 'HIDDEN', label: '', group_label: '', decimals: null, single_step_removal: null } })}
+        param={param({
+          user_interface: {
+            control: 'HIDDEN',
+            label: '',
+            group_label: '',
+            decimals: null,
+            single_step_removal: null,
+          },
+        })}
         value=""
         onChange={vi.fn()}
       />,
@@ -45,7 +62,14 @@ describe('ProductParamField', () => {
   })
 
   it('shows an error message', () => {
-    render(<ProductParamField param={param({ name: 'Scene' })} value="" error="Scene is required" onChange={vi.fn()} />)
+    render(
+      <ProductParamField
+        param={param({ name: 'Scene' })}
+        value=""
+        error="Scene is required"
+        onChange={vi.fn()}
+      />,
+    )
     expect(screen.getByText('Scene is required')).toBeInTheDocument()
   })
 })

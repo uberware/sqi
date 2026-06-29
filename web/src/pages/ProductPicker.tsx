@@ -16,7 +16,11 @@ export default function ProductPicker() {
       {products && products.length > 0 && (
         <div className={styles.grid}>
           {products.map((p) => (
-            <Link key={p.name} className={styles.card} to={`/submit/product/${encodeURIComponent(p.name)}`}>
+            <Link
+              key={p.name}
+              className={styles.card}
+              to={`/submit/product/${encodeURIComponent(p.name)}`}
+            >
               <strong>{p.title || p.name}</strong>
               {p.description && <p>{p.description}</p>}
             </Link>

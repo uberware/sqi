@@ -86,9 +86,7 @@ describe('fetchSubmitProductJob', () => {
       '/products/blender/jobs',
       expect.objectContaining({ method: 'POST' }),
     )
-    const body = JSON.parse(
-      (vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string,
-    )
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string)
     expect(body).toMatchObject({
       name: 'Shot010',
       farm_id: 'f1',

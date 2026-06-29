@@ -17,7 +17,16 @@ vi.mock('react-router-dom', async (orig) => ({
 vi.mock('@/api/queries', async (orig) => ({
   ...(await orig<typeof import('@/api/queries')>()),
   useProduct: () => ({
-    data: { name: 'blender', title: 'Blender', description: '', category: 'rendering', version: '1.0', source: 'builtin' as const, template: '', format: 'yaml' as const },
+    data: {
+      name: 'blender',
+      title: 'Blender',
+      description: '',
+      category: 'rendering',
+      version: '1.0',
+      source: 'builtin' as const,
+      template: '',
+      format: 'yaml' as const,
+    },
     isLoading: false,
     error: null,
   }),
@@ -136,7 +145,12 @@ describe('ProductSubmit', () => {
     fireEvent.click(screen.getByRole('button', { name: /submit/i }))
     await waitFor(() => expect(submitMock).toHaveBeenCalled())
     const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
-    expect(arg).toMatchObject({ productName: 'blender', farmId: 'f1', queueId: 'q1', parameters: { Scene: '/proj/a.blend' } })
+    expect(arg).toMatchObject({
+      productName: 'blender',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: { Scene: '/proj/a.blend' },
+    })
     expect(arg.name as string).toMatch(/^Blender /)
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/jobs/job-1'))
   })

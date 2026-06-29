@@ -26,8 +26,10 @@ export function validateParam(p: ProductParameter, value: string): string | null
   }
 
   // STRING / PATH length constraints.
-  if (p.min_length !== null && value.length < p.min_length) return `must be at least ${p.min_length} characters`
-  if (p.max_length !== null && value.length > p.max_length) return `must be at most ${p.max_length} characters`
+  if (p.min_length !== null && value.length < p.min_length)
+    return `must be at least ${p.min_length} characters`
+  if (p.max_length !== null && value.length > p.max_length)
+    return `must be at most ${p.max_length} characters`
   return null
 }
 

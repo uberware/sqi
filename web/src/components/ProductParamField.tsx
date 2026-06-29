@@ -25,7 +25,9 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
         return (
           <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
             {(param.allowed_values ?? []).map((opt) => (
-              <option key={opt} value={opt}>{opt}</option>
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
             ))}
           </select>
         )
@@ -43,12 +45,24 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
       case 'textarea':
         return <textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} />
       case 'number':
-        return <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
+        return (
+          <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
+        )
       case 'chips':
         // v1: comma-separated entry; server receives the raw string.
-        return <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder="comma-separated" />
+        return (
+          <input
+            id={id}
+            type="text"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="comma-separated"
+          />
+        )
       default:
-        return <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} />
+        return (
+          <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} />
+        )
     }
   }
 
@@ -56,11 +70,19 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
     <div className={styles.field}>
       <label className={styles.label} htmlFor={id}>
         {label}
-        {required && <span className={styles.required} aria-hidden="true">*</span>}
+        {required && (
+          <span className={styles.required} aria-hidden="true">
+            *
+          </span>
+        )}
       </label>
       {param.description && <span>{param.description}</span>}
       {renderControl()}
-      {error && <span className={styles.error} role="alert">{error}</span>}
+      {error && (
+        <span className={styles.error} role="alert">
+          {error}
+        </span>
+      )}
     </div>
   )
 }
