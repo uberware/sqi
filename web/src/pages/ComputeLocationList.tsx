@@ -46,6 +46,7 @@ export default function ComputeLocationList() {
     <div className={styles.page}>
       <PageHeader
         title="Compute Locations"
+        backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} locations`}
         action={
           <Link to="/compute-locations/new" className={styles.newBtn}>

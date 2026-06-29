@@ -42,6 +42,7 @@ export default function FarmList() {
     <div className={styles.page}>
       <PageHeader
         title="Farms"
+        backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} farms`}
         action={
           <Link to="/farms/new" className={styles.newBtn}>

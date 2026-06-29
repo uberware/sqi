@@ -42,6 +42,7 @@ export default function ProductList() {
     <div className={styles.page}>
       <PageHeader
         title="Products"
+        backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} products`}
         action={
           <Link to="/products/new" className={styles.newBtn}>

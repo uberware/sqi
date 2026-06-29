@@ -42,6 +42,7 @@ export default function StorageLocationList() {
     <div className={styles.page}>
       <PageHeader
         title="Storage Locations"
+        backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} locations`}
         action={
           <Link to="/storage-locations/new" className={styles.newBtn}>

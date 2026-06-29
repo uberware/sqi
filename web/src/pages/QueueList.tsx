@@ -44,6 +44,7 @@ export default function QueueList() {
     <div className={styles.page}>
       <PageHeader
         title="Queues"
+        backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} queues`}
         action={
           <Link to="/queues/new" className={styles.newBtn}>

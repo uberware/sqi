@@ -43,6 +43,7 @@ export default function UsagePoolList() {
     <div className={styles.page}>
       <PageHeader
         title="Usage Pools"
+        backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} pools`}
         action={
           <Link to="/usage-pools/new" className={styles.newBtn}>
