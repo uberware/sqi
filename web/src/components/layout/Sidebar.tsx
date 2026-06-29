@@ -15,12 +15,6 @@ const PHASE1_NAV: NavItem[] = [
   { label: 'Submit', to: '/submit' },
   { label: 'Jobs', to: '/jobs' },
   { label: 'Workers', to: '/workers' },
-  { label: 'Farms', to: '/farms' },
-  { label: 'Queues', to: '/queues' },
-  { label: 'Usage Pools', to: '/usage-pools' },
-  { label: 'Storage', to: '/storage-locations' },
-  { label: 'Compute', to: '/compute-locations' },
-  { label: 'Products', to: '/products' },
   { label: 'Admin', to: '/admin' },
 ]
 
