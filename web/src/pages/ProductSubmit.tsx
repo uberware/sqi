@@ -120,61 +120,63 @@ export default function ProductSubmit() {
   }
 
   return (
-    <form onSubmit={(e) => void handleSubmit(e)}>
+    <form className={styles.page} onSubmit={(e) => void handleSubmit(e)}>
       <PageHeader title={`Submit: ${productData.title || productData.name}`} />
 
-      <div className={styles.row}>
-        <label htmlFor="jobName">Job name</label>
-        <input id="jobName" value={jobName} onChange={(e) => setJobName(e.target.value)} />
-      </div>
+      <div className={styles.content}>
+        <div className={styles.row}>
+          <label htmlFor="jobName">Job name</label>
+          <input id="jobName" value={jobName} onChange={(e) => setJobName(e.target.value)} />
+        </div>
 
-      <div className={styles.row}>
-        <label htmlFor="queue">Queue</label>
-        <select id="queue" value={effectiveQueueId} onChange={(e) => setQueueId(e.target.value)}>
-          {farms.isLoading && <option value="">Loading queues…</option>}
-          {!farms.isLoading && allQueues.length === 0 && (
-            <option value="">No queues available</option>
-          )}
-          {farmList.map((f) => (
-            <optgroup key={f.farm.id} label={f.farm.name}>
-              {f.queues.map((q) => (
-                <option key={q.id} value={q.id}>
-                  {q.name}
-                </option>
-              ))}
-            </optgroup>
+        <div className={styles.row}>
+          <label htmlFor="queue">Queue</label>
+          <select id="queue" value={effectiveQueueId} onChange={(e) => setQueueId(e.target.value)}>
+            {farms.isLoading && <option value="">Loading queues…</option>}
+            {!farms.isLoading && allQueues.length === 0 && (
+              <option value="">No queues available</option>
+            )}
+            {farmList.map((f) => (
+              <optgroup key={f.farm.id} label={f.farm.name}>
+                {f.queues.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.name}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+
+        {groups
+          .filter((g) => g.items.some((p) => selectWidget(p) !== 'hidden'))
+          .map((g) => (
+            <section className={styles.group} key={g.heading || '_default'}>
+              {g.heading && <h2 className={styles.groupHeading}>{g.heading}</h2>}
+              {g.items.map((p) => {
+                const fieldError = errors[p.name]
+                return (
+                  <ProductParamField
+                    key={p.name}
+                    param={p}
+                    value={values[p.name] ?? ''}
+                    onChange={(v) => setValue(p.name, v)}
+                    {...(fieldError !== undefined ? { error: fieldError } : {})}
+                  />
+                )
+              })}
+            </section>
           ))}
-        </select>
+
+        {formError && (
+          <p className={styles.formError} role="alert">
+            {formError}
+          </p>
+        )}
+        <button type="submit" className={styles.submitBtn} disabled={submit.isPending}>
+          Submit job
+        </button>
       </div>
-
-      {groups
-        .filter((g) => g.items.some((p) => selectWidget(p) !== 'hidden'))
-        .map((g) => (
-          <section className={styles.group} key={g.heading || '_default'}>
-            {g.heading && <h2 className={styles.groupHeading}>{g.heading}</h2>}
-            {g.items.map((p) => {
-              const fieldError = errors[p.name]
-              return (
-                <ProductParamField
-                  key={p.name}
-                  param={p}
-                  value={values[p.name] ?? ''}
-                  onChange={(v) => setValue(p.name, v)}
-                  {...(fieldError !== undefined ? { error: fieldError } : {})}
-                />
-              )
-            })}
-          </section>
-        ))}
-
-      {formError && (
-        <p className={styles.formError} role="alert">
-          {formError}
-        </p>
-      )}
-      <button type="submit" disabled={submit.isPending}>
-        Submit job
-      </button>
     </form>
   )
 }
