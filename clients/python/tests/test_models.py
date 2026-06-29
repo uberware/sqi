@@ -475,3 +475,58 @@ def test_retry_job_result_from_dict_tolerant() -> None:
     assert r == RetryJobResult(job_id="j1", retried=2)
     # Missing fields fall back to type defaults.
     assert RetryJobResult.from_dict({}) == RetryJobResult(job_id="", retried=0)
+
+
+# ── Product, ProductParameter, ParameterUserInterface ───────────────
+
+
+def test_product_from_dict() -> None:
+    from sqi_client.models import Product
+
+    p = Product.from_dict(
+        {
+            "name": "blender",
+            "title": "Blender",
+            "description": "Render a .blend",
+            "category": "render",
+            "version": "1.0.0",
+            "source": "builtin",
+            "template": "specificationVersion: jobtemplate-2023-09\n",
+            "format": "yaml",
+        }
+    )
+    assert p.name == "blender"
+    assert p.source == "builtin"
+    assert p.format == "yaml"
+
+
+def test_product_parameter_from_dict_with_user_interface() -> None:
+    from sqi_client.models import ProductParameter
+
+    param = ProductParameter.from_dict(
+        {
+            "name": "Quality",
+            "type": "STRING",
+            "default": "final",
+            "allowed_values": ["draft", "final"],
+            "user_interface": {
+                "control": "DROPDOWN_LIST",
+                "label": "Render quality",
+                "group_label": "Output",
+            },
+        }
+    )
+    assert param.name == "Quality"
+    assert param.default == "final"
+    assert param.allowed_values == ["draft", "final"]
+    assert param.user_interface is not None
+    assert param.user_interface.control == "DROPDOWN_LIST"
+    assert param.user_interface.group_label == "Output"
+
+
+def test_product_parameter_from_dict_without_user_interface() -> None:
+    from sqi_client.models import ProductParameter
+
+    param = ProductParameter.from_dict({"name": "Frames", "type": "INT"})
+    assert param.user_interface is None
+    assert param.default is None
