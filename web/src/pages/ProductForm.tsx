@@ -10,6 +10,9 @@ import { useCreateProduct, useUpdateProduct } from '@/api/mutations'
 import type { ProductInput } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { detectFormat } from '@/lib/format'
+import { parsePathDeliveries, serializePathDeliveries } from '@/lib/pathDelivery'
+import type { PathTranslation } from '@/api/types'
+import { ProductPathDelivery } from '@/pages/ProductPathDelivery'
 import styles from './ProductForm.module.css'
 
 interface Props {
@@ -63,6 +66,23 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
 
   const mutation = mode === 'create' ? createProduct : updateProduct
   const isPending = createProduct.isPending || updateProduct.isPending
+
+  const format = detectFormat(template)
+
+  let pathTranslation: PathTranslation | null = null
+  try {
+    pathTranslation = parsePathDeliveries(template, format)
+  } catch {
+    // invalid template text — panel shows nothing checked
+  }
+
+  function handlePathDeliveryChange(pt: PathTranslation) {
+    try {
+      setTemplate(serializePathDeliveries(template, format, pt))
+    } catch {
+      // invalid template text — skip update
+    }
+  }
 
   const trimmedName = name.trim()
   const nameValid = NAME_PATTERN.test(trimmedName)
@@ -206,6 +226,8 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
             />
           </div>
         </div>
+
+        <ProductPathDelivery value={pathTranslation} onChange={handlePathDeliveryChange} />
 
         {mutation.isError && (
           <div className={styles.errorBlock} role="alert">

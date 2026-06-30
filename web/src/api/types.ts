@@ -312,11 +312,7 @@ export interface UsagePool {
 
 /** Delivery mechanism kind for the SQI_PATH_TRANSLATION extension. */
 export type PathDeliveryKind =
-  | 'swap_in_place'
-  | 'translation_file'
-  | 'command_flags'
-  | 'environment'
-  | 'stage_locally'
+  'swap_in_place' | 'translation_file' | 'command_flags' | 'environment' | 'stage_locally'
 
 /** A single path-delivery entry inside SQI_PATH_TRANSLATION.deliveries. */
 export interface PathDelivery {

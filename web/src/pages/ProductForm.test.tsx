@@ -173,6 +173,22 @@ describe('ProductForm (create)', () => {
   })
 })
 
+describe('ProductForm path-delivery panel', () => {
+  it('toggling swap-in-place injects SQI_PATH_TRANSLATION into the template', async () => {
+    const user = userEvent.setup()
+    renderForm(['/products/new'])
+
+    await user.type(screen.getByLabelText(/^name$/i), 'my-render')
+    await user.type(screen.getByLabelText(/^title$/i), 'My Render')
+    await user.type(screen.getByTestId('template-editor'), 'name: x')
+
+    await user.click(screen.getByRole('checkbox', { name: /swap paths in place/i }))
+
+    const textarea = screen.getByTestId('template-editor') as HTMLTextAreaElement
+    expect(textarea.value).toContain('SQI_PATH_TRANSLATION')
+  })
+})
+
 describe('ProductForm (edit)', () => {
   it('prefills from GET and PUTs to the original name on save', async () => {
     fetchMock.mockResolvedValueOnce(ok(makeProduct())) // GET /products/my-render
