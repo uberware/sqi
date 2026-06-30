@@ -52,6 +52,20 @@ type WorkerConfig struct {
 	// Diagnostics controls publishing the worker's own slog output to
 	// sqi-server for display in the web UI.
 	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
+
+	// Staging configures local input/output staging for the stage_locally path
+	// delivery. Both fields must be set for staging to function.
+	Staging StagingConfig `yaml:"staging"`
+}
+
+// StagingConfig is the operator-owned configuration for the stage_locally path
+// delivery. sqi never copies bytes itself: it invokes SyncCommand per path.
+type StagingConfig struct {
+	// ScratchDir is the base directory for per-attempt staged copies.
+	ScratchDir string `yaml:"scratch_dir"`
+	// SyncCommand is the command template invoked per path, with {src}, {dest},
+	// and optional {object_type} placeholders, e.g. "rsync -a {src} {dest}".
+	SyncCommand string `yaml:"sync_command"`
 }
 
 // DiagnosticsConfig controls the diagnostic-log sink that ships the worker's
