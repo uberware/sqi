@@ -288,6 +288,14 @@ type AssignMsg struct {
 	// location configuration for the worker's compute location.  May be empty
 	// when a task references no named storage locations.
 	PathMap []PathMapRule `json:"path_map,omitempty"`
+
+	// PathDeliveries is the ordered set of enabled path-delivery mechanisms for
+	// this task (the declared SQI_PATH_TRANSLATION set, or the implicit default).
+	PathDeliveries []PathDelivery `json:"path_deliveries,omitempty"`
+
+	// Staging is the manifest of job-level PATH parameters to stage locally,
+	// present only when the stage_locally delivery is enabled.
+	Staging []StageEntry `json:"staging,omitempty"`
 }
 
 // Action is an executable command included in an [AssignMsg].
@@ -358,6 +366,21 @@ type PathMapRule struct {
 	SourcePath string `json:"source_path"`
 	// DestinationPath is the worker-local concrete path that replaces SourcePath.
 	DestinationPath string `json:"destination_path"`
+}
+
+// PathDelivery mirrors openjd.PathDelivery: one enabled delivery + settings.
+type PathDelivery struct {
+	Kind     string `json:"kind"`
+	Pattern  string `json:"pattern,omitempty"`
+	Variable string `json:"variable,omitempty"`
+}
+
+// StageEntry is one path to stage locally, with its dataFlow direction and
+// objectType, resolved to a concrete worker-visible path by the server.
+type StageEntry struct {
+	Path       string `json:"path"`
+	Direction  string `json:"direction"` // IN | OUT | INOUT
+	ObjectType string `json:"object_type,omitempty"`
 }
 
 // ── TaskStatusMsg ─────────────────────────────────────────────────────────────
