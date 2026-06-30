@@ -290,6 +290,45 @@ job name to `"<product title> <timestamp>"` and posts to
 The raw OpenJD editor remains reachable at `/submit/raw` for one-off submissions
 that do not use the catalog.
 
+## Path translation
+
+Path translation lets a product specify how concrete paths reach the application.
+It rides the `SQI_PATH_TRANSLATION` extension and offers five delivery mechanisms:
+
+1. **`swap_in_place`** — String substitution of path parameters in the template
+   (sqi convenience, not in OpenJD spec).
+2. **`translation_file`** — Native OpenJD `pathmapping-1.0` file format, served
+   via the `{{Session.PathMappingRulesFile}}` format string. Prefer this when your
+   app can read a mapping file.
+3. **`command_flags`** — Append individual `src`/`dest` pairs as command-line flags
+   (pattern: `--remap {src}={dest}`). Use only for apps needing per-pair flags.
+4. **`environment`** — Set an environment variable to `src=dest` pairs joined by
+   the OS path-list separator. Use only for apps needing per-pair environment
+   variables.
+5. **`stage_locally`** — Copy job-level PATH parameters with `dataFlow` IN/INOUT
+   to worker-local scratch before the run, and copy OUT/INOUT back after (sqi
+   convenience, not in OpenJD spec). Requires operator configuration of
+   `staging.scratch_dir` and `staging.sync_command` on the worker.
+
+Deliveries execute in fixed order and are mutually compatible — a product can
+declare all five simultaneously. The first two (`swap_in_place`, `translation_file`)
+are the default when no `SQI_PATH_TRANSLATION` extension is declared, preserving
+existing behavior.
+
+**Relationship to native OpenJD:** The base OpenJD spec provides the `{{Session.PathMappingRulesFile}}`
+format string for apps that read a mapping file. Use it (via `translation_file`).
+`command_flags` and `environment` exist for apps that need individual pairs —
+neither can be expressed by native OpenJD alone. `swap_in_place` and `stage_locally`
+are sqi-specific conveniences for path-mapping-unaware applications and for
+worker-local staging.
+
+**Staging requirement:** Staging (`stage_locally`) applies only to job-level PATH
+parameters declared with `dataFlow: IN`, `OUT`, or `INOUT`. Step-level parameters
+and non-PATH types are not staged.
+
+For full details, schema reference, and examples, see
+[`docs/openjd-extensions/path-translation.md`](openjd-extensions/path-translation.md).
+
 ## Limiting product concurrency
 
 There is no separate "product limit" knob. A product is a thin wrapper over an
