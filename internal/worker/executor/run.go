@@ -160,10 +160,10 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// Every attempt must have a running→terminal transition for the server's
 	// state machine; the running status is not a claim that a process exists.
 	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, &failed)
+	defer e.stager.Cleanup(scratchDir)
 	if !ok {
 		return
 	}
-	defer e.stager.Cleanup(scratchDir)
 
 	// ── OpenJD path mapping file ────────────────────────────────────
 	// The pathmapping-1.0 path_mapping.json file is written once at session
@@ -889,9 +889,11 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 // and rewrites path_mapping.json when staging rules are added alongside
 // translation_file.
 //
-// On any failure it calls failPreExec and returns (nil, "", false); the caller
-// must return immediately. On success it returns the effective lookup, the
-// scratch directory (empty string if staging was not active), and true.
+// On any failure it calls failPreExec; if staging was not yet active it returns
+// (nil, "", false), otherwise it returns (nil, scratchDir, false) so the caller's
+// deferred Cleanup always receives the real scratch path. On success it returns
+// the effective lookup, the scratch directory (empty string if staging was not
+// active), and true.
 func (e *Executor) buildEffectiveLookup(
 	ctx context.Context,
 	msg *protocol.AssignMsg,
@@ -918,13 +920,13 @@ func (e *Executor) buildEffectiveLookup(
 	lookup, err := pathmap.NewLookup(effectiveRules)
 	if err != nil {
 		e.failPreExec(msg, sessID, failed, err.Error())
-		return nil, "", false
+		return nil, scratchDir, false
 	}
 
 	if len(stagingRules) > 0 && hasDelivery(msg.PathDeliveries, "translation_file") {
 		if werr := pathmap.WritePathMappingFile(workDir, effectiveRules); werr != nil {
 			e.failPreExec(msg, sessID, failed, werr.Error())
-			return nil, "", false
+			return nil, scratchDir, false
 		}
 	}
 

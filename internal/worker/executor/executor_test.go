@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1399,5 +1400,76 @@ func TestExecutor_Cancel_registrarError(t *testing.T) {
 	// Deregister must not be called when Register failed — nothing was subscribed.
 	if dc != 0 {
 		t.Errorf("Deregister called %d time(s) after failed Register; want 0", dc)
+	}
+}
+
+// ── Staging scratch-dir cleanup regression test ───────────────────────────────
+
+// TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure is a regression
+// test for the scratch-directory leak: when StageIn succeeds but a subsequent
+// step in buildEffectiveLookup fails (here: a PathMap rule with a non-empty
+// SourcePath but empty DestinationPath causes pathmap.NewLookup to return an
+// error), the scratch directory must still be removed by the caller's deferred
+// stager.Cleanup.
+func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX-style path rules")
+	}
+
+	scratchBase := t.TempDir()
+	nc := &stubNATS{}
+	m := metrics.New()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mgr := session.NewManager(t.TempDir(), false, logger)
+	cfg := executor.Config{
+		KillGracePeriod: 500 * time.Millisecond,
+		// Staging configured so the stager.Configured() check passes and
+		// StageIn creates the scratch dir. The sync command is never actually
+		// invoked because there are no Staging entries to copy.
+		StagingScratchDir:  scratchBase,
+		StagingSyncCommand: "echo {src} {dest}",
+	}
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	exec := executor.New(statusPub, mgr, m, nil, cfg, logger)
+
+	const jobID = "job-scratch-leak"
+	const attemptID = "attempt-1"
+
+	msg := &protocol.AssignMsg{
+		Version:   protocol.ProtocolVersion,
+		Type:      protocol.TypeAssign,
+		TaskID:    "task-scratch-leak",
+		AttemptID: attemptID,
+		JobID:     jobID,
+		OnRun:     &protocol.Action{Command: "echo", Args: []string{"should-not-run"}},
+		PathDeliveries: []protocol.PathDelivery{
+			{Kind: "stage_locally"},
+		},
+		// No Staging entries: StageIn creates the scratch dir but copies nothing.
+		// A PathMap rule with a non-empty SourcePath and empty DestinationPath
+		// causes pathmap.NewLookup to fail after StageIn has already created
+		// the scratch directory — the scenario that previously leaked the dir.
+		PathMap: []protocol.PathMapRule{
+			{SourcePath: "/original/path", DestinationPath: ""},
+		},
+	}
+
+	ctx := context.Background()
+	if err := exec.Dispatch(ctx, msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Pre-exec failure publishes running → failed (2 status messages).
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "failed" {
+		t.Errorf("terminal status = %q; want %q (pipeline failure must fail the task)", last.Status, "failed")
+	}
+
+	// The scratch directory must have been removed by the deferred Cleanup.
+	scratchDir := filepath.Join(scratchBase, jobID, attemptID)
+	if _, err := os.Stat(scratchDir); !os.IsNotExist(err) {
+		t.Errorf("scratch dir %q still exists after pipeline failure — stager.Cleanup was not called (leak)", scratchDir)
 	}
 }
