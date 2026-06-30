@@ -159,6 +159,35 @@ func TestCreate_NoPathMapExposesFalseAndNoFile(t *testing.T) {
 	}
 }
 
+// TestCreate_NoTranslationFileWhenDeliveryDisabled verifies that when an
+// assignment carries path-mapping rules but the PathDeliveries set does not
+// include the "translation_file" delivery, no path_mapping.json is written and
+// HasPathMappingRules returns false.
+func TestCreate_NoTranslationFileWhenDeliveryDisabled(t *testing.T) {
+	// PathMap present, but deliveries omit translation_file -> no file written.
+	dataDir := t.TempDir()
+	mgr := NewManager(dataDir, false, nopLogger())
+	msg := &protocol.AssignMsg{
+		JobID:  "job1",
+		TaskID: "task1",
+		PathMap: []protocol.PathMapRule{
+			{SourcePath: "/projects", DestinationPath: "/mnt/cloud", SourcePathFormat: "POSIX"},
+		},
+		PathDeliveries: []protocol.PathDelivery{{Kind: "swap_in_place"}}, // no translation_file
+		OnRun:          &protocol.Action{Command: "true"},
+	}
+	sess, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sess.HasPathMappingRules() {
+		t.Error("HasPathMappingRules = true, want false (delivery disabled)")
+	}
+	if _, statErr := os.Stat(filepath.Join(sess.WorkDir, "path_mapping.json")); statErr == nil {
+		t.Error("path_mapping.json written despite delivery disabled")
+	}
+}
+
 // TestCreate_PathMappingRulesFileReferenceFailsWithoutRules verifies that when
 // there are no rules, an env action referencing {{Session.PathMappingRulesFile}}
 // fails session creation cleanly (the variable is intentionally absent so the
