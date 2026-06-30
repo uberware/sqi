@@ -946,7 +946,8 @@ func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, se
 	if soErr == nil {
 		return true
 	}
-	e.logger.ErrorContext(ctx, "executor: stage-out failed",
+	e.logger.ErrorContext(
+		ctx, "executor: stage-out failed",
 		slog.String("task_id", msg.TaskID),
 		slog.Any("error", soErr),
 	)
