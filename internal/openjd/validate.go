@@ -107,12 +107,7 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 
 // hasExtension reports whether name appears in the template's extensions list.
 func (t *JobTemplate) hasExtension(name string) bool {
-	for _, e := range t.Extensions {
-		if e == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(t.Extensions, name)
 }
 
 // validateDelivery checks per-delivery settings for a single PathDelivery.
