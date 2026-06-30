@@ -131,6 +131,9 @@ func buildAssignPayload(
 	// themselves.
 	msg.PathMap = buildPathMap(allLocs, worker.ComputeLocation)
 
+	// ── Path-translation deliveries ────────────────────────────────────────
+	msg.PathDeliveries = convertPathDeliveries(tmpl.PathTranslation)
+
 	// ── Resolved-mode path translation ───────────────────────────
 	// Replace any loc:// URI references in the command, args, task parameters,
 	// and environment variables with concrete local paths for this worker.
@@ -138,6 +141,11 @@ func buildAssignPayload(
 	// concrete paths.
 	if err := resolveLocURIsInMsg(&msg, allLocs, worker.ComputeLocation); err != nil {
 		return nil, fmt.Errorf("build assign payload: resolve loc:// URIs: %w", err)
+	}
+
+	// ── Staging manifest (uses already-resolved job parameters) ────────────
+	if hasDelivery(msg.PathDeliveries, string(openjd.DeliveryStageLocally)) {
+		msg.Staging = buildStagingManifest(tmpl, msg.JobParameters)
 	}
 
 	return json.Marshal(msg)
@@ -370,6 +378,56 @@ func resolveLocURIsInMsg(
 	}
 
 	return nil
+}
+
+// convertPathDeliveries maps the parsed SQI_PATH_TRANSLATION block to the
+// protocol delivery set, or the implicit default when the extension is absent.
+func convertPathDeliveries(pt *openjd.PathTranslation) []protocol.PathDelivery {
+	src := openjd.DefaultPathDeliveries()
+	if pt != nil {
+		src = pt.Deliveries
+	}
+	out := make([]protocol.PathDelivery, len(src))
+	for i, d := range src {
+		out[i] = protocol.PathDelivery{Kind: string(d.Kind), Pattern: d.Pattern, Variable: d.Variable}
+	}
+	return out
+}
+
+func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
+	for _, d := range ds {
+		if d.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// buildStagingManifest produces a StageEntry per job-level PATH parameter that
+// declares a dataFlow direction (IN/OUT/INOUT). NONE/undirected params and
+// non-PATH params are skipped. The path value is taken from the already
+// loc://-resolved job parameters.
+func buildStagingManifest(tmpl *openjd.JobTemplate, jobParams map[string]string) []protocol.StageEntry {
+	var out []protocol.StageEntry
+	for _, p := range tmpl.ParameterDefinitions {
+		if p.Type != openjd.JobParamTypePath {
+			continue
+		}
+		dir := string(p.DataFlow)
+		if dir != "IN" && dir != "OUT" && dir != "INOUT" {
+			continue
+		}
+		val, ok := jobParams[p.Name]
+		if !ok || val == "" {
+			continue
+		}
+		out = append(out, protocol.StageEntry{
+			Path:       val,
+			Direction:  dir,
+			ObjectType: string(p.ObjectType),
+		})
+	}
+	return out
 }
 
 // resolveAction rewrites loc:// URIs in an action's command and args.
