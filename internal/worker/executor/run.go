@@ -846,26 +846,42 @@ func (e *Executor) takeFailReason(attemptID string) (string, bool) {
 // flags; environment sets the configured variable. translation_file is handled
 // at session/executor file-write time, not here. Returns the (possibly new)
 // action and the env map (mutated in place and returned for clarity).
+//
+// Deliveries are applied in a FIXED canonical order (swap_in_place →
+// command_flags → environment) regardless of the declared order in the
+// template. This prevents a hand-authored template that lists command_flags
+// before swap_in_place from double-substituting the appended flag strings.
 func applyDeliveries(deliveries []protocol.PathDelivery, lookup *pathmap.Lookup, action *protocol.Action, env map[string]string) (outAction *protocol.Action, outEnv map[string]string) {
-	out := action
+	// Index enabled deliveries by kind so we can apply in fixed canonical order.
+	type kindCfg struct{ pattern, variable string }
+	kinds := make(map[string]kindCfg, len(deliveries))
 	for _, d := range deliveries {
-		switch d.Kind {
-		case "swap_in_place":
-			out = lookup.ApplyToAction(out)
-		case "command_flags":
-			flags := lookup.CommandFlags(d.Pattern)
-			if len(flags) > 0 {
-				args := make([]string, 0, len(out.Args)+len(flags))
-				args = append(args, out.Args...)
-				args = append(args, flags...)
-				na := *out
-				na.Args = args
-				out = &na
-			}
-		case "environment":
-			if v := lookup.EnvValue(); v != "" {
-				env[d.Variable] = v
-			}
+		kinds[d.Kind] = kindCfg{d.Pattern, d.Variable}
+	}
+
+	out := action
+	// 1. swap_in_place: substitute source paths in command and args first so that
+	//    the appended command_flags use the original (untranslated) source path.
+	if _, ok := kinds["swap_in_place"]; ok {
+		out = lookup.ApplyToAction(out)
+	}
+	// 2. command_flags: append rendered flag strings after swap so they are not
+	//    re-substituted by any subsequent (mis-ordered) swap.
+	if c, ok := kinds["command_flags"]; ok {
+		flags := lookup.CommandFlags(c.pattern)
+		if len(flags) > 0 {
+			args := make([]string, 0, len(out.Args)+len(flags))
+			args = append(args, out.Args...)
+			args = append(args, flags...)
+			na := *out
+			na.Args = args
+			out = &na
+		}
+	}
+	// 3. environment: set the configured variable.
+	if c, ok := kinds["environment"]; ok {
+		if v := lookup.EnvValue(); v != "" {
+			env[c.variable] = v
 		}
 	}
 	return out, env

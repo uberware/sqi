@@ -15,8 +15,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -54,30 +56,42 @@ func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries [
 }
 
 // copyInEntries iterates entries and copies IN/INOUT files into scratchDir,
-// returning the resulting path-map rules. Extracted to keep StageIn under the
-// cyclop complexity limit.
+// returning the resulting path-map rules. Each entry is placed under a
+// per-index subdirectory (<scratchDir>/<i>/<basename>) so entries with the same
+// basename never collide; the same index is used by StageOut for copy-back.
+// Extracted to keep StageIn under the cyclop complexity limit.
 func (s *Stager) copyInEntries(ctx context.Context, scratchDir string, entries []protocol.StageEntry) ([]protocol.PathMapRule, error) {
 	var rules []protocol.PathMapRule
-	for _, e := range entries {
+	for i, e := range entries {
 		if e.Direction != "IN" && e.Direction != "INOUT" {
 			continue
 		}
-		dest := filepath.Join(scratchDir, filepath.Base(e.Path))
+		subDir := filepath.Join(scratchDir, strconv.Itoa(i))
+		if err := os.MkdirAll(subDir, 0o750); err != nil {
+			return nil, fmt.Errorf("staging: create subdir %q: %w", subDir, err)
+		}
+		dest := filepath.Join(subDir, filepath.Base(e.Path))
 		if err := s.runSync(ctx, e.Path, dest, e.ObjectType); err != nil {
 			return nil, fmt.Errorf("staging: copy-in %q: %w", e.Path, err)
 		}
-		rules = append(rules, protocol.PathMapRule{SourcePath: e.Path, DestinationPath: dest})
+		rules = append(rules, protocol.PathMapRule{
+			SourcePathFormat: pathmap.DetectSourceFormat(e.Path),
+			SourcePath:       e.Path,
+			DestinationPath:  dest,
+		})
 	}
 	return rules, nil
 }
 
 // StageOut copies every OUT/INOUT entry from scratch back to its original path.
+// It iterates the full entries slice with its original index so the per-index
+// subdirectory (<scratchDir>/<i>/<basename>) matches what copyInEntries created.
 func (s *Stager) StageOut(ctx context.Context, scratchDir string, entries []protocol.StageEntry) error {
-	for _, e := range entries {
+	for i, e := range entries {
 		if e.Direction != "OUT" && e.Direction != "INOUT" {
 			continue
 		}
-		src := filepath.Join(scratchDir, filepath.Base(e.Path))
+		src := filepath.Join(scratchDir, strconv.Itoa(i), filepath.Base(e.Path))
 		if err := s.runSync(ctx, src, e.Path, e.ObjectType); err != nil {
 			return fmt.Errorf("staging: copy-out %q: %w", e.Path, err)
 		}

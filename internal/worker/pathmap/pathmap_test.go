@@ -512,6 +512,32 @@ func TestLookup_CommandFlags_SkipsEmptySource(t *testing.T) {
 	}
 }
 
+// ── DetectSourceFormat ────────────────────────────────────────────────────────
+
+// TestDetectSourceFormat verifies the POSIX/WINDOWS path-format heuristic used
+// when populating SourcePathFormat on staging-produced PathMapRules.
+func TestDetectSourceFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/nfs/projects/shot.ma", "POSIX"},
+		{"/mnt/nas/assets", "POSIX"},
+		{"s3://bucket/assets", "POSIX"},
+		{`C:\projects\shot.ma`, "WINDOWS"},
+		{`c:\lowercase\drive`, "WINDOWS"},
+		{`\\server\share\file`, "WINDOWS"},
+		{"C:/mixed/slash", "WINDOWS"}, // drive letter triggers WINDOWS even without backslash
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			if got := pathmap.DetectSourceFormat(tc.path); got != tc.want {
+				t.Errorf("DetectSourceFormat(%q) = %q; want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 // ── EnvValue ──────────────────────────────────────────────────────────────────
 
 func TestLookup_EnvValue(t *testing.T) {

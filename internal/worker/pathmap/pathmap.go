@@ -170,6 +170,28 @@ func (l *Lookup) CommandFlags(pattern string) []string {
 	return out
 }
 
+// DetectSourceFormat returns the OpenJD pathmapping source-path-format enum for
+// path p: "WINDOWS" when p contains a backslash or starts with a drive-letter
+// prefix (e.g. "C:"), "POSIX" otherwise.
+//
+// The heuristic mirrors detectPathFormat in internal/scheduler/assign.go and is
+// used by the staging package to populate SourcePathFormat on staging-produced
+// PathMapRules so that the written path_mapping.json is valid against the
+// OpenJD pathmapping-1.0 schema (which requires "POSIX" or "WINDOWS").
+func DetectSourceFormat(p string) string {
+	if strings.Contains(p, `\`) {
+		return "WINDOWS"
+	}
+	// Drive-letter prefix: a single ASCII letter followed by a colon, e.g. "C:".
+	if len(p) >= 2 && p[1] == ':' {
+		c := p[0]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return "WINDOWS"
+		}
+	}
+	return "POSIX"
+}
+
 // EnvValue returns the rules as "src=dest" pairs joined by the OS path-list
 // separator, for the environment delivery. Rules with an empty SourcePath are
 // skipped. Returns "" when there are no usable rules.

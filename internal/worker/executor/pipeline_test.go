@@ -36,6 +36,34 @@ func TestApplyDeliveries_FlagsAndEnv(t *testing.T) {
 	}
 }
 
+// TestApplyDeliveries_CanonicalOrder verifies that deliveries are applied in the
+// fixed canonical order (swap_in_place → command_flags → environment) regardless
+// of the declared order. When command_flags is declared BEFORE swap_in_place the
+// appended flag strings must not be double-substituted by the swap.
+func TestApplyDeliveries_CanonicalOrder(t *testing.T) {
+	lookup, err := pathmap.NewLookup([]protocol.PathMapRule{
+		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
+	})
+	if err != nil {
+		t.Fatalf("NewLookup: %v", err)
+	}
+	action := &protocol.Action{Command: "render", Args: []string{"/projects/shot.ma"}}
+	// Intentionally wrong declared order: command_flags listed BEFORE swap_in_place.
+	deliveries := []protocol.PathDelivery{
+		{Kind: "command_flags", Pattern: "--remap {src}={dest}"},
+		{Kind: "swap_in_place"},
+	}
+
+	gotAction, _ := applyDeliveries(deliveries, lookup, action, map[string]string{})
+
+	// swap_in_place must run first: the path arg is translated and the appended
+	// flag references the original source path (not the already-translated dest).
+	wantArgs := []string{"/mnt/cloud/shot.ma", "--remap /projects=/mnt/cloud"}
+	if !reflect.DeepEqual(gotAction.Args, wantArgs) {
+		t.Errorf("Args = %v; want %v (canonical order must apply swap before flags)", gotAction.Args, wantArgs)
+	}
+}
+
 func TestApplyDeliveries_SwapDisabledLeavesArgs(t *testing.T) {
 	lookup, err := pathmap.NewLookup([]protocol.PathMapRule{
 		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},

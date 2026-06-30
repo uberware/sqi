@@ -14,6 +14,15 @@ import (
 	"github.com/uberware/sqi/internal/worker/staging"
 )
 
+// writeFile is a test helper that creates a file with content, failing the test
+// on error.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // fakeSync writes a shell script that records its args and copies src->dest with cp -R.
@@ -69,17 +78,19 @@ func TestStager_StageIn_FailsWhenSyncFails(t *testing.T) {
 func TestStager_StageOut_CopiesBack(t *testing.T) {
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), discard())
-	// Create a staged scratch dir with an output file.
+	// Create a staged scratch dir with an output file at the index-namespaced
+	// path. StageOut looks for OUT entries at <scratchDir>/<index>/<basename>;
+	// the single OUT entry is at slice index 0, so the staged file lives under
+	// "0/render.exr".
 	scratchDir := filepath.Join(scratch, "job1", "att1")
-	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
+	stagedDir := filepath.Join(scratchDir, "0")
+	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// The output's original path (dest of copy-back) is a fresh temp file path.
 	outOrig := filepath.Join(t.TempDir(), "render.exr")
-	staged := filepath.Join(scratchDir, "render.exr")
-	if err := os.WriteFile(staged, []byte("pixels"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(stagedDir, "render.exr"), "pixels")
+
 	err := s.StageOut(context.Background(), scratchDir, []protocol.StageEntry{
 		{Path: outOrig, Direction: "OUT", ObjectType: "FILE"},
 	})
@@ -88,6 +99,130 @@ func TestStager_StageOut_CopiesBack(t *testing.T) {
 	}
 	if _, err := os.Stat(outOrig); err != nil {
 		t.Fatalf("output not copied back: %v", err)
+	}
+}
+
+// TestStager_StageIn_RulesHaveFormat verifies that StageIn populates
+// SourcePathFormat on every path-map rule it returns.  An empty format violates
+// the OpenJD pathmapping-1.0 schema ("POSIX"|"WINDOWS" required).
+func TestStager_StageIn_RulesHaveFormat(t *testing.T) {
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "shot.ma")
+	writeFile(t, srcFile, "scene")
+
+	scratch := t.TempDir()
+	s := staging.New(scratch, fakeSync(t), discard())
+
+	rules, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+	})
+	if err != nil {
+		t.Fatalf("StageIn: %v", err)
+	}
+	for i, r := range rules {
+		if r.SourcePathFormat == "" {
+			t.Errorf("rules[%d].SourcePathFormat is empty; want POSIX or WINDOWS", i)
+		}
+	}
+}
+
+// TestStager_StageIn_NoBasenameCollision verifies that two IN entries with the
+// same basename (e.g. /showA/scene.ma and /showB/scene.ma) are staged to
+// distinct per-index paths and that both path-map rules reference the correct
+// staged files.
+func TestStager_StageIn_NoBasenameCollision(t *testing.T) {
+	src1Dir := t.TempDir()
+	src2Dir := t.TempDir()
+	src1 := filepath.Join(src1Dir, "scene.ma")
+	src2 := filepath.Join(src2Dir, "scene.ma")
+	writeFile(t, src1, "scene-A")
+	writeFile(t, src2, "scene-B")
+
+	scratch := t.TempDir()
+	s := staging.New(scratch, fakeSync(t), discard())
+
+	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+		{Path: src1, Direction: "IN", ObjectType: "FILE"},
+		{Path: src2, Direction: "IN", ObjectType: "FILE"},
+	})
+	if err != nil {
+		t.Fatalf("StageIn: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("want 2 rules; got %d", len(rules))
+	}
+
+	// Destinations must be distinct (no collision).
+	if rules[0].DestinationPath == rules[1].DestinationPath {
+		t.Errorf("both entries staged to the same path: %q", rules[0].DestinationPath)
+	}
+
+	// Both staged files must exist under the scratch dir.
+	for i, r := range rules {
+		if !strings.HasPrefix(r.DestinationPath, scratchDir) {
+			t.Errorf("rules[%d].DestinationPath %q not under scratchDir %q", i, r.DestinationPath, scratchDir)
+		}
+		if _, err := os.Stat(r.DestinationPath); err != nil {
+			t.Errorf("rules[%d] staged file %q missing: %v", i, r.DestinationPath, err)
+		}
+	}
+
+	// Source paths must map back to their originals.
+	if rules[0].SourcePath != src1 {
+		t.Errorf("rules[0].SourcePath = %q; want %q", rules[0].SourcePath, src1)
+	}
+	if rules[1].SourcePath != src2 {
+		t.Errorf("rules[1].SourcePath = %q; want %q", rules[1].SourcePath, src2)
+	}
+}
+
+// TestStager_StageOut_ConsistentWithStageIn verifies that StageOut reads back
+// from the same per-index subdirectories that StageIn wrote, even when multiple
+// INOUT entries share the same basename.  This ensures a task's modified outputs
+// are copied back to the correct originals.
+func TestStager_StageOut_ConsistentWithStageIn(t *testing.T) {
+	src1Dir := t.TempDir()
+	src2Dir := t.TempDir()
+	src1 := filepath.Join(src1Dir, "output.exr")
+	src2 := filepath.Join(src2Dir, "output.exr")
+	writeFile(t, src1, "data-A")
+	writeFile(t, src2, "data-B")
+
+	scratch := t.TempDir()
+	s := staging.New(scratch, fakeSync(t), discard())
+
+	entries := []protocol.StageEntry{
+		{Path: src1, Direction: "INOUT", ObjectType: "FILE"},
+		{Path: src2, Direction: "INOUT", ObjectType: "FILE"},
+	}
+
+	_, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	if err != nil {
+		t.Fatalf("StageIn: %v", err)
+	}
+
+	// Simulate worker output: overwrite the staged files.
+	writeFile(t, filepath.Join(scratchDir, "0", "output.exr"), "result-A")
+	writeFile(t, filepath.Join(scratchDir, "1", "output.exr"), "result-B")
+
+	if err := s.StageOut(context.Background(), scratchDir, entries); err != nil {
+		t.Fatalf("StageOut: %v", err)
+	}
+
+	// Each original must receive the correct result from its per-index staging path.
+	got1, err := os.ReadFile(src1)
+	if err != nil {
+		t.Fatalf("read src1: %v", err)
+	}
+	got2, err := os.ReadFile(src2)
+	if err != nil {
+		t.Fatalf("read src2: %v", err)
+	}
+	if string(got1) != "result-A" {
+		t.Errorf("src1 = %q; want %q", got1, "result-A")
+	}
+	if string(got2) != "result-B" {
+		t.Errorf("src2 = %q; want %q", got2, "result-B")
 	}
 }
 
