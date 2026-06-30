@@ -63,6 +63,12 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	t.Description = getString(raw, "description")
 	t.Extensions = getStringSlice(raw, "extensions")
 
+	pt, err := maybeDecodePathTranslation(raw)
+	if err != nil {
+		return nil, err
+	}
+	t.PathTranslation = pt
+
 	// parameterDefinitions
 	if defs, ok := raw["parameterDefinitions"]; ok {
 		items, err := toSliceOfMaps(defs, "parameterDefinitions")
