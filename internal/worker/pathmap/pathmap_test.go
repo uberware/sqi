@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -482,4 +483,47 @@ func TestWritePathMappingFile(t *testing.T) {
 			t.Error("expected error writing to nonexistent directory; got nil")
 		}
 	})
+}
+
+// ── CommandFlags ──────────────────────────────────────────────────────────────
+
+func TestLookup_CommandFlags(t *testing.T) {
+	l, err := pathmap.NewLookup([]protocol.PathMapRule{
+		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
+		{SourcePath: "/assets", DestinationPath: "/mnt/assets"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := l.CommandFlags("--remap {src}={dest}")
+	want := []string{"--remap /projects=/mnt/cloud", "--remap /assets=/mnt/assets"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("CommandFlags = %v, want %v", got, want)
+	}
+}
+
+func TestLookup_CommandFlags_SkipsEmptySource(t *testing.T) {
+	l, err := pathmap.NewLookup([]protocol.PathMapRule{{SourcePath: "", DestinationPath: "/x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.CommandFlags("{src}={dest}"); len(got) != 0 {
+		t.Errorf("CommandFlags = %v, want empty", got)
+	}
+}
+
+// ── EnvValue ──────────────────────────────────────────────────────────────────
+
+func TestLookup_EnvValue(t *testing.T) {
+	l, err := pathmap.NewLookup([]protocol.PathMapRule{
+		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
+		{SourcePath: "/assets", DestinationPath: "/mnt/assets"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/projects=/mnt/cloud" + string(os.PathListSeparator) + "/assets=/mnt/assets"
+	if got := l.EnvValue(); got != want {
+		t.Errorf("EnvValue = %q, want %q", got, want)
+	}
 }

@@ -93,6 +93,12 @@ func Parse(rules []protocol.PathMapRule) (*Lookup, error) {
 	return &Lookup{rules: cp}, nil
 }
 
+// NewLookup is an alias for Parse, named for call sites that build a Lookup from
+// a combined (e.g. staging-prepended) rule slice.
+func NewLookup(rules []protocol.PathMapRule) (*Lookup, error) {
+	return Parse(rules)
+}
+
 // Len returns the number of rules in the Lookup.
 func (l *Lookup) Len() int {
 	if l == nil {
@@ -143,6 +149,42 @@ func (l *Lookup) ApplyToAction(action *protocol.Action) *protocol.Action {
 		}
 	}
 	return &out
+}
+
+// CommandFlags renders pattern once per rule with a non-empty SourcePath,
+// replacing {src} with SourcePath and {dest} with DestinationPath, and returns
+// the rendered strings in rule order. Rules with an empty SourcePath are skipped.
+func (l *Lookup) CommandFlags(pattern string) []string {
+	if l == nil || len(l.rules) == 0 {
+		return nil
+	}
+	var out []string
+	for _, r := range l.rules {
+		if r.SourcePath == "" {
+			continue
+		}
+		s := strings.ReplaceAll(pattern, "{src}", r.SourcePath)
+		s = strings.ReplaceAll(s, "{dest}", r.DestinationPath)
+		out = append(out, s)
+	}
+	return out
+}
+
+// EnvValue returns the rules as "src=dest" pairs joined by the OS path-list
+// separator, for the environment delivery. Rules with an empty SourcePath are
+// skipped. Returns "" when there are no usable rules.
+func (l *Lookup) EnvValue() string {
+	if l == nil || len(l.rules) == 0 {
+		return ""
+	}
+	var pairs []string
+	for _, r := range l.rules {
+		if r.SourcePath == "" {
+			continue
+		}
+		pairs = append(pairs, r.SourcePath+"="+r.DestinationPath)
+	}
+	return strings.Join(pairs, string(os.PathListSeparator))
 }
 
 // ── Path mapping file ─────────────────────────────────────────────────────────
