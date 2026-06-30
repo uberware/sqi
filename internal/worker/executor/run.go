@@ -147,10 +147,11 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		return
 	}
 
-	// ── Validate and parse path map ────────────────────────────
-	// Parse validates that every PathMapRule has a non-empty DestinationPath.
-	// If any named location is unresolvable, we abort immediately and publish
-	// a failed status so the server does not wait for heartbeat timeout.
+	// ── Stage inputs + build effective path-map lookup ──────────────────────────
+	// buildEffectiveLookup handles stage_locally copy-in (if enabled), constructs
+	// the combined lookup (staging rules prepended so they take precedence), and
+	// rewrites path_mapping.json when staging rules are added alongside the
+	// translation_file delivery.
 	//
 	// Pre-execution failures below intentionally publish a "running" status
 	// immediately before the terminal "failed", consistent with the nil-action
@@ -158,23 +159,17 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// ("Publish running status before Start so the server records the attempt").
 	// Every attempt must have a running→terminal transition for the server's
 	// state machine; the running status is not a claim that a process exists.
-	lookup, err := pathmap.Parse(msg.PathMap)
-	if err != nil {
-		e.logger.ErrorContext(
-			ctx, "executor: unresolvable path map — failing task",
-			slog.String("task_id", msg.TaskID),
-			slog.String("attempt_id", msg.AttemptID),
-			slog.Any("error", err),
-		)
-		e.failPreExec(msg, sess.ID, &failed, err.Error())
+	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, &failed)
+	if !ok {
 		return
 	}
+	defer e.stager.Cleanup(scratchDir)
 
 	// ── OpenJD path mapping file ────────────────────────────────────
 	// The pathmapping-1.0 path_mapping.json file is written once at session
-	// creation (session.Manager.Create) so that both environment actions and the
-	// task action can rely on Session.PathMappingRulesFile.  It is intentionally
-	// NOT written here, to avoid a double-write.
+	// creation (session.Manager.Create) for the base path-map rules.  When
+	// staging is active and translation_file is enabled, buildEffectiveLookup
+	// rewrites the file with the combined (staging-prepended) rules above.
 
 	// ── Resolve OpenJD {{...}} format strings ──────────────────────────────────
 	// The session working directory (Session.WorkingDirectory) is only known now,
@@ -217,11 +212,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// reason is available for the terminal status switch below.
 	// Both the reason and the bool are kept: openjdFailed=true when openjd_fail
 	// was seen, even if the emitted reason text was empty.
-	var openjdFailReason string
-	var openjdFailed bool
-	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
-		openjdFailReason, openjdFailed = hook.TakeFailReason(msg.AttemptID)
-	}
+	openjdFailReason, openjdFailed := e.takeFailReason(msg.AttemptID)
 
 	// ── Snapshot last-known progress ────────────────────────────────
 	// Must be called before deferred Deregister removes the attempt state from
@@ -347,7 +338,11 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 
 	default:
-		// Successful completion.
+		// Successful completion: copy outputs back before publishing terminal status.
+		if !e.stageOutputs(ctx, msg, sess.ID, scratchDir, &failed) {
+			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
+			return
+		}
 		zero := 0
 		e.logger.InfoContext(
 			ctx, "executor: task succeeded",
@@ -447,9 +442,12 @@ func (e *Executor) failResolution(ctx context.Context, msg *protocol.AssignMsg, 
 // the caller; envVars is the merged, format-string-resolved environment-variable
 // map to apply on top of the inherited process environment.
 func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, sess *session.Session, run *taskRun, lookup *pathmap.Lookup, resolvedRun *protocol.Action, envVars map[string]string) processResult {
-	// Apply resolved-mode path substitution to the command and args
-	// so the launched process sees only concrete filesystem paths.
-	action := lookup.ApplyToAction(resolvedRun)
+	// Apply path-delivery transformations: swap_in_place substitutes paths in
+	// the action, command_flags appends rendered flag strings, and environment
+	// sets the configured variable.  translation_file is handled at session/
+	// session-creation time (and rewritten by buildEffectiveLookup when staging
+	// adds rules), not here.
+	action, envVars := applyDeliveries(msg.PathDeliveries, lookup, resolvedRun, envVars)
 
 	// Build process environment.
 	// Set working directory to the session working directory.
@@ -828,6 +826,133 @@ func (e *Executor) flushTaskLogs(ctx context.Context, msg *protocol.AssignMsg, s
 			slog.Any("error", err),
 		)
 	}
+}
+
+// takeFailReason retrieves the openjd_fail reason stored for attemptID by the
+// output handler's TaskLifecycleHook, if wired. Returns ("", false) when no
+// openjd_fail was seen or no hook is configured. Extracted from runTask to keep
+// its cyclomatic complexity within the project limit.
+func (e *Executor) takeFailReason(attemptID string) (string, bool) {
+	if hook, ok := e.outputHandler.(TaskLifecycleHook); ok {
+		return hook.TakeFailReason(attemptID)
+	}
+	return "", false
+}
+
+// ── Path-delivery helpers ─────────────────────────────────────────────────────
+
+// applyDeliveries runs the non-staging deliveries over the effective lookup:
+// swap_in_place substitutes paths in the action; command_flags appends rendered
+// flags; environment sets the configured variable. translation_file is handled
+// at session/executor file-write time, not here. Returns the (possibly new)
+// action and the env map (mutated in place and returned for clarity).
+func applyDeliveries(deliveries []protocol.PathDelivery, lookup *pathmap.Lookup, action *protocol.Action, env map[string]string) (outAction *protocol.Action, outEnv map[string]string) {
+	out := action
+	for _, d := range deliveries {
+		switch d.Kind {
+		case "swap_in_place":
+			out = lookup.ApplyToAction(out)
+		case "command_flags":
+			flags := lookup.CommandFlags(d.Pattern)
+			if len(flags) > 0 {
+				args := make([]string, 0, len(out.Args)+len(flags))
+				args = append(args, out.Args...)
+				args = append(args, flags...)
+				na := *out
+				na.Args = args
+				out = &na
+			}
+		case "environment":
+			if v := lookup.EnvValue(); v != "" {
+				env[d.Variable] = v
+			}
+		}
+	}
+	return out, env
+}
+
+// hasDelivery reports whether deliveries contains an entry with the given kind.
+// A local copy is intentional: scheduler and executor are same-level internal
+// packages that must not cross-import.
+func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
+	for _, d := range ds {
+		if d.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// buildEffectiveLookup handles the staging + path-map phases of runTask.
+// It stages inputs if the stage_locally delivery is enabled, builds the
+// combined (staging-rules-prepended) lookup so staging paths take precedence,
+// and rewrites path_mapping.json when staging rules are added alongside
+// translation_file.
+//
+// On any failure it calls failPreExec and returns (nil, "", false); the caller
+// must return immediately. On success it returns the effective lookup, the
+// scratch directory (empty string if staging was not active), and true.
+func (e *Executor) buildEffectiveLookup(
+	ctx context.Context,
+	msg *protocol.AssignMsg,
+	sessID, workDir string,
+	failed *bool,
+) (*pathmap.Lookup, string, bool) {
+	var scratchDir string
+	var stagingRules []protocol.PathMapRule
+
+	if hasDelivery(msg.PathDeliveries, "stage_locally") {
+		if !e.stager.Configured() {
+			e.failPreExec(msg, sessID, failed, "worker not configured for staging (set staging.scratch_dir and staging.sync_command)")
+			return nil, "", false
+		}
+		var stErr error
+		stagingRules, scratchDir, stErr = e.stager.StageIn(ctx, msg.JobID, msg.AttemptID, msg.Staging)
+		if stErr != nil {
+			e.failPreExec(msg, sessID, failed, stErr.Error())
+			return nil, "", false
+		}
+	}
+
+	effectiveRules := append(append([]protocol.PathMapRule{}, stagingRules...), msg.PathMap...)
+	lookup, err := pathmap.NewLookup(effectiveRules)
+	if err != nil {
+		e.failPreExec(msg, sessID, failed, err.Error())
+		return nil, "", false
+	}
+
+	if len(stagingRules) > 0 && hasDelivery(msg.PathDeliveries, "translation_file") {
+		if werr := pathmap.WritePathMappingFile(workDir, effectiveRules); werr != nil {
+			e.failPreExec(msg, sessID, failed, werr.Error())
+			return nil, "", false
+		}
+	}
+
+	return lookup, scratchDir, true
+}
+
+// stageOutputs copies staged outputs back to their original paths after a
+// successful process exit. If staging was not active (scratchDir == "") it
+// returns true immediately. On copy-out failure it logs the error, publishes a
+// terminal failed status, sets *failed, and returns false; the caller must
+// return.
+func (e *Executor) stageOutputs(ctx context.Context, msg *protocol.AssignMsg, sessID, scratchDir string, failed *bool) bool {
+	if scratchDir == "" {
+		return true
+	}
+	soErr := e.stager.StageOut(ctx, scratchDir, msg.Staging)
+	if soErr == nil {
+		return true
+	}
+	e.logger.ErrorContext(ctx, "executor: stage-out failed",
+		slog.String("task_id", msg.TaskID),
+		slog.Any("error", soErr),
+	)
+	*failed = true
+	minusOne := -1
+	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, soErr.Error(), nil, time.Now())
+	e.m.TasksTotal.WithLabelValues("failed").Inc()
+	return false
 }
 
 // ── Output capture ────────────────────────────────────────────────────────────

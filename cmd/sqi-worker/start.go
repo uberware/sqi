@@ -290,8 +290,10 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		m,
 		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
 		executor.Config{
-			KillGracePeriod: cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
-			AllowRoot:       cfg.Worker.AllowRoot,
+			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
+			AllowRoot:          cfg.Worker.AllowRoot,
+			StagingScratchDir:  cfg.Staging.ScratchDir,
+			StagingSyncCommand: cfg.Staging.SyncCommand,
 		},
 		logger,
 	)
