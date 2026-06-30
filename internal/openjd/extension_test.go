@@ -32,6 +32,19 @@ func TestLookupExtension(t *testing.T) {
 	}
 }
 
+func TestLookupExtension_PathTranslationVendor(t *testing.T) {
+	ext, ok := LookupExtension("SQI_PATH_TRANSLATION")
+	if !ok {
+		t.Fatal("SQI_PATH_TRANSLATION not registered")
+	}
+	if ext.Origin != OriginVendor {
+		t.Errorf("Origin = %q, want %q", ext.Origin, OriginVendor)
+	}
+	if ext.DocPath != "docs/openjd-extensions/path-translation.md" {
+		t.Errorf("DocPath = %q", ext.DocPath)
+	}
+}
+
 // TestRegistryVendorNamespacing is the invariant that guarantees sqi-defined
 // (vendor) extension names can never collide with a future official OpenJD name:
 // every vendor entry must carry the SQI_ prefix and match the OpenJD name format.
