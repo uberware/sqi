@@ -259,15 +259,15 @@ reset, so pass every field you want to keep.
 |---|---|---|---|
 | Farms | `create_farm(*, name, description=None, max_concurrent_tasks=0)` | `list_farms() -> list[Farm]`, `iter_farms()` | `get_farm`, `update_farm`, `delete_farm` |
 | Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset) -> Page[Queue]`, `iter_queues(...)` | `get_queue`, `update_queue`, `delete_queue` |
-| Storage locations | `create_storage_location(*, name, type, description=None, roots=None)` | `list_storage_locations() -> list[StorageLocation]`, `iter_storage_locations()` | `get_storage_location`, `update_storage_location`, `delete_storage_location` |
+| Storage locations | `create_storage_location(*, name, description=None, roots=None)` | `list_storage_locations() -> list[StorageLocation]`, `iter_storage_locations()` | `get_storage_location`, `update_storage_location`, `delete_storage_location` |
 | Usage pools | `create_usage_pool(*, name, max_concurrent, server_hint=None)` | `list_usage_pools() -> list[UsagePool]`, `iter_usage_pools()` | `get_usage_pool`, `update_usage_pool`, `delete_usage_pool` |
 
 ```python
 farm = sqi.create_farm(name="studio-a", description="Studio A render farm")
 queue = sqi.create_queue(farm_id=farm.id, name="renders", priority=50, max_concurrent_tasks=200)
 loc = sqi.create_storage_location(
-    name="project-root", type="filesystem", roots={"on-prem": "/mnt/farm"}
-)
+    name="project-root", roots={"on-prem": "/mnt/farm"}
+)  # type is derived by the server from the roots
 pool = sqi.create_usage_pool(name="arnold-pool", max_concurrent=10)
 ```
 

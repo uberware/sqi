@@ -297,11 +297,11 @@ _FAMILIES: list[_Family] = [
         "storage_location",
         StorageLocation,
         False,
-        lambda c: c.create_storage_location(name="s", type="filesystem"),
+        lambda c: c.create_storage_location(name="s"),
         lambda c: c.list_storage_locations(),
         lambda c: c.iter_storage_locations(),
         lambda c, i: c.get_storage_location(i),
-        lambda c, i: c.update_storage_location(i, name="s2", type="s3"),
+        lambda c, i: c.update_storage_location(i, name="s2"),
         lambda c, i: c.delete_storage_location(i),
     ),
     _Family(
@@ -395,9 +395,11 @@ def test_optional_body_fields_included_when_supplied(make_client: ClientFactory)
     assert json.loads(queue_route.calls.last.request.content)["description"] == "main queue"
 
     client.create_storage_location(
-        name="s", type="filesystem", description="primary", roots={"on-prem": "/mnt/farm"}
+        name="s", description="primary", roots={"on-prem": "/mnt/farm"}
     )
     storage_body = json.loads(storage_route.calls.last.request.content)
+    assert "type" not in storage_body
+    assert storage_body["name"] == "s"
     assert storage_body["description"] == "primary"
     assert storage_body["roots"] == {"on-prem": "/mnt/farm"}
 

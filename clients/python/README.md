@@ -67,7 +67,7 @@ with SqiClient("http://localhost:8080") as sqi:
   pagination (`list_*` returns a `Page`; `iter_*` walks every page lazily).
 - **Manage** jobs (pause, resume, set priority, cancel, retry) and tasks (cancel, retry) and workers
   (enable, disable).
-- **CRUD** farms, queues, storage locations, and usage pools.
+- **CRUD** farms, queues, storage locations (``type`` is derived from roots by the server), and usage pools.
 - **Tail logs** by polling (`tail_task_logs`) or live over WebSocket with the
   `ws` extra (`tail_task_logs_live`).
 
