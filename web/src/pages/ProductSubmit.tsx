@@ -29,17 +29,25 @@ export default function ProductSubmit() {
   const [queueId, setQueueId] = useState(() => localStorage.getItem(QUEUE_STORAGE_KEY) ?? '')
   const [formError, setFormError] = useState('')
 
-  // Seed parameter defaults once data arrives (useEffect — cleaner than useMemo
-  // for side-effects; seeded-ref prevents re-running on subsequent renders).
-  const valuesSeeded = useRef(false)
+  // Seed parameter defaults when data arrives, and re-seed fields the user has
+  // not yet edited whenever the product's parameter payload changes (e.g. after
+  // the product definition is edited). TanStack Query's structural sharing keeps
+  // params.data referentially stable unless the content actually changed, so this
+  // re-seeds only on a genuine definition change — not on every background
+  // refetch — and never clobbers a value the user has already touched.
+  const touchedFields = useRef<Set<string>>(new Set())
+  const seededParams = useRef<ProductParameter[] | null>(null)
   useEffect(() => {
     const paramList = params.data
-    if (!valuesSeeded.current && paramList) {
-      valuesSeeded.current = true
-      const defaults: Record<string, string> = {}
-      for (const p of paramList) defaults[p.name] = initialValue(p)
-      setValues(defaults)
-    }
+    if (!paramList || seededParams.current === paramList) return
+    seededParams.current = paramList
+    setValues((prev) => {
+      const next = { ...prev }
+      for (const p of paramList) {
+        if (!touchedFields.current.has(p.name)) next[p.name] = initialValue(p)
+      }
+      return next
+    })
   }, [params.data])
 
   const jobNameSeeded = useRef(false)
@@ -81,6 +89,7 @@ export default function ProductSubmit() {
   }
 
   function setValue(pname: string, v: string) {
+    touchedFields.current.add(pname)
     setValues((prev) => ({ ...prev, [pname]: v }))
   }
 

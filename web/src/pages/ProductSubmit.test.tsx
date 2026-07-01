@@ -9,6 +9,47 @@ import ProductSubmit from './ProductSubmit'
 const submitMock = vi.fn().mockResolvedValue({ id: 'job-1' })
 const navigateMock = vi.fn()
 
+// Parameter data lives in mutable hoisted state so a test can simulate the
+// product being edited (its parsed parameters changing) between renders.
+const h = vi.hoisted(() => {
+  const sceneParam = (def: string | null) => ({
+    name: 'Scene',
+    type: 'PATH' as const,
+    description: '',
+    default: def,
+    allowed_values: null,
+    min_value: null,
+    max_value: null,
+    min_length: null,
+    max_length: null,
+    object_type: 'FILE',
+    data_flow: '',
+    user_interface: null,
+  })
+  const internalParam = () => ({
+    name: 'InternalPath',
+    type: 'PATH' as const,
+    description: '',
+    default: '/internal/default',
+    allowed_values: null,
+    min_value: null,
+    max_value: null,
+    min_length: null,
+    max_length: null,
+    object_type: 'FILE',
+    data_flow: '',
+    user_interface: {
+      control: 'HIDDEN' as const,
+      label: '',
+      group_label: '',
+      decimals: null,
+      single_step_removal: null,
+    },
+  })
+  const defaultParams = () => [sceneParam(null), internalParam()]
+  return { sceneParam, internalParam, defaultParams, state: { params: defaultParams() } }
+})
+
 vi.mock('react-router-dom', async (orig) => ({
   ...(await orig<typeof import('react-router-dom')>()),
   useNavigate: () => navigateMock,
@@ -31,42 +72,7 @@ vi.mock('@/api/queries', async (orig) => ({
     error: null,
   }),
   useProductParameters: () => ({
-    data: [
-      {
-        name: 'Scene',
-        type: 'PATH' as const,
-        description: '',
-        default: null,
-        allowed_values: null,
-        min_value: null,
-        max_value: null,
-        min_length: null,
-        max_length: null,
-        object_type: 'FILE',
-        data_flow: '',
-        user_interface: null,
-      },
-      {
-        name: 'InternalPath',
-        type: 'PATH' as const,
-        description: '',
-        default: '/internal/default',
-        allowed_values: null,
-        min_value: null,
-        max_value: null,
-        min_length: null,
-        max_length: null,
-        object_type: 'FILE',
-        data_flow: '',
-        user_interface: {
-          control: 'HIDDEN' as const,
-          label: '',
-          group_label: '',
-          decimals: null,
-          single_step_removal: null,
-        },
-      },
-    ],
+    data: h.state.params,
     isLoading: false,
     error: null,
   }),
@@ -108,6 +114,7 @@ vi.mock('@/api/mutations', async (orig) => ({
 beforeEach(() => {
   submitMock.mockClear()
   navigateMock.mockClear()
+  h.state.params = h.defaultParams()
   // jsdom uses a null origin by default which blocks localStorage access.
   vi.stubGlobal('localStorage', {
     getItem: vi.fn().mockReturnValue(null),
@@ -116,9 +123,8 @@ beforeEach(() => {
   })
 })
 
-function renderPage() {
-  const qc = new QueryClient()
-  return render(
+function tree(qc: QueryClient) {
+  return (
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <MemoryRouter initialEntries={['/submit/product/blender']}>
@@ -127,8 +133,12 @@ function renderPage() {
           </Routes>
         </MemoryRouter>
       </ToastProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+}
+
+function renderPage() {
+  return render(tree(new QueryClient()))
 }
 
 describe('ProductSubmit', () => {
@@ -164,5 +174,29 @@ describe('ProductSubmit', () => {
     const parameters = arg.parameters as Record<string, string>
     expect(parameters['Scene']).toBe('/proj/a.blend')
     expect(parameters['InternalPath']).toBeUndefined()
+  })
+
+  it('re-seeds an untouched field when the product parameters change', async () => {
+    h.state.params = [h.sceneParam('/old/scene.blend')]
+    const qc = new QueryClient()
+    const { rerender } = render(tree(qc))
+    expect(await screen.findByLabelText(/Scene/)).toHaveValue('/old/scene.blend')
+
+    // Simulate the product being edited: its parameter default changes.
+    h.state.params = [h.sceneParam('/new/scene.blend')]
+    rerender(tree(qc))
+    await waitFor(() => expect(screen.getByLabelText(/Scene/)).toHaveValue('/new/scene.blend'))
+  })
+
+  it('preserves a field the user has edited when parameters change', async () => {
+    h.state.params = [h.sceneParam('/old/scene.blend')]
+    const qc = new QueryClient()
+    const { rerender } = render(tree(qc))
+    const input = await screen.findByLabelText(/Scene/)
+    fireEvent.change(input, { target: { value: '/user/typed.blend' } })
+
+    h.state.params = [h.sceneParam('/new/scene.blend')]
+    rerender(tree(qc))
+    await waitFor(() => expect(screen.getByLabelText(/Scene/)).toHaveValue('/user/typed.blend'))
   })
 })
