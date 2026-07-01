@@ -117,10 +117,18 @@ func buildWorkerBinary(tb testing.TB) string {
 // The process is automatically terminated via t.Cleanup.  Logs from the
 // subprocess are forwarded to t.Log for visibility in -v mode.
 func startRealWorker(t *testing.T, ts *testServer, farmID, queueID string) string {
+	return startRealWorkerWithOptions(t, ts, farmID, queueID, nil, nil)
+}
+
+// startRealWorkerWithOptions is [startRealWorker] with extra global CLI args
+// (placed before the "start" subcommand, e.g. "--config", path) and extra
+// environment entries (appended after the standard ones), for tests that need a
+// non-default worker configuration such as local staging.
+func startRealWorkerWithOptions(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string) string {
 	t.Helper()
 
 	if runtime.GOOS == "windows" {
-		t.Skip("real-worker integration test requires a POSIX echo command; skipping on Windows")
+		t.Skip("real-worker integration test requires a POSIX shell; skipping on Windows")
 	}
 
 	binaryPath := buildWorkerBinary(t)
@@ -128,9 +136,14 @@ func startRealWorker(t *testing.T, ts *testServer, farmID, queueID string) strin
 	dataDir := t.TempDir()
 	metricsPort := freePort(t)
 
+	// Global flags (e.g. --config) precede the "start" subcommand.
+	args := make([]string, 0, len(extraArgs)+1)
+	args = append(args, extraArgs...)
+	args = append(args, "start")
+
 	// Use context.Background so that the subprocess lifetime is controlled by
 	// t.Cleanup below rather than any caller-supplied context.
-	cmd := exec.CommandContext(context.Background(), binaryPath, "start")
+	cmd := exec.CommandContext(context.Background(), binaryPath, args...)
 	cmd.Env = append(
 		os.Environ(),
 		"SQI_WORKER_NATS_URL=nats://"+ts.NATSAddr,
@@ -146,6 +159,8 @@ func startRealWorker(t *testing.T, ts *testServer, farmID, queueID string) strin
 		"SQI_WORKER_PULL_IDLE_BACKOFF=200ms",
 		fmt.Sprintf("SQI_WORKER_METRICS_ADDR=127.0.0.1:%d", metricsPort),
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+
 	// Route subprocess stdout/stderr to test stderr so output appears in
 	// `go test -v` and in CI logs when the test fails.
 	cmd.Stdout = os.Stderr
