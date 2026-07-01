@@ -792,7 +792,9 @@ components:
           type: string
         type:
           type: string
-          enum: [filesystem, s3]
+          enum: [filesystem, s3, mixed]
+          description: >-
+            Derived from the roots (read-only): all s3:// → s3, none → filesystem, a mix → mixed.
         description:
           type: string
         roots:
@@ -811,7 +813,9 @@ components:
 
     CreateStorageLocationRequest:
       type: object
-      required: [name, type]
+      required: [name]
+      description: >-
+        Supplying a `type` field returns 400; the type is derived from the roots.
       properties:
         name:
           type: string
@@ -819,9 +823,6 @@ components:
           description: >-
             Must be referenceable via a loc:// URI: no whitespace, "/", or
             quote characters.
-        type:
-          type: string
-          enum: [filesystem, s3]
         description:
           type: string
         roots:
@@ -831,7 +832,9 @@ components:
 
     UpdateStorageLocationRequest:
       type: object
-      required: [name, type]
+      required: [name]
+      description: >-
+        Supplying a `type` field returns 400; the type is derived from the roots.
       properties:
         name:
           type: string
@@ -839,9 +842,6 @@ components:
           description: >-
             Must be referenceable via a loc:// URI: no whitespace, "/", or
             quote characters.
-        type:
-          type: string
-          enum: [filesystem, s3]
         description:
           type: string
         roots:

@@ -15,8 +15,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,7 +55,7 @@ type storageLocationResponse struct {
 // createStorageLocationRequest is the body accepted by POST /api/v1/storage-locations.
 type createStorageLocationRequest struct {
 	Name        string            `json:"name"`
-	Type        string            `json:"type"`
+	Type        *string           `json:"type"`
 	Description string            `json:"description"`
 	Roots       map[string]string `json:"roots"`
 }
@@ -61,7 +63,7 @@ type createStorageLocationRequest struct {
 // updateStorageLocationRequest is the body accepted by PUT /api/v1/storage-locations/{id}.
 type updateStorageLocationRequest struct {
 	Name        string            `json:"name"`
-	Type        string            `json:"type"`
+	Type        *string           `json:"type"`
 	Description string            `json:"description"`
 	Roots       map[string]string `json:"roots"`
 }
@@ -85,8 +87,12 @@ func (h *storageLocationHandler) createStorageLocation(w http.ResponseWriter, r 
 		writeProblem(w, r, http.StatusBadRequest, `name must not contain whitespace, "/", or quotes (it must be referenceable via a loc:// URI)`)
 		return
 	}
-	if !isValidStorageLocationType(req.Type) {
-		writeProblem(w, r, http.StatusBadRequest, `type must be "filesystem" or "s3"`)
+	if msg := rejectType(req.Type); msg != "" {
+		writeProblem(w, r, http.StatusBadRequest, msg)
+		return
+	}
+	if msg := validateRoots(req.Roots); msg != "" {
+		writeProblem(w, r, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -94,7 +100,7 @@ func (h *storageLocationHandler) createStorageLocation(w http.ResponseWriter, r 
 	loc := store.StorageLocation{
 		ID:          uuid.NewString(),
 		Name:        req.Name,
-		Type:        store.StorageLocationType(req.Type),
+		Type:        store.StorageLocationType(openjd.DeriveStorageType(req.Roots)),
 		Description: req.Description,
 		Roots:       req.Roots,
 		CreatedAt:   now,
@@ -175,15 +181,19 @@ func (h *storageLocationHandler) updateStorageLocation(w http.ResponseWriter, r 
 		writeProblem(w, r, http.StatusBadRequest, `name must not contain whitespace, "/", or quotes (it must be referenceable via a loc:// URI)`)
 		return
 	}
-	if !isValidStorageLocationType(req.Type) {
-		writeProblem(w, r, http.StatusBadRequest, `type must be "filesystem" or "s3"`)
+	if msg := rejectType(req.Type); msg != "" {
+		writeProblem(w, r, http.StatusBadRequest, msg)
+		return
+	}
+	if msg := validateRoots(req.Roots); msg != "" {
+		writeProblem(w, r, http.StatusBadRequest, msg)
 		return
 	}
 
 	loc := store.StorageLocation{
 		ID:          id,
 		Name:        req.Name,
-		Type:        store.StorageLocationType(req.Type),
+		Type:        store.StorageLocationType(openjd.DeriveStorageType(req.Roots)),
 		Description: req.Description,
 		Roots:       req.Roots,
 	}
@@ -235,7 +245,7 @@ func toStorageLocationResponse(l store.StorageLocation) storageLocationResponse 
 	return storageLocationResponse{
 		ID:          l.ID,
 		Name:        l.Name,
-		Type:        string(l.Type),
+		Type:        openjd.DeriveStorageType(l.Roots),
 		Description: l.Description,
 		Roots:       roots,
 		CreatedAt:   l.CreatedAt,
@@ -243,7 +253,31 @@ func toStorageLocationResponse(l store.StorageLocation) storageLocationResponse 
 	}
 }
 
-// isValidStorageLocationType returns true for the two recognized type values.
-func isValidStorageLocationType(t string) bool {
-	return t == string(store.StorageLocationTypeFilesystem) || t == string(store.StorageLocationTypeS3)
+// rejectType returns a non-empty problem message if a client supplied a `type`,
+// which is now server-derived from the roots and must not be sent.
+func rejectType(t *string) string {
+	if t != nil {
+		return "type is derived from roots and must not be supplied"
+	}
+	return ""
+}
+
+// validateRoots checks each root by its own scheme: an s3:// root must be a
+// well-formed s3://bucket[/prefix]; a value that merely starts with "s3:" is a
+// malformed S3 URI; anything else is treated as a filesystem path. An empty
+// root value is always rejected. Returns "" when all roots are acceptable.
+func validateRoots(roots map[string]string) string {
+	for name, root := range roots {
+		switch {
+		case root == "":
+			return fmt.Sprintf("root for compute location %q is empty", name)
+		case strings.HasPrefix(root, "s3://"):
+			if !openjd.ValidS3Root(root) {
+				return fmt.Sprintf("root for compute location %q is not a valid s3://bucket[/prefix] URI: %q", name, root)
+			}
+		case strings.HasPrefix(root, "s3:"):
+			return fmt.Sprintf("root for compute location %q looks like a malformed S3 URI (use s3://bucket/prefix): %q", name, root)
+		}
+	}
+	return ""
 }

@@ -5,6 +5,7 @@ package api
 // Unit tests for storage-location REST handlers.
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -140,8 +141,8 @@ func TestCreateStorageLocation_Conflict(t *testing.T) {
 	loc := seedStorageLoc(t, st)
 
 	req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
-		"name": loc.Name,
-		"type": "filesystem",
+		"name":  loc.Name,
+		"roots": map[string]string{"default": "/mnt/nas"},
 	}))
 	rr := httptest.NewRecorder()
 	newStorageLocationRouter(st).ServeHTTP(rr, req)
@@ -156,8 +157,8 @@ func TestCreateStorageLocation_Success(t *testing.T) {
 	defer st.Close()
 
 	req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
-		"name": "new-loc",
-		"type": "filesystem",
+		"name":  "new-loc",
+		"roots": map[string]string{"default": "/mnt/nas"},
 	}))
 	rr := httptest.NewRecorder()
 	newStorageLocationRouter(st).ServeHTTP(rr, req)
@@ -172,8 +173,8 @@ func TestCreateStorageLocation_S3Type(t *testing.T) {
 	defer st.Close()
 
 	req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
-		"name": "s3-output",
-		"type": "s3",
+		"name":  "s3-output",
+		"roots": map[string]string{"default": "s3://bucket/shows"},
 	}))
 	rr := httptest.NewRecorder()
 	newStorageLocationRouter(st).ServeHTTP(rr, req)
@@ -266,7 +267,6 @@ func TestUpdateStorageLocation_NotFound(t *testing.T) {
 
 	req := newReq(t, http.MethodPut, "/api/v1/storage-locations/missing", jsonBody(t, map[string]any{
 		"name": "foo",
-		"type": "filesystem",
 	}))
 	rr := httptest.NewRecorder()
 	newStorageLocationRouter(st).ServeHTTP(rr, req)
@@ -284,7 +284,6 @@ func TestUpdateStorageLocation_Conflict(t *testing.T) {
 
 	req := newReq(t, http.MethodPut, "/api/v1/storage-locations/"+loc1.ID, jsonBody(t, map[string]any{
 		"name": loc2.Name,
-		"type": "filesystem",
 	}))
 	rr := httptest.NewRecorder()
 	newStorageLocationRouter(st).ServeHTTP(rr, req)
@@ -300,8 +299,8 @@ func TestUpdateStorageLocation_Success(t *testing.T) {
 	loc := seedStorageLoc(t, st)
 
 	req := newReq(t, http.MethodPut, "/api/v1/storage-locations/"+loc.ID, jsonBody(t, map[string]any{
-		"name": loc.Name,
-		"type": "filesystem",
+		"name":  loc.Name,
+		"roots": map[string]string{"default": "/mnt/nas"},
 	}))
 	rr := httptest.NewRecorder()
 	newStorageLocationRouter(st).ServeHTTP(rr, req)
@@ -337,5 +336,88 @@ func TestDeleteStorageLocation_Success(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("want 204, got %d", rr.Code)
+	}
+}
+
+// ── derived type + root validation ───────────────────────────────────────────
+
+func TestCreateStorageLocation_RejectsType(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+
+	req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
+		"name":  "nas",
+		"type":  "s3",
+		"roots": map[string]string{"default": "/mnt/nas"},
+	}))
+	rr := httptest.NewRecorder()
+	newStorageLocationRouter(st).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (type must not be supplied)", rr.Code)
+	}
+}
+
+func TestCreateStorageLocation_DerivesType(t *testing.T) {
+	cases := []struct {
+		name  string
+		roots map[string]string
+		want  string
+	}{
+		{"fs", map[string]string{"default": "/mnt/nas"}, "filesystem"},
+		{"s3", map[string]string{"default": "s3://bucket/shows"}, "s3"},
+		{"mixed", map[string]string{"default": "/mnt/nas", "aws": "s3://bucket/shows"}, "mixed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := fake.New()
+			defer st.Close()
+
+			req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
+				"name":  "loc-" + c.name,
+				"roots": c.roots,
+			}))
+			rr := httptest.NewRecorder()
+			newStorageLocationRouter(st).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201; body=%s", rr.Code, rr.Body.String())
+			}
+			var got struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Type != c.want {
+				t.Errorf("derived type = %q, want %q", got.Type, c.want)
+			}
+		})
+	}
+}
+
+func TestCreateStorageLocation_RejectsMalformedS3Root(t *testing.T) {
+	bad := map[string]string{
+		"no-bucket":    "s3://",
+		"single-slash": "s3:/bucket",
+		"space":        "s3://bad bucket/x",
+		"empty-value":  "",
+	}
+	for label, root := range bad {
+		t.Run(label, func(t *testing.T) {
+			st := fake.New()
+			defer st.Close()
+
+			req := newReq(t, http.MethodPost, "/api/v1/storage-locations", jsonBody(t, map[string]any{
+				"name":  "loc",
+				"roots": map[string]string{"default": root},
+			}))
+			rr := httptest.NewRecorder()
+			newStorageLocationRouter(st).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("root %q: status = %d, want 400", root, rr.Code)
+			}
+		})
 	}
 }
