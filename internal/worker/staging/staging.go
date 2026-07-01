@@ -39,15 +39,21 @@ func (s *Stager) Configured() bool {
 	return s.scratchBase != "" && s.syncCommand != ""
 }
 
-// StageIn copies every IN/INOUT entry into a per-attempt scratch directory and
+// StageIn prepares a per-attempt scratch directory for every staged entry and
 // returns one path-map rule per entry (original path -> scratch path) plus the
-// scratch directory. On any failure the partial scratch directory is removed.
+// scratch directory. IN/INOUT inputs are copied into scratch via the sync command;
+// OUT entries only get their scratch destination created (the task writes the
+// output there, and [Stager.StageOut] copies it back afterward). Returning a rule
+// for OUT entries too is what lets the other deliveries redirect the task's
+// OUTPUT paths into scratch — without it the task writes to the real path and
+// copy-out fails on a missing scratch file. On any failure the partial scratch
+// directory is removed.
 func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry) ([]protocol.PathMapRule, string, error) {
 	scratchDir := filepath.Join(s.scratchBase, jobID, attemptID)
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch dir %q: %w", scratchDir, err)
 	}
-	rules, err := s.copyInEntries(ctx, scratchDir, entries)
+	rules, err := s.prepareEntries(ctx, scratchDir, entries)
 	if err != nil {
 		s.Cleanup(scratchDir)
 		return nil, "", err
@@ -55,15 +61,18 @@ func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries [
 	return rules, scratchDir, nil
 }
 
-// copyInEntries iterates entries and copies IN/INOUT files into scratchDir,
-// returning the resulting path-map rules. Each entry is placed under a
-// per-index subdirectory (<scratchDir>/<i>/<basename>) so entries with the same
-// basename never collide; the same index is used by StageOut for copy-back.
+// prepareEntries iterates entries and, for every staged entry (IN/OUT/INOUT),
+// creates a per-index scratch subdirectory (<scratchDir>/<i>/<basename>) and a
+// path-map rule so the other deliveries redirect both the task's inputs and
+// outputs into scratch. Input bytes (IN/INOUT) are copied in via the sync command;
+// OUT entries are produced by the task, so nothing is copied in — only the scratch
+// directory is created so the task can write there. The per-index layout (so
+// same-basename entries never collide) matches what StageOut uses for copy-back.
 // Extracted to keep StageIn under the cyclop complexity limit.
-func (s *Stager) copyInEntries(ctx context.Context, scratchDir string, entries []protocol.StageEntry) ([]protocol.PathMapRule, error) {
+func (s *Stager) prepareEntries(ctx context.Context, scratchDir string, entries []protocol.StageEntry) ([]protocol.PathMapRule, error) {
 	var rules []protocol.PathMapRule
 	for i, e := range entries {
-		if e.Direction != "IN" && e.Direction != "INOUT" {
+		if e.Direction != "IN" && e.Direction != "INOUT" && e.Direction != "OUT" {
 			continue
 		}
 		subDir := filepath.Join(scratchDir, strconv.Itoa(i))
@@ -71,8 +80,11 @@ func (s *Stager) copyInEntries(ctx context.Context, scratchDir string, entries [
 			return nil, fmt.Errorf("staging: create subdir %q: %w", subDir, err)
 		}
 		dest := filepath.Join(subDir, filepath.Base(e.Path))
-		if err := s.runSync(ctx, e.Path, dest, e.ObjectType); err != nil {
-			return nil, fmt.Errorf("staging: copy-in %q: %w", e.Path, err)
+		// Copy existing bytes in only for inputs; outputs are produced by the task.
+		if e.Direction == "IN" || e.Direction == "INOUT" {
+			if err := s.runSync(ctx, e.Path, dest, e.ObjectType); err != nil {
+				return nil, fmt.Errorf("staging: copy-in %q: %w", e.Path, err)
+			}
 		}
 		rules = append(rules, protocol.PathMapRule{
 			SourcePathFormat: pathmap.DetectSourceFormat(e.Path),

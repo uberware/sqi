@@ -226,6 +226,55 @@ func TestStager_StageOut_ConsistentWithStageIn(t *testing.T) {
 	}
 }
 
+// TestStager_StageIn_MapsOutputEntries verifies that OUT entries get a scratch
+// destination and a path-map rule (so swap_in_place/flags/env redirect the task's
+// output into scratch), and that the per-index scratch subdirectory is created so
+// the task can write there — without copying any bytes in (an output has nothing
+// to copy in, and its original path may not exist yet). Regression test for
+// outputs being written to the real path instead of scratch, which made copy-out
+// fail on a missing scratch file.
+func TestStager_StageIn_MapsOutputEntries(t *testing.T) {
+	inDir := t.TempDir()
+	inFile := filepath.Join(inDir, "in.txt")
+	writeFile(t, inFile, "input")
+	// A not-yet-existing output directory: if StageIn tried to copy it in, the
+	// fake `cp -R` would fail and StageIn would return an error.
+	outOrig := filepath.Join(t.TempDir(), "renders")
+
+	scratch := t.TempDir()
+	s := staging.New(scratch, fakeSync(t), discard())
+
+	entries := []protocol.StageEntry{
+		{Path: inFile, Direction: "IN", ObjectType: "FILE"},
+		{Path: outOrig, Direction: "OUT", ObjectType: "DIRECTORY"},
+	}
+	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	if err != nil {
+		t.Fatalf("StageIn: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("want 2 rules (IN + OUT); got %d: %+v", len(rules), rules)
+	}
+
+	var outRule *protocol.PathMapRule
+	for i := range rules {
+		if rules[i].SourcePath == outOrig {
+			outRule = &rules[i]
+		}
+	}
+	if outRule == nil {
+		t.Fatalf("no path-map rule for the OUT entry %q; rules=%+v", outOrig, rules)
+	}
+	wantDest := filepath.Join(scratchDir, "1", "renders")
+	if outRule.DestinationPath != wantDest {
+		t.Errorf("OUT dest = %q; want %q", outRule.DestinationPath, wantDest)
+	}
+	// The per-index scratch subdir must exist so the task can write its output.
+	if _, err := os.Stat(filepath.Join(scratchDir, "1")); err != nil {
+		t.Errorf("scratch subdir for OUT entry not created: %v", err)
+	}
+}
+
 func TestStager_Configured(t *testing.T) {
 	if staging.New("", "", discard()).Configured() {
 		t.Error("empty config should not be Configured")
