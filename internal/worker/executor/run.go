@@ -878,9 +878,14 @@ func applyDeliveries(deliveries []protocol.PathDelivery, lookup *pathmap.Lookup,
 			out = &na
 		}
 	}
-	// 3. environment: set the configured variable.
+	// 3. environment: set the configured variable. The assignment may carry no
+	//    OpenJD environment variables, in which case env is nil — allocate it
+	//    before writing rather than panicking on a nil-map assignment.
 	if c, ok := kinds["environment"]; ok {
 		if v := lookup.EnvValue(); v != "" {
+			if env == nil {
+				env = make(map[string]string, 1)
+			}
 			env[c.variable] = v
 		}
 	}

@@ -64,6 +64,27 @@ func TestApplyDeliveries_CanonicalOrder(t *testing.T) {
 	}
 }
 
+// TestApplyDeliveries_EnvironmentNilEnv guards against a nil-map panic: when an
+// assignment carries no OpenJD environment variables, the env map passed in is
+// nil, and the environment delivery must allocate it rather than write to nil.
+func TestApplyDeliveries_EnvironmentNilEnv(t *testing.T) {
+	lookup, err := pathmap.NewLookup([]protocol.PathMapRule{
+		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
+	})
+	if err != nil {
+		t.Fatalf("NewLookup: %v", err)
+	}
+	action := &protocol.Action{Command: "render", Args: []string{"/projects/shot.ma"}}
+	deliveries := []protocol.PathDelivery{{Kind: "environment", Variable: "PROJECT_ROOT"}}
+
+	// env is nil (no OpenJD environment variables in the assignment).
+	_, gotEnv := applyDeliveries(deliveries, lookup, action, nil)
+
+	if gotEnv["PROJECT_ROOT"] != "/projects=/mnt/cloud" {
+		t.Errorf("env PROJECT_ROOT = %q, want /projects=/mnt/cloud", gotEnv["PROJECT_ROOT"])
+	}
+}
+
 func TestApplyDeliveries_SwapDisabledLeavesArgs(t *testing.T) {
 	lookup, err := pathmap.NewLookup([]protocol.PathMapRule{
 		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
