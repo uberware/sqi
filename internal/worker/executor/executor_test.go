@@ -28,6 +28,56 @@ import (
 	"github.com/uberware/sqi/internal/worker/status"
 )
 
+// ── S3 path guard tests ───────────────────────────────────────────────────────
+
+// TestExecutor_Dispatch_S3PathWithoutStaging verifies that a resolved s3://
+// path with no stage_locally delivery fails the task pre-exec with a clear
+// reason, mirroring the other pre-exec failures.
+func TestExecutor_Dispatch_S3PathWithoutStaging(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+	exec, nc, _ := newTestExecutor(t, nil)
+
+	msg := makeAssign("stdout", nil)
+	msg.OnRun.Args = []string{"s3://studio-bucket/shows/scene.hip"}
+	// No PathDeliveries → default (no stage_locally).
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "failed" {
+		t.Fatalf("terminal status = %q, want failed", last.Status)
+	}
+	if !strings.Contains(last.Message, "stage_locally") ||
+		!strings.Contains(last.Message, "s3://studio-bucket/shows/scene.hip") {
+		t.Errorf("message = %q; want it to name the path and stage_locally", last.Message)
+	}
+	if statuses := nc.statuses(); len(statuses) < 2 || statuses[0] != "running" {
+		t.Errorf("want running→failed transition, got %v", statuses)
+	}
+}
+
+// TestExecutor_firstS3Path verifies that FirstS3Path finds the first s3:// URI
+// in a resolved action's command, args, and env-var values.
+// With stage_locally enabled the guard does not trip on the pre-swap s3:// path
+// (staging is responsible for rewriting it to a scratch path).
+func TestExecutor_firstS3Path(t *testing.T) {
+	action := &protocol.Action{Command: "/bin/echo", Args: []string{"--in", "s3://b/x"}}
+	if p, ok := executor.FirstS3Path(action, nil); !ok || p != "s3://b/x" {
+		t.Errorf("FirstS3Path args = (%q,%v), want (s3://b/x,true)", p, ok)
+	}
+	if p, ok := executor.FirstS3Path(&protocol.Action{Command: "/bin/echo"}, map[string]string{"IN": "s3://b/y"}); !ok || p != "s3://b/y" {
+		t.Errorf("FirstS3Path env = (%q,%v), want (s3://b/y,true)", p, ok)
+	}
+	if _, ok := executor.FirstS3Path(&protocol.Action{Command: "/bin/echo", Args: []string{"/mnt/nas/x"}}, nil); ok {
+		t.Error("FirstS3Path should not match a filesystem path")
+	}
+}
+
 // ── Subprocess dispatcher ─────────────────────────────────────────────────────
 //
 // TestMain uses the test binary itself as the subprocess for process execution

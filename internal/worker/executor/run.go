@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -184,20 +185,11 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 		return
 	}
 
-	// ── Materialize step-level embedded files ────────────────────────────────
-	// Files are written into the session working directory before OnRun so the
-	// task command can reference them by name (and by {{Task.File.<name>}}).
-	// Environment-level embedded files are materialized earlier, at
-	// environment-enter time (session.enterOne).  Data was resolved above against
-	// the task scope; the writer materializes the already-resolved copies.
-	if err := sess.WriteEmbeddedFiles(resolvedFiles); err != nil {
-		e.logger.ErrorContext(
-			ctx, "executor: step embedded file write failed — failing task",
-			slog.String("task_id", msg.TaskID),
-			slog.String("attempt_id", msg.AttemptID),
-			slog.Any("error", err),
-		)
-		e.failPreExec(msg, sess.ID, &failed, err.Error())
+	// ── Pre-exec validation: s3:// guard + embedded file write ─────────────────
+	// Guards the object-store path (see guardUnstagedS3) and materializes
+	// step-level embedded files before OnRun.  Combined into one call to stay
+	// within the cyclomatic-complexity limit for runTask.
+	if !e.preExecValidate(ctx, msg, sess, resolvedRun, resolvedEnvVars, resolvedFiles, &failed) {
 		return
 	}
 
@@ -902,6 +894,107 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 		}
 	}
 	return false
+}
+
+// preExecValidate runs the two pre-exec guards that sit between resolveAssignment
+// and the process launch: (1) the s3:// path guard and (2) step embedded-file
+// materialization. Combining them keeps runTask's cyclomatic complexity within
+// the project limit. Returns true when all checks pass; false when any check
+// failed the task (caller must return).
+func (e *Executor) preExecValidate(
+	ctx context.Context,
+	msg *protocol.AssignMsg,
+	sess *session.Session,
+	resolvedRun *protocol.Action,
+	resolvedEnvVars map[string]string,
+	resolvedFiles []protocol.EmbeddedFile,
+	failed *bool,
+) bool {
+	if e.guardUnstagedS3(ctx, msg, sess.ID, resolvedRun, resolvedEnvVars, failed) {
+		return false
+	}
+	// Files are written into the session working directory before OnRun so the
+	// task command can reference them by name (and by {{Task.File.<name>}}).
+	// Environment-level embedded files are materialized earlier, at
+	// environment-enter time (session.enterOne).  Data was resolved above against
+	// the task scope; the writer materializes the already-resolved copies.
+	if err := sess.WriteEmbeddedFiles(resolvedFiles); err != nil {
+		e.logger.ErrorContext(
+			ctx, "executor: step embedded file write failed — failing task",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.Any("error", err),
+		)
+		e.failPreExec(msg, sess.ID, failed, err.Error())
+		return false
+	}
+	return true
+}
+
+// guardUnstagedS3 checks whether the resolved command/args/env contains an
+// s3:// URI without stage_locally enabled, and if so fails the task pre-exec
+// with a clear reason. It returns true when the task was failed (caller must
+// return), false otherwise. Extracted from runTask to keep its cyclomatic
+// complexity within the project limit.
+func (e *Executor) guardUnstagedS3(
+	ctx context.Context,
+	msg *protocol.AssignMsg,
+	sessID string,
+	resolvedRun *protocol.Action,
+	resolvedEnvVars map[string]string,
+	failed *bool,
+) bool {
+	if hasDelivery(msg.PathDeliveries, "stage_locally") {
+		return false
+	}
+	p, ok := FirstS3Path(resolvedRun, resolvedEnvVars)
+	if !ok {
+		return false
+	}
+	e.logger.ErrorContext(
+		ctx, "executor: object-store path without staging — failing task",
+		slog.String("task_id", msg.TaskID),
+		slog.String("attempt_id", msg.AttemptID),
+		slog.String("path", p),
+	)
+	e.failPreExec(msg, sessID, failed, fmt.Sprintf(
+		"resolved path %q is an object-store URI but stage_locally is not enabled for this job; "+
+			"enable the SQI_PATH_TRANSLATION stage_locally delivery or use a filesystem/mounted root", p,
+	))
+	return true
+}
+
+// FirstS3Path returns the first s3:// URI found among the resolved action's
+// command, args, and env-var values, or ("", false) if none. It underpins the
+// pre-exec guard that rejects an object-store path which was not staged to local
+// scratch. Env iteration order is unspecified, so tests should place the token in
+// the command or args when they assert a specific value.
+func FirstS3Path(action *protocol.Action, env map[string]string) (string, bool) {
+	if action != nil {
+		if s, ok := s3Token(action.Command); ok {
+			return s, true
+		}
+		for _, a := range action.Args {
+			if s, ok := s3Token(a); ok {
+				return s, true
+			}
+		}
+	}
+	for _, v := range env {
+		if s, ok := s3Token(v); ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// s3Token returns the substring of s starting at the first lowercase "s3://"
+// occurrence, or ("", false) if absent.
+func s3Token(s string) (string, bool) {
+	if i := strings.Index(s, "s3://"); i >= 0 {
+		return s[i:], true
+	}
+	return "", false
 }
 
 // buildEffectiveLookup handles the staging + path-map phases of runTask.
