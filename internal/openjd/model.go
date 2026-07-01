@@ -23,6 +23,10 @@ type JobTemplate struct {
 	// enable (e.g. "feature-bundle-1").
 	Extensions []string
 
+	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
+	// when the extension is not declared.
+	PathTranslation *PathTranslation
+
 	// ParameterDefinitions declares the job-level parameters that submitters
 	// must or may provide.  Parameter names must be unique.
 	ParameterDefinitions []JobParameter

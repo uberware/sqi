@@ -103,6 +103,67 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
+// ─── path translation validation ─────────────────────────────────────────────
+
+// hasExtension reports whether name appears in the template's extensions list.
+func (t *JobTemplate) hasExtension(name string) bool {
+	return slices.Contains(t.Extensions, name)
+}
+
+// validateDelivery checks per-delivery settings for a single PathDelivery.
+// Extracted from validatePathTranslation to keep cyclomatic complexity in bounds.
+func validateDelivery(d PathDelivery, ptr string) ValidationErrors {
+	switch d.Kind {
+	case DeliverySwapInPlace, DeliveryTranslationFile, DeliveryStageLocally:
+		// no per-delivery settings to validate
+	case DeliveryCommandFlags:
+		if !strings.Contains(d.Pattern, "{src}") || !strings.Contains(d.Pattern, "{dest}") {
+			return ValidationErrors{{Pointer: ptr, Message: "command_flags pattern must contain {src} and {dest}"}}
+		}
+	case DeliveryEnvironment:
+		if d.Variable == "" {
+			return ValidationErrors{{Pointer: ptr, Message: "environment delivery requires a non-empty variable"}}
+		}
+	default:
+		return ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("unknown delivery %q", string(d.Kind))}}
+	}
+	return nil
+}
+
+// validatePathTranslation enforces the SQI_PATH_TRANSLATION extension/block
+// coupling and per-delivery settings. Structural (not gated by EnforceLimits).
+func validatePathTranslation(t *JobTemplate) ValidationErrors {
+	declared := t.hasExtension("SQI_PATH_TRANSLATION")
+
+	if t.PathTranslation != nil && !declared {
+		return ValidationErrors{{
+			Pointer: "/SQI_PATH_TRANSLATION",
+			Message: "SQI_PATH_TRANSLATION block requires declaring the SQI_PATH_TRANSLATION extension in extensions",
+		}}
+	}
+	if !declared {
+		return nil
+	}
+	if t.PathTranslation == nil {
+		return ValidationErrors{{
+			Pointer: "/extensions",
+			Message: "the SQI_PATH_TRANSLATION extension requires a SQI_PATH_TRANSLATION block",
+		}}
+	}
+	if len(t.PathTranslation.Deliveries) == 0 {
+		return ValidationErrors{{
+			Pointer: "/SQI_PATH_TRANSLATION/deliveries",
+			Message: "SQI_PATH_TRANSLATION requires at least one delivery",
+		}}
+	}
+	var errs ValidationErrors
+	for i, d := range t.PathTranslation.Deliveries {
+		ptr := fmt.Sprintf("/SQI_PATH_TRANSLATION/deliveries/%d", i)
+		errs = append(errs, validateDelivery(d, ptr)...)
+	}
+	return errs
+}
+
 // ─── identifier pattern ───────────────────────────────────────────────────────
 
 var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -225,6 +286,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// Run unconditionally: silently accepting an unsupported extension would
 	// mis-run the template.  NOT gated by opts.EnforceLimits.
 	errs = append(errs, validateExtensions(t)...)
+	errs = append(errs, validatePathTranslation(t)...)
 
 	// ── quantitative limits (gated) ───────────────────────────────────────
 	// Every check below MUST stay behind opts.EnforceLimits.

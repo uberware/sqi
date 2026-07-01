@@ -47,6 +47,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
+	"github.com/uberware/sqi/internal/worker/staging"
 	"github.com/uberware/sqi/internal/worker/status"
 )
 
@@ -155,6 +156,14 @@ type Config struct {
 	// Linux/macOS.  [CheckRootUser] returns an error if this is false and the
 	// process UID is 0.
 	AllowRoot bool
+
+	// StagingScratchDir is the base directory for per-attempt staged copies.
+	// Passed to staging.New; staging is disabled when empty.
+	StagingScratchDir string
+
+	// StagingSyncCommand is the operator-configured sync command template.
+	// Passed to staging.New; staging is disabled when empty.
+	StagingSyncCommand string
 }
 
 // ── CancelRegistrar ───────────────────────────────────────────────────────────
@@ -218,6 +227,7 @@ type Executor struct {
 	outputHandler OutputHandler
 	logger        *slog.Logger
 	cfg           Config
+	stager        *staging.Stager
 
 	mu               sync.Mutex
 	activeTasks      map[string]*taskRun
@@ -280,6 +290,7 @@ func New(
 		outputHandler: outputHandler,
 		logger:        logger,
 		cfg:           cfg,
+		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, logger),
 		activeTasks:   make(map[string]*taskRun),
 		execCtx:       execCtx,
 		execCancel:    execCancel,

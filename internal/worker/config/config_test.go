@@ -369,6 +369,27 @@ func TestLoad_DiagnosticsEnvOverridesToFalse(t *testing.T) {
 	}
 }
 
+// ── Staging: defaults and YAML loading ───────────────────────────────────────
+
+func TestDefault_StagingEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.Staging.SyncCommand != "" || cfg.Staging.ScratchDir != "" {
+		t.Errorf("Staging defaults non-empty: %+v", cfg.Staging)
+	}
+}
+
+func TestLoad_StagingFromYAML(t *testing.T) {
+	body := "staging:\n  scratch_dir: /scratch\n  sync_command: rsync -a {src} {dest}\n"
+	f := writeTempFile(t, "worker.yaml", []byte(body))
+	cfg, err := Load(f, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Staging.ScratchDir != "/scratch" || cfg.Staging.SyncCommand != "rsync -a {src} {dest}" {
+		t.Errorf("Staging = %+v", cfg.Staging)
+	}
+}
+
 // ── Worker ID persistence ─────────────────────────────────────────────────────
 // Core tests live in workerid_test.go. These tests exercise the integration
 // between Load and the persistence layer.

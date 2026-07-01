@@ -332,8 +332,10 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	// BOTH environment actions (entered below) and the task action (run later by
 	// the executor) can rely on Session.PathMappingRulesFile pointing at a real
 	// file. The executor no longer writes it, avoiding a double-write.
-	// An empty PathMap produces no file (WritePathMappingFile is a no-op).
-	hasPathMap := len(msg.PathMap) > 0
+	// Write the OpenJD path-mapping file only when the translation_file delivery
+	// is enabled (or, for legacy assignments with no delivery set, fall back to
+	// "write if rules exist" to preserve prior behavior).
+	hasPathMap := len(msg.PathMap) > 0 && translationFileEnabled(msg.PathDeliveries)
 	var pathMapFile string
 	if hasPathMap {
 		pathMapFile = filepath.Join(workDir, pathmap.PathMappingFileName)
@@ -919,6 +921,21 @@ func writeEmbeddedFile(workDir string, f protocol.EmbeddedFile) error {
 		return fmt.Errorf("write %q: %w", path, err)
 	}
 	return nil
+}
+
+// translationFileEnabled reports whether the translation_file delivery is in the
+// set. A nil/empty set (legacy assignments predating path deliveries) is treated
+// as enabled so the OpenJD path-mapping file is still written.
+func translationFileEnabled(deliveries []protocol.PathDelivery) bool {
+	if len(deliveries) == 0 {
+		return true
+	}
+	for _, d := range deliveries {
+		if d.Kind == "translation_file" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyEOL converts line endings in data according to eol.

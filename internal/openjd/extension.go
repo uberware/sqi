@@ -54,6 +54,13 @@ var registry = map[string]Extension{
 		Summary: "openjd_redacted_env stdout directive; redacts a var's value from logs.",
 		DocPath: "docs/openjd-extensions/redacted-env-vars.md",
 	},
+	"SQI_PATH_TRANSLATION": {
+		Name:    "SQI_PATH_TRANSLATION",
+		Origin:  OriginVendor,
+		Status:  "supported",
+		Summary: "Per-product path-delivery checklist (swap/file/flags/env/stage).",
+		DocPath: "docs/openjd-extensions/path-translation.md",
+	},
 }
 
 // LookupExtension returns the registry entry for name and whether it exists.

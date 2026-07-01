@@ -512,6 +512,77 @@ func TestBuildPathMap(t *testing.T) {
 	}
 }
 
+// ── Path deliveries + staging manifest ───────────────────────────────────────
+
+// buildAssignForTemplate is a test helper that parses a YAML job template,
+// constructs the required store.Job/Step/Task/Worker fixtures (step "S"),
+// calls buildAssignPayload, and unmarshals the result into protocol.AssignMsg.
+// jobParams is set as job.Parameters; nil is a valid (empty) value.
+func buildAssignForTemplate(t *testing.T, templateYAML string, jobParams map[string]string) protocol.AssignMsg {
+	t.Helper()
+	st := fake.New()
+	task, worker, job, step := buildFixture(t, templateYAML, store.TemplateFormatYAML, "S")
+	if len(jobParams) > 0 {
+		job.Parameters = jobParams
+	}
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return msg
+}
+
+func TestBuildAssignPayload_DefaultDeliveriesWhenExtensionAbsent(t *testing.T) {
+	msg := buildAssignForTemplate(t, `
+specificationVersion: jobtemplate-2023-09
+name: T
+steps:
+  - name: S
+    script: { actions: { onRun: { command: echo } } }
+`, nil)
+	if len(msg.PathDeliveries) != 2 ||
+		msg.PathDeliveries[0].Kind != "swap_in_place" ||
+		msg.PathDeliveries[1].Kind != "translation_file" {
+		t.Fatalf("PathDeliveries = %+v", msg.PathDeliveries)
+	}
+	if msg.Staging != nil {
+		t.Fatalf("Staging = %+v, want nil", msg.Staging)
+	}
+}
+
+func TestBuildAssignPayload_StagingManifestFromDataFlow(t *testing.T) {
+	tmpl := `
+specificationVersion: jobtemplate-2023-09
+name: T
+extensions: [ SQI_PATH_TRANSLATION ]
+SQI_PATH_TRANSLATION:
+  deliveries: [ stage_locally ]
+parameterDefinitions:
+  - { name: InScene, type: PATH, dataFlow: IN, objectType: FILE }
+  - { name: OutDir, type: PATH, dataFlow: OUT, objectType: DIRECTORY }
+  - { name: Note, type: STRING }
+steps:
+  - name: S
+    script: { actions: { onRun: { command: echo } } }
+`
+	params := map[string]string{"InScene": "/projects/shot.ma", "OutDir": "/projects/out", "Note": "x"}
+	msg := buildAssignForTemplate(t, tmpl, params)
+	if len(msg.Staging) != 2 {
+		t.Fatalf("Staging = %+v, want 2 entries", msg.Staging)
+	}
+	got := map[string]string{}
+	for _, e := range msg.Staging {
+		got[e.Path] = e.Direction
+	}
+	if got["/projects/shot.ma"] != "IN" || got["/projects/out"] != "OUT" {
+		t.Fatalf("Staging directions = %+v", got)
+	}
+}
+
 // TestDetectPathFormat verifies the WINDOWS-vs-POSIX heuristic directly.
 func TestDetectPathFormat(t *testing.T) {
 	tests := []struct {

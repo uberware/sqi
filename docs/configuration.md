@@ -443,6 +443,33 @@ See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
 ---
 
+## Worker configuration
+
+Worker configuration applies to `sqi-worker` instances, not the server. Workers
+load configuration from the same layered sources as the server (defaults → file →
+environment → flags).
+
+### Staging (`stage_locally` path delivery)
+
+Operator-owned. Required only on workers that run jobs declaring the
+`stage_locally` delivery of `SQI_PATH_TRANSLATION`.
+
+| Key | Type | Description |
+|---|---|---|
+| `staging.scratch_dir` | string | Base directory for per-attempt staged copies. |
+| `staging.sync_command` | string | Command template invoked per path, with `{src}`, `{dest}`, and optional `{object_type}` placeholders (e.g. `rsync -a {src} {dest}`). The same template serves copy-in and copy-out. |
+
+sqi never copies bytes itself — it invokes `sync_command`. If a job needs staging
+and these keys are unset, the task fails immediately with a clear message.
+
+```yaml
+staging:
+  scratch_dir: "/tmp/sqi-staging"
+  sync_command: "rsync -a {src} {dest}"
+```
+
+---
+
 ## Quick reference table
 
 | Key | Type | Default | Env var | CLI flag |

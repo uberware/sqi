@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -482,4 +483,73 @@ func TestWritePathMappingFile(t *testing.T) {
 			t.Error("expected error writing to nonexistent directory; got nil")
 		}
 	})
+}
+
+// ── CommandFlags ──────────────────────────────────────────────────────────────
+
+func TestLookup_CommandFlags(t *testing.T) {
+	l, err := pathmap.NewLookup([]protocol.PathMapRule{
+		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
+		{SourcePath: "/assets", DestinationPath: "/mnt/assets"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := l.CommandFlags("--remap {src}={dest}")
+	want := []string{"--remap /projects=/mnt/cloud", "--remap /assets=/mnt/assets"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("CommandFlags = %v, want %v", got, want)
+	}
+}
+
+func TestLookup_CommandFlags_SkipsEmptySource(t *testing.T) {
+	l, err := pathmap.NewLookup([]protocol.PathMapRule{{SourcePath: "", DestinationPath: "/x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.CommandFlags("{src}={dest}"); len(got) != 0 {
+		t.Errorf("CommandFlags = %v, want empty", got)
+	}
+}
+
+// ── DetectSourceFormat ────────────────────────────────────────────────────────
+
+// TestDetectSourceFormat verifies the POSIX/WINDOWS path-format heuristic used
+// when populating SourcePathFormat on staging-produced PathMapRules.
+func TestDetectSourceFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/nfs/projects/shot.ma", "POSIX"},
+		{"/mnt/nas/assets", "POSIX"},
+		{"s3://bucket/assets", "POSIX"},
+		{`C:\projects\shot.ma`, "WINDOWS"},
+		{`c:\lowercase\drive`, "WINDOWS"},
+		{`\\server\share\file`, "WINDOWS"},
+		{"C:/mixed/slash", "WINDOWS"}, // drive letter triggers WINDOWS even without backslash
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			if got := pathmap.DetectSourceFormat(tc.path); got != tc.want {
+				t.Errorf("DetectSourceFormat(%q) = %q; want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// ── EnvValue ──────────────────────────────────────────────────────────────────
+
+func TestLookup_EnvValue(t *testing.T) {
+	l, err := pathmap.NewLookup([]protocol.PathMapRule{
+		{SourcePath: "/projects", DestinationPath: "/mnt/cloud"},
+		{SourcePath: "/assets", DestinationPath: "/mnt/assets"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/projects=/mnt/cloud" + string(os.PathListSeparator) + "/assets=/mnt/assets"
+	if got := l.EnvValue(); got != want {
+		t.Errorf("EnvValue = %q, want %q", got, want)
+	}
 }
