@@ -22,7 +22,7 @@ export type LogStream = 'stdout' | 'stderr'
 /** Wire format of a submitted OpenJD template. */
 export type TemplateFormat = 'yaml' | 'json'
 /** Backing storage kind for a storage location. */
-export type StorageLocationType = 'filesystem' | 's3'
+export type StorageLocationType = 'filesystem' | 's3' | 'mixed'
 /** Source/origin of a product in the catalog. */
 export type ProductSource = 'builtin' | 'custom' | 'installed'
 

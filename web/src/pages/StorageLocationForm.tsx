@@ -7,7 +7,6 @@ import { useToast } from '@/components/Toast'
 import { useGetStorageLocation } from '@/api/queries'
 import { useCreateStorageLocation, useUpdateStorageLocation } from '@/api/mutations'
 import type { StorageLocationInput } from '@/api/mutations'
-import type { StorageLocationType } from '@/api/types'
 import styles from './StorageLocationForm.module.css'
 
 interface Props {
@@ -22,7 +21,6 @@ interface RootRow {
 
 interface Defaults {
   name: string
-  type: StorageLocationType
   description: string
   roots: RootRow[]
 }
@@ -59,7 +57,6 @@ function StorageLocationFormInner({ mode, id, defaults }: InnerProps) {
   const updateLocation = useUpdateStorageLocation()
 
   const [name, setName] = useState(defaults.name)
-  const [type, setType] = useState<StorageLocationType>(defaults.type)
   const [description, setDescription] = useState(defaults.description)
   const [rows, setRows] = useState<RootRow[]>(defaults.roots)
   const [nameFocused, setNameFocused] = useState(false)
@@ -111,7 +108,6 @@ function StorageLocationFormInner({ mode, id, defaults }: InnerProps) {
     const trimmedDesc = description.trim()
     const input: StorageLocationInput = {
       name: name.trim(),
-      type,
       roots: serializeRoots(),
       ...(trimmedDesc ? { description: trimmedDesc } : {}),
     }
@@ -170,21 +166,6 @@ function StorageLocationFormInner({ mode, id, defaults }: InnerProps) {
               </div>
             )}
           </div>
-        </div>
-
-        <div className={styles.field}>
-          <label htmlFor="sl-type" className={styles.label}>
-            Type
-          </label>
-          <select
-            id="sl-type"
-            className={styles.input}
-            value={type}
-            onChange={(e) => setType(e.target.value as StorageLocationType)}
-          >
-            <option value="filesystem">filesystem</option>
-            <option value="s3">s3</option>
-          </select>
         </div>
 
         <div className={styles.field}>
@@ -283,7 +264,6 @@ export default function StorageLocationForm({ mode }: Props) {
         id={id}
         defaults={{
           name: data.name,
-          type: data.type,
           description: data.description ?? '',
           roots: rootsToRows(data.roots),
         }}
@@ -295,7 +275,7 @@ export default function StorageLocationForm({ mode }: Props) {
     <StorageLocationFormInner
       mode="create"
       id=""
-      defaults={{ name: '', type: 'filesystem', description: '', roots: rootsToRows(undefined) }}
+      defaults={{ name: '', description: '', roots: rootsToRows(undefined) }}
     />
   )
 }

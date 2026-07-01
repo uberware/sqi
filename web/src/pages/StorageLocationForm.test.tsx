@@ -105,7 +105,7 @@ describe('StorageLocationForm (create)', () => {
       const [, init] = post as [string, RequestInit]
       const body = JSON.parse(init.body as string)
       expect(body.roots.default).toBe('/mnt/nas/shows')
-      expect(body.type).toBe('filesystem')
+      expect(body.type).toBeUndefined()
     })
     await screen.findByText('list page')
   })
