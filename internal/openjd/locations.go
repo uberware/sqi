@@ -290,3 +290,57 @@ func JoinPath(root, relPath string) string {
 	}
 	return strings.TrimRight(root, `/\`) + sep + strings.ReplaceAll(rel, "/", sep)
 }
+
+// ── S3 root classification ────────────────────────────────────────────────────
+
+// IsS3Root reports whether root is an S3 object-store root — i.e. it begins with
+// the lowercase "s3://" scheme. Uppercase "S3://" is intentionally NOT treated as
+// S3 (it is a filesystem path), matching JoinPath's forward-slash rule.
+func IsS3Root(root string) bool {
+	return strings.HasPrefix(root, "s3://")
+}
+
+// ValidS3Root reports whether root is a well-formed s3://bucket[/prefix] URI: it
+// must carry the s3:// scheme, a non-empty bucket segment, and no whitespace in
+// that bucket segment. The optional key prefix after the first "/" is not
+// constrained (object keys are permissive across providers).
+func ValidS3Root(root string) bool {
+	if !strings.HasPrefix(root, "s3://") {
+		return false
+	}
+	rest := strings.TrimPrefix(root, "s3://")
+	bucket := rest
+	if before, _, ok := strings.Cut(rest, "/"); ok {
+		bucket = before
+	}
+	if bucket == "" {
+		return false
+	}
+	return !strings.ContainsAny(bucket, " \t\r\n")
+}
+
+// DeriveStorageType classifies a storage location from its roots: "s3" when every
+// root is an S3 URI, "filesystem" when none are (or there are no roots), and
+// "mixed" when the roots span both. The storage-location type is descriptive
+// only — sqi keys real behavior off each root's scheme, not off this value.
+func DeriveStorageType(roots map[string]string) string {
+	if len(roots) == 0 {
+		return "filesystem"
+	}
+	anyS3, anyFS := false, false
+	for _, r := range roots {
+		if IsS3Root(r) {
+			anyS3 = true
+		} else {
+			anyFS = true
+		}
+	}
+	switch {
+	case anyS3 && anyFS:
+		return "mixed"
+	case anyS3:
+		return "s3"
+	default:
+		return "filesystem"
+	}
+}
