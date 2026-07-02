@@ -30,7 +30,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 ## Key features
 
-- **Farms and queues** organize work hierarchically. Configuration — scheduling policy, worker affinity, usage pool limits, storage bindings — can be set at the farm level and overridden per queue, so you're not repeating yourself on every job submission.
+- **Farms and queues** organize work hierarchically. Configuration — scheduling policy, worker affinity, usage pool limits — can be set at the farm level and overridden per queue, so you're not repeating yourself on every job submission. Storage doesn't need this: a storage location already maps each compute location to its own root path, so jobs resolve the right path wherever they run without per-queue configuration.
 
 - **Products and presets** are the authoring layer above raw job descriptions. A product defines a class of work (an Arnold render, a Houdini sim, an ffmpeg transcode) in terms of user-friendly parameters and how they map to commands. A preset is a ready-to-use product definition for a specific tool, installable from a community library directly through the web UI.
 

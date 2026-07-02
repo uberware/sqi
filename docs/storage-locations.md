@@ -60,6 +60,19 @@ run the task by:
 
 `default` is therefore the universal fallback.
 
+### There is no per-farm or per-queue storage binding
+
+You do not bind storage locations to farms or queues. Storage locations are
+global, and the axis a job's storage actually varies along is **where the task
+runs** — its compute location — not which farm or queue it belongs to. The
+`roots` map already captures that: one location lists a root per compute
+location, and sqi picks the right one at dispatch. A farm/queue "storage
+binding" would only duplicate that mapping on the wrong axis, so sqi omits it.
+
+If two groups of workers genuinely need different data, model them as two
+compute locations with different roots (or two named locations), not as a queue
+setting.
+
 ### Translation mechanisms
 
 sqi applies two complementary mechanisms automatically:
