@@ -394,9 +394,7 @@ def test_optional_body_fields_included_when_supplied(make_client: ClientFactory)
     client.create_queue(farm_id="farm-1", name="q", description="main queue")
     assert json.loads(queue_route.calls.last.request.content)["description"] == "main queue"
 
-    client.create_storage_location(
-        name="s", description="primary", roots={"on-prem": "/mnt/farm"}
-    )
+    client.create_storage_location(name="s", description="primary", roots={"on-prem": "/mnt/farm"})
     storage_body = json.loads(storage_route.calls.last.request.content)
     assert "type" not in storage_body
     assert storage_body["name"] == "s"

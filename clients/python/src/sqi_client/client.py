@@ -1229,9 +1229,7 @@ class SqiClient:
         Full replace: an omitted ``description`` or ``roots`` is cleared, not
         preserved — pass every field you want to keep.
         """
-        return self._storage_locations.update(
-            location_id, _storage_body(name, description, roots)
-        )
+        return self._storage_locations.update(location_id, _storage_body(name, description, roots))
 
     def delete_storage_location(self, location_id: str) -> None:
         """Delete a storage location. Raises :class:`NotFoundError` if it is missing."""
