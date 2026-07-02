@@ -42,7 +42,7 @@ import (
 var (
 	s3SyncBinaryOnce sync.Once
 	s3SyncBinaryPath string
-	s3SyncBinaryDir  string // removed by TestMain (in worker_binary_test.go) after all tests
+	s3SyncBinaryDir  string // intentionally left for the OS temp reaper (not registered in TestMain cleanup)
 	errS3SyncBinary  error
 )
 
@@ -89,7 +89,7 @@ func buildS3SyncBinary(tb testing.TB) string {
 	})
 
 	if errS3SyncBinary != nil {
-		tb.Skipf("skipping s3 staging test: s3sync binary unavailable: %v", errS3SyncBinary)
+		tb.Fatalf("s3sync helper binary failed to build: %v", errS3SyncBinary)
 	}
 	return s3SyncBinaryPath
 }
