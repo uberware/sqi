@@ -27,7 +27,12 @@ sqi sees an ordinary path. No `stage_locally`, no sync command, nothing extra.
 Use an `s3://` root and the `SQI_PATH_TRANSLATION` extension with `stage_locally`.
 Before each task the worker invokes the operator-configured `staging.sync_command`
 to copy inputs to worker-local scratch; after the task it copies outputs back.
-sqi supplies `{src}` and `{dest}` placeholders; the sync tool does the transfer.
+sqi passes three placeholders: `{src}` and `{dest}` for the source and destination
+paths, and `{object_type}` (expands to `FILE` or `DIRECTORY`). For an `s3://`
+storage root the concrete path is a literal `s3://bucket/key` URI — the sync tool
+receives, for example, `aws s3 cp s3://bucket/shows/scene.hip /scratch/attempt/0/scene.hip`.
+The sync tool therefore **must** accept `s3://` URI arguments natively (or be wrapped
+in a script that rewrites them — see the rclone and mc sections below).
 
 ```yaml
 name: shows
@@ -80,8 +85,18 @@ sqi has no visibility into these settings and makes no attempt to validate them.
 
 ## Per-provider `sync_command` recipes
 
-Set `staging.sync_command` in `sqi-worker.yaml`. Use `{src}` and `{dest}` as
-placeholders for the source and destination paths.
+Set `staging.sync_command` in `sqi-worker.yaml`. Three placeholders are available:
+
+| Placeholder | Expands to |
+|---|---|
+| `{src}` | Concrete source path |
+| `{dest}` | Concrete destination path |
+| `{object_type}` | `FILE` or `DIRECTORY` (from the OpenJD PATH parameter's `objectType`) |
+
+**Important:** for an `s3://` storage root the concrete path is a literal
+`s3://bucket/key` URI. Only tools that accept `s3://` URI syntax natively work
+without a wrapper. `aws s3 cp` and `s5cmd` both do; rclone and mc do not — see
+their sections below.
 
 ### AWS S3
 
@@ -90,7 +105,23 @@ sync_command: "aws s3 cp {src} {dest}"
 ```
 
 Credentials from the standard AWS credential chain (`~/.aws`, instance profile,
-task role, etc.).
+task role, etc.). For non-AWS providers see the MinIO, R2, and B2 sections
+(same `aws` CLI, different `--endpoint-url`).
+
+### s5cmd (fast alternative)
+
+[s5cmd](https://github.com/peak/s5cmd) is a high-performance S3 client that
+accepts `s3://bucket/key` natively:
+
+```yaml
+sync_command: "s5cmd cp {src} {dest}"
+```
+
+For non-AWS providers add `--endpoint-url`:
+
+```yaml
+sync_command: "s5cmd --endpoint-url http://minio.internal:9000 cp {src} {dest}"
+```
 
 ### MinIO (via `--endpoint-url`)
 
@@ -111,34 +142,72 @@ R2 API token as access/secret key.
 
 ### Backblaze B2
 
-```yaml
-# rclone — configure a B2 remote named "b2" first
-sync_command: "rclone copy {src} {dest}"
-```
-
-Or use the S3-compatible endpoint with the AWS CLI:
+Use the S3-compatible endpoint with the AWS CLI (substitute the correct region
+endpoint for your B2 bucket):
 
 ```yaml
 sync_command: "aws --endpoint-url https://s3.us-west-004.backblazeb2.com s3 cp {src} {dest}"
 ```
 
-### rclone (generic)
+B2 Application Key ID and Application Key go in `~/.aws/credentials` (or the
+standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables).
 
-rclone works for any provider. Configure a named remote in `rclone.conf`, then:
+### rclone (requires a wrapper)
 
-```yaml
-sync_command: "rclone copy {src} {dest}"
+rclone uses `remote:bucket/path` syntax — it does **not** accept `s3://` URIs
+directly. `rclone copy {src} {dest}` does not work as a `sync_command` when the
+storage root is `s3://`.
+
+If you prefer rclone, write a small wrapper script that rewrites the
+`s3://bucket/key` path sqi passes into rclone's `remote:bucket/key` form, then
+point `sync_command` at that script:
+
+```sh
+#!/usr/bin/env bash
+# /usr/local/bin/sqi-rclone-sync
+# Rewrite s3://bucket/key → RCLONE_REMOTE:bucket/key for rclone.
+# Set RCLONE_REMOTE in the worker environment to the configured remote name.
+: "${RCLONE_REMOTE:?set RCLONE_REMOTE to your rclone remote name}"
+rewrite() {
+  [[ "$1" == s3://* ]] && echo "${RCLONE_REMOTE}:${1#s3://}" || echo "$1"
+}
+exec rclone copy "$(rewrite "$1")" "$(rewrite "$2")"
 ```
 
-rclone translates `s3://bucket/key` paths to the appropriate remote
-automatically when the remote is aliased to the bucket.
+```yaml
+# chmod +x /usr/local/bin/sqi-rclone-sync first
+sync_command: "/usr/local/bin/sqi-rclone-sync {src} {dest}"
+```
 
-### MinIO Client (`mc`)
+### MinIO Client (`mc`) (requires a wrapper)
+
+mc uses `alias/bucket/object` syntax — it does **not** accept `s3://` URIs
+directly. `mc cp {src} {dest}` does not work as a `sync_command` when the
+storage root is `s3://`.
+
+If you prefer mc, use the same wrapper pattern, rewriting
+`s3://bucket/key` → `MC_ALIAS/bucket/key`:
+
+```sh
+#!/usr/bin/env bash
+# /usr/local/bin/sqi-mc-sync
+# Rewrite s3://bucket/key → MC_ALIAS/bucket/key for mc.
+# Set MC_ALIAS in the worker environment to the configured alias name.
+: "${MC_ALIAS:?set MC_ALIAS to your mc alias name}"
+rewrite() {
+  [[ "$1" == s3://* ]] && echo "${MC_ALIAS}/${1#s3://}" || echo "$1"
+}
+exec mc cp "$(rewrite "$1")" "$(rewrite "$2")"
+```
 
 ```yaml
-# Configure an alias first: mc alias set myminio http://minio.internal:9000 KEY SECRET
-sync_command: "mc cp {src} {dest}"
+# chmod +x /usr/local/bin/sqi-mc-sync first; configure alias first:
+# mc alias set myminio http://minio.internal:9000 KEY SECRET
+sync_command: "/usr/local/bin/sqi-mc-sync {src} {dest}"
 ```
+
+For most MinIO deployments the `aws --endpoint-url` recipe above is simpler and
+requires no wrapper.
 
 ---
 
