@@ -456,6 +456,15 @@ Each resource supports `GET /` (list), `POST /` (create), `GET /{id}`,
 /api/v1/usage-pools
 ```
 
+#### Storage locations: `type` is derived, not supplied
+
+The `type` field (`filesystem` / `s3` / `mixed`) is computed from the location's
+roots and appears **only in responses**. Supplying `type` in a `POST` or `PUT`
+body returns `400 Bad Request`. Set the roots; sqi infers the type.
+
+Each `s3://` root is validated as a well-formed `s3://bucket[/prefix]` URI.
+See [`docs/storage-s3.md`](storage-s3.md) for the full S3 setup guide.
+
 Example — create a farm, then a queue inside it:
 
 ```sh

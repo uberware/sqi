@@ -51,3 +51,8 @@ deliveries advertise the effective (post-staging) mappings. `command_flags`
 appends `pattern` rendered per pair; `environment` sets `variable` to `src=dest`
 pairs joined by the OS path-list separator. When the extension is absent, the
 default is `swap_in_place` + `translation_file` (today's behavior, unchanged).
+
+`stage_locally` is the primary mechanism for accessing S3-backed storage on
+ephemeral cloud workers. See [`docs/storage-s3.md`](../storage-s3.md) for
+setup instructions, per-provider `sync_command` recipes (AWS, MinIO, R2, B2),
+and the mounted-vs-staged decision guide.

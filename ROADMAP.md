@@ -120,7 +120,7 @@ Example:
 
 ```yaml
 name: nas_shows
-type: filesystem
+# type is derived from roots ("mixed" here: filesystem + s3://) and is response-only
 roots:
   default: /mnt/nas/shows
   windows_workers: Z:\shows
@@ -129,7 +129,23 @@ roots:
 
 ### S3-Compatible Storage
 
-Native support for S3-compatible object storage: AWS S3, Backblaze B2, Cloudflare R2, MinIO, and others.
+sqi is a thin layer with respect to S3: it validates `s3://bucket[/prefix]`
+roots, derives a storage location's `type` from its roots
+(`filesystem`/`s3`/`mixed`), and translates/stages paths at run time. It embeds
+no S3 client, stores no credentials or endpoint addresses, and moves no bytes
+itself.
+
+S3-backed data reaches a worker via two paths: (1) **mounted** — a FUSE tool
+(mountpoint-s3, goofys, rclone mount) exposes the bucket as a plain filesystem
+path, already supported with no extra configuration; or (2) **staged** — B4
+`stage_locally` invokes the operator's `staging.sync_command` (e.g.
+`aws s3 cp {src} {dest}`, `rclone copy {src} {dest}`, `mc cp {src} {dest}`) to
+copy inputs to worker-local scratch before each task and outputs back after.
+Credentials, endpoint URLs, and remote aliases live entirely in the operator's
+per-worker tool configuration — sqi stores none of it.
+
+Supported providers: AWS S3, Backblaze B2, Cloudflare R2, MinIO, and any other
+S3-compatible store reachable by the operator's chosen sync tool.
 
 ### Path Translation Modes
 
@@ -210,7 +226,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Preset library integration (browse and install from community repo)
 - Web UI product form editor
 - Additional path translation modes
-- S3-compatible storage support
+- S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework (Maya, Houdini) — built on the Python client
 - Compute location configuration and job affinity
 
