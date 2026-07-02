@@ -763,3 +763,66 @@ func TestValidLocationName(t *testing.T) {
 		})
 	}
 }
+
+// ── IsS3Root / ValidS3Root / DeriveStorageType ────────────────────────────────
+
+func TestIsS3Root(t *testing.T) {
+	cases := []struct {
+		root string
+		want bool
+	}{
+		{"s3://bucket", true},
+		{"s3://bucket/prefix", true},
+		{"/mnt/nas/shows", false},
+		{`Z:\shows`, false},
+		{"S3://bucket", false}, // uppercase scheme is not S3
+		{"s3:/bucket", false},  // single slash
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := openjd.IsS3Root(c.root); got != c.want {
+			t.Errorf("IsS3Root(%q) = %v, want %v", c.root, got, c.want)
+		}
+	}
+}
+
+func TestValidS3Root(t *testing.T) {
+	cases := []struct {
+		root string
+		want bool
+	}{
+		{"s3://bucket", true},
+		{"s3://bucket/prefix/deep", true},
+		{"s3://", false},             // no bucket
+		{"s3://bad bucket/x", false}, // whitespace in bucket
+		{"s3:/bucket", false},        // single slash → not an s3:// URI
+		{"/mnt/nas", false},          // filesystem path is not a valid s3 root
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := openjd.ValidS3Root(c.root); got != c.want {
+			t.Errorf("ValidS3Root(%q) = %v, want %v", c.root, got, c.want)
+		}
+	}
+}
+
+func TestDeriveStorageType(t *testing.T) {
+	cases := []struct {
+		name  string
+		roots map[string]string
+		want  string
+	}{
+		{"empty", map[string]string{}, "filesystem"},
+		{"nil", nil, "filesystem"},
+		{"all fs", map[string]string{"default": "/mnt/nas", "win": `Z:\s`}, "filesystem"},
+		{"all s3", map[string]string{"default": "s3://b", "aws": "s3://b/p"}, "s3"},
+		{"mixed", map[string]string{"default": "/mnt/nas", "aws": "s3://b/p"}, "mixed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := openjd.DeriveStorageType(c.roots); got != c.want {
+				t.Errorf("DeriveStorageType = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

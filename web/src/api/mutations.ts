@@ -8,7 +8,6 @@ import type {
   Farm,
   Job,
   StorageLocation,
-  StorageLocationType,
   UsagePool,
   Queue,
   RetryResponse,
@@ -391,7 +390,6 @@ export function useDeleteUsagePool() {
 
 export interface StorageLocationInput {
   name: string
-  type: StorageLocationType
   description?: string
   roots?: Record<string, string>
 }

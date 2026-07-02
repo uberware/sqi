@@ -20,8 +20,8 @@ whichever worker picks up the task.
 Create one location:
 
 - **Name:** `projects`
-- **Type:** `filesystem`
 - **Roots:** `default → /mnt/studio/projects`
+- **Type:** `filesystem` (derived from the root — response-only, not supplied on create)
 
 In your job, reference a file inside it:
 
@@ -101,15 +101,28 @@ location is `X`; a no-affinity step can run on any worker, which is why it needs
 
 ### Storage types
 
-`type` is `filesystem` or `s3`. In Phase 1 it is metadata plus path-joining
-behavior — `s3://` roots join with forward slashes. sqi performs **no** S3 I/O,
-credential handling, or staging in Phase 1.
+`type` is a **read-only, derived** field computed from the location's roots:
+`filesystem` when all roots are filesystem paths (or there are no roots), `s3`
+when all roots are `s3://` URIs, and `mixed` when roots span both schemes.
+Supplying `type` on create or update returns HTTP 400 — set the roots and sqi
+infers the type automatically.
+
+A `mixed` location is the normal shape for a farm that uses on-prem NAS for
+some workers and `s3://` roots for cloud workers.
 
 ### What sqi does not do
 
 sqi does **not** replicate or synchronize data between locations. Ensure data is
-present in the target storage before jobs run (rclone, AWS DataSync, rsync, etc.).
-sqi only translates paths.
+present in the target storage before jobs run.
+
+S3 I/O — copying files to and from object storage — is handled by the
+operator's sync tool (e.g. `aws s3 cp`, `rclone`, `mc`) through the B4
+[`stage_locally`](openjd-extensions/path-translation.md) delivery. sqi invokes
+the operator-configured `staging.sync_command`; it stores no S3 credentials or
+endpoint addresses.
+
+See [`docs/storage-s3.md`](storage-s3.md) for S3 setup, per-provider recipes,
+and the mounted vs staged decision guide.
 
 See also: [`openjd-submission.md`](openjd-submission.md) and
 [`architecture.md`](architecture.md).

@@ -331,7 +331,6 @@ func TestStorageLocationCRUD(t *testing.T) {
 	t.Run("create storage location", func(t *testing.T) {
 		body := jsonBody(t, createStorageLocationRequest{
 			Name:  "nas_shows",
-			Type:  "filesystem",
 			Roots: map[string]string{"default": "/mnt/nas/shows"},
 		})
 		req := newReq(t, http.MethodPost, "/storage-locations", body)
@@ -351,9 +350,9 @@ func TestStorageLocationCRUD(t *testing.T) {
 		}
 	})
 
-	// ── POST — invalid type ───────────────────────────────────────────────────
+	// ── POST — type must not be supplied ─────────────────────────────────────
 	t.Run("create storage location invalid type", func(t *testing.T) {
-		body := jsonBody(t, createStorageLocationRequest{Name: "x", Type: "nfs"})
+		body := jsonBody(t, map[string]any{"name": "x", "type": "nfs"})
 		req := newReq(t, http.MethodPost, "/storage-locations", body)
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
@@ -377,7 +376,6 @@ func TestStorageLocationCRUD(t *testing.T) {
 	t.Run("update storage location", func(t *testing.T) {
 		body := jsonBody(t, updateStorageLocationRequest{
 			Name:  "nas_shows",
-			Type:  "s3",
 			Roots: map[string]string{"default": "s3://bucket/shows"},
 		})
 		req := newReq(t, http.MethodPut, "/storage-locations/"+createdID, body)

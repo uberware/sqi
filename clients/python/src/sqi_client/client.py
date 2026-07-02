@@ -1190,7 +1190,6 @@ class SqiClient:
         self,
         *,
         name: str,
-        type: str,
         description: str | None = None,
         roots: Mapping[str, str] | None = None,
     ) -> StorageLocation:
@@ -1198,12 +1197,12 @@ class SqiClient:
 
         Args:
             name: Storage-location name.
-            type: Storage type — ``filesystem`` or ``s3``.
             description: Optional description.
             roots: Map of compute-location name to absolute root path for that
-                location (e.g. ``{"on-prem": "/mnt/farm"}``).
+                location (e.g. ``{"on-prem": "/mnt/farm"}``). The storage
+                ``type`` is derived by the server from the roots.
         """
-        return self._storage_locations.create(_storage_body(name, type, description, roots))
+        return self._storage_locations.create(_storage_body(name, description, roots))
 
     def list_storage_locations(self) -> list[StorageLocation]:
         """Return all storage locations (bare array, no pagination)."""
@@ -1222,7 +1221,6 @@ class SqiClient:
         location_id: str,
         *,
         name: str,
-        type: str,
         description: str | None = None,
         roots: Mapping[str, str] | None = None,
     ) -> StorageLocation:
@@ -1231,9 +1229,7 @@ class SqiClient:
         Full replace: an omitted ``description`` or ``roots`` is cleared, not
         preserved — pass every field you want to keep.
         """
-        return self._storage_locations.update(
-            location_id, _storage_body(name, type, description, roots)
-        )
+        return self._storage_locations.update(location_id, _storage_body(name, description, roots))
 
     def delete_storage_location(self, location_id: str) -> None:
         """Delete a storage location. Raises :class:`NotFoundError` if it is missing."""
@@ -1712,11 +1708,10 @@ def _queue_body(
 
 def _storage_body(
     name: str,
-    location_type: str,
     description: str | None,
     roots: Mapping[str, str] | None,
 ) -> dict[str, Any]:
-    body: dict[str, Any] = {"name": name, "type": location_type}
+    body: dict[str, Any] = {"name": name}
     if description is not None:
         body["description"] = description
     if roots is not None:
