@@ -119,7 +119,7 @@ All endpoints return 503 when `preset_library.url` is empty.
 |---|---|---|
 | `GET` | `/api/v1/presets` | List all presets with per-preset status. `?refresh=true` forces a re-fetch of the index. |
 | `GET` | `/api/v1/presets/{name}` | Preview a preset — metadata, template, and status. 404 if not in the index. 422 if the definition cannot be fetched or parsed. |
-| `POST` | `/api/v1/presets/{name}/install` | Install or update the named preset. 201 on first install, 200 on update. 409 if the installed product is already up to date. 422 on SHA-256 mismatch or validation failure. |
+| `POST` | `/api/v1/presets/{name}/install` | Install or update the named preset. 201 on first install, 200 on update or reinstall. 404 if not in the index. 409 if a built-in or custom product already uses that name. 422 on SHA-256 mismatch or validation failure. |
 
 To uninstall, use `DELETE /api/v1/products/{name}`.
 
