@@ -75,7 +75,10 @@ func TestFakeProduct_OriginRoundTrip(t *testing.T) {
 	if _, err := st.CreateProduct(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := st.GetProductByName(ctx, "studio/maya")
+	got, err := st.GetProductByName(ctx, "studio/maya")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
 	if got.OriginRef != "studio/maya" || got.OriginFingerprint != "abc123" {
 		t.Fatalf("fake dropped origin: %+v", got)
 	}
