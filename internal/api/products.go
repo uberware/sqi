@@ -199,7 +199,7 @@ func (h *productHandler) updateProduct(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, product.ErrReadOnly):
-			writeProblem(w, r, http.StatusForbidden, "built-in products are read-only")
+			writeProblem(w, r, http.StatusForbidden, "this product is read-only")
 		case errors.Is(err, store.ErrNotFound):
 			writeProblem(w, r, http.StatusNotFound, "product not found")
 		default:

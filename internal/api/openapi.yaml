@@ -2484,6 +2484,8 @@ paths:
           description: Preset not found in the index.
         "422":
           description: Definition invalid or fingerprint mismatch.
+        "502":
+          description: Failed to fetch the preset library index.
         "503":
           description: Preset library not configured.
 
@@ -2518,6 +2520,10 @@ paths:
           description: Name conflicts with a built-in or custom product.
         "422":
           description: Definition invalid or fingerprint mismatch.
+        "500":
+          description: Unexpected error installing the preset.
+        "502":
+          description: Failed to fetch the preset library index.
         "503":
           description: Preset library not configured.
 

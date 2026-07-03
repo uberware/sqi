@@ -13,8 +13,8 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// ErrReadOnly is returned when a mutation targets a built-in product.
-var ErrReadOnly = errors.New("product: built-in is read-only")
+// ErrReadOnly is returned when a mutation targets a read-only product (built-in or installed preset).
+var ErrReadOnly = errors.New("product: read-only")
 
 // Catalog overlays the embedded built-ins on a ProductStore and enforces the
 // read-only / name-shadowing rules. It is the only component aware of built-ins.
