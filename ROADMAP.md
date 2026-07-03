@@ -223,7 +223,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 ### Phase 2: Products and Presets (v0.2)
 
 - Product/preset definition system (YAML/JSON)
-- Preset library integration (browse and install from community repo)
+- Preset library integration — static JSON index at a configurable URL (default: official community library on GitHub Pages); browse presets in the Admin hub with per-preset status (not installed / installed / update available); preview the definition and install as a product (`source: installed`) in one click; SHA-256 integrity and update-detection check on install; read-only installed products, uninstallable, with Duplicate-to-custom available on every product
 - Web UI product form editor
 - Additional path translation modes
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)

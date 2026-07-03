@@ -65,6 +65,7 @@ through scheduling, worker execution, and final state.
 | Metrics | `internal/metrics` | Prometheus counter, gauge, and histogram definitions |
 | Health | `internal/health` | `/healthz` (liveness) and `/readyz` (readiness) handlers |
 | Discovery | `internal/discovery` | mDNS `_sqi._tcp` responder |
+| Preset library | `internal/presetlib` | Fetches and caches the remote preset index; verifies SHA-256 on install |
 | UI | `internal/ui` | Embeds `web/dist`; SPA fallback handler |
 | Version | `internal/version` | Build metadata (version, commit, date, Go version) |
 
@@ -383,6 +384,11 @@ Products are the catalog layer over OpenJD templates: a named, versioned wrapper
 template files. The `internal/product` package overlays embedded built-ins on
 stored `custom`/`installed` products; the REST surface is at `/api/v1/products`.
 See [`docs/products.md`](products.md) for the full reference.
+
+The **preset library** (`internal/presetlib`) extends the product catalog with a
+remote index of ready-made product definitions. It exposes `/api/v1/presets`
+endpoints for browsing and installing presets; installed presets become products with
+`source: installed`. See [`docs/preset-library.md`](preset-library.md).
 
 ---
 

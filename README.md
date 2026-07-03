@@ -77,7 +77,7 @@ Both modes run the same software. The difference is configuration.
 
 ## Status and roadmap
 
-`sqi` v0.1.0 delivers the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. Products and presets, S3 storage, DCC submitters, authentication, and the community preset library follow in later phases.
+`sqi` v0.1.0 delivers the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. Phase 2 adds products, the community preset library, and S3 storage; DCC submitters, authentication, and further features follow in later phases.
 
 This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose). 
 

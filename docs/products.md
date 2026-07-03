@@ -130,10 +130,31 @@ Every product carries a `source` field identifying where it came from:
 |---|---|---|
 | Built-in | `builtin` | Embedded in the binary. Served read-only; cannot be mutated or deleted. |
 | Custom | `custom` | Authored on this server via `POST /api/v1/products`. Mutable. |
-| Installed | `installed` | Installed from a community preset repository. Mutable. |
+| Installed | `installed` | Installed from the preset library. Read-only (PUT returns 403); can be deleted. |
 
 Built-in names are reserved: `POST /api/v1/products` rejects a `name` that
 matches an existing built-in.
+
+---
+
+## Installing from the preset library
+
+The **preset library** lets you browse and install ready-made product definitions
+from a hosted catalog without writing any YAML. Installed presets become products
+with `source: installed`.
+
+See [`docs/preset-library.md`](preset-library.md) for the full guide, including the
+index format, configuration, and the browse → preview → install flow.
+
+Key points about installed products:
+
+- **Read-only.** `PUT /api/v1/products/{name}` returns 403. The template is updated
+  only via the preset library install flow (when the library publishes an update and
+  you choose to apply it).
+- **Uninstallable.** `DELETE /api/v1/products/{name}` works normally.
+- **Duplicate to custom.** Every product — including installed ones and built-ins —
+  has a **Duplicate to custom** action. Use it to create a fully mutable local copy
+  (`source: custom`) that is no longer tied to the library and can be edited freely.
 
 ---
 

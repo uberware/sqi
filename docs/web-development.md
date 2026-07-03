@@ -139,18 +139,25 @@ Router.
    | `/submit/product/:name` | `ProductSubmit` | Product submission form — fetches parameters and renders a dynamic form |
    | `/submit/raw` | `Submit` | Raw OpenJD editor for direct template submission without the catalog |
 
+   The preset library (under the Admin hub) uses two routes:
+
+   | Route | Component | Description |
+   |---|---|---|
+   | `/presets` | `PresetLibrary` | Browse all presets from the index with per-preset status and a Refresh button |
+   | `/presets/:name` | `PresetDetail` | Preview a preset's metadata and template (read-only); Install / Update / Reinstall button |
+
 3. Surface it in navigation:
    - **Operational views** (dashboard, submit, jobs, workers) are top-level
      entries in `src/components/layout/Sidebar.tsx` — add a `<NavLink>` so the
      active link highlights based on the URL.
    - **Admin / management views** (farms, queues, usage pools, storage, compute
-     locations, products, server log) are **not** in the sidebar; they live on
-     the **Admin hub** (`/admin`, `src/pages/Admin.tsx`). Add an entry to its
-     `ADMIN_LINKS` registry (`label`, `description`, `to`) and the card grid
-     renders it. The sidebar's only management entry is **Admin** itself; the
-     server log is its own route, `/server-log`.
+     locations, products, preset library, server log) are **not** in the sidebar;
+     they live on the **Admin hub** (`/admin`, `src/pages/Admin.tsx`). Add an entry
+     to its `ADMIN_LINKS` registry (`label`, `description`, `to`) and the card grid
+     renders it. The sidebar's only management entry is **Admin** itself; the server
+     log is its own route, `/server-log`.
    - Deferred (future) views are listed in the sidebar as disabled "coming soon"
-     stubs (`DEFERRED_LABELS`, e.g. `Presets`) — promote one when its view lands.
+     stubs (`DEFERRED_LABELS`) — promote one when its view lands.
 
 Use the `@/` path alias (configured in both `vite.config.ts` and
 `tsconfig.app.json`) for imports instead of relative `../../` paths.
