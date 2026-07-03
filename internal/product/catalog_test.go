@@ -103,3 +103,69 @@ func TestCatalog_UpdateDeleteBuiltinCaseInsensitive(t *testing.T) {
 		t.Fatalf("delete builtin (uppercase): want ErrReadOnly, got %v", err)
 	}
 }
+
+func TestCatalog_InstalledIsReadOnly(t *testing.T) {
+	st := fake.New()
+	c := product.NewCatalog(st)
+	ctx := context.Background()
+	// Seed an installed product directly via the store.
+	if _, err := st.CreateProduct(ctx, store.Product{ID: "i1", Name: "studio/maya", Title: "Maya", Source: store.SourceInstalled, OriginRef: "studio/maya", OriginFingerprint: "fp1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.Update(ctx, store.Product{Name: "studio/maya", Title: "Hacked"})
+	if !errors.Is(err, product.ErrReadOnly) {
+		t.Fatalf("expected ErrReadOnly updating installed product, got %v", err)
+	}
+	// Delete (uninstall) must still work.
+	if err := c.Delete(ctx, "studio/maya"); err != nil {
+		t.Fatalf("uninstall (delete) should succeed, got %v", err)
+	}
+}
+
+func TestCatalog_Install(t *testing.T) {
+	st := fake.New()
+	c := product.NewCatalog(st)
+	ctx := context.Background()
+	def := store.Product{Name: "studio/maya", Title: "Maya", Template: "t", Format: store.TemplateFormatYAML}
+
+	// First install → created.
+	got, created, err := c.Install(ctx, def, "studio/maya", "fp1")
+	if err != nil || !created {
+		t.Fatalf("first install: created=%v err=%v", created, err)
+	}
+	if got.Source != store.SourceInstalled || got.OriginRef != "studio/maya" || got.OriginFingerprint != "fp1" {
+		t.Fatalf("install did not stamp origin/source: %+v", got)
+	}
+
+	// Second install (update) → overwrite, not created.
+	def2 := def
+	def2.Title = "Maya 2"
+	got2, created2, err := c.Install(ctx, def2, "studio/maya", "fp2")
+	if err != nil || created2 {
+		t.Fatalf("update install: created=%v err=%v", created2, err)
+	}
+	if got2.Title != "Maya 2" || got2.OriginFingerprint != "fp2" {
+		t.Fatalf("update did not overwrite: %+v", got2)
+	}
+}
+
+func TestCatalog_Install_ShadowBuiltin(t *testing.T) {
+	c := product.NewCatalog(fake.New())
+	_, _, err := c.Install(context.Background(), store.Product{Name: "script", Title: "X"}, "script", "fp")
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected conflict shadowing built-in, got %v", err)
+	}
+}
+
+func TestCatalog_Install_CollidesWithCustom(t *testing.T) {
+	st := fake.New()
+	c := product.NewCatalog(st)
+	ctx := context.Background()
+	if _, err := st.CreateProduct(ctx, store.Product{ID: "c1", Name: "studio/maya", Title: "Custom", Source: store.SourceCustom}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := c.Install(ctx, store.Product{Name: "studio/maya", Title: "X"}, "studio/maya", "fp")
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected conflict with custom product, got %v", err)
+	}
+}
