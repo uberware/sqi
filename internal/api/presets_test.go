@@ -420,3 +420,35 @@ func TestPresets_GetPresetFetchDefinitionError(t *testing.T) {
 		t.Errorf("status = %d, want 422", rec.Code)
 	}
 }
+
+// TestPresets_InstallConflict checks that POST /presets/{name}/install returns
+// 409 when a custom (non-installed) product already exists with the same name,
+// because the catalog refuses to overwrite a custom product with a preset.
+func TestPresets_InstallConflict(t *testing.T) {
+	entries := sampleEntries()
+	def := sampleDef("maya-render")
+	lib := &fakeLib{
+		configured: true,
+		entries:    entries,
+		defs:       map[string]store.Product{"maya-render": def},
+	}
+	srv := newPresetTestServer(t, lib)
+	ctx := t.Context()
+
+	// Seed a CUSTOM product with the same name as the preset.
+	_, err := srv.st.CreateProduct(ctx, store.Product{
+		ID: "custom-1", Name: "maya-render", Title: "My Custom Maya",
+		Source:   store.SourceCustom,
+		Template: validTemplate, Format: store.TemplateFormatYAML,
+	})
+	if err != nil {
+		t.Fatalf("seed custom product: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/presets/maya-render/install", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", rec.Code)
+	}
+}
