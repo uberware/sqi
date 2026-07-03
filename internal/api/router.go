@@ -111,6 +111,11 @@ type Deps struct {
 	// /api/v1/products endpoints. Required for product routes.
 	Products *product.Catalog
 
+	// PresetLib is the community preset library client used by the
+	// /api/v1/presets endpoints. Nil-tolerant: when nil or unconfigured the
+	// endpoints respond 503.
+	PresetLib PresetLibrary
+
 	// Version is the server build metadata reported by GET /api/v1/version.
 	// The zero value is acceptable (fields default to empty strings).
 	Version version.Info
@@ -223,6 +228,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
 	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, logger)
+	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 
@@ -300,6 +306,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Delete("/products/{name}", products.deleteProduct)
 		api.Post("/products/{name}/jobs", products.submitProductJob)
 		api.Get("/products/{name}/parameters", products.getProductParameters)
+
+		// ── Preset endpoints ────────────────────────────────────
+		api.Get("/presets", presets.listPresets)
+		api.Get("/presets/{name}", presets.getPreset)
+		api.Post("/presets/{name}/install", presets.installPreset)
 
 		// ── Usage-pool endpoints ────────────────────────────────
 		api.Post("/usage-pools", usagePools.createUsagePool)
