@@ -57,6 +57,12 @@ const ADMIN_LINKS: AdminLink[] = [
     description: 'Product definitions and presets',
     to: '/products',
   },
+  {
+    id: 'presets',
+    label: 'Preset Library',
+    description: 'Browse and install community presets',
+    to: '/presets',
+  },
   { id: 'log', label: 'Server Log', description: 'Live server diagnostic log', to: '/server-log' },
 ]
 
