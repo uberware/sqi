@@ -96,6 +96,36 @@ describe('ProductDetail', () => {
     expect(screen.getByTestId('dup-template')).toHaveTextContent('name: my-template')
   })
 
+  it('shows Duplicate to custom on a custom product (alongside Edit and Delete)', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct()))
+    renderDetail('/products/my-render')
+    await screen.findByText('name: my-template')
+    expect(screen.getByRole('button', { name: /duplicate to custom/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /edit/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument()
+  })
+
+  it('installed product is read-only but duplicable and shows Uninstall', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ source: 'installed' })))
+    renderDetail('/products/my-render')
+    await screen.findByText('name: my-template')
+
+    expect(screen.getByRole('button', { name: /duplicate to custom/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /edit/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /uninstall/i })).toBeInTheDocument()
+
+    fetchMock.mockResolvedValueOnce(ok(null, 204)) // DELETE
+    await userEvent.click(screen.getByRole('button', { name: /uninstall/i }))
+
+    await waitFor(() => {
+      const del = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
+      )
+      expect(del?.[0]).toBe('/api/v1/products/my-render')
+    })
+  })
+
   it('shows Edit and Delete for a custom product and deletes after confirm', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     fetchMock.mockResolvedValueOnce(ok(makeProduct()))

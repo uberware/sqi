@@ -52,35 +52,38 @@ export default function ProductDetail() {
     )
   }
 
-  const isBuiltin = product.source === 'builtin'
+  const isInstalled = product.source === 'installed'
+  const canEdit = product.source === 'custom'
+  const canDelete = product.source === 'custom' || isInstalled
 
   return (
     <div className={styles.page}>
       <PageHeader
         title="Product Details"
         action={
-          isBuiltin ? (
+          <div className={styles.actions}>
             <button type="button" className={styles.actionBtn} onClick={handleDuplicate}>
               Duplicate to custom
             </button>
-          ) : (
-            <div className={styles.actions}>
+            {canEdit && (
               <Link
                 to={`/products/${encodeURIComponent(product.name)}/edit`}
                 className={styles.actionBtn}
               >
                 Edit
               </Link>
+            )}
+            {canDelete && (
               <button
                 type="button"
                 className={styles.deleteBtn}
                 onClick={() => void handleDelete()}
                 disabled={deleteProduct.isPending}
               >
-                Delete
+                {isInstalled ? 'Uninstall' : 'Delete'}
               </button>
-            </div>
-          )
+            )}
+          </div>
         }
       />
 
