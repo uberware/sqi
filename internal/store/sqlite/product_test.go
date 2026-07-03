@@ -94,3 +94,24 @@ func TestSQLiteProduct_ListOrdered(t *testing.T) {
 		t.Fatalf("not name-ordered: %v", []string{list[0].Name, list[1].Name, list[2].Name})
 	}
 }
+
+func TestProduct_OriginRoundTrip(t *testing.T) {
+	st := newProductStore(t) // existing helper in this package
+	ctx := context.Background()
+	in := store.Product{
+		ID: "p1", Name: "studio/maya", Title: "Maya", Source: store.SourceInstalled,
+		Template: "specificationVersion: jobtemplate-2023-09\nname: M\nsteps: []\n",
+		Format:   store.TemplateFormatYAML,
+		OriginRef: "studio/maya", OriginFingerprint: "abc123",
+	}
+	if _, err := st.CreateProduct(ctx, in); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.GetProductByName(ctx, "studio/maya")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.OriginRef != "studio/maya" || got.OriginFingerprint != "abc123" {
+		t.Fatalf("origin not persisted: ref=%q fp=%q", got.OriginRef, got.OriginFingerprint)
+	}
+}

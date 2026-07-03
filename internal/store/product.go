@@ -32,8 +32,14 @@ type Product struct {
 	Source      Source
 	Template    string // verbatim OpenJD template
 	Format      TemplateFormat
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// OriginRef is the preset-library index entry name this product was
+	// installed from; empty for builtin/custom products.
+	OriginRef string
+	// OriginFingerprint is the definition's sha256 at install time; empty for
+	// builtin/custom products. Compared against the index to detect updates.
+	OriginFingerprint string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // ProductStore persists custom/installed [Product] rows. Built-in overlay and
