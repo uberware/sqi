@@ -604,3 +604,22 @@ export function useSubmitProductJob() {
     },
   })
 }
+
+// ── Preset install ─────────────────────────────────────────────────────────────
+
+/**
+ * Install a preset by name via `POST /presets/{name}/install`.
+ * Returns the newly-created Product. Invalidates both the preset list and the
+ * product catalog so both views refresh automatically.
+ */
+export function useInstallPreset() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string): Promise<Product> =>
+      apiFetch(`/presets/${encodeURIComponent(name)}/install`, { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.presets.all })
+      void qc.invalidateQueries({ queryKey: queryKeys.products.all })
+    },
+  })
+}

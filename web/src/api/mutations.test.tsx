@@ -23,6 +23,7 @@ import {
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
   fetchDeleteStorageLocation,
+  useInstallPreset,
 } from './mutations'
 import { queryKeys } from './queries'
 
@@ -691,5 +692,50 @@ describe('storage location mutations', () => {
     await fetchDeleteStorageLocation('loc-1')
     expect(calledUrl()).toContain('/storage-locations/loc-1')
     expect(calledInit().method).toBe('DELETE')
+  })
+})
+
+// ── useInstallPreset ──────────────────────────────────────────────────────────
+
+describe('useInstallPreset', () => {
+  it('POSTs to /presets/:name/install and invalidates presets and products on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({
+        name: 'blender-render',
+        title: 'Blender Render',
+        description: '',
+        category: 'rendering',
+        version: '1.0.0',
+        source: 'installed',
+        template: 'name: x',
+        format: 'yaml',
+      }),
+    )
+
+    const { result } = renderHook(() => useInstallPreset(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('blender-render')
+    })
+
+    expect(calledUrl()).toContain('/presets/blender-render/install')
+    expect(calledInit().method).toBe('POST')
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.presets.all })
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.products.all })
+  })
+
+  it('URL-encodes the preset name in the install path', async () => {
+    const client = makeClient()
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ name: 'my preset', source: 'installed' }))
+
+    const { result } = renderHook(() => useInstallPreset(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('my preset')
+    })
+
+    expect(calledUrl()).toContain('/presets/my%20preset/install')
   })
 })

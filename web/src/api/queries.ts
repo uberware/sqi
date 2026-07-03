@@ -7,6 +7,8 @@ import type {
   Farm,
   Job,
   JobDetail,
+  PresetDetail,
+  PresetListItem,
   Product,
   ProductParameter,
   StorageLocation,
@@ -134,6 +136,10 @@ export const queryKeys = {
     all: ['products'] as const,
     detail: (name: string) => ['products', 'detail', name] as const,
     parameters: (name: string) => ['products', 'detail', name, 'parameters'] as const,
+  },
+  presets: {
+    all: ['presets'] as const,
+    detail: (name: string) => ['presets', name] as const,
   },
   version: {
     all: ['version'] as const,
@@ -286,6 +292,16 @@ export function fetchProduct(name: string): Promise<Product> {
 /** Fetch a product's parsed parameters from GET /products/{name}/parameters. */
 export function fetchProductParameters(name: string): Promise<ProductParameter[]> {
   return apiFetch(`/products/${encodeURIComponent(name)}/parameters`)
+}
+
+/** Fetch all presets from `GET /presets` (bare array, no pagination). Pass refresh=true to force a remote check. */
+export function fetchPresets(refresh = false): Promise<PresetListItem[]> {
+  return apiFetch(`/presets${refresh ? '?refresh=true' : ''}`)
+}
+
+/** Fetch one preset by name from `GET /presets/{name}`. */
+export function fetchPreset(name: string): Promise<PresetDetail> {
+  return apiFetch(`/presets/${encodeURIComponent(name)}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -477,6 +493,20 @@ export function useProductParameters(name: string) {
     queryKey: queryKeys.products.parameters(name),
     queryFn: () => fetchProductParameters(name),
     enabled: name !== '',
+  })
+}
+
+/** List all presets in the catalog (bare array, no pagination). Pass refresh=true to force a remote check. */
+export function usePresets(refresh = false) {
+  return useQuery({ queryKey: queryKeys.presets.all, queryFn: () => fetchPresets(refresh) })
+}
+
+/** Load a single preset by name. Disabled when name is empty. */
+export function usePreset(name: string) {
+  return useQuery({
+    queryKey: queryKeys.presets.detail(name),
+    queryFn: () => fetchPreset(name),
+    enabled: !!name,
   })
 }
 

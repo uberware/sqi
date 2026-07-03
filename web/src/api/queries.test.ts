@@ -19,6 +19,8 @@ import {
   fetchProducts,
   fetchProduct,
   fetchProductParameters,
+  fetchPresets,
+  fetchPreset,
 } from './queries'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -396,5 +398,63 @@ describe('fetchProductParameters', () => {
     const params = await fetchProductParameters('blender')
     expect(calledUrl()).toBe('/api/v1/products/blender/parameters')
     expect(params[0]?.name).toBe('Quality')
+  })
+})
+
+// ── fetchPresets ──────────────────────────────────────────────────────────────
+
+describe('fetchPresets', () => {
+  it('GETs /api/v1/presets and returns the bare array', async () => {
+    const body = [
+      {
+        name: 'blender-render',
+        title: 'Blender Render',
+        description: 'Render with Blender',
+        category: 'rendering',
+        version: '1.0.0',
+        status: 'not_installed',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(makeOkResponse(body))
+    const result = await fetchPresets()
+    expect(result).toHaveLength(1)
+    expect(result[0]?.name).toBe('blender-render')
+  })
+
+  it('calls /api/v1/presets without query string by default', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse([]))
+    await fetchPresets()
+    expect(calledUrl()).toBe('/api/v1/presets')
+  })
+
+  it('adds ?refresh=true when refresh is true', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse([]))
+    await fetchPresets(true)
+    expect(calledUrl()).toBe('/api/v1/presets?refresh=true')
+  })
+})
+
+// ── fetchPreset ───────────────────────────────────────────────────────────────
+
+describe('fetchPreset', () => {
+  it('calls /api/v1/presets/:name', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ name: 'blender-render' }))
+    await fetchPreset('blender-render')
+    expect(calledUrl()).toBe('/api/v1/presets/blender-render')
+  })
+
+  it('URL-encodes the preset name', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ name: 'my preset' }))
+    await fetchPreset('my preset')
+    expect(calledUrl()).toBe('/api/v1/presets/my%20preset')
+  })
+})
+
+// ── queryKeys.presets ─────────────────────────────────────────────────────────
+
+describe('queryKeys.presets', () => {
+  it('exposes stable all + detail keys', () => {
+    expect(queryKeys.presets.all).toEqual(['presets'])
+    expect(queryKeys.presets.detail('blender-render')).toEqual(['presets', 'blender-render'])
   })
 })

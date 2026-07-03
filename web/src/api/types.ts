@@ -326,6 +326,27 @@ export interface PathTranslation {
   deliveries: PathDelivery[]
 }
 
+// ── Preset ────────────────────────────────────────────────────────────────────
+
+/** Installation status of a preset in the catalog. */
+export type PresetStatus = 'not_installed' | 'installed' | 'update_available'
+
+/** Wire shape returned by GET /api/v1/presets (list item). */
+export interface PresetListItem {
+  name: string
+  title: string
+  description: string
+  category: string
+  version: string
+  status: PresetStatus
+}
+
+/** Wire shape returned by GET /api/v1/presets/{name} (detail). */
+export interface PresetDetail extends PresetListItem {
+  template: string
+  format: string
+}
+
 // ── Product ───────────────────────────────────────────────────────────────────
 
 /** Wire shape returned by GET /api/v1/products and GET /api/v1/products/{name}. */
