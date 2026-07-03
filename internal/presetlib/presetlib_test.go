@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -108,14 +109,56 @@ func TestFetchDefinition_FingerprintMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = s.FetchDefinition(context.Background(), entries[0])
-	if err == nil {
-		t.Fatal("expected fingerprint mismatch error")
+	if !errors.Is(err, presetlib.ErrFingerprintMismatch) {
+		t.Fatalf("want ErrFingerprintMismatch, got %v", err)
 	}
 }
 
 func TestFetchIndex_NotConfigured(t *testing.T) {
 	_, err := presetlib.New("", time.Hour).FetchIndex(context.Background(), false)
-	if err == nil {
-		t.Fatal("expected error when not configured")
+	if !errors.Is(err, presetlib.ErrNotConfigured) {
+		t.Fatalf("want ErrNotConfigured, got %v", err)
+	}
+}
+
+func TestFetchIndex_StaleCache_OnFailedRefresh(t *testing.T) {
+	sha := sha256hex(validDef)
+	indexBody := `{"presets":[{"name":"studio/maya","title":"Maya","category":"Rendering","version":"1.0.0","definition":"maya.yaml","sha256":"` + sha + `"}]}`
+
+	var fail atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, _ *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(indexBody)) //nolint:errcheck // response write errors cannot be handled after headers are sent
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	s := presetlib.New(srv.URL+"/index.json", time.Hour)
+	ctx := context.Background()
+
+	// Populate the cache with a successful fetch.
+	entries, err := s.FetchIndex(ctx, false)
+	if err != nil {
+		t.Fatalf("initial fetch: %v", err)
+	}
+
+	// Make the server start returning failures.
+	fail.Store(true)
+
+	// Force refresh — refresh fails; service should return the stale cache plus a non-nil error.
+	got, refreshErr := s.FetchIndex(ctx, true)
+	if refreshErr == nil {
+		t.Fatal("expected non-nil error on failed refresh")
+	}
+	if len(got) != len(entries) {
+		t.Fatalf("expected %d stale cached entries, got %d", len(entries), len(got))
+	}
+	if len(got) > 0 && got[0].Name != entries[0].Name {
+		t.Fatalf("stale cache entry mismatch: want %q, got %q", entries[0].Name, got[0].Name)
 	}
 }
