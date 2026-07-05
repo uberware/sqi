@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
@@ -129,7 +127,7 @@ func (h *presetHandler) getPreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	name := chi.URLParam(r, "name")
+	name := nameParam(r)
 	entry, ok, err := h.findEntry(ctx, name)
 	if err != nil {
 		writeProblem(w, r, http.StatusBadGateway, "failed to fetch preset library index")
@@ -165,7 +163,7 @@ func (h *presetHandler) installPreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	name := chi.URLParam(r, "name")
+	name := nameParam(r)
 	entry, ok, err := h.findEntry(ctx, name)
 	if err != nil {
 		writeProblem(w, r, http.StatusBadGateway, "failed to fetch preset library index")

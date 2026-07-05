@@ -130,6 +130,35 @@ func TestProducts_CreateThenGet(t *testing.T) {
 	}
 }
 
+// TestProducts_NamespacedNameRoundTrip checks that a product whose name has a
+// '/' namespace (e.g. an installed preset "testing/render-simulator") is
+// retrievable when the browser URL-encodes the slash as %2F. Regression test:
+// chi does not decode path params, so the handler must unescape the name.
+func TestProducts_NamespacedNameRoundTrip(t *testing.T) {
+	srv := newProductRouter(fake.New())
+	req := newReq(t, http.MethodPost, "/api/v1/products", jsonBody(t, map[string]any{
+		"name": "testing/render-simulator", "title": "Render Simulator", "version": "1.0.0",
+		"template": validTemplate, "format": "yaml",
+	}))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body)
+	}
+
+	// encodeURIComponent("testing/render-simulator") => testing%2Frender-simulator
+	for _, path := range []string{
+		"/api/v1/products/testing%2Frender-simulator",
+		"/api/v1/products/testing%2Frender-simulator/parameters",
+	} {
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, newReq(t, http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200; body=%s", path, rec.Code, rec.Body)
+		}
+	}
+}
+
 func TestProducts_CreateBadTemplateIs400(t *testing.T) {
 	srv := newProductRouter(fake.New())
 	req := newReq(t, http.MethodPost, "/api/v1/products", jsonBody(t, map[string]any{

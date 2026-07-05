@@ -289,6 +289,59 @@ func TestPresets_GetPresetReturnsDetail(t *testing.T) {
 	}
 }
 
+// TestPresets_GetPresetNamespacedName checks that a preset whose name contains
+// a '/' namespace separator (e.g. "testing/render-simulator") is resolvable when
+// the browser URL-encodes the slash as %2F in the path. Regression test: chi
+// does not decode path params, so the handler must unescape the name itself.
+func TestPresets_GetPresetNamespacedName(t *testing.T) {
+	entries := []presetlib.IndexEntry{
+		{Name: "testing/render-simulator", Title: "Render Simulator", Category: "Testing", Version: "1.0.0", Sha256: "abc123"},
+	}
+	lib := &fakeLib{
+		configured: true,
+		entries:    entries,
+		defs:       map[string]store.Product{"testing/render-simulator": sampleDef("testing/render-simulator")},
+	}
+	srv := newPresetTestServer(t, lib)
+
+	// The web UI issues encodeURIComponent(name), so '/' arrives as %2F.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/presets/testing%2Frender-simulator", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["name"] != "testing/render-simulator" {
+		t.Errorf("name = %q, want testing/render-simulator", got["name"])
+	}
+}
+
+// TestPresets_InstallNamespacedName is the install-path counterpart to
+// TestPresets_GetPresetNamespacedName: a %2F-encoded namespaced name must
+// resolve and install.
+func TestPresets_InstallNamespacedName(t *testing.T) {
+	entries := []presetlib.IndexEntry{
+		{Name: "testing/render-simulator", Sha256: "abc123"},
+	}
+	lib := &fakeLib{
+		configured: true,
+		entries:    entries,
+		defs:       map[string]store.Product{"testing/render-simulator": sampleDef("testing/render-simulator")},
+	}
+	srv := newPresetTestServer(t, lib)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/presets/testing%2Frender-simulator/install", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body)
+	}
+}
+
 // TestPresets_InstallCreates checks that POST /presets/{name}/install creates
 // a new product (201) and sets the correct source/origin fields.
 func TestPresets_InstallCreates(t *testing.T) {

@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
@@ -119,7 +117,7 @@ func toProductParameterResponse(p openjd.JobParameter) productParameterResponse 
 // stored verbatim and may be invalid; an unparseable template yields 422.
 func (h *productHandler) getProductParameters(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	p, err := h.catalog.GetByName(ctx, chi.URLParam(r, "name"))
+	p, err := h.catalog.GetByName(ctx, nameParam(r))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "product not found")
@@ -160,7 +158,7 @@ func (h *productHandler) listProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *productHandler) getProduct(w http.ResponseWriter, r *http.Request) {
-	p, err := h.catalog.GetByName(r.Context(), chi.URLParam(r, "name"))
+	p, err := h.catalog.GetByName(r.Context(), nameParam(r))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "product not found")
@@ -190,7 +188,7 @@ func (h *productHandler) createProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *productHandler) updateProduct(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := nameParam(r)
 	req, ok := decodeProductBody(w, r, name)
 	if !ok {
 		return
@@ -211,7 +209,7 @@ func (h *productHandler) updateProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *productHandler) deleteProduct(w http.ResponseWriter, r *http.Request) {
-	err := h.catalog.Delete(r.Context(), chi.URLParam(r, "name"))
+	err := h.catalog.Delete(r.Context(), nameParam(r))
 	if err != nil {
 		switch {
 		case errors.Is(err, product.ErrReadOnly):
@@ -242,7 +240,7 @@ type submitProductRequest struct {
 // the existing openjd.Submitter pipeline.
 func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	p, err := h.catalog.GetByName(ctx, chi.URLParam(r, "name"))
+	p, err := h.catalog.GetByName(ctx, nameParam(r))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "product not found")
