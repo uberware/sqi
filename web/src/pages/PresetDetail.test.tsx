@@ -82,6 +82,13 @@ describe('PresetDetail', () => {
     expect(screen.getByLabelText('OpenJD template')).toHaveTextContent('name: nuke-template')
   })
 
+  it('renders a back link to the preset library next to the action', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset()))
+    renderDetail('/presets/nuke-comp')
+    const back = await screen.findByRole('link', { name: /presets/i })
+    expect(back).toHaveAttribute('href', '/presets')
+  })
+
   it('shows Install button when status is not_installed', async () => {
     fetchMock.mockResolvedValueOnce(ok(makePreset({ status: 'not_installed' })))
     renderDetail('/presets/nuke-comp')

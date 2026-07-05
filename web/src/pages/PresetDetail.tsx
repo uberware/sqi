@@ -43,6 +43,8 @@ export default function PresetDetail() {
     <div className={styles.page}>
       <PageHeader
         title="Preset Details"
+        backTo="/presets"
+        backLabel="Presets"
         action={
           <button
             type="button"
