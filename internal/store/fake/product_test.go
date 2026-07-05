@@ -67,3 +67,19 @@ func TestFakeProduct_UpdateNotFound(t *testing.T) {
 		t.Fatalf("update nonexistent: want ErrNotFound, got %v", err)
 	}
 }
+
+func TestFakeProduct_OriginRoundTrip(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	in := store.Product{ID: "p1", Name: "studio/maya", Title: "Maya", Source: store.SourceInstalled, OriginRef: "studio/maya", OriginFingerprint: "abc123"}
+	if _, err := st.CreateProduct(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetProductByName(ctx, "studio/maya")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.OriginRef != "studio/maya" || got.OriginFingerprint != "abc123" {
+		t.Fatalf("fake dropped origin: %+v", got)
+	}
+}

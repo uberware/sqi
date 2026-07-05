@@ -517,6 +517,12 @@ func TestValidate_DiagnosticsZeroBufferSizeAllowed(t *testing.T) {
 
 // ── Scheduler: job_retention defaults and env overrides ──────────────────────
 
+func TestDefaultConfig_PresetLibraryURL(t *testing.T) {
+	if got := config.DefaultConfig().PresetLibrary.URL; got != "https://uberware.github.io/sqi-presets/index.json" {
+		t.Fatalf("unexpected default preset library URL: %q", got)
+	}
+}
+
 func TestDefaultConfig_JobRetention(t *testing.T) {
 	cfg := config.DefaultConfig()
 	if cfg.Scheduler.JobRetention != 7*24*time.Hour {

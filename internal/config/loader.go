@@ -134,6 +134,10 @@ type fileConfig struct {
 	Diagnostics *struct {
 		BufferSize *int `yaml:"buffer_size"`
 	} `yaml:"diagnostics"`
+
+	PresetLibrary *struct {
+		URL *string `yaml:"url"`
+	} `yaml:"preset_library"`
 }
 
 func applyFile(cfg *Config, explicit string) error {
@@ -188,6 +192,7 @@ func mergeFileConfig(cfg *Config, fc fileConfig) {
 	mergeDiscoveryFile(cfg, fc)
 	mergeOpenJDFile(cfg, fc)
 	mergeDiagnosticsFile(cfg, fc)
+	mergePresetLibraryFile(cfg, fc)
 }
 
 func mergeHTTPFile(cfg *Config, fc fileConfig) {
@@ -305,6 +310,15 @@ func mergeDiagnosticsFile(cfg *Config, fc fileConfig) {
 	}
 }
 
+func mergePresetLibraryFile(cfg *Config, fc fileConfig) {
+	if fc.PresetLibrary == nil {
+		return
+	}
+	if fc.PresetLibrary.URL != nil {
+		cfg.PresetLibrary.URL = *fc.PresetLibrary.URL
+	}
+}
+
 // ── Environment variable layer ────────────────────────────────────────────────
 
 func applyEnv(cfg *Config) {
@@ -334,6 +348,8 @@ func applyEnv(cfg *Config) {
 	setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS")
 
 	setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE")
+
+	setString(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
 }
 
 func setString(dst *string, key string) {

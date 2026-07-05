@@ -76,26 +76,3 @@
 .spacer {
   flex: 1;
 }
-
-.deferredItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  color: var(--color-sidebar-text-muted);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: not-allowed;
-  user-select: none;
-}
-
-.comingSoonBadge {
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-normal);
-  color: var(--color-sidebar-text-muted);
-  background-color: rgba(255, 255, 255, 0.07);
-  padding: 1px var(--space-1);
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-}

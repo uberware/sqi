@@ -883,6 +883,34 @@ components:
         description:
           type: string
 
+    # ── Presets ───────────────────────────────────────────────────────────────
+    Preset:
+      type: object
+      properties:
+        name:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [not_installed, installed, update_available]
+
+    PresetDetail:
+      allOf:
+        - $ref: "#/components/schemas/Preset"
+        - type: object
+          properties:
+            template:
+              type: string
+            format:
+              type: string
+
     # ── Products ──────────────────────────────────────────────────────────────
     Product:
       type: object
@@ -2405,6 +2433,99 @@ paths:
                 items: { $ref: '#/components/schemas/ProductParameter' }
         '404': { description: Product not found }
         '422': { description: The product's stored template could not be parsed }
+
+  # ── Presets ────────────────────────────────────────────────────────────────
+
+  /presets:
+    get:
+      operationId: listPresets
+      summary: List community preset library entries with install status
+      tags: [presets]
+      parameters:
+        - in: query
+          name: refresh
+          schema:
+            type: boolean
+          description: Force a re-fetch of the library index.
+      responses:
+        "200":
+          description: Array of presets with install status.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Preset"
+        "502":
+          description: Failed to fetch the preset library index.
+        "503":
+          description: Preset library not configured.
+
+  /presets/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Preset name as it appears in the library index.
+    get:
+      operationId: getPreset
+      summary: Fetch a preset definition for preview
+      tags: [presets]
+      responses:
+        "200":
+          description: Preset detail including the OpenJD template.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresetDetail"
+        "404":
+          description: Preset not found in the index.
+        "422":
+          description: Definition invalid or fingerprint mismatch.
+        "502":
+          description: Failed to fetch the preset library index.
+        "503":
+          description: Preset library not configured.
+
+  /presets/{name}/install:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Preset name as it appears in the library index.
+    post:
+      operationId: installPreset
+      summary: Install (or update) a preset as a product
+      tags: [presets]
+      responses:
+        "201":
+          description: Preset installed as a new product.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "200":
+          description: Existing installed product updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "404":
+          description: Preset not found in the index.
+        "409":
+          description: Name conflicts with a built-in or custom product.
+        "422":
+          description: Definition invalid or fingerprint mismatch.
+        "500":
+          description: Unexpected error installing the preset.
+        "502":
+          description: Failed to fetch the preset library index.
+        "503":
+          description: Preset library not configured.
 
   # ── Usage pools ────────────────────────────────────────────────────────────
 

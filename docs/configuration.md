@@ -443,6 +443,34 @@ See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
 ---
 
+## `preset_library` — Remote preset catalog
+
+### `preset_library.url`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"https://uberware.github.io/sqi-presets/index.json"` |
+| **Env var** | `SQI_PRESET_LIBRARY_URL` |
+
+URL of the preset library's JSON index. The default points to the official community
+preset library hosted on GitHub Pages.
+
+Set to an empty string `""` to **disable** the feature. When disabled, the Preset
+Library browse page shows a "not configured" empty state and all `/api/v1/presets`
+endpoints return 503.
+
+```yaml
+preset_library:
+  url: "https://uberware.github.io/sqi-presets/index.json"
+```
+
+To use a private or self-hosted library, provide any accessible HTTP or HTTPS URL
+that serves the index JSON. See [`docs/preset-library.md`](preset-library.md) for the
+index format and full integration guide.
+
+---
+
 ## Worker configuration
 
 Worker configuration applies to `sqi-worker` instances, not the server. Workers
@@ -490,6 +518,7 @@ staging:
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
+| `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
 
 ---
 

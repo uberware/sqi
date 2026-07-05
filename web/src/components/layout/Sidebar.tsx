@@ -18,18 +18,6 @@ const PHASE1_NAV: NavItem[] = [
   { label: 'Admin', to: '/admin' },
 ]
 
-// Labels only — inert "coming soon" stubs for views not yet implemented.
-const DEFERRED_LABELS = ['Presets']
-
-function DeferredItem({ label }: { label: string }) {
-  return (
-    <span className={styles.deferredItem} data-disabled="true">
-      {label}
-      <span className={styles.comingSoonBadge}>coming soon</span>
-    </span>
-  )
-}
-
 export default function Sidebar() {
   return (
     <nav className={styles.sidebar} aria-label="Primary navigation">
@@ -54,16 +42,6 @@ export default function Sidebar() {
             >
               {item.label}
             </NavLink>
-          </li>
-        ))}
-      </ul>
-
-      <div className={styles.divider} />
-
-      <ul className={styles.navSection} role="list">
-        {DEFERRED_LABELS.map((label) => (
-          <li key={label}>
-            <DeferredItem label={label} />
           </li>
         ))}
       </ul>

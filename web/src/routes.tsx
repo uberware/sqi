@@ -17,6 +17,8 @@ import StorageLocationList from '@/pages/StorageLocationList'
 import StorageLocationForm from '@/pages/StorageLocationForm'
 import ComputeLocationList from '@/pages/ComputeLocationList'
 import ComputeLocationForm from '@/pages/ComputeLocationForm'
+import PresetLibrary from '@/pages/PresetLibrary'
+import PresetDetail from '@/pages/PresetDetail'
 import ProductList from '@/pages/ProductList'
 import ProductDetail from '@/pages/ProductDetail'
 import ProductForm from '@/pages/ProductForm'
@@ -55,6 +57,8 @@ export default function AppRoutes() {
       <Route path="/submit/raw" element={<Submit />} />
       <Route path="/submit/product/:name" element={<ProductSubmit />} />
       <Route path="/admin" element={<Admin />} />
+      <Route path="/presets" element={<PresetLibrary />} />
+      <Route path="/presets/:name" element={<PresetDetail />} />
       <Route path="/products" element={<ProductList />} />
       <Route path="/products/new" element={<ProductForm mode="create" />} />
       <Route path="/products/:name/edit" element={<ProductForm mode="edit" />} />

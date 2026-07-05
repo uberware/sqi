@@ -28,14 +28,15 @@ import "time"
 // Zero values are not valid; use [DefaultConfig] or [Load] to obtain a
 // populated instance.
 type Config struct {
-	HTTP        HTTPConfig        `yaml:"http"`
-	NATS        NATSConfig        `yaml:"nats"`
-	Store       StoreConfig       `yaml:"store"`
-	Log         LogConfig         `yaml:"log"`
-	Scheduler   SchedulerConfig   `yaml:"scheduler"`
-	Discovery   DiscoveryConfig   `yaml:"discovery"`
-	OpenJD      OpenJDConfig      `yaml:"openjd"`
-	Diagnostics DiagnosticsConfig `yaml:"diagnostics"`
+	HTTP          HTTPConfig          `yaml:"http"`
+	NATS          NATSConfig          `yaml:"nats"`
+	Store         StoreConfig         `yaml:"store"`
+	Log           LogConfig           `yaml:"log"`
+	Scheduler     SchedulerConfig     `yaml:"scheduler"`
+	Discovery     DiscoveryConfig     `yaml:"discovery"`
+	OpenJD        OpenJDConfig        `yaml:"openjd"`
+	Diagnostics   DiagnosticsConfig   `yaml:"diagnostics"`
+	PresetLibrary PresetLibraryConfig `yaml:"preset_library"`
 }
 
 // HTTPConfig controls the REST and WebSocket listener.
@@ -162,6 +163,14 @@ type DiagnosticsConfig struct {
 	BufferSize int `yaml:"buffer_size"`
 }
 
+// PresetLibraryConfig controls the community preset library integration.
+type PresetLibraryConfig struct {
+	// URL is the library's JSON index URL (the raw index file, not a repo page).
+	// Empty disables the feature. Default: the official sqi preset library.
+	// Env: SQI_PRESET_LIBRARY_URL
+	URL string `yaml:"url"`
+}
+
 // OpenJDConfig controls OpenJD submission and validation behavior.
 type OpenJDConfig struct {
 	// EnforceLimits gates quantitative limit validation (maximum name lengths,
@@ -209,6 +218,9 @@ func DefaultConfig() Config {
 		},
 		Diagnostics: DiagnosticsConfig{
 			BufferSize: 1000,
+		},
+		PresetLibrary: PresetLibraryConfig{
+			URL: "https://uberware.github.io/sqi-presets/index.json",
 		},
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
@@ -105,6 +106,11 @@ type Config struct {
 	// (name lengths, element counts, reserved-name rules) are enforced during
 	// job submission.  Default true.  Mirror of config.OpenJDConfig.EnforceLimits.
 	EnforceOpenJDLimits bool
+
+	// PresetLibraryURL is the URL of the community preset library index JSON.
+	// When empty the /api/v1/presets endpoints respond 503.
+	// Mirror of config.PresetLibraryConfig.URL.
+	PresetLibraryURL string
 
 	// SeedDefaults, when true, creates a "default" farm and queue on first
 	// startup if the store has no farms yet. No-op once any farm exists.
@@ -322,6 +328,12 @@ func (s *Server) start(ctx context.Context) error {
 	// the endpoint return 503 instead of panicking on Query.
 	if s.diagBuf != nil {
 		deps.DiagReader = s.diagBuf
+	}
+	// Only wire the preset library when a URL is configured. Leaving PresetLib
+	// as a nil interface (rather than a typed-nil *presetlib.Service) makes the
+	// endpoints return 503 instead of panicking.
+	if s.cfg.PresetLibraryURL != "" {
+		deps.PresetLib = presetlib.New(s.cfg.PresetLibraryURL, presetlib.DefaultCacheTTL)
 	}
 	router := api.NewRouter(
 		api.Config{

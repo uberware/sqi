@@ -94,3 +94,57 @@ func TestSQLiteProduct_ListOrdered(t *testing.T) {
 		t.Fatalf("not name-ordered: %v", []string{list[0].Name, list[1].Name, list[2].Name})
 	}
 }
+
+func TestProduct_OriginRoundTrip(t *testing.T) {
+	st := newProductStore(t) // existing helper in this package
+	ctx := context.Background()
+	in := store.Product{
+		ID: "p1", Name: "studio/maya", Title: "Maya", Source: store.SourceInstalled,
+		Template:  "specificationVersion: jobtemplate-2023-09\nname: M\nsteps: []\n",
+		Format:    store.TemplateFormatYAML,
+		OriginRef: "studio/maya", OriginFingerprint: "abc123",
+	}
+	if _, err := st.CreateProduct(ctx, in); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.GetProductByName(ctx, "studio/maya")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.OriginRef != "studio/maya" || got.OriginFingerprint != "abc123" {
+		t.Fatalf("origin not persisted: ref=%q fp=%q", got.OriginRef, got.OriginFingerprint)
+	}
+}
+
+func TestProduct_UpdateOriginRoundTrip(t *testing.T) {
+	st := newProductStore(t)
+	ctx := context.Background()
+	in := store.Product{
+		ID: uuid.NewString(), Name: "studio/nuke", Title: "Nuke", Source: store.SourceInstalled,
+		Template:  "specificationVersion: jobtemplate-2023-09\nname: N\nsteps: []\n",
+		Format:    store.TemplateFormatYAML,
+		OriginRef: "studio/nuke@v1", OriginFingerprint: "fp111",
+	}
+	created, err := st.CreateProduct(ctx, in)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	created.OriginRef = "studio/nuke@v2"
+	created.OriginFingerprint = "fp222"
+	updated, err := st.UpdateProduct(ctx, created)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.OriginRef != "studio/nuke@v2" || updated.OriginFingerprint != "fp222" {
+		t.Fatalf("update returned stale origin: ref=%q fp=%q", updated.OriginRef, updated.OriginFingerprint)
+	}
+
+	fetched, err := st.GetProductByName(ctx, "studio/nuke")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if fetched.OriginRef != "studio/nuke@v2" || fetched.OriginFingerprint != "fp222" {
+		t.Fatalf("persisted origin wrong: ref=%q fp=%q", fetched.OriginRef, fetched.OriginFingerprint)
+	}
+}
