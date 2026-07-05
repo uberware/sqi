@@ -73,6 +73,20 @@ warn_unused_configs = true
 module = ["PySide2.*", "maya.*", "hou", "nuke", "bpy", "bpy.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# _compat.py's None-fallback shim (QtCore = QtGui = QtWidgets = None, later
+# reassigned to the real modules under try/except) is inherently untypeable:
+# mypy infers the module-level names as `object | None`, so every
+# `QtWidgets.Whatever` call in widgets.py is flagged `attr-defined`, and the
+# exact set of `type: ignore` codes needed on the fallback/import lines
+# differs depending on which binding stub is installed. Narrowest workable
+# relaxation: disable attr-defined/assignment for this module only and stop
+# mypy from complaining about ignores that are only needed in some
+# environments.
+module = "sqi_submitter.qt.*"
+disable_error_code = ["attr-defined", "assignment"]
+warn_unused_ignores = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not integration' --cov=sqi_submitter --cov-report=term-missing --cov-fail-under=60"
