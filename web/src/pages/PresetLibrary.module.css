@@ -44,8 +44,6 @@
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--font-size-sm);
 }
 
@@ -69,7 +67,7 @@
 
 .table tbody tr {
   background: var(--color-surface);
-  transition: background 80ms;
+  transition: background var(--transition-fast);
 }
 
 .table tbody tr:hover {
@@ -92,7 +90,7 @@
 }
 
 .emptyState code {
-  font-family: monospace;
+  font-family: var(--font-family-mono);
   color: var(--color-text-primary);
 }
 

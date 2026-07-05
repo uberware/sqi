@@ -16,7 +16,7 @@
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   white-space: nowrap;
-  min-width: 80px;
+  min-width: 5rem;
 }
 
 /* ── Page controls ───────────────────────────────────────────────────────────── */
@@ -29,23 +29,27 @@
   justify-content: center;
 }
 
-.navBtn {
+.navBtn,
+.pageBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
-  height: 32px;
+  min-width: 2rem;
+  height: 2rem;
   padding: 0 var(--space-2);
   border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
   cursor: pointer;
   transition:
-    background 120ms,
-    border-color 120ms,
-    color 120ms;
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.navBtn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
 
 .navBtn:hover:not(:disabled) {
@@ -60,22 +64,8 @@
 }
 
 .pageBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  height: 32px;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  transition:
-    background 120ms,
-    color 120ms,
-    border-color 120ms;
 }
 
 .pageBtn:hover:not(:disabled) {
@@ -96,8 +86,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 24px;
-  height: 32px;
+  min-width: 1.5rem;
+  height: 2rem;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   user-select: none;
@@ -127,7 +117,7 @@
   font-size: var(--font-size-sm);
   cursor: pointer;
   outline: none;
-  transition: border-color 120ms;
+  transition: border-color var(--transition-base);
 }
 
 .pageSizeSelect:focus {

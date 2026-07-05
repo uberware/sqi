@@ -32,7 +32,7 @@
 
 .metaGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(11.25rem, 1fr));
   gap: var(--space-4) var(--space-6);
   margin: 0;
 }
@@ -46,15 +46,14 @@
   margin-bottom: var(--space-1);
 }
 
-.metaField dd {
-  font-size: var(--font-size-base);
-  color: var(--color-text-primary);
-  margin: 0;
-}
-
+.metaField dd,
 .metaValue {
   font-size: var(--font-size-base);
   color: var(--color-text-primary);
+}
+
+.metaField dd {
+  margin: 0;
 }
 
 .metaMono {
@@ -90,7 +89,7 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   opacity: 0;
-  transition: opacity 100ms;
+  transition: opacity var(--transition-base);
 }
 
 .idDisplay:hover .idCopyHint {
@@ -117,9 +116,11 @@
   margin: 0 0 var(--space-4);
 }
 
-/* ── Capabilities section ─────────────────────────────────────────────────────── */
+/* ── Capabilities / tasks / diagnostics sections ─────────────────────────────── */
 
-.capSection {
+.capSection,
+.tasksSection,
+.diagSection {
   display: flex;
   flex-direction: column;
 }
@@ -147,7 +148,7 @@
 
 .capGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
   gap: var(--space-3) var(--space-6);
   margin: 0;
 }
@@ -168,20 +169,6 @@
   color: var(--color-text-muted);
 }
 
-/* ── Active tasks section ─────────────────────────────────────────────────────── */
-
-.tasksSection {
-  display: flex;
-  flex-direction: column;
-}
-
-/* ── Diagnostics section ──────────────────────────────────────────────────────── */
-
-.diagSection {
-  display: flex;
-  flex-direction: column;
-}
-
 .taskCardList {
   list-style: none;
   padding: 0;
@@ -197,7 +184,7 @@
   border-radius: var(--radius-lg);
   padding: var(--space-4) var(--space-6);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(11.25rem, 1fr));
   gap: var(--space-3) var(--space-6);
 }
 
@@ -279,9 +266,9 @@
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition:
-    background 120ms,
-    border-color 120ms,
-    color 120ms;
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
 }
 
 .toggleBtn--disable {
@@ -321,9 +308,9 @@
   cursor: pointer;
   white-space: nowrap;
   transition:
-    background 120ms,
-    border-color 120ms,
-    color 120ms;
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
 }
 
 .refreshBtn:hover {

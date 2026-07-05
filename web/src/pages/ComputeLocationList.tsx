@@ -8,7 +8,7 @@ import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useListComputeLocations } from '@/api/queries'
 import { useDeleteComputeLocation } from '@/api/mutations'
-import styles from './ComputeLocationList.module.css'
+import styles from './entityList.module.css'
 
 export default function ComputeLocationList() {
   const { data: locations, isLoading, isError, error } = useListComputeLocations()

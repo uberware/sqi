@@ -4,7 +4,7 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  font-family: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: var(--font-size-sm);
   /* Let CodeMirror fill the container height. */
   display: flex;

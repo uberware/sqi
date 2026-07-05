@@ -8,7 +8,7 @@ import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useListStorageLocations } from '@/api/queries'
 import { useDeleteStorageLocation } from '@/api/mutations'
-import styles from './StorageLocationList.module.css'
+import styles from './entityList.module.css'
 
 export default function StorageLocationList() {
   const { data: locations, isLoading, isError, error } = useListStorageLocations()

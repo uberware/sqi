@@ -1,69 +1,37 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/* Shared list-page scaffold; only the usage cell below is pool-specific. */
+
 .page {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+  composes: page from './entityList.module.css';
 }
 
-/* ── Table wrapper ───────────────────────────────────────────────────────────── */
-
 .tableWrap {
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: auto;
+  composes: tableWrap from './entityList.module.css';
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
+  composes: table from './entityList.module.css';
 }
 
-.table th {
-  position: sticky;
-  top: 0;
-  background: var(--color-surface-raised);
-  border-bottom: 1px solid var(--color-border);
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  user-select: none;
-  z-index: 1;
-}
-
-.table td {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-border-subtle);
-  color: var(--color-text-primary);
-  vertical-align: middle;
-}
-
-.table tbody tr {
-  background: var(--color-surface);
-  transition: background 80ms;
-}
-
-.table tbody tr:hover {
-  background: var(--color-surface-raised);
-}
-
-/* ── Empty / error / loading ─────────────────────────────────────────────────── */
-
-.emptyRow td {
-  text-align: center;
-  padding: var(--space-16) var(--space-8);
-  color: var(--color-text-muted);
+.emptyRow {
+  composes: emptyRow from './entityList.module.css';
 }
 
 .errorBanner {
-  padding: var(--space-4) var(--space-8);
-  background: var(--color-error-muted);
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  border-bottom: 1px solid var(--color-error);
+  composes: errorBanner from './entityList.module.css';
+}
+
+.linkBtn {
+  composes: linkBtn from './entityList.module.css';
+}
+
+.deleteBtn {
+  composes: deleteBtn from './entityList.module.css';
+}
+
+.newBtn {
+  composes: newBtn from './entityList.module.css';
 }
 
 /* ── Usage cell ──────────────────────────────────────────────────────────────── */
@@ -84,54 +52,4 @@
 /* Lets the shared <UsageBar> grow to fill the cell beside the label. */
 .usageBar {
   flex: 1;
-}
-
-/* ── Row actions ─────────────────────────────────────────────────────────────── */
-
-.linkBtn {
-  color: var(--color-accent);
-  text-decoration: none;
-}
-
-.deleteBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-error);
-  background: transparent;
-  color: var(--color-error);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 80ms,
-    background 80ms;
-}
-
-tr:hover .deleteBtn {
-  opacity: 1;
-}
-
-.deleteBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.deleteBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* ── Header action ───────────────────────────────────────────────────────────── */
-
-.newBtn {
-  display: inline-block;
-  background: var(--color-accent);
-  color: var(--color-text-inverse);
-  border-radius: var(--radius-md);
-  padding: var(--space-1) var(--space-3);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  text-decoration: none;
-  white-space: nowrap;
 }

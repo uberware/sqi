@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 .progress {
-  min-width: 120px;
+  min-width: 7.5rem;
 }
 
 .progressFrac {
@@ -22,5 +22,5 @@
   height: 100%;
   border-radius: var(--radius-full);
   background: var(--color-accent);
-  transition: width 300ms;
+  transition: width var(--transition-slow);
 }

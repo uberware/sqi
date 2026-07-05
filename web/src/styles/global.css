@@ -142,8 +142,8 @@ input[type='checkbox'] {
   background-color: var(--color-surface);
   cursor: pointer;
   transition:
-    background-color 0.1s ease,
-    border-color 0.1s ease;
+    background-color var(--transition-base) ease,
+    border-color var(--transition-base) ease;
 }
 
 input[type='checkbox']::before {
@@ -151,7 +151,7 @@ input[type='checkbox']::before {
   width: 0.625rem;
   height: 0.625rem;
   transform: scale(0);
-  transition: transform 0.1s ease;
+  transition: transform var(--transition-base) ease;
   background-color: var(--color-text-inverse);
   clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
 }

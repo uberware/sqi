@@ -13,9 +13,9 @@
   background: var(--color-surface);
   color: var(--color-text-primary);
   font-size: var(--font-size-sm);
-  width: 220px;
+  width: 13.75rem;
   outline: none;
-  transition: border-color 120ms;
+  transition: border-color var(--transition-base);
 }
 
 .searchInput:focus {

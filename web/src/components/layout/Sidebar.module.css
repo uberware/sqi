@@ -51,8 +51,8 @@
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   transition:
-    background-color 0.1s ease,
-    color 0.1s ease;
+    background-color var(--transition-base) ease,
+    color var(--transition-base) ease;
 }
 
 .navLink:hover {

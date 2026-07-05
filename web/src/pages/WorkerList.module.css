@@ -9,7 +9,7 @@
 /* ── Clear button (bulk bar) ─────────────────────────────────────────────────── */
 
 .clearBtn {
-  padding: 4px var(--space-3);
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -27,8 +27,6 @@
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--font-size-sm);
 }
 
@@ -43,7 +41,7 @@
   color: var(--color-text-secondary);
   white-space: nowrap;
   user-select: none;
-  z-index: 1;
+  z-index: var(--z-sticky);
 }
 
 .table td {
@@ -55,7 +53,7 @@
 
 .table tbody tr {
   background: var(--color-surface);
-  transition: background 80ms;
+  transition: background var(--transition-fast);
 }
 
 .table tbody tr:hover {
@@ -84,7 +82,7 @@
   align-items: center;
   opacity: 0;
   color: var(--color-text-muted);
-  transition: opacity 100ms;
+  transition: opacity var(--transition-base);
 }
 
 /* ── Capability tags ─────────────────────────────────────────────────────────── */
@@ -130,7 +128,7 @@
   position: absolute;
   bottom: calc(100% + var(--space-1));
   left: 0;
-  z-index: 10;
+  z-index: var(--z-tooltip);
   flex-direction: column;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
@@ -138,8 +136,8 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
-  min-width: 140px;
-  max-width: 280px;
+  min-width: 8.75rem;
+  max-width: 17.5rem;
 }
 
 .tagTooltipItem {
@@ -170,17 +168,18 @@
   cursor: pointer;
   opacity: 0;
   transition:
-    opacity 80ms,
-    background 80ms,
-    border-color 80ms,
-    color 80ms;
+    opacity var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .toggleBtn + .toggleBtn {
   margin-left: var(--space-1);
 }
 
-.toggleBtn--disable {
+.toggleBtn--disable,
+.toggleBtn--remove {
   border-color: var(--color-error);
   color: var(--color-error);
 }
@@ -188,11 +187,6 @@
 .toggleBtn--enable {
   border-color: var(--color-success);
   color: var(--color-success);
-}
-
-.toggleBtn--remove {
-  border-color: var(--color-error);
-  color: var(--color-error);
 }
 
 tr:hover .toggleBtn,
@@ -204,16 +198,13 @@ tr.rowSelected .toggleBtn {
   background: var(--color-surface-raised);
 }
 
-.toggleBtn--disable:hover:not(:disabled) {
+.toggleBtn--disable:hover:not(:disabled),
+.toggleBtn--remove:hover:not(:disabled) {
   background: var(--color-error-muted);
 }
 
 .toggleBtn--enable:hover:not(:disabled) {
   background: var(--color-success-muted);
-}
-
-.toggleBtn--remove:hover:not(:disabled) {
-  background: var(--color-error-muted);
 }
 
 .toggleBtn:disabled {
@@ -224,8 +215,12 @@ tr.rowSelected .toggleBtn {
 /* ── Selection + bulk actions ────────────────────────────────────────────────── */
 
 .checkCell {
-  width: 36px;
-  padding-right: 0 !important;
+  width: 2.5rem;
+}
+
+/* Descendant selector outranks the `.table td` padding without !important. */
+.table .checkCell {
+  padding-right: 0;
 }
 
 .table tbody tr.rowSelected {
@@ -260,14 +255,10 @@ tr.rowSelected .toggleBtn {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: background 120ms;
+  transition: background var(--transition-base);
 }
 
-.bulkBtn--disable {
-  border-color: var(--color-error);
-  color: var(--color-error);
-}
-
+.bulkBtn--disable,
 .bulkBtn--remove {
   border-color: var(--color-error);
   color: var(--color-error);
@@ -327,9 +318,9 @@ tr.rowSelected .toggleBtn {
   cursor: pointer;
   white-space: nowrap;
   transition:
-    background 120ms,
-    border-color 120ms,
-    color 120ms;
+    background var(--transition-base),
+    border-color var(--transition-base),
+    color var(--transition-base);
 }
 
 .refreshBtn:hover {

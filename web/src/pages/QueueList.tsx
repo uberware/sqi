@@ -8,7 +8,7 @@ import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useDeleteQueue } from '@/api/mutations'
-import styles from './QueueList.module.css'
+import styles from './entityList.module.css'
 
 export default function QueueList() {
   const { data: farmsWithQueues, isLoading, isError, error } = useFarmsWithQueues()

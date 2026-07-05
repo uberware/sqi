@@ -31,7 +31,7 @@
   align-items: center;
   color: var(--color-text-muted);
   opacity: 0;
-  transition: opacity 100ms;
+  transition: opacity var(--transition-base);
 }
 
 .root:hover .icon,
@@ -58,8 +58,8 @@
   border-radius: var(--radius-sm);
   white-space: nowrap;
   pointer-events: none;
-  animation: fadeIn 100ms ease-out;
-  z-index: 100;
+  animation: fadeIn var(--transition-base) ease-out;
+  z-index: var(--z-popover);
 }
 
 .tooltip::after {

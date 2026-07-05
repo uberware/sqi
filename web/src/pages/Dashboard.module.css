@@ -44,7 +44,7 @@
   gap: var(--space-6);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 47.5rem) {
   .grid {
     grid-template-columns: 1fr;
   }
@@ -112,7 +112,7 @@
 }
 
 .capacityLine {
-  margin: 0 0 var(--space-4) 0;
+  margin: 0 0 var(--space-4);
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
 }
@@ -123,23 +123,29 @@
   flex-wrap: wrap;
 }
 
-.statLink {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+/* Shared "stat card" treatment for the worker and job stat links. */
+.statLink,
+.jobStatItem {
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-subtle);
   background: var(--color-surface-raised);
   text-decoration: none;
   transition:
-    background 120ms,
-    border-color 120ms;
+    background var(--transition-base),
+    border-color var(--transition-base);
 }
 
-.statLink:hover {
+.statLink:hover,
+.jobStatItem:hover {
   background: var(--color-accent-muted);
   border-color: var(--color-accent);
+}
+
+.statLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
 }
 
 .statDot {
@@ -186,18 +192,6 @@
   align-items: flex-start;
   gap: var(--space-1);
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-surface-raised);
-  text-decoration: none;
-  transition:
-    background 120ms,
-    border-color 120ms;
-}
-
-.jobStatItem:hover {
-  background: var(--color-accent-muted);
-  border-color: var(--color-accent);
 }
 
 .jobStatCount {
@@ -231,8 +225,6 @@
 }
 
 .failureTable {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--font-size-sm);
 }
 
@@ -259,7 +251,7 @@
 }
 
 .failureTable tbody tr {
-  transition: background 80ms;
+  transition: background var(--transition-fast);
 }
 
 .failureTable tbody tr:hover {

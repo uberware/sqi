@@ -8,7 +8,7 @@ import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useListFarms } from '@/api/queries'
 import { useDeleteFarm } from '@/api/mutations'
-import styles from './FarmList.module.css'
+import styles from './entityList.module.css'
 
 export default function FarmList() {
   const { data: farms, isLoading, isError, error } = useListFarms()

@@ -1,20 +1,43 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/* Shared entity-form scaffold with a wider page; the template editor and its
+   error block are product-specific. */
+
 .page {
-  padding: var(--space-6);
-  max-width: 48rem;
+  composes: page from './entityForm.module.css';
+  max-width: var(--form-width-wide);
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  composes: form from './entityForm.module.css';
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: field from './entityForm.module.css';
+}
+
+.label {
+  composes: label from './entityForm.module.css';
+}
+
+.input {
+  composes: input from './entityForm.module.css';
+}
+
+.footer {
+  composes: footer from './entityForm.module.css';
+}
+
+.submitBtn {
+  composes: submitBtn from './entityForm.module.css';
+}
+
+.cancelBtn {
+  composes: cancelBtn from './entityForm.module.css';
+}
+
+.hint {
+  composes: hint from './entityForm.module.css';
 }
 
 .row {
@@ -23,20 +46,9 @@
   gap: var(--space-4);
 }
 
-.label {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-}
-
-.input {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-  font: inherit;
-}
-
+/* Unlike the narrow forms, the name help never floats beside the input here —
+   the wide page leaves no room — so these stay local instead of composing the
+   shared classes (whose help repositions at wide viewports). */
 .nameControl {
   position: relative;
   display: flex;
@@ -50,10 +62,7 @@
   gap: var(--space-2);
 }
 
-.hint {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
+/* ── Template editor ─────────────────────────────────────────────────────────── */
 
 .editorWrap {
   min-height: 24rem;
@@ -83,32 +92,4 @@
   word-break: break-word;
   font-size: var(--font-size-sm);
   color: var(--color-text-primary);
-}
-
-.footer {
-  display: flex;
-  gap: var(--space-3);
-}
-
-.submitBtn {
-  background: var(--color-accent);
-  color: var(--color-text-inverse);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-}
-
-.submitBtn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.cancelBtn {
-  background: none;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  color: var(--color-text-primary);
-  text-decoration: none;
 }
