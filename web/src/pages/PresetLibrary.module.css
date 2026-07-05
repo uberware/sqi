@@ -6,6 +6,11 @@
   height: 100%;
 }
 
+.toolbar {
+  display: flex;
+  padding: var(--space-4) var(--space-6) 0;
+}
+
 .groups {
   flex: 1;
   overflow-x: auto;

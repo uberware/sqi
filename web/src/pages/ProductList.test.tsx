@@ -37,11 +37,11 @@ function makeProduct(over: Partial<Product> = {}): Product {
   }
 }
 
-function renderList() {
+function renderList(route = '/products') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/products']}>
+      <MemoryRouter initialEntries={[route]}>
         <ToastProvider>
           <Routes>
             <Route path="/products" element={<ProductList />} />
@@ -94,5 +94,43 @@ describe('ProductList', () => {
       )
       expect(del?.[0]).toBe('/api/v1/products/my-render')
     })
+  })
+
+  it('filters rows as you type and shows the filtered count in the subtitle', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([
+        makeProduct({ name: 'blender', title: 'Blender' }),
+        makeProduct({ name: 'ffmpeg', title: 'FFmpeg' }),
+      ]),
+    )
+    renderList()
+    await screen.findByRole('link', { name: 'blender' })
+    expect(screen.getByText('2 products')).toBeInTheDocument()
+
+    await userEvent.type(screen.getByRole('searchbox'), 'blender')
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: 'ffmpeg' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('link', { name: 'blender' })).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 products')).toBeInTheDocument()
+  })
+
+  it('matches on category from an initial ?search=', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([
+        makeProduct({ name: 'a', category: 'Rendering' }),
+        makeProduct({ name: 'b', category: 'Simulation' }),
+      ]),
+    )
+    renderList('/products?search=rendering')
+    expect(await screen.findByRole('link', { name: 'a' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'b' })).not.toBeInTheDocument()
+  })
+
+  it('shows a no-match row distinct from the onboarding empty state', async () => {
+    fetchMock.mockResolvedValueOnce(ok([makeProduct()]))
+    renderList('/products?search=zzz')
+    expect(await screen.findByText(/No products match/)).toBeInTheDocument()
+    expect(screen.queryByText(/No products yet/)).not.toBeInTheDocument()
   })
 })
