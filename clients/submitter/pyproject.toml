@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sqi-submitter"
+description = "DCC submitter framework for sqi (Maya, Houdini, Nuke, Blender) on top of sqi-sdk"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Robin Scher", email = "robin@uberware.net" }]
+maintainers = [{ name = "Uberware Inc.", email = "robin@uberware.net" }]
+keywords = ["render-farm", "openjd", "vfx", "sqi", "maya", "houdini", "nuke", "blender"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = ["sqi-sdk>=0.1"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+qt = ["PySide6"]
+dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx", "PyYAML"]
+
+[project.scripts]
+sqi-submit = "sqi_submitter.qt.dialog:main"
+
+[project.urls]
+Homepage = "https://github.com/uberware/sqi"
+Repository = "https://github.com/uberware/sqi"
+Documentation = "https://github.com/uberware/sqi/blob/main/docs/dcc-submitters.md"
+Issues = "https://github.com/uberware/sqi/issues"
+
+[tool.hatch.version]
+path = "src/sqi_submitter/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sqi_submitter"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/sqi_submitter/py.typed" = "sqi_submitter/py.typed"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sqi_submitter", "sqi_client"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["src"]
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["PySide2.*", "maya.*", "hou", "nuke", "bpy", "bpy.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration' --cov=sqi_submitter --cov-report=term-missing --cov-fail-under=60"
+markers = [
+  "integration: tests that require a running sqi-server (deselected by default)",
+]
+
+[tool.coverage.run]
+# Qt widget/dialog code and pure-registration DCC glue are exercised only where
+# a Qt binding / real DCC exists (separate CI job / manual checklist).
+omit = ["*/qt/widgets.py", "*/qt/dialog.py", "*/hosts/blender/addon.py", "*/hosts/*/startup/*"]
