@@ -50,11 +50,11 @@ function makePreset(over: Partial<PresetListItem> = {}): PresetListItem {
   }
 }
 
-function renderPage() {
+function renderPage(route = '/presets') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/presets']}>
+      <MemoryRouter initialEntries={[route]}>
         <ToastProvider>
           <Routes>
             <Route path="/presets" element={<PresetLibrary />} />
@@ -125,5 +125,37 @@ describe('PresetLibrary', () => {
       )
       expect(refreshCall).toBeDefined()
     })
+  })
+
+  it('filters presets as you type and hides emptied categories', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([
+        makePreset({ name: 'nuke-comp', title: 'Nuke Composite', category: 'Compositing' }),
+        makePreset({ name: 'maya-render', title: 'Maya Render', category: 'Rendering' }),
+      ]),
+    )
+    renderPage()
+    await screen.findByRole('link', { name: 'Nuke Composite' })
+
+    await userEvent.type(screen.getByRole('searchbox'), 'maya')
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: 'Nuke Composite' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('link', { name: 'Maya Render' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Compositing' })).not.toBeInTheDocument()
+  })
+
+  it('shows a no-match message when the filter empties the library', async () => {
+    fetchMock.mockResolvedValueOnce(ok([makePreset()]))
+    renderPage('/presets?search=zzz')
+    expect(await screen.findByText(/No presets match/)).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('does not render the search box in the not-configured state', async () => {
+    fetchMock.mockResolvedValueOnce(err503())
+    renderPage()
+    await screen.findByText(/no preset library/i)
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
   })
 })
