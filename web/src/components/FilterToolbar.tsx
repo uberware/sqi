@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useState, useEffect, useRef } from 'react'
-import SearchInput from './SearchInput'
-import { useDebounce } from '@/hooks/useDebounce'
+import DebouncedSearchInput from './DebouncedSearchInput'
 import styles from './FilterToolbar.module.css'
 
 export interface StatusFilterOption {
@@ -30,23 +28,6 @@ export default function FilterToolbar({
   searchPlaceholder,
   searchLabel,
 }: FilterToolbarProps) {
-  const [input, setInput] = useState(search)
-  const debounced = useDebounce(input, 300)
-
-  // Push the settled debounced value up once it changes. Skip the initial mount
-  // run so an existing URL search value isn't re-emitted (which would clear the
-  // page param) on first render.
-  const didMount = useRef(false)
-  useEffect(() => {
-    if (!didMount.current) {
-      didMount.current = true
-      return
-    }
-    onSearchChange(debounced)
-    // onSearchChange is a stable callback from the parent's filter hook.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced])
-
   return (
     <div className={styles.toolbar}>
       <div className={styles.filterBar} role="toolbar" aria-label="Filter by status">
@@ -73,9 +54,9 @@ export default function FilterToolbar({
           </button>
         ))}
       </div>
-      <SearchInput
-        value={input}
-        onChange={setInput}
+      <DebouncedSearchInput
+        value={search}
+        onChange={onSearchChange}
         placeholder={searchPlaceholder}
         aria-label={searchLabel}
       />
