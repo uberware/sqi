@@ -1,20 +1,18 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/* Shared entity-form scaffold; the fieldset reset and roots table are
+   storage-location-specific. */
+
 .page {
-  padding: var(--space-6);
-  max-width: 36rem;
+  composes: page from './entityForm.module.css';
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  composes: form from './entityForm.module.css';
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: field from './entityForm.module.css';
 }
 
 fieldset.field {
@@ -25,46 +23,38 @@ fieldset.field {
 }
 
 .label {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
+  composes: label from './entityForm.module.css';
 }
 
 .input {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-  font: inherit;
+  composes: input from './entityForm.module.css';
 }
 
 .footer {
-  display: flex;
-  gap: var(--space-3);
+  composes: footer from './entityForm.module.css';
 }
 
 .submitBtn {
-  background: var(--color-accent);
-  color: var(--color-text-inverse);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-}
-
-.submitBtn:disabled {
-  opacity: 0.5;
-  cursor: default;
+  composes: submitBtn from './entityForm.module.css';
 }
 
 .cancelBtn {
-  background: none;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  color: var(--color-text-primary);
-  text-decoration: none;
+  composes: cancelBtn from './entityForm.module.css';
 }
+
+.hint {
+  composes: hint from './entityForm.module.css';
+}
+
+.nameControl {
+  composes: nameControl from './entityForm.module.css';
+}
+
+.nameHelp {
+  composes: nameHelp from './entityForm.module.css';
+}
+
+/* ── Roots table ─────────────────────────────────────────────────────────────── */
 
 .rootsTable {
   display: flex;
@@ -77,37 +67,4 @@ fieldset.field {
   grid-template-columns: 1fr 2fr auto;
   gap: var(--space-2);
   align-items: center;
-}
-
-.hint {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-/* Wraps the name input so its help text can be positioned relative to it. */
-.nameControl {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-/*
- * Name help/error. By default it stacks beneath the input (compact layout).
- * On viewports wide enough to clear the form's max-width, it moves into the
- * empty space to the right of the input instead.
- */
-.nameHelp {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-@media (min-width: 75rem) {
-  .nameHelp {
-    position: absolute;
-    top: 0;
-    left: calc(100% + var(--space-4));
-    width: 16rem;
-  }
 }

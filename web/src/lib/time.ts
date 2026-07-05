@@ -45,3 +45,17 @@ export function formatUptime(registeredAt: string, now: number): string {
   const d = Math.floor(h / 24)
   return `${d}d ${h % 24}h`
 }
+
+/**
+ * Short "updated N ago" age for a millisecond timestamp: "just now" under
+ * five seconds, then seconds/minutes, falling back to a clock time after an
+ * hour. Returns "—" for a zero timestamp (no data yet).
+ */
+export function formatAge(ts: number, now: number): string {
+  if (ts === 0) return '—'
+  const diff = now - ts
+  if (diff < 5000) return 'just now'
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  return new Date(ts).toLocaleTimeString()
+}

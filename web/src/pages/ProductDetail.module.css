@@ -84,9 +84,15 @@
   text-transform: capitalize;
 }
 
-.badge[data-source='builtin'] {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
+/* builtin keeps the default grey; custom and installed get accent colors */
+.badge[data-source='custom'] {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.badge[data-source='installed'] {
+  color: var(--color-success);
+  border-color: var(--color-success);
 }
 
 .sectionTitle {

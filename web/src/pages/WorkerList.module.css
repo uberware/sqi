@@ -6,18 +6,6 @@
   height: 100%;
 }
 
-/* ── Clear button (bulk bar) ─────────────────────────────────────────────────── */
-
-.clearBtn {
-  padding: 4px var(--space-3);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-}
-
 /* ── Table wrapper ───────────────────────────────────────────────────────────── */
 
 .tableWrap {
@@ -27,8 +15,6 @@
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--font-size-sm);
 }
 
@@ -43,7 +29,7 @@
   color: var(--color-text-secondary);
   white-space: nowrap;
   user-select: none;
-  z-index: 1;
+  z-index: var(--z-sticky);
 }
 
 .table td {
@@ -55,36 +41,11 @@
 
 .table tbody tr {
   background: var(--color-surface);
-  transition: background 80ms;
+  transition: background var(--transition-fast);
 }
 
 .table tbody tr:hover {
   background: var(--color-surface-raised);
-}
-
-/* ── ID cell ─────────────────────────────────────────────────────────────────── */
-
-.idCell {
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.idCell:hover .copyHint {
-  opacity: 1;
-}
-
-.copyHint {
-  display: inline-flex;
-  align-items: center;
-  opacity: 0;
-  color: var(--color-text-muted);
-  transition: opacity 100ms;
 }
 
 /* ── Capability tags ─────────────────────────────────────────────────────────── */
@@ -130,7 +91,7 @@
   position: absolute;
   bottom: calc(100% + var(--space-1));
   left: 0;
-  z-index: 10;
+  z-index: var(--z-tooltip);
   flex-direction: column;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
@@ -138,8 +99,8 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
-  min-width: 140px;
-  max-width: 280px;
+  min-width: 8.75rem;
+  max-width: 17.5rem;
 }
 
 .tagTooltipItem {
@@ -170,17 +131,18 @@
   cursor: pointer;
   opacity: 0;
   transition:
-    opacity 80ms,
-    background 80ms,
-    border-color 80ms,
-    color 80ms;
+    opacity var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .toggleBtn + .toggleBtn {
   margin-left: var(--space-1);
 }
 
-.toggleBtn--disable {
+.toggleBtn--disable,
+.toggleBtn--remove {
   border-color: var(--color-error);
   color: var(--color-error);
 }
@@ -188,11 +150,6 @@
 .toggleBtn--enable {
   border-color: var(--color-success);
   color: var(--color-success);
-}
-
-.toggleBtn--remove {
-  border-color: var(--color-error);
-  color: var(--color-error);
 }
 
 tr:hover .toggleBtn,
@@ -204,16 +161,13 @@ tr.rowSelected .toggleBtn {
   background: var(--color-surface-raised);
 }
 
-.toggleBtn--disable:hover:not(:disabled) {
+.toggleBtn--disable:hover:not(:disabled),
+.toggleBtn--remove:hover:not(:disabled) {
   background: var(--color-error-muted);
 }
 
 .toggleBtn--enable:hover:not(:disabled) {
   background: var(--color-success-muted);
-}
-
-.toggleBtn--remove:hover:not(:disabled) {
-  background: var(--color-error-muted);
 }
 
 .toggleBtn:disabled {
@@ -224,28 +178,16 @@ tr.rowSelected .toggleBtn {
 /* ── Selection + bulk actions ────────────────────────────────────────────────── */
 
 .checkCell {
-  width: 36px;
-  padding-right: 0 !important;
+  width: 2.5rem;
+}
+
+/* Descendant selector outranks the `.table td` padding without !important. */
+.table .checkCell {
+  padding-right: 0;
 }
 
 .table tbody tr.rowSelected {
   background: var(--color-accent-muted);
-}
-
-.bulkBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-8);
-  background: var(--color-accent-muted);
-  border-top: 1px solid var(--color-accent);
-  font-size: var(--font-size-sm);
-  color: var(--color-accent);
-  flex-shrink: 0;
-}
-
-.bulkBarCount {
-  font-weight: var(--font-weight-medium);
 }
 
 .bulkBtn {
@@ -260,14 +202,10 @@ tr.rowSelected .toggleBtn {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: background 120ms;
+  transition: background var(--transition-base);
 }
 
-.bulkBtn--disable {
-  border-color: var(--color-error);
-  color: var(--color-error);
-}
-
+.bulkBtn--disable,
 .bulkBtn--remove {
   border-color: var(--color-error);
   color: var(--color-error);
@@ -288,52 +226,4 @@ tr.rowSelected .toggleBtn {
   text-align: center;
   padding: var(--space-16) var(--space-8);
   color: var(--color-text-muted);
-}
-
-.errorBanner {
-  padding: var(--space-4) var(--space-8);
-  background: var(--color-error-muted);
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  border-bottom: 1px solid var(--color-error);
-}
-
-/* ── Header actions (refresh + last updated) ─────────────────────────────────── */
-
-.headerActions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-shrink: 0;
-}
-
-.lastUpdated {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.refreshBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background 120ms,
-    border-color 120ms,
-    color 120ms;
-}
-
-.refreshBtn:hover {
-  background: var(--color-surface-raised);
-  border-color: var(--color-text-muted);
-  color: var(--color-text-primary);
 }

@@ -116,6 +116,17 @@
     var(--line-height-normal) * var(--font-size-base) + 2 * var(--space-2) + 2px
   );
 
+  /* ---- Motion ---- */
+  --transition-fast: 80ms;
+  --transition-base: 120ms;
+  --transition-slow: 200ms;
+
+  /* ---- Z-index scale ---- */
+  --z-sticky: 1;
+  --z-tooltip: 10;
+  --z-popover: 100;
+  --z-overlay: 1000;
+
   /* ---- Border radii ---- */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -128,10 +139,12 @@
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06);
   --shadow-xl: 0 8px 16px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.06);
+  --focus-ring: 0 0 0 2px var(--color-accent-muted);
 
   /* ---- Layout ---- */
-  --sidebar-width: 220px;
-  --header-height: 48px;
+  --sidebar-width: 13.75rem;
+  --form-width: 36rem;
+  --form-width-wide: 48rem;
 }
 
 :root[data-theme='dark'] {

@@ -6,7 +6,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import DiagnosticsPanel from '@/components/DiagnosticsPanel'
 import PageHeader from '@/components/PageHeader'
 import StatusBadge from '@/components/StatusBadge'
-import { Check, Copy, Refresh } from '@/components/icons'
+import { Check, Copy } from '@/components/icons'
+import ErrorBanner from '@/components/ErrorBanner'
+import RefreshControls from '@/components/RefreshControls'
 import { useGetWorker, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
@@ -14,6 +16,7 @@ import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
 import type { WorkerDetail as WorkerDetailType } from '@/api/types'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan, formatUptime } from '@/lib/time'
+import { truncateId } from '@/lib/id'
 import styles from './WorkerDetail.module.css'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -27,10 +30,6 @@ function formatDateTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function truncateId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id
 }
 
 // ── IdDisplay ─────────────────────────────────────────────────────────────────
@@ -377,10 +376,10 @@ export default function WorkerDetail() {
     return (
       <div className={styles.page}>
         <PageHeader title="Worker Details" />
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load worker:{' '}
           {error instanceof Error ? error.message : 'Worker not found or unavailable.'}
-        </div>
+        </ErrorBanner>
       </div>
     )
   }
@@ -390,7 +389,7 @@ export default function WorkerDetail() {
       <PageHeader
         title="Worker Details"
         action={
-          <div className={styles.headerActions}>
+          <RefreshControls onRefresh={handleRefresh} label="Refresh worker">
             <StatusBadge status={worker.status} />
             <ToggleButton
               worker={worker}
@@ -398,16 +397,7 @@ export default function WorkerDetail() {
               onDisable={() => void handleDisable()}
               onEnable={() => void handleEnable()}
             />
-            <button
-              className={styles.refreshBtn}
-              onClick={handleRefresh}
-              type="button"
-              aria-label="Refresh worker"
-            >
-              <Refresh />
-              Refresh
-            </button>
-          </div>
+          </RefreshControls>
         }
       />
 
@@ -416,12 +406,12 @@ export default function WorkerDetail() {
       </div>
 
       {(disableWorker.isError || enableWorker.isError) && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Action failed:{' '}
           {(disableWorker.error ?? enableWorker.error) instanceof Error
             ? ((disableWorker.error ?? enableWorker.error) as Error).message
             : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       {/* Metadata header card */}

@@ -1,5 +1,11 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/*
+ * Shared stylesheet for the admin entity list pages (farms, queues, storage
+ * locations, compute locations, usage pools, products). Page-specific rules
+ * live in each page's own module, which composes the classes it needs.
+ */
+
 .page {
   display: flex;
   flex-direction: column;
@@ -15,8 +21,6 @@
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--font-size-sm);
 }
 
@@ -31,7 +35,7 @@
   color: var(--color-text-secondary);
   white-space: nowrap;
   user-select: none;
-  z-index: 1;
+  z-index: var(--z-sticky);
 }
 
 .table td {
@@ -43,7 +47,7 @@
 
 .table tbody tr {
   background: var(--color-surface);
-  transition: background 80ms;
+  transition: background var(--transition-fast);
 }
 
 .table tbody tr:hover {
@@ -56,14 +60,6 @@
   text-align: center;
   padding: var(--space-16) var(--space-8);
   color: var(--color-text-muted);
-}
-
-.errorBanner {
-  padding: var(--space-4) var(--space-8);
-  background: var(--color-error-muted);
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  border-bottom: 1px solid var(--color-error);
 }
 
 /* ── Row actions ─────────────────────────────────────────────────────────────── */
@@ -85,8 +81,8 @@
   cursor: pointer;
   opacity: 0;
   transition:
-    opacity 80ms,
-    background 80ms;
+    opacity var(--transition-fast),
+    background var(--transition-fast);
 }
 
 tr:hover .deleteBtn {

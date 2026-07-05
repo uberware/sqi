@@ -7,6 +7,7 @@ import UsageBar from '@/components/UsageBar'
 import IconButton from '@/components/IconButton'
 import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useListUsagePools } from '@/api/queries'
 import { useDeleteUsagePool } from '@/api/mutations'
 import styles from './UsagePoolList.module.css'
@@ -53,9 +54,9 @@ export default function UsagePoolList() {
       />
 
       {isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load usage pools: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       <div className={styles.tableWrap}>

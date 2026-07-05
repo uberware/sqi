@@ -6,10 +6,10 @@
   height: 100%;
 }
 
-/* ── Clear button (bulk bar + dialog cancel) ─────────────────────────────────── */
+/* ── Clear button (dialog cancel) ────────────────────────────────────────────── */
 
 .clearBtn {
-  padding: 4px var(--space-3);
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -20,66 +20,44 @@
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
 
-.bulkBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-8);
-  background: var(--color-accent-muted);
-  border-top: 1px solid var(--color-accent);
-  font-size: var(--font-size-sm);
-  color: var(--color-accent);
-  flex-shrink: 0;
-}
-
-.bulkBarCount {
-  font-weight: var(--font-weight-medium);
-}
-
-.bulkCancelBtn {
+.bulkCancelBtn,
+.bulkRetryBtn,
+.bulkDeleteBtn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-md);
-  border: 1px solid var(--color-error);
   background: transparent;
-  color: var(--color-error);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: background 120ms;
+  transition: background var(--transition-base);
 }
 
-.bulkCancelBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.bulkCancelBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.bulkCancelBtn,
+.bulkDeleteBtn {
+  border: 1px solid var(--color-error);
+  color: var(--color-error);
 }
 
 .bulkRetryBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
   border: 1px solid var(--color-warning);
-  background: transparent;
   color: var(--color-warning);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  transition: background 120ms;
+}
+
+.bulkCancelBtn:hover:not(:disabled),
+.bulkDeleteBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
 }
 
 .bulkRetryBtn:hover:not(:disabled) {
   background: var(--color-warning-muted);
 }
 
-.bulkRetryBtn:disabled {
+.bulkCancelBtn:disabled,
+.bulkRetryBtn:disabled,
+.bulkDeleteBtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -93,8 +71,6 @@
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--font-size-sm);
 }
 
@@ -109,7 +85,7 @@
   color: var(--color-text-secondary);
   white-space: nowrap;
   user-select: none;
-  z-index: 1;
+  z-index: var(--z-sticky);
 }
 
 .table td {
@@ -121,7 +97,7 @@
 
 .table tbody tr {
   background: var(--color-surface);
-  transition: background 80ms;
+  transition: background var(--transition-fast);
 }
 
 .table tbody tr:hover {
@@ -151,91 +127,60 @@
   opacity: 0.6;
 }
 
-/* ── ID cell ─────────────────────────────────────────────────────────────────── */
+/* ── Row action buttons (visible on hover) ───────────────────────────────────── */
 
-.idCell {
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.idCell:hover .copyHint {
-  opacity: 1;
-}
-
-.copyHint {
-  display: inline-flex;
-  align-items: center;
-  opacity: 0;
-  color: var(--color-text-muted);
-  transition: opacity 100ms;
-}
-
-/* ── Cancel button (per-row, visible on hover) ───────────────────────────────── */
-
-.cancelBtn {
+.cancelBtn,
+.retryBtn,
+.deleteBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: var(--space-1);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--color-error);
   background: transparent;
-  color: var(--color-error);
   cursor: pointer;
   opacity: 0;
   transition:
-    opacity 80ms,
-    background 80ms;
+    opacity var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.cancelBtn,
+.deleteBtn {
+  border: 1px solid var(--color-error);
+  color: var(--color-error);
+}
+
+.retryBtn {
+  border: 1px solid var(--color-warning);
+  color: var(--color-warning);
+}
+
+.deleteBtn {
+  margin-left: var(--space-1);
 }
 
 tr:hover .cancelBtn,
-tr.rowSelected .cancelBtn {
-  opacity: 1;
-}
-
-.cancelBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.cancelBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* ── Retry button (per-row, visible on hover) ────────────────────────────────── */
-
-.retryBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-warning);
-  background: transparent;
-  color: var(--color-warning);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 80ms,
-    background 80ms;
-}
-
 tr:hover .retryBtn,
-tr.rowSelected .retryBtn {
+tr:hover .deleteBtn,
+tr.rowSelected .cancelBtn,
+tr.rowSelected .retryBtn,
+tr.rowSelected .deleteBtn {
   opacity: 1;
+}
+
+.cancelBtn:hover:not(:disabled),
+.deleteBtn:hover:not(:disabled) {
+  background: var(--color-error-muted);
 }
 
 .retryBtn:hover:not(:disabled) {
   background: var(--color-warning-muted);
 }
 
-.retryBtn:disabled {
+.cancelBtn:disabled,
+.retryBtn:disabled,
+.deleteBtn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -248,92 +193,15 @@ tr.rowSelected .retryBtn {
   color: var(--color-text-muted);
 }
 
-.errorBanner {
-  padding: var(--space-4) var(--space-8);
-  background: var(--color-error-muted);
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  border-bottom: 1px solid var(--color-error);
-}
-
 /* ── Checkbox ────────────────────────────────────────────────────────────────── */
 
 .checkCell {
-  width: 36px;
-  padding-right: 0 !important;
+  width: 2.5rem;
 }
 
-/* ── Header actions (refresh + last updated) ─────────────────────────────────── */
-
-.headerActions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-shrink: 0;
-}
-
-.lastUpdated {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.refreshBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background 120ms,
-    border-color 120ms,
-    color 120ms;
-}
-
-.refreshBtn:hover {
-  background: var(--color-surface-raised);
-  border-color: var(--color-text-muted);
-  color: var(--color-text-primary);
-}
-
-/* ── Delete button (per-row, visible on hover) ───────────────────────────────── */
-
-.deleteBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-error);
-  background: transparent;
-  color: var(--color-error);
-  cursor: pointer;
-  margin-left: var(--space-1);
-  opacity: 0;
-  transition:
-    opacity 80ms,
-    background 80ms;
-}
-
-tr:hover .deleteBtn,
-tr.rowSelected .deleteBtn {
-  opacity: 1;
-}
-
-.deleteBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.deleteBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+/* Descendant selector outranks the `.table td` padding without !important. */
+.table .checkCell {
+  padding-right: 0;
 }
 
 /* ── Actions cell ────────────────────────────────────────────────────────────── */
@@ -350,32 +218,6 @@ tr.rowSelected .deleteBtn {
   white-space: nowrap;
 }
 
-/* ── Bulk delete button ──────────────────────────────────────────────────────── */
-
-.bulkDeleteBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-error);
-  background: transparent;
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  transition: background 120ms;
-}
-
-.bulkDeleteBtn:hover:not(:disabled) {
-  background: var(--color-error-muted);
-}
-
-.bulkDeleteBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* ── Confirmation dialog ─────────────────────────────────────────────────────── */
 
 .dialogBackdrop {
@@ -385,7 +227,7 @@ tr.rowSelected .deleteBtn {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000; /* sits above all page content; no z-index token defined in tokens.css */
+  z-index: var(--z-overlay);
 }
 
 .dialog {

@@ -9,6 +9,7 @@ import { useToast } from '@/components/Toast'
 import { useProducts } from '@/api/queries'
 import { useDeleteProduct } from '@/api/mutations'
 import DebouncedSearchInput from '@/components/DebouncedSearchInput'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
 import styles from './ProductList.module.css'
@@ -64,9 +65,9 @@ export default function ProductList() {
       />
 
       {isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load products: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       {!isLoading && all.length > 0 && (

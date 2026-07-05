@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.idCell {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.idCell:hover .copyHint {
+  opacity: 1;
+}
+
+.copyHint {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0;
+  color: var(--color-text-muted);
+  transition: opacity var(--transition-base);
+}

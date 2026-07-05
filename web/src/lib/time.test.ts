@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect } from 'vitest'
-import { formatDuration, formatTimespan, formatUptime } from './time'
+import { formatAge, formatDuration, formatTimespan, formatUptime } from './time'
 
 describe('formatDuration', () => {
   it('returns — for negative durations', () => {
@@ -55,5 +55,26 @@ describe('formatUptime', () => {
   })
   it('formats days and hours', () => {
     expect(formatUptime(reg, base + 26 * 3_600_000)).toBe('1d 2h')
+  })
+})
+
+describe('formatAge', () => {
+  const now = Date.parse('2026-06-19T12:00:00.000Z')
+
+  it('returns — for a zero timestamp', () => {
+    expect(formatAge(0, now)).toBe('—')
+  })
+  it('returns "just now" under five seconds', () => {
+    expect(formatAge(now - 4_000, now)).toBe('just now')
+  })
+  it('formats seconds', () => {
+    expect(formatAge(now - 30_000, now)).toBe('30s ago')
+  })
+  it('formats minutes', () => {
+    expect(formatAge(now - 5 * 60_000, now)).toBe('5m ago')
+  })
+  it('falls back to a clock time after an hour', () => {
+    const ts = now - 2 * 3_600_000
+    expect(formatAge(ts, now)).toBe(new Date(ts).toLocaleTimeString())
   })
 })

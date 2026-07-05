@@ -30,7 +30,7 @@
 .field select,
 .field textarea {
   width: 100%;
-  padding: 6px var(--space-3);
+  padding: 0.375rem var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
@@ -38,7 +38,7 @@
   font-size: var(--font-size-sm);
   font-family: inherit;
   outline: none;
-  transition: border-color 120ms;
+  transition: border-color var(--transition-base);
 }
 
 .field textarea {
@@ -50,7 +50,7 @@
 .field select:focus,
 .field textarea:focus {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px var(--color-accent-muted);
+  box-shadow: var(--focus-ring);
 }
 
 .field input:not([type='checkbox']):disabled,

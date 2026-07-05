@@ -38,7 +38,7 @@
 .row input,
 .row select {
   width: 100%;
-  padding: 6px var(--space-3);
+  padding: 0.375rem var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
@@ -46,17 +46,17 @@
   font-size: var(--font-size-sm);
   font-family: inherit;
   outline: none;
-  transition: border-color 120ms;
+  transition: border-color var(--transition-base);
 }
 
 .row input:focus,
 .row select:focus {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px var(--color-accent-muted);
+  box-shadow: var(--focus-ring);
 }
 
 .submitBtn {
-  padding: 8px var(--space-6);
+  padding: var(--space-2) var(--space-6);
   border: none;
   border-radius: var(--radius-sm);
   background: var(--color-accent);
@@ -65,7 +65,7 @@
   font-weight: var(--font-weight-semibold);
   font-family: inherit;
   cursor: pointer;
-  transition: background 120ms;
+  transition: background var(--transition-base);
 }
 
 .submitBtn:hover:not(:disabled) {

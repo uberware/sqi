@@ -45,7 +45,7 @@
   font-weight: var(--font-weight-medium);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: filter 0.1s ease;
+  transition: filter var(--transition-base) ease;
 }
 
 .retryButton:hover {

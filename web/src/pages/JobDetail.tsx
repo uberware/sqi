@@ -8,12 +8,17 @@ import SearchInput from '@/components/SearchInput'
 import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import { Check, Copy, Document, Refresh, Rotate, X } from '@/components/icons'
+import { Document, Rotate, X } from '@/components/icons'
+import ErrorBanner from '@/components/ErrorBanner'
+import BulkBar from '@/components/BulkBar'
+import CopyableId from '@/components/CopyableId'
+import RefreshControls from '@/components/RefreshControls'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
 import { useRetryTask, useCancelTask } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
+import { truncateId } from '@/lib/id'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
   JobDetail as JobDetailType,
@@ -35,10 +40,6 @@ const CANCELABLE: ReadonlySet<TaskStatus> = new Set(['pending', 'ready', 'assign
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function truncateId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id
-}
-
 function formatDateTime(iso: string | undefined): string {
   if (!iso) return '—'
   return new Date(iso).toLocaleString(undefined, {
@@ -59,69 +60,12 @@ function stepDepsSatisfied(step: Step, statusByName: Map<string, StepStatus>): b
   return (step.depends_on ?? []).every((name) => statusByName.get(name) === 'completed')
 }
 
-/** Returns a human-readable age string for a past timestamp. */
-function formatAge(ts: number, now: number): string {
-  if (ts === 0) return '—'
-  const diff = now - ts
-  if (diff < 5000) return 'just now'
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  return new Date(ts).toLocaleTimeString()
-}
-
 /** Lower-cased substring match of a term against a task's name. */
 function taskMatches(task: Task, term: string): boolean {
   return task.name.toLowerCase().includes(term)
 }
 
 // ── IdCell ────────────────────────────────────────────────────────────────────
-
-function IdCell({ id }: { id: string }) {
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) clearTimeout(timerRef.current)
-    },
-    [],
-  )
-
-  const handleCopy = useCallback(
-    (e: React.SyntheticEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      void navigator.clipboard
-        .writeText(id)
-        .then(() => {
-          setCopied(true)
-          if (timerRef.current !== null) clearTimeout(timerRef.current)
-          timerRef.current = setTimeout(() => setCopied(false), 1500)
-        })
-        .catch(() => {
-          // Clipboard write can fail in insecure contexts or when the document
-          // is not focused. Silently ignore — no visual change shown.
-        })
-    },
-    [id],
-  )
-
-  return (
-    <span
-      className={styles.idCell}
-      onClick={handleCopy}
-      title={`Click to copy: ${id}`}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') handleCopy(e)
-      }}
-    >
-      {truncateId(id)}
-      <span className={styles.copyHint}>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
-    </span>
-  )
-}
 
 // ── ParametersCell ────────────────────────────────────────────────────────────
 
@@ -177,7 +121,7 @@ function MetadataCard({ job }: { job: JobDetailType }) {
         <div className={styles.metaField}>
           <dt>Job ID</dt>
           <dd>
-            <IdCell id={job.id} />
+            <CopyableId id={job.id} />
           </dd>
         </div>
         <div className={styles.metaField}>
@@ -293,7 +237,7 @@ function TaskRow({
           )}
         </td>
         <td>
-          <IdCell id={task.id} />
+          <CopyableId id={task.id} />
         </td>
         <td>
           <ParametersCell params={task.parameters} />
@@ -795,9 +739,9 @@ export default function JobDetail() {
     return (
       <div className={styles.page}>
         <PageHeader title="Job Details" />
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load job: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       </div>
     )
   }
@@ -810,23 +754,14 @@ export default function JobDetail() {
       <PageHeader
         title="Job Details"
         action={
-          <div className={styles.headerActions}>
+          <RefreshControls
+            onRefresh={handleRefresh}
+            label="Refresh job data"
+            updatedAt={lastUpdated}
+            now={now}
+          >
             <StatusBadge status={job.status} />
-            {lastUpdated > 0 && (
-              <span className={styles.lastUpdated} aria-live="polite">
-                Updated {formatAge(lastUpdated, now)}
-              </span>
-            )}
-            <button
-              className={styles.refreshBtn}
-              onClick={handleRefresh}
-              type="button"
-              aria-label="Refresh job data"
-            >
-              <Refresh />
-              Refresh
-            </button>
-          </div>
+          </RefreshControls>
         }
       />
 
@@ -901,8 +836,7 @@ export default function JobDetail() {
       </div>
 
       {activeSelectedCount > 0 && (
-        <div className={styles.bulkBar}>
-          <span className={styles.bulkBarCount}>{activeSelectedCount} selected</span>
+        <BulkBar count={activeSelectedCount} onClear={() => setSelectedTaskIds(new Set())}>
           <button
             className={styles.bulkCancelBtn}
             onClick={() => void handleBulkCancel()}
@@ -923,14 +857,7 @@ export default function JobDetail() {
             <Rotate />
             Retry {selectedRetryable.length}
           </button>
-          <button
-            className={styles.clearBtn}
-            onClick={() => setSelectedTaskIds(new Set())}
-            type="button"
-          >
-            Clear
-          </button>
-        </div>
+        </BulkBar>
       )}
     </div>
   )

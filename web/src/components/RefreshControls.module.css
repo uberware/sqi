@@ -1,28 +1,24 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
-.toolbar {
+.headerActions {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-8);
-  background: var(--color-surface);
-  border-bottom: 1px solid var(--color-border-subtle);
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
-.filterBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+.lastUpdated {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
-.filterPill {
+.refreshBtn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text-secondary);
@@ -32,22 +28,12 @@
   white-space: nowrap;
   transition:
     background var(--transition-base),
-    color var(--transition-base),
-    border-color var(--transition-base);
+    border-color var(--transition-base),
+    color var(--transition-base);
 }
 
-.filterPill:hover {
+.refreshBtn:hover {
   background: var(--color-surface-raised);
   border-color: var(--color-text-muted);
-}
-
-.filterPill--active {
-  background: var(--color-accent-muted);
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-}
-
-.filterCount {
-  font-size: var(--font-size-xs);
-  opacity: 0.75;
+  color: var(--color-text-primary);
 }

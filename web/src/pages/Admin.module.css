@@ -22,7 +22,7 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
   gap: var(--space-4);
 }
 
@@ -36,8 +36,8 @@
   background: var(--color-surface);
   text-decoration: none;
   transition:
-    background 80ms,
-    border-color 80ms;
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .card:hover {

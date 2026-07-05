@@ -6,9 +6,10 @@ import PageHeader from '@/components/PageHeader'
 import IconButton from '@/components/IconButton'
 import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useDeleteQueue } from '@/api/mutations'
-import styles from './QueueList.module.css'
+import styles from './entityList.module.css'
 
 export default function QueueList() {
   const { data: farmsWithQueues, isLoading, isError, error } = useFarmsWithQueues()
@@ -54,9 +55,9 @@ export default function QueueList() {
       />
 
       {isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load queues: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       <div className={styles.tableWrap}>

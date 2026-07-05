@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import PageHeader from '@/components/PageHeader'
@@ -8,10 +8,15 @@ import IconButton from '@/components/IconButton'
 import FilterToolbar from '@/components/FilterToolbar'
 import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
-import { Check, Copy, Pause, Play, Refresh, Trash } from '@/components/icons'
+import { Pause, Play, Trash } from '@/components/icons'
+import ErrorBanner from '@/components/ErrorBanner'
+import BulkBar from '@/components/BulkBar'
+import CopyableId from '@/components/CopyableId'
+import RefreshControls from '@/components/RefreshControls'
 import { useListWorkers, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker, useRemoveWorker } from '@/api/mutations'
 import { useListFilters } from '@/hooks/useListFilters'
+import { useLiveNow } from '@/hooks/useLiveNow'
 import { useWebSocket } from '@/ws/context'
 import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
 import type { Worker, WorkerStatus, ListResponse } from '@/api/types'
@@ -31,10 +36,6 @@ const STATUS_FILTERS: { label: string; value: WorkerStatus | '' }[] = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function truncateId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id
-}
-
 function formatHeartbeat(iso: string | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()
@@ -45,62 +46,7 @@ function formatHeartbeat(iso: string | undefined): string {
   return new Date(iso).toLocaleDateString()
 }
 
-function formatAge(ts: number, now: number): string {
-  if (ts === 0) return '—'
-  const diff = now - ts
-  if (diff < 5000) return 'just now'
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  return new Date(ts).toLocaleTimeString()
-}
-
 // ── Sub-components ────────────────────────────────────────────────────────────
-
-function IdCell({ id }: { id: string }) {
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    },
-    [],
-  )
-
-  const triggerCopy = useCallback(
-    (e: React.SyntheticEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      void navigator.clipboard
-        .writeText(id)
-        .then(() => {
-          setCopied(true)
-          if (timerRef.current) clearTimeout(timerRef.current)
-          timerRef.current = setTimeout(() => setCopied(false), 1500)
-        })
-        .catch(() => {
-          // Clipboard write can fail in insecure contexts. Silently ignore.
-        })
-    },
-    [id],
-  )
-
-  return (
-    <span
-      className={styles.idCell}
-      onClick={triggerCopy}
-      title={`Click to copy: ${id}`}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') triggerCopy(e)
-      }}
-    >
-      {truncateId(id)}
-      <span className={styles.copyHint}>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
-    </span>
-  )
-}
 
 // ── Capability tag extraction ─────────────────────────────────────────────────
 
@@ -380,11 +326,7 @@ export default function WorkerList() {
   })
 
   // ── Last-updated timestamp ────────────────────────────────────────────────
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(id)
-  }, [])
+  const now = useLiveNow(false)
 
   // ── Manual refresh ────────────────────────────────────────────────────────
   const handleRefresh = useCallback(() => {
@@ -397,22 +339,12 @@ export default function WorkerList() {
         title="Workers"
         subtitle={isLoading ? 'Loading…' : `${total} workers`}
         action={
-          <div className={styles.headerActions}>
-            {dataUpdatedAt > 0 && (
-              <span className={styles.lastUpdated} aria-live="polite">
-                Updated {formatAge(dataUpdatedAt, now)}
-              </span>
-            )}
-            <button
-              className={styles.refreshBtn}
-              onClick={handleRefresh}
-              type="button"
-              aria-label="Refresh workers"
-            >
-              <Refresh />
-              Refresh
-            </button>
-          </div>
+          <RefreshControls
+            onRefresh={handleRefresh}
+            label="Refresh workers"
+            updatedAt={dataUpdatedAt}
+            now={now}
+          />
         }
       />
 
@@ -427,17 +359,17 @@ export default function WorkerList() {
       />
 
       {isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load workers: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
       {(disableWorker.isError || enableWorker.isError || removeWorker.isError) && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Action failed:{' '}
           {(disableWorker.error ?? enableWorker.error ?? removeWorker.error) instanceof Error
             ? ((disableWorker.error ?? enableWorker.error ?? removeWorker.error) as Error).message
             : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       {/* Workers table */}
@@ -492,7 +424,7 @@ export default function WorkerList() {
                     <Link to={`/workers/${worker.id}`}>{worker.name || worker.hostname}</Link>
                   </td>
                   <td>
-                    <IdCell id={worker.id} />
+                    <CopyableId id={worker.id} />
                   </td>
                   <td>
                     <span className={styles.metaText}>{worker.compute_location ?? '—'}</span>
@@ -575,8 +507,7 @@ export default function WorkerList() {
 
       {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
       {selectedIds.size > 0 && (
-        <div className={styles.bulkBar}>
-          <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
+        <BulkBar count={selectedIds.size} onClear={() => setSelectedIds(new Set())}>
           <button
             className={`${styles.bulkBtn} ${styles['bulkBtn--disable']}`}
             onClick={() => void handleBulkDisable()}
@@ -597,14 +528,7 @@ export default function WorkerList() {
             <Trash />
             Remove {selectedRemovable.length}
           </button>
-          <button
-            className={styles.clearBtn}
-            onClick={() => setSelectedIds(new Set())}
-            type="button"
-          >
-            Clear
-          </button>
-        </div>
+        </BulkBar>
       )}
     </div>
   )

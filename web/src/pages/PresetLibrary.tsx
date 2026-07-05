@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import DebouncedSearchInput from '@/components/DebouncedSearchInput'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
 import { usePresets, queryKeys, fetchPresets } from '@/api/queries'
@@ -79,9 +80,9 @@ export default function PresetLibrary() {
           </p>
         </div>
       ) : isError ? (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load presets: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       ) : isLoading ? (
         <div className={styles.emptyState}>Loading…</div>
       ) : !data || data.length === 0 ? (

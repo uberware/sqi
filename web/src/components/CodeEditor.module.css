@@ -4,8 +4,9 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  font-family: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: var(--font-size-sm);
+  transition: border-color var(--transition-base);
   /* Let CodeMirror fill the container height. */
   display: flex;
   flex-direction: column;
@@ -57,15 +58,20 @@
   --cm-property: #e6c98a;
 }
 
+/*
+ * Focus ring lives on the outer wrapper rather than .cm-editor: CodeMirror's
+ * gutter is position: sticky with its own opaque background, which paints
+ * over an inset outline on .cm-editor along the left edge (and slivers of
+ * top/bottom). The wrapper's border has nothing above it to occlude it.
+ */
+.editor:focus-within {
+  border-color: var(--color-accent);
+}
+
 .editor :global(.cm-editor) {
   height: 100%;
   outline: none;
   background: var(--cm-bg);
-}
-
-.editor :global(.cm-editor.cm-focused) {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -2px;
 }
 
 .editor :global(.cm-scroller) {
