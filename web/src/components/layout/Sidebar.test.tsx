@@ -73,7 +73,15 @@ describe('Sidebar', () => {
 
   it('does not show the management links moved under Admin', () => {
     renderSidebar()
-    for (const label of ['Farms', 'Queues', 'Usage Pools', 'Storage', 'Compute', 'Products']) {
+    for (const label of [
+      'Farms',
+      'Queues',
+      'Usage Pools',
+      'Storage',
+      'Compute',
+      'Products',
+      'Presets',
+    ]) {
       expect(screen.queryByRole('link', { name: label })).not.toBeInTheDocument()
     }
   })
@@ -92,26 +100,11 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Jobs' }).getAttribute('aria-current')).toBe('page')
   })
 
-  it('renders deferred Phase 2+ items as non-navigable disabled spans', () => {
+  it('renders no deferred "coming soon" items', () => {
     const { container } = renderSidebar()
-    const disabledItems = container.querySelectorAll('[data-disabled="true"]')
-    expect(disabledItems.length).toBe(1)
-    disabledItems.forEach((item) => {
-      expect(item.tagName.toLowerCase()).toBe('span')
-    })
-  })
-
-  it('shows "coming soon" badge for each deferred item', () => {
-    renderSidebar()
-    const badges = screen.getAllByText('coming soon')
-    expect(badges.length).toBe(1)
-  })
-
-  it('deferred items include the expected labels', () => {
-    renderSidebar()
-    expect(screen.getByText('Presets')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Products' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Settings')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('[data-disabled="true"]').length).toBe(0)
+    expect(screen.queryByText('coming soon')).not.toBeInTheDocument()
+    expect(screen.queryByText('Presets')).not.toBeInTheDocument()
   })
 
   it('Admin is an active nav link to /admin', () => {
