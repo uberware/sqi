@@ -82,6 +82,16 @@ def test_hidden_field_is_not_rendered_but_default_submits() -> None:
     assert model.values() == {"Secret": "v"}
 
 
+def test_set_value_clears_prefilled_flag() -> None:
+    model = FormModel.from_parameters([_p(name="Frames")])
+    model.apply_prefill({"Frames": "1-10"})
+    frames = model.fields[0]
+    assert frames.prefilled is True
+    model.set_value("Frames", "5")
+    assert frames.prefilled is False
+    assert frames.value == "5"
+
+
 def test_prefill_marks_fields_and_groups_preserve_order() -> None:
     model = FormModel.from_parameters(
         [
