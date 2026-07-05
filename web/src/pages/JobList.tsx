@@ -9,17 +9,11 @@ import FilterToolbar from '@/components/FilterToolbar'
 import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import {
-  Check,
-  ChevronDown,
-  ChevronUp,
-  ChevronUpDown,
-  Copy,
-  Refresh,
-  Rotate,
-  Trash,
-  X,
-} from '@/components/icons'
+import { ChevronDown, ChevronUp, ChevronUpDown, Rotate, Trash, X } from '@/components/icons'
+import ErrorBanner from '@/components/ErrorBanner'
+import BulkBar from '@/components/BulkBar'
+import CopyableId from '@/components/CopyableId'
+import RefreshControls from '@/components/RefreshControls'
 import { useListJobs, queryKeys } from '@/api/queries'
 import { useCancelJob, useDeleteJob, useRetryJob } from '@/api/mutations'
 import { useListFilters } from '@/hooks/useListFilters'
@@ -61,10 +55,6 @@ const STATUS_FILTERS: { label: string; value: JobStatus | '' }[] = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function truncateId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id
-}
-
 function formatTime(iso: string | undefined): string {
   if (!iso) return '—'
   return new Date(iso).toLocaleString(undefined, {
@@ -73,16 +63,6 @@ function formatTime(iso: string | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-/** Returns a human-readable age string for a past timestamp. */
-function formatAge(ts: number, now: number): string {
-  if (ts === 0) return '—'
-  const diff = now - ts
-  if (diff < 5000) return 'just now'
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  return new Date(ts).toLocaleTimeString()
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -142,53 +122,6 @@ function sortAriaValue(
 ): 'ascending' | 'descending' | 'none' {
   if (field !== activeField) return 'none'
   return dir === 'asc' ? 'ascending' : 'descending'
-}
-
-function IdCell({ id }: { id: string }) {
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    },
-    [],
-  )
-
-  const triggerCopy = useCallback(
-    (e: React.SyntheticEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      void navigator.clipboard
-        .writeText(id)
-        .then(() => {
-          setCopied(true)
-          if (timerRef.current) clearTimeout(timerRef.current)
-          timerRef.current = setTimeout(() => setCopied(false), 1500)
-        })
-        .catch(() => {
-          // Clipboard write can fail in insecure contexts or when the document
-          // is not focused. Silently ignore.
-        })
-    },
-    [id],
-  )
-
-  return (
-    <span
-      className={styles.idCell}
-      onClick={triggerCopy}
-      title={`Click to copy: ${id}`}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') triggerCopy(e)
-      }}
-    >
-      {truncateId(id)}
-      <span className={styles.copyHint}>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
-    </span>
-  )
 }
 
 function ProgressCell({ job }: { job: Job }) {
@@ -491,22 +424,12 @@ export default function JobList() {
         title="Jobs"
         subtitle={isLoading ? 'Loading…' : `${total} jobs`}
         action={
-          <div className={styles.headerActions}>
-            {dataUpdatedAt > 0 && (
-              <span className={styles.lastUpdated} aria-live="polite">
-                Updated {formatAge(dataUpdatedAt, now)}
-              </span>
-            )}
-            <button
-              className={styles.refreshBtn}
-              onClick={handleRefresh}
-              type="button"
-              aria-label="Refresh jobs"
-            >
-              <Refresh />
-              Refresh
-            </button>
-          </div>
+          <RefreshControls
+            onRefresh={handleRefresh}
+            label="Refresh jobs"
+            updatedAt={dataUpdatedAt}
+            now={now}
+          />
         }
       />
 
@@ -521,26 +444,26 @@ export default function JobList() {
       />
 
       {isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load jobs: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
       {cancelJob.isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Cancel failed:{' '}
           {cancelJob.error instanceof Error ? cancelJob.error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
       {deleteJob.isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Delete failed:{' '}
           {deleteJob.error instanceof Error ? deleteJob.error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
       {retryJob.isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Retry failed: {retryJob.error instanceof Error ? retryJob.error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       {/* Job table */}
@@ -630,7 +553,7 @@ export default function JobList() {
                     <Link to={`/jobs/${job.id}`}>{job.name}</Link>
                   </td>
                   <td>
-                    <IdCell id={job.id} />
+                    <CopyableId id={job.id} />
                   </td>
                   <td>{job.owner}</td>
                   <td>
@@ -699,8 +622,7 @@ export default function JobList() {
 
       {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
       {selectedIds.size > 0 && (
-        <div className={styles.bulkBar}>
-          <span className={styles.bulkBarCount}>{selectedIds.size} selected</span>
+        <BulkBar count={selectedIds.size} onClear={() => setSelectedIds(new Set())}>
           <button
             className={styles.bulkCancelBtn}
             onClick={() => void handleBulkCancel()}
@@ -731,14 +653,7 @@ export default function JobList() {
             <Trash />
             Delete {selectedIds.size}
           </button>
-          <button
-            className={styles.clearBtn}
-            onClick={() => setSelectedIds(new Set())}
-            type="button"
-          >
-            Clear
-          </button>
-        </div>
+        </BulkBar>
       )}
 
       {confirm && (

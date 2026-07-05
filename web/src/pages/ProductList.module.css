@@ -18,10 +18,6 @@
   composes: emptyRow from './entityList.module.css';
 }
 
-.errorBanner {
-  composes: errorBanner from './entityList.module.css';
-}
-
 .linkBtn {
   composes: linkBtn from './entityList.module.css';
 }

@@ -178,31 +178,6 @@
   opacity: 0.6;
 }
 
-/* ── ID cell ─────────────────────────────────────────────────────────────────── */
-
-.idCell {
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.idCell:hover .copyHint {
-  opacity: 1;
-}
-
-.copyHint {
-  display: inline-flex;
-  align-items: center;
-  opacity: 0;
-  color: var(--color-text-muted);
-  transition: opacity var(--transition-base);
-}
-
 /* ── Worker link ─────────────────────────────────────────────────────────────── */
 
 .workerLink {
@@ -395,54 +370,6 @@
   font-size: var(--font-size-sm);
 }
 
-.errorBanner {
-  padding: var(--space-4) var(--space-8);
-  background: var(--color-error-muted);
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  border-bottom: 1px solid var(--color-error);
-}
-
-/* ── Header actions (status badge + refresh + last updated) ──────────────────── */
-
-.headerActions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-shrink: 0;
-}
-
-.lastUpdated {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.refreshBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background var(--transition-base),
-    border-color var(--transition-base),
-    color var(--transition-base);
-}
-
-.refreshBtn:hover {
-  background: var(--color-surface-raised);
-  border-color: var(--color-text-muted);
-  color: var(--color-text-primary);
-}
-
 /* ── Checkbox column ─────────────────────────────────────────────────────────── */
 
 .checkCell {
@@ -454,22 +381,6 @@
 }
 
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
-
-.bulkBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-8);
-  background: var(--color-accent-muted);
-  border-top: 1px solid var(--color-accent);
-  font-size: var(--font-size-sm);
-  color: var(--color-accent);
-  flex-shrink: 0;
-}
-
-.bulkBarCount {
-  font-weight: var(--font-weight-medium);
-}
 
 .bulkCancelBtn,
 .bulkRetryBtn {
@@ -507,30 +418,6 @@
 .bulkRetryBtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.clearBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background var(--transition-base),
-    color var(--transition-base),
-    border-color var(--transition-base);
-}
-
-.clearBtn:hover {
-  background: var(--color-surface-raised);
-  border-color: var(--color-text-muted);
 }
 
 /* ── Task search ──────────────────────────────────────────────────────────────── */

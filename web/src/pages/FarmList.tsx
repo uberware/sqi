@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader'
 import IconButton from '@/components/IconButton'
 import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useListFarms } from '@/api/queries'
 import { useDeleteFarm } from '@/api/mutations'
 import styles from './entityList.module.css'
@@ -52,9 +53,9 @@ export default function FarmList() {
       />
 
       {isError && (
-        <div className={styles.errorBanner} role="alert">
+        <ErrorBanner>
           Failed to load farms: {error instanceof Error ? error.message : 'Unknown error'}
-        </div>
+        </ErrorBanner>
       )}
 
       <div className={styles.tableWrap}>
