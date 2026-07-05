@@ -8,6 +8,9 @@ import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useProducts } from '@/api/queries'
 import { useDeleteProduct } from '@/api/mutations'
+import DebouncedSearchInput from '@/components/DebouncedSearchInput'
+import { useSearchParam } from '@/hooks/useSearchParam'
+import { filterBySearch } from '@/utils/filterBySearch'
 import styles from './ProductList.module.css'
 
 export default function ProductList() {
@@ -36,14 +39,23 @@ export default function ProductList() {
     [deleteProduct, showToast],
   )
 
-  const rows = products ?? []
+  const { search, setSearch } = useSearchParam()
+  const all = products ?? []
+  const rows = filterBySearch(all, search, (p) => [p.name, p.title, p.description, p.category])
+  const filtering = search.trim() !== ''
 
   return (
     <div className={styles.page}>
       <PageHeader
         title="Products"
         backTo="/admin"
-        subtitle={isLoading ? 'Loading…' : `${rows.length} products`}
+        subtitle={
+          isLoading
+            ? 'Loading…'
+            : filtering
+              ? `${rows.length} of ${all.length} products`
+              : `${all.length} products`
+        }
         action={
           <Link to="/products/new" className={styles.newBtn}>
             + New Product
@@ -54,6 +66,17 @@ export default function ProductList() {
       {isError && (
         <div className={styles.errorBanner} role="alert">
           Failed to load products: {error instanceof Error ? error.message : 'Unknown error'}
+        </div>
+      )}
+
+      {!isLoading && all.length > 0 && (
+        <div className={styles.toolbar}>
+          <DebouncedSearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search products…"
+            aria-label="Search products"
+          />
         </div>
       )}
 
@@ -75,7 +98,7 @@ export default function ProductList() {
                 <td colSpan={6}>Loading…</td>
               </tr>
             )}
-            {!isLoading && rows.length === 0 && (
+            {!isLoading && all.length === 0 && (
               <tr className={styles.emptyRow}>
                 <td colSpan={6}>
                   No products yet. Products are reusable, named OpenJD recipes submitted by
@@ -89,6 +112,11 @@ export default function ProductList() {
                   </a>
                   .
                 </td>
+              </tr>
+            )}
+            {!isLoading && all.length > 0 && rows.length === 0 && (
+              <tr className={styles.emptyRow}>
+                <td colSpan={6}>No products match “{search}”.</td>
               </tr>
             )}
             {rows.map((product) => (
