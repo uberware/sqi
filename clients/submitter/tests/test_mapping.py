@@ -56,3 +56,15 @@ def test_fork_with_convention_names_still_prefills() -> None:
     # A renamed studio fork keeps pre-fill by keeping the parameter names.
     got = prefill([_p("SceneFile", "PATH")], CTX)
     assert got == {"SceneFile": "/shows/a/shot.ma"}
+
+
+def test_prefill_is_hyphen_insensitive() -> None:
+    got = prefill([_p("Scene-File", "PATH"), _p("frame-range")], CTX)
+    assert got == {"Scene-File": "/shows/a/shot.ma", "frame-range": "1-100"}
+
+
+def test_extras_match_case_and_separator_insensitively() -> None:
+    # target.extra key "WriteNode" must fill a parameter named "write_node".
+    target = RenderTarget(name="Write1", kind="write_node", extra={"WriteNode": "Write1"})
+    got = prefill([_p("write_node")], CTX, target)
+    assert got == {"write_node": "Write1"}
