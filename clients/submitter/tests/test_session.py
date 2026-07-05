@@ -7,6 +7,7 @@ import httpx
 import pytest
 import respx
 
+from sqi_client import SqiClient
 from sqi_client.models import Product
 from sqi_submitter.core.errors import SubmitterError
 from sqi_submitter.core.session import (
@@ -77,9 +78,51 @@ def test_server_422_message_is_surfaced_verbatim() -> None:
     assert "missing required parameter Frames" in exc.value.user_message
 
 
-def test_resolve_server_url_precedence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
-) -> None:
+@respx.mock
+def test_missing_product_translates_to_no_longer_exists() -> None:
+    respx.get(f"{BASE}/api/v1/products/gone/parameters").mock(
+        return_value=httpx.Response(404, json={"error": "product not found"})
+    )
+    with pytest.raises(SubmitterError) as exc:
+        _session().parameters("gone")
+    assert "no longer exists" in exc.value.user_message
+
+
+@respx.mock
+def test_server_error_translates_to_submitter_error() -> None:
+    respx.get(f"{BASE}/api/v1/products").mock(
+        return_value=httpx.Response(500, json={"error": "internal server error"})
+    )
+    # max_attempts=1 disables the SDK's GET retry/backoff so the test is fast.
+    session = SubmitterSession(server_url=BASE, client=SqiClient(BASE, max_attempts=1))
+    with pytest.raises(SubmitterError) as exc:
+        session.products()
+    assert exc.value.user_message
+    assert "500" in exc.value.user_message
+
+
+@respx.mock
+def test_farms_and_queues_fetch() -> None:
+    respx.get(f"{BASE}/api/v1/farms").mock(
+        return_value=httpx.Response(200, json=[{"id": "f1", "name": "Farm One"}])
+    )
+    respx.get(f"{BASE}/api/v1/queues", params={"farm_id": "f1"}).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [{"id": "q1", "farm_id": "f1", "name": "Queue One"}],
+                "total": 1,
+                "limit": 50,
+                "offset": 0,
+            },
+        )
+    )
+    s = _session()
+    assert [f.id for f in s.farms()] == ["f1"]
+    assert [q.id for q in s.queues("f1")] == ["q1"]
+
+
+def test_resolve_server_url_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> None:
     settings = Settings(path=str(Path(str(tmp_path)) / "s.json"))
     assert resolve_server_url(None, settings) == "http://localhost:8080"
     settings.set("server_url", "http://from-settings:1")
