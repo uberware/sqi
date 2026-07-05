@@ -6,12 +6,30 @@ import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import { usePresets, queryKeys, fetchPresets } from '@/api/queries'
 import { ApiError } from '@/api/client'
+import type { PresetListItem } from '@/api/types'
 import styles from './PresetLibrary.module.css'
 
 const STATUS_LABEL: Record<string, string> = {
   not_installed: 'Not installed',
   installed: 'Installed',
   update_available: 'Update available',
+}
+
+const UNCATEGORIZED = 'Uncategorized'
+
+// groupByCategory buckets presets by their category (empty → "Uncategorized")
+// and returns the buckets sorted alphabetically by category name.
+function groupByCategory(presets: PresetListItem[]): [string, PresetListItem[]][] {
+  const groups = new Map<string, PresetListItem[]>()
+  for (const p of presets) {
+    const category = p.category || UNCATEGORIZED
+    const bucket = groups.get(category)
+    if (bucket) bucket.push(p)
+    else groups.set(category, [p])
+  }
+  return [...groups.entries()].sort(([a], [b]) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' }),
+  )
 }
 
 export default function PresetLibrary() {
@@ -54,46 +72,49 @@ export default function PresetLibrary() {
         <div className={styles.errorBanner} role="alert">
           Failed to load presets: {error instanceof Error ? error.message : 'Unknown error'}
         </div>
+      ) : isLoading ? (
+        <div className={styles.emptyState}>Loading…</div>
+      ) : !data || data.length === 0 ? (
+        <div className={styles.emptyState}>No presets available yet.</div>
       ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.table} aria-label="Presets">
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Version</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading && (
-                <tr className={styles.emptyRow}>
-                  <td colSpan={4}>Loading…</td>
-                </tr>
-              )}
-              {!isLoading && (!data || data.length === 0) && (
-                <tr className={styles.emptyRow}>
-                  <td colSpan={4}>No presets available yet.</td>
-                </tr>
-              )}
-              {data?.map((p) => (
-                <tr key={p.name}>
-                  <td>
-                    <Link to={`/presets/${encodeURIComponent(p.name)}`} className={styles.linkBtn}>
-                      {p.title}
-                    </Link>
-                  </td>
-                  <td>{p.category || '—'}</td>
-                  <td>{p.version || '—'}</td>
-                  <td>
-                    <span className={styles.badge} data-status={p.status}>
-                      {STATUS_LABEL[p.status] ?? p.status}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className={styles.groups}>
+          {groupByCategory(data).map(([category, presets]) => (
+            <section className={styles.group} key={category}>
+              <div className={styles.groupHeading}>
+                <h2 className={styles.groupLabel}>{category}</h2>
+                <hr className={styles.rule} />
+              </div>
+              <table className={styles.table} aria-label={`${category} presets`}>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Version</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {presets.map((p) => (
+                    <tr key={p.name}>
+                      <td>
+                        <Link
+                          to={`/presets/${encodeURIComponent(p.name)}`}
+                          className={styles.linkBtn}
+                        >
+                          {p.title}
+                        </Link>
+                      </td>
+                      <td>{p.version || '—'}</td>
+                      <td>
+                        <span className={styles.badge} data-status={p.status}>
+                          {STATUS_LABEL[p.status] ?? p.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          ))}
         </div>
       )}
     </div>

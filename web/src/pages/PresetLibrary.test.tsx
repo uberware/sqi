@@ -83,6 +83,27 @@ describe('PresetLibrary', () => {
     expect(screen.getByText('Update available')).toBeInTheDocument()
   })
 
+  it('groups presets by category with a heading per category, sorted alphabetically', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([
+        makePreset({ name: 'r1', title: 'R One', category: 'Rendering' }),
+        makePreset({ name: 'c1', title: 'C One', category: 'Compositing' }),
+        makePreset({ name: 't1', title: 'T One', category: 'Testing' }),
+      ]),
+    )
+    renderPage()
+    await screen.findByRole('link', { name: 'R One' })
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
+    expect(headings).toEqual(['Compositing', 'Rendering', 'Testing'])
+  })
+
+  it('does not render a Category column', async () => {
+    fetchMock.mockResolvedValueOnce(ok([makePreset()]))
+    renderPage()
+    await screen.findByRole('link', { name: 'Nuke Composite' })
+    expect(screen.queryByRole('columnheader', { name: 'Category' })).not.toBeInTheDocument()
+  })
+
   it('shows the not-configured state when GET /presets returns 503', async () => {
     fetchMock.mockResolvedValueOnce(err503())
     renderPage()
