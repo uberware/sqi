@@ -58,7 +58,7 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "FA"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["sqi_submitter", "sqi_client"]

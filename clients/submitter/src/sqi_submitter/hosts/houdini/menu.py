@@ -4,6 +4,11 @@
 To launch the submitter in Houdini, create a shelf tool with the body:
     from sqi_submitter.hosts.houdini.menu import open_submitter
     open_submitter()
+
+The sibling ``startup/sqi_submitter.json`` is a Houdini package *template*:
+copy it into a Houdini packages directory and replace the literal ``<path>``
+placeholder with the directory containing the installed ``sqi_submitter``
+package (e.g. the DCC python's site-packages).
 """
 
 from __future__ import annotations

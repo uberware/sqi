@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Houdini adapter extraction tests against a fake hou module."""
 
+from __future__ import annotations
+
 from typing import Any, ClassVar
 
 
