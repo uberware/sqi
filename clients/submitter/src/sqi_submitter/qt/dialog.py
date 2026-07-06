@@ -24,10 +24,12 @@ from sqi_submitter.qt.widgets import build_form
 
 __all__ = ["SubmitDialog", "main", "open_for_adapter"]
 
-_SUGGESTED_LABEL = "Suggested"
-_ALL_PRODUCTS_LABEL = "All products"
+_SUGGESTED_LABEL = "Suggested —"
+_ALL_PRODUCTS_LABEL = "All —"
 _SCENE_SETTINGS_LABEL = "Scene settings"
 _ERROR_STYLE = "border: 1px solid red;"
+_STALE_MODEL_MESSAGE = "Product parameters failed to load — reload and try again."
+_CLOSE_WAIT_MS = 10_000
 
 
 class _SubmitWorker(QtCore.QThread):
@@ -92,6 +94,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
         self._products: list[Product] = []
         self._model: FormModel | None = None
+        self._model_product: str | None = None
         self._form_root: QtWidgets.QWidget | None = None
         self._worker: _SubmitWorker | None = None
 
@@ -307,6 +310,11 @@ class SubmitDialog(QtWidgets.QDialog):
         try:
             parameters: list[ProductParameter] = self.session.parameters(product.name)
         except SubmitterError as exc:
+            # The combo already moved: whatever model we hold belongs to the
+            # previous product. Mark it stale so submit refuses to post the
+            # old fields under the new product's name.
+            self._model_product = None
+            self._submit_button.setEnabled(False)
             self._show_error(exc.user_message)
             return
 
@@ -315,6 +323,8 @@ class SubmitDialog(QtWidgets.QDialog):
             context = self.adapter.scene_context()
             model.apply_prefill(prefill(parameters, context, self._current_target()))
         self._model = model
+        self._model_product = product.name
+        self._submit_button.setEnabled(True)
 
         old = self._form_scroll.takeWidget()
         self._form_scroll.setWidget(build_form(model))
@@ -339,13 +349,33 @@ class SubmitDialog(QtWidgets.QDialog):
             ),
         }
 
-    def _on_submit(self) -> None:
+    def _ready_product(self) -> Product | None:
+        """The selected product, only if the current form model belongs to it.
+
+        Guards against a stale model: when a product change's parameters fetch
+        failed, ``self._model`` still holds the previous product's fields and
+        must never be posted under the newly selected product's name.
+        """
         product = self._current_product()
+        if product is None:
+            return None
+        if self._model is None or self._model_product != product.name:
+            self._show_error(_STALE_MODEL_MESSAGE)
+            return None
+        return product
+
+    def _on_submit(self) -> None:
+        product = self._ready_product()
         if product is None or self._model is None:
             return
+        kwargs = self._submit_kwargs()
+        # Capture at submit-start: the async submit must persist what was
+        # actually submitted, not whatever the widgets say when it finishes.
+        product_name = product.name
+        save_scene = bool(kwargs["save_scene"])
         self._submit_button.setEnabled(False)
-        worker = _SubmitWorker(self.session, product.name, self._model, **self._submit_kwargs())
-        worker.done.connect(self._on_submit_success)
+        worker = _SubmitWorker(self.session, product_name, self._model, **kwargs)
+        worker.done.connect(lambda job: self._on_submit_success(job, product_name, save_scene))
         worker.failed.connect(self._on_submit_error)
         worker.finished.connect(lambda: self._submit_button.setEnabled(True))
         self._worker = worker
@@ -353,31 +383,30 @@ class SubmitDialog(QtWidgets.QDialog):
 
     def submit_and_wait(self) -> None:
         """Test/QA hook: runs the submit body synchronously, no worker thread."""
-        product = self._current_product()
+        product = self._ready_product()
         if product is None or self._model is None:
             return
+        kwargs = self._submit_kwargs()
         self._submit_button.setEnabled(False)
         try:
-            job = submit_form(self.session, product.name, self._model, **self._submit_kwargs())
+            job = submit_form(self.session, product.name, self._model, **kwargs)
         except SubmitterError as exc:
             self._on_submit_error(exc)
         else:
-            self._on_submit_success(job)
+            self._on_submit_success(job, product.name, bool(kwargs["save_scene"]))
         finally:
             self._submit_button.setEnabled(True)
 
-    def _on_submit_success(self, job: Job) -> None:
+    def _on_submit_success(self, job: Job, product_name: str, save_scene: bool) -> None:
         self._clear_field_errors()
         self._clear_error()
         url = f"{self.session.server_url}/jobs/{job.id}"
         QtWidgets.QMessageBox.information(self, "Job submitted", f"Submitted job {job.id}\n{url}")
 
-        product = self._current_product()
-        if product is not None:
-            host = self.adapter.host_name if self.adapter is not None else ""
-            self.session.settings.set(f"last_product.{host}", product.name)
+        host = self.adapter.host_name if self.adapter is not None else ""
+        self.session.settings.set(f"last_product.{host}", product_name)
         if self.adapter is not None:
-            self.session.settings.set("save_before_submit", self._save_scene_check.isChecked())
+            self.session.settings.set("save_before_submit", save_scene)
 
     def _on_submit_error(self, exc: SubmitterError) -> None:
         if isinstance(exc, FormInvalidError):
@@ -416,6 +445,17 @@ class SubmitDialog(QtWidgets.QDialog):
         self._error_label.clear()
         self._error_label.hide()
         self._reload_button.hide()
+
+    # -- lifecycle ------------------------------------------------------------
+
+    def closeEvent(self, arg__1: QtGui.QCloseEvent) -> None:
+        """Never destroy a running submit thread: wait briefly, else block close."""
+        worker = self._worker
+        if worker is not None and worker.isRunning() and not worker.wait(_CLOSE_WAIT_MS):
+            self._show_error("A submit is still in progress — please wait, then close.")
+            arg__1.ignore()
+            return
+        super().closeEvent(arg__1)
 
 
 _dialog_ref: SubmitDialog | None = None

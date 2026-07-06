@@ -13,6 +13,8 @@ compat = pytest.importorskip("sqi_submitter.qt._compat")
 if not compat.QT_BINDING:
     pytest.skip("no Qt binding installed", allow_module_level=True)
 
+from sqi_client import SqiClient  # noqa: E402
+from sqi_client.models import Product  # noqa: E402
 from sqi_submitter.core import SubmitterSession  # noqa: E402
 from sqi_submitter.qt.dialog import SubmitDialog, main  # noqa: E402
 from tests.test_adapter_contract import BASE, MiniAdapter  # noqa: E402
@@ -27,9 +29,11 @@ def app() -> object:
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
-def _mock_server() -> respx.Route:
+def _mock_server(products: "list[dict[str, str]] | None" = None) -> respx.Route:
     respx.get(f"{BASE}/api/v1/products").mock(
-        return_value=httpx.Response(200, json=[{"name": "mini-render", "title": "Mini Render"}])
+        return_value=httpx.Response(
+            200, json=products or [{"name": "mini-render", "title": "Mini Render"}]
+        )
     )
     respx.get(f"{BASE}/api/v1/products/mini-render/parameters").mock(
         return_value=httpx.Response(
@@ -67,6 +71,9 @@ def test_dialog_prefills_and_submits(app: object, monkeypatch: pytest.MonkeyPatc
     body = json.loads(route.calls.last.request.content)
     assert body["parameters"]["SceneFile"] == "/x/s.mini"
     assert body["name"] == "Mini Render"
+    # Settings are persisted from values captured at submit-start, not from
+    # post-completion widget state; this pins the capture code path.
+    assert dialog.session.settings.get("last_product.mini") == "mini-render"
 
 
 @respx.mock
@@ -76,6 +83,38 @@ def test_validation_error_shows_banner_not_post(app: object) -> None:
     line = dialog.findChild(QtWidgets.QLineEdit, "field_SceneFile")
     assert line is not None
     line.setText("")
+    dialog.submit_and_wait()
+    assert not route.called
+    error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
+    assert error_label is not None
+    assert not error_label.isHidden()
+
+
+@respx.mock
+def test_stale_model_never_submits_under_new_product_name(app: object) -> None:
+    route = _mock_server(
+        products=[
+            {"name": "mini-render", "title": "Mini Render"},
+            {"name": "broken", "title": "Broken"},
+        ]
+    )
+    respx.get(f"{BASE}/api/v1/products/broken/parameters").mock(
+        return_value=httpx.Response(500, json={"error": "internal server error"})
+    )
+    # max_attempts=1 disables the SDK's GET retry/backoff so the test is fast
+    # (mirrors tests/test_session.py::test_server_error_translates...).
+    session = SubmitterSession(server_url=BASE, client=SqiClient(BASE, max_attempts=1))
+    dialog = SubmitDialog(session, adapter=None)
+
+    combo = dialog.findChild(QtWidgets.QComboBox, "productCombo")
+    assert combo is not None
+    broken_index = next(
+        i
+        for i in range(combo.count())
+        if isinstance(combo.itemData(i), Product) and combo.itemData(i).name == "broken"
+    )
+    combo.setCurrentIndex(broken_index)  # rebuild fails: model is now stale
+
     dialog.submit_and_wait()
     assert not route.called
     error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
