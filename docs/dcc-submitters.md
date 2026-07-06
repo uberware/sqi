@@ -264,7 +264,7 @@ Rules that make this a stable contract:
   its own frame range or output path, that value wins over the scene-level
   one for `frame_range`/`output_path`.
 
-### The LINE_EDIT / PATH-fallback nuance
+### PATH parameters and the client chooser fallback
 
 This repo's OpenJD `userInterface` control enum (see
 [`docs/openjd-extensions.md`](openjd-extensions.md) and
@@ -272,24 +272,26 @@ This repo's OpenJD `userInterface` control enum (see
 file-chooser control** — the valid values are `LINE_EDIT`, `MULTILINE_EDIT`,
 `DROPDOWN_LIST`, `CHECK_BOX`, `CHIP_INPUT`, `HIDDEN`, and `SPIN_BOX`. There is
 no `CHOOSE_INPUT_FILE`/`CHOOSE_OUTPUT_FILE`/`CHOOSE_DIRECTORY` a template
-author can declare, and the server rejects a `userInterface` block with no
-`control` at all — so any parameter that carries a `userInterface` hint
-(e.g. to set a friendly `label`) must set `control` to one of the above.
+author can declare, and a `userInterface` block that is present must carry a
+`control` (the server rejects one without it).
 
-The Qt dialog, however, resolves a **type fallback** for a `PATH` parameter
-with no `userInterface` hint at all: it renders a text field with a browse
-button that opens the appropriate file/directory chooser
-(`object_type: DIRECTORY` → folder picker, `data_flow: OUT` → save dialog,
-otherwise an open dialog). This only kicks in when the parameter has **no**
-`userInterface` block — an explicit `control` always wins.
+Chooser widgets instead come from a **client-side type fallback**: for a
+`PATH` parameter with **no** `userInterface` block at all, the Qt dialog
+renders a text field plus a browse button opening the appropriate chooser
+(`objectType: DIRECTORY` → folder picker, `dataFlow: OUT` → save dialog,
+otherwise an open-file dialog), and the web submission form applies its own
+equivalent PATH fallback. An explicit `control` always wins over the type
+fallback — **hinting a `PATH` parameter as `LINE_EDIT` forces a plain text
+field with no browse button**.
 
-The four reference presets set `userInterface: { control: LINE_EDIT, label:
-"..." }` on every `PATH` parameter (`SceneFile`, `OutputDir`) so they get a
-readable label. The tradeoff: **in the shipped presets, `SceneFile` and
-`OutputDir` render as plain text fields, not choosers** — that's expected
-behavior, not a bug. If you'd rather have a browse button on a `PATH`
-parameter in your own duplicate, drop its `userInterface` block entirely (the
-field label falls back to the raw parameter name).
+The rule for preset authors: **leave `PATH` parameters without a
+`userInterface` hint** so clients apply their chooser fallback. The four
+reference presets do exactly this — their `PATH` parameters (`SceneFile`
+everywhere; `OutputDir` in the Maya and Blender presets) carry no
+`userInterface` block, so artists get real file/directory pickers. The
+tradeoff is the field label falls back to the raw parameter name (e.g.
+"SceneFile"), since a label can't currently be set without also forcing a
+`control`. Non-`PATH` parameters keep `LINE_EDIT` hints for friendly labels.
 
 ---
 

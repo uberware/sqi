@@ -16,7 +16,6 @@ template:
       type: PATH
       objectType: FILE
       dataFlow: IN
-      userInterface: { control: LINE_EDIT, label: Blend File }
     - name: Frames
       type: STRING
       userInterface: { control: LINE_EDIT, label: Frame Range }
@@ -24,7 +23,6 @@ template:
       type: PATH
       objectType: DIRECTORY
       dataFlow: OUT
-      userInterface: { control: LINE_EDIT, label: Output Directory }
   steps:
     - name: Render
       hostRequirements:
