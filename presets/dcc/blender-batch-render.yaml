@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: blender-batch-render
+title: Blender Batch Render
+description: >-
+  Renders a saved .blend file headless, one frame per task. Requires workers
+  tagged blender=true with blender on PATH. A starting point - duplicate to
+  customize for your pipeline.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Blender Batch Render
+  extensions: [TASK_CHUNKING]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: LINE_EDIT, label: Blend File }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: OutputDir
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: OUT
+      userInterface: { control: LINE_EDIT, label: Output Directory }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.blender
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 1
+      script:
+        actions:
+          onRun:
+            command: blender
+            args:
+              - "-b"
+              - "{{Param.SceneFile}}"
+              - "-o"
+              - "{{Param.OutputDir}}/frame_####"
+              - "-f"
+              - "{{Task.Param.Frame}}"
