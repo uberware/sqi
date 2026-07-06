@@ -146,6 +146,16 @@ with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including the
 index format, configuration, and the browse → preview → install flow.
 
+The official library's four `Rendering`-category DCC presets
+(`maya-batch-render`, `houdini-rop-render`, `nuke-write-render`,
+`blender-batch-render`) exist to give the [`sqi-submitter`](dcc-submitters.md)
+in-application submitters something real to target. They declare their
+parameters (`SceneFile`, `Frames`, `OutputDir`, plus per-host extras like
+`Renderer`/`RopPath`/`WriteNode`) following a documented, versioned,
+additive-only naming convention — duplicate one and keep the parameter names
+to keep submitter pre-fill working. Full reference:
+[`docs/dcc-submitters.md`](dcc-submitters.md).
+
 Key points about installed products:
 
 - **Read-only.** `PUT /api/v1/products/{name}` returns 403. The template is updated

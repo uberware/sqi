@@ -737,3 +737,37 @@ To wrap a new server endpoint in the client, mirror the existing layering:
 Run `make py-check` before opening the PR. The authoritative request/response
 shape is always the OpenAPI spec (`internal/api/openapi.yaml`); when it and the
 server diverge, treat the spec as authoritative and flag the discrepancy.
+
+## The sqi-submitter package
+
+`clients/submitter/` (import name `sqi_submitter`, distribution `sqi-submitter`)
+is a second, separate Python package depending on `sqi-sdk` — its own
+virtualenv, `pyproject.toml`, and gate, independent of both the Go build and
+`clients/python`. Full user-facing reference: [`docs/dcc-submitters.md`](dcc-submitters.md).
+
+```
+clients/submitter/
+  pyproject.toml            sqi-submitter; requires-python >=3.9; deps: sqi-sdk
+  src/sqi_submitter/
+    core/                   no Qt, no DCC imports — session, form model, pre-fill, HostAdapter
+    qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
+    hosts/{maya,houdini,nuke,blender}/   adapter + launch glue per host
+  tests/                     pytest; tests/integration/ is env-gated (see below)
+presets/dcc/                 the four reference preset YAML fixtures, validated by
+                              internal/product/dccpresets_test.go
+```
+
+Gate command line (from `clients/submitter`, with `sqi-sdk` resolvable —
+`pip install -e ../python` first if not already installed):
+
+```sh
+ruff format --check . && ruff check . && mypy src && pytest -q
+```
+
+`tests/integration/` is skipped unless `SQI_TEST_SERVER_URL` points at a live
+`sqi-server`; the Blender render smoke inside it additionally requires
+`SQI_TEST_BLENDER=1` and a local Blender install.
+
+Adding a DCC adapter (a fifth Python-based host) is a `HostAdapter` subclass
+plus launch glue — walked through in
+[`docs/dcc-submitters.md` §6, Writing a new adapter](dcc-submitters.md#writing-a-new-adapter).

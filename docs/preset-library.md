@@ -156,3 +156,18 @@ Any HTTP server that can serve static files is sufficient:
 Set `preset_library.url` to the full URL of your `index.json`. When you update a
 definition file, also update its `sha256` entry in the index so that already-installed
 copies show the **Update available** badge.
+
+---
+
+## DCC reference presets
+
+The official library ships four `Rendering`-category presets — `maya-batch-render`,
+`houdini-rop-render`, `nuke-write-render`, `blender-batch-render` — as ready
+targets for the [`sqi-submitter`](dcc-submitters.md) in-application submitters.
+Each declares its parameters using the [parameter convention
+contract](dcc-submitters.md#the-parameter-convention-contract) (`SceneFile`,
+`Frames`, `OutputDir`, plus per-host extras) so submitter pre-fill works out of
+the box, and each gates on an operator-configured worker capability tag (see
+[worker capability tags](worker-capabilities.md)). See
+[`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
+including the chunking behavior and worker requirements per preset.
