@@ -20,7 +20,9 @@ def _install_fake_cmds(fake_host_module: Any, **overrides: Any) -> tuple[Any, li
     state.update(overrides)
     saved: list[bool] = []
 
-    def file(*args: Any, **kw: Any) -> Any:  # shadows the builtin deliberately: mirrors maya.cmds.file
+    def file(
+        *args: Any, **kw: Any
+    ) -> Any:  # shadows the builtin deliberately: mirrors maya.cmds.file
         if kw.get("query") and kw.get("sceneName"):
             return state[("file", ("query", "sceneName"))]
         if kw.get("query") and kw.get("modified"):
@@ -70,8 +72,28 @@ def test_render_targets_are_renderable_unreferenced_layers(fake_host_module: Any
 
     targets = MayaAdapter().render_targets()
     assert [t.name for t in targets] == ["masterLayer", "charLayer"]
+    assert targets[0].extra == {"RenderLayer": "masterLayer"}
     assert targets[1].extra == {"RenderLayer": "charLayer"}
     assert all(t.kind == "render_layer" for t in targets)
+
+
+def test_render_targets_exclude_referenced_layers(fake_host_module: Any) -> None:
+    # importedLayer is renderable but referenced: only the referenceQuery
+    # filter can exclude it, so this test fails if that check is removed.
+    _install_fake_cmds(
+        fake_host_module,
+        layers=["defaultRenderLayer", "charLayer", "importedLayer"],
+        referenced={"defaultRenderLayer": False, "charLayer": False, "importedLayer": True},
+        **{
+            "defaultRenderLayer.renderable": True,
+            "charLayer.renderable": True,
+            "importedLayer.renderable": True,
+        },
+    )
+    from sqi_submitter.hosts.maya.adapter import MayaAdapter
+
+    targets = MayaAdapter().render_targets()
+    assert [t.name for t in targets] == ["masterLayer", "charLayer"]
 
 
 def test_save_scene_saves_when_named_and_fails_when_untitled(fake_host_module: Any) -> None:
