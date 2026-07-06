@@ -26,7 +26,7 @@ template:
     - name: Render
       hostRequirements:
         attributes:
-          - name: attr.worker.houdini
+          - name: attr.worker.tag.houdini
             anyOf: ["true"]
       parameterSpace:
         taskParameterDefinitions:

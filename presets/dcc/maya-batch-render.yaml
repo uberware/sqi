@@ -35,7 +35,7 @@ template:
     - name: Render
       hostRequirements:
         attributes:
-          - name: attr.worker.maya
+          - name: attr.worker.tag.maya
             anyOf: ["true"]
       parameterSpace:
         taskParameterDefinitions:

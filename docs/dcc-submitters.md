@@ -196,16 +196,16 @@ Every submitter resolves the server URL the same way, in order:
 C1 ships four products under `presets/dcc/`, published through the [preset
 library](preset-library.md) so `sqi-submitter` has something real to submit
 to out of the box. Install them from **Admin → Preset Library** in the web
-UI, or by hand via `product create` if you're not using a preset index. All
-four use the product `category` `Rendering` and declare `TASK_CHUNKING` for
-frame distribution.
+UI, or by hand via `POST /api/v1/products` (or **Admin → Products** in the
+web UI) if you're not using a preset index. All four use the product
+`category` `Rendering` and declare `TASK_CHUNKING` for frame distribution.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
-| `maya-batch-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.maya = "true"` |
-| `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` per frame range | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.houdini = "true"` |
-| `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.nuke = "true"` |
-| `blender-batch-render` | `blender -b <file> -o <dir>/frame_#### -f <frame>` | one frame per task | `SceneFile`, `Frames`, `OutputDir` | `attr.worker.blender = "true"` |
+| `maya-batch-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
+| `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` per frame range | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
+| `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
+| `blender-batch-render` | `blender -b <file> -o <dir>/frame_#### -f <frame>` | one frame per task | `SceneFile`, `Frames`, `OutputDir` | `attr.worker.tag.blender = "true"` |
 
 Maya and Blender are one-frame-per-task because both commands only take a
 single frame at a time (`Render -s/-e` bounds one call; Blender's `-f` renders
@@ -216,12 +216,21 @@ Nuke get real multi-frame chunks (10 by default) because both the embedded
 a chunk amortizes DCC startup cost across several frames.
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
-capability tag — these are **operator-configured**, not auto-detected; see
-[worker capability tags](worker-capabilities.md) for how to add
-`capability_tags: [maya=true]` (or `houdini`/`nuke`/`blender`) to a worker's
-config, on top of having the corresponding DCC binary on that worker's `PATH`.
-A job submitted against one of these products sits `ready` forever if no
-worker advertises the tag.
+`attr.worker.tag.<name>` capability tag — these are **operator-configured**,
+not auto-detected. Add a `key=value` entry to the worker's
+`capability_tags` (see [worker capability tags](worker-capabilities.md)),
+on top of having the corresponding DCC binary on that worker's `PATH`:
+
+```yaml
+worker:
+  capability_tags:
+    - maya=true
+```
+
+(substitute `houdini=true`, `nuke=true`, or `blender=true` for the other
+three presets). This satisfies the preset's `attr.worker.tag.maya` (etc.)
+requirement. A job submitted against one of these products sits `ready`
+forever if no worker advertises the tag.
 
 ---
 
@@ -275,23 +284,27 @@ no `CHOOSE_INPUT_FILE`/`CHOOSE_OUTPUT_FILE`/`CHOOSE_DIRECTORY` a template
 author can declare, and a `userInterface` block that is present must carry a
 `control` (the server rejects one without it).
 
-Chooser widgets instead come from a **client-side type fallback**: for a
-`PATH` parameter with **no** `userInterface` block at all, the Qt dialog
-renders a text field plus a browse button opening the appropriate chooser
-(`objectType: DIRECTORY` → folder picker, `dataFlow: OUT` → save dialog,
-otherwise an open-file dialog), and the web submission form applies its own
-equivalent PATH fallback. An explicit `control` always wins over the type
-fallback — **hinting a `PATH` parameter as `LINE_EDIT` forces a plain text
-field with no browse button**.
+Chooser widgets instead come from a **client-side type fallback**, and it
+only exists in the Qt dialog: for a `PATH` parameter with **no**
+`userInterface` block at all, the Qt dialog renders a text field plus a
+browse button opening the appropriate chooser (`objectType: DIRECTORY` →
+folder picker, `dataFlow: OUT` → save dialog, otherwise an open-file dialog).
+The web submission form has no equivalent — `selectWidget` in
+`web/src/lib/productForm.ts` falls through to a plain text input for a
+`PATH` parameter with no `control` hint, same as any other unrecognized type.
+An explicit `control` always wins over the Qt type fallback — **hinting a
+`PATH` parameter as `LINE_EDIT` forces a plain text field with no browse
+button, in both Qt and web**.
 
 The rule for preset authors: **leave `PATH` parameters without a
-`userInterface` hint** so clients apply their chooser fallback. The four
-reference presets do exactly this — their `PATH` parameters (`SceneFile`
-everywhere; `OutputDir` in the Maya and Blender presets) carry no
-`userInterface` block, so artists get real file/directory pickers. The
-tradeoff is the field label falls back to the raw parameter name (e.g.
-"SceneFile"), since a label can't currently be set without also forcing a
-`control`. Non-`PATH` parameters keep `LINE_EDIT` hints for friendly labels.
+`userInterface` hint** so the Qt dialog applies its chooser fallback (the web
+form renders a plain text field either way). The four reference presets do
+exactly this — their `PATH` parameters (`SceneFile` everywhere; `OutputDir`
+in the Maya and Blender presets) carry no `userInterface` block, so Qt-hosted
+artists get real file/directory pickers. The tradeoff is the field label
+falls back to the raw parameter name (e.g. "SceneFile"), since a label can't
+currently be set without also forcing a `control`. Non-`PATH` parameters keep
+`LINE_EDIT` hints for friendly labels.
 
 ---
 

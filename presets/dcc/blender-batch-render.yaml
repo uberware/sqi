@@ -27,7 +27,7 @@ template:
     - name: Render
       hostRequirements:
         attributes:
-          - name: attr.worker.blender
+          - name: attr.worker.tag.blender
             anyOf: ["true"]
       parameterSpace:
         taskParameterDefinitions:
