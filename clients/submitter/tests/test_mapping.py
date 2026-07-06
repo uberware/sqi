@@ -68,3 +68,22 @@ def test_extras_match_case_and_separator_insensitively() -> None:
     target = RenderTarget(name="Write1", kind="write_node", extra={"WriteNode": "Write1"})
     got = prefill([_p("write_node")], CTX, target)
     assert got == {"write_node": "Write1"}
+
+
+def test_extras_win_over_convention_for_same_name() -> None:
+    # "Frames" is both a convention-aliased key (frame_range) and, here, a
+    # target extra. Extras must win: this is what makes the Blender "Scene"
+    # extra (the scene NAME) safe now that "scene" is no longer a scene_path
+    # alias — a fork adding a same-named extra always beats the convention.
+    target = RenderTarget(name="T", kind="write_node", frame_range="10-20", extra={"Frames": "999"})
+    got = prefill([_p("Frames")], CTX, target)
+    assert got == {"Frames": "999"}
+
+
+def test_scene_is_no_longer_a_scene_path_alias() -> None:
+    # "scene" was removed from CONVENTION_ALIASES["scene_path"]: it collided
+    # with hosts/blender/adapter.py's "Scene" extra (the scene NAME, not a
+    # path). A parameter literally named "Scene" no longer prefills from
+    # SceneContext.scene_path.
+    got = prefill([_p("Scene")], CTX)
+    assert got == {}

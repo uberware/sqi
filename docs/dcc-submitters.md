@@ -245,7 +245,7 @@ keep working submitters as long as the parameter names below are kept.
 
 | Convention key | Matches parameter names | Source |
 |---|---|---|
-| `scene_path` | `SceneFile`, `Scene`, `ScenePath` | `SceneContext.scene_path` |
+| `scene_path` | `SceneFile`, `ScenePath` | `SceneContext.scene_path` |
 | `frame_range` | `Frames`, `FrameRange` | `SceneContext.frame_range`, overridden by the selected render target's range |
 | `output_path` | `OutputDir`, `OutputPath` | `SceneContext.output_path`, overridden by the selected render target's output path |
 | `renderer` | `Renderer` | `SceneContext.renderer` |
@@ -254,16 +254,23 @@ A selected render target can also supply **exact-name** extras that aren't
 part of the general convention (still case/separator-insensitive, but not
 aliased to anything else): `RenderLayer` (Maya render layer), `RopPath`
 (Houdini ROP path), `WriteNode` (Nuke Write node). Blender's target picker is
-scene × view-layer, but the shipped `blender-batch-render` preset doesn't
-declare `Scene`/`ViewLayer` parameters yet — selecting a target there only
-drives the `frame_range`/`output_path` override, not a target-specific
-extra parameter.
+scene × view-layer, and each target's extras include `Scene` (the Blender
+**scene name**, not a path — see `hosts/blender/adapter.py`) and `ViewLayer`.
+The shipped `blender-batch-render` preset doesn't declare `Scene`/`ViewLayer`
+parameters yet — selecting a target there only drives the
+`frame_range`/`output_path` override — but a fork that adds a `Scene`
+parameter gets the scene name unambiguously: extras always win over
+convention aliases (below), and `scene` is deliberately not a `scene_path`
+alias for exactly this reason.
 
 Rules that make this a stable contract:
 
 - **Additive-only.** New convention keys or aliases may be added; existing
   ones are never renamed or removed. A form field that doesn't match any
   known key or extra simply renders unfilled — it's never an error.
+- **Extras win over convention aliases.** If a selected render target's
+  `extra` map has a key matching a parameter's name, that value is used even
+  if the same parameter name would otherwise match a convention alias.
 - **Never keyed on product identity.** The mapping code has no notion of
   "this is the Maya preset" — it only ever asks "does this parameter's name
   match `scene_path`'s aliases?". A completely custom, differently-named

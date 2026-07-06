@@ -13,7 +13,12 @@ from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 
 CONVENTION_ALIASES: dict[str, frozenset[str]] = {
-    "scene_path": frozenset({"scenefile", "scene", "scenepath"}),
+    # "scene" is deliberately NOT an alias: hosts/blender/adapter.py emits a
+    # target extra key "Scene" holding the Blender scene NAME (not a path),
+    # and extras beat convention aliases in prefill() below. Keeping "scene"
+    # here would silently overwrite a scene-name extra with a scene path for
+    # any product parameter literally named "Scene".
+    "scene_path": frozenset({"scenefile", "scenepath"}),
     "frame_range": frozenset({"frames", "framerange"}),
     "output_path": frozenset({"outputdir", "outputpath"}),
     "renderer": frozenset({"renderer"}),

@@ -216,7 +216,10 @@ Affinity rules in OpenJD job definitions live under a step's
 list of acceptable string values. A custom worker tag is addressed as
 `attr.worker.tag.<key>`, matched case-insensitively against
 `Capabilities.Tags[<key>]` (see [`internal/scheduler/matcher.go`](../internal/scheduler/matcher.go)).
-Any other attribute name always resolves to `""` and can never match.
+Any attribute name outside the well-known set (`attr.worker.os.family`,
+`attr.worker.os.version`, `attr.worker.computelocation`) and the
+`attr.worker.tag.<key>` namespace always resolves to `""` and can never
+match.
 
 To gate a step on a worker tagged `maya=true` (set via `capability_tags:
 [maya=true]`, see [Setting manual tags](#setting-manual-tags) above):
