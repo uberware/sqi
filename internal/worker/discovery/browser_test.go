@@ -270,10 +270,13 @@ func TestResolveNATSURLDisabledNoURL(t *testing.T) {
 	}
 }
 
-func TestResolveNATSURLMDNSTimeout(t *testing.T) {
-	// This test runs a real (brief) mDNS browse that will find no sqi-server
-	// and return ErrDiscoveryTimeout. Skipped in -short mode because it
-	// waits for the timeout to elapse.
+func TestBrowseMDNSTimeout(t *testing.T) {
+	// This test runs a real (brief) mDNS browse and asserts the timeout path
+	// returns ErrDiscoveryTimeout. It browses a service type nothing
+	// advertises rather than "_sqi._tcp": a developer machine (or CI host)
+	// legitimately running sqi-server would otherwise answer instantly and
+	// turn this into a test of the local network's state, not of the timeout
+	// path. Skipped in -short mode because it waits for the timeout to elapse.
 	if testing.Short() {
 		t.Skip("skipping mDNS network test in short mode")
 	}
@@ -284,7 +287,7 @@ func TestResolveNATSURLMDNSTimeout(t *testing.T) {
 	timeout := 200 * time.Millisecond
 	start := time.Now()
 
-	_, err := ResolveNATSURL(ctx, "", true, timeout, logger)
+	_, err := browseService(ctx, "_sqi-test-absent._tcp", timeout, logger)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, ErrDiscoveryTimeout) {
