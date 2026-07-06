@@ -121,6 +121,43 @@ def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any
     assert annotations["save_before_submit"] == ("prop", "BoolProperty")
 
 
+def test_copy_scene_values_maps_bool_checkbox_through_allowed_values() -> None:
+    # CHECK_BOX bools must go through the same (off, on) = allowed_values
+    # convention as qt/widgets.py and the web form — never str(bool), which
+    # would write Python's capitalized "True"/"False".
+    from sqi_client.models import ParameterUserInterface, ProductParameter
+    from sqi_submitter.core.schema import FormModel
+    from sqi_submitter.hosts.blender.addon import _bool_field_value, _copy_scene_values_into_model
+
+    model = FormModel.from_parameters(
+        [
+            ProductParameter(
+                name="Skip",
+                type="STRING",
+                allowed_values=["off", "on"],
+                user_interface=ParameterUserInterface(control="CHECK_BOX"),
+            ),
+            ProductParameter(
+                name="NoAllowedValues",
+                type="STRING",
+                user_interface=ParameterUserInterface(control="CHECK_BOX"),
+            ),
+        ]
+    )
+    fields = SimpleNamespace(sqi_field_Skip=True, sqi_field_NoAllowedValues=False)
+    context = SimpleNamespace(scene=SimpleNamespace(sqi_fields=fields))
+
+    _copy_scene_values_into_model(context, model)
+
+    assert model.values()["Skip"] == "on"
+    assert model.values()["NoAllowedValues"] == "false"  # <2 allowed_values fallback, lowercase
+
+    # Directly pins the (off, on) mapping function used above.
+    skip_field = next(f for f in model.fields if f.parameter.name == "Skip")
+    assert _bool_field_value(True, skip_field) == "on"
+    assert _bool_field_value(False, skip_field) == "off"
+
+
 def test_field_property_group_maps_widgets_to_property_types(fake_host_module: Any) -> None:
     from sqi_client.models import ParameterUserInterface, ProductParameter
     from sqi_submitter.core.schema import FormModel

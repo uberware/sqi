@@ -68,7 +68,8 @@ def _write_value(w: QtWidgets.QWidget, f: FormField) -> None:
         else:
             w.setCurrentIndex(-1)
     elif isinstance(w, QtWidgets.QCheckBox):
-        w.setChecked(f.value == _check_states(f)[0])
+        _, on = _check_states(f)
+        w.setChecked(f.value == on)
     elif isinstance(w, QtWidgets.QSpinBox):
         if f.value is not None:
             w.setValue(int(float(f.value)))
@@ -76,10 +77,17 @@ def _write_value(w: QtWidgets.QWidget, f: FormField) -> None:
         w.setValue(float(f.value))
 
 
-def _check_states(f: FormField) -> list[str]:
-    """Checked/unchecked model values; fall back when allowed_values is short."""
+def _check_states(f: FormField) -> tuple[str, str]:
+    """(off, on) model values: allowed_values[0] is unchecked, [1] is checked.
+
+    Matches the web form's convention (web/src/components/ProductParamField.tsx
+    ``const [off, on] = allowed_values``). Falls back to ("false", "true") when
+    allowed_values is short.
+    """
     allowed = f.parameter.allowed_values or []
-    return list(allowed) if len(allowed) >= 2 else ["true", "false"]
+    if len(allowed) >= 2:
+        return allowed[0], allowed[1]
+    return "false", "true"
 
 
 def _editor(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -144,10 +152,10 @@ def _double_spin_box(
 
 def _check_box(f: FormField, model: FormModel, parent: QtWidgets.QWidget) -> QtWidgets.QCheckBox:
     name = f.parameter.name
-    states = _check_states(f)
+    off, on = _check_states(f)
     w = QtWidgets.QCheckBox(parent)
-    w.setChecked(f.value == states[0])
-    w.toggled.connect(lambda on: model.set_value(name, states[0] if on else states[1]))
+    w.setChecked(f.value == on)
+    w.toggled.connect(lambda checked: model.set_value(name, on if checked else off))
     return w
 
 

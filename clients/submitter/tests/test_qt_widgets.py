@@ -61,6 +61,59 @@ def test_spin_and_dropdown_bind(app: object) -> None:
     assert model.values()["Renderer"] == "vray"
 
 
+def _check_box_model(value: str) -> FormModel:
+    # allowed_values[0] is the unchecked value, [1] is checked — matches the
+    # web form's `const [off, on] = allowed_values` (ProductParamField.tsx).
+    return FormModel.from_parameters(
+        [
+            ProductParameter(
+                name="Skip",
+                type="STRING",
+                default=value,
+                allowed_values=["off", "on"],
+                user_interface=ParameterUserInterface(control="CHECK_BOX"),
+            ),
+        ]
+    )
+
+
+def test_check_box_initial_state_matches_web_order(app: object) -> None:
+    model = _check_box_model("on")
+    form = build_form(model)
+    box = form.findChild(QtWidgets.QCheckBox, "field_Skip")
+    assert box is not None
+    assert box.isChecked() is True
+
+    unchecked_model = _check_box_model("off")
+    unchecked_form = build_form(unchecked_model)
+    unchecked_box = unchecked_form.findChild(QtWidgets.QCheckBox, "field_Skip")
+    assert unchecked_box is not None
+    assert unchecked_box.isChecked() is False
+
+
+def test_check_box_toggle_writes_web_order_values(app: object) -> None:
+    model = _check_box_model("off")
+    form = build_form(model)
+    box = form.findChild(QtWidgets.QCheckBox, "field_Skip")
+    assert box is not None
+
+    box.setChecked(True)
+    assert model.values()["Skip"] == "on"
+    box.setChecked(False)
+    assert model.values()["Skip"] == "off"
+
+
+def test_check_box_refresh_form_matches_web_order(app: object) -> None:
+    model = _check_box_model("off")
+    form = build_form(model)
+    box = form.findChild(QtWidgets.QCheckBox, "field_Skip")
+    assert box is not None
+
+    model.apply_prefill({"Skip": "on"})
+    refresh_form(form, model)
+    assert box.isChecked() is True
+
+
 def test_refresh_form_shows_prefill(app: object) -> None:
     model = _model()
     form = build_form(model)

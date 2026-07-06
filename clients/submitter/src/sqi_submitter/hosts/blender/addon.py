@@ -156,15 +156,35 @@ def _apply_model(model: FormModel | None, adapter: HostAdapter | None) -> None:
     bpy.types.Scene.sqi_fields = bpy.props.PointerProperty(type=new_cls)
 
 
+def _bool_field_value(checked: bool, field: FormField) -> str:
+    """Map a CHECK_BOX bool through the same (off, on) rule as qt/widgets.py.
+
+    ``allowed_values[0]`` is the unchecked value, ``allowed_values[1]`` is
+    checked (mirrors the web form's ``const [off, on] = allowed_values`` in
+    ``web/src/components/ProductParamField.tsx``). Never ``str(bool)`` —
+    that would write Python's capitalized "True"/"False", a third,
+    incompatible convention.
+    """
+    allowed = field.parameter.allowed_values or []
+    off, on = (allowed[0], allowed[1]) if len(allowed) >= 2 else ("false", "true")
+    return on if checked else off
+
+
 def _copy_scene_values_into_model(context: Any, model: FormModel) -> None:
     """Read the artist's edits out of the scene properties before submit."""
     fields = getattr(context.scene, "sqi_fields", None)
     if fields is None:
         return
-    for name, _label, _widget in field_layout(model):
-        value = getattr(fields, _prop_name(name), None)
-        if value is not None:
-            model.set_value(name, str(value))
+    for f in model.fields:
+        if f.hidden:
+            continue
+        value = getattr(fields, _prop_name(f.parameter.name), None)
+        if value is None:
+            continue
+        if f.widget == "CHECK_BOX":
+            model.set_value(f.parameter.name, _bool_field_value(bool(value), f))
+        else:
+            model.set_value(f.parameter.name, str(value))
 
 
 def _product_enum_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
