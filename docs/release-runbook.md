@@ -80,6 +80,48 @@ needs to be done once.
 
 ---
 
+## Step 3b: sqi-submitter PyPI trusted publisher
+
+Same procedure as Step 3, for the separate `sqi-submitter` PyPI project (the
+DCC submitter framework package in `clients/submitter/`). This is required
+before `sqi-submitter` can be published to PyPI, and it only needs to be done
+once.
+
+**Procedure:**
+
+1. Log in to [pypi.org](https://pypi.org) as the `uberware` account.
+
+2. If the `sqi-submitter` project does not yet exist on PyPI, claim the name
+   with a one-time manual placeholder upload (a pending trusted publisher
+   alone does not reserve the name against a `python -m build` from a local
+   checkout — verified free 2026-07-05):
+
+   ```bash
+   cd clients/submitter
+   python -m pip install --upgrade build twine
+   python -m build
+   twine upload dist/*   # prompts for a PyPI API token on first upload
+   ```
+
+3. Once the project exists (either from the placeholder upload above or
+   because it already did), navigate to its Publishing settings and add a
+   trusted publisher:
+   - PyPI project name: `sqi-submitter`
+   - Owner: `uberware`
+   - Repository name: `sqi`
+   - Workflow filename: `release.yml`
+   - Environment name: *(leave blank)*
+
+4. The `PUBLISH_TO_PYPI` repository variable set in Step 3 gates both the
+   `sqi-sdk` and `sqi-submitter` publish steps in `release.yml` — no separate
+   variable is needed.
+
+**Verify:** the `sqi-submitter` project's Publishing page on PyPI lists the
+trusted publisher above, and `gh variable list` still shows
+`PUBLISH_TO_PYPI=true`.
+
+---
+
 ## Step 4: Notarization dry-run via a throwaway tag
 
 Run a full release pipeline using a throwaway `-rc` tag to confirm that
@@ -152,6 +194,15 @@ build (`-amd64`/`-arm64` per image, plus the manifest tags).
    grep __version__ clients/python/src/sqi_client/_version.py
    ```
 
+   Also bump and confirm `clients/submitter/src/sqi_submitter/_version.py` —
+   it does **not** track the same version as `sqi-sdk` automatically (it ships
+   `0.1.0.dev0` until deliberately bumped) and `release.yml`'s
+   "Check sqi-submitter version matches the tag" step fails the release
+   outright if it does not match the tag:
+   ```bash
+   grep __version__ clients/submitter/src/sqi_submitter/_version.py
+   ```
+
 2. Confirm the `main` branch is green in CI and all release-blocking tasks are
    merged.
 
@@ -168,6 +219,43 @@ build (`-amd64`/`-arm64` per image, plus the manifest tags).
   `sqi_Windows_x86_64.zip`, `sqi_Windows_arm64.zip`
 - `checksums.txt`, SBOMs (`.sbom`), cosign signatures (`.sig` / `.pem`)
 - `sqi_sdk-0.1.0-py3-none-any.whl` and `sqi_sdk-0.1.0.tar.gz`
+- `sqi_submitter-0.1.0-py3-none-any.whl` and `sqi_submitter-0.1.0.tar.gz`
+
+---
+
+## Step 6b: Publish DCC reference presets to the preset library
+
+The four reference presets authored in this repo (`presets/dcc/*.yaml` —
+Maya, Houdini, Nuke, Blender) are not distributed as part of the GitHub
+release or PyPI packages; they are published to the separate
+`uberware/sqi-presets` repository that backs the default
+`preset_library.url` (see `docs/preset-library.md`).
+
+**Procedure:**
+
+1. Compute the SHA-256 of each preset file:
+   ```bash
+   shasum -a 256 presets/dcc/*.yaml
+   ```
+
+2. Clone (or update a working checkout of) `uberware/sqi-presets` and copy
+   the four files into it, following that repository's existing directory
+   layout (mirrors `docs/preset-library.md`'s `definition` path convention,
+   e.g. `<category>/<name>.yaml`).
+
+3. Add or update the corresponding entries in that repo's `index.json`,
+   following its README: `name`, `title`, `description`, `category`,
+   `version`, `definition` (path relative to the index), and the `sha256`
+   computed in step 1.
+
+4. Commit and push to `uberware/sqi-presets` per that repo's own contribution
+   process (it is not part of this release's tag or CI).
+
+**Verify:**
+- The published index (`https://uberware.github.io/sqi-presets/index.json`)
+  lists all four presets with the correct `sha256`.
+- In the sqi web UI's Preset Library page, each preset installs successfully
+  and its checksum verifies (no 422).
 
 ---
 
@@ -203,6 +291,16 @@ python -c "import sqi_client; print(sqi_client.__version__)"
 ```
 
 Expected output: `0.1.0`.
+
+Also verify `sqi-submitter` (once its version has been bumped past the
+`0.1.0.dev0` placeholder per Step 6):
+
+```bash
+python -m pip install --no-cache-dir "sqi-submitter==<version>"
+python -c "import sqi_submitter; print(sqi_submitter.__version__)"
+```
+
+Expected output: `<version>` matching the tag.
 
 ---
 

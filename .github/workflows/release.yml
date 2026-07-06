@@ -70,6 +70,40 @@ jobs:
           print(f"sqi-sdk version {version} matches tag {tag}")
           PY
 
+      # Same rule as the sqi-sdk check above, applied to the submitter package:
+      # fail the release outright if clients/submitter's version was not bumped
+      # to match the tag. Kept strict and symmetric — bumping the version is a
+      # release-runbook step, not something this workflow does automatically.
+      - name: Check sqi-submitter version matches the tag
+        if: ${{ !contains(github.ref_name, '-rc') }}
+        run: |
+          python3 -m pip install --quiet --upgrade packaging
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          from packaging.version import InvalidVersion, Version
+
+          tag = sys.argv[1]
+          tag = tag[1:] if tag.startswith("v") else tag
+          source = pathlib.Path("clients/submitter/src/sqi_submitter/_version.py").read_text()
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', source)
+          if not match:
+              sys.exit("::error::could not find __version__ in clients/submitter/src/sqi_submitter/_version.py")
+          version = match.group(1)
+          try:
+              mismatch = Version(version) != Version(tag)
+          except InvalidVersion as exc:
+              sys.exit(f"::error::invalid version string: {exc}")
+          if mismatch:
+              sys.exit(
+                  f"::error::sqi_submitter.__version__ ({version}) does not match release "
+                  f"tag ({tag}); bump clients/submitter/src/sqi_submitter/_version.py"
+              )
+          print(f"sqi-submitter version {version} matches tag {tag}")
+          PY
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -249,3 +283,30 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: clients/python/dist
+
+      # ── Submitter client (sqi-submitter) distributions ─────────────────────
+      # Same pattern as sqi-sdk above: goreleaser does not build this package,
+      # so its sdist + wheel are built and attached separately.
+      - name: Build sqi-submitter sdist + wheel
+        working-directory: clients/submitter
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Attach sqi-submitter distributions to the release
+        run: gh release upload "${GITHUB_REF_NAME}" clients/submitter/dist/* --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish sqi-submitter to PyPI via OIDC trusted publishing, gated on the
+      # same PUBLISH_TO_PYPI repository variable as sqi-sdk. NOTE: the
+      # `sqi-submitter` PyPI project must exist and have a trusted publisher
+      # configured before the first tagged release reaches this step — claim
+      # the name with a one-time manual placeholder upload (see release
+      # runbook; name verified free 2026-07-05). Until that setup is done,
+      # leave PUBLISH_TO_PYPI unset/false so this step no-ops.
+      - name: Publish sqi-submitter to PyPI (trusted publishing)
+        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: clients/submitter/dist
