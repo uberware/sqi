@@ -3,22 +3,36 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from sqi_submitter.core.errors import SubmitterError
 
-QT_BINDING = ""
-QtCore = QtGui = QtWidgets = None  # type: ignore[assignment]
+__all__ = ["QT_BINDING", "QtCore", "QtGui", "QtWidgets", "require_qt"]
 
-try:  # pragma: no cover - depends on environment
-    from PySide6 import QtCore, QtGui, QtWidgets  # type: ignore[no-redef]
+QT_BINDING: str
+
+if TYPE_CHECKING:
+    # Type-check qt.* modules against the real PySide6 stubs so attribute
+    # typos (e.g. QtWidgets.QLinEdit) are mypy errors; runtime keeps the
+    # graceful no-binding fallback below.
+    from PySide6 import QtCore, QtGui, QtWidgets
 
     QT_BINDING = "PySide6"
-except ImportError:  # pragma: no cover
-    try:
-        from PySide2 import QtCore, QtGui, QtWidgets  # type: ignore[no-redef] # noqa: F401
+else:
+    QT_BINDING = ""
+    QtCore = QtGui = QtWidgets = None
 
-        QT_BINDING = "PySide2"
-    except ImportError:
-        pass
+    try:  # pragma: no cover - depends on environment
+        from PySide6 import QtCore, QtGui, QtWidgets
+
+        QT_BINDING = "PySide6"
+    except ImportError:  # pragma: no cover
+        try:
+            from PySide2 import QtCore, QtGui, QtWidgets
+
+            QT_BINDING = "PySide2"
+        except ImportError:
+            pass
 
 
 def require_qt() -> None:
