@@ -123,12 +123,13 @@ worker:
     - arnold-7
     - gpu
     - highram
+    - maya=true   # key=value: sets Tags["maya"] = "true"
 ```
 
 **Via environment variable (comma-separated):**
 
 ```sh
-SQI_WORKER_CAPABILITY_TAGS=maya-2025,arnold-7,gpu sqi-worker start
+SQI_WORKER_CAPABILITY_TAGS=maya-2025,arnold-7,gpu,maya=true sqi-worker start
 ```
 
 **Verify before connecting:**
@@ -169,20 +170,30 @@ Manual tags are merged into the `Tags` map (a `map[string]string` keyed by
 tag name). A manual tag overwrites an auto-detected entry only when the map
 key is identical.
 
+Each `capability_tags` entry is parsed by `MergeManualTags`:
+
+- A bare entry with no `=` is stored as a presence-only key with an empty
+  value, e.g. `maya-2025` → `Tags["maya-2025"] = ""`.
+- A `key=value` entry is split on the **first** `=`, e.g. `maya=true` →
+  `Tags["maya"] = "true"`. A value may itself contain `=` (only the first
+  one splits the key from the value), and a trailing `=` with nothing after
+  it (`maya=`) stores an empty value, same as the presence-only form.
+- An entry with an empty key (starting with `=`, e.g. `=true`) is skipped —
+  an empty tag key can never satisfy an `attr.worker.tag.<key>` requirement.
+
 **Auto-detected string tags** — `os` and `os_version` — are stored in `Tags`
 and can be overridden by adding a manual tag with the same exact key:
 
 ```yaml
 worker:
   capability_tags:
-    - os          # adds Tags["os"] = "" (presence flag)
-    - os_version  # if needed, the presence of this key replaces the auto value
+    - os=freebsd  # replaces Tags["os"] with "freebsd"
+    - os_version  # presence-only: clears the auto-detected value to ""
 ```
 
-Note that `MergeManualTags` stores each tag string as a verbatim map key with
-an empty value. To override `os_version` you add `"os_version"` as a tag
-(which sets `Tags["os_version"] = ""`), effectively clearing the auto-detected
-string value for that key.
+To override `os_version` with a specific value, use `os_version=<value>`; to
+just clear it, add the bare `os_version` entry (which sets
+`Tags["os_version"] = ""`).
 
 **Hardware values** — `RAMMb`, `CPUCount`, and GPU fields — are reported as
 typed struct fields in the registration message, **not** as entries in the
@@ -200,23 +211,32 @@ option.
 
 ## Using capability tags in job submissions
 
-Affinity rules in OpenJD job definitions reference capability tags by name.
-The exact syntax depends on the sqi-server version and job schema; the
-principle is the same in all cases:
+Affinity rules in OpenJD job definitions live under a step's
+`hostRequirements.attributes`, each entry a `name` + an `anyOf` (or `allOf`)
+list of acceptable string values. A custom worker tag is addressed as
+`attr.worker.tag.<key>`, matched case-insensitively against
+`Capabilities.Tags[<key>]` (see [`internal/scheduler/matcher.go`](../internal/scheduler/matcher.go)).
+Any other attribute name always resolves to `""` and can never match.
+
+To gate a step on a worker tagged `maya=true` (set via `capability_tags:
+[maya=true]`, see [Setting manual tags](#setting-manual-tags) above):
 
 ```yaml
-# Hypothetical job definition excerpt
-affinity:
-  required:
-    - gpu
-    - maya-2025
-  preferred:
-    - highram
+steps:
+  - name: Render
+    hostRequirements:
+      attributes:
+        - name: attr.worker.tag.maya
+          anyOf: ["true"]
 ```
 
-The server's scheduler matches the required tags against registered workers'
-capability sets and routes each task only to workers that satisfy all required
-constraints. Workers missing any required tag are not eligible for that task.
+This is the real syntax the four reference presets under `presets/dcc/` use
+— see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
+
+The server's scheduler matches the required attribute against registered
+workers' `Tags` map and routes each task only to workers that satisfy every
+`hostRequirements` attribute. Workers missing the tag entirely, or whose
+`Tags[<key>]` doesn't appear in `anyOf`, are not eligible for that task.
 
 ---
 
