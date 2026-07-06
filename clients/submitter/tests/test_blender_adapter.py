@@ -70,3 +70,79 @@ def test_field_layout_rows_follow_form_model() -> None:
         ("Frames", "Frames", "LINE_EDIT"),
         ("Chunk", "Chunk", "SPIN_BOX"),
     ]
+
+
+def _install_fake_bpy_props(fake_host_module: Any) -> Any:
+    """A fake bpy whose props factories return recording stand-in tuples."""
+
+    def _factory(kind: str) -> Any:
+        def make(**kwargs: Any) -> tuple[str, str]:
+            return ("prop", kind)
+
+        return make
+
+    return fake_host_module(
+        "bpy",
+        props=SimpleNamespace(
+            IntProperty=_factory("IntProperty"),
+            FloatProperty=_factory("FloatProperty"),
+            BoolProperty=_factory("BoolProperty"),
+            StringProperty=_factory("StringProperty"),
+            EnumProperty=_factory("EnumProperty"),
+        ),
+        types=SimpleNamespace(PropertyGroup=type("PropertyGroup", (), {})),
+    )
+
+
+def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any) -> None:
+    # Regression: `from __future__ import annotations` stringifies class-body
+    # annotations, so the settings PropertyGroup must be built with a runtime
+    # __annotations__ dict of real bpy.props objects — never annotation syntax.
+    _install_fake_bpy_props(fake_host_module)
+    from sqi_submitter.hosts.blender.addon import _make_settings_class
+
+    cls = _make_settings_class()
+    annotations = cls.__annotations__
+    assert set(annotations) == {
+        "product",
+        "target",
+        "job_name",
+        "farm_id",
+        "queue_id",
+        "save_before_submit",
+    }
+    for value in annotations.values():
+        assert not isinstance(value, str), "annotation was stringified — no property registered"
+    assert annotations["product"] == ("prop", "EnumProperty")
+    assert annotations["target"] == ("prop", "EnumProperty")
+    assert annotations["job_name"] == ("prop", "StringProperty")
+    assert annotations["farm_id"] == ("prop", "StringProperty")
+    assert annotations["queue_id"] == ("prop", "StringProperty")
+    assert annotations["save_before_submit"] == ("prop", "BoolProperty")
+
+
+def test_field_property_group_maps_widgets_to_property_types(fake_host_module: Any) -> None:
+    from sqi_client.models import ParameterUserInterface, ProductParameter
+    from sqi_submitter.core.schema import FormModel
+    from sqi_submitter.hosts.blender.addon import _build_field_property_group
+
+    _install_fake_bpy_props(fake_host_module)
+    model = FormModel.from_parameters(
+        [
+            ProductParameter(name="Chunk", type="INT", default="1"),
+            ProductParameter(name="Scale", type="FLOAT", default="1.0"),
+            ProductParameter(
+                name="Skip",
+                type="STRING",
+                default="false",
+                user_interface=ParameterUserInterface(control="CHECK_BOX"),
+            ),
+            ProductParameter(name="Frames", type="STRING"),
+        ]
+    )
+    cls = _build_field_property_group(model)
+    annotations = cls.__annotations__
+    assert annotations["sqi_field_Chunk"] == ("prop", "IntProperty")
+    assert annotations["sqi_field_Scale"] == ("prop", "FloatProperty")
+    assert annotations["sqi_field_Skip"] == ("prop", "BoolProperty")
+    assert annotations["sqi_field_Frames"] == ("prop", "StringProperty")

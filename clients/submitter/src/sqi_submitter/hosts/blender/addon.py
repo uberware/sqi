@@ -22,6 +22,7 @@ from collections.abc import Callable
 from typing import Any
 
 from sqi_submitter.core import (
+    FormField,
     FormModel,
     HostAdapter,
     SubmitterError,
@@ -51,6 +52,11 @@ _state: dict[str, Any] = {
     "targets": [],  # list[RenderTarget]
     "model": None,  # FormModel | None
     "adapter": None,  # HostAdapter | None
+    # EnumProperty items callbacks must keep a Python reference to the last
+    # returned sequence (documented Blender pitfall: the returned strings can
+    # be garbage-collected while Blender still holds pointers into them).
+    "_product_items": [],  # list[tuple[str, str, str]]
+    "_target_items": [],  # list[tuple[str, str, str]]
 }
 
 _classes: list[Any] = []  # registered bpy.types classes, in registration order
@@ -85,7 +91,7 @@ def _run_async(fn: Callable[[], Any], on_done: Callable[[Any, BaseException | No
     def _worker() -> None:
         try:
             result = fn()
-        except BaseException as exc:  # forwarded to on_done, not swallowed
+        except Exception as exc:  # forwarded to on_done, not swallowed
             result_queue.put((None, exc))
         else:
             result_queue.put((result, None))
@@ -102,10 +108,19 @@ def _run_async(fn: Callable[[], Any], on_done: Callable[[Any, BaseException | No
     bpy.app.timers.register(_poll)
 
 
-def _widget_property(bpy_props: Any, widget: str) -> Any:
-    """Map a FormField widget kind to a Blender scene-property constructor."""
-    if widget == "SPIN_BOX":
+def _widget_property(bpy_props: Any, field: FormField) -> Any:
+    """Map a form field to a Blender scene-property, honoring the value type.
+
+    Mirrors ``qt/widgets.py``: SPIN_BOX means Int for INT parameters and Float
+    for FLOAT parameters; CHECK_BOX is a Bool; everything else edits a string.
+    """
+    widget = field.widget
+    if widget == "SPIN_BOX" and field.parameter.type == "INT":
         return bpy_props.IntProperty(name="")
+    if widget == "SPIN_BOX":
+        return bpy_props.FloatProperty(name="")
+    if widget == "CHECK_BOX":
+        return bpy_props.BoolProperty(name="")
     return bpy_props.StringProperty(name="")
 
 
@@ -115,8 +130,10 @@ def _build_field_property_group(model: FormModel | None) -> Any:
 
     annotations: dict[str, Any] = {}
     if model is not None:
-        for name, _label, widget in field_layout(model):
-            annotations[_prop_name(name)] = _widget_property(bpy.props, widget)
+        for field in model.fields:
+            if field.hidden:
+                continue
+            annotations[_prop_name(field.parameter.name)] = _widget_property(bpy.props, field)
     namespace: dict[str, Any] = {"__annotations__": annotations}
     return type("SQI_FieldPropertyGroup", (bpy.types.PropertyGroup,), namespace)
 
@@ -153,13 +170,17 @@ def _copy_scene_values_into_model(context: Any, model: FormModel) -> None:
 def _product_enum_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     products = _state["products"]
     if not products:
-        return [("NONE", "(refresh to load products)", "")]
-    return [(str(i), p.title or p.name, p.description) for i, p in enumerate(products)]
+        items = [("NONE", "(refresh to load products)", "")]
+    else:
+        items = [(str(i), p.title or p.name, p.description) for i, p in enumerate(products)]
+    _state["_product_items"] = items  # keep a reference: Blender only borrows it
+    return items
 
 
 def _target_enum_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     items = [("SCENE", "Scene settings", "")]
     items += [(str(i), t.name, "") for i, t in enumerate(_state["targets"])]
+    _state["_target_items"] = items  # keep a reference: Blender only borrows it
     return items
 
 
@@ -304,20 +325,26 @@ def _make_classes() -> list[Any]:
 
 
 def _make_settings_class() -> Any:
-    """The fixed (non-per-field) scene properties: product/target pick, job name, etc."""
+    """The fixed (non-per-field) scene properties: product/target pick, job name, etc.
+
+    Built with ``type()`` and a *runtime* ``__annotations__`` dict, never with
+    class-body annotation syntax: this module has ``from __future__ import
+    annotations`` active, which stringifies class-body annotations — Blender's
+    ``register_class`` would then see ``"bpy.props.EnumProperty(...)"`` string
+    literals instead of property definitions and register no properties at all.
+    """
     import bpy
 
-    class SQI_PropertyGroup(bpy.types.PropertyGroup):  # type: ignore[misc]
-        product: bpy.props.EnumProperty(name="Product", items=_product_enum_items)  # type: ignore[valid-type]
-        target: bpy.props.EnumProperty(name="Target", items=_target_enum_items)  # type: ignore[valid-type]
-        job_name: bpy.props.StringProperty(name="Job name", default="")  # type: ignore[valid-type]
-        farm_id: bpy.props.StringProperty(name="Farm", default="")  # type: ignore[valid-type]
-        queue_id: bpy.props.StringProperty(name="Queue", default="")  # type: ignore[valid-type]
-        save_before_submit: bpy.props.BoolProperty(  # type: ignore[valid-type]
-            name="Save scene before submit", default=True
-        )
-
-    return SQI_PropertyGroup
+    annotations: dict[str, Any] = {
+        "product": bpy.props.EnumProperty(name="Product", items=_product_enum_items),
+        "target": bpy.props.EnumProperty(name="Target", items=_target_enum_items),
+        "job_name": bpy.props.StringProperty(name="Job name", default=""),
+        "farm_id": bpy.props.StringProperty(name="Farm", default=""),
+        "queue_id": bpy.props.StringProperty(name="Queue", default=""),
+        "save_before_submit": bpy.props.BoolProperty(name="Save scene before submit", default=True),
+    }
+    namespace: dict[str, Any] = {"__annotations__": annotations}
+    return type("SQI_Settings", (bpy.types.PropertyGroup,), namespace)
 
 
 def register() -> None:
