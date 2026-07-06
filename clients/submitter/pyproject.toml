@@ -29,7 +29,7 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 qt = ["PySide6"]
-dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx", "PyYAML"]
+dev = ["ruff", "mypy<2", "pytest", "pytest-cov", "respx", "PyYAML", "types-PyYAML"]
 
 [project.scripts]
 sqi-submit = "sqi_submitter.qt.dialog:main"
