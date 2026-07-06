@@ -29,6 +29,10 @@ _ALL_PRODUCTS_LABEL = "All —"
 _SCENE_SETTINGS_LABEL = "Scene settings"
 _ERROR_STYLE = "border: 1px solid red;"
 _STALE_MODEL_MESSAGE = "Product parameters failed to load — reload and try again."
+_EMPTY_CATALOG_MESSAGE = (
+    "No products are available on this server. Ask your admin to install a "
+    "preset from the preset library (Admin → Preset Library), then Reload."
+)
 _CLOSE_WAIT_MS = 10_000
 
 
@@ -191,6 +195,9 @@ class SubmitDialog(QtWidgets.QDialog):
             self._populate_products(products)
             self._populate_targets()
             self._rebuild_form()
+            if not products:
+                self._show_error(_EMPTY_CATALOG_MESSAGE)
+                self._submit_button.setEnabled(False)
 
         try:
             farms = self.session.farms()

@@ -30,11 +30,12 @@ def app() -> object:
 
 
 def _mock_server(products: "list[dict[str, str]] | None" = None) -> respx.Route:
-    respx.get(f"{BASE}/api/v1/products").mock(
-        return_value=httpx.Response(
-            200, json=products or [{"name": "mini-render", "title": "Mini Render"}]
-        )
-    )
+    # NOTE: `products` distinguishes "not given" (None, use the default single
+    # product) from "given as []" (an explicitly empty catalog) — `products or
+    # [default]` would silently discard a caller-supplied empty list.
+    if products is None:
+        products = [{"name": "mini-render", "title": "Mini Render"}]
+    respx.get(f"{BASE}/api/v1/products").mock(return_value=httpx.Response(200, json=products))
     respx.get(f"{BASE}/api/v1/products/mini-render/parameters").mock(
         return_value=httpx.Response(
             200,
@@ -120,6 +121,26 @@ def test_stale_model_never_submits_under_new_product_name(app: object) -> None:
     error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
     assert error_label is not None
     assert not error_label.isHidden()
+
+
+@respx.mock
+def test_empty_catalog_shows_guidance_banner_and_disables_submit(app: object) -> None:
+    post_route = _mock_server(products=[])
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=None)
+
+    error_label = dialog.findChild(QtWidgets.QLabel, "errorLabel")
+    assert error_label is not None
+    assert not error_label.isHidden()
+    assert (
+        error_label.text() == "No products are available on this server. Ask your admin to "
+        "install a preset from the preset library (Admin → Preset Library), then Reload."
+    )
+    submit_button = dialog.findChild(QtWidgets.QPushButton, "submitButton")
+    assert submit_button is not None
+    assert not submit_button.isEnabled()
+
+    dialog.submit_and_wait()
+    assert not post_route.called
 
 
 def test_main_is_importable_entry_point() -> None:
