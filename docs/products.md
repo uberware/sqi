@@ -117,8 +117,11 @@ Demonstrates two parameters (`Interpreter` and `Script`), an OpenJD
 
 ### `container` — Run a Docker Image
 
-Demonstrates `hostRequirements.attributes` to gate tasks to workers that
-advertise `attr.worker.docker = "true"`. Runs `docker run --rm {{Param.Image}}`.
+Demonstrates `hostRequirements.attributes` to gate tasks to workers tagged
+`docker=true`: the step requires `attr.worker.tag.docker` with `anyOf: ["true"]`,
+which a worker satisfies via `capability_tags: ["docker=true"]` in its
+configuration (see [worker-capabilities.md](worker-capabilities.md)). Runs
+`docker run --rm {{Param.Image}}`.
 
 ---
 

@@ -17,7 +17,7 @@ template:
     - name: Run
       hostRequirements:
         attributes:
-          - name: attr.worker.docker
+          - name: attr.worker.tag.docker
             anyOf: ["true"]
       script:
         actions:
