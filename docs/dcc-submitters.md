@@ -265,10 +265,19 @@ Shared parameter labels are standardized across the reference presets so the
 hosts read identically: `SceneFile` → "Scene File", `Frames` → "Frame Range",
 `OutputDir` → "Output Directory". Labels live in the product template
 (`userInterface.label`), so a product created locally must be re-created from
-the updated preset to pick up a label change. Path parameters that carry a
-label use the `LINE_EDIT` control (the base spec requires a control whenever a
-`userInterface` is set, and there is no picker control — the Qt file/directory
-picker is only derived for path parameters that set no control at all).
+the updated preset to pick up a label change.
+
+**`PATH` is type-first.** OpenJD has no file/directory *picker* control, and the
+base spec requires a `control` whenever a `userInterface` (hence a `label`) is
+set — so a labeled path parameter must declare `control: LINE_EDIT`. The
+submitter clients treat `PATH` as type-first: a `LINE_EDIT` (or absent) control
+does **not** suppress the picker. The Qt dialog derives the picker
+(`CHOOSE_DIRECTORY` / `CHOOSE_OUTPUT_FILE` / `CHOOSE_INPUT_FILE`, from
+`objectType`/`dataFlow`) and honors the label, so a labeled path shows a browse
+button *and* its label. An explicit `HIDDEN` still wins. Templates stay valid
+OpenJD; the picker is a client rendering affordance never represented in the
+document. (The web UI renders paths as a labeled text field — a browser cannot
+browse the farm filesystem — and the Blender panel uses a text property.)
 
 A selected render target can also supply **exact-name** extras that aren't
 part of the general convention (still case/separator-insensitive, but not

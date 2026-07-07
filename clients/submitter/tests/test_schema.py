@@ -113,3 +113,38 @@ def test_form_field_is_scene_path() -> None:
     scene, frames = model.fields
     assert scene.is_scene_path is True
     assert frames.is_scene_path is False
+
+
+@pytest.mark.parametrize(
+    ("param", "widget"),
+    [
+        # PATH is type-first: a LINE_EDIT control (the only legal way to carry a
+        # label on a path) must not suppress the derived picker.
+        (_p(type_="PATH", ui={"control": "LINE_EDIT"}), "CHOOSE_INPUT_FILE"),
+        (
+            _p(type_="PATH", object_type="DIRECTORY", ui={"control": "LINE_EDIT"}),
+            "CHOOSE_DIRECTORY",
+        ),
+        (
+            _p(type_="PATH", object_type="FILE", data_flow="OUT", ui={"control": "LINE_EDIT"}),
+            "CHOOSE_OUTPUT_FILE",
+        ),
+        # An explicit HIDDEN still wins over the picker.
+        (_p(type_="PATH", ui={"control": "HIDDEN"}), "HIDDEN"),
+    ],
+)
+def test_path_is_type_first(param: ProductParameter, widget: str) -> None:
+    model = FormModel.from_parameters([param])
+    assert model.fields[0].widget == widget
+
+
+def test_labeled_path_keeps_label() -> None:
+    param = _p(
+        name="OutputDir",
+        type_="PATH",
+        object_type="DIRECTORY",
+        ui={"control": "LINE_EDIT", "label": "Output Directory"},
+    )
+    field = FormModel.from_parameters([param]).fields[0]
+    assert field.widget == "CHOOSE_DIRECTORY"
+    assert field.label == "Output Directory"

@@ -160,3 +160,27 @@ def test_build_form_hides_named_fields(app: object) -> None:
     root = build_form(model, hidden_names=frozenset({"SceneFile"}))
     assert _find_editor(root, "SceneFile") is None
     assert _find_editor(root, "Frames") is not None
+
+
+def test_labeled_path_renders_picker_with_browse_button(app: object) -> None:
+    from sqi_submitter.qt.widgets import _find_editor
+
+    model = FormModel.from_parameters(
+        [
+            ProductParameter(
+                name="OutputDir",
+                type="PATH",
+                object_type="DIRECTORY",
+                user_interface=ParameterUserInterface(
+                    control="LINE_EDIT", label="Output Directory"
+                ),
+            )
+        ]
+    )
+    root = build_form(model)
+    line = _find_editor(root, "OutputDir")
+    assert line is not None
+    # _path_row wraps the line edit and a browse QToolButton in one parent row.
+    parent = line.parent()
+    assert parent is not None
+    assert parent.findChild(QtWidgets.QToolButton) is not None

@@ -27,17 +27,22 @@ class FormField:
     @property
     def widget(self) -> str:
         ui = self.parameter.user_interface
-        if ui is not None and ui.control:
-            return ui.control
+        control = ui.control if (ui is not None and ui.control) else ""
         t = self.parameter.type
-        if t in ("INT", "FLOAT"):
-            return "SPIN_BOX"
-        if t == "PATH":
+        # PATH is type-first: OpenJD has no picker control, so LINE_EDIT (the
+        # only legal control that can carry a label on a path) must not suppress
+        # the derived picker. An explicit non-LINE_EDIT control (e.g. HIDDEN)
+        # still wins. See docs/dcc-submitters.md.
+        if t == "PATH" and control in ("", "LINE_EDIT"):
             if self.parameter.object_type == "DIRECTORY":
                 return "CHOOSE_DIRECTORY"
             if self.parameter.data_flow == "OUT":
                 return "CHOOSE_OUTPUT_FILE"
             return "CHOOSE_INPUT_FILE"
+        if control:
+            return control
+        if t in ("INT", "FLOAT"):
+            return "SPIN_BOX"
         if self.parameter.allowed_values:
             return "DROPDOWN_LIST"
         return "LINE_EDIT"
