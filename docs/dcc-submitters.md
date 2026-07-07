@@ -250,6 +250,26 @@ keep working submitters as long as the parameter names below are kept.
 | `output_path` | `OutputDir`, `OutputPath` | `SceneContext.output_path`, overridden by the selected render target's output path |
 | `renderer` | `Renderer` | `SceneContext.renderer` |
 
+### The scene file is host-managed
+
+Inside a DCC (whenever a `HostAdapter` is present), the scene-path parameter
+(`SceneFile`/`ScenePath`) is **not shown in the submit form**. It is always
+taken from the currently open file at submit time, and submitting fails with
+"Save your scene before submitting" if the file has never been saved — the
+farm renders the file on disk, so an unsaved scene has nothing to render. This
+is enforced once in `core/submit.py::submit_form`, so every host (the Qt dialog
+and the Blender panel alike) behaves identically. The standalone `sqi-submit`
+dialog has no adapter, so there the scene field stays visible and editable.
+
+Shared parameter labels are standardized across the reference presets so the
+hosts read identically: `SceneFile` → "Scene File", `Frames` → "Frame Range",
+`OutputDir` → "Output Directory". Labels live in the product template
+(`userInterface.label`), so a product created locally must be re-created from
+the updated preset to pick up a label change. Path parameters that carry a
+label use the `LINE_EDIT` control (the base spec requires a control whenever a
+`userInterface` is set, and there is no picker control — the Qt file/directory
+picker is only derived for path parameters that set no control at all).
+
 A selected render target can also supply **exact-name** extras that aren't
 part of the general convention (still case/separator-insensitive, but not
 aliased to anything else): `RenderLayer` (Maya render layer), `RopPath`
