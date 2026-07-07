@@ -66,6 +66,12 @@
  */
 .editor:focus-within {
   border-color: var(--color-accent);
+  /*
+   * Full-height focus ring on the wrapper (not .cm-content, which sizes to the
+   * doc). box-shadow is not clipped by the wrapper's overflow: hidden, so it
+   * wraps the whole widget regardless of how many lines the editor holds.
+   */
+  box-shadow: 0 0 0 2px var(--color-accent);
 }
 
 .editor :global(.cm-editor) {
@@ -89,6 +95,14 @@
    */
   padding: var(--space-3);
   color: var(--cm-text);
+  /*
+   * .cm-content is the focused element, so the global :focus-visible outline
+   * (global.css) lands here. It sizes to the content, so an empty doc draws a
+   * one-line outline with a gap down to the full-height wrapper border. Focus
+   * is already shown by .editor:focus-within's accent border, so suppress this
+   * stray inner outline.
+   */
+  outline: none;
 }
 
 .editor :global(.cm-cursor) {
