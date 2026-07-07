@@ -293,8 +293,11 @@ straight to Blender's `-o` and defaults to blank. Left blank, `submit_form`
 fills it from the scene's own output setting (`SceneContext.output_path`), so a
 default submission renders exactly like a local render — Blender's own frame
 numbering and file naming apply. Set it to override the destination (e.g. to
-shared storage). This differs from Maya's `OutputDir`, which is a real output
-*directory* (`Render -rd`); Blender's `-o` is a full path prefix, not a folder.
+shared storage). If both the field **and** the scene's output setting are blank,
+`submit_form` refuses the job with "No output path set" rather than letting
+Blender scatter files into the worker's working directory. This differs from
+Maya's `OutputDir`, which is a real output *directory* (`Render -rd`); Blender's
+`-o` is a full path prefix, not a folder.
 
 **`PATH` is type-first.** OpenJD has no file/directory *picker* control, and the
 base spec requires a `control` whenever a `userInterface` (hence a `label`) is

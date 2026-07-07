@@ -136,17 +136,17 @@ def test_output_override_is_kept() -> None:
     assert session.calls[0]["parameters"]["OutputPath"] == "/farm/override/out.####.png"
 
 
-def test_blank_output_stays_blank_when_scene_has_none() -> None:
+def test_blank_output_and_no_scene_output_fails() -> None:
     session = _FakeSession()
-    model = _model_with_output()
-    submit_form(
-        session,  # type: ignore[arg-type]
-        "blender-batch-render",
-        model,
-        farm_id="f",
-        queue_id="q",
-        adapter=_FakeAdapter("/shows/a/shot.blend", output_path=None),
-        save_scene=False,
-    )
-    # OutputPath is optional (default ""), so it validates and is simply omitted.
-    assert session.calls[0]["parameters"].get("OutputPath", "") == ""
+    model = _model_with_output()  # OutputPath blank
+    with pytest.raises(SubmitterError, match="No output path"):
+        submit_form(
+            session,  # type: ignore[arg-type]
+            "blender-batch-render",
+            model,
+            farm_id="f",
+            queue_id="q",
+            adapter=_FakeAdapter("/shows/a/shot.blend", output_path=None),
+            save_scene=False,
+        )
+    assert session.calls == []  # never posted — would scatter files in the worker cwd

@@ -33,8 +33,15 @@ def submit_form(
             if is_scene_path_param(f.parameter.name):
                 # Scene path is host-authoritative: always the open file.
                 model.set_value(f.parameter.name, ctx.scene_path)
-            elif is_output_path_param(f.parameter.name) and not f.value and ctx.output_path:
+            elif is_output_path_param(f.parameter.name) and not f.value:
                 # Output left blank defaults to the scene's own output setting.
+                # If the scene has none either, fail fast rather than render to
+                # an unpredictable relative path in the worker's working dir.
+                if not ctx.output_path:
+                    raise SubmitterError(
+                        "No output path set. Enter an output path, or set an "
+                        "output location in your scene's render settings."
+                    )
                 model.set_value(f.parameter.name, ctx.output_path)
     if (
         adapter is not None
