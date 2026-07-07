@@ -58,6 +58,10 @@ _state: dict[str, Any] = {
     # be garbage-collected while Blender still holds pointers into them).
     "_product_items": [],  # list[tuple[str, str, str]]
     "_target_items": [],  # list[tuple[str, str, str]]
+    "farms": [],  # list[Farm]
+    "queues": [],  # list[Queue] for the currently selected farm
+    "_farm_items": [],  # list[tuple[str, str, str]]
+    "_queue_items": [],  # list[tuple[str, str, str]]
     "field_errors": {},  # dict[str, str]
 }
 
@@ -250,6 +254,26 @@ def _target_enum_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     return items
 
 
+def _farm_enum_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    farms = _state["farms"]
+    if not farms:
+        items = [("NONE", "(refresh to load farms)", "")]
+    else:
+        items = [(str(i), f.name, "") for i, f in enumerate(farms)]
+    _state["_farm_items"] = items  # keep a reference: Blender only borrows it
+    return items
+
+
+def _queue_enum_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    queues = _state["queues"]
+    if not queues:
+        items = [("NONE", "(no queues)", "")]
+    else:
+        items = [(str(i), q.name, "") for i, q in enumerate(queues)]
+    _state["_queue_items"] = items  # keep a reference: Blender only borrows it
+    return items
+
+
 def _selected_product(props: Any) -> Any | None:
     products = _state["products"]
     if not products:
@@ -259,6 +283,53 @@ def _selected_product(props: Any) -> Any | None:
     except ValueError:
         index = 0
     return products[index] if 0 <= index < len(products) else products[0]
+
+
+def _selected_farm(props: Any) -> Any | None:
+    farms = _state["farms"]
+    if not farms:
+        return None
+    try:
+        index = int(props.farm)
+    except ValueError:
+        index = 0
+    return farms[index] if 0 <= index < len(farms) else farms[0]
+
+
+def _selected_queue(props: Any) -> Any | None:
+    queues = _state["queues"]
+    if not queues:
+        return None
+    try:
+        index = int(props.queue)
+    except ValueError:
+        index = 0
+    return queues[index] if 0 <= index < len(queues) else queues[0]
+
+
+def _on_farm_changed(self: Any, _context: Any) -> None:
+    """EnumProperty update: refetch queues for the newly selected farm.
+
+    Mirrors the Qt dialog's farm→queue dependency. The fetch runs off the main
+    thread; when it lands, the queue list is swapped and the selection reset.
+    """
+    import bpy
+
+    farm = _selected_farm(self)
+    session = _state["session"]
+    if farm is None or session is None:
+        return
+
+    def _on_done(queues: Any, error: BaseException | None) -> None:
+        if error is not None:
+            return
+        _state["queues"] = queues
+        scene = getattr(bpy.context, "scene", None)
+        props = getattr(scene, "sqi_submitter", None) if scene is not None else None
+        if props is not None:
+            props.queue = "0" if queues else "NONE"
+
+    _run_async(lambda: session.queues(farm.id), _on_done)
 
 
 def _selected_target(props: Any) -> Any | None:
@@ -272,10 +343,15 @@ def _selected_target(props: Any) -> Any | None:
     return targets[index] if 0 <= index < len(targets) else None
 
 
-def _fetch_products_and_model(
-    selected_product_name: str | None, target: Any | None
-) -> tuple[list[Any], Any]:
-    """Runs off the main thread: session/products/parameters fetch only."""
+def _fetch_bootstrap(
+    selected_product_name: str | None, target: Any | None, selected_farm_id: str | None
+) -> dict[str, Any]:
+    """Runs off the main thread: fetch products, params, farms, and queues.
+
+    Queues are fetched for the previously selected farm (or the first farm),
+    matching the Qt dialog: a farm change refetches queues via
+    :func:`_on_farm_changed`.
+    """
     from sqi_submitter.hosts.blender.adapter import BlenderAdapter
 
     session = _state["session"] or SubmitterSession()
@@ -289,7 +365,19 @@ def _fetch_products_and_model(
         parameters = session.parameters(product.name)
         model = FormModel.from_parameters(parameters)
         model.apply_prefill(prefill(parameters, adapter.scene_context(), target))
-    return products, (model, adapter)
+
+    farms = session.farms()
+    queues: list[Any] = []
+    if farms:
+        farm = next((f for f in farms if f.id == selected_farm_id), farms[0])
+        queues = session.queues(farm.id)
+    return {
+        "products": products,
+        "model": model,
+        "adapter": adapter,
+        "farms": farms,
+        "queues": queues,
+    }
 
 
 def _make_classes() -> list[Any]:
@@ -306,6 +394,8 @@ def _make_classes() -> list[Any]:
             current = _selected_product(props)
             selected_name = current.name if current is not None else None
             target = _selected_target(props)
+            current_farm = _selected_farm(props)
+            selected_farm_id = current_farm.id if current_farm is not None else None
 
             def _on_done(result: Any, error: BaseException | None) -> None:
                 if error is not None:
@@ -314,14 +404,20 @@ def _make_classes() -> list[Any]:
                     )
                     self.report({"ERROR"}, message)
                     return
-                products, (model, adapter) = result
+                products = result["products"]
+                adapter = result["adapter"]
                 _state["products"] = products
                 _state["targets"] = adapter.render_targets()
-                _apply_model(model, adapter)
+                _state["farms"] = result["farms"]
+                _state["queues"] = result["queues"]
+                _apply_model(result["model"], adapter)
                 _state["field_errors"] = {}
-                self.report({"INFO"}, f"Loaded {len(products)} product(s)")
+                self.report(
+                    {"INFO"},
+                    f"Loaded {len(products)} product(s), {len(result['farms'])} farm(s)",
+                )
 
-            _run_async(lambda: _fetch_products_and_model(selected_name, target), _on_done)
+            _run_async(lambda: _fetch_bootstrap(selected_name, target, selected_farm_id), _on_done)
             return {"FINISHED"}
 
     class SQI_OT_submit(bpy.types.Operator):  # type: ignore[misc]
@@ -338,6 +434,11 @@ def _make_classes() -> list[Any]:
 
             _copy_scene_values_into_model(context, model)
             props = context.scene.sqi_submitter
+            farm = _selected_farm(props)
+            queue = _selected_queue(props)
+            if farm is None or queue is None:
+                self.report({"ERROR"}, "Select a farm and queue (Refresh to load them).")
+                return {"CANCELLED"}
             session = _state["session"] or SubmitterSession()
             _state["session"] = session
             try:
@@ -345,8 +446,8 @@ def _make_classes() -> list[Any]:
                     session,
                     product.name,
                     model,
-                    farm_id=props.farm_id,
-                    queue_id=props.queue_id,
+                    farm_id=farm.id,
+                    queue_id=queue.id,
                     job_name=props.job_name or None,
                     adapter=_state["adapter"],
                     save_scene=props.save_before_submit,
@@ -393,8 +494,8 @@ def _make_classes() -> list[Any]:
                         box.label(text=error, icon="ERROR")
 
             layout.prop(props, "job_name", text="Job name")
-            layout.prop(props, "farm_id", text="Farm")
-            layout.prop(props, "queue_id", text="Queue")
+            layout.prop(props, "farm", text="Farm")
+            layout.prop(props, "queue", text="Queue")
             layout.prop(props, "save_before_submit", text="Save scene before submit")
             layout.operator(SQI_OT_submit.bl_idname, icon="EXPORT")
 
@@ -416,8 +517,10 @@ def _make_settings_class() -> Any:
         "product": bpy.props.EnumProperty(name="Product", items=_product_enum_items),
         "target": bpy.props.EnumProperty(name="Target", items=_target_enum_items),
         "job_name": bpy.props.StringProperty(name="Job name", default=""),
-        "farm_id": bpy.props.StringProperty(name="Farm", default=""),
-        "queue_id": bpy.props.StringProperty(name="Queue", default=""),
+        "farm": bpy.props.EnumProperty(
+            name="Farm", items=_farm_enum_items, update=_on_farm_changed
+        ),
+        "queue": bpy.props.EnumProperty(name="Queue", items=_queue_enum_items),
         "save_before_submit": bpy.props.BoolProperty(name="Save scene before submit", default=True),
     }
     namespace: dict[str, Any] = {"__annotations__": annotations}
@@ -453,4 +556,6 @@ def unregister() -> None:
     _state["targets"] = []
     _state["model"] = None
     _state["adapter"] = None
+    _state["farms"] = []
+    _state["queues"] = []
     _state["field_errors"] = {}

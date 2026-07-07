@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from sqi_client.models import ParameterUserInterface, ProductParameter
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.hosts.blender import addon
@@ -66,3 +70,46 @@ def test_field_rows_attaches_errors() -> None:
         ("Frames", "Frames", "LINE_EDIT", None),
         ("OutputDir", "OutputDir", "CHOOSE_DIRECTORY", "Required"),
     ]
+
+
+@pytest.fixture(autouse=True)
+def _reset_farm_queue_state() -> object:
+    saved = (addon._state["farms"], addon._state["queues"])
+    addon._state["farms"], addon._state["queues"] = [], []
+    yield
+    addon._state["farms"], addon._state["queues"] = saved
+
+
+def _farm(id_: str, name: str) -> SimpleNamespace:
+    return SimpleNamespace(id=id_, name=name)
+
+
+def test_farm_enum_items_empty_prompts_refresh() -> None:
+    addon._state["farms"] = []
+    items = addon._farm_enum_items(None, None)
+    assert items[0][0] == "NONE"
+
+
+def test_farm_enum_items_lists_farms() -> None:
+    addon._state["farms"] = [_farm("f1", "Farm A"), _farm("f2", "Farm B")]
+    assert addon._farm_enum_items(None, None) == [("0", "Farm A", ""), ("1", "Farm B", "")]
+
+
+def test_queue_enum_items_lists_queues() -> None:
+    addon._state["queues"] = [_farm("q1", "Nightly"), _farm("q2", "Interactive")]
+    assert addon._queue_enum_items(None, None) == [("0", "Nightly", ""), ("1", "Interactive", "")]
+
+
+def test_selected_farm_by_index() -> None:
+    addon._state["farms"] = [_farm("f1", "A"), _farm("f2", "B")]
+    assert addon._selected_farm(SimpleNamespace(farm="1")).id == "f2"
+
+
+def test_selected_farm_none_when_no_farms() -> None:
+    addon._state["farms"] = []
+    assert addon._selected_farm(SimpleNamespace(farm="NONE")) is None
+
+
+def test_selected_queue_by_index() -> None:
+    addon._state["queues"] = [_farm("q1", "A"), _farm("q2", "B")]
+    assert addon._selected_queue(SimpleNamespace(queue="0")).id == "q1"

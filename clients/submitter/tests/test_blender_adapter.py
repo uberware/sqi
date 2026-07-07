@@ -107,8 +107,8 @@ def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any
         "product",
         "target",
         "job_name",
-        "farm_id",
-        "queue_id",
+        "farm",
+        "queue",
         "save_before_submit",
     }
     for value in annotations.values():
@@ -116,8 +116,8 @@ def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any
     assert annotations["product"] == ("prop", "EnumProperty")
     assert annotations["target"] == ("prop", "EnumProperty")
     assert annotations["job_name"] == ("prop", "StringProperty")
-    assert annotations["farm_id"] == ("prop", "StringProperty")
-    assert annotations["queue_id"] == ("prop", "StringProperty")
+    assert annotations["farm"] == ("prop", "EnumProperty")
+    assert annotations["queue"] == ("prop", "EnumProperty")
     assert annotations["save_before_submit"] == ("prop", "BoolProperty")
 
 
