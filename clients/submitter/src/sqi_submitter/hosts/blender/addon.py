@@ -63,13 +63,18 @@ _classes: list[Any] = []  # registered bpy.types classes, in registration order
 _field_group_cls: list[Any] = []  # current per-field PropertyGroup, [cls] or []
 
 
+def _visible_fields(model: FormModel) -> list[FormField]:
+    """Fields the panel draws: not hidden, and not the host-managed scene path."""
+    return [f for f in model.fields if not f.hidden and not f.is_scene_path]
+
+
 def field_layout(model: FormModel) -> list[tuple[str, str, str]]:
-    """(name, label, widget) rows for every non-hidden field, in order.
+    """(name, label, widget) rows for every drawable field, in order.
 
     Pure and bpy-free so it is directly unit-testable; the panel's draw loop
     calls this to decide which scene property + widget to draw per field.
     """
-    return [(f.parameter.name, f.label, f.widget) for f in model.fields if not f.hidden]
+    return [(f.parameter.name, f.label, f.widget) for f in _visible_fields(model)]
 
 
 def _prop_name(field_name: str) -> str:
@@ -130,9 +135,7 @@ def _build_field_property_group(model: FormModel | None) -> Any:
 
     annotations: dict[str, Any] = {}
     if model is not None:
-        for field in model.fields:
-            if field.hidden:
-                continue
+        for field in _visible_fields(model):
             annotations[_prop_name(field.parameter.name)] = _widget_property(bpy.props, field)
     namespace: dict[str, Any] = {"__annotations__": annotations}
     return type("SQI_FieldPropertyGroup", (bpy.types.PropertyGroup,), namespace)
@@ -155,6 +158,13 @@ def _apply_model(model: FormModel | None, adapter: HostAdapter | None) -> None:
     _field_group_cls.append(new_cls)
     bpy.types.Scene.sqi_fields = bpy.props.PointerProperty(type=new_cls)
 
+    if model is not None:
+        scene = getattr(bpy.context, "scene", None)
+        fields = getattr(scene, "sqi_fields", None) if scene is not None else None
+        if fields is not None:
+            for field in _visible_fields(model):
+                setattr(fields, _prop_name(field.parameter.name), _scene_prop_value(field))
+
 
 def _bool_field_value(checked: bool, field: FormField) -> str:
     """Map a CHECK_BOX bool through the same (off, on) rule as qt/widgets.py.
@@ -170,14 +180,37 @@ def _bool_field_value(checked: bool, field: FormField) -> str:
     return on if checked else off
 
 
+def _scene_prop_value(field: FormField) -> str | int | float | bool:
+    """Coerce a field's model value to the scene property's Python type.
+
+    Inverse of _copy_scene_values_into_model / mirror of _widget_property:
+    SPIN_BOX(INT)->int, SPIN_BOX(FLOAT)->float, CHECK_BOX->bool, else str.
+    """
+    value = field.value or ""
+    widget = field.widget
+    if widget == "SPIN_BOX" and field.parameter.type == "INT":
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    if widget == "SPIN_BOX":
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    if widget == "CHECK_BOX":
+        allowed = field.parameter.allowed_values or []
+        on = allowed[1] if len(allowed) >= 2 else "true"
+        return value == on
+    return value
+
+
 def _copy_scene_values_into_model(context: Any, model: FormModel) -> None:
     """Read the artist's edits out of the scene properties before submit."""
     fields = getattr(context.scene, "sqi_fields", None)
     if fields is None:
         return
-    for f in model.fields:
-        if f.hidden:
-            continue
+    for f in _visible_fields(model):
         value = getattr(fields, _prop_name(f.parameter.name), None)
         if value is None:
             continue
