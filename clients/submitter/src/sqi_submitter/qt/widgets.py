@@ -10,16 +10,23 @@ _FILE_PICKERS = {"CHOOSE_INPUT_FILE", "CHOOSE_OUTPUT_FILE", "CHOOSE_DIRECTORY"}
 _PREFILL_TIP = "Pre-filled from the scene"
 
 
-def build_form(model: FormModel, parent: QtWidgets.QWidget | None = None) -> QtWidgets.QWidget:
+def build_form(
+    model: FormModel,
+    parent: QtWidgets.QWidget | None = None,
+    hidden_names: frozenset[str] = frozenset(),
+) -> QtWidgets.QWidget:
     require_qt()
     root = QtWidgets.QWidget(parent)
     outer = QtWidgets.QVBoxLayout(root)
     for group, fields in model.groups():
+        visible = [f for f in fields if f.parameter.name not in hidden_names]
+        if not visible:
+            continue
         box: QtWidgets.QWidget = (
             QtWidgets.QGroupBox(group, root) if group else QtWidgets.QWidget(root)
         )
         layout = QtWidgets.QFormLayout(box)
-        for f in fields:
+        for f in visible:
             layout.addRow(f.label, _editor(f, model, box))
         outer.addWidget(box)
     return root

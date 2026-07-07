@@ -146,3 +146,17 @@ def test_refresh_form_syncs_prefill_tooltip(app: object) -> None:
     model.set_value("Frames", "2-6")
     refresh_form(form, model)
     assert line.toolTip() == ""
+
+
+def test_build_form_hides_named_fields(app: object) -> None:
+    from sqi_submitter.qt.widgets import _find_editor
+
+    model = FormModel.from_parameters(
+        [
+            ProductParameter(name="SceneFile", type="PATH"),
+            ProductParameter(name="Frames", type="STRING", default="1-10"),
+        ]
+    )
+    root = build_form(model, hidden_names=frozenset({"SceneFile"}))
+    assert _find_editor(root, "SceneFile") is None
+    assert _find_editor(root, "Frames") is not None

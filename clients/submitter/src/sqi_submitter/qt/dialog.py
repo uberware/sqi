@@ -310,6 +310,12 @@ class SubmitDialog(QtWidgets.QDialog):
     def _on_target_changed(self, _index: int) -> None:
         self._rebuild_form()
 
+    def _hidden_field_names(self, model: FormModel) -> frozenset[str]:
+        """Scene-path fields are host-managed when a DCC adapter is present."""
+        if self.adapter is None:
+            return frozenset()
+        return frozenset(f.parameter.name for f in model.fields if f.is_scene_path)
+
     def _rebuild_form(self) -> None:
         product = self._current_product()
         if product is None:
@@ -334,7 +340,7 @@ class SubmitDialog(QtWidgets.QDialog):
         self._submit_button.setEnabled(True)
 
         old = self._form_scroll.takeWidget()
-        self._form_scroll.setWidget(build_form(model))
+        self._form_scroll.setWidget(build_form(model, hidden_names=self._hidden_field_names(model)))
         self._form_root = self._form_scroll.widget()
         if old is not None:
             old.deleteLater()

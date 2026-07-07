@@ -145,3 +145,11 @@ def test_empty_catalog_shows_guidance_banner_and_disables_submit(app: object) ->
 
 def test_main_is_importable_entry_point() -> None:
     assert callable(main)
+
+
+@respx.mock
+def test_dialog_hides_scene_field_with_adapter(app: object) -> None:
+    _mock_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    assert dialog.findChild(QtWidgets.QLineEdit, "field_SceneFile") is None
+    assert dialog.findChild(QtWidgets.QLineEdit, "field_Frames") is not None
