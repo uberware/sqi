@@ -77,6 +77,13 @@ describe('ProductDetail', () => {
     expect(screen.getByText('name: my-template')).toBeInTheDocument()
   })
 
+  it('links back to the products list', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct()))
+    renderDetail('/products/my-render')
+    const back = await screen.findByRole('link', { name: /← products/i })
+    expect(back).toHaveAttribute('href', '/products')
+  })
+
   it('shows Duplicate (and no Edit/Delete) for a built-in', async () => {
     fetchMock.mockResolvedValueOnce(ok(makeProduct({ name: 'script', source: 'builtin' })))
     renderDetail('/products/script')
