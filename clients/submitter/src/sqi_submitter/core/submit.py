@@ -27,8 +27,7 @@ def submit_form(
         scene_path = adapter.scene_context().scene_path
         if not scene_path:
             raise SubmitterError(
-                "Save your scene before submitting — the farm renders the "
-                "file on disk."
+                "Save your scene before submitting — the farm renders the file on disk."
             )
         for f in model.fields:
             if is_scene_path_param(f.parameter.name):

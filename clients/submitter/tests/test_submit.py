@@ -6,8 +6,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqi_client.models import ProductParameter
 
+from sqi_client.models import ProductParameter
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 from sqi_submitter.core.errors import SubmitterError

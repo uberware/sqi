@@ -12,7 +12,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from sqi_client.models import ProductParameter
-
 from sqi_submitter.core.mapping import is_scene_path_param
 
 

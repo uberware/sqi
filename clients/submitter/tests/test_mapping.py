@@ -2,6 +2,7 @@
 """Parameter-name convention pre-fill tests."""
 
 import pytest
+
 from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 from sqi_submitter.core.mapping import is_scene_path_param, prefill
