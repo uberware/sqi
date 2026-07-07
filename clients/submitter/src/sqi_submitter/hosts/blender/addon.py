@@ -23,6 +23,7 @@ from typing import Any
 
 from sqi_submitter.core import (
     FormField,
+    FormInvalidError,
     FormModel,
     HostAdapter,
     SubmitterError,
@@ -57,6 +58,7 @@ _state: dict[str, Any] = {
     # be garbage-collected while Blender still holds pointers into them).
     "_product_items": [],  # list[tuple[str, str, str]]
     "_target_items": [],  # list[tuple[str, str, str]]
+    "field_errors": {},  # dict[str, str]
 }
 
 _classes: list[Any] = []  # registered bpy.types classes, in registration order
@@ -75,6 +77,17 @@ def field_layout(model: FormModel) -> list[tuple[str, str, str]]:
     calls this to decide which scene property + widget to draw per field.
     """
     return [(f.parameter.name, f.label, f.widget) for f in _visible_fields(model)]
+
+
+def field_rows(
+    model: FormModel, errors: dict[str, str] | None = None
+) -> list[tuple[str, str, str, str | None]]:
+    """(name, label, widget, error) for every drawable field, in order."""
+    errs = errors or {}
+    return [
+        (f.parameter.name, f.label, f.widget, errs.get(f.parameter.name))
+        for f in _visible_fields(model)
+    ]
 
 
 def _prop_name(field_name: str) -> str:
@@ -305,6 +318,7 @@ def _make_classes() -> list[Any]:
                 _state["products"] = products
                 _state["targets"] = adapter.render_targets()
                 _apply_model(model, adapter)
+                _state["field_errors"] = {}
                 self.report({"INFO"}, f"Loaded {len(products)} product(s)")
 
             _run_async(lambda: _fetch_products_and_model(selected_name, target), _on_done)
@@ -337,9 +351,14 @@ def _make_classes() -> list[Any]:
                     adapter=_state["adapter"],
                     save_scene=props.save_before_submit,
                 )
+            except FormInvalidError as exc:
+                _state["field_errors"] = dict(exc.errors)
+                self.report({"ERROR"}, exc.user_message)
+                return {"CANCELLED"}
             except SubmitterError as exc:
                 self.report({"ERROR"}, exc.user_message)
                 return {"CANCELLED"}
+            _state["field_errors"] = {}
             self.report({"INFO"}, f"Submitted job {job.id}")
             return {"FINISHED"}
 
@@ -365,8 +384,13 @@ def _make_classes() -> list[Any]:
             fields = getattr(context.scene, "sqi_fields", None)
             if model is not None and fields is not None:
                 box = layout.box()
-                for name, label, _widget in field_layout(model):
-                    box.prop(fields, _prop_name(name), text=label)
+                errors = _state["field_errors"]
+                for name, label, _widget, error in field_rows(model, errors):
+                    row = box.row()
+                    row.alert = error is not None
+                    row.prop(fields, _prop_name(name), text=label)
+                    if error is not None:
+                        box.label(text=error, icon="ERROR")
 
             layout.prop(props, "job_name", text="Job name")
             layout.prop(props, "farm_id", text="Farm")
@@ -429,3 +453,4 @@ def unregister() -> None:
     _state["targets"] = []
     _state["model"] = None
     _state["adapter"] = None
+    _state["field_errors"] = {}

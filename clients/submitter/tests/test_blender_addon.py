@@ -52,3 +52,17 @@ def test_scene_prop_value_coerces_by_widget() -> None:
     assert addon._scene_prop_value(by_name["Samples"]) == 64
     assert addon._scene_prop_value(by_name["Gamma"]) == 2.2
     assert addon._scene_prop_value(by_name["Denoise"]) is True
+
+
+def test_field_rows_attaches_errors() -> None:
+    model = FormModel.from_parameters(
+        [
+            ProductParameter(name="Frames", type="STRING", default="1-10"),
+            ProductParameter(name="OutputDir", type="PATH", object_type="DIRECTORY"),
+        ]
+    )
+    rows = addon.field_rows(model, {"OutputDir": "Required"})
+    assert rows == [
+        ("Frames", "Frames", "LINE_EDIT", None),
+        ("OutputDir", "OutputDir", "CHOOSE_DIRECTORY", "Required"),
+    ]
