@@ -88,6 +88,11 @@ cmds.evalDeferred("from sqi_submitter.hosts.maya.menu import install_menu; insta
 `evalDeferred` waits until Maya's UI is ready before installing the menu, so
 this is safe from `userSetup.py`. Restart Maya; a **sqi** menu appears.
 
+> **For a submitted job to actually run,** the worker that renders it needs the
+> `maya=true` capability tag and Maya's `Render` binary on its `PATH` —
+> otherwise the job sits `ready` forever with no worker eligible to take it. See
+> [Reference presets](#reference-presets).
+
 ### Houdini
 
 ```sh
@@ -114,6 +119,11 @@ open_submitter()
 
 Restart Houdini; click the shelf tool to open the submit dialog.
 
+> **For a submitted job to actually run,** the worker that renders it needs the
+> `houdini=true` capability tag and `hython` on its `PATH` — otherwise the job
+> sits `ready` forever with no worker eligible to take it. See
+> [Reference presets](#reference-presets).
+
 ### Nuke
 
 ```sh
@@ -130,6 +140,11 @@ install_menu()
 
 Nuke auto-executes `menu.py` files on its path at startup; a **sqi** menu
 appears once Nuke restarts.
+
+> **For a submitted job to actually run,** the worker that renders it needs the
+> `nuke=true` capability tag and `nuke` on its `PATH` — otherwise the job sits
+> `ready` forever with no worker eligible to take it. See
+> [Reference presets](#reference-presets).
 
 ### Blender
 
@@ -159,6 +174,11 @@ self-contained flow:
 **Changing the product or target does not automatically refetch parameters —
 click Refresh Products again** after changing either dropdown, or the form
 still shows the previous selection's fields.
+
+> **For a submitted job to actually run,** the worker that renders it needs the
+> `blender=true` capability tag and `blender` on its `PATH` — otherwise the job
+> sits `ready` forever with no worker eligible to take it. See
+> [Reference presets](#reference-presets).
 
 ### Standalone (`sqi-submit`)
 
