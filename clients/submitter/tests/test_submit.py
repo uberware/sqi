@@ -18,11 +18,12 @@ from sqi_submitter.core.submit import submit_form
 class _FakeAdapter(HostAdapter):
     host_name = "fake"
 
-    def __init__(self, scene_path: str | None) -> None:
+    def __init__(self, scene_path: str | None, output_path: str | None = None) -> None:
         self._scene_path = scene_path
+        self._output_path = output_path
 
     def scene_context(self) -> SceneContext:
-        return SceneContext(scene_path=self._scene_path)
+        return SceneContext(scene_path=self._scene_path, output_path=self._output_path)
 
     def render_targets(self) -> list[RenderTarget]:
         return []
@@ -91,3 +92,61 @@ def test_no_adapter_leaves_scene_field_alone() -> None:
         adapter=None,
     )
     assert session.calls[0]["parameters"]["SceneFile"] == "/typed/by/hand.blend"
+
+
+def _model_with_output(value: str | None = None) -> FormModel:
+    model = FormModel.from_parameters(
+        [
+            ProductParameter(name="SceneFile", type="PATH"),
+            ProductParameter(name="OutputPath", type="PATH", default=""),
+        ]
+    )
+    if value is not None:
+        model.set_value("OutputPath", value)
+    return model
+
+
+def test_blank_output_defaults_to_scene_output() -> None:
+    session = _FakeSession()
+    model = _model_with_output()  # OutputPath left blank
+    submit_form(
+        session,  # type: ignore[arg-type]
+        "blender-batch-render",
+        model,
+        farm_id="f",
+        queue_id="q",
+        adapter=_FakeAdapter("/shows/a/shot.blend", output_path="/renders/a/shot.####.png"),
+        save_scene=False,
+    )
+    assert session.calls[0]["parameters"]["OutputPath"] == "/renders/a/shot.####.png"
+
+
+def test_output_override_is_kept() -> None:
+    session = _FakeSession()
+    model = _model_with_output(value="/farm/override/out.####.png")
+    submit_form(
+        session,  # type: ignore[arg-type]
+        "blender-batch-render",
+        model,
+        farm_id="f",
+        queue_id="q",
+        adapter=_FakeAdapter("/shows/a/shot.blend", output_path="/renders/a/shot.####.png"),
+        save_scene=False,
+    )
+    assert session.calls[0]["parameters"]["OutputPath"] == "/farm/override/out.####.png"
+
+
+def test_blank_output_stays_blank_when_scene_has_none() -> None:
+    session = _FakeSession()
+    model = _model_with_output()
+    submit_form(
+        session,  # type: ignore[arg-type]
+        "blender-batch-render",
+        model,
+        farm_id="f",
+        queue_id="q",
+        adapter=_FakeAdapter("/shows/a/shot.blend", output_path=None),
+        save_scene=False,
+    )
+    # OutputPath is optional (default ""), so it validates and is simply omitted.
+    assert session.calls[0]["parameters"].get("OutputPath", "") == ""

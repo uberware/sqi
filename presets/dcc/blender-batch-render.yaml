@@ -3,8 +3,9 @@ name: blender-batch-render
 title: Blender Batch Render
 description: >-
   Renders a saved .blend file headless, one frame per task. Requires workers
-  tagged blender=true with blender on PATH. A starting point - duplicate to
-  customize for your pipeline.
+  tagged blender=true with blender on PATH. Leave Output Path blank to use the
+  scene's own output setting, or set it to override. A starting point -
+  duplicate to customize for your pipeline.
 category: Rendering
 version: 1.0.0
 template:
@@ -20,11 +21,12 @@ template:
     - name: Frames
       type: STRING
       userInterface: { control: LINE_EDIT, label: Frame Range }
-    - name: OutputDir
+    - name: OutputPath
       type: PATH
-      objectType: DIRECTORY
+      objectType: FILE
       dataFlow: OUT
-      userInterface: { control: LINE_EDIT, label: Output Directory }
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Output Path }
   steps:
     - name: Render
       hostRequirements:
@@ -46,6 +48,6 @@ template:
               - "-b"
               - "{{Param.SceneFile}}"
               - "-o"
-              - "{{Param.OutputDir}}/frame_####"
+              - "{{Param.OutputPath}}"
               - "-f"
               - "{{Task.Param.Frame}}"

@@ -16,7 +16,7 @@ func TestDCCReferencePresets(t *testing.T) {
 		"maya-batch-render":    {"SceneFile", "Frames", "OutputDir", "Renderer", "RenderLayer"},
 		"houdini-rop-render":   {"SceneFile", "Frames", "RopPath"},
 		"nuke-write-render":    {"SceneFile", "Frames", "WriteNode"},
-		"blender-batch-render": {"SceneFile", "Frames", "OutputDir"},
+		"blender-batch-render": {"SceneFile", "Frames", "OutputPath"},
 	}
 	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "dcc", "*.yaml"))
 	if err != nil {

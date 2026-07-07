@@ -5,7 +5,7 @@ import pytest
 
 from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
-from sqi_submitter.core.mapping import is_scene_path_param, prefill
+from sqi_submitter.core.mapping import is_output_path_param, is_scene_path_param, prefill
 
 
 def _p(name: str, type_: str = "STRING") -> ProductParameter:
@@ -105,3 +105,17 @@ def test_scene_is_no_longer_a_scene_path_alias() -> None:
 )
 def test_is_scene_path_param(name: str, expected: bool) -> None:
     assert is_scene_path_param(name) is expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("OutputDir", True),
+        ("OutputPath", True),
+        ("output_dir", True),
+        ("SceneFile", False),
+        ("Frames", False),
+    ],
+)
+def test_is_output_path_param(name: str, expected: bool) -> None:
+    assert is_output_path_param(name) is expected

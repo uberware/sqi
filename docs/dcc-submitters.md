@@ -225,7 +225,7 @@ web UI) if you're not using a preset index. All four use the product
 | `maya-batch-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
 | `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` per frame range | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
-| `blender-batch-render` | `blender -b <file> -o <dir>/frame_#### -f <frame>` | one frame per task | `SceneFile`, `Frames`, `OutputDir` | `attr.worker.tag.blender = "true"` |
+| `blender-batch-render` | `blender -b <file> -o <output> -f <frame>` | one frame per task | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
 
 Maya and Blender are one-frame-per-task because both commands only take a
 single frame at a time (`Render -s/-e` bounds one call; Blender's `-f` renders
@@ -283,9 +283,18 @@ dialog has no adapter, so there the scene field stays visible and editable.
 
 Shared parameter labels are standardized across the reference presets so the
 hosts read identically: `SceneFile` → "Scene File", `Frames` → "Frame Range",
-`OutputDir` → "Output Directory". Labels live in the product template
-(`userInterface.label`), so a product created locally must be re-created from
-the updated preset to pick up a label change.
+Maya's `OutputDir` → "Output Directory", Blender's `OutputPath` → "Output Path".
+Labels live in the product template (`userInterface.label`), so a product
+created locally must be re-created from the updated preset to pick up a label
+change.
+
+**Blender output is optional.** `blender-batch-render`'s `OutputPath` is passed
+straight to Blender's `-o` and defaults to blank. Left blank, `submit_form`
+fills it from the scene's own output setting (`SceneContext.output_path`), so a
+default submission renders exactly like a local render — Blender's own frame
+numbering and file naming apply. Set it to override the destination (e.g. to
+shared storage). This differs from Maya's `OutputDir`, which is a real output
+*directory* (`Render -rd`); Blender's `-o` is a full path prefix, not a folder.
 
 **`PATH` is type-first.** OpenJD has no file/directory *picker* control, and the
 base spec requires a `control` whenever a `userInterface` (hence a `label`) is

@@ -6,7 +6,7 @@ from __future__ import annotations
 from sqi_client.models import Job
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.errors import FormInvalidError, SubmitterError
-from sqi_submitter.core.mapping import is_scene_path_param
+from sqi_submitter.core.mapping import is_output_path_param, is_scene_path_param
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.session import SubmitterSession
 
@@ -24,14 +24,18 @@ def submit_form(
 ) -> Job:
     """Save-if-needed → validate → submit. Raises SubmitterError variants."""
     if adapter is not None:
-        scene_path = adapter.scene_context().scene_path
-        if not scene_path:
+        ctx = adapter.scene_context()
+        if not ctx.scene_path:
             raise SubmitterError(
                 "Save your scene before submitting — the farm renders the file on disk."
             )
         for f in model.fields:
             if is_scene_path_param(f.parameter.name):
-                model.set_value(f.parameter.name, scene_path)
+                # Scene path is host-authoritative: always the open file.
+                model.set_value(f.parameter.name, ctx.scene_path)
+            elif is_output_path_param(f.parameter.name) and not f.value and ctx.output_path:
+                # Output left blank defaults to the scene's own output setting.
+                model.set_value(f.parameter.name, ctx.output_path)
     if (
         adapter is not None
         and save_scene

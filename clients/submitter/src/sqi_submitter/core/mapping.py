@@ -38,6 +38,15 @@ def is_scene_path_param(name: str) -> bool:
     return _norm(name) in CONVENTION_ALIASES["scene_path"]
 
 
+def is_output_path_param(name: str) -> bool:
+    """True when a parameter name is the output-path field by convention.
+
+    Reuses CONVENTION_ALIASES["output_path"] so the "default output from the
+    scene when left blank" rule shares one definition with prefill.
+    """
+    return _norm(name) in CONVENTION_ALIASES["output_path"]
+
+
 def prefill(
     parameters: Sequence[ProductParameter],
     context: SceneContext,
