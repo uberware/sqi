@@ -4,7 +4,7 @@
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext, frame_range_str
 from sqi_submitter.core.errors import FormInvalidError, SubmitterError
-from sqi_submitter.core.mapping import prefill
+from sqi_submitter.core.mapping import is_scene_path_param, prefill
 from sqi_submitter.core.schema import FormField, FormModel
 from sqi_submitter.core.session import (
     Settings,
@@ -26,6 +26,7 @@ __all__ = [
     "SubmitterSession",
     "frame_range_str",
     "group_products",
+    "is_scene_path_param",
     "prefill",
     "resolve_server_url",
     "submit_form",

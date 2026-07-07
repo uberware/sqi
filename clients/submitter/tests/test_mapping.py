@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Parameter-name convention pre-fill tests."""
 
+import pytest
 from sqi_client.models import ProductParameter
 from sqi_submitter.core.context import RenderTarget, SceneContext
-from sqi_submitter.core.mapping import prefill
+from sqi_submitter.core.mapping import is_scene_path_param, prefill
 
 
 def _p(name: str, type_: str = "STRING") -> ProductParameter:
@@ -87,3 +88,19 @@ def test_scene_is_no_longer_a_scene_path_alias() -> None:
     # SceneContext.scene_path.
     got = prefill([_p("Scene")], CTX)
     assert got == {}
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("SceneFile", True),
+        ("ScenePath", True),
+        ("scene_file", True),
+        ("scene-path", True),
+        ("Scene", False),
+        ("Frames", False),
+        ("OutputDir", False),
+    ],
+)
+def test_is_scene_path_param(name: str, expected: bool) -> None:
+    assert is_scene_path_param(name) is expected

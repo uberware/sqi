@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 
 from sqi_client.models import ProductParameter
 
+from sqi_submitter.core.mapping import is_scene_path_param
+
 
 @dataclass
 class FormField:
@@ -58,6 +60,10 @@ class FormField:
     @property
     def required(self) -> bool:
         return self.parameter.default is None
+
+    @property
+    def is_scene_path(self) -> bool:
+        return is_scene_path_param(self.parameter.name)
 
 
 @dataclass

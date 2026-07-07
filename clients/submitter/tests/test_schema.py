@@ -104,3 +104,12 @@ def test_prefill_marks_fields_and_groups_preserve_order() -> None:
     frames = next(f for f in model.fields if f.parameter.name == "Frames")
     assert frames.prefilled and frames.value == "1-10"
     assert [g for g, _ in model.groups()] == ["Scene", ""]
+
+
+def test_form_field_is_scene_path() -> None:
+    model = FormModel.from_parameters(
+        [_p(name="SceneFile", type_="PATH"), _p(name="Frames", type_="STRING")]
+    )
+    scene, frames = model.fields
+    assert scene.is_scene_path is True
+    assert frames.is_scene_path is False

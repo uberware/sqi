@@ -29,6 +29,15 @@ def _norm(name: str) -> str:
     return name.lower().replace("_", "").replace("-", "")
 
 
+def is_scene_path_param(name: str) -> bool:
+    """True when a parameter name is the scene-file field by convention.
+
+    Reuses CONVENTION_ALIASES["scene_path"] so hosts and UIs share one
+    definition of "which field is the scene path".
+    """
+    return _norm(name) in CONVENTION_ALIASES["scene_path"]
+
+
 def prefill(
     parameters: Sequence[ProductParameter],
     context: SceneContext,
