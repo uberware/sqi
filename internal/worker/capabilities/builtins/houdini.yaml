@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+tag: houdini
+checks:
+  - exe: hython
+  - path_glob: "/opt/hfs*/bin/houdini"                                        # linux
+  - path_glob: "/Applications/Houdini/Houdini*/Frameworks/Houdini.framework"  # macOS
+  - registry: 'HKLM\SOFTWARE\Side Effects Software\Houdini'                   # windows
+    os: windows
+version:
+  from: "(?:hfs|Houdini)(?P<v>[0-9]+\\.[0-9]+)"
