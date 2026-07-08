@@ -60,6 +60,8 @@ export default function ProductDetail() {
     <div className={styles.page}>
       <PageHeader
         title="Product Details"
+        backTo="/products"
+        backLabel="Products"
         action={
           <div className={styles.actions}>
             <button type="button" className={styles.actionBtn} onClick={handleDuplicate}>

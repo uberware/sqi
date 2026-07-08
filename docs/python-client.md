@@ -14,6 +14,13 @@ contract is the OpenAPI spec described in [`api.md`](./api.md).
 - Python 3.9+ · sync-only in Phase 1 · core dependency `httpx` only
 - Optional extras: `yaml` (PyYAML), `ws` (websockets)
 
+> **Related: `sqi-submitter`.** Building a scripted pipeline tool, a batch
+> submission script, or any headless automation? Use `sqi-sdk` directly, as
+> below. Building an in-application submitter for Maya, Houdini, Nuke, or
+> Blender? See [`docs/dcc-submitters.md`](dcc-submitters.md) — the
+> `sqi-submitter` package depends on `sqi-sdk` and adds the Qt/native-UI form,
+> scene-context extraction, and pre-fill on top of it.
+
 ## Contents
 
 - [Installation](#installation)

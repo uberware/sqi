@@ -32,7 +32,10 @@ func TestBuiltins_LoadValidateAndStamp(t *testing.T) {
 func TestBuiltins_ContainerDeclaresDockerRequirement(t *testing.T) {
 	for _, p := range product.Builtins() {
 		if p.Name == "container" {
-			if !strings.Contains(p.Template, "attr.worker.docker") {
+			// Must use the tag namespace: the scheduler only resolves custom
+			// attributes via "attr.worker.tag.<key>" (see internal/scheduler
+			// matcher.go workerAttributeValue); an unprefixed name never matches.
+			if !strings.Contains(p.Template, "attr.worker.tag.docker") {
 				t.Fatalf("container missing docker host requirement: %s", p.Template)
 			}
 			return

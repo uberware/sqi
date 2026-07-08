@@ -21,7 +21,8 @@ permissions:
 jobs:
   # ── Change detection ─────────────────────────────────────────────────────────
   # Detects which areas changed so downstream jobs run only when relevant: the
-  # Python jobs target `clients/python/`, and the actionlint job targets the
+  # Python jobs target `clients/python/`, the submitter jobs target
+  # `clients/submitter/` and `presets/dcc/`, and the actionlint job targets the
   # workflow files themselves.
   changes:
     name: Detect changed paths
@@ -31,6 +32,7 @@ jobs:
       pull-requests: read # paths-filter reads the PR diff via the API
     outputs:
       python: ${{ steps.filter.outputs.python }}
+      submitter: ${{ steps.filter.outputs.submitter }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - name: Checkout
@@ -43,6 +45,10 @@ jobs:
           filters: |
             python:
               - 'clients/python/**'
+              - '.github/workflows/ci.yml'
+            submitter:
+              - 'clients/submitter/**'
+              - 'presets/dcc/**'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
@@ -675,3 +681,115 @@ jobs:
 
       - name: Check package metadata
         run: twine check dist/*
+
+  # ── Submitter client: lint + type-check ──────────────────────────────────────
+  # Mirrors python-lint above: ruff and mypy run once on a single Python rather
+  # than across the matrix. The local sqi-sdk checkout is installed first (`pip
+  # install -e ../python`) so the submitter's `sqi-sdk>=0.1` dependency resolves
+  # to the in-repo package, never a published PyPI release.
+  submitter-lint:
+    name: Submitter client lint + type-check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.submitter == 'true' || github.event_name == 'workflow_dispatch' }}
+    defaults:
+      run:
+        working-directory: clients/submitter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: clients/submitter/pyproject.toml
+
+      - name: Install local sqi-sdk + submitter with dev extras
+        run: pip install -e ../python -e '.[dev]'
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Ruff lint
+        run: ruff check .
+
+      # src is type-checked at the 3.9 floor (pyproject python_version); the
+      # tests are checked at a newer target where they are allowed to run.
+      - name: mypy
+        run: mypy src && mypy --python-version=3.13 tests
+
+  # ── Submitter client: unit tests ─────────────────────────────────────────────
+  # Runtime behavior is what genuinely varies by interpreter, so the unit suite
+  # (with its coverage gate) runs across the supported range: 3.9 floor through
+  # the latest stable.
+  submitter-test:
+    name: Submitter client tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.submitter == 'true' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: clients/submitter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: clients/submitter/pyproject.toml
+
+      - name: Install local sqi-sdk + submitter with dev extras
+        run: pip install -e ../python -e '.[dev]'
+
+      - name: Unit tests with coverage gate
+        run: pytest
+
+  # ── Submitter client: Qt widget tests ────────────────────────────────────────
+  # PySide6 widget/dialog tests are excluded from the main coverage-gated suite
+  # (see pyproject.toml tool.coverage.run.omit) and run separately here, headless
+  # via Qt's offscreen platform plugin. One interpreter is sufficient — this is
+  # exercising Qt binding behavior, not sqi-submitter's own version matrix.
+  submitter-qt-test:
+    name: Submitter client Qt widget tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.submitter == 'true' || github.event_name == 'workflow_dispatch' }}
+    defaults:
+      run:
+        working-directory: clients/submitter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: clients/submitter/pyproject.toml
+
+      # PySide6's offscreen QPA platform plugin needs a few system libraries
+      # that ubuntu-latest runners do not ship by default. libegl1 + libgl1
+      # satisfy Qt's GL loader, libxkbcommon0 satisfies the keyboard/input
+      # abstraction the offscreen plugin still initializes.
+      - name: Install PySide6 offscreen platform dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0
+
+      - name: Install local sqi-sdk + submitter with dev,qt extras
+        run: pip install -e ../python -e '.[dev,qt]'
+
+      - name: Qt widget + dialog tests (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/test_qt_widgets.py tests/test_qt_dialog.py --no-cov

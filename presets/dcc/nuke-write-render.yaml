@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: nuke-write-render
+title: Nuke Write Render
+description: >-
+  Renders one Write node from a saved Nuke script in frame chunks. Requires
+  workers tagged nuke=true with nuke on PATH. A starting point - duplicate
+  to customize for your pipeline.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Nuke Write Render
+  extensions: [TASK_CHUNKING]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: LINE_EDIT, label: Scene File }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: WriteNode
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Write Node }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.nuke
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frames
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 10
+      script:
+        actions:
+          onRun:
+            command: nuke
+            args:
+              - "-x"
+              - "-X"
+              - "{{Param.WriteNode}}"
+              - "-F"
+              - "{{Task.Param.Frames}}"
+              - "{{Param.SceneFile}}"

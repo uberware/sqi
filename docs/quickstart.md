@@ -73,6 +73,16 @@ built-in `script` product — no farm/queue creation needed. See
 [Submit a job from a product](api.md#submit-a-job-from-a-product) for the REST
 call, or the [Python client](python-client.md) for scripted submission.
 
+### Submitting from inside Maya/Houdini/Nuke/Blender
+
+Rather than the web UI, artists can submit directly from the DCC they're
+already working in. The [`sqi-submitter`](dcc-submitters.md) Python package
+adds an in-application submit dialog (native panel for Blender) to Maya,
+Houdini, Nuke, and Blender, driven by the same product catalog — including
+four ready-to-install reference render presets — with scene path, frame
+range, and render-target pre-fill. See [DCC submitters](dcc-submitters.md) for
+installation per host.
+
 ## Next steps
 
 - [Worker deployment](worker-deployment.md) — run workers as services.

@@ -328,3 +328,75 @@ func TestMergeManualTags_PreservesAutoTags(t *testing.T) {
 		t.Errorf(`Tags["os_version"] should still be "22.04", got %q`, got)
 	}
 }
+
+func TestMergeManualTags_KeyValueParsing(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		wantKey string
+		// wantOK is false when wantKey must be absent from Tags entirely.
+		wantOK    bool
+		wantValue string
+	}{
+		{
+			name:      "plain presence-only tag has no equals sign",
+			entries:   []string{"gpu"},
+			wantKey:   "gpu",
+			wantOK:    true,
+			wantValue: "",
+		},
+		{
+			name:      "key=value tag splits on the equals sign",
+			entries:   []string{"maya=true"},
+			wantKey:   "maya",
+			wantOK:    true,
+			wantValue: "true",
+		},
+		{
+			name:      "value containing equals signs keeps everything after the first",
+			entries:   []string{"a=b=c"},
+			wantKey:   "a",
+			wantOK:    true,
+			wantValue: "b=c",
+		},
+		{
+			name:      "trailing equals sign with empty value stores an empty string",
+			entries:   []string{"maya="},
+			wantKey:   "maya",
+			wantOK:    true,
+			wantValue: "",
+		},
+		{
+			name:    "leading equals sign with empty key is skipped",
+			entries: []string{"=true"},
+			wantKey: "",
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caps := Capabilities{}
+			caps.MergeManualTags(tt.entries)
+
+			if tt.wantKey == "" {
+				// Empty-key entries must not create a Tags[""] entry either.
+				if v, ok := caps.Tags[""]; ok {
+					t.Errorf(`Tags[""] should not be set, got %q`, v)
+				}
+				if len(caps.Tags) != 0 {
+					t.Errorf("Tags should be empty after skipping %v, got %+v", tt.entries, caps.Tags)
+				}
+				return
+			}
+
+			v, ok := caps.Tags[tt.wantKey]
+			if ok != tt.wantOK {
+				t.Fatalf("Tags[%q] present = %v, want %v", tt.wantKey, ok, tt.wantOK)
+			}
+			if v != tt.wantValue {
+				t.Errorf("Tags[%q] = %q, want %q", tt.wantKey, v, tt.wantValue)
+			}
+		})
+	}
+}

@@ -77,6 +77,14 @@ var ErrDiscoveryDisabled = errors.New("discovery: mDNS is disabled and no explic
 // The timeout parameter should come from [workerconfig.DiscoveryConfig.MDNSTimeout]
 // (default 5 s). Pass a zero timeout to use a 5 s default.
 func Browse(ctx context.Context, timeout time.Duration, logger *slog.Logger) (Result, error) {
+	return browseService(ctx, serviceType, timeout, logger)
+}
+
+// browseService is [Browse] with the DNS-SD service type as a parameter.
+// Production code always browses serviceType; tests exercise the timeout path
+// with a service type nothing advertises, so a sqi-server legitimately running
+// on the developer's network cannot satisfy the browse and mask the timeout.
+func browseService(ctx context.Context, service string, timeout time.Duration, logger *slog.Logger) (Result, error) {
 	if timeout <= 0 {
 		// Belt-and-suspenders: the canonical default lives in
 		// workerconfig.DiscoveryConfig.MDNSTimeout (5 s). This guard protects
@@ -86,7 +94,7 @@ func Browse(ctx context.Context, timeout time.Duration, logger *slog.Logger) (Re
 
 	logger.InfoContext(
 		ctx, "discovery: starting mDNS browse",
-		slog.String("service", serviceType),
+		slog.String("service", service),
 		slog.Duration("timeout", timeout),
 	)
 
@@ -104,8 +112,8 @@ func Browse(ctx context.Context, timeout time.Duration, logger *slog.Logger) (Re
 	browseCtx, cancelBrowse := context.WithTimeout(ctx, timeout)
 	defer cancelBrowse()
 
-	if err := resolver.Browse(browseCtx, serviceType, domain, entries); err != nil {
-		return Result{}, fmt.Errorf("discovery: browse %s: %w", serviceType, err)
+	if err := resolver.Browse(browseCtx, service, domain, entries); err != nil {
+		return Result{}, fmt.Errorf("discovery: browse %s: %w", service, err)
 	}
 
 	for {

@@ -70,6 +70,40 @@ jobs:
           print(f"sqi-sdk version {version} matches tag {tag}")
           PY
 
+      # Same rule as the sqi-sdk check above, applied to the submitter package:
+      # fail the release outright if clients/submitter's version was not bumped
+      # to match the tag. Kept strict and symmetric — bumping the version is a
+      # release-runbook step, not something this workflow does automatically.
+      - name: Check sqi-submitter version matches the tag
+        if: ${{ !contains(github.ref_name, '-rc') }}
+        run: |
+          python3 -m pip install --quiet --upgrade packaging
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          from packaging.version import InvalidVersion, Version
+
+          tag = sys.argv[1]
+          tag = tag[1:] if tag.startswith("v") else tag
+          source = pathlib.Path("clients/submitter/src/sqi_submitter/_version.py").read_text()
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', source)
+          if not match:
+              sys.exit("::error::could not find __version__ in clients/submitter/src/sqi_submitter/_version.py")
+          version = match.group(1)
+          try:
+              mismatch = Version(version) != Version(tag)
+          except InvalidVersion as exc:
+              sys.exit(f"::error::invalid version string: {exc}")
+          if mismatch:
+              sys.exit(
+                  f"::error::sqi_submitter.__version__ ({version}) does not match release "
+                  f"tag ({tag}); bump clients/submitter/src/sqi_submitter/_version.py"
+              )
+          print(f"sqi-submitter version {version} matches tag {tag}")
+          PY
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -249,3 +283,75 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: clients/python/dist
+
+      # ── Submitter client (sqi-submitter) distributions ─────────────────────
+      # Same pattern as sqi-sdk above: goreleaser does not build this package,
+      # so its sdist + wheel are built and attached separately.
+      - name: Build sqi-submitter sdist + wheel
+        working-directory: clients/submitter
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Attach sqi-submitter distributions to the release
+        run: gh release upload "${GITHUB_REF_NAME}" clients/submitter/dist/* --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish sqi-submitter to PyPI via OIDC trusted publishing, gated on the
+      # same PUBLISH_TO_PYPI repository variable as sqi-sdk. NOTE: the
+      # `sqi-submitter` PyPI project must exist and have a trusted publisher
+      # configured before the first tagged release reaches this step — claim
+      # the name with a one-time manual placeholder upload (see release
+      # runbook; name verified free 2026-07-05). Until that setup is done,
+      # leave PUBLISH_TO_PYPI unset/false so this step no-ops.
+      - name: Publish sqi-submitter to PyPI (trusted publishing)
+        if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: clients/submitter/dist
+
+  # ── Reference preset library ──────────────────────────────────────────────
+  # Publish the authored DCC presets (presets/dcc/) to the community preset
+  # library repo so `sqi-server` can install them. Runs only after a successful
+  # release, and only when PUBLISH_PRESETS is set — so it no-ops until the
+  # library repo and SQI_PRESETS_TOKEN secret are configured (see release
+  # runbook). Skipped for -rc tags to keep pre-releases out of the live library.
+  publish-presets:
+    name: Publish presets
+    needs: goreleaser
+    if: ${{ vars.PUBLISH_PRESETS == 'true' && !contains(github.ref_name, '-rc') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # presetgen regenerates index.json + the dcc/ definition files in a
+      # checkout of the library repo (merging, so any non-dcc entries survive),
+      # then we commit + push only when something actually changed. The
+      # fine-grained PAT (SQI_PRESETS_TOKEN) needs Contents: write on the
+      # library repo; it authenticates the clone/push as the git password.
+      - name: Publish presets to the library repo
+        env:
+          SQI_PRESETS_TOKEN: ${{ secrets.SQI_PRESETS_TOKEN }}
+        run: |
+          set -euo pipefail
+          lib="$RUNNER_TEMP/sqi-presets"
+          git clone --depth 1 \
+            "https://x-access-token:${SQI_PRESETS_TOKEN}@github.com/uberware/sqi-presets.git" "$lib"
+          go run ./cmd/presetgen -presets presets/dcc -out "$lib"
+          cd "$lib"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No preset changes to publish."
+            exit 0
+          fi
+          git -c user.name="sqi-release[bot]" \
+              -c user.email="sqi-release[bot]@users.noreply.github.com" \
+              commit -m "chore: publish presets for ${GITHUB_REF_NAME}"
+          git push

@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: maya-layer-render
+title: Maya Layer Render
+description: >-
+  Renders one render layer of a saved Maya scene with the Render batch
+  command, one frame per task. Requires workers tagged maya=true with Render
+  on PATH. For all renderable layers use maya-scene-render. A starting point -
+  duplicate to customize for your pipeline.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Maya Layer Render
+  extensions: [TASK_CHUNKING]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: LINE_EDIT, label: Scene File }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: OutputDir
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: OUT
+      userInterface: { control: LINE_EDIT, label: Output Directory }
+    - name: Renderer
+      type: STRING
+      default: file
+      userInterface: { control: LINE_EDIT, label: Renderer }
+    - name: RenderLayer
+      type: STRING
+      default: masterLayer
+      userInterface: { control: LINE_EDIT, label: Render Layer }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.maya
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 1
+      script:
+        actions:
+          onRun:
+            command: Render
+            args:
+              - "-r"
+              - "{{Param.Renderer}}"
+              - "-s"
+              - "{{Task.Param.Frame}}"
+              - "-e"
+              - "{{Task.Param.Frame}}"
+              - "-rl"
+              - "{{Param.RenderLayer}}"
+              - "-rd"
+              - "{{Param.OutputDir}}"
+              - "{{Param.SceneFile}}"

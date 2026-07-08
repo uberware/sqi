@@ -41,27 +41,28 @@ func seedFarmQueue(t *testing.T, st *fake.Store) (farmID, queueID string) {
 	return farm.ID, queue.ID
 }
 
-// assertDockerRequirement checks that the step carries an attr.worker.docker
-// attribute requirement with anyOf=["true"].
+// assertDockerRequirement checks that the step carries an attr.worker.tag.docker
+// attribute requirement with anyOf=["true"]. The tag namespace is required: the
+// scheduler resolves custom attributes only via "attr.worker.tag.<key>".
 func assertDockerRequirement(t *testing.T, step store.Step) {
 	t.Helper()
 	if step.HostRequirements == nil {
 		t.Fatal("container step must have HostRequirements, got nil")
 	}
 	for _, attr := range step.HostRequirements.Attributes {
-		if attr.Name == "attr.worker.docker" {
+		if attr.Name == "attr.worker.tag.docker" {
 			if !slices.Contains(attr.AnyOf, "true") {
-				t.Fatalf("attr.worker.docker found but anyOf does not contain \"true\": %v", attr.AnyOf)
+				t.Fatalf("attr.worker.tag.docker found but anyOf does not contain \"true\": %v", attr.AnyOf)
 			}
 			return
 		}
 	}
-	t.Fatal("container step HostRequirements.Attributes does not contain attr.worker.docker")
+	t.Fatal("container step HostRequirements.Attributes does not contain attr.worker.tag.docker")
 }
 
 // TestBuiltinProductsSubmitEndToEnd verifies each built-in submits successfully
 // through the real Submitter, producing at least one step and one task. The
-// container product additionally carries the attr.worker.docker host requirement.
+// container product additionally carries the attr.worker.tag.docker host requirement.
 func TestBuiltinProductsSubmitEndToEnd(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedFarmQueue(t, st)

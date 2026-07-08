@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: houdini-rop-render
+title: Houdini ROP Render
+description: >-
+  Renders a ROP from a saved hip file with hython, in frame chunks. Requires
+  workers tagged houdini=true with hython on PATH. A starting point -
+  duplicate to customize for your pipeline.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Houdini ROP Render
+  extensions: [TASK_CHUNKING]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: LINE_EDIT, label: Scene File }
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+    - name: RopPath
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: ROP Path }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.houdini
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frames
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 10
+      script:
+        embeddedFiles:
+          - name: render_chunk.py
+            type: TEXT
+            data: |
+              import sys
+              import hou
+
+              hip, rop_path, frames = sys.argv[1], sys.argv[2], sys.argv[3]
+              hou.hipFile.load(hip, ignore_load_warnings=True)
+              rop = hou.node(rop_path)
+              if rop is None:
+                  raise SystemExit("no such ROP: " + rop_path)
+              for part in frames.split(","):
+                  expr, _, step = part.partition(":")
+                  lo, _, hi = expr.partition("-")
+                  rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+        actions:
+          onRun:
+            command: hython
+            args:
+              - render_chunk.py
+              - "{{Param.SceneFile}}"
+              - "{{Param.RopPath}}"
+              - "{{Task.Param.Frames}}"

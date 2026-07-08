@@ -48,7 +48,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 - **Web UI** is the primary interface. No required desktop application. Real-time job and worker status, log streaming, preset management, product configuration, and farm administration — all in a browser.
 
-- **DCC submitter widgets** in Python/Qt for in-application submission from Maya, Houdini, Nuke, and other tools. The [`sqi-sdk` Python library](docs/python-client.md) covers scripted submission and pipeline integration.
+- **DCC submitters** for Maya, Houdini, Nuke, and Blender via the [`sqi-submitter`](docs/dcc-submitters.md) Python package — in-application submission with per-host scene extraction and pre-fill, built on top of the [`sqi-sdk` Python library](docs/python-client.md), which covers scripted submission and pipeline integration on its own.
 
 - **Optional LLM integration** (disabled by default) adds natural-language interfaces for farm management — explain a job failure in plain English, manage workers or job priorities by description, filter and search jobs conversationally. Pluggable provider model: bring your own API key (OpenAI, Anthropic, Azure, or a local Ollama instance). `sqi` never requires or bundles an AI service.
 
