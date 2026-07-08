@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -251,5 +252,57 @@ func TestCapabilitiesCmd_RunsAndPrints(t *testing.T) {
 	prepareRoot([]string{"capabilities"})
 	if err := Execute(); err != nil {
 		t.Fatalf("capabilities command failed: %v", err)
+	}
+}
+
+// TestCapabilitiesCmd_ManualSuppression verifies that the "capabilities"
+// command is authoritative: a manual tag suppression such as
+// `capability_tags: ["testtag=false"]` must show up with its final value
+// (false) rather than being silently reported as present, since a value the
+// command doesn't show could still make a worker fail a preset's
+// anyOf:["true"] gate at runtime.
+func TestCapabilitiesCmd_ManualSuppression(t *testing.T) {
+	t.Cleanup(func() { persistentFlags.ConfigFile = "" })
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sqi-worker.yaml")
+	cfgYAML := `
+worker:
+  capability_tags:
+    - "testtag=false"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	prepareRoot([]string{"--config", cfgPath, "capabilities"})
+
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Errorf("Execute(capabilities) unexpected error: %v", err)
+		}
+	})
+
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 || !strings.Contains(lines[0], "TAG") ||
+		!strings.Contains(lines[0], "VALUE") || !strings.Contains(lines[0], "SOURCE") {
+		t.Errorf("capabilities output missing three-column header; got:\n%s", out)
+	}
+
+	found := false
+	for line := range strings.SplitSeq(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "testtag" {
+			found = true
+			if fields[1] != "false" {
+				t.Errorf("testtag value: got %q, want %q\nfull output:\n%s", fields[1], "false", out)
+			}
+			if fields[2] != "manual" {
+				t.Errorf("testtag source: got %q, want %q\nfull output:\n%s", fields[2], "manual", out)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("capabilities output missing 'testtag' row; got:\n%s", out)
 	}
 }

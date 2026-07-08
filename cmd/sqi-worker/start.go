@@ -216,7 +216,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Capabilities ──────────────────────────────────────────────────────────
 	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
 	if err != nil {
-		return fmt.Errorf("invalid capability tags: %w", err)
+		return fmt.Errorf("build capabilities: %w", err)
 	}
 
 	// ── Registration ────────────────────────────────────────────
@@ -462,7 +462,7 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 
 	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
 	if err != nil {
-		return fmt.Errorf("invalid capability tags: %w", err)
+		return fmt.Errorf("build capabilities: %w", err)
 	}
 
 	fmt.Fprintf(w, "os:          %s\n", caps.OS)
