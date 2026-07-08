@@ -337,6 +337,32 @@ func TestEligible_AttrCustomTag_Missing(t *testing.T) {
 	}
 }
 
+// TestEligible_AttrAutoDetectedTag_ValueTrue mirrors the DCC preset convention
+// (presets/dcc/*.yaml declare attr.worker.tag.maya anyOf: ["true"]) to guard
+// against the auto-detection regression where detected tags were recorded
+// with an empty value instead of "true", which silently rejected every
+// auto-detected worker.
+func TestEligible_AttrAutoDetectedTag_ValueTrue(t *testing.T) {
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.tag.maya", AnyOf: []string{"true"}},
+		},
+	}
+
+	detected := baseWorker()
+	detected.Tags = map[string]string{"maya": "true"}
+	if !scheduler.WorkerEligible(detected, baseJob(), s, nil, nil) {
+		t.Error("worker with tag maya=true should satisfy anyOf [true]")
+	}
+
+	presenceOnly := baseWorker()
+	presenceOnly.Tags = map[string]string{"maya": ""}
+	if scheduler.WorkerEligible(presenceOnly, baseJob(), s, nil, nil) {
+		t.Error("worker with tag maya=\"\" (presence-only) must not satisfy anyOf [true]")
+	}
+}
+
 func TestEligible_AttrAllOf_Satisfied(t *testing.T) {
 	// AllOf with a single value that matches exactly.
 	w := baseWorker()

@@ -17,14 +17,26 @@ func TestBuildWorkerCapabilities_MergeAndPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildWorkerCapabilities: %v", err)
 	}
-	if _, ok := caps.Tags["inhouse"]; !ok {
-		t.Errorf("custom detector tag not applied: %v", caps.Tags)
+	if caps.Tags["inhouse"] != "true" {
+		t.Errorf("custom detector tag not applied with value %q: got %q", "true", caps.Tags["inhouse"])
 	}
 	if caps.Tags["maya"] != "override" {
 		t.Errorf("manual tag should win: got %q", caps.Tags["maya"])
 	}
 	if _, ok := caps.Tags["os"]; !ok {
 		t.Errorf("base os tag missing")
+	}
+}
+
+func TestApplyDetectors_SetsValueTrueForFreshTag(t *testing.T) {
+	caps := Capabilities{}
+	det := Detector{Tag: "inhouse", Checks: []Check{{Env: EnvCheck{Name: "INHOUSE"}}}}
+	env := fakeEnv{goos: "linux", envs: map[string]string{"INHOUSE": "1"}}
+
+	caps.ApplyDetectors([]Detector{det}, env)
+
+	if caps.Tags["inhouse"] != "true" {
+		t.Errorf("ApplyDetectors should record value %q for a freshly detected tag: got %q", "true", caps.Tags["inhouse"])
 	}
 }
 

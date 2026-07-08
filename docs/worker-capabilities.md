@@ -7,8 +7,11 @@ hardware.
 
 Tags appear in two forms:
 
-- **List-style tags** — presence only; e.g., `maya-2025` (the value is the
-  empty string). Used for software labels and feature flags.
+- **List-style tags** — presence only; e.g., a manual `gpu` entry (the value
+  is the empty string). Used for software labels and feature flags. (The
+  built-in DCC detectors below are the exception: they emit `key=true` pairs,
+  not empty-value presence tags — see [Capability
+  auto-detection](#capability-auto-detection-built-in-dcc-detectors).)
 - **Key=value tags** — e.g., `os=linux`, `os_version=22.04`. The value adds
   context for range-based matching rules.
 
@@ -110,12 +113,14 @@ GPU-capable on macOS or Windows.
 In addition to the hardware/OS tags above, `sqi-worker` runs a second,
 declarative detection engine (`internal/worker/capabilities`) that looks for
 installed creative applications — Maya, Nuke, Houdini, Blender — and
-advertises a presence tag automatically, with no per-worker configuration.
-This makes the software actually installed on a worker visible without
-hand-editing its config — run `sqi-worker capabilities` any time to see what
-was found. See [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)
-for how these presence tags currently relate to the `key=true` manual
-capability tag the six shipped reference presets require.
+advertises a tag with value `"true"` automatically, with no per-worker
+configuration. This makes the software actually installed on a worker visible
+without hand-editing its config, and it's enough on its own to satisfy the
+`anyOf: ["true"]` gate the six shipped reference presets declare — a standard
+install matches those presets with zero configuration. Run
+`sqi-worker capabilities` any time to see what was found. See
+[`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets) for how these
+auto-detected tags relate to the reference presets.
 
 ### How it runs
 
@@ -170,12 +175,13 @@ in the development guide).
 
 A detector emits tags into the same `Tags` map as the hardware tags above:
 
-- The bare `<tag>` (e.g. `maya`) is emitted once, with an **empty value**,
-  the moment *any* of its checks matches — this is a presence-only tag, same
-  shape as a bare manual tag like `gpu`.
+- The bare `<tag>` (e.g. `maya`) is emitted once, with value `"true"`, the
+  moment *any* of its checks matches — this matches the same `key=true`
+  convention as a manual tag like `maya=true`, so `attr.worker.tag.<tag>`
+  `anyOf: ["true"]` requirements are satisfied directly.
 - `<tag>-<version>` (e.g. `maya-2025`) is emitted per **distinct** version
-  string captured by the detector's `version.from` regex, also with an empty
-  value.
+  string captured by the detector's `version.from` regex, also with value
+  `"true"`.
 - **Multi-version is supported.** A `path_glob` check can match several
   installs at once (e.g. `/opt/hfs20.0/…` and `/opt/hfs20.5/…` both present),
   so a single detector run can emit `houdini`, `houdini-20.0`, **and**
@@ -186,7 +192,7 @@ A detector emits tags into the same `Tags` map as the hardware tags above:
 - Built-in detectors run before custom detectors; if a custom detector emits
   a tag also emitted by an (enabled) built-in, the built-in's evaluation runs
   first and the tag is already present, so the custom detector doesn't
-  overwrite it. Since both are empty-value presence tags this has no
+  overwrite it. Since both detectors emit the same `"true"` value this has no
   practical effect on the tag itself, only on which detector is credited as
   the source in the `sqi-worker capabilities` output below.
 - To fully replace a built-in's checks for a tag (e.g. because it misfires on
@@ -194,8 +200,9 @@ A detector emits tags into the same `Tags` map as the hardware tags above:
   only your custom detector's checks run.
 - Manual `worker.capability_tags` are merged last via `MergeManualTags` and
   always overwrite a same-named key from any detector, built-in or custom —
-  this is the escape hatch to force a value (`maya=true`) or suppress a
-  misdetection (`maya=` clears it to empty).
+  this is the escape hatch to suppress a misdetection (`maya=` clears it to
+  empty) or to force the tag on a worker where the built-in checks don't fire
+  (`maya=true` on a nonstandard install path).
 
 ### The `sqi-worker capabilities` command
 
@@ -395,8 +402,11 @@ Any attribute name outside the well-known set (`attr.worker.os.family`,
 `attr.worker.tag.<key>` namespace always resolves to `""` and can never
 match.
 
-To gate a step on a worker tagged `maya=true` (set via `capability_tags:
-[maya=true]`, see [Setting manual tags](#setting-manual-tags) above):
+To gate a step on a worker tagged `maya=true` — auto-detected on any worker
+with a standard Maya install (see [Capability
+auto-detection](#capability-auto-detection-built-in-dcc-detectors) above), or
+set manually via `capability_tags: [maya=true]` (see [Setting manual
+tags](#setting-manual-tags) above) for a nonstandard install:
 
 ```yaml
 steps:

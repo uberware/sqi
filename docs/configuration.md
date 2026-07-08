@@ -533,11 +533,12 @@ See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
 Controls the worker's software capability auto-detection: built-in detectors
 for Maya, Nuke, Houdini, and Blender run automatically at startup and
-advertise a presence tag (e.g. `maya`, plus `maya-2025`) with no per-worker
-configuration. See [`docs/products.md`](products.md) and
-[`docs/dcc-submitters.md`](dcc-submitters.md) for how these presence tags
-relate to the `key=true` capability tag the reference DCC products/presets
-currently require.
+advertise a tag (e.g. `maya`, plus `maya-2025`) with value `"true"`, with no
+per-worker configuration — enough on its own to satisfy the reference DCC
+products/presets' `key=true` requirement. See
+[`docs/products.md`](products.md) and
+[`docs/dcc-submitters.md`](dcc-submitters.md) for how these auto-detected
+tags relate to the reference DCC products/presets.
 
 | Key | Type | Default | Env var | Description |
 |---|---|---|---|---|

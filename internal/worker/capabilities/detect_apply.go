@@ -31,8 +31,9 @@ func LoadDetectors(cfg CapabilitiesConfig) ([]Detector, error) {
 	return out, nil
 }
 
-// ApplyDetectors evaluates each detector against env and records emitted tags as
-// presence tags (empty value) without overwriting keys already present.
+// ApplyDetectors evaluates each detector against env and records emitted tags
+// with value "true" (matching the manual `tag=true` convention used by the
+// scheduler's attribute matcher) without overwriting keys already present.
 func (c *Capabilities) ApplyDetectors(detectors []Detector, env CheckEnv) {
 	if c.Tags == nil {
 		c.Tags = make(map[string]string)
@@ -40,7 +41,7 @@ func (c *Capabilities) ApplyDetectors(detectors []Detector, env CheckEnv) {
 	for _, d := range detectors {
 		for _, tag := range d.Evaluate(env) {
 			if _, exists := c.Tags[tag]; !exists {
-				c.Tags[tag] = ""
+				c.Tags[tag] = "true"
 			}
 		}
 	}

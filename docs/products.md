@@ -128,14 +128,15 @@ configuration (see [worker-capabilities.md](worker-capabilities.md)). Runs
 [docs/dcc-submitters.md](dcc-submitters.md#reference-presets)) gate the same
 way: a `hostRequirements.attributes` entry requiring `attr.worker.tag.<app>`
 with `anyOf: ["true"]`. `sqi-worker` auto-detects a standard install of each
-of those four applications and advertises a bare presence tag (e.g. `maya`)
-with no configuration — see [Capability
+of those four applications and advertises the matching tag (e.g. `maya`) with
+value `"true"` with no configuration — see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)
-— but that tag's value is always empty, so it does not by itself satisfy the
-`anyOf: ["true"]` match above; a manual `capability_tags: [maya=true]` entry
-(or the equivalent for `docker`/`nuke`/`houdini`/`blender`) is still how a
-worker satisfies these built-in gates today. Nonstandard install paths or an
-in-house tool not covered by a built-in detector can add a [custom
+— which satisfies the `anyOf: ["true"]` match above directly, so a worker with
+a standard install matches these four built-in gates with zero per-worker
+configuration. `docker` has no built-in detector, so the `container` product
+above still needs the manual `capability_tags: ["docker=true"]` entry.
+Nonstandard install paths for Maya/Nuke/Houdini/Blender, or an in-house tool
+not covered by a built-in detector, can add a manual tag or a [custom
 detector](worker-capabilities.md#writing-custom-detectors) instead.
 
 ---

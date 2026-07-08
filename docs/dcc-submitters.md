@@ -244,10 +244,22 @@ Nuke get real multi-frame chunks (10 by default) because both the embedded
 a chunk amortizes DCC startup cost across several frames.
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
-`attr.worker.tag.<name>` capability tag — these are **operator-configured**,
-not auto-detected. Add a `key=value` entry to the worker's
-`capability_tags` (see [worker capability tags](worker-capabilities.md)),
-on top of having the corresponding DCC binary on that worker's `PATH`:
+`attr.worker.tag.<name>` capability tag. `sqi-worker` auto-detects a standard
+Maya/Nuke/Houdini/Blender install on `PATH`/in its usual install location and
+advertises the matching tag (`maya`, plus a version variant like `maya-2025`)
+with value `"true"` automatically at startup, with no configuration — see
+[Capability
+auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
+That satisfies the `anyOf: ["true"]` requirement each of the six presets above
+declares, so a worker with a standard DCC install matches these presets with
+**zero per-worker configuration**. Run `sqi-worker capabilities` (or
+`start --dry-run`) to confirm at a glance which DCCs were actually found.
+
+Manual tags are only needed when a DCC lives at a nonstandard install path (or
+under a name/location the built-in detectors don't check) or for in-house
+tools the built-in detectors don't cover. In those cases, add a `key=value`
+entry to the worker's `capability_tags` (see [worker capability
+tags](worker-capabilities.md)):
 
 ```yaml
 worker:
@@ -256,26 +268,10 @@ worker:
 ```
 
 (substitute `houdini=true`, `nuke=true`, or `blender=true` for the other
-three presets). This satisfies the preset's `attr.worker.tag.maya` (etc.)
-requirement. A job submitted against one of these products sits `ready`
-forever if no worker advertises the tag.
-
-**Auto-detected tags vs. the `key=true` requirement above.** `sqi-worker`
-also auto-detects installed Maya/Nuke/Houdini/Blender installs and advertises
-a bare presence tag (`maya`, plus a version variant like `maya-2025`)
-automatically at startup, with no configuration — see [Capability
-auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That presence tag's value is always empty, so it does not by itself satisfy
-the `anyOf: ["true"]` value match the six presets above declare; the manual
-`capability_tags: [maya=true]` entry shown above is still how a worker
-satisfies these specific presets today. Auto-detection is still useful on
-every worker regardless — `sqi-worker capabilities` (or `start --dry-run`)
-shows at a glance which DCCs were actually found on `PATH`/in their standard
-install locations, which is the fastest way to confirm a worker *should* be
-tagged before you set `capability_tags` by hand. Nonstandard install paths or
-in-house tools that the built-in detectors don't cover can add a [custom
-detector](worker-capabilities.md#writing-custom-detectors) instead of (or in
-addition to) a manual tag.
+three presets), or add a [custom
+detector](worker-capabilities.md#writing-custom-detectors) instead. A job
+submitted against one of these products sits `ready` forever if no worker
+ends up advertising the tag (auto-detected or manual).
 
 ---
 

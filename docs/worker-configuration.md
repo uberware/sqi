@@ -429,7 +429,7 @@ worker:
 ## `capabilities` — Software auto-detection
 
 Configures the built-in DCC detectors (Maya, Nuke, Houdini, Blender) that run
-automatically at startup and advertise a presence tag with no per-worker
+automatically at startup and advertise a `key=true` tag with no per-worker
 configuration, plus any custom detectors for in-house tools. Full reference,
 including the detector schema and the tag/version model:
 [`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
