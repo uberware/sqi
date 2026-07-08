@@ -72,8 +72,22 @@ discovery:
 
 worker:
   data_dir: "/var/lib/sqi-worker"
-  max_concurrent_tasks: 4
 ```
+
+A worker executes as many tasks concurrently as it has CPU cores; the server
+gates capacity by CPU-core fit, so there is no per-worker concurrency knob to
+set. On a multi-site farm you may also want to declare where this worker runs
+so the server can resolve storage paths and honour location affinity:
+
+```yaml
+worker:
+  compute_location: "onprem"      # matches a storage-location root name
+  capability_tags: ["maya-2025", "arnold-7"]
+  # queue_ids: ["gpu-renders"]    # restrict to specific queues (optional)
+```
+
+See [Compute locations](compute-locations.md) and
+[Storage locations](storage-locations.md) for how these names are used.
 
 Validate before deploying:
 
@@ -98,7 +112,10 @@ sudo chown sqiworker:sqiworker /var/lib/sqi-worker
 
 ### 2. Install the systemd unit file
 
-Create `/etc/systemd/system/sqi-worker.service`:
+Ready-to-use unit files ship in the repository at
+[`deploy/systemd/`](https://github.com/uberware/sqi/tree/main/deploy/systemd)
+(`sqi-worker.service` and the `sqi-worker@.service` template). Copy one into
+place, or create `/etc/systemd/system/sqi-worker.service` from the following:
 
 ```ini
 [Unit]
@@ -282,7 +299,6 @@ discovery:
   enable_mdns: false
 worker:
   data_dir: "C:\\ProgramData\\sqi\\worker"
-  max_concurrent_tasks: 4
 ```
 
 ### 3. Register as a Windows service
@@ -347,6 +363,7 @@ docker run -d \
   --name sqi-worker \
   -e SQI_WORKER_NATS_URL=nats://sqi-server:4222 \
   -e SQI_WORKER_DISCOVERY_ENABLE_MDNS=false \
+  -e SQI_WORKER_DATA_DIR=/var/lib/sqi-worker \
   -v sqi-worker-data:/var/lib/sqi-worker \
   ghcr.io/uberware/sqi/sqi-worker:latest
 ```
@@ -355,10 +372,11 @@ docker run -d \
 
 ## Multiple workers on one host
 
-A single worker runs `worker.max_concurrent_tasks` tasks in parallel (default
-4), so raise that value first if you only need more throughput. Run *separate*
-worker processes when you want distinct identities — independent heartbeats and
-registrations, different capability sets, or separate queue assignments.
+A single worker already executes as many tasks concurrently as the host has CPU
+cores — the server gates capacity by CPU-core fit — so one worker per host is
+usually enough for throughput. Run *separate* worker processes only when you
+want distinct identities: independent heartbeats and registrations, different
+capability sets or compute locations, or separate queue assignments.
 
 Each instance must have its own `worker.data_dir` (it holds the persistent
 `worker.id` UUID) and its own `metrics.addr` (the local health/metrics port),

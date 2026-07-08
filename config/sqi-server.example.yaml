@@ -85,9 +85,7 @@ log:
   format: "json"
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-# Controls the task assignment loop. These settings are consumed by the
-# scheduler component; they are accepted and validated now so
-# that config files written today remain valid once the scheduler lands.
+# Controls the task assignment loop and the background retention sweeps.
 scheduler:
   # Duration after which a worker that has not sent a heartbeat is declared
   # offline. Its in-flight tasks are reclaimed and re-queued for assignment.
@@ -110,6 +108,25 @@ scheduler:
   # Type: int   Env: SQI_SCHEDULER_MAX_TASKS_PER_WORKER
   max_tasks_per_worker: 1
 
+  # How long a worker that has stopped sending heartbeats may remain offline
+  # before the retention sweep hard-deletes it, bounding the worker table on
+  # farms with ephemeral nodes. Disabled and online workers are never
+  # auto-removed. Set to 0 to disable automatic removal.
+  # Type: duration   Env: SQI_SCHEDULER_OFFLINE_WORKER_RETENTION
+  offline_worker_retention: "24h"
+
+  # How long a terminal job is kept before the retention sweep hard-deletes it
+  # and all of its data. completed and canceled jobs are always eligible; failed
+  # jobs only when job_retention_include_failed is true. Set to 0 to disable
+  # automatic deletion.
+  # Type: duration   Env: SQI_SCHEDULER_JOB_RETENTION
+  job_retention: "168h"
+
+  # Extend the job retention sweep to failed jobs as well. Leave false to keep
+  # failed jobs indefinitely for post-mortem inspection.
+  # Type: bool   Env: SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED
+  job_retention_include_failed: false
+
 # ── mDNS service discovery ────────────────────────────────────────────────────
 discovery:
   # When true, sqi-server broadcasts a _sqi._tcp mDNS record so that workers
@@ -123,3 +140,31 @@ discovery:
   # Each sqi-server on the same subnet should use a distinct name.
   # Type: string   Env: SQI_DISCOVERY_INSTANCE_NAME
   instance_name: "sqi-server"
+
+# ── OpenJD submission ─────────────────────────────────────────────────────────
+openjd:
+  # Enforce OpenJD's quantitative limits at submission time (maximum name
+  # lengths, parameter/step/environment counts, reserved-name rules). Disable
+  # only when onboarding templates that predate the strict limits and cannot yet
+  # be updated.
+  # Type: bool   Env: SQI_OPENJD_ENFORCE_LIMITS   Flag: --openjd-enforce-limits
+  enforce_limits: true
+
+# ── Diagnostics (in-memory log ring buffer) ──────────────────────────────────
+diagnostics:
+  # Maximum diagnostic-log records retained per component (the server plus each
+  # worker), surfaced in the web UI and at GET /api/v1/diagnostics/logs. A
+  # positive value is the per-component capacity. Set to 0 to disable
+  # diagnostics entirely — no ring buffer, no worker.diag subscription, and the
+  # REST endpoint returns 503 — when logs are collected out-of-band
+  # (journald / Docker / Loki / etc.). Must not be negative.
+  # Type: int   Env: SQI_DIAGNOSTICS_BUFFER_SIZE
+  buffer_size: 1000
+
+# ── Community preset library ──────────────────────────────────────────────────
+preset_library:
+  # JSON index URL for the community preset library browsed and installed from
+  # the web UI (the raw index file, not a repo page). Leave empty to disable the
+  # feature entirely. Defaults to the official sqi preset library.
+  # Type: string   Env: SQI_PRESET_LIBRARY_URL
+  url: "https://uberware.github.io/sqi-presets/index.json"

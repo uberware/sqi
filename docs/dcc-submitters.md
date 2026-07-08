@@ -39,7 +39,7 @@ lets the artist pick one, fetches its parameters (`GET
 exactly what the web `/submit` page does. Everything DCC-specific is
 scene/context extraction (a scene path, a frame range, which render target is
 selected) that pre-fills matching parameters by **name**, never by which
-product was chosen. See [Reference presets](#reference-presets) for the four
+product was chosen. See [Reference presets](#reference-presets) for the six
 products this repo ships to give the framework something real to target, and
 [The parameter convention contract](#the-parameter-convention-contract) for
 exactly how pre-fill works.
@@ -213,8 +213,8 @@ Every submitter resolves the server URL the same way, in order:
 
 ## Reference presets
 
-C1 ships four products under `presets/dcc/`, published through the [preset
-library](preset-library.md) so `sqi-submitter` has something real to submit
+sqi ships six reference products under `presets/dcc/`, published through the
+[preset library](preset-library.md) so `sqi-submitter` has something real to submit
 to out of the box. Install them from **Admin → Preset Library** in the web
 UI, or by hand via `POST /api/v1/products` (or **Admin → Products** in the
 web UI) if you're not using a preset index. All use the product `category`
@@ -349,7 +349,7 @@ Rules that make this a stable contract:
   its own frame range or output path, that value wins over the scene-level
   one for `frame_range`/`output_path`.
 
-### PATH parameters and the client chooser fallback
+### PATH parameters, labels, and pickers
 
 This repo's OpenJD `userInterface` control enum (see
 [`docs/openjd-extensions.md`](openjd-extensions.md) and
@@ -360,27 +360,23 @@ no `CHOOSE_INPUT_FILE`/`CHOOSE_OUTPUT_FILE`/`CHOOSE_DIRECTORY` a template
 author can declare, and a `userInterface` block that is present must carry a
 `control` (the server rejects one without it).
 
-Chooser widgets instead come from a **client-side type fallback**, and it
-only exists in the Qt dialog: for a `PATH` parameter with **no**
-`userInterface` block at all, the Qt dialog renders a text field plus a
-browse button opening the appropriate chooser (`objectType: DIRECTORY` →
-folder picker, `dataFlow: OUT` → save dialog, otherwise an open-file dialog).
-The web submission form has no equivalent — `selectWidget` in
-`web/src/lib/productForm.ts` falls through to a plain text input for a
-`PATH` parameter with no `control` hint, same as any other unrecognized type.
-An explicit `control` always wins over the Qt type fallback — **hinting a
-`PATH` parameter as `LINE_EDIT` forces a plain text field with no browse
-button, in both Qt and web**.
+Because of that, every reference preset labels its `PATH` parameters with
+`control: LINE_EDIT` — the only control that can carry a `label` on a path —
+and the Qt dialog **still** renders a real chooser for them, because it treats
+`PATH` as type-first (see [The scene file is host-managed](#the-scene-file-is-host-managed)
+above): a `LINE_EDIT` (or absent) control does not suppress the picker. So a
+Qt-hosted artist gets a browse button *and* a friendly label. The picker
+variant follows the parameter's `objectType`/`dataFlow` (`objectType:
+DIRECTORY` → folder picker, `dataFlow: OUT` → save dialog, otherwise an
+open-file dialog). An explicit non-`LINE_EDIT` control (e.g. `HIDDEN`) wins
+over the type fallback.
 
-The rule for preset authors: **leave `PATH` parameters without a
-`userInterface` hint** so the Qt dialog applies its chooser fallback (the web
-form renders a plain text field either way). The four reference presets do
-exactly this — their `PATH` parameters (`SceneFile` everywhere; `OutputDir`
-in the Maya and Blender presets) carry no `userInterface` block, so Qt-hosted
-artists get real file/directory pickers. The tradeoff is the field label
-falls back to the raw parameter name (e.g. "SceneFile"), since a label can't
-currently be set without also forcing a `control`. Non-`PATH` parameters keep
-`LINE_EDIT` hints for friendly labels.
+The chooser is a **Qt-only** rendering affordance, never represented in the
+OpenJD document. The web submission form has no equivalent — `selectWidget`
+in `web/src/lib/productForm.ts` renders a `PATH` parameter as a plain labeled
+text field (a browser cannot browse the farm filesystem) — and the Blender
+panel uses a `bpy` string property. All three read the same `LINE_EDIT` +
+`label` hint; only Qt adds the browse button on top of it.
 
 ---
 

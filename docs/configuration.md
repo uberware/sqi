@@ -437,7 +437,7 @@ diagnostics:
 ```
 
 > Workers have their own separate `diagnostics.enabled` toggle (they publish
-> rather than buffer) — see the worker configuration guide.
+> rather than buffer) — see [Worker configuration](#worker-configuration) below.
 
 See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
@@ -475,7 +475,17 @@ index format and full integration guide.
 
 Worker configuration applies to `sqi-worker` instances, not the server. Workers
 load configuration from the same layered sources as the server (defaults → file →
-environment → flags).
+environment → flags), except that environment variables use the `SQI_WORKER_`
+prefix and the config file is named `sqi-worker.yaml`.
+
+The full worker key reference — NATS connection, identity, metrics, discovery, log
+streaming, and more — lives in
+[`docs/worker-configuration.md`](worker-configuration.md), and a fully commented
+example is at
+[`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml).
+The two keys below are documented here because they are not covered in that
+reference: `staging` bridges server storage configuration to worker execution, and
+`diagnostics` mirrors the server-side diagnostics setting.
 
 ### Staging (`stage_locally` path delivery)
 
@@ -496,6 +506,28 @@ staging:
   sync_command: "rsync -a {src} {dest}"
 ```
 
+### Diagnostics (`diagnostics.enabled`)
+
+Controls whether the worker mirrors its own structured (`slog`) output to
+`sqi-server` over core NATS, where it appears in the web UI alongside server logs.
+This is the worker agent's operational log — distinct from task process output,
+which is always streamed. This is the worker's counterpart to the server's
+`diagnostics.buffer_size` (workers publish; the server buffers).
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | When `true`, the worker's diagnostic-log records are published to `sqi-server` in addition to local stderr. Set `false` to keep them local only. |
+
+Note the env var is `SQI_DIAGNOSTICS_ENABLED` (not `SQI_WORKER_…`), matching the
+server-side diagnostics naming.
+
+```yaml
+diagnostics:
+  enabled: true
+```
+
+See [`docs/observability.md`](observability.md) for the full diagnostics guide.
+
 ---
 
 ## Quick reference table
@@ -514,6 +546,9 @@ staging:
 | `scheduler.heartbeat_timeout` | duration | `30s` | `SQI_SCHEDULER_HEARTBEAT_TIMEOUT` | — |
 | `scheduler.tick_interval` | duration | `500ms` | `SQI_SCHEDULER_TICK_INTERVAL` | — |
 | `scheduler.max_tasks_per_worker` | int | `1` | `SQI_SCHEDULER_MAX_TASKS_PER_WORKER` | — |
+| `scheduler.offline_worker_retention` | duration | `24h` | `SQI_SCHEDULER_OFFLINE_WORKER_RETENTION` | — |
+| `scheduler.job_retention` | duration | `168h` | `SQI_SCHEDULER_JOB_RETENTION` | — |
+| `scheduler.job_retention_include_failed` | bool | `false` | `SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED` | — |
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |

@@ -32,6 +32,11 @@ COPY --chown=sqiworker:sqiworker sqi-worker /usr/local/bin/sqi-worker
 # Data directory for worker ID persistence and session working directories.
 RUN mkdir -p /var/lib/sqi-worker && chown sqiworker:sqiworker /var/lib/sqi-worker
 
+# Pin the data dir explicitly so it does not depend on $HOME resolving at
+# runtime (the built-in default falls back to /var/lib/sqi-worker only when no
+# home directory is set).
+ENV SQI_WORKER_DATA_DIR=/var/lib/sqi-worker
+
 USER sqiworker
 
 # Metrics / health-probe port (Prometheus + /healthz, /readyz).
