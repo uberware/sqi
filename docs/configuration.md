@@ -483,9 +483,10 @@ streaming, and more — lives in
 [`docs/worker-configuration.md`](worker-configuration.md), and a fully commented
 example is at
 [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml).
-The two keys below are documented here because they are not covered in that
-reference: `staging` bridges server storage configuration to worker execution, and
-`diagnostics` mirrors the server-side diagnostics setting.
+The keys below are documented here because they are not covered in that
+reference: `staging` bridges server storage configuration to worker execution,
+`diagnostics` mirrors the server-side diagnostics setting, and `capabilities`
+configures the worker's software auto-detection.
 
 ### Staging (`stage_locally` path delivery)
 
@@ -527,6 +528,36 @@ diagnostics:
 ```
 
 See [`docs/observability.md`](observability.md) for the full diagnostics guide.
+
+### Capability auto-detection (`capabilities.detect` / `capabilities.disable`)
+
+Controls the worker's software capability auto-detection: built-in detectors
+for Maya, Nuke, Houdini, and Blender run automatically at startup and
+advertise a presence tag (e.g. `maya`, plus `maya-2025`) with no per-worker
+configuration. See [`docs/products.md`](products.md) and
+[`docs/dcc-submitters.md`](dcc-submitters.md) for how these presence tags
+relate to the `key=true` capability tag the reference DCC products/presets
+currently require.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | Custom detectors for in-house tools, same schema as the built-ins. |
+| `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` (comma-separated, appended) | Turn off a built-in detector by tag name, e.g. `[blender]`. |
+
+```yaml
+capabilities:
+  detect:
+    - tag: mytool
+      checks:
+        - exe: mytool
+  disable: [blender]
+```
+
+See [`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)
+for the full auto-detection guide (how it runs, the tag/version model, the
+`sqi-worker capabilities` command) and
+[`docs/worker-capabilities.md`](worker-capabilities.md#writing-custom-detectors)
+for the detector schema reference.
 
 ---
 

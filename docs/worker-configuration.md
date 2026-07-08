@@ -426,6 +426,68 @@ worker:
 
 ---
 
+## `capabilities` — Software auto-detection
+
+Configures the built-in DCC detectors (Maya, Nuke, Houdini, Blender) that run
+automatically at startup and advertise a presence tag with no per-worker
+configuration, plus any custom detectors for in-house tools. Full reference,
+including the detector schema and the tag/version model:
+[`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
+
+### `capabilities.detect`
+
+| | |
+|---|---|
+| **Type** | `[]Detector` |
+| **Default** | `[]` (empty — only the built-ins run) |
+| **Env var** | — (config file only) |
+
+Custom detectors, in the same schema as the built-ins. Structured detectors
+have no environment-variable form — cloud fleets bake them into the worker
+config file shipped in the image. Each entry is validated at config-load
+time; an invalid detector (missing `tag`, zero `checks`, more than one check
+primitive set, a bad `os` value, or a non-compiling regex) fails worker
+startup with a descriptive error.
+
+```yaml
+capabilities:
+  detect:
+    - tag: mytool
+      checks:
+        - exe: mytool
+        - path_glob: "/opt/mytool*/bin/mytool"
+      version:
+        from: "mytool(?P<v>[0-9.]+)"
+```
+
+### `capabilities.disable`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` (empty — all built-ins run) |
+| **Env var** | `SQI_WORKER_CAPABILITIES_DISABLE` (comma-separated, appended to any config-file entries) |
+
+Built-in tag names to turn off, by exact tag (`maya`, `nuke`, `houdini`,
+`blender`). Use this when a built-in misfires on a nonstandard host layout —
+typically paired with a `capabilities.detect` entry for the same tag that
+supplies more specific checks.
+
+```yaml
+capabilities:
+  disable: [blender]
+```
+
+```sh
+SQI_WORKER_CAPABILITIES_DISABLE=blender,nuke sqi-worker start
+```
+
+Run `sqi-worker capabilities` to print every tag the worker would currently
+advertise, with its source (`auto`, `builtin:<tag>`, `custom`, or `manual`) —
+the fastest way to confirm a detector is (or isn't) firing.
+
+---
+
 ## `log` — Structured logging
 
 ### `log.level`
@@ -653,6 +715,8 @@ log_streamer:
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |
+| `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | — |
+| `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — |
 | `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |
 | `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |

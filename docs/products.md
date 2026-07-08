@@ -123,6 +123,21 @@ which a worker satisfies via `capability_tags: ["docker=true"]` in its
 configuration (see [worker-capabilities.md](worker-capabilities.md)). Runs
 `docker run --rm {{Param.Image}}`.
 
+**A note on the DCC reference presets and auto-detection.** The
+`presets/dcc/*.yaml` reference products (Maya, Nuke, Houdini, Blender — see
+[docs/dcc-submitters.md](dcc-submitters.md#reference-presets)) gate the same
+way: a `hostRequirements.attributes` entry requiring `attr.worker.tag.<app>`
+with `anyOf: ["true"]`. `sqi-worker` auto-detects a standard install of each
+of those four applications and advertises a bare presence tag (e.g. `maya`)
+with no configuration — see [Capability
+auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)
+— but that tag's value is always empty, so it does not by itself satisfy the
+`anyOf: ["true"]` match above; a manual `capability_tags: [maya=true]` entry
+(or the equivalent for `docker`/`nuke`/`houdini`/`blender`) is still how a
+worker satisfies these built-in gates today. Nonstandard install paths or an
+in-house tool not covered by a built-in detector can add a [custom
+detector](worker-capabilities.md#writing-custom-detectors) instead.
+
 ---
 
 ## Sources
