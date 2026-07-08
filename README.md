@@ -2,6 +2,8 @@
 
 `sqi` (pronounced "sky") is an open source distributed task and render farm manager built for modern production pipelines. It is designed to run simply on a handful of local workstations and scale to hybrid on-premises and cloud infrastructure without changing how you work.
 
+📖 **[Documentation](https://uberware.github.io/sqi/)** — quickstart, architecture, configuration, and full reference.
+
 > **Status:** v0.1.0 (Phase 1) released. Early but functional — core scheduler, pull-based workers, OpenJD job execution, and a basic web UI. Contributions, feedback, and discussion welcome.
 
 ---
