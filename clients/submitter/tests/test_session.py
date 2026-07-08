@@ -134,8 +134,8 @@ def test_resolve_server_url_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 def test_settings_round_trip(tmp_path: object) -> None:
     path = str(Path(str(tmp_path)) / "s.json")
-    Settings(path=path).set("last_product.maya", "maya-batch-render")
-    assert Settings(path=path).get("last_product.maya") == "maya-batch-render"
+    Settings(path=path).set("last_product.maya", "maya-layer-render")
+    assert Settings(path=path).get("last_product.maya") == "maya-layer-render"
     assert Settings(path=path).get("missing", "d") == "d"
 
 

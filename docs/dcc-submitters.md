@@ -217,15 +217,23 @@ C1 ships four products under `presets/dcc/`, published through the [preset
 library](preset-library.md) so `sqi-submitter` has something real to submit
 to out of the box. Install them from **Admin → Preset Library** in the web
 UI, or by hand via `POST /api/v1/products` (or **Admin → Products** in the
-web UI) if you're not using a preset index. All four use the product
-`category` `Rendering` and declare `TASK_CHUNKING` for frame distribution.
+web UI) if you're not using a preset index. All use the product `category`
+`Rendering` and declare `TASK_CHUNKING` for frame distribution.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
-| `maya-batch-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
+| `maya-layer-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
+| `maya-scene-render` | `Render -r <renderer> -s/-e <frame> -rd <dir> <scene>` (no `-rl`) | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`) | `attr.worker.tag.maya = "true"` |
 | `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` per frame range | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
+| `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
 | `blender-batch-render` | `blender -b <file> -o <output> -f <frame>` | one frame per task | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
+
+Maya and Nuke each ship two variants: a **single-target** product (`-rl <layer>` /
+`-X <writeNode>`) and a **whole-scene** product that omits that flag — Maya's
+renders the scene's renderable layers, Nuke's renders every enabled Write node.
+Houdini and Blender have one product each (Houdini's output target is a scripted
+`rop.render()` call, not an omittable flag).
 
 Maya and Blender are one-frame-per-task because both commands only take a
 single frame at a time (`Render -s/-e` bounds one call; Blender's `-f` renders
@@ -379,8 +387,8 @@ currently be set without also forcing a `control`. Non-`PATH` parameters keep
 ## Customizing for your pipeline
 
 The reference presets are explicitly named to leave room for variants
-(`maya-batch-render`, not "the Maya product") and are described in their own
-`description` field as a starting point. To adapt one:
+(`maya-layer-render` / `maya-scene-render`, not "the Maya product") and are
+described in their own `description` field as a starting point. To adapt one:
 
 1. Open it in **Admin → Products**, or fetch it via
    `GET /api/v1/products/{name}` and re-`POST` under a new name.
@@ -500,9 +508,9 @@ For each host, after installing per [Installation per host](#installation-per-ho
 1. **Open scene → launch submitter.** Open (or create) a scene with a saved
    path. Trigger the sqi menu item / shelf tool / N-panel.
 2. **Dialog opens with a suggested product.** The product picker shows a
-   **Suggested** group containing the host's reference preset (e.g. Maya
-   shows `maya-batch-render` suggested) and an **All** group with every other
-   product.
+   **Suggested** group containing the host's reference presets (e.g. Maya
+   shows `maya-layer-render` and `maya-scene-render` suggested) and an **All**
+   group with every other product.
 3. **Target picker lists render units.** If the scene has renderable units
    (Maya render layers, Houdini ROPs, Nuke Write nodes, Blender view layers),
    the target picker is visible and lists them; if there are none, it's

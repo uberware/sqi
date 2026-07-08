@@ -149,10 +149,11 @@ with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including the
 index format, configuration, and the browse → preview → install flow.
 
-The official library's four `Rendering`-category DCC presets
-(`maya-batch-render`, `houdini-rop-render`, `nuke-write-render`,
-`blender-batch-render`) exist to give the [`sqi-submitter`](dcc-submitters.md)
-in-application submitters something real to target. They declare their
+The official library's `Rendering`-category DCC presets (`maya-layer-render`,
+`maya-scene-render`, `houdini-rop-render`, `nuke-write-render`,
+`nuke-script-render`, `blender-batch-render`) exist to give the
+[`sqi-submitter`](dcc-submitters.md) in-application submitters something real to
+target. They declare their
 parameters (`SceneFile`, `Frames`, `OutputDir`, plus per-host extras like
 `Renderer`/`RopPath`/`WriteNode`) following a documented, versioned,
 additive-only naming convention — duplicate one and keep the parameter names

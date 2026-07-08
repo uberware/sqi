@@ -161,9 +161,10 @@ copies show the **Update available** badge.
 
 ## DCC reference presets
 
-The official library ships four `Rendering`-category presets — `maya-batch-render`,
-`houdini-rop-render`, `nuke-write-render`, `blender-batch-render` — as ready
-targets for the [`sqi-submitter`](dcc-submitters.md) in-application submitters.
+The official library ships `Rendering`-category presets — `maya-layer-render`,
+`maya-scene-render`, `houdini-rop-render`, `nuke-write-render`,
+`nuke-script-render`, `blender-batch-render` — as ready targets for the
+[`sqi-submitter`](dcc-submitters.md) in-application submitters.
 Each declares its parameters using the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract) (`SceneFile`,
 `Frames`, `OutputDir`, plus per-host extras) so submitter pre-fill works out of

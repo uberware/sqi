@@ -21,11 +21,14 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("got %d presets, want 4", len(got))
+	if len(got) != 6 {
+		t.Fatalf("got %d presets, want 6", len(got))
 	}
-	// Sorted by name: blender, houdini, maya, nuke.
-	want := []string{"blender-batch-render", "houdini-rop-render", "maya-batch-render", "nuke-write-render"}
+	// Sorted by name.
+	want := []string{
+		"blender-batch-render", "houdini-rop-render", "maya-layer-render",
+		"maya-scene-render", "nuke-script-render", "nuke-write-render",
+	}
 	for i, w := range want {
 		if got[i].Entry.Name != w {
 			t.Fatalf("got[%d].Name = %q, want %q", i, got[i].Entry.Name, w)

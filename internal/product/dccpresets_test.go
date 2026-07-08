@@ -13,9 +13,11 @@ import (
 // published to the preset library; this test pins them to the real schema.
 func TestDCCReferencePresets(t *testing.T) {
 	want := map[string][]string{
-		"maya-batch-render":    {"SceneFile", "Frames", "OutputDir", "Renderer", "RenderLayer"},
+		"maya-layer-render":    {"SceneFile", "Frames", "OutputDir", "Renderer", "RenderLayer"},
+		"maya-scene-render":    {"SceneFile", "Frames", "OutputDir", "Renderer"},
 		"houdini-rop-render":   {"SceneFile", "Frames", "RopPath"},
 		"nuke-write-render":    {"SceneFile", "Frames", "WriteNode"},
+		"nuke-script-render":   {"SceneFile", "Frames"},
 		"blender-batch-render": {"SceneFile", "Frames", "OutputPath"},
 	}
 	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "dcc", "*.yaml"))

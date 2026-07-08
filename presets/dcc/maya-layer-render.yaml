@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: maya-batch-render
-title: Maya Batch Render
+name: maya-layer-render
+title: Maya Layer Render
 description: >-
-  Renders a saved Maya scene with the Render batch command, one frame per
-  task. Requires workers tagged maya=true with Render on PATH. A starting
-  point - duplicate to customize for your pipeline.
+  Renders one render layer of a saved Maya scene with the Render batch
+  command, one frame per task. Requires workers tagged maya=true with Render
+  on PATH. For all renderable layers use maya-scene-render. A starting point -
+  duplicate to customize for your pipeline.
 category: Rendering
 version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
-  name: Maya Batch Render
+  name: Maya Layer Render
   extensions: [TASK_CHUNKING]
   parameterDefinitions:
     - name: SceneFile
