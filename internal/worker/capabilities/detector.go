@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -84,6 +85,11 @@ func (d Detector) Validate() error {
 		if !validOS[c.OS] {
 			return fmt.Errorf("detector %q check %d: invalid os %q", d.Tag, i, c.OS)
 		}
+		if c.Env.Matches != "" {
+			if _, err := regexp.Compile(c.Env.Matches); err != nil {
+				return fmt.Errorf("detector %q check %d: bad env matches regex: %w", d.Tag, i, err)
+			}
+		}
 	}
 	if d.Version.From != "" {
 		if _, err := regexp.Compile(d.Version.From); err != nil {
@@ -91,4 +97,90 @@ func (d Detector) Validate() error {
 		}
 	}
 	return nil
+}
+
+// CheckEnv abstracts the host queries a detector needs, so tests inject fakes.
+type CheckEnv interface {
+	LookPath(file string) (string, bool)
+	Glob(pattern string) []string
+	Getenv(key string) (string, bool)
+	RegistryExists(key string) bool
+	GOOS() string
+}
+
+// Evaluate runs the detector's checks against env and returns the presence tags
+// to advertise: the bare Tag if any check matched, plus Tag-<version> for each
+// distinct version captured. Results are de-duplicated and sorted.
+//
+// Evaluate assumes d has already passed Validate (in particular that
+// Version.From and every check's Env.Matches compile); callers (the
+// capability-detection loaders) validate detectors before evaluating them.
+func (d Detector) Evaluate(env CheckEnv) []string {
+	matched := false
+	versions := map[string]struct{}{}
+	for _, c := range d.Checks {
+		if c.OS != "" && c.OS != env.GOOS() {
+			continue
+		}
+		for _, signal := range c.signals(env) {
+			matched = true
+			if v := d.extractVersion(signal); v != "" {
+				versions[v] = struct{}{}
+			}
+		}
+	}
+	if !matched {
+		return nil
+	}
+	out := []string{d.Tag}
+	for v := range versions {
+		out = append(out, d.Tag+"-"+v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// signals returns the matched signal strings for a single check (paths for
+// exe/path_glob, the value for env, the key for registry). Empty if no match.
+func (c Check) signals(env CheckEnv) []string {
+	switch {
+	case c.Exe != "":
+		if p, ok := env.LookPath(c.Exe); ok {
+			return []string{p}
+		}
+	case c.PathGlob != "":
+		return env.Glob(c.PathGlob)
+	case c.Env.Name != "":
+		if v, ok := env.Getenv(c.Env.Name); ok {
+			if c.Env.Matches == "" {
+				return []string{v}
+			}
+			if regexp.MustCompile(c.Env.Matches).MatchString(v) {
+				return []string{v}
+			}
+		}
+	case c.Registry != "":
+		if env.RegistryExists(c.Registry) {
+			return []string{c.Registry}
+		}
+	}
+	return nil
+}
+
+func (d Detector) extractVersion(signal string) string {
+	if d.Version.From == "" {
+		return ""
+	}
+	re := regexp.MustCompile(d.Version.From)
+	m := re.FindStringSubmatch(signal)
+	if m == nil {
+		return ""
+	}
+	if i := re.SubexpIndex("v"); i > 0 && i < len(m) {
+		return m[i]
+	}
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
 }
