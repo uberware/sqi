@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 name: Release
 
 # Triggered when a version tag is pushed (e.g., v0.1.0, v0.1.0-alpha).

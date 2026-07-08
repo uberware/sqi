@@ -101,3 +101,9 @@ Desktop.ini
 # ─── Tooling ──────────────────────────────────────────────────────────────────
 .golangci-cache/
 .task/
+
+# MkDocs build output
+/site/
+
+# Python docs virtualenv
+.venv-docs/

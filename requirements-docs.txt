@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Dependencies for building the documentation site with MkDocs.
+# Kept at the repo root (outside docs/) so it is never copied into the
+# published site. Install with `make docs-site-install`.
+#
+# mkdocs-material pins its own compatible mkdocs, pymdown-extensions, and
+# Pygments, all of which mkdocs.yml relies on.
+mkdocs==1.6.1
+mkdocs-material==9.7.6

@@ -37,6 +37,13 @@ Add the following comment block at the top of every source file, **before** any 
 # SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
+## TOML (`.toml`)
+
+```toml
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+```
+
 ## Notes
 
 - Use `AGPL-3.0-or-later` (not `AGPL-3.0-only`) so future relicensing to a newer AGPL version is permissible.

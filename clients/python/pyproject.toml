@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 [build-system]
 # Floor is 1.27: the PEP 639 string-form `license` expression below (and the
 # resulting Metadata-Version 2.4) requires hatchling >= 1.27. Without the floor a

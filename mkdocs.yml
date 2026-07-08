@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+site_name: sqi Documentation
+site_description: Distributed task and render farm manager
+site_url: https://uberware.github.io/sqi/
+repo_url: https://github.com/uberware/sqi
+repo_name: uberware/sqi
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+
+# Files present under docs/ that are not part of the published site:
+# README.md would collide with index.md as the homepage, and superpowers/ holds
+# local-only planning notes that are never published.
+exclude_docs: |
+  README.md
+  superpowers/
+  ._*
+
+theme:
+  name: material
+  palette:
+    - scheme: light
+      primary: indigo
+      accent: indigo
+    - scheme: dark
+      primary: indigo
+      accent: indigo
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quickstart: quickstart.md
+      - Architecture: architecture.md
+      - Development: development.md
+      - Configuration: configuration.md
+      - Roadmap: roadmap.md
+      - Contributing: contributing.md
+  - DCC Integration:
+      - DCC Submitters: dcc-submitters.md
+      - Python Client: python-client.md
+      - Products: products.md
+      - Preset Library: preset-library.md
+  - Web UI:
+      - Development: web-development.md
+      - Accessibility: web-accessibility.md
+      - Build: web-build.md
+  - Workers:
+      - Configuration: worker-configuration.md
+      - Deployment: worker-deployment.md
+      - Docker: worker-docker.md
+      - Capabilities: worker-capabilities.md
+  - Storage & Compute:
+      - Storage Locations: storage-locations.md
+      - S3 Storage: storage-s3.md
+      - Compute Locations: compute-locations.md
+  - Operations:
+      - Overview: operations.md
+      - Observability: observability.md
+      - Release Runbook: release-runbook.md
+  - Reference:
+      - REST API:
+          - Overview: api.md
+      - OpenJD:
+          - Submission Guide: openjd-submission.md
+          - Extensions Overview: openjd-extensions.md
+          - Extension Details:
+              - Task Chunking: openjd-extensions/task-chunking.md
+              - Path Translation: openjd-extensions/path-translation.md
+              - Redacted Env Vars: openjd-extensions/redacted-env-vars.md
+      - Cross-Platform Validation: cross-platform-validation.md
+      - SPDX Header: spdx-header.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.highlight:
+      use_pygments: true
+  - pymdownx.superfences
+  - toc:
+      permalink: true

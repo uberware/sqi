@@ -248,6 +248,31 @@ docs: ## Serve Go package docs locally via pkgsite
 	@which pkgsite > /dev/null 2>&1 || go install golang.org/x/pkgsite/cmd/pkgsite@latest
 	pkgsite -open .
 
+# ── Docs site (MkDocs) ────────────────────────────────────────────────────────
+# The public documentation site (docs/ + mkdocs.yml), published to GitHub Pages
+# on release. Uses a local virtualenv at .venv-docs so it never touches system
+# Python. Run docs-site-install once, then docs-site / docs-site-serve.
+DOCS_VENV := .venv-docs
+# Strip macOS AppleDouble sidecars (._*) that some network/exFAT mounts create
+# on every write; jinja2 chokes on them when loading theme templates. No-op on
+# clean filesystems (Linux CI, local APFS) where the find matches nothing.
+DOCS_CLEAN := find $(DOCS_VENV) -name '._*' -delete 2>/dev/null || true
+
+.PHONY: docs-site-install
+docs-site-install: ## Create .venv-docs and install pinned MkDocs dependencies
+	@test -d $(DOCS_VENV) || python3 -m venv $(DOCS_VENV)
+	$(DOCS_VENV)/bin/python -m pip install -r requirements-docs.txt
+
+.PHONY: docs-site
+docs-site: ## Build the docs site with strict checks (the CI gate)
+	@$(DOCS_CLEAN)
+	$(DOCS_VENV)/bin/mkdocs build --strict
+
+.PHONY: docs-site-serve
+docs-site-serve: ## Serve the docs site locally with live reload
+	@$(DOCS_CLEAN)
+	$(DOCS_VENV)/bin/mkdocs serve
+
 # ── Release ───────────────────────────────────────────────────────────────────
 
 .PHONY: release
