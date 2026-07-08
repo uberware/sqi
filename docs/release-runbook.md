@@ -228,32 +228,45 @@ build (`-amd64`/`-arm64` per image, plus the manifest tags).
 The four reference presets authored in this repo (`presets/dcc/*.yaml` —
 Maya, Houdini, Nuke, Blender) are not distributed as part of the GitHub
 release or PyPI packages; they are published to the separate
-`uberware/sqi-presets` repository that backs the default
-`preset_library.url` (see `docs/preset-library.md`).
+`uberware/sqi-presets` repository that backs the default `preset_library.url`
+(see `docs/preset-library.md`). This is **automated** by the `publish-presets`
+job in `.github/workflows/release.yml`: after a successful release, on a
+non-`-rc` tag, it runs `cmd/presetgen` to regenerate `index.json` + the `dcc/`
+definition files in a checkout of the library repo and pushes only if something
+changed. `presetgen` merges — it owns the `dcc/` namespace and leaves any other
+library entries untouched — and computes each `sha256` over the raw file bytes,
+so the published index always matches what `sqi-server` verifies on install.
 
-**Procedure:**
+**One-time setup** (until done, the job is skipped and the release is
+unaffected):
 
-1. Compute the SHA-256 of each preset file:
+1. Create the `uberware/sqi-presets` repository and enable GitHub Pages serving
+   from the default branch root, so `https://uberware.github.io/sqi-presets/index.json`
+   resolves. It may start empty — the first release populates it.
+
+2. Create a fine-grained personal access token with **Contents: write** scoped
+   to `uberware/sqi-presets`, and add it as a secret on this repo:
    ```bash
-   shasum -a 256 presets/dcc/*.yaml
+   gh secret set SQI_PRESETS_TOKEN   # paste the fine-grained PAT
    ```
 
-2. Clone (or update a working checkout of) `uberware/sqi-presets` and copy
-   the four files into it, following that repository's existing directory
-   layout (mirrors `docs/preset-library.md`'s `definition` path convention,
-   e.g. `<category>/<name>.yaml`).
+3. Enable the publish step:
+   ```bash
+   gh variable set PUBLISH_PRESETS --body true
+   ```
+   **Verify:** `gh variable list` shows `PUBLISH_PRESETS=true` and
+   `gh secret list` shows `SQI_PRESETS_TOKEN`.
 
-3. Add or update the corresponding entries in that repo's `index.json`,
-   following its README: `name`, `title`, `description`, `category`,
-   `version`, `definition` (path relative to the index), and the `sha256`
-   computed in step 1.
-
-4. Commit and push to `uberware/sqi-presets` per that repo's own contribution
-   process (it is not part of this release's tag or CI).
+**Manual fallback** (out-of-band publish without a release): from a repo
+checkout, against a checkout of the library repo, run and push:
+```bash
+go run ./cmd/presetgen -presets presets/dcc -out /path/to/sqi-presets
+( cd /path/to/sqi-presets && git add -A && git commit -m "publish presets" && git push )
+```
 
 **Verify:**
 - The published index (`https://uberware.github.io/sqi-presets/index.json`)
-  lists all four presets with the correct `sha256`.
+  lists all four presets under `dcc/` with the correct `sha256`.
 - In the sqi web UI's Preset Library page, each preset installs successfully
   and its checksum verifies (no 422).
 
