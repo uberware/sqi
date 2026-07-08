@@ -28,6 +28,25 @@ func TestBuildWorkerCapabilities_MergeAndPrecedence(t *testing.T) {
 	}
 }
 
+func TestApplyDetectors_DoesNotOverwriteExistingKey(t *testing.T) {
+	caps := Capabilities{Tags: map[string]string{"inhouse": "keep"}}
+	det := Detector{Tag: "inhouse", Checks: []Check{{Env: EnvCheck{Name: "INHOUSE"}}}}
+	env := fakeEnv{goos: "linux", envs: map[string]string{"INHOUSE": "1"}}
+
+	caps.ApplyDetectors([]Detector{det}, env)
+
+	if caps.Tags["inhouse"] != "keep" {
+		t.Errorf("ApplyDetectors overwrote existing tag: got %q, want %q", caps.Tags["inhouse"], "keep")
+	}
+}
+
+func TestLoadDetectors_RejectsInvalidCustomDetector(t *testing.T) {
+	_, err := LoadDetectors(CapabilitiesConfig{Detect: []Detector{{Tag: "x"}}})
+	if err == nil {
+		t.Fatal("expected error for custom detector with no checks, got nil")
+	}
+}
+
 func TestLoadDetectors_DisableRemovesBuiltin(t *testing.T) {
 	ds, err := LoadDetectors(CapabilitiesConfig{Disable: []string{"maya"}})
 	if err != nil {
