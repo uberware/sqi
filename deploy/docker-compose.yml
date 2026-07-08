@@ -12,7 +12,7 @@
 
 services:
   sqi-server:
-    image: ghcr.io/uberware/sqi/sqi-server:v0.1.0
+    image: ghcr.io/uberware/sqi/sqi-server:v0.2.0
     ports:
       - "8080:8080" # REST API + web UI
       - "4222:4222" # embedded NATS (workers connect here)
@@ -29,7 +29,7 @@ services:
       - server-data:/var/lib/sqi-server
 
   sqi-worker:
-    image: ghcr.io/uberware/sqi/sqi-worker:v0.1.0
+    image: ghcr.io/uberware/sqi/sqi-worker:v0.2.0
     depends_on:
       - sqi-server
     restart: unless-stopped

@@ -74,6 +74,11 @@ COPY --from=builder --chown=sqiworker:sqiworker /out/sqi-worker /usr/local/bin/s
 # Mount a persistent volume here so the worker retains its ID across restarts.
 RUN mkdir -p /var/lib/sqi-worker && chown sqiworker:sqiworker /var/lib/sqi-worker
 
+# Pin the data dir explicitly so it does not depend on $HOME resolving at
+# runtime (the built-in default falls back to /var/lib/sqi-worker only when no
+# home directory is set).
+ENV SQI_WORKER_DATA_DIR=/var/lib/sqi-worker
+
 USER sqiworker
 
 # Metrics / health-probe port (Prometheus + /healthz, /readyz).
