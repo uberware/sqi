@@ -337,7 +337,7 @@ attempts reference a session by ID alone.
 
 ## sqi-sdk (Python library)
 
-`sqi-sdk` (the `sqi-sdk` box in the component overview, per [`../ROADMAP.md`](../ROADMAP.md))
+`sqi-sdk` (the `sqi-sdk` box in the component overview, per [`../ROADMAP.md`](roadmap.md))
 is a pure-Python client library that talks to `sqi-server` over the same public
 surface as the web UI: the REST API for everything, plus the WebSocket gateway
 for live events. It lives in the repository at `clients/python/` (import name
@@ -399,4 +399,4 @@ endpoints for browsing and installing presets; installed presets become products
 - [`docs/python-client.md`](python-client.md) — Python client (`sqi-sdk`) reference.
 - [`docs/development.md`](development.md) — Local setup, test commands, adding a new endpoint.
 - [`docs/compute-locations.md`](compute-locations.md) — Compute-location registry: auto-registration, curation, step affinity, and storage-location roots.
-- [`internal/store/migrations/`](../internal/store/migrations) — Full schema DDL.
+- [`internal/store/migrations/`](https://github.com/uberware/sqi/tree/main/internal/store/migrations) — Full schema DDL.

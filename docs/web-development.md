@@ -7,7 +7,7 @@ subscription. For the Go server/worker side, see
 [`development.md`](development.md); for the production build and embedding, see
 [`web-build.md`](web-build.md).
 
-The UI source lives in [`web/`](../web); see [`web/README.md`](../web/README.md)
+The UI source lives in [`web/`](https://github.com/uberware/sqi/tree/main/web); see [`web/README.md`](https://github.com/uberware/sqi/blob/main/web/README.md)
 for the directory layout.
 
 ---
@@ -111,7 +111,7 @@ same relative paths; only the proxy differs.
 
 ## Adding a new route
 
-Routes are declared in [`web/src/routes.tsx`](../web/src/routes.tsx) using React
+Routes are declared in [`web/src/routes.tsx`](https://github.com/uberware/sqi/blob/main/web/src/routes.tsx) using React
 Router.
 
 1. Create the page component under `src/pages/`, e.g. `Presets.tsx`, default-
@@ -279,6 +279,6 @@ avoid stale rows lingering in the UI.
   `src/ws/` carry JSDoc so editors surface descriptions without a round-trip to
   the OpenAPI spec.
 
-See the project [`CONTRIBUTING.md`](../CONTRIBUTING.md) "Web UI contributions"
+See the project [`CONTRIBUTING.md`](contributing.md) "Web UI contributions"
 section for the component testing approach and styling conventions, and
 [`web-accessibility.md`](web-accessibility.md) for the accessibility baseline.

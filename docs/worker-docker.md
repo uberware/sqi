@@ -287,5 +287,5 @@ docker build \
 
 - [`docs/worker-deployment.md`](worker-deployment.md) — Bare-metal Linux, macOS, and Windows deployment.
 - [`docs/worker-configuration.md`](worker-configuration.md) — Full configuration reference.
-- [`deploy/docker/worker/Dockerfile`](../deploy/docker/worker/Dockerfile) — Image source.
-- [`deploy/docker-compose.smoke.yml`](../deploy/docker-compose.smoke.yml) — Smoke-test Compose file for server + worker.
+- [`deploy/docker/worker/Dockerfile`](https://github.com/uberware/sqi/blob/main/deploy/docker/worker/Dockerfile) — Image source.
+- [`deploy/docker-compose.smoke.yml`](https://github.com/uberware/sqi/blob/main/deploy/docker-compose.smoke.yml) — Smoke-test Compose file for server + worker.

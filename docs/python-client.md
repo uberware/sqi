@@ -3,11 +3,11 @@
 `sqi-sdk` is the pure-Python library for driving a `sqi-server` instance from
 scripts and pipeline tooling — the same operations the web UI performs, over the
 REST API (with an optional WebSocket extra for live events). Per the roadmap
-([`../ROADMAP.md`](../ROADMAP.md)) it is the foundation for the Phase 2 DCC
+([`../ROADMAP.md`](roadmap.md)) it is the foundation for the Phase 2 DCC
 submitters and for pipeline automation.
 
 This is the reference document. For the project overview and install, see
-[`clients/python/README.md`](../clients/python/README.md); the authoritative wire
+[`clients/python/README.md`](https://github.com/uberware/sqi/blob/main/clients/python/README.md); the authoritative wire
 contract is the OpenAPI spec described in [`api.md`](./api.md).
 
 - Import name: `sqi_client` · distribution: `sqi-sdk`
@@ -44,7 +44,7 @@ pip install 'sqi-sdk[ws]'      # + websockets (live event streaming)
 ```
 
 Until the package is published to PyPI, install the wheel attached to a GitHub
-release — see [`clients/python/README.md`](../clients/python/README.md#installation).
+release — see [`clients/python/README.md`](https://github.com/uberware/sqi/blob/main/clients/python/README.md#installation).
 
 ## Client construction and configuration
 

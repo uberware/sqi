@@ -24,7 +24,7 @@ sqi-worker start --dry-run
 ```
 
 A fully commented example file is at
-[`config/sqi-worker.example.yaml`](../config/sqi-worker.example.yaml).
+[`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml).
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 
@@ -742,7 +742,7 @@ done
 
 ## See also
 
-- [`config/sqi-worker.example.yaml`](../config/sqi-worker.example.yaml) — Fully commented example with every option.
+- [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml) — Fully commented example with every option.
 - [`docs/worker-capabilities.md`](worker-capabilities.md) — Auto-detected capability tags and how to override them.
 - [`docs/worker-deployment.md`](worker-deployment.md) — systemd, launchd, and Windows service installation.
 - [`docs/configuration.md`](configuration.md) — `sqi-server` configuration reference.

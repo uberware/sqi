@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Docs
+
+# Builds the MkDocs documentation site and publishes it to GitHub Pages.
+#
+# - Pull requests touching the docs run a strict build only (no deploy), so a
+#   broken link or bad reference fails the check before merge.
+# - Pushing a release tag (v*) — or a manual dispatch — builds and deploys the
+#   site to https://uberware.github.io/sqi/ via the GitHub Actions Pages
+#   artifact flow (no gh-pages branch). Requires repo Settings -> Pages ->
+#   Source = "GitHub Actions" (one-time).
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Least privilege: the build needs nothing special; the deploy needs Pages +
+# an OIDC token. contents:read is enough for actions/checkout.
+permissions:
+  contents: read
+
+# Allow only one concurrent Pages deployment; never cancel an in-flight deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-docs.txt
+
+      - name: Build site (strict)
+        run: mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # Only publish on release tags or a manual dispatch — never on PRs.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write      # publish to GitHub Pages
+      id-token: write    # OIDC token required by deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

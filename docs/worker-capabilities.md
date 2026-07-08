@@ -215,7 +215,7 @@ Affinity rules in OpenJD job definitions live under a step's
 `hostRequirements.attributes`, each entry a `name` + an `anyOf` (or `allOf`)
 list of acceptable string values. A custom worker tag is addressed as
 `attr.worker.tag.<key>`, matched case-insensitively against
-`Capabilities.Tags[<key>]` (see [`internal/scheduler/matcher.go`](../internal/scheduler/matcher.go)).
+`Capabilities.Tags[<key>]` (see [`internal/scheduler/matcher.go`](https://github.com/uberware/sqi/blob/main/internal/scheduler/matcher.go)).
 Any attribute name outside the well-known set (`attr.worker.os.family`,
 `attr.worker.os.version`, `attr.worker.computelocation`) and the
 `attr.worker.tag.<key>` namespace always resolves to `""` and can never
@@ -247,7 +247,7 @@ workers' `Tags` map and routes each task only to workers that satisfy every
 
 To add a new hardware or OS-level detection to the sqi-worker itself, see
 the development guide:
-[`docs/development.md` — Adding a new capability tag](development.md#adding-a-new-capability-tag).
+[`docs/development.md` — Adding a new capability tag](development.md#adding-a-new-capability-tag-to-auto-detection).
 
 ---
 
@@ -255,4 +255,4 @@ the development guide:
 
 - [`docs/worker-configuration.md`](worker-configuration.md) — `worker.capability_tags` option.
 - [`docs/development.md`](development.md) — How to add a new auto-detected capability tag to the source.
-- [`internal/worker/capabilities/`](../internal/worker/capabilities/) — Source for auto-detection logic.
+- [`internal/worker/capabilities/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities) — Source for auto-detection logic.

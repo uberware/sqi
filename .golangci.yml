@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # golangci-lint configuration for sqi
 # Docs: https://golangci-lint.run/docs/configuration/
 # Config schema version (only valid value is "2")

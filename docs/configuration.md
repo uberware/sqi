@@ -17,7 +17,7 @@ sqi-server config print
 ```
 
 A fully commented example file is at
-[`config/sqi-server.example.yaml`](../config/sqi-server.example.yaml).
+[`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml).
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 
@@ -555,7 +555,7 @@ discovery:
 
 ## See also
 
-- [`config/sqi-server.example.yaml`](../config/sqi-server.example.yaml) — Fully
+- [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml) — Fully
   commented example with every option.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
 - [`docs/operations.md`](operations.md) — Install, upgrade, backup, and log rotation.
