@@ -102,7 +102,9 @@ def test_queue_enum_items_lists_queues() -> None:
 
 def test_selected_farm_by_index() -> None:
     addon._state["farms"] = [_farm("f1", "A"), _farm("f2", "B")]
-    assert addon._selected_farm(SimpleNamespace(farm="1")).id == "f2"
+    farm = addon._selected_farm(SimpleNamespace(farm="1"))
+    assert farm is not None
+    assert farm.id == "f2"
 
 
 def test_selected_farm_none_when_no_farms() -> None:
@@ -112,4 +114,6 @@ def test_selected_farm_none_when_no_farms() -> None:
 
 def test_selected_queue_by_index() -> None:
     addon._state["queues"] = [_farm("q1", "A"), _farm("q2", "B")]
-    assert addon._selected_queue(SimpleNamespace(queue="0")).id == "q1"
+    queue = addon._selected_queue(SimpleNamespace(queue="0"))
+    assert queue is not None
+    assert queue.id == "q1"
