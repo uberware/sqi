@@ -23,9 +23,9 @@ http://localhost:8080.
    ```sh
    ./sqi-worker start
    ```
-   Off-LAN or in doubt, point it explicitly:
+   Off-LAN or in doubt, point it explicitly with the server's NATS URL:
    ```sh
-   ./sqi-worker start --nats-url nats://<server-host>:4222
+   SQI_WORKER_NATS_URL=nats://<server-host>:4222 ./sqi-worker start
    ```
 
 4. Continue to **"Submit your first job"** below.
@@ -33,7 +33,7 @@ http://localhost:8080.
 ## Option B — Docker Compose
 
 ```sh
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.1.0/deploy/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.2.0/deploy/docker-compose.yml
 docker compose -f docker-compose.yml up -d
 ```
 
@@ -79,7 +79,7 @@ Rather than the web UI, artists can submit directly from the DCC they're
 already working in. The [`sqi-submitter`](dcc-submitters.md) Python package
 adds an in-application submit dialog (native panel for Blender) to Maya,
 Houdini, Nuke, and Blender, driven by the same product catalog — including
-four ready-to-install reference render presets — with scene path, frame
+six ready-to-install reference render presets — with scene path, frame
 range, and render-target pre-fill. See [DCC submitters](dcc-submitters.md) for
 installation per host.
 
