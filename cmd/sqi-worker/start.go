@@ -214,9 +214,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	go obsServer.Run(ctx)
 
 	// ── Capabilities ──────────────────────────────────────────────────────────
-	caps := capabilities.Detect(nil)
-	caps.MergeManualTags(cfg.Worker.CapabilityTags)
-	if err := capabilities.ValidateTagKeys(caps.Tags); err != nil {
+	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
+	if err != nil {
 		return fmt.Errorf("invalid capability tags: %w", err)
 	}
 
@@ -461,9 +460,8 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 	fmt.Fprintln(w, "## Detected capabilities")
 	fmt.Fprintln(w)
 
-	caps := capabilities.Detect(nil)
-	caps.MergeManualTags(cfg.Worker.CapabilityTags)
-	if err := capabilities.ValidateTagKeys(caps.Tags); err != nil {
+	caps, err := capabilities.BuildWorkerCapabilities(cfg.Capabilities, cfg.Worker.CapabilityTags, capabilities.OSCheckEnv())
+	if err != nil {
 		return fmt.Errorf("invalid capability tags: %w", err)
 	}
 
