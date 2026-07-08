@@ -70,6 +70,14 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # @vitest/eslint-plugin 1.6.21 regressed its `valid-expect` rule to
+      # false-positive on the valid `expect.any(String)` asymmetric matcher
+      # (web/src/api/client.test.ts), breaking `npm run lint`. Held at 1.6.20
+      # (pinned exactly in web/package.json) until a fixed release supersedes
+      # it, then remove this ignore and restore the caret range.
+      - dependency-name: "@vitest/eslint-plugin"
+        versions: ["1.6.21"]
 
   # ── Python client (clients/python) ────────────────────────────────────────────
   # Version-update PRs are disabled (open-pull-requests-limit: 0). This entry
