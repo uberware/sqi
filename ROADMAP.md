@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** Pre-release. Active development beginning mid-2026. Details may change with requests, feedback, and discoveries as development progresses
+> **Status:** v0.2.0 (Phase 2) released. Phases 1–2 are complete; Phase 3 (auth and multi-user) is next. Details may change with requests, feedback, and discoveries as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](README.md).
 
@@ -187,7 +187,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 
 ## Development Roadmap
 
-### Phase 1: Core (v0.1 — alpha)
+### Phase 1: Core (v0.1 — alpha) ✅ Released
 
 **Goal:** Working farm, core job model, basic web UI.
 
@@ -220,15 +220,16 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
   - *Deferred:* worker drain/headroom signal, head-of-line reservation for
     large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
-### Phase 2: Products and Presets (v0.2)
+### Phase 2: Products and Presets (v0.2) ✅ Released
 
-- Product/preset definition system (YAML/JSON)
+- Product/preset definition system (YAML/JSON) — a thin catalog over OpenJD templates, with embedded Script/Python/Container built-ins
 - Preset library integration — static JSON index at a configurable URL (default: official community library on GitHub Pages); browse presets in the Admin hub with per-preset status (not installed / installed / update available); preview the definition and install as a product (`source: installed`) in one click; SHA-256 integrity and update-detection check on install; read-only installed products, uninstallable, with Duplicate-to-custom available on every product
-- Web UI product form editor
-- Additional path translation modes
+- Web UI product management editor and a product-driven submission form (parameter form generated from the selected product)
+- Additional path translation modes (resolved, command-arg, environment, staged) as the `SQI_PATH_TRANSLATION` vendor extension
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
-- DCC submitter framework (Maya, Houdini) — built on the Python client
-- Compute location configuration and job affinity
+- DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
+- Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)
+- Product concurrency limits and per-compute-location storage are provided by the existing usage pools and storage-location roots — no separate mechanism
 
 ### Phase 3: Auth and Multi-User (v0.3)
 
