@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/uberware/sqi/internal/worker/capabilities"
 )
 
 // WorkerConfig is the complete runtime configuration for sqi-worker.
@@ -56,6 +58,10 @@ type WorkerConfig struct {
 	// Staging configures local input/output staging for the stage_locally path
 	// delivery. Both fields must be set for staging to function.
 	Staging StagingConfig `yaml:"staging"`
+
+	// Capabilities configures software capability auto-detection (built-in DCC
+	// detectors plus custom detectors and a disable list).
+	Capabilities capabilities.CapabilitiesConfig `yaml:"capabilities"`
 }
 
 // StagingConfig is the operator-owned configuration for the stage_locally path
@@ -415,6 +421,13 @@ func applyEnv(cfg *WorkerConfig) {
 	applyDiscoveryEnv(&cfg.Discovery)
 	applyLogStreamerEnv(&cfg.LogStreamer)
 	applyDiagnosticsEnv(&cfg.Diagnostics)
+	applyCapabilitiesEnv(&cfg.Capabilities)
+}
+
+func applyCapabilitiesEnv(c *capabilities.CapabilitiesConfig) {
+	if v := os.Getenv("SQI_WORKER_CAPABILITIES_DISABLE"); v != "" {
+		c.Disable = append(c.Disable, splitTags(v)...)
+	}
 }
 
 func applyDiagnosticsEnv(c *DiagnosticsConfig) {
@@ -635,6 +648,13 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	}
 
 	errs = append(errs, validateLogStreamer(cfg.LogStreamer)...)
+
+	for i, d := range cfg.Capabilities.Detect {
+		if err := d.Validate(); err != nil {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("capabilities.detect[%d]", i), Message: err.Error()})
+		}
+	}
+
 	return errs
 }
 
