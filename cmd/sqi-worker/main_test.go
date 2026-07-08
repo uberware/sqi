@@ -230,6 +230,10 @@ func TestStartCmd_DryRun(t *testing.T) {
 // loadAndValidateConfig.
 func TestStartCmd_InvalidConfig(t *testing.T) {
 	t.Run("non-existent config file returns load error", func(t *testing.T) {
+		// Restore the global config file path after this sub-test so it does not
+		// bleed into later tests (pflag does not reset flag values between
+		// Execute() calls).
+		t.Cleanup(func() { persistentFlags.ConfigFile = "" })
 		prepareRoot([]string{"start", "--config", "/nonexistent/sqi-worker-test.yaml"})
 		err := Execute()
 		if err == nil {
@@ -239,4 +243,13 @@ func TestStartCmd_InvalidConfig(t *testing.T) {
 			t.Errorf("error should contain 'load config'; got: %v", err)
 		}
 	})
+}
+
+// TestCapabilitiesCmd_RunsAndPrints verifies that the "capabilities"
+// diagnostic command runs without error.
+func TestCapabilitiesCmd_RunsAndPrints(t *testing.T) {
+	prepareRoot([]string{"capabilities"})
+	if err := Execute(); err != nil {
+		t.Fatalf("capabilities command failed: %v", err)
+	}
 }

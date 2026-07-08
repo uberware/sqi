@@ -56,6 +56,7 @@ func init() {
 		startCmd,
 		versionCmd,
 		configCmd,
+		capabilitiesCmd,
 	)
 }
 
