@@ -113,6 +113,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	schedCfg.OfflineWorkerRetention = cfg.Scheduler.OfflineWorkerRetention
 	schedCfg.JobRetention = cfg.Scheduler.JobRetention
 	schedCfg.JobRetentionIncludeFailed = cfg.Scheduler.JobRetentionIncludeFailed
+	schedCfg.UnschedulableGrace = cfg.Scheduler.UnschedulableGrace
 
 	srv := server.New(server.Config{
 		HTTPAddr:              cfg.HTTP.Addr,

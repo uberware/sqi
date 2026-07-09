@@ -86,12 +86,13 @@ type JobSummaryPush struct {
 
 // TaskUpdatePush is the TypePush payload for "jobs/{id}/tasks" subscriptions.
 type TaskUpdatePush struct {
-	JobID     string    `json:"job_id"`
-	TaskID    string    `json:"task_id"`
-	Name      string    `json:"name,omitempty"`
-	Status    string    `json:"status"`
-	WorkerID  string    `json:"worker_id,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	JobID               string    `json:"job_id"`
+	TaskID              string    `json:"task_id"`
+	Name                string    `json:"name,omitempty"`
+	Status              string    `json:"status"`
+	WorkerID            string    `json:"worker_id,omitempty"`
+	UnschedulableReason string    `json:"unschedulable_reason,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // WorkerStatusPush is the TypePush payload for [SubjectWorkers] subscriptions.
@@ -361,12 +362,13 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, e.JobID)
 	if h.hasSubscribers(taskSubject) {
 		if env, err := buildEnvelope(taskSubject, TaskUpdatePush{
-			JobID:     e.JobID,
-			TaskID:    e.TaskID,
-			Name:      e.Name,
-			Status:    e.Status,
-			WorkerID:  e.WorkerID,
-			UpdatedAt: now,
+			JobID:               e.JobID,
+			TaskID:              e.TaskID,
+			Name:                e.Name,
+			Status:              e.Status,
+			WorkerID:            e.WorkerID,
+			UnschedulableReason: e.UnschedulableReason,
+			UpdatedAt:           now,
 		}); err == nil {
 			h.fanout(taskSubject, env)
 		} else {

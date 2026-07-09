@@ -50,6 +50,11 @@ type Task struct {
 	// amount.worker.vcpu min). Nil means undeclared — the scheduler treats the
 	// cost as the running worker's full CPUCount (one such task per worker).
 	RequiredCores *int
+
+	// UnschedulableReason is set when a ready task cannot be satisfied by any
+	// online worker (empty = schedulable). An annotation on the task, not a
+	// status.
+	UnschedulableReason string
 }
 
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.
@@ -190,6 +195,17 @@ type TaskStore interface {
 	// false return means another worker leased it first. This is the race guard
 	// for concurrent lease requests.
 	LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error)
+
+	// SetTaskUnschedulableReason sets (or, with an empty string, clears) the
+	// reason a ready task cannot be scheduled. Returns ErrNotFound if id is unknown.
+	SetTaskUnschedulableReason(ctx context.Context, id, reason string) error
+
+	// CountUnschedulableTasksByJob returns the number of tasks for the given
+	// job that are currently in [TaskStatusReady] with a non-empty
+	// UnschedulableReason. Used by the REST layer to surface an
+	// "unschedulable" count alongside the per-status task counts in job
+	// responses.
+	CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

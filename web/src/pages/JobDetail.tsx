@@ -7,6 +7,7 @@ import PageHeader from '@/components/PageHeader'
 import SearchInput from '@/components/SearchInput'
 import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
+import UnschedulableBadge from '@/components/UnschedulableBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
 import { Document, Rotate, X } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
@@ -244,6 +245,12 @@ function TaskRow({
         </td>
         <td>
           <StatusBadge status={displayStatus} />
+          {task.unschedulable_reason !== undefined && (
+            <UnschedulableBadge
+              reason={task.unschedulable_reason}
+              className={styles.unschedulableBadge ?? ''}
+            />
+          )}
         </td>
         <td>
           {task.assigned_worker_id !== undefined ? (
@@ -571,12 +578,20 @@ export default function JobDetail() {
       const prev = old.items[idx]
       if (!prev) return old
       const newItems = [...old.items]
-      newItems[idx] = {
+      const patched: Task = {
         ...prev,
         status: payload.status,
         updated_at: payload.updated_at,
         ...(payload.worker_id ? { assigned_worker_id: payload.worker_id } : {}),
       }
+      // The field is omitted from the wire payload (never sent as an explicit
+      // '') to mean "clear" — so an absent unschedulable_reason drops the key.
+      if (payload.unschedulable_reason !== undefined) {
+        patched.unschedulable_reason = payload.unschedulable_reason
+      } else {
+        delete patched.unschedulable_reason
+      }
+      newItems[idx] = patched
       return { ...old, items: newItems }
     })
 

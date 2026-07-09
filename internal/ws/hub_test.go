@@ -238,6 +238,40 @@ func TestHub_NotifyTask_JobsPushCarriesTaskID(t *testing.T) {
 	}
 }
 
+// The per-job task-update push emitted by NotifyTask must carry the
+// unschedulable reason so the web client can render/clear the "unschedulable"
+// badge without a separate fetch.
+func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
+	h := newTestHub()
+	const jobID, taskID = "job-abc", "t1"
+	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, jobID)
+
+	taskCh := h.Register("c-tasks")
+	if err := h.Subscribe("c-tasks", taskSubject, 0); err != nil {
+		t.Fatalf("subscribe tasks: %v", err)
+	}
+
+	h.NotifyTask(TaskEvent{
+		JobID:               jobID,
+		TaskID:              taskID,
+		Status:              "ready",
+		UnschedulableReason: "no online workers",
+	})
+
+	env, ok := drainOrTimeout(taskCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("tasks subscriber did not receive NotifyTask push")
+	}
+
+	var push TaskUpdatePush
+	if err := json.Unmarshal(env.Payload, &push); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if push.UnschedulableReason != "no online workers" {
+		t.Fatalf("expected unschedulable_reason %q, got %q", "no online workers", push.UnschedulableReason)
+	}
+}
+
 // NotifyJob (a genuine job-status change) must NOT carry a task_id, so list
 // subscribers classify it as a job-status event rather than a task event.
 func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {

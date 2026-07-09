@@ -60,6 +60,9 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 }
 
 // UpdateTaskStatus transitions a task to a new status and updates UpdatedAt.
+// unschedulable_reason is only meaningful while a task is ready (set by the
+// scheduler sweep), so it is cleared here regardless of the destination
+// status — harmless when it was already empty.
 func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.TaskStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,6 +73,22 @@ func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.Task
 	}
 
 	task.Status = status
+	task.UnschedulableReason = ""
+	task.UpdatedAt = time.Now()
+	s.tasks[id] = task
+	return nil
+}
+
+// SetTaskUnschedulableReason implements [store.TaskStore].
+func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	task.UnschedulableReason = reason
 	task.UpdatedAt = time.Now()
 	s.tasks[id] = task
 	return nil
@@ -87,6 +106,7 @@ func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to 
 			continue
 		}
 		t.Status = to
+		t.UnschedulableReason = ""
 		t.UpdatedAt = time.Now()
 		s.tasks[id] = t
 
@@ -111,6 +131,7 @@ func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt ti
 	task.AssignedWorkerID = workerID
 	task.AssignedAt = &assignedAt
 	task.Status = store.TaskStatusAssigned
+	task.UnschedulableReason = ""
 	task.UpdatedAt = time.Now()
 	s.tasks[id] = task
 	return nil
@@ -134,6 +155,7 @@ func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, err
 		task.Status = store.TaskStatusReady
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
+		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
 		count++
@@ -161,6 +183,7 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 		task.Status = store.TaskStatusReady
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
+		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
 	}
@@ -314,6 +337,7 @@ func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time) (
 		task.Status = store.TaskStatusCanceled
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
+		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
 	}
@@ -349,6 +373,7 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 			}
 		}
 		t.Status = store.TaskStatusPending
+		t.UnschedulableReason = ""
 		t.UpdatedAt = now
 		s.tasks[id] = t
 		affectedSteps[t.StepID] = struct{}{}
@@ -442,6 +467,21 @@ func (s *Store) CountTasksByJob(_ context.Context, jobID string) (map[store.Task
 	return counts, nil
 }
 
+// CountUnschedulableTasksByJob returns the number of ready tasks for the
+// given job that carry a non-empty unschedulable reason.
+func (s *Store) CountUnschedulableTasksByJob(_ context.Context, jobID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+	for _, t := range s.tasks {
+		if t.JobID == jobID && t.Status == store.TaskStatusReady && t.UnschedulableReason != "" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // CommittedCores implements [store.TaskStore].
 func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCost int) (int, error) {
 	s.mu.Lock()
@@ -480,6 +520,7 @@ func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now t
 	t.AssignedWorkerID = workerID
 	at := now
 	t.AssignedAt = &at
+	t.UnschedulableReason = ""
 	t.UpdatedAt = now
 	s.tasks[taskID] = t
 	return true, nil

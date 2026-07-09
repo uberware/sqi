@@ -86,6 +86,49 @@ The server infers worker health from two signals:
    server-side phantom (the server assigned the task but the reply was lost),
    which the tight reaper window already catches.
 
+### Why isn't my job running? — Unschedulable tasks
+
+Unlike `assigned` lingering (an anomaly on an otherwise-progressing task),
+"unschedulable" answers the more common operator question: a `ready` task
+just never gets picked up. It means no currently-online worker can satisfy
+that task's requirements — a farm/queue/compute-location mismatch, an unmet
+hardware amount or capability-attribute requirement, or a usage pool at
+capacity — and it has been waiting long enough that this isn't just a
+worker-hasn't-polled-yet timing gap.
+
+The scheduler's **unschedulable sweep** runs on every heartbeat-sweep tick
+(the same tick as the stale-assigned reaper above) and reuses the same
+worker-eligibility check the assignment path uses to hand out leases — it is
+read-only and never changes scheduling, only the annotation described below.
+A `ready` task is flagged once it has waited longer than
+`scheduler.unschedulable_grace` (default **30 s**) with no eligible online
+worker; setting the grace period to `0` disables the sweep entirely. See
+[`scheduler.unschedulable_grace`](configuration.md#schedulerunschedulable_grace)
+for the config knob.
+
+Where it surfaces:
+
+- **Task**: the `unschedulable_reason` field on `GET /api/v1/tasks/{id}` (and
+  in task list/detail responses) — a human-readable string such as
+  `no online workers` or `no eligible online worker: <reason>`, where
+  `<reason>` is one of `farm mismatch`, `queue affinity`,
+  `compute location mismatch`, `amount requirement not met`,
+  `attribute requirement not met`, or `usage pool at capacity`. Empty/absent
+  means schedulable.
+- **Job**: `task_counts.unschedulable` — the number of `ready` tasks currently
+  flagged, a subset of `ready`, not an additional task status.
+- **Web UI**: an "Unschedulable" badge on the job detail page (per affected
+  task) and a matching count on the job's row in the job list.
+
+It is a continuous, self-clearing signal rather than a one-shot alert: every
+sweep tick re-evaluates already-flagged tasks, so the reason string clears the
+moment a matching worker comes online, or the task leaves `ready` (assigned to
+a worker or canceled) — no manual acknowledgement is needed. If a job's badge
+won't clear, check the [Worker diagnostics panel](#worker-diagnostics-panel)
+and the task's reason string together: a `queue affinity` or
+`compute location mismatch` reason usually points at a worker configuration
+mismatch rather than a capacity shortfall.
+
 ---
 
 ## In-UI diagnostics

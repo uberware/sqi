@@ -178,6 +178,12 @@
   opacity: 0.6;
 }
 
+/* ── Unschedulable badge ─────────────────────────────────────────────────────── */
+
+.unschedulableBadge {
+  margin-left: var(--space-1);
+}
+
 /* ── Worker link ─────────────────────────────────────────────────────────────── */
 
 .workerLink {

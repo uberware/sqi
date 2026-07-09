@@ -29,6 +29,8 @@ export interface WsTaskEvent {
   name?: string
   status: TaskStatus
   worker_id?: string
+  /** Present while the task cannot currently be scheduled; omitted (not empty) when cleared. */
+  unschedulable_reason?: string
   updated_at: string
 }
 

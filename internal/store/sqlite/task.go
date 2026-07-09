@@ -14,24 +14,32 @@ import (
 
 const taskCols = `
 	id, job_id, step_id, name, parameters, status,
-	assigned_worker_id, assigned_at, created_at, updated_at, required_cores`
+	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
+	unschedulable_reason`
 
 const (
 	sqlInsertTask = `
 INSERT INTO tasks (
 	id, job_id, step_id, name, parameters, status,
-	assigned_worker_id, assigned_at, created_at, updated_at, required_cores)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
+	unschedulable_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
 
+	// unschedulable_reason is only meaningful while a task is ready (set by the
+	// scheduler sweep); it is cleared here so a task carries no stale
+	// annotation once it leaves ready for any reason.
 	sqlUpdateTaskStatus = `
-UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`
+UPDATE tasks SET status = ?, updated_at = ?, unschedulable_reason = '' WHERE id = ?`
+
+	sqlSetTaskUnschedulableReason = `
+UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
 
 	sqlAssignTask = `
 UPDATE tasks
-SET assigned_worker_id = ?, assigned_at = ?, status = 'assigned', updated_at = ?
+SET assigned_worker_id = ?, assigned_at = ?, status = 'assigned', updated_at = ?, unschedulable_reason = ''
 WHERE id = ?`
 
 	// Joins to jobs, queues, and steps to apply the full selection ordering:
@@ -49,7 +57,8 @@ WHERE id = ?`
 	// one for the value filter.
 	sqlListReadyTasks = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
-       t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores
+       t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores,
+       t.unschedulable_reason
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
@@ -62,7 +71,7 @@ LIMIT ?`
 
 	sqlReclaimWorkerTasks = `
 UPDATE tasks
-SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
@@ -76,7 +85,7 @@ WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
 
 	sqlReclaimStaleAssignedTasks = `
 UPDATE tasks
-SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
 WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
 
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
@@ -115,12 +124,20 @@ FROM   tasks
 WHERE  job_id = ?
 GROUP BY status`
 
+	// Counts ready tasks for a given job that carry a non-empty unschedulable
+	// reason. Used by the REST layer to surface an "unschedulable" count
+	// alongside the per-status task counts in job responses.
+	sqlCountUnschedulableTasksByJob = `
+SELECT COUNT(*)
+FROM   tasks
+WHERE  job_id = ? AND status = 'ready' AND unschedulable_reason <> ''`
+
 	// Cancels all non-terminal tasks for a job and returns the number of rows
 	// updated. The caller first SELECTs active tasks within the same
 	// transaction to capture worker IDs before this UPDATE clears them.
 	sqlCancelJobTasks = `
 UPDATE tasks
-SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
 WHERE  job_id = ?
   AND  status IN ('pending', 'ready', 'assigned', 'running')`
 
@@ -129,7 +146,7 @@ WHERE  job_id = ?
 	// assignment to clear. Single statement — not bounded by MaxLimit.
 	sqlTransitionStepPendingTasks = `
 UPDATE tasks
-SET    status = ?, updated_at = ?
+SET    status = ?, updated_at = ?, unschedulable_reason = ''
 WHERE  step_id = ? AND status = 'pending'
 RETURNING ` + taskCols
 
@@ -141,7 +158,7 @@ WHERE  assigned_worker_id = ?
 
 	sqlLeaseReadyTask = `
 UPDATE tasks
-SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?
+SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?, unschedulable_reason = ''
 WHERE  id = ? AND status = 'ready'`
 
 	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
@@ -156,7 +173,7 @@ WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 	// The optional "AND id IN (?, …)" suffix is appended at call time.
 	sqlRetryTasksPrefix = `
 UPDATE tasks
-SET    status = 'pending', updated_at = ?
+SET    status = 'pending', updated_at = ?, unschedulable_reason = ''
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 
 	// sqlRetryResetSteps resets any terminal step that now owns a pending task
@@ -184,6 +201,7 @@ func scanTask(row scanner) (store.Task, error) {
 	if err := row.Scan(
 		&t.ID, &t.JobID, &t.StepID, &t.Name, &paramsJSON, &status,
 		&assignedWorkerID, &assignedAt, &createdAt, &updatedAt, &reqCores,
+		&t.UnschedulableReason,
 	); err != nil {
 		return store.Task{}, err
 	}
@@ -220,7 +238,8 @@ func (s *Store) CreateTask(ctx context.Context, task store.Task) (store.Task, er
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertTask.QueryRowContext(ctx,
 		task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
-		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores)
+		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
+		task.UnschedulableReason)
 	out, err := scanTask(row)
 	return out, mapErr(err)
 }
@@ -321,6 +340,15 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 // UpdateTaskStatus implements [store.TaskStore].
 func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
 	res, err := s.stmtUpdateTaskStatus.ExecContext(ctx, string(status), timeToText(time.Now().UTC()), id)
+	if err != nil {
+		return mapErr(err)
+	}
+	return checkRowsAffected(res)
+}
+
+// SetTaskUnschedulableReason implements [store.TaskStore].
+func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) error {
+	res, err := s.stmtSetTaskUnschedulableReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -474,7 +502,8 @@ func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time)
 	active, err := func() ([]store.Task, error) {
 		rows, queryErr := tx.QueryContext(ctx, `
 SELECT id, job_id, step_id, name, parameters, status,
-       assigned_worker_id, assigned_at, created_at, updated_at, required_cores
+       assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
+       unschedulable_reason
 FROM   tasks
 WHERE  job_id = ?
   AND  status IN ('assigned', 'running')`, jobID)
@@ -624,6 +653,18 @@ func (s *Store) CountTasksByJob(ctx context.Context, jobID string) (map[store.Ta
 		counts[status] = n
 	}
 	return counts, rows.Err()
+}
+
+// CountUnschedulableTasksByJob implements [store.TaskStore].
+// Returns the number of ready tasks for the given job that carry a non-empty
+// unschedulable reason.
+func (s *Store) CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error) {
+	var n int
+	err := s.stmtCountUnschedulableTasksByJob.QueryRowContext(ctx, jobID).Scan(&n)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
 }
 
 // CommittedCores implements [store.TaskStore].

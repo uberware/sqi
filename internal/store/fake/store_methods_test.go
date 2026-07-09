@@ -209,6 +209,115 @@ func TestAssignTask_NotFound(t *testing.T) {
 	}
 }
 
+func TestSetTaskUnschedulableReason(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker: attribute requirement not met"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+	tk := mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "no eligible online worker: attribute requirement not met" {
+		t.Errorf("UnschedulableReason: got %q", tk.UnschedulableReason)
+	}
+
+	// Clearing.
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason clear: %v", err)
+	}
+	tk = mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after clear: got %q, want empty", tk.UnschedulableReason)
+	}
+
+	// Unknown id.
+	if err := s.SetTaskUnschedulableReason(ctx(), "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown task id, got %v", err)
+	}
+}
+
+// TestUnschedulableReason_ClearedOnAssign verifies that AssignTask clears a
+// stale unschedulable_reason left over from the scheduler's sweep — the
+// reason is only meaningful while a task is ready, and AssignTask moves it to
+// assigned.
+func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+
+	if err := s.AssignTask(ctx(), "t1", "worker-1", time.Now()); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+
+	tk := mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after AssignTask: got %q, want empty", tk.UnschedulableReason)
+	}
+}
+
+// TestUnschedulableReason_ClearedOnCancel verifies that CancelJobTasks clears
+// a stale unschedulable_reason on the tasks it cancels.
+func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+
+	if _, err := s.CancelJobTasks(ctx(), "j1", time.Now()); err != nil {
+		t.Fatalf("CancelJobTasks: %v", err)
+	}
+
+	tk := mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after CancelJobTasks: got %q, want empty", tk.UnschedulableReason)
+	}
+}
+
+// TestUnschedulableReason_ClearedOnUpdateStatus verifies that UpdateTaskStatus
+// clears a stale unschedulable_reason on any status transition out of ready.
+func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+
+	if err := s.UpdateTaskStatus(ctx(), "t1", store.TaskStatusRunning); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	tk := mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after UpdateTaskStatus: got %q, want empty", tk.UnschedulableReason)
+	}
+}
+
 func TestReclaimWorkerTasks(t *testing.T) {
 	s := New()
 	defer s.Close()
@@ -385,6 +494,42 @@ func TestCountTasksByJob(t *testing.T) {
 	}
 	if counts[store.TaskStatusSucceeded] != 1 {
 		t.Errorf("succeeded = %d, want 1", counts[store.TaskStatusSucceeded])
+	}
+}
+
+func TestCountUnschedulableTasksByJob(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
+	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusReady)
+
+	for _, id := range []string{"t1", "t2"} {
+		if err := s.SetTaskUnschedulableReason(ctx(), id, "no worker matches required capability"); err != nil {
+			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
+		}
+	}
+
+	n, err := s.CountUnschedulableTasksByJob(ctx(), "j1")
+	if err != nil {
+		t.Fatalf("CountUnschedulableTasksByJob: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d, want 2", n)
+	}
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason(clear): %v", err)
+	}
+	n, err = s.CountUnschedulableTasksByJob(ctx(), "j1")
+	if err != nil {
+		t.Fatalf("CountUnschedulableTasksByJob: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("count after clear = %d, want 1", n)
 	}
 }
 

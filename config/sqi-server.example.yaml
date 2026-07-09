@@ -127,6 +127,11 @@ scheduler:
   # Type: bool   Env: SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED
   job_retention_include_failed: false
 
+  # How long a ready task may wait with no eligible online worker before it is
+  # flagged "unschedulable" (surfaced in the API/UI). 0 disables the sweep.
+  # Type: duration   Env: SQI_SCHEDULER_UNSCHEDULABLE_GRACE
+  unschedulable_grace: "30s"
+
 # ── mDNS service discovery ────────────────────────────────────────────────────
 discovery:
   # When true, sqi-server broadcasts a _sqi._tcp mDNS record so that workers

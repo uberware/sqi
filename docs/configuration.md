@@ -341,6 +341,31 @@ scheduler:
 
 ---
 
+### `scheduler.unschedulable_grace`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `30s` |
+| **Env var** | `SQI_SCHEDULER_UNSCHEDULABLE_GRACE` |
+
+How long a `ready` task may wait with no eligible online worker before it is
+flagged "unschedulable" (surfaced in the API/UI so operators can spot stuck
+work rather than assume the scheduler is silently making progress). Set to `0`
+to disable the sweep entirely.
+
+```yaml
+scheduler:
+  unschedulable_grace: "30s"
+```
+
+See
+[Why isn't my job running? — Unschedulable tasks](observability.md#why-isnt-my-job-running-unschedulable-tasks)
+for what the flag means, where it surfaces (task `unschedulable_reason`, job
+`task_counts.unschedulable`, the job-detail badge), and how it clears.
+
+---
+
 ## `discovery` — mDNS service advertisement
 
 ### `discovery.enabled`
@@ -581,6 +606,7 @@ for the detector schema reference.
 | `scheduler.offline_worker_retention` | duration | `24h` | `SQI_SCHEDULER_OFFLINE_WORKER_RETENTION` | — |
 | `scheduler.job_retention` | duration | `168h` | `SQI_SCHEDULER_JOB_RETENTION` | — |
 | `scheduler.job_retention_include_failed` | bool | `false` | `SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED` | — |
+| `scheduler.unschedulable_grace` | duration | `30s` | `SQI_SCHEDULER_UNSCHEDULABLE_GRACE` | — |
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |

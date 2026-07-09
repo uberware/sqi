@@ -96,6 +96,10 @@ type taskCountsResponse struct {
 	Succeeded int `json:"succeeded"`
 	Failed    int `json:"failed"`
 	Canceled  int `json:"canceled"`
+	// Unschedulable is the number of Ready tasks that currently carry a
+	// non-empty unschedulable reason (a subset of Ready, not an additional
+	// status).
+	Unschedulable int `json:"unschedulable"`
 }
 
 // jobDetailResponse is returned by GET /api/v1/jobs/{id}.
@@ -283,10 +287,17 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		r := toJobResponse(j)
 		r.QueueName = queueNames[j.QueueID]
 		item := jobListItemResponse{jobResponse: r}
-		// Per-job count query, mirroring resolveQueueNames' per-row enrichment.
-		// A count failure degrades to zero counts rather than failing the list.
+		// Per-job count queries, mirroring resolveQueueNames' per-row
+		// enrichment. This is N additional queries per list call (one pair
+		// per job, matching the pre-existing CountTasksByJob pattern rather
+		// than introducing a new N+1). A count failure degrades to zero
+		// counts rather than failing the list.
 		if counts, err := h.store.CountTasksByJob(ctx, j.ID); err == nil {
-			item.TaskCounts = toTaskCountsResponse(counts)
+			unschedulable, uErr := h.store.CountUnschedulableTasksByJob(ctx, j.ID)
+			if uErr != nil {
+				unschedulable = 0
+			}
+			item.TaskCounts = toTaskCountsResponse(counts, unschedulable)
 		}
 		resp.Items[i] = item
 	}
@@ -326,6 +337,13 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	unschedulableCount, err := h.store.CountUnschedulableTasksByJob(ctx, id)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "jobs: count unschedulable tasks failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task counts")
+		return
+	}
+
 	stepResps := make([]stepResponse, len(steps))
 	for i, s := range steps {
 		stepResps[i] = toStepResponse(s)
@@ -339,7 +357,7 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 	resp := jobDetailResponse{
 		jobResponse: jr,
 		Steps:       stepResps,
-		TaskCounts:  toTaskCountsResponse(taskCounts),
+		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -690,9 +708,10 @@ func toStepResponse(s store.Step) stepResponse {
 	}
 }
 
-// toTaskCountsResponse builds a [taskCountsResponse] from a status→count map.
-func toTaskCountsResponse(counts map[store.TaskStatus]int) taskCountsResponse {
-	var tc taskCountsResponse
+// toTaskCountsResponse builds a [taskCountsResponse] from a status→count map
+// plus the separately-queried unschedulable count.
+func toTaskCountsResponse(counts map[store.TaskStatus]int, unschedulable int) taskCountsResponse {
+	tc := taskCountsResponse{Unschedulable: unschedulable}
 	for status, n := range counts {
 		tc.Total += n
 		switch status {

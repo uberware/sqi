@@ -548,3 +548,42 @@ func TestLoad_JobRetentionEnvOverride(t *testing.T) {
 		t.Fatalf("JobRetentionIncludeFailed = false, want true")
 	}
 }
+
+// ── Scheduler: unschedulable_grace defaults and env overrides ────────────────
+
+func TestDefaultConfig_UnschedulableGrace(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Scheduler.UnschedulableGrace != 30*time.Second {
+		t.Fatalf("UnschedulableGrace default = %v, want 30s", cfg.Scheduler.UnschedulableGrace)
+	}
+}
+
+func TestLoad_UnschedulableGraceEnv(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_SCHEDULER_UNSCHEDULABLE_GRACE", "45s")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scheduler.UnschedulableGrace != 45*time.Second {
+		t.Errorf("got %v, want 45s", cfg.Scheduler.UnschedulableGrace)
+	}
+}
+
+func TestValidate_UnschedulableGraceNegativeRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.UnschedulableGrace = -1 * time.Second
+	if errs := config.Validate(cfg); len(errs) == 0 {
+		t.Fatal("negative unschedulable_grace should be a validation error")
+	}
+}
+
+func TestValidate_UnschedulableGraceZeroAllowed(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.UnschedulableGrace = 0
+	for _, e := range config.Validate(cfg) {
+		if e.Field == "scheduler.unschedulable_grace" {
+			t.Fatalf("zero unschedulable_grace (disabled) should be valid, got %v", e)
+		}
+	}
+}

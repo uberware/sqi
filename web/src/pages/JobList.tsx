@@ -561,6 +561,14 @@ export default function JobList() {
                   </td>
                   <td>
                     <StatusBadge status={job.status} />
+                    {(job.task_counts?.unschedulable ?? 0) > 0 && (
+                      <span
+                        className={styles.unschedulableIndicator}
+                        title={`${job.task_counts?.unschedulable} unschedulable`}
+                      >
+                        {job.task_counts?.unschedulable} unschedulable
+                      </span>
+                    )}
                   </td>
                   <td>{job.priority}</td>
                   <td>
