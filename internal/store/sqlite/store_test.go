@@ -1314,6 +1314,44 @@ func TestTask_TransitionStepPendingTasks(t *testing.T) {
 	}
 }
 
+func TestTask_SetUnschedulableReason(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+
+	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.UnschedulableReason != "no eligible online worker: attribute requirement not met" {
+		t.Errorf("UnschedulableReason: got %q", got.UnschedulableReason)
+	}
+
+	// Clearing.
+	if err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason clear: %v", err)
+	}
+	got, err = s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask after clear: %v", err)
+	}
+	if got.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after clear: got %q, want empty", got.UnschedulableReason)
+	}
+
+	// Unknown id.
+	if err := s.SetTaskUnschedulableReason(ctx, "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown task id, got %v", err)
+	}
+}
+
 // ── UsagePool CRUD ────────────────────────────────────────────────────────────
 
 func TestUsagePool_CreateAndGet(t *testing.T) {

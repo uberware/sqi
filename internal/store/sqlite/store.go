@@ -147,16 +147,17 @@ type Store struct {
 	stmtUpdateStepStatus *sql.Stmt
 
 	// ── tasks ────────────────────────────────────────────────────────────
-	stmtInsertTask              *sql.Stmt
-	stmtGetTask                 *sql.Stmt
-	stmtUpdateTaskStatus        *sql.Stmt
-	stmtAssignTask              *sql.Stmt
-	stmtListReadyTasks          *sql.Stmt
-	stmtReclaimWorkerTasks      *sql.Stmt
-	stmtCountActiveTasksInQueue *sql.Stmt
-	stmtCountActiveTasksInFarm  *sql.Stmt
-	stmtCountReadyTasksByQueue  *sql.Stmt
-	stmtCountTasksByJob         *sql.Stmt
+	stmtInsertTask                 *sql.Stmt
+	stmtGetTask                    *sql.Stmt
+	stmtUpdateTaskStatus           *sql.Stmt
+	stmtSetTaskUnschedulableReason *sql.Stmt
+	stmtAssignTask                 *sql.Stmt
+	stmtListReadyTasks             *sql.Stmt
+	stmtReclaimWorkerTasks         *sql.Stmt
+	stmtCountActiveTasksInQueue    *sql.Stmt
+	stmtCountActiveTasksInFarm     *sql.Stmt
+	stmtCountReadyTasksByQueue     *sql.Stmt
+	stmtCountTasksByJob            *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
 	stmtInsertAttempt           *sql.Stmt
@@ -463,6 +464,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtUpdateTaskStatus, err = s.prepare(ctx, sqlUpdateTaskStatus); err != nil {
+		return err
+	}
+	if s.stmtSetTaskUnschedulableReason, err = s.prepare(ctx, sqlSetTaskUnschedulableReason); err != nil {
 		return err
 	}
 	if s.stmtAssignTask, err = s.prepare(ctx, sqlAssignTask); err != nil {

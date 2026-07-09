@@ -209,6 +209,38 @@ func TestAssignTask_NotFound(t *testing.T) {
 	}
 }
 
+func TestSetTaskUnschedulableReason(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker: attribute requirement not met"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+	tk := mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "no eligible online worker: attribute requirement not met" {
+		t.Errorf("UnschedulableReason: got %q", tk.UnschedulableReason)
+	}
+
+	// Clearing.
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason clear: %v", err)
+	}
+	tk = mustGetTask(t, s, "t1")
+	if tk.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after clear: got %q, want empty", tk.UnschedulableReason)
+	}
+
+	// Unknown id.
+	if err := s.SetTaskUnschedulableReason(ctx(), "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown task id, got %v", err)
+	}
+}
+
 func TestReclaimWorkerTasks(t *testing.T) {
 	s := New()
 	defer s.Close()
