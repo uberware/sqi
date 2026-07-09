@@ -78,6 +78,18 @@ The scheduler is intentionally stateless with respect to the running process —
 Configuration cascades: farm defaults → queue overrides. This avoids repeating settings across every job submission.
 
 **Scheduling considers:** job priority, task dependencies, queue and farm policy (concurrency limits, scheduling mode), compute location affinity, worker capability tags (OS, GPU, installed software), and usage pool availability.
+ - *Design:* ready tasks remain `ready` until a worker sends a core-NATS
+    request to `work.lease.<queue>`. The server computes free cores
+    (`CPUCount − Σ committed`), selects a priority-ordered batch that fits,
+    atomically transitions the batch `ready → assigned` (stamping `assigned_at`
+    only now), and replies. The `SQI_WORK` JetStream stream, `work.assign.<queue>`
+    subject, and server dispatch loop are removed.
+ - *CPU capacity:* `amount.worker.vcpu` `min` is a consumable per-task
+    reservation; omitting it reserves the whole machine (one task per worker).
+    The server tracks committed cores in the database; the ledger rebuilds
+    instantly on restart.
+  - *Deferred:* worker drain/headroom signal, head-of-line reservation for
+    large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
 ---
 
@@ -200,25 +212,6 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Usage pool tracking (count-based)
 - Simple all-in-one deployment
 - Docker image for worker
-- **CPU-aware lease scheduling** — replaced the eager push model with a
-  lazy, worker-requested lease design (see
-  `docs/superpowers/specs/2026-06-18-cpu-aware-lease-scheduling-design.md`):
-  - *Motivation:* the previous model stamped `assigned` and `assigned_at` before
-    any worker had the task; workers sharing a JetStream pull consumer could
-    steal each other's assignments; and `amount.worker.vcpu` was checked only as
-    a static capability filter, never as live per-worker consumption.
-  - *Design:* ready tasks remain `ready` until a worker sends a core-NATS
-    request to `work.lease.<queue>`. The server computes free cores
-    (`CPUCount − Σ committed`), selects a priority-ordered batch that fits,
-    atomically transitions the batch `ready → assigned` (stamping `assigned_at`
-    only now), and replies. The `SQI_WORK` JetStream stream, `work.assign.<queue>`
-    subject, and server dispatch loop are removed.
-  - *CPU capacity:* `amount.worker.vcpu` `min` is now a consumable per-task
-    reservation; omitting it reserves the whole machine (one task per worker).
-    The server tracks committed cores in the database; the ledger rebuilds
-    instantly on restart.
-  - *Deferred:* worker drain/headroom signal, head-of-line reservation for
-    large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
 ### Phase 2: Products and Presets (v0.2) ✅ Released
 
@@ -229,7 +222,6 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
 - Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)
-- Product concurrency limits and per-compute-location storage are provided by the existing usage pools and storage-location roots — no separate mechanism
 
 ### Phase 3: Auth and Multi-User (v0.3)
 
