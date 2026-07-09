@@ -359,6 +359,11 @@ scheduler:
   unschedulable_grace: "30s"
 ```
 
+See
+[Why isn't my job running? — Unschedulable tasks](observability.md#why-isnt-my-job-running-unschedulable-tasks)
+for what the flag means, where it surfaces (task `unschedulable_reason`, job
+`task_counts.unschedulable`, the job-detail badge), and how it clears.
+
 ---
 
 ## `discovery` — mDNS service advertisement

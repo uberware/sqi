@@ -184,6 +184,19 @@ whose location name does not appear in the registry is fully eligible for
 matching tasks, and a registry entry with no matching workers simply reports
 `worker_count: 0`. See [`docs/compute-locations.md`](compute-locations.md).
 
+**Unschedulable detection.** On every heartbeat-sweep tick (the same tick that
+reaps stale-`assigned` tasks and reclaims stale workers), the scheduler also
+re-evaluates each `ready` task against the current online-worker set using the
+same `WorkerEligible` check used above for lease assignment — read-only, it
+never changes scheduling, only an annotation. A task that has waited longer
+than `scheduler.unschedulable_grace` with no eligible online worker is flagged
+with a human-readable `unschedulable_reason`, cleared automatically once a
+matching worker appears or the task leaves `ready`. See
+[`docs/observability.md`](observability.md#why-isnt-my-job-running-unschedulable-tasks)
+for the operator-facing view and
+[`scheduler.unschedulable_grace`](configuration.md#schedulerunschedulable_grace)
+for the config knob.
+
 ### 4. Worker execution
 
 ```
