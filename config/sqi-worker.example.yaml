@@ -263,3 +263,18 @@ diagnostics:
   # records are mirrored to sqi-server in addition to local stderr output.
   # Type: bool   Env: SQI_DIAGNOSTICS_ENABLED
   enabled: true
+
+# ── Capability auto-detection ─────────────────────────────────────────────────
+# Built-in detectors for Maya, Nuke, Houdini, and Blender run automatically and
+# advertise a presence tag (e.g. `maya`, plus `maya-2025`) when the app is found,
+# so products that require attr.worker.tag.<app> match with no configuration.
+# capabilities:
+#   detect:                 # custom detectors for in-house tools
+#     - tag: mytool
+#       checks:
+#         - exe: mytool     # found on PATH
+#         - path_glob: "/opt/mytool*/bin/mytool"
+#       version:
+#         from: "mytool(?P<v>[0-9.]+)"
+#   disable: [blender]      # turn off a built-in that misfires on this host
+#                           # (also: SQI_WORKER_CAPABILITIES_DISABLE=blender,nuke)

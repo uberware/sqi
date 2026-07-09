@@ -327,6 +327,11 @@ malformed. To add a new built-in:
    test validates every built-in definition and will catch template errors.
 4. Built-in names are reserved; `POST /api/v1/products` rejects names that
    shadow a built-in.
+5. New default/built-in product or reference preset requiring a software
+   capability tag → add a matching built-in detector in
+   `internal/worker/capabilities/builtins/`; the
+   `TestBuiltinDetectors_CoverPresets` invariant must stay green (see
+   [Adding a built-in DCC detector](#adding-a-built-in-dcc-detector) below).
 
 ### Custom products
 
@@ -663,6 +668,45 @@ and `probe_other.go`.
    go test -race ./internal/worker/capabilities/...
    make fmt && make lint
    ```
+
+### Adding a built-in DCC detector
+
+This is a separate, declarative detection path from the `Probe`-based
+hardware tags above — see
+[`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)
+for the full picture (how detection runs, the tag/version model, precedence)
+and the
+[Writing custom detectors](worker-capabilities.md#writing-custom-detectors)
+reference for the detector schema.
+
+**Paired-change convention:** every new default/built-in product or reference
+preset that requires a software capability tag ships a matching built-in
+detector in `internal/worker/capabilities/builtins/`. For `presets/dcc/*.yaml`
+specifically, this is test-enforced: `TestBuiltinDetectors_CoverPresets` in
+[`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go)
+cross-checks every `attr.worker.tag.<x>` required by `presets/dcc/*.yaml`
+against the tags emitted by the built-in detectors, so a new reference preset
+cannot ship without a matching detector or the test fails. (The test currently
+only scans `presets/dcc/`, not `internal/product/builtins/`; apply the same
+convention by hand to a new built-in *product* until that coverage is
+extended.)
+
+**Steps to add a new built-in detector:**
+
+1. Create `internal/worker/capabilities/builtins/<name>.yaml` with the
+   detector schema — `tag`, `checks` (each check exactly one of
+   `exe`/`path_glob`/`env`/`registry`, with an optional per-check `os` gate),
+   and an optional `version.from` regex. Use the existing built-ins
+   (`maya.yaml`, `nuke.yaml`, `houdini.yaml`, `blender.yaml`) as reference —
+   they use the identical schema as a custom detector.
+2. Stamp the file with the SPDX comment header:
+   ```
+   # SPDX-License-Identifier: AGPL-3.0-or-later
+   ```
+3. Run `go test ./internal/worker/capabilities/...` —
+   `TestBuiltinDetectors_CoverPresets` and the built-in load/validate tests
+   will catch a malformed detector or a still-uncovered preset tag.
+4. `make fmt && make lint`.
 
 ## sqi-sdk (Python) development
 

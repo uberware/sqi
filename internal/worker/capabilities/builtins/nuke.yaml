@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+tag: nuke
+checks:
+  - path_glob: "/usr/local/Nuke*/Nuke*"                              # linux
+  - path_glob: "/Applications/Nuke*/Nuke*.app"                       # macOS
+  - registry: 'HKLM\SOFTWARE\The Foundry\Nuke'                       # windows
+    os: windows
+version:
+  from: "Nuke([0-9]+\\.[0-9]+)"

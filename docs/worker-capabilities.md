@@ -7,8 +7,11 @@ hardware.
 
 Tags appear in two forms:
 
-- **List-style tags** — presence only; e.g., `maya-2025` (the value is the
-  empty string). Used for software labels and feature flags.
+- **List-style tags** — presence only; e.g., a manual `gpu` entry (the value
+  is the empty string). Used for software labels and feature flags. (The
+  built-in DCC detectors below are the exception: they emit `key=true` pairs,
+  not empty-value presence tags — see [Capability
+  auto-detection](#capability-auto-detection-built-in-dcc-detectors).)
 - **Key=value tags** — e.g., `os=linux`, `os_version=22.04`. The value adds
   context for range-based matching rules.
 
@@ -102,6 +105,184 @@ covers:
 When no GPU is detected all GPU fields are zero/empty and the worker is not
 reported as GPU-capable. Use the manual tag `gpu` to mark a worker as
 GPU-capable on macOS or Windows.
+
+---
+
+## Capability auto-detection (built-in DCC detectors)
+
+In addition to the hardware/OS tags above, `sqi-worker` runs a second,
+declarative detection engine (`internal/worker/capabilities`) that looks for
+installed creative applications — Maya, Nuke, Houdini, Blender — and
+advertises a tag with value `"true"` automatically, with no per-worker
+configuration. This makes the software actually installed on a worker visible
+without hand-editing its config, and it's enough on its own to satisfy the
+`anyOf: ["true"]` gate the six shipped reference presets declare — a standard
+install matches those presets with zero configuration. Run
+`sqi-worker capabilities` any time to see what was found. See
+[`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets) for how these
+auto-detected tags relate to the reference presets.
+
+### How it runs
+
+Detection runs once, at process startup, before the worker's first
+registration (`BuildWorkerCapabilities` in
+[`cmd/sqi-worker/start.go`](https://github.com/uberware/sqi/blob/main/cmd/sqi-worker/start.go)):
+
+1. Every **built-in detector** not named in `capabilities.disable` is
+   evaluated.
+2. Every **custom detector** under `capabilities.detect` is evaluated (these
+   are validated at load time; a malformed custom detector — missing `tag`,
+   zero checks, more than one check primitive set, an invalid `os` gate, or a
+   non-compiling regex — fails worker startup with a clear error rather than
+   silently skipping).
+3. Manual `worker.capability_tags` are merged last and always win on a key
+   collision (see [Manual capability tags](#manual-capability-tags) below).
+
+Detection is declarative only — checks read the filesystem, `PATH`, an
+environment variable, or (Windows) the registry; nothing is executed. It runs
+once at startup, not on a timer, so installing or removing an application on a
+running worker is only picked up on the next restart.
+
+### Built-in detectors
+
+Four built-ins ship embedded in the worker binary, one YAML file per
+application under
+[`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
+
+| Tag | Checks | Version source |
+|---|---|---|
+| `maya` | Linux `path_glob /usr/autodesk/maya*/bin/maya`; macOS `path_glob /Applications/Autodesk/maya*/Maya.app`; Windows `registry HKLM\SOFTWARE\Autodesk\Maya` | `maya(?P<v>[0-9]+)` against the matched path |
+| `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `nuke` | Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `registry HKLM\SOFTWARE\The Foundry\Nuke` | `Nuke([0-9]+\.[0-9]+)` against the matched path |
+| `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only — no `-<version>` tags) |
+
+A `path_glob`/`exe` check's matched signal is a filesystem path, so version
+extraction works there. A `registry` check's signal is the registry key
+string itself (not a value read from the registry), so on Windows these
+built-ins currently detect *presence* only — no `-<version>` variant — unless
+a path-based check also matches on that host.
+
+Every software tag a shipped reference preset requires
+(`presets/dcc/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by some
+built-in detector — enforced by
+`TestBuiltinDetectors_CoverPresets` in
+[`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go),
+so a new default preset cannot ship without a matching detector (see
+[Adding a new auto-detected tag](development.md#adding-a-new-capability-tag-to-auto-detection)
+in the development guide).
+
+### Tag and version model
+
+A detector emits tags into the same `Tags` map as the hardware tags above:
+
+- The bare `<tag>` (e.g. `maya`) is emitted once, with value `"true"`, the
+  moment *any* of its checks matches — this matches the same `key=true`
+  convention as a manual tag like `maya=true`, so `attr.worker.tag.<tag>`
+  `anyOf: ["true"]` requirements are satisfied directly.
+- `<tag>-<version>` (e.g. `maya-2025`) is emitted per **distinct** version
+  string captured by the detector's `version.from` regex, also with value
+  `"true"`.
+- **Multi-version is supported.** A `path_glob` check can match several
+  installs at once (e.g. `/opt/hfs20.0/…` and `/opt/hfs20.5/…` both present),
+  so a single detector run can emit `houdini`, `houdini-20.0`, **and**
+  `houdini-20.5` together — every distinct version found, not just one.
+
+### Precedence: built-in → custom → manual
+
+- Built-in detectors run before custom detectors; if a custom detector emits
+  a tag also emitted by an (enabled) built-in, the built-in's evaluation runs
+  first and the tag is already present, so the custom detector doesn't
+  overwrite it. Since both detectors emit the same `"true"` value this has no
+  practical effect on the tag itself, only on which detector is credited as
+  the source in the `sqi-worker capabilities` output below.
+- To fully replace a built-in's checks for a tag (e.g. because it misfires on
+  a nonstandard host layout), also add the tag to `capabilities.disable` so
+  only your custom detector's checks run.
+- Manual `worker.capability_tags` are merged last via `MergeManualTags` and
+  always overwrite a same-named key from any detector, built-in or custom —
+  this is the escape hatch to suppress a misdetection (`maya=` clears it to
+  empty) or to force the tag on a worker where the built-in checks don't fire
+  (`maya=true` on a nonstandard install path).
+
+### The `sqi-worker capabilities` command
+
+Prints every tag the worker would currently advertise — auto-detected
+(hardware and software) plus manual — with its source, without connecting to
+a server:
+
+```sh
+sqi-worker capabilities
+```
+
+```text
+TAG        SOURCE
+gpu        manual
+houdini    builtin:houdini
+os         auto
+os_version auto
+```
+
+The `SOURCE` column is one of `auto` (the hardware probe's own `Tags` entries
+— just `os` and, when detected, `os_version`), `builtin:<tag>`, `custom`, or
+`manual`. This is the first thing to run
+when a worker isn't picking up jobs you'd expect it to — it answers "why
+isn't my worker getting Maya jobs?" without needing to connect to a server or
+inspect logs. `sqi-worker start --dry-run` includes the same detected
+capabilities as part of its larger config-and-capabilities summary.
+
+---
+
+## Writing custom detectors
+
+Custom detectors are configured under `capabilities.detect` in the worker
+config file (see
+[`docs/worker-configuration.md`](worker-configuration.md#capabilities-software-auto-detection)
+and
+[`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml)).
+They use the exact same schema as the built-ins
+([`internal/worker/capabilities/detector.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/detector.go)),
+so any built-in YAML under
+[`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins)
+doubles as a worked example.
+
+```yaml
+capabilities:
+  detect:
+    - tag: mytool                # required; the base tag key
+      checks:                    # required; at least one; ANY match => present
+        - exe: mytool            # found via a PATH lookup
+        - path_glob: "/opt/mytool*/bin/mytool"   # >=1 filesystem match
+        - env: HFS                # env var present, even if empty (bare form)
+        - env: { name: HOUDINI_ROOT, matches: "hfs[0-9.]+" }  # env var + value regex
+        - registry: 'HKLM\SOFTWARE\MyCompany\MyTool'  # Windows only
+          os: windows             # optional per-check OS gate
+      version:                    # optional
+        from: "mytool(?P<v>[0-9.]+)"   # regex applied to each matched signal
+  disable: [blender]              # turn off a misfiring built-in by tag name
+```
+
+### Detector schema
+
+| Field | Required | Description |
+|---|---|---|
+| `tag` | yes | The base tag key this detector emits (case-insensitive at match time, but keep it lowercase by convention). |
+| `checks` | yes, ≥ 1 | A list of probes; the detector matches if **any** check matches. |
+| `checks[].exe` | one of these four per check | Resolved via a `PATH` lookup (like the shell `which`, using `exec.LookPath`). The signal is the resolved path. |
+| `checks[].path_glob` | | A `filepath.Glob` pattern; every match is a separate signal, which is how multi-version detection works. |
+| `checks[].env` | | An environment variable check. Bare form (`env: HFS`) requires the variable to be present in the environment (an empty value still counts as present). Mapping form (`env: {name: ..., matches: ...}`) additionally requires the value to match a regex. |
+| `checks[].registry` | | A Windows registry key path; checked for existence only (no value read). Evaluates to false on Linux/macOS unless combined with an `os: windows` gate (harmless either way, since the underlying check is a no-op off Windows). |
+| `checks[].os` | no | Restricts the check to one platform: `linux`, `darwin`, or `windows`. Omit to run the check on all platforms. |
+| `version.from` | no | A regex applied to **each matched signal** of every check. The version is the named group `v` (`(?P<v>...)`) if present, otherwise the first capturing group. A signal that doesn't match contributes only the bare tag, no version tag. |
+
+Exactly one of `exe` / `path_glob` / `env` / `registry` must be set per
+check — a check with zero or more than one is rejected at load time, along
+with a missing `tag`, zero `checks`, an invalid `os` value, or a `version.from`
+/ `env.matches` regex that fails to compile. Built-ins go through the same
+`Validate()` call at load time and are covered by tests that assert they
+parse and validate cleanly, so a broken built-in YAML is caught in CI; custom
+detectors are validated when the worker config is loaded at startup, and a
+validation failure stops the worker from starting with a descriptive error
+rather than silently dropping the detector.
 
 ---
 
@@ -221,8 +402,11 @@ Any attribute name outside the well-known set (`attr.worker.os.family`,
 `attr.worker.tag.<key>` namespace always resolves to `""` and can never
 match.
 
-To gate a step on a worker tagged `maya=true` (set via `capability_tags:
-[maya=true]`, see [Setting manual tags](#setting-manual-tags) above):
+To gate a step on a worker tagged `maya=true` — auto-detected on any worker
+with a standard Maya install (see [Capability
+auto-detection](#capability-auto-detection-built-in-dcc-detectors) above), or
+set manually via `capability_tags: [maya=true]` (see [Setting manual
+tags](#setting-manual-tags) above) for a nonstandard install:
 
 ```yaml
 steps:

@@ -588,6 +588,44 @@ describe('WorkerList', () => {
       expect(overflowBadge.textContent).toMatch(/^\+\d+/)
     })
 
+    it('collapses auto-detected versioned presence tags to the base name', async () => {
+      const worker = makeWorker({
+        hostname: 'dcc-node',
+        os: 'Linux',
+        cpu_count: 8,
+        ram_mb: 16384,
+        tags: { nuke: 'true', 'nuke-17.0': 'true', maya: 'true', 'maya-2025': 'true' },
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      // Base names show (inline or in the overflow tooltip)...
+      await waitFor(() => screen.getByText('nuke'))
+      expect(screen.getByText('maya')).toBeInTheDocument()
+      // ...and the raw "=true" / versioned forms are gone.
+      expect(screen.queryByText('nuke=true')).not.toBeInTheDocument()
+      expect(screen.queryByText('nuke-17.0=true')).not.toBeInTheDocument()
+      expect(screen.queryByText('maya-2025=true')).not.toBeInTheDocument()
+      expect(screen.queryByText(/17\.0|2025/)).not.toBeInTheDocument()
+    })
+
+    it('keeps value-bearing (non-presence) tags verbatim', async () => {
+      const worker = makeWorker({
+        hostname: 'proj-node',
+        os: 'Linux',
+        cpu_count: 8,
+        ram_mb: 16384,
+        tags: { project: 'vfx' },
+      })
+      fetchMock.mockResolvedValue(okJson(makeListResponse([worker])))
+
+      render(<WorkerList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('project=vfx'))
+      expect(screen.getByText('project=vfx')).toBeInTheDocument()
+    })
+
     it('+N more badge aria-label lists the overflow tags', async () => {
       const worker = makeWorker({
         hostname: 'overflow-node',

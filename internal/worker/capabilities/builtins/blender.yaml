@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+tag: blender
+checks:
+  - exe: blender
+  - path_glob: "/Applications/Blender.app"                           # macOS
+  - registry: 'HKLM\SOFTWARE\BlenderFoundation\Blender'              # windows
+    os: windows

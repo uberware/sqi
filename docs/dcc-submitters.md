@@ -244,10 +244,22 @@ Nuke get real multi-frame chunks (10 by default) because both the embedded
 a chunk amortizes DCC startup cost across several frames.
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
-`attr.worker.tag.<name>` capability tag — these are **operator-configured**,
-not auto-detected. Add a `key=value` entry to the worker's
-`capability_tags` (see [worker capability tags](worker-capabilities.md)),
-on top of having the corresponding DCC binary on that worker's `PATH`:
+`attr.worker.tag.<name>` capability tag. `sqi-worker` auto-detects a standard
+Maya/Nuke/Houdini/Blender install on `PATH`/in its usual install location and
+advertises the matching tag (`maya`, plus a version variant like `maya-2025`)
+with value `"true"` automatically at startup, with no configuration — see
+[Capability
+auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
+That satisfies the `anyOf: ["true"]` requirement each of the six presets above
+declares, so a worker with a standard DCC install matches these presets with
+**zero per-worker configuration**. Run `sqi-worker capabilities` (or
+`start --dry-run`) to confirm at a glance which DCCs were actually found.
+
+Manual tags are only needed when a DCC lives at a nonstandard install path (or
+under a name/location the built-in detectors don't check) or for in-house
+tools the built-in detectors don't cover. In those cases, add a `key=value`
+entry to the worker's `capability_tags` (see [worker capability
+tags](worker-capabilities.md)):
 
 ```yaml
 worker:
@@ -256,9 +268,10 @@ worker:
 ```
 
 (substitute `houdini=true`, `nuke=true`, or `blender=true` for the other
-three presets). This satisfies the preset's `attr.worker.tag.maya` (etc.)
-requirement. A job submitted against one of these products sits `ready`
-forever if no worker advertises the tag.
+three presets), or add a [custom
+detector](worker-capabilities.md#writing-custom-detectors) instead. A job
+submitted against one of these products sits `ready` forever if no worker
+ends up advertising the tag (auto-detected or manual).
 
 ---
 

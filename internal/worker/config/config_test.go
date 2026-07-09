@@ -5,8 +5,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/uberware/sqi/internal/worker/capabilities"
 )
 
 // ── Default() ────────────────────────────────────────────────────────────────
@@ -447,5 +450,44 @@ func assertDuration(t *testing.T, label string, got, want time.Duration) {
 	t.Helper()
 	if got != want {
 		t.Errorf("%s: got %v, want %v", label, got, want)
+	}
+}
+
+// ── capabilities ─────────────────────────────────────────────────────────────
+
+func TestLoad_CapabilitiesDetectorsAndDisableEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sqi-worker.yaml")
+	const y = `
+capabilities:
+  detect:
+    - tag: inhouse
+      checks:
+        - exe: inhouse-tool
+  disable: [blender]
+`
+	if err := os.WriteFile(path, []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SQI_WORKER_CAPABILITIES_DISABLE", "nuke")
+
+	cfg, err := Load(path, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Capabilities.Detect) != 1 || cfg.Capabilities.Detect[0].Tag != "inhouse" {
+		t.Errorf("detectors not parsed: %+v", cfg.Capabilities.Detect)
+	}
+	// Env-provided disable appends to file-provided disable.
+	if got := strings.Join(cfg.Capabilities.Disable, ","); got != "blender,nuke" {
+		t.Errorf("disable merge: got %q, want blender,nuke", got)
+	}
+}
+
+func TestValidate_RejectsBadDetector(t *testing.T) {
+	cfg := Default()
+	cfg.Capabilities.Detect = []capabilities.Detector{{Tag: "x"}} // no checks
+	if errs := Validate(cfg); len(errs) == 0 {
+		t.Errorf("expected validation error for detector with no checks")
 	}
 }

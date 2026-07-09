@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+tag: maya
+checks:
+  - path_glob: "/usr/autodesk/maya*/bin/maya"                        # linux
+  - path_glob: "/Applications/Autodesk/maya*/Maya.app"               # macOS
+  - registry: 'HKLM\SOFTWARE\Autodesk\Maya'                          # windows
+    os: windows
+version:
+  from: "maya(?P<v>[0-9]+)"
