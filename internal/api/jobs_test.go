@@ -425,6 +425,65 @@ func TestListJobs(t *testing.T) {
 		}
 	})
 
+	t.Run("includes unschedulable count in task_counts per item", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		ctx := t.Context()
+		job := seedJob(t, st, store.JobStatusRunning)
+
+		now := time.Now()
+		step, err := st.CreateStep(ctx, store.Step{
+			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
+			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateStep: %v", err)
+		}
+		// Two ready-but-unschedulable tasks and one plain ready task.
+		for range 2 {
+			tk, err := st.CreateTask(ctx, store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+				Name: "t", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			if err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
+				t.Fatalf("SetTaskUnschedulableReason: %v", err)
+			}
+		}
+		if _, err := st.CreateTask(ctx, store.Task{
+			ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+			Name: "t", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobListResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		var found *jobListItemResponse
+		for i := range resp.Items {
+			if resp.Items[i].ID == job.ID {
+				found = &resp.Items[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("seeded job not present in list response")
+		}
+		if found.TaskCounts.Unschedulable != 2 {
+			t.Errorf("task_counts.unschedulable = %d, want 2", found.TaskCounts.Unschedulable)
+		}
+	})
+
 	t.Run("filter by status", func(t *testing.T) {
 		req := newReq(t, http.MethodGet, "/api/v1/jobs?status=running", nil)
 		rr := httptest.NewRecorder()
@@ -540,6 +599,49 @@ func TestGetJob(t *testing.T) {
 		ct := rr.Header().Get("Content-Type")
 		if !strings.HasPrefix(ct, "application/problem+json") {
 			t.Errorf("Content-Type = %q, want application/problem+json", ct)
+		}
+	})
+
+	t.Run("includes unschedulable count in task_counts", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		ctx := t.Context()
+		job := seedJob(t, st, store.JobStatusRunning)
+
+		now := time.Now()
+		step, err := st.CreateStep(ctx, store.Step{
+			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
+			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateStep: %v", err)
+		}
+		const wantUnschedulable = 3
+		for range wantUnschedulable {
+			tk, err := st.CreateTask(ctx, store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+				Name: "t", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			if err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
+				t.Fatalf("SetTaskUnschedulableReason: %v", err)
+			}
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobDetailResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.TaskCounts.Unschedulable != wantUnschedulable {
+			t.Errorf("task_counts.unschedulable = %d, want %d", resp.TaskCounts.Unschedulable, wantUnschedulable)
 		}
 	})
 }

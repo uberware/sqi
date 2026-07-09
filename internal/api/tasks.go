@@ -61,6 +61,9 @@ type taskResponse struct {
 	AssignedAt       *time.Time        `json:"assigned_at,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
+	// UnschedulableReason is set when a ready task cannot currently be
+	// satisfied by any online worker; empty means schedulable.
+	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
 }
 
 // taskListResponse is the paginated result returned by GET /api/v1/jobs/{id}/tasks.
@@ -422,16 +425,17 @@ func (h *taskHandler) retryTask(w http.ResponseWriter, r *http.Request) {
 // toTaskResponse converts a [store.Task] into the API wire type.
 func toTaskResponse(t store.Task) taskResponse {
 	return taskResponse{
-		ID:               t.ID,
-		JobID:            t.JobID,
-		StepID:           t.StepID,
-		Name:             t.Name,
-		Parameters:       t.Parameters,
-		Status:           string(t.Status),
-		AssignedWorkerID: t.AssignedWorkerID,
-		AssignedAt:       t.AssignedAt,
-		CreatedAt:        t.CreatedAt,
-		UpdatedAt:        t.UpdatedAt,
+		ID:                  t.ID,
+		JobID:               t.JobID,
+		StepID:              t.StepID,
+		Name:                t.Name,
+		Parameters:          t.Parameters,
+		Status:              string(t.Status),
+		AssignedWorkerID:    t.AssignedWorkerID,
+		AssignedAt:          t.AssignedAt,
+		CreatedAt:           t.CreatedAt,
+		UpdatedAt:           t.UpdatedAt,
+		UnschedulableReason: t.UnschedulableReason,
 	}
 }
 

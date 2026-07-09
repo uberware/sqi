@@ -1152,6 +1152,53 @@ func TestTask_CountActiveTasksInQueue(t *testing.T) {
 	}
 }
 
+func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+	insertTask(t, s, "t2", "j1", "s1")
+	insertTask(t, s, "t3", "j1", "s1")
+
+	// t1, t2: ready with an unschedulable reason set — counted.
+	for _, id := range []string{"t1", "t2"} {
+		if err := s.UpdateTaskStatus(ctx, id, store.TaskStatusReady); err != nil {
+			t.Fatalf("UpdateTaskStatus(%q): %v", id, err)
+		}
+		if err := s.SetTaskUnschedulableReason(ctx, id, "no worker matches required capability"); err != nil {
+			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
+		}
+	}
+	// t3: ready but schedulable (no reason) — not counted.
+	if err := s.UpdateTaskStatus(ctx, "t3", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus(t3): %v", err)
+	}
+
+	n, err := s.CountUnschedulableTasksByJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("CountUnschedulableTasksByJob: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("unschedulable in j1: got %d, want 2", n)
+	}
+
+	// Clearing the reason on t1 (as the scheduler does when it becomes
+	// schedulable again) drops the count.
+	if err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason(clear): %v", err)
+	}
+	n, err = s.CountUnschedulableTasksByJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("CountUnschedulableTasksByJob: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("unschedulable in j1 after clear: got %d, want 1", n)
+	}
+}
+
 func TestTask_CountActiveTasksInFarm(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

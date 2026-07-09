@@ -497,6 +497,42 @@ func TestCountTasksByJob(t *testing.T) {
 	}
 }
 
+func TestCountUnschedulableTasksByJob(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
+	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusReady)
+
+	for _, id := range []string{"t1", "t2"} {
+		if err := s.SetTaskUnschedulableReason(ctx(), id, "no worker matches required capability"); err != nil {
+			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
+		}
+	}
+
+	n, err := s.CountUnschedulableTasksByJob(ctx(), "j1")
+	if err != nil {
+		t.Fatalf("CountUnschedulableTasksByJob: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d, want 2", n)
+	}
+
+	if err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason(clear): %v", err)
+	}
+	n, err = s.CountUnschedulableTasksByJob(ctx(), "j1")
+	if err != nil {
+		t.Fatalf("CountUnschedulableTasksByJob: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("count after clear = %d, want 1", n)
+	}
+}
+
 func TestListTasks_SortFields(t *testing.T) {
 	s := New()
 	defer s.Close()

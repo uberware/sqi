@@ -258,6 +258,7 @@ components:
         - succeeded
         - failed
         - canceled
+        - unschedulable
       properties:
         total:
           type: integer
@@ -275,6 +276,11 @@ components:
           type: integer
         canceled:
           type: integer
+        unschedulable:
+          type: integer
+          description: >-
+            Number of Ready tasks that currently carry a non-empty
+            unschedulable reason. A subset of ready, not an additional status.
 
     JobDetail:
       allOf:
@@ -359,6 +365,13 @@ components:
         updated_at:
           type: string
           format: date-time
+        unschedulable_reason:
+          type: string
+          description: >-
+            Set when a ready task cannot currently be satisfied by any online
+            worker (e.g. no worker matches its required capabilities or core
+            reservation). Empty/absent means schedulable. An annotation on the
+            task, not a status.
 
     TaskList:
       type: object

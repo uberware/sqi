@@ -467,6 +467,21 @@ func (s *Store) CountTasksByJob(_ context.Context, jobID string) (map[store.Task
 	return counts, nil
 }
 
+// CountUnschedulableTasksByJob returns the number of ready tasks for the
+// given job that carry a non-empty unschedulable reason.
+func (s *Store) CountUnschedulableTasksByJob(_ context.Context, jobID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+	for _, t := range s.tasks {
+		if t.JobID == jobID && t.Status == store.TaskStatusReady && t.UnschedulableReason != "" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // CommittedCores implements [store.TaskStore].
 func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCost int) (int, error) {
 	s.mu.Lock()

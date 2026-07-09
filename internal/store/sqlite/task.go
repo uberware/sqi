@@ -124,6 +124,14 @@ FROM   tasks
 WHERE  job_id = ?
 GROUP BY status`
 
+	// Counts ready tasks for a given job that carry a non-empty unschedulable
+	// reason. Used by the REST layer to surface an "unschedulable" count
+	// alongside the per-status task counts in job responses.
+	sqlCountUnschedulableTasksByJob = `
+SELECT COUNT(*)
+FROM   tasks
+WHERE  job_id = ? AND status = 'ready' AND unschedulable_reason <> ''`
+
 	// Cancels all non-terminal tasks for a job and returns the number of rows
 	// updated. The caller first SELECTs active tasks within the same
 	// transaction to capture worker IDs before this UPDATE clears them.
@@ -645,6 +653,18 @@ func (s *Store) CountTasksByJob(ctx context.Context, jobID string) (map[store.Ta
 		counts[status] = n
 	}
 	return counts, rows.Err()
+}
+
+// CountUnschedulableTasksByJob implements [store.TaskStore].
+// Returns the number of ready tasks for the given job that carry a non-empty
+// unschedulable reason.
+func (s *Store) CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error) {
+	var n int
+	err := s.stmtCountUnschedulableTasksByJob.QueryRowContext(ctx, jobID).Scan(&n)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
 }
 
 // CommittedCores implements [store.TaskStore].

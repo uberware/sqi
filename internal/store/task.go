@@ -199,6 +199,13 @@ type TaskStore interface {
 	// SetTaskUnschedulableReason sets (or, with an empty string, clears) the
 	// reason a ready task cannot be scheduled. Returns ErrNotFound if id is unknown.
 	SetTaskUnschedulableReason(ctx context.Context, id, reason string) error
+
+	// CountUnschedulableTasksByJob returns the number of tasks for the given
+	// job that are currently in [TaskStatusReady] with a non-empty
+	// UnschedulableReason. Used by the REST layer to surface an
+	// "unschedulable" count alongside the per-status task counts in job
+	// responses.
+	CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

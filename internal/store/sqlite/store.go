@@ -147,17 +147,18 @@ type Store struct {
 	stmtUpdateStepStatus *sql.Stmt
 
 	// ── tasks ────────────────────────────────────────────────────────────
-	stmtInsertTask                 *sql.Stmt
-	stmtGetTask                    *sql.Stmt
-	stmtUpdateTaskStatus           *sql.Stmt
-	stmtSetTaskUnschedulableReason *sql.Stmt
-	stmtAssignTask                 *sql.Stmt
-	stmtListReadyTasks             *sql.Stmt
-	stmtReclaimWorkerTasks         *sql.Stmt
-	stmtCountActiveTasksInQueue    *sql.Stmt
-	stmtCountActiveTasksInFarm     *sql.Stmt
-	stmtCountReadyTasksByQueue     *sql.Stmt
-	stmtCountTasksByJob            *sql.Stmt
+	stmtInsertTask                   *sql.Stmt
+	stmtGetTask                      *sql.Stmt
+	stmtUpdateTaskStatus             *sql.Stmt
+	stmtSetTaskUnschedulableReason   *sql.Stmt
+	stmtAssignTask                   *sql.Stmt
+	stmtListReadyTasks               *sql.Stmt
+	stmtReclaimWorkerTasks           *sql.Stmt
+	stmtCountActiveTasksInQueue      *sql.Stmt
+	stmtCountActiveTasksInFarm       *sql.Stmt
+	stmtCountReadyTasksByQueue       *sql.Stmt
+	stmtCountTasksByJob              *sql.Stmt
+	stmtCountUnschedulableTasksByJob *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
 	stmtInsertAttempt           *sql.Stmt
@@ -488,6 +489,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtCountTasksByJob, err = s.prepare(ctx, sqlCountTasksByJob); err != nil {
+		return err
+	}
+	if s.stmtCountUnschedulableTasksByJob, err = s.prepare(ctx, sqlCountUnschedulableTasksByJob); err != nil {
 		return err
 	}
 
