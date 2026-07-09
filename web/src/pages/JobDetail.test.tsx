@@ -1149,6 +1149,96 @@ describe('JobDetail', () => {
     })
   })
 
+  // ── Unschedulable badge ───────────────────────────────────────────────────
+
+  describe('unschedulable badge', () => {
+    it('renders an Unschedulable badge with the reason for a ready task that has one', async () => {
+      const task = makeTask({
+        id: 'task-unschedulable',
+        status: 'ready',
+        name: 'task.blocked',
+        unschedulable_reason: 'no online workers',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const badge = await screen.findByText('Unschedulable')
+      expect(badge).toBeInTheDocument()
+      // The reason must be exposed via an accessible name or title.
+      const hasTitle = badge.getAttribute('title') === 'no online workers'
+      const hasAriaLabel = badge.getAttribute('aria-label')?.includes('no online workers') ?? false
+      expect(hasTitle || hasAriaLabel).toBe(true)
+    })
+
+    it('does not render an Unschedulable badge for a ready task without a reason', async () => {
+      const task = makeTask({
+        id: 'task-ready-no-reason',
+        status: 'ready',
+        name: 'task.ready',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByLabelText('Status: Ready'))
+      expect(screen.queryByText('Unschedulable')).not.toBeInTheDocument()
+    })
+
+    it('sets the reason via a WS task-update event and clears it when absent', async () => {
+      const task = makeTask({
+        id: 'task-ws-unschedulable',
+        status: 'ready',
+        name: 'task.wsblocked',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockResolvedValue(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+      await waitFor(() => screen.getAllByLabelText('Status: Ready'))
+      expect(screen.queryByText('Unschedulable')).not.toBeInTheDocument()
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 'task-ws-unschedulable',
+            status: 'ready',
+            unschedulable_reason: 'no matching capabilities',
+            updated_at: '2024-01-15T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => screen.getByText('Unschedulable'))
+      expect(screen.getByText('Unschedulable')).toHaveAttribute('title', 'no matching capabilities')
+
+      // Field absent on a subsequent event means "clear".
+      act(() => {
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 'task-ws-unschedulable',
+            status: 'ready',
+            updated_at: '2024-01-15T10:11:00Z',
+          },
+          seq: 2,
+        })
+      })
+
+      await waitFor(() => expect(screen.queryByText('Unschedulable')).not.toBeInTheDocument())
+    })
+  })
+
   // ── Task search ───────────────────────────────────────────────────────────
 
   describe('task search', () => {

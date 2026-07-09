@@ -18,6 +18,21 @@
   cursor: pointer;
 }
 
+/* ── Unschedulable indicator ─────────────────────────────────────────────────── */
+
+.unschedulableIndicator {
+  display: inline-flex;
+  align-items: center;
+  margin-left: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background-color: var(--color-warning-muted);
+  color: var(--color-warning);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
 
 .bulkCancelBtn,

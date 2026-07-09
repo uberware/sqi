@@ -81,6 +81,8 @@ export interface TaskCounts {
   succeeded: number
   failed: number
   canceled: number
+  /** Count of tasks currently blocked from scheduling (subset of `ready`); optional for backward compatibility. */
+  unschedulable?: number
 }
 
 /** Wire shape returned by GET /api/v1/jobs/{id}. */
@@ -114,6 +116,8 @@ export interface Task {
   status: TaskStatus
   assigned_worker_id?: string
   assigned_at?: string
+  /** Set while the task cannot currently be scheduled (e.g. no online workers with matching capabilities); absent when schedulable. */
+  unschedulable_reason?: string
   created_at: string
   updated_at: string
 }
