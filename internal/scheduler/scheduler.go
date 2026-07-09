@@ -896,7 +896,8 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 // runHeartbeatSweep periodically finds workers whose last heartbeat is older
 // than WorkerTimeout, marks them offline, and reclaims their in-flight tasks.
 // On the same tick it reaps tasks stranded in 'assigned' on still-live workers,
-// demotes stalled jobs, and refreshes the queue-depth, idle-worker, and
+// demotes stalled jobs, flags/clears ready tasks no online worker can satisfy
+// ([sweepUnschedulable]), and refreshes the queue-depth, idle-worker, and
 // usage-claim Prometheus gauges.
 func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.HeartbeatSweepInterval)
@@ -912,6 +913,7 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			s.sweepRetiredJobs(ctx)
 			s.reapStaleAssignedTasks(ctx)
 			s.demoteStalledJobs(ctx)
+			s.sweepUnschedulable(ctx)
 			// Refresh instrumentation gauges on the same tick so Prometheus
 			// reflects current farm state without a dedicated metrics loop.
 			s.refreshQueueDepthGauge(ctx)
