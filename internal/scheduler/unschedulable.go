@@ -77,16 +77,14 @@ func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.
 		)
 		return
 	}
-	// TODO(P2-T4): carry unschedulable reason on the event once
-	// ws.TaskEvent grows an UnschedulableReason field; for now this just
-	// prompts subscribed clients to refetch the task.
 	s.notifier.NotifyTask(ws.TaskEvent{
-		JobID:     task.JobID,
-		TaskID:    task.ID,
-		Name:      task.Name,
-		Status:    string(task.Status),
-		WorkerID:  task.AssignedWorkerID,
-		UpdatedAt: time.Now().UTC(),
+		JobID:               task.JobID,
+		TaskID:              task.ID,
+		Name:                task.Name,
+		Status:              string(task.Status),
+		WorkerID:            task.AssignedWorkerID,
+		UnschedulableReason: reason,
+		UpdatedAt:           time.Now().UTC(),
 	})
 }
 

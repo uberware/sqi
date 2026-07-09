@@ -9,12 +9,13 @@ import "time"
 //   - clients subscribed to [SubjectJobs] (job-summary updates)
 //   - clients subscribed to "jobs/{jobID}/tasks" (per-job task updates)
 type TaskEvent struct {
-	JobID     string
-	TaskID    string
-	Name      string
-	Status    string // store.TaskStatus value
-	WorkerID  string // empty when unassigned
-	UpdatedAt time.Time
+	JobID               string
+	TaskID              string
+	Name                string
+	Status              string // store.TaskStatus value
+	WorkerID            string // empty when unassigned
+	UnschedulableReason string // empty when schedulable
+	UpdatedAt           time.Time
 }
 
 // WorkerStatusRemoved is a synthetic WorkerEvent.Status value (not a persisted
