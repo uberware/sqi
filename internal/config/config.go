@@ -135,6 +135,11 @@ type SchedulerConfig struct {
 	// JobRetentionIncludeFailed extends the retention sweep to failed jobs.
 	// Default: false. Env: SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED
 	JobRetentionIncludeFailed bool `yaml:"job_retention_include_failed"`
+
+	// UnschedulableGrace is how long a ready task may wait with no eligible
+	// online worker before it is flagged unschedulable. 0 disables the sweep.
+	// Default: 30s. Env: SQI_SCHEDULER_UNSCHEDULABLE_GRACE
+	UnschedulableGrace time.Duration `yaml:"unschedulable_grace"`
 }
 
 // DiscoveryConfig controls mDNS service advertisement.
@@ -208,6 +213,7 @@ func DefaultConfig() Config {
 			OfflineWorkerRetention:    24 * time.Hour,
 			JobRetention:              7 * 24 * time.Hour,
 			JobRetentionIncludeFailed: false,
+			UnschedulableGrace:        30 * time.Second,
 		},
 		Discovery: DiscoveryConfig{
 			Enabled:      true,

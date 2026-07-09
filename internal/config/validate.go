@@ -167,6 +167,15 @@ func validateScheduler(cfg SchedulerConfig) []ValidationError {
 			),
 		})
 	}
+	if cfg.UnschedulableGrace < 0 {
+		errs = append(errs, ValidationError{
+			Field: "scheduler.unschedulable_grace",
+			Message: fmt.Sprintf(
+				"must be >= 0 (0 disables the sweep), got %s; set SQI_SCHEDULER_UNSCHEDULABLE_GRACE or scheduler.unschedulable_grace",
+				cfg.UnschedulableGrace,
+			),
+		})
+	}
 	return errs
 }
 

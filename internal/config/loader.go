@@ -120,6 +120,7 @@ type fileConfig struct {
 		OfflineWorkerRetention    *string `yaml:"offline_worker_retention"`
 		JobRetention              *string `yaml:"job_retention"`
 		JobRetentionIncludeFailed *bool   `yaml:"job_retention_include_failed"`
+		UnschedulableGrace        *string `yaml:"unschedulable_grace"`
 	} `yaml:"scheduler"`
 
 	Discovery *struct {
@@ -278,6 +279,11 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 	if fc.Scheduler.JobRetentionIncludeFailed != nil {
 		cfg.Scheduler.JobRetentionIncludeFailed = *fc.Scheduler.JobRetentionIncludeFailed
 	}
+	if fc.Scheduler.UnschedulableGrace != nil {
+		if d, err := time.ParseDuration(*fc.Scheduler.UnschedulableGrace); err == nil {
+			cfg.Scheduler.UnschedulableGrace = d
+		}
+	}
 }
 
 func mergeDiscoveryFile(cfg *Config, fc fileConfig) {
@@ -341,6 +347,7 @@ func applyEnv(cfg *Config) {
 	setDuration(&cfg.Scheduler.OfflineWorkerRetention, "SQI_SCHEDULER_OFFLINE_WORKER_RETENTION")
 	setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION")
 	setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED")
+	setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE")
 
 	setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED")
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")

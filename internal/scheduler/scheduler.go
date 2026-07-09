@@ -101,6 +101,7 @@ func DefaultConfig() Config {
 		OfflineWorkerRetention:    24 * time.Hour,
 		JobRetention:              7 * 24 * time.Hour,
 		JobRetentionIncludeFailed: false,
+		UnschedulableGrace:        30 * time.Second,
 	}
 }
 
@@ -158,6 +159,13 @@ type Config struct {
 	// JobRetentionIncludeFailed extends the retention sweep to failed jobs.
 	// Default: false (failed jobs are kept for debugging).
 	JobRetentionIncludeFailed bool
+
+	// UnschedulableGrace is how long a ready task may wait with no eligible
+	// online worker before it is flagged unschedulable (surfaced in the
+	// API/UI). A value <= 0 disables the sweep entirely — unlike the other
+	// duration knobs above, this is NOT coerced up to the default in [New],
+	// since 0 is a legitimate "off" setting. Default: 30 s.
+	UnschedulableGrace time.Duration
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -293,6 +301,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		slog.Duration("offline_worker_retention", s.cfg.OfflineWorkerRetention),
 		slog.Duration("job_retention", s.cfg.JobRetention),
 		slog.Bool("job_retention_include_failed", s.cfg.JobRetentionIncludeFailed),
+		slog.Duration("unschedulable_grace", s.cfg.UnschedulableGrace),
 	)
 
 	// ── Worker NATS consumer ────────────────────────────────
