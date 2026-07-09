@@ -28,15 +28,18 @@ RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
 
+	// unschedulable_reason is only meaningful while a task is ready (set by the
+	// scheduler sweep); it is cleared here so a task carries no stale
+	// annotation once it leaves ready for any reason.
 	sqlUpdateTaskStatus = `
-UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`
+UPDATE tasks SET status = ?, updated_at = ?, unschedulable_reason = '' WHERE id = ?`
 
 	sqlSetTaskUnschedulableReason = `
 UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
 
 	sqlAssignTask = `
 UPDATE tasks
-SET assigned_worker_id = ?, assigned_at = ?, status = 'assigned', updated_at = ?
+SET assigned_worker_id = ?, assigned_at = ?, status = 'assigned', updated_at = ?, unschedulable_reason = ''
 WHERE id = ?`
 
 	// Joins to jobs, queues, and steps to apply the full selection ordering:
@@ -68,7 +71,7 @@ LIMIT ?`
 
 	sqlReclaimWorkerTasks = `
 UPDATE tasks
-SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
@@ -82,7 +85,7 @@ WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
 
 	sqlReclaimStaleAssignedTasks = `
 UPDATE tasks
-SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
 WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
 
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
@@ -126,7 +129,7 @@ GROUP BY status`
 	// transaction to capture worker IDs before this UPDATE clears them.
 	sqlCancelJobTasks = `
 UPDATE tasks
-SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?
+SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
 WHERE  job_id = ?
   AND  status IN ('pending', 'ready', 'assigned', 'running')`
 
@@ -135,7 +138,7 @@ WHERE  job_id = ?
 	// assignment to clear. Single statement — not bounded by MaxLimit.
 	sqlTransitionStepPendingTasks = `
 UPDATE tasks
-SET    status = ?, updated_at = ?
+SET    status = ?, updated_at = ?, unschedulable_reason = ''
 WHERE  step_id = ? AND status = 'pending'
 RETURNING ` + taskCols
 
@@ -147,7 +150,7 @@ WHERE  assigned_worker_id = ?
 
 	sqlLeaseReadyTask = `
 UPDATE tasks
-SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?
+SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?, unschedulable_reason = ''
 WHERE  id = ? AND status = 'ready'`
 
 	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
@@ -162,7 +165,7 @@ WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 	// The optional "AND id IN (?, …)" suffix is appended at call time.
 	sqlRetryTasksPrefix = `
 UPDATE tasks
-SET    status = 'pending', updated_at = ?
+SET    status = 'pending', updated_at = ?, unschedulable_reason = ''
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 
 	// sqlRetryResetSteps resets any terminal step that now owns a pending task

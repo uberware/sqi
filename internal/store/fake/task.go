@@ -60,6 +60,9 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 }
 
 // UpdateTaskStatus transitions a task to a new status and updates UpdatedAt.
+// unschedulable_reason is only meaningful while a task is ready (set by the
+// scheduler sweep), so it is cleared here regardless of the destination
+// status — harmless when it was already empty.
 func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.TaskStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,6 +73,7 @@ func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.Task
 	}
 
 	task.Status = status
+	task.UnschedulableReason = ""
 	task.UpdatedAt = time.Now()
 	s.tasks[id] = task
 	return nil
@@ -102,6 +106,7 @@ func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to 
 			continue
 		}
 		t.Status = to
+		t.UnschedulableReason = ""
 		t.UpdatedAt = time.Now()
 		s.tasks[id] = t
 
@@ -126,6 +131,7 @@ func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt ti
 	task.AssignedWorkerID = workerID
 	task.AssignedAt = &assignedAt
 	task.Status = store.TaskStatusAssigned
+	task.UnschedulableReason = ""
 	task.UpdatedAt = time.Now()
 	s.tasks[id] = task
 	return nil
@@ -149,6 +155,7 @@ func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, err
 		task.Status = store.TaskStatusReady
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
+		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
 		count++
@@ -176,6 +183,7 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 		task.Status = store.TaskStatusReady
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
+		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
 	}
@@ -329,6 +337,7 @@ func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time) (
 		task.Status = store.TaskStatusCanceled
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
+		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
 	}
@@ -364,6 +373,7 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 			}
 		}
 		t.Status = store.TaskStatusPending
+		t.UnschedulableReason = ""
 		t.UpdatedAt = now
 		s.tasks[id] = t
 		affectedSteps[t.StepID] = struct{}{}
@@ -495,6 +505,7 @@ func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now t
 	t.AssignedWorkerID = workerID
 	at := now
 	t.AssignedAt = &at
+	t.UnschedulableReason = ""
 	t.UpdatedAt = now
 	s.tasks[taskID] = t
 	return true, nil

@@ -1352,6 +1352,102 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	}
 }
 
+// TestUnschedulableReason_ClearedOnAssign verifies that AssignTask clears a
+// stale unschedulable_reason left over from the scheduler's sweep — the
+// reason is only meaningful while a task is ready, and AssignTask moves it to
+// assigned.
+func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertWorker(t, s, "w1", "f1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+
+	if err := s.AssignTask(ctx, "t1", "w1", time.Now().UTC()); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after AssignTask: got %q, want empty", got.UnschedulableReason)
+	}
+}
+
+// TestUnschedulableReason_ClearedOnCancel verifies that CancelJobTasks clears
+// a stale unschedulable_reason on the tasks it cancels.
+func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+
+	if _, err := s.CancelJobTasks(ctx, "j1", time.Now()); err != nil {
+		t.Fatalf("CancelJobTasks: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after CancelJobTasks: got %q, want empty", got.UnschedulableReason)
+	}
+}
+
+// TestUnschedulableReason_ClearedOnUpdateStatus verifies that UpdateTaskStatus
+// clears a stale unschedulable_reason on any status transition out of ready.
+func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus ready: %v", err)
+	}
+	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	}
+
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
+		t.Fatalf("UpdateTaskStatus running: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.UnschedulableReason != "" {
+		t.Errorf("UnschedulableReason after UpdateTaskStatus: got %q, want empty", got.UnschedulableReason)
+	}
+}
+
 // ── UsagePool CRUD ────────────────────────────────────────────────────────────
 
 func TestUsagePool_CreateAndGet(t *testing.T) {
