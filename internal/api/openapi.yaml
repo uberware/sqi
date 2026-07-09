@@ -24,7 +24,7 @@ info:
     prefix keeps serving and marks retiring endpoints with the RFC 8594
     deprecation headers (`Deprecation`, `Sunset`, and a
     `Link rel="deprecation"` — see `components.headers`).
-  version: "0.1.0"
+  version: "0.2.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
