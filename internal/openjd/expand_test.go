@@ -71,3 +71,48 @@ func TestExpand_TaskCountGuardRespectsZip(t *testing.T) {
 		t.Fatalf("zip expansion produced %d tasks, want 1024", len(rows))
 	}
 }
+
+func TestDeriveChunkBounds(t *testing.T) {
+	strp := func(s string) *string { return &s }
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name: "Frame", Type: openjd.TaskParamTypeChunkInt, RangeExpr: strp("1-10"),
+				Chunks: &openjd.TaskChunks{DefaultTaskCount: 5, RangeConstraint: "CONTIGUOUS"},
+			},
+		},
+	}
+	rows := []openjd.TaskParams{
+		{"Frame": "1-5"},
+		{"Frame": "6-10"},
+		{"Frame": "7"},
+		{"Frame": "1-10:2"}, // 1,3,5,7,9 → Start 1, End 9
+	}
+	openjd.DeriveChunkBounds(rows, ps)
+
+	want := []struct{ start, end string }{
+		{"1", "5"}, {"6", "10"}, {"7", "7"}, {"1", "9"},
+	}
+	for i, w := range want {
+		if got := rows[i]["Frame.Start"]; got != w.start {
+			t.Errorf("row %d Frame.Start = %q, want %q", i, got, w.start)
+		}
+		if got := rows[i]["Frame.End"]; got != w.end {
+			t.Errorf("row %d Frame.End = %q, want %q", i, got, w.end)
+		}
+	}
+}
+
+func TestDeriveChunkBounds_NilAndNonChunk(t *testing.T) {
+	// nil ps is a no-op.
+	openjd.DeriveChunkBounds([]openjd.TaskParams{{"X": "1"}}, nil)
+	// A non-chunk param gets no derived keys.
+	ps := &openjd.StepParameterSpace{TaskParameterDefinitions: []openjd.TaskParamDefinition{
+		{Name: "X", Type: openjd.TaskParamTypeInt, RangeList: []string{"1"}},
+	}}
+	rows := []openjd.TaskParams{{"X": "1"}}
+	openjd.DeriveChunkBounds(rows, ps)
+	if _, ok := rows[0]["X.Start"]; ok {
+		t.Error("non-chunk param should not get .Start")
+	}
+}
