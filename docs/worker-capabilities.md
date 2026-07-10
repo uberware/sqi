@@ -163,7 +163,7 @@ built-ins currently detect *presence* only — no `-<version>` variant — unles
 a path-based check also matches on that host.
 
 Every software tag a shipped reference preset requires
-(`presets/dcc/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by some
+(`presets/sqi/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by some
 built-in detector — enforced by
 `TestBuiltinDetectors_CoverPresets` in
 [`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go),
@@ -418,7 +418,7 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the real syntax the six reference presets under `presets/dcc/` use
+This is the real syntax the six reference presets under `presets/sqi/` use
 — see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
 
 The server's scheduler matches the required attribute against registered

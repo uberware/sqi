@@ -701,13 +701,13 @@ reference for the detector schema.
 
 **Paired-change convention:** every new default/built-in product or reference
 preset that requires a software capability tag ships a matching built-in
-detector in `internal/worker/capabilities/builtins/`. For `presets/dcc/*.yaml`
+detector in `internal/worker/capabilities/builtins/`. For `presets/sqi/*.yaml`
 specifically, this is test-enforced: `TestBuiltinDetectors_CoverPresets` in
 [`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go)
-cross-checks every `attr.worker.tag.<x>` required by `presets/dcc/*.yaml`
+cross-checks every `attr.worker.tag.<x>` required by `presets/sqi/*.yaml`
 against the tags emitted by the built-in detectors, so a new reference preset
 cannot ship without a matching detector or the test fails. (The test currently
-only scans `presets/dcc/`, not `internal/product/builtins/`; apply the same
+only scans `presets/sqi/`, not `internal/product/builtins/`; apply the same
 convention by hand to a new built-in *product* until that coverage is
 extended.)
 
@@ -817,7 +817,7 @@ clients/submitter/
     qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
     hosts/{maya,houdini,nuke,blender}/   adapter + launch glue per host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/dcc/                 the four reference preset YAML fixtures, validated by
+presets/sqi/                 the six reference preset YAML fixtures, validated by
                               internal/product/dccpresets_test.go
 ```
 

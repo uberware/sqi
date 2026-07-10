@@ -315,8 +315,8 @@ jobs:
           packages-dir: clients/submitter/dist
 
   # ── Reference preset library ──────────────────────────────────────────────
-  # Publish the authored DCC presets (presets/dcc/) to the community preset
-  # library repo so `sqi-server` can install them. Runs only after a successful
+  # Publish the authored first-party presets (presets/sqi/) to the community
+  # preset library repo so `sqi-server` can install them. Runs only after a successful
   # release, and only when PUBLISH_PRESETS is set — so it no-ops until the
   # library repo and SQI_PRESETS_TOKEN secret are configured (see release
   # runbook). Skipped for -rc tags to keep pre-releases out of the live library.
@@ -334,8 +334,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # presetgen regenerates index.json + the dcc/ definition files in a
-      # checkout of the library repo (merging, so any non-dcc entries survive),
+      # presetgen regenerates index.json + the sqi/ definition files in a
+      # checkout of the library repo (merging, so any non-sqi entries survive),
       # then we commit + push only when something actually changed. The
       # fine-grained PAT (SQI_PRESETS_TOKEN) needs Contents: write on the
       # library repo; it authenticates the clone/push as the git password.
@@ -347,7 +347,7 @@ jobs:
           lib="$RUNNER_TEMP/sqi-presets"
           git clone --depth 1 \
             "https://x-access-token:${SQI_PRESETS_TOKEN}@github.com/uberware/sqi-presets.git" "$lib"
-          go run ./cmd/presetgen -presets presets/dcc -out "$lib"
+          go run ./cmd/presetgen -presets presets/sqi -out "$lib"
           cd "$lib"
           git add -A
           if git diff --cached --quiet; then
