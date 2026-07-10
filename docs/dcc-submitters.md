@@ -58,6 +58,11 @@ all).
 pip install sqi-submitter
 ```
 
+> **Note:** `sqi-submitter` is not yet published to PyPI — the package name is
+> being claimed. Until it lands, install the wheel attached to a GitHub release
+> (the same pattern as [`sqi-sdk`](python-client.md#installation)). The commands
+> below assume the package is available to the DCC's interpreter once installed.
+
 ### Maya
 
 ```sh

@@ -11,7 +11,7 @@ This is the reference document. For the project overview and install, see
 contract is the OpenAPI spec described in [`api.md`](./api.md).
 
 - Import name: `sqi_client` · distribution: `sqi-sdk`
-- Python 3.9+ · sync-only in Phase 1 · core dependency `httpx` only
+- Python 3.9+ · sync-only · core dependency `httpx` only
 - Optional extras: `yaml` (PyYAML), `ws` (websockets)
 
 > **Related: `sqi-submitter`.** Building a scripted pipeline tool, a batch
@@ -43,8 +43,8 @@ pip install 'sqi-sdk[yaml]'    # + PyYAML
 pip install 'sqi-sdk[ws]'      # + websockets (live event streaming)
 ```
 
-Until the package is published to PyPI, install the wheel attached to a GitHub
-release — see [`clients/python/README.md`](https://github.com/uberware/sqi/blob/main/clients/python/README.md#installation).
+For offline installs or a specific pre-release build, the wheel is also attached
+to each GitHub release — see [`clients/python/README.md`](https://github.com/uberware/sqi/blob/main/clients/python/README.md#installation).
 
 ## Client construction and configuration
 

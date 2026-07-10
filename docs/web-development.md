@@ -17,7 +17,7 @@ for the directory layout.
 | Tool | Purpose | Install |
 |---|---|---|
 | Node.js ≥ 24 with npm ≥ 11 | Build and develop the web UI | [nodejs.org](https://nodejs.org/) or `nvm use` |
-| Go ≥ 1.23 | Build and run `sqi-server` / `sqi-worker` to develop against | [go.dev/dl](https://go.dev/dl/) |
+| Go ≥ 1.26 (the `go` directive in `go.mod` pins 1.26.3) | Build and run `sqi-server` / `sqi-worker` to develop against | [go.dev/dl](https://go.dev/dl/) |
 
 The Node and npm minimums are pinned in `.nvmrc` (repo root) and the `engines`
 field of `web/package.json`. From the repo root:
@@ -156,8 +156,9 @@ Router.
      to its `ADMIN_LINKS` registry (`label`, `description`, `to`) and the card grid
      renders it. The sidebar's only management entry is **Admin** itself; the server
      log is its own route, `/server-log`.
-   - Deferred (future) views are listed in the sidebar as disabled "coming soon"
-     stubs (`DEFERRED_LABELS`) — promote one when its view lands.
+     The sidebar's fixed set of top-level entries is the `PHASE1_NAV` array in
+     `Sidebar.tsx` (Dashboard, Submit, Jobs, Workers, Admin); there are no
+     disabled or "coming soon" placeholder entries.
 
 Use the `@/` path alias (configured in both `vite.config.ts` and
 `tsconfig.app.json`) for imports instead of relative `../../` paths.
@@ -241,7 +242,7 @@ messages in a component:
 Subjects mirror the server's hub (e.g. `jobs`, `jobs/{jobId}/tasks`, `workers`,
 `tasks/{taskId}/logs`). The provider lives at the app root
 (`WebSocketProvider` in `main.tsx`), and `ConnectionStatusBadge` surfaces the
-connection state in the header so operators can tell whether live updates are
+connection state in the sidebar so operators can tell whether live updates are
 flowing.
 
 `JobList` exposes per-row and bulk retry affordances: each row for a job with

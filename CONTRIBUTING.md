@@ -22,11 +22,11 @@ cd cmd/sqi-server
 go mod download
 go build
 
-# Python development (client API and DCC submitters)
-cd python-client
+# Python development (client SDK and DCC submitters)
+cd clients/python
 pip install -e .
 
-# Web UI development (TypeScript + React/Svelte)
+# Web UI development (TypeScript + React)
 cd web
 npm install
 npm run dev
@@ -40,16 +40,16 @@ npm run dev
 
 **Code style and conventions:**
 
-- **Go**: Follow [Effective Go](https://golang.org/doc/effective_go). Use `gofmt` and `golangci-lint` before submitting
+- **Go**: Follow [Effective Go](https://golang.org/doc/effective_go). Run `make fmt` (gofumpt + goimports) and `make lint` (golangci-lint) before submitting
 - **Python**: Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/). Use type hints for all function signatures. Format and lint with ruff: `ruff format && ruff check --fix` — this handles style consistency automatically
 - **TypeScript/React**: Use ESLint and Prettier with the project configuration. Functional components and hooks preferred
 - **Commit messages**: Be clear and specific. Reference issue numbers where relevant (e.g., "Fix scheduler race condition in Phase 1 (#42)")
 
 **Testing:**
 
-- Unit tests are required for code changes. Aim for >80% coverage on new code
+- Unit tests are required for code changes. The enforced coverage floor is 70% (`COVERAGE_MIN` in the Makefile); aim higher on new code
 - Integration tests are encouraged for complex features
-- Run `go test ./...` before submitting PR for Go changes
+- Run `make test` (or `make ci`) before submitting a PR — do not run bare `go test ./...` from the repo root, since `web/node_modules/` contains third-party Go files the Makefile filters out
 
 **Submitting a PR:**
 
@@ -85,7 +85,7 @@ entry point here.
 Conventions:
 
 - Co-locate each test next to its subject as `Name.test.tsx` (or `.test.ts`).
-- Test behaviour through the rendered DOM the way a user experiences it — query
+- Test behavior through the rendered DOM the way a user experiences it — query
   by role, label, and text; drive interaction with `@testing-library/user-event`;
   assert with `@testing-library/jest-dom` matchers. Avoid asserting on internal
   state or implementation details.
@@ -121,7 +121,7 @@ Conventions:
   [`docs/web-accessibility.md`](docs/web-accessibility.md).
 - Functional components and hooks only. Import with the `@/` path alias, not
   relative `../../` chains.
-- Honour the accessibility baseline ([`docs/web-accessibility.md`](docs/web-accessibility.md)):
+- Honor the accessibility baseline ([`docs/web-accessibility.md`](docs/web-accessibility.md)):
   semantic HTML, keyboard-operable controls, and text alternatives for any
   color-only or icon-only indicator.
 
@@ -205,9 +205,9 @@ Have ideas for a feature, architectural improvement, or design change? Open a [G
 
 The [ROADMAP.md](ROADMAP.md) document outlines development phases. Current priorities:
 
-- **Phase 1** (v0.1 — in progress): Core scheduler, pull-based workers, basic web UI, OpenJD execution
-- **Phase 2** (planned): Product system, preset library integration, additional DCC support
-- **Phase 3** (planned): Auth (LDAP, OAuth2), multi-user role model
+- **Phase 1** (v0.1 — released): Core scheduler, pull-based workers, basic web UI, OpenJD execution
+- **Phase 2** (v0.2 — released): Product system, preset library, DCC submitters
+- **Phase 3** (next): Auth (LDAP, OAuth2), multi-user role model
 - **Phase 4** (planned): Production hardening, PostgreSQL, HA, auto-scaling
 
 Code contributions aligned with the current phase are most likely to be accepted quickly. Contributions targeting later phases are welcome but may take longer to review if they require design discussion.

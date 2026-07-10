@@ -60,8 +60,9 @@ seconds. A task that lingers in `assigned` is a genuine anomaly — the worker
 leased it but never reported `running`.
 
 The scheduler's **stale-assigned reaper** runs on every heartbeat-sweep tick
-and returns tasks that have been `assigned` for longer than
-`scheduler.assigned_task_timeout` (default **30 s**) to the `ready` queue.
+and returns tasks that have been `assigned` for longer than a fixed internal
+timeout (**30 s** — `AssignedTaskTimeout`, not a tunable config key) to the
+`ready` queue.
 If the task's job is now idle (no other tasks in flight), the job is demoted
 from `running` back to `pending` so it does not appear stuck.
 
@@ -80,8 +81,8 @@ The server infers worker health from two signals:
    tasks are reclaimed.
 
 2. **Missing `running` within the tight window.** A task in `assigned` that
-   does not transition to `running` within `assigned_task_timeout` is reclaimed
-   by the stale-assigned reaper. No worker self-report is needed — the
+   does not transition to `running` within the fixed 30 s reaper window is
+   reclaimed by the stale-assigned reaper. No worker self-report is needed — the
    server's ledger is authoritative. The only possible divergence is a
    server-side phantom (the server assigned the task but the reply was lost),
    which the tight reaper window already catches.

@@ -17,12 +17,12 @@ layer adds only the catalog envelope on top.
 ```
               ┌────────────────────────────────────────────┐
               │                  Product                   │
-              │  name · title · description · category     │
-              │  version · source                          │
-              │  ┌──────────────────────────────────────┐  │
-              │  │         OpenJD template (verbatim)   │  │
-              │  │  parameters · steps · requirements   │  │
-              │  └──────────────────────────────────────┘  │
+              │   name · title · description · category    │
+              │   version · source                         │
+              │   ┌──────────────────────────────────────┐ │
+              │   │      OpenJD template (verbatim)      │ │
+              │   │  parameters · steps · requirements   │ │
+              │   └──────────────────────────────────────┘ │
               └────────────────────────────────────────────┘
 ```
 

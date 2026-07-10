@@ -244,10 +244,12 @@ scheduler:
 | **Default** | `"500ms"` |
 | **Env var** | `SQI_SCHEDULER_TICK_INTERVAL` |
 
-How often the assignment loop wakes to match ready tasks to idle workers. Lower
-values reduce assignment latency at the cost of more CPU. Most farms work well
-at the default. Reduce to `100ms` only for workloads with sub-second task
-bursts. Must be `> 0`.
+> **Reserved — not yet wired.** This key is parsed and validated but the
+> scheduler does not currently consume it; the assignment loop runs on a fixed
+> 1s interval (`AssignInterval`). Setting it has no effect today. Must be `> 0`.
+
+Intended meaning: how often the assignment loop wakes to match ready tasks to
+idle workers.
 
 ```yaml
 scheduler:
@@ -264,10 +266,13 @@ scheduler:
 | **Default** | `1` |
 | **Env var** | `SQI_SCHEDULER_MAX_TASKS_PER_WORKER` |
 
-Maximum number of tasks simultaneously assigned to a single worker. The default
-of `1` is appropriate for rendering workloads that saturate CPU or GPU.
-Increase for lightweight tasks (transcoding short clips, small script jobs) that
-benefit from in-process concurrency on the worker side. Must be `≥ 1`.
+> **Reserved — not yet wired.** This key is parsed and validated but the
+> scheduler does not currently consume it; task concurrency is governed by
+> CPU-core commitment (`CPUCount − committed`), not a per-worker task cap.
+> Setting it has no effect today. Must be `≥ 1`.
+
+Intended meaning: the maximum number of tasks simultaneously assigned to a
+single worker.
 
 ```yaml
 scheduler:
@@ -508,10 +513,11 @@ streaming, and more — lives in
 [`docs/worker-configuration.md`](worker-configuration.md), and a fully commented
 example is at
 [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml).
-The keys below are documented here because they are not covered in that
-reference: `staging` bridges server storage configuration to worker execution,
-`diagnostics` mirrors the server-side diagnostics setting, and `capabilities`
-configures the worker's software auto-detection.
+The keys below are summarized here for operators configuring a worker alongside
+the server; the same keys are covered in full in that reference. `staging`
+bridges server storage configuration to worker execution, `diagnostics` mirrors
+the server-side diagnostics setting, and `capabilities` configures the worker's
+software auto-detection.
 
 ### Staging (`stage_locally` path delivery)
 

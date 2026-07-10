@@ -98,9 +98,9 @@ covers:
 
 | Platform | Source |
 |---|---|
-| Linux | `/proc/driver/nvidia/gpus/` — NVIDIA kernel driver sysfs tree. Only NVIDIA GPUs are detected in Phase 1. |
-| macOS | Not detected in Phase 1 (requires CGo + IOKit; deferred to a future phase). |
-| Windows | Not detected in Phase 1 (requires WMI or Direct3D; deferred to a future phase). |
+| Linux | `/proc/driver/nvidia/gpus/` — NVIDIA kernel driver sysfs tree. Currently only NVIDIA GPUs are detected. |
+| macOS | Not detected yet (requires CGo + IOKit). |
+| Windows | Not detected yet (requires WMI or Direct3D). |
 
 When no GPU is detected all GPU fields are zero/empty and the worker is not
 reported as GPU-capable. Use the manual tag `gpu` to mark a worker as
@@ -215,14 +215,16 @@ sqi-worker capabilities
 ```
 
 ```text
-TAG        SOURCE
-gpu        manual
-houdini    builtin:houdini
-os         auto
-os_version auto
+TAG        VALUE   SOURCE
+gpu        true    manual
+houdini    true    builtin:houdini
+os         linux   auto
+os_version 22.04   auto
 ```
 
-The `SOURCE` column is one of `auto` (the hardware probe's own `Tags` entries
+The `VALUE` column is the tag's advertised value (bare tags resolve to `true`;
+hardware tags like `os`/`os_version` carry their detected string). The `SOURCE`
+column is one of `auto` (the hardware probe's own `Tags` entries
 — just `os` and, when detected, `os_version`), `builtin:<tag>`, `custom`, or
 `manual`. This is the first thing to run
 when a worker isn't picking up jobs you'd expect it to — it answers "why
@@ -384,9 +386,8 @@ to suppress or correct these values, the current option is to set
 rules, such as `no-gpu`, to annotate the worker without relying on the
 auto-detected field.
 
-There is no explicit "remove this field" mechanism for hardware fields in
-Phase 1. Hardware-field overrides are planned for a future configuration
-option.
+There is currently no explicit "remove this field" mechanism for hardware
+fields. Hardware-field overrides are planned for a future configuration option.
 
 ---
 
@@ -417,7 +418,7 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the real syntax the four reference presets under `presets/dcc/` use
+This is the real syntax the six reference presets under `presets/dcc/` use
 — see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
 
 The server's scheduler matches the required attribute against registered

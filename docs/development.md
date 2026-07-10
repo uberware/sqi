@@ -10,7 +10,7 @@ guides for extending the worker.
 
 | Tool | Purpose | Install |
 |---|---|---|
-| Go ≥ 1.23 (see `go.mod` for the pinned toolchain) | Build and test | [go.dev/dl](https://go.dev/dl/) |
+| Go ≥ 1.26 (the `go` directive in `go.mod` pins 1.26.3) | Build and test | [go.dev/dl](https://go.dev/dl/) |
 | Node.js ≥ 24 with npm ≥ 11 (see `.nvmrc` and `web/package.json` `engines`) | Build the web UI bundle embedded in `sqi-server` (`make build` runs it) | [nodejs.org](https://nodejs.org/) or `nvm use` |
 | `gofumpt` | Stricter formatter (superset of `gofmt`) | `go install mvdan.cc/gofumpt@latest` |
 | `goimports` | Import organiser | `go install golang.org/x/tools/cmd/goimports@latest` |
@@ -62,7 +62,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make run-worker` | Build then run a single `sqi-worker` with default config |
 | `make run-workers` | Build then run N `sqi-worker` instances locally (`N=3` default); Ctrl-C stops all |
 | `make test` | Run all tests with the race detector enabled |
-| `make test-cover` | Run tests and print coverage; fails below 60% (the `COVERAGE_MIN` default in the Makefile) |
+| `make test-cover` | Run tests and print coverage; fails below 70% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
 | `make bench` | Run benchmarks |
@@ -128,16 +128,16 @@ sqi/
 │   ├── store/             Store interface + SQLite implementation + migrations
 │   ├── ui/                Embeds web/dist; SPA fallback handler
 │   ├── version/           Build metadata (version, commit, date, Go version)
-│   ├── worker/            Server-side handlers for the worker wire protocol
-│   └── ws/                WebSocket hub, subscription management, NATS fanout
-├── pkg/                   Public Go API (empty in Phase 1; see pkg/doc.go)
+│   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server
+│   └── ws/                WebSocket hub, subscription management, scheduler-driven fanout
+├── pkg/                   Public Go API (currently empty; see pkg/doc.go)
 ├── api/                   Source-of-truth specs: OpenAPI 3.1, JSON schemas
-├── web/                   Frontend source (Phase 2); web/dist is embedded
+├── web/                   Frontend source; web/dist is embedded
 ├── config/                Example config files
 ├── deploy/                Docker and infrastructure manifests
 ├── docs/                  Human-readable documentation
 ├── scripts/               Utility scripts (SBOM, signing, etc.)
-└── test/                  Integration test harness (Phase 2)
+└── test/                  Integration test harness
 ```
 
 ### Key conventions

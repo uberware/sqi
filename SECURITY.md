@@ -66,7 +66,7 @@ The following are in scope for security reports:
 - `sqi-server` — scheduler, REST API, WebSocket, embedded NATS, SQLite state management
 - `sqi-worker` — task executor and worker agent
 - The Python client library (`sqi-sdk`)
-- The authentication and authorisation implementation
+- The authentication and authorization implementation (once shipped — Phase 3+)
 - Dependency vulnerabilities in the Go module graph or npm packages
 
 The following are **out of scope**:
@@ -76,6 +76,6 @@ The following are **out of scope**:
 - Theoretical vulnerabilities with no practical exploit path
 - Social engineering of maintainers
 
-## Safe harbour
+## Safe harbor
 
 We consider good-faith security research to be a valuable contribution. We will not pursue legal action against researchers who report vulnerabilities responsibly in accordance with this policy, provided that the research does not access, modify, or exfiltrate data belonging to other users, and does not disrupt production services.

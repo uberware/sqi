@@ -38,9 +38,10 @@ The image is based on **Alpine 3.21** with the following additions:
 - A dedicated non-root user `sqiworker` runs the worker process.
 - The worker binary is installed at `/usr/local/bin/sqi-worker`.
 - `/var/lib/sqi-worker` is created and owned by `sqiworker` — mount a volume
-  here for worker ID persistence, and set `SQI_WORKER_DATA_DIR=/var/lib/sqi-worker`
-  so the worker writes its ID there (the built-in default data directory is
-  `~/.sqi/worker`).
+  here for worker ID persistence. The image already pins
+  `SQI_WORKER_DATA_DIR=/var/lib/sqi-worker` (the binary's built-in default is
+  `~/.sqi/worker`), so you only need to set it yourself when mounting the volume
+  at a different path.
 
 The entrypoint is:
 

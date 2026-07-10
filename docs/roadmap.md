@@ -11,7 +11,7 @@ This document provides technical detail on `sqi`'s architecture, core concepts, 
 | Layer | Technology | Rationale |
 |---|---|---|
 | Server / scheduler / worker core | Go | Single static binary, trivial cross-platform builds, excellent networking and concurrency |
-| Web UI | TypeScript + React or Svelte | Standard modern web stack, works in any browser |
+| Web UI | TypeScript + React | Standard modern web stack, works in any browser |
 | Python client API | Python 3 | Scripting and pipeline integration; used by DCC submitter tools |
 | DCC submitter widgets | Python + Qt (PySide6) | Cross-platform integration with DCC application environments |
 | Embedded state store (simple mode) | SQLite | Zero configuration, single file, sufficient for small deployments |
@@ -35,7 +35,7 @@ sqi-server
 └── State store        (SQLite embedded or PostgreSQL external)
 
 sqi-worker
-├── Worker agent       (pull-based, polls for assigned tasks)
+├── Worker agent       (pull-based, requests work via lease request/reply)
 ├── Task executor      (spawns and monitors processes)
 ├── Path resolver      (translates storage location names to paths)
 └── Status reporter    (streams logs and status to server)
@@ -188,10 +188,13 @@ Jobs and individual steps can declare affinity to a compute location. The schedu
 The database is the source of truth for all job, task, worker, and configuration state. SQLite is embedded within `sqi-server` (simple mode) or PostgreSQL runs as a separate instance (production mode).
 
 NATS JetStream handles:
-- Work assignment messages (server → worker)
 - Task status and log streaming (worker → server)
-- Real-time UI updates (server → web clients via WebSocket)
 - Heartbeats and worker registration
+
+Work leases use **core NATS** request/reply (not JetStream): the worker requests
+work on `work.lease.<queue>` and the server replies with a batch it is
+authorized to run (pull-based). Real-time UI updates reach web clients over
+WebSocket, fanned out by the server after it ingests the JetStream messages.
 
 NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster (production mode).
 

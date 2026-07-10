@@ -38,9 +38,9 @@ You rarely run `npm run build` by hand. The `Makefile` does it for you:
 
 `npm ci` (the slow, clean reinstall) is gated on a stamp file
 (`web/node_modules/.make-stamp`) keyed to `package.json` and `package-lock.json`,
-so it only re-runs when dependencies actually change. The fast `vite build`
-(~0.5 s) runs every time, keeping the guarantee that `web/dist/` matches current
-source.
+so it only re-runs when dependencies actually change. The build step itself
+(`npm run build` = `tsc -b && vite build`, the Vite portion ~0.5 s) runs every
+time, keeping the guarantee that `web/dist/` matches current source.
 
 ---
 
@@ -59,12 +59,16 @@ Whatever files exist under `web/dist/` when `go build` runs are baked into the
 binary. `internal/ui` consumes the `fs.FS` from `web.Dist()` and serves it over
 HTTP:
 
-- `GET /` → `index.html` (the SPA shell).
 - `GET /assets/index-<hash>.js` (and any other embedded file) → that file, with
   its content type detected automatically.
-- `GET /ui` or `GET /ui/...` with no matching embedded file → `index.html`, so
-  client-side React Router routes resolve (SPA fallback).
-- Any other unknown path → `404`.
+- Any path with **no file extension** and no matching embedded file →
+  `index.html` (SPA fallback). The front-end router is root-based, so
+  client-side routes look like ordinary paths (`/`, `/jobs`, `/submit`,
+  `/workers/{id}`) and all resolve on the client. The legacy `/ui/*` prefix is
+  also honored for backward compatibility.
+- A path that **does** carry a file extension (e.g. `/assets/old.js`,
+  `/favicon.ico`) with no matching embedded file → `404`, so a stale or mistyped
+  asset URL is not masked by the HTML shell.
 
 Two embed details worth knowing:
 

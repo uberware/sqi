@@ -125,7 +125,7 @@ trusted publisher above, and `gh variable list` still shows
 ## Step 4: Notarization dry-run via a throwaway tag
 
 Run a full release pipeline using a throwaway `-rc` tag to confirm that
-notarization is wired up correctly before tagging `v0.1.0`.
+notarization is wired up correctly before tagging the real release.
 
 The `release.yml` workflow skips the `sqi-sdk` version check for tags
 containing `-rc` (via `if: ${{ !contains(github.ref_name, '-rc') }}`), so the
@@ -187,16 +187,23 @@ build (`-amd64`/`-arm64` per image, plus the manifest tags).
 
 ## Step 6: Cut the real release
 
+Set the target version once and reuse it throughout this section (examples below
+use `0.2.0`):
+
+```bash
+VERSION=0.2.0
+```
+
 **Procedure:**
 
-1. Confirm `clients/python/src/sqi_client/_version.py` reads `0.1.0`:
+1. Confirm `clients/python/src/sqi_client/_version.py` reads `$VERSION`:
    ```bash
    grep __version__ clients/python/src/sqi_client/_version.py
    ```
 
    Also bump and confirm `clients/submitter/src/sqi_submitter/_version.py` —
    it does **not** track the same version as `sqi-sdk` automatically (it ships
-   `0.1.0.dev0` until deliberately bumped) and `release.yml`'s
+   a `.dev0` placeholder until deliberately bumped) and `release.yml`'s
    "Check sqi-submitter version matches the tag" step fails the release
    outright if it does not match the tag:
    ```bash
@@ -208,25 +215,26 @@ build (`-amd64`/`-arm64` per image, plus the manifest tags).
 
 3. Tag and push:
    ```bash
-   git tag v0.1.0 && git push origin v0.1.0
+   git tag "v$VERSION" && git push origin "v$VERSION"
    ```
 
 4. Wait for the Release workflow to complete.
 
-**Verify:** The GitHub release `v0.1.0` contains:
+**Verify:** The GitHub release `v$VERSION` contains:
 - Archives: `sqi_Linux_x86_64.tar.gz`, `sqi_Linux_arm64.tar.gz`,
   `sqi_Darwin_x86_64.tar.gz`, `sqi_Darwin_arm64.tar.gz`,
   `sqi_Windows_x86_64.zip`, `sqi_Windows_arm64.zip`
 - `checksums.txt`, SBOMs (`.sbom`), cosign signatures (`.sig` / `.pem`)
-- `sqi_sdk-0.1.0-py3-none-any.whl` and `sqi_sdk-0.1.0.tar.gz`
-- `sqi_submitter-0.1.0-py3-none-any.whl` and `sqi_submitter-0.1.0.tar.gz`
+- `sqi_sdk-$VERSION-py3-none-any.whl` and `sqi_sdk-$VERSION.tar.gz`
+- `sqi_submitter-$VERSION-py3-none-any.whl` and `sqi_submitter-$VERSION.tar.gz`
 
 ---
 
 ## Step 6b: Publish DCC reference presets to the preset library
 
-The four reference presets authored in this repo (`presets/dcc/*.yaml` —
-Maya, Houdini, Nuke, Blender) are not distributed as part of the GitHub
+The six reference presets authored in this repo (`presets/dcc/*.yaml` —
+Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch) are not
+distributed as part of the GitHub
 release or PyPI packages; they are published to the separate
 `uberware/sqi-presets` repository that backs the default `preset_library.url`
 (see `docs/preset-library.md`). This is **automated** by the `publish-presets`
@@ -287,8 +295,8 @@ By default, packages pushed to GHCR inherit the repository's visibility
 
 ```bash
 docker logout ghcr.io
-docker buildx imagetools inspect ghcr.io/uberware/sqi/sqi-server:v0.1.0
-docker buildx imagetools inspect ghcr.io/uberware/sqi/sqi-worker:v0.1.0
+docker buildx imagetools inspect ghcr.io/uberware/sqi/sqi-server:v$VERSION
+docker buildx imagetools inspect ghcr.io/uberware/sqi/sqi-worker:v$VERSION
 ```
 
 Expected: each command succeeds and prints a manifest list with both
@@ -299,14 +307,14 @@ Expected: each command succeeds and prints a manifest list with both
 ## Step 8: PyPI verification
 
 ```bash
-python -m pip install --no-cache-dir "sqi-sdk==0.1.0"
+python -m pip install --no-cache-dir "sqi-sdk==$VERSION"
 python -c "import sqi_client; print(sqi_client.__version__)"
 ```
 
-Expected output: `0.1.0`.
+Expected output: `$VERSION`.
 
 Also verify `sqi-submitter` (once its version has been bumped past the
-`0.1.0.dev0` placeholder per Step 6):
+`.dev0` placeholder per Step 6):
 
 ```bash
 python -m pip install --no-cache-dir "sqi-submitter==<version>"
@@ -322,7 +330,7 @@ Expected output: `<version>` matching the tag.
 ### Docker Compose path
 
 ```bash
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.1.0/deploy/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/uberware/sqi/v$VERSION/deploy/docker-compose.yml
 docker compose -f docker-compose.yml up -d
 curl -sf localhost:8080/readyz && echo server-ready
 ```
@@ -330,7 +338,7 @@ curl -sf localhost:8080/readyz && echo server-ready
 Create a farm and queue, then submit the sample job from the repository:
 
 ```bash
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.1.0/docs/examples/hello.json
+curl -LO https://raw.githubusercontent.com/uberware/sqi/v$VERSION/docs/examples/hello.json
 
 FARM=$(curl -s -X POST localhost:8080/api/v1/farms \
   -H 'content-type: application/json' -d '{"name":"demo"}' | jq -r .id)
@@ -348,7 +356,7 @@ curl -s localhost:8080/api/v1/jobs/$JOB/tasks
 ```
 
 Expected: the job's tasks reach `succeeded` status. Logs in the web UI
-(http://localhost:8080) show `Hello from sqi v0.1.0`.
+(http://localhost:8080) show `Hello from sqi v$VERSION`.
 
 Clean up:
 
@@ -361,7 +369,7 @@ docker compose -f docker-compose.yml down -v
 1. Download and extract the Darwin archive matching your machine's arch:
    ```bash
    # arm64 (Apple Silicon)
-   curl -LO https://github.com/uberware/sqi/releases/download/v0.1.0/sqi_Darwin_arm64.tar.gz
+   curl -LO https://github.com/uberware/sqi/releases/download/v$VERSION/sqi_Darwin_arm64.tar.gz
    tar -xzf sqi_Darwin_arm64.tar.gz
    ```
 
@@ -385,7 +393,7 @@ docker compose -f docker-compose.yml down -v
 On an arm64 Linux host:
 
 ```bash
-curl -LO https://github.com/uberware/sqi/releases/download/v0.1.0/sqi_Linux_arm64.tar.gz
+curl -LO https://github.com/uberware/sqi/releases/download/v$VERSION/sqi_Linux_arm64.tar.gz
 tar -xzf sqi_Linux_arm64.tar.gz
 ./sqi-server serve &
 ./sqi-worker start &

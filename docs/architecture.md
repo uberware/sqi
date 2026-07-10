@@ -59,7 +59,7 @@ through scheduling, worker execution, and final state.
 | NATS bus | `internal/bus` | Typed JetStream client wrapper; stream, subject, and consumer definitions |
 | Store | `internal/store` | `Store` interface + SQLite implementation; migrations |
 | OpenJD | `internal/openjd` | Template parser, validator, parameter-space expansion |
-| Worker protocol | `internal/worker` | Server-side handlers for registration, heartbeat, status, log ingestion |
+| Worker protocol | `internal/worker/protocol` | Shared worker wire-protocol types (the rest of `internal/worker` is the sqi-worker binary; the server-side status/log ingestion lives in `internal/scheduler`) |
 | Config | `internal/config` | Typed config struct, layered loader (defaults → file → env → flags) |
 | Middleware | `internal/middleware` | Recovery, CORS, request ID, gzip, structured-logging |
 | Metrics | `internal/metrics` | Prometheus counter, gauge, and histogram definitions |
@@ -112,12 +112,12 @@ client
   │
   │  POST /api/v1/jobs (OpenJD YAML/JSON body)
   ▼
-REST handler (internal/server/api/jobs.go)
+REST handler (internal/api/jobs.go)
   │
   ├─ Parse body → raw template bytes + detected content-type
   ├─ openjd.Parse(template)          → structured JobTemplate
   ├─ openjd.Validate(template)       → []ValidationError (reject if non-empty)
-  ├─ openjd.ExpandTasks(template)    → []TaskSpec (one per parameter combination)
+  ├─ openjd.ExpandParameterSpace(...) → []TaskParams (one per parameter combination)
   │
   ├─ store.CreateJob(template, steps, tasks)
   │     Writes in a single transaction:
@@ -137,7 +137,8 @@ steps become `ready` only after all tasks in their dependency steps have
 reached `succeeded`.
 
 This evaluation runs inside the `CreateJob` transaction for the initial set,
-and again inside `RecordTaskTerminal` whenever a task reaches a terminal state.
+and again via the scheduler's `handleTaskTerminal` → `propagateStepDependencies`
+path whenever a task reaches a terminal state.
 
 ### 3. Assignment (lease-on-request)
 
@@ -214,35 +215,37 @@ sqi-worker
 ### 5. Status ingestion
 
 ```
-NATS consumer (internal/worker/status_handler.go)
+NATS consumer (internal/scheduler/taskstatus.go)
   │
   ├─ Receive task.status message
   ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time)
   ├─ If terminal (succeeded/failed/canceled):
-  │     store.UpdateTask(task_id, status)
-  │     usagePool.ReleaseClaim(task_id)
-  │     store.EvaluateStepReadiness(job_id)   ← marks successor tasks ready
-  │     bus.PublishTaskStatus(job_id, summary) ← triggers WebSocket fanout
+  │     store.TransitionTask(task_id, status)
+  │     usagePool.ReleaseClaim(claim_id)
+  │     checkStepCompletion → propagateStepDependencies   ← marks successor tasks ready
+  │     notifier.NotifyTask(...)                          ← triggers WebSocket fanout
   └─ ack message
 ```
 
 ### 6. Log ingestion
 
 ```
-NATS consumer (internal/worker/log_handler.go)
+NATS consumer (internal/scheduler/logingest.go)
   │
   ├─ Receive task.logs message (chunk: seq, timestamp, data)
   ├─ store.InsertLogChunk(attempt_id, seq, timestamp, data)
-  └─ bus.PublishLogChunk(task_id, chunk)   ← triggers WebSocket fanout for live tail
+  └─ notifier.NotifyLog(task_id, chunk)   ← triggers WebSocket fanout for live tail
 ```
 
 ### 7. Real-time delivery to clients
 
 ```
-bus fanout goroutine (internal/ws/hub.go)
+WebSocket hub (internal/ws/hub.go)
   │
-  ├─ NATS subscriber on task.status.*, task.logs.*, worker.heartbeat
-  ├─ For each received message:
+  ├─ The scheduler calls the hub's Notifier methods (NotifyTask/NotifyLog/
+  │     NotifyJob/NotifyWorker) after it ingests each NATS message — the hub
+  │     itself is not a NATS subscriber
+  ├─ For each notification:
   │     Look up subscribed WebSocket connections
   │     Enqueue to per-client send channel (drops on overflow / backpressure)
   └─ WebSocket write loop drains the send channel to the client
@@ -292,9 +295,9 @@ transition returns an error from `store.TransitionTask`.
 `failed` and `canceled` tasks can be retried — individually via
 `POST /api/v1/tasks/{id}/retry` or in bulk via `POST /api/v1/jobs/{id}/retry`.
 On retry the task resets to `pending`, and its step and the job also reset to
-`pending` when they were terminal; `ResolveDependencies` then re-gates
-`pending`→`ready`, so tasks whose step dependencies are already met land in
-`ready` immediately.
+`pending` when they were terminal; the scheduler's step-dependency propagation
+then re-gates `pending`→`ready`, so tasks whose step dependencies are already
+met land in `ready` immediately.
 
 ---
 
@@ -350,7 +353,7 @@ attempts reference a session by ID alone.
 
 ## sqi-sdk (Python library)
 
-`sqi-sdk` (the `sqi-sdk` box in the component overview, per [`../ROADMAP.md`](roadmap.md))
+`sqi-sdk` (the `sqi-sdk` box in the component overview, per the [roadmap](roadmap.md))
 is a pure-Python client library that talks to `sqi-server` over the same public
 surface as the web UI: the REST API for everything, plus the WebSocket gateway
 for live events. It lives in the repository at `clients/python/` (import name
