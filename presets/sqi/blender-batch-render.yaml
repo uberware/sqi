@@ -2,16 +2,17 @@
 name: blender-batch-render
 title: Blender Batch Render
 description: >-
-  Renders a saved .blend file headless, one frame per task. Requires workers
-  tagged blender=true with blender on PATH. Leave Output Path blank to use the
-  scene's own output setting, or set it to override. A starting point -
-  duplicate to customize for your pipeline.
+  Renders a saved .blend file headless, one frame per task by default; raise
+  the task chunk size to batch a frame range per Blender launch. Requires
+  workers tagged blender=true with blender on PATH. Leave Output Path blank to
+  use the scene's own output setting, or set it to override. A starting point
+  - duplicate to customize for your pipeline.
 category: Rendering
 version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: Blender Batch Render
-  extensions: [TASK_CHUNKING]
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -40,6 +41,7 @@ template:
             range: "{{Param.Frames}}"
             chunks:
               defaultTaskCount: 1
+              rangeConstraint: CONTIGUOUS
       script:
         actions:
           onRun:
@@ -49,5 +51,8 @@ template:
               - "{{Param.SceneFile}}"
               - "-o"
               - "{{Param.OutputPath}}"
-              - "-f"
-              - "{{Task.Param.Frame}}"
+              - "-s"
+              - "{{Task.Param.Frame.Start}}"
+              - "-e"
+              - "{{Task.Param.Frame.End}}"
+              - "-a"

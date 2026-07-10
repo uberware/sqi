@@ -3,8 +3,9 @@ name: maya-scene-render
 title: Maya Scene Render
 description: >-
   Renders a saved Maya scene's renderable layers (whatever the scene's render
-  settings mark renderable), one frame per task. Requires workers tagged
-  maya=true with Render on PATH. For a single render layer use
+  settings mark renderable), one frame per task by default; raise the task
+  chunk size to batch multiple frames per Render launch. Requires workers
+  tagged maya=true with Render on PATH. For a single render layer use
   maya-layer-render. A starting point - duplicate to customize for your
   pipeline.
 category: Rendering
@@ -12,7 +13,7 @@ version: 1.0.0
 template:
   specificationVersion: jobtemplate-2023-09
   name: Maya Scene Render
-  extensions: [TASK_CHUNKING]
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
   parameterDefinitions:
     - name: SceneFile
       type: PATH
@@ -44,6 +45,7 @@ template:
             range: "{{Param.Frames}}"
             chunks:
               defaultTaskCount: 1
+              rangeConstraint: CONTIGUOUS
       script:
         actions:
           onRun:
@@ -52,9 +54,9 @@ template:
               - "-r"
               - "{{Param.Renderer}}"
               - "-s"
-              - "{{Task.Param.Frame}}"
+              - "{{Task.Param.Frame.Start}}"
               - "-e"
-              - "{{Task.Param.Frame}}"
+              - "{{Task.Param.Frame.End}}"
               - "-rd"
               - "{{Param.OutputDir}}"
               - "{{Param.SceneFile}}"
