@@ -218,7 +218,7 @@ Every submitter resolves the server URL the same way, in order:
 
 ## Reference presets
 
-sqi ships six reference products under `presets/dcc/`, published through the
+sqi ships six reference products under `presets/sqi/`, published through the
 [preset library](preset-library.md) so `sqi-submitter` has something real to submit
 to out of the box. Install them from **Admin → Preset Library** in the web
 UI, or by hand via `POST /api/v1/products` (or **Admin → Products** in the

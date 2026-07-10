@@ -19,9 +19,9 @@ import (
 // The DCC reference presets must round-trip through the real library install
 // path (index → fetch → fingerprint verify → parsed product).
 func TestDCCReferencePresetsInstallLoop(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "dcc", "*.yaml"))
+	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil || len(paths) == 0 {
-		t.Fatalf("glob presets/dcc: %v (%d files)", err, len(paths))
+		t.Fatalf("glob presets/sqi: %v (%d files)", err, len(paths))
 	}
 	files := map[string][]byte{}
 	var entries []IndexEntry

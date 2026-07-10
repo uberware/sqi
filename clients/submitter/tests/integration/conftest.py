@@ -11,7 +11,7 @@ import pytest
 from sqi_submitter.core import SubmitterSession
 
 # clients/submitter/tests/integration/conftest.py -> repo root is four levels up.
-_PRESETS_DIR = pathlib.Path(__file__).resolve().parents[4] / "presets" / "dcc"
+_PRESETS_DIR = pathlib.Path(__file__).resolve().parents[4] / "presets" / "sqi"
 PRESETS = [p for p in sorted(_PRESETS_DIR.glob("*.yaml")) if not p.name.startswith("._")]
 
 

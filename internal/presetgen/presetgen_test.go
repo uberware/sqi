@@ -14,10 +14,10 @@ import (
 	"github.com/uberware/sqi/internal/presetlib"
 )
 
-const presetsDir = "../../presets/dcc"
+const presetsDir = "../../presets/sqi"
 
 func TestBuild(t *testing.T) {
-	got, err := presetgen.Build(presetsDir, "dcc")
+	got, err := presetgen.Build(presetsDir, "sqi")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -42,11 +42,11 @@ func TestBuild(t *testing.T) {
 	if blender.Entry.Category != "Rendering" {
 		t.Errorf("category = %q, want Rendering", blender.Entry.Category)
 	}
-	if blender.Entry.Definition != "dcc/blender-batch-render.yaml" {
-		t.Errorf("definition = %q, want dcc/blender-batch-render.yaml", blender.Entry.Definition)
+	if blender.Entry.Definition != "sqi/blender-batch-render.yaml" {
+		t.Errorf("definition = %q, want sqi/blender-batch-render.yaml", blender.Entry.Definition)
 	}
-	if blender.Path != "dcc/blender-batch-render.yaml" {
-		t.Errorf("path = %q, want dcc/blender-batch-render.yaml", blender.Path)
+	if blender.Path != "sqi/blender-batch-render.yaml" {
+		t.Errorf("path = %q, want sqi/blender-batch-render.yaml", blender.Path)
 	}
 
 	// SHA-256 must match the raw file bytes exactly (integrity guarantee).
@@ -66,12 +66,12 @@ func TestBuild(t *testing.T) {
 func TestMergePreservesForeignAndReplacesOwned(t *testing.T) {
 	existing := []byte(`{"presets":[
 		{"name":"community-thing","definition":"community/thing.yaml","sha256":"aa"},
-		{"name":"stale-dcc","definition":"dcc/stale.yaml","sha256":"bb"}
+		{"name":"stale-sqi","definition":"sqi/stale.yaml","sha256":"bb"}
 	]}`)
 	generated := []presetgen.Generated{
-		{Entry: presetlib.IndexEntry{Name: "blender-batch-render", Definition: "dcc/blender-batch-render.yaml", Sha256: "cc"}},
+		{Entry: presetlib.IndexEntry{Name: "blender-batch-render", Definition: "sqi/blender-batch-render.yaml", Sha256: "cc"}},
 	}
-	idx, err := presetgen.Merge(existing, generated, "dcc")
+	idx, err := presetgen.Merge(existing, generated, "sqi")
 	if err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestMergePreservesForeignAndReplacesOwned(t *testing.T) {
 	for i, e := range idx.Presets {
 		names[i] = e.Name
 	}
-	// Foreign entry survives; stale dcc entry replaced; sorted by name.
+	// Foreign entry survives; stale sqi entry replaced; sorted by name.
 	want := []string{"blender-batch-render", "community-thing"}
 	if len(names) != len(want) {
 		t.Fatalf("merged names = %v, want %v", names, want)
@@ -93,9 +93,9 @@ func TestMergePreservesForeignAndReplacesOwned(t *testing.T) {
 
 func TestMergeEmptyExisting(t *testing.T) {
 	generated := []presetgen.Generated{
-		{Entry: presetlib.IndexEntry{Name: "x", Definition: "dcc/x.yaml"}},
+		{Entry: presetlib.IndexEntry{Name: "x", Definition: "sqi/x.yaml"}},
 	}
-	idx, err := presetgen.Merge(nil, generated, "dcc")
+	idx, err := presetgen.Merge(nil, generated, "sqi")
 	if err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
@@ -107,25 +107,25 @@ func TestMergeEmptyExisting(t *testing.T) {
 func TestPublish(t *testing.T) {
 	out := t.TempDir()
 	mustMkdir(t, filepath.Join(out, "community"))
-	mustMkdir(t, filepath.Join(out, "dcc"))
+	mustMkdir(t, filepath.Join(out, "sqi"))
 	mustWrite(t, filepath.Join(out, "community", "thing.yaml"), "x")
-	mustWrite(t, filepath.Join(out, "dcc", "gone.yaml"), "old") // stale, no longer a source preset
+	mustWrite(t, filepath.Join(out, "sqi", "gone.yaml"), "old") // stale, no longer a source preset
 	seed := `{"presets":[{"name":"community-thing","definition":"community/thing.yaml","sha256":"aa"},` +
-		`{"name":"gone","definition":"dcc/gone.yaml","sha256":"bb"}]}`
+		`{"name":"gone","definition":"sqi/gone.yaml","sha256":"bb"}]}`
 	mustWrite(t, filepath.Join(out, "index.json"), seed)
 
-	if err := presetgen.Publish(presetsDir, out, "dcc"); err != nil {
+	if err := presetgen.Publish(presetsDir, out, "sqi"); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(out, "dcc", "gone.yaml")); !os.IsNotExist(err) {
-		t.Error("stale dcc/gone.yaml should have been removed")
+	if _, err := os.Stat(filepath.Join(out, "sqi", "gone.yaml")); !os.IsNotExist(err) {
+		t.Error("stale sqi/gone.yaml should have been removed")
 	}
 	if _, err := os.Stat(filepath.Join(out, "community", "thing.yaml")); err != nil {
 		t.Error("foreign community/thing.yaml should be preserved")
 	}
-	if _, err := os.Stat(filepath.Join(out, "dcc", "blender-batch-render.yaml")); err != nil {
-		t.Error("dcc/blender-batch-render.yaml should be published")
+	if _, err := os.Stat(filepath.Join(out, "sqi", "blender-batch-render.yaml")); err != nil {
+		t.Error("sqi/blender-batch-render.yaml should be published")
 	}
 
 	var idx presetgen.Index

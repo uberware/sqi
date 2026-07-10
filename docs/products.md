@@ -124,7 +124,7 @@ configuration (see [worker-capabilities.md](worker-capabilities.md)). Runs
 `docker run --rm {{Param.Image}}`.
 
 **A note on the DCC reference presets and auto-detection.** The
-`presets/dcc/*.yaml` reference products (Maya, Nuke, Houdini, Blender — see
+`presets/sqi/*.yaml` reference products (Maya, Nuke, Houdini, Blender — see
 [docs/dcc-submitters.md](dcc-submitters.md#reference-presets)) gate the same
 way: a `hostRequirements.attributes` entry requiring `attr.worker.tag.<app>`
 with `anyOf: ["true"]`. `sqi-worker` auto-detects a standard install of each

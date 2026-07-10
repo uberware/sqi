@@ -338,7 +338,7 @@ func TestEligible_AttrCustomTag_Missing(t *testing.T) {
 }
 
 // TestEligible_AttrAutoDetectedTag_ValueTrue mirrors the DCC preset convention
-// (presets/dcc/*.yaml declare attr.worker.tag.maya anyOf: ["true"]) to guard
+// (presets/sqi/*.yaml declare attr.worker.tag.maya anyOf: ["true"]) to guard
 // against the auto-detection regression where detected tags were recorded
 // with an empty value instead of "true", which silently rejected every
 // auto-detected worker.

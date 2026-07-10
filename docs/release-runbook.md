@@ -247,16 +247,16 @@ VERSION=0.2.0
 
 ## Step 6b: Publish DCC reference presets to the preset library
 
-The six reference presets authored in this repo (`presets/dcc/*.yaml` —
+The six reference presets authored in this repo (`presets/sqi/*.yaml` —
 Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch) are not
 distributed as part of the GitHub
 release or PyPI packages; they are published to the separate
 `uberware/sqi-presets` repository that backs the default `preset_library.url`
 (see `docs/preset-library.md`). This is **automated** by the `publish-presets`
 job in `.github/workflows/release.yml`: after a successful release, on a
-non-`-rc` tag, it runs `cmd/presetgen` to regenerate `index.json` + the `dcc/`
+non-`-rc` tag, it runs `cmd/presetgen` to regenerate `index.json` + the `sqi/`
 definition files in a checkout of the library repo and pushes only if something
-changed. `presetgen` merges — it owns the `dcc/` namespace and leaves any other
+changed. `presetgen` merges — it owns the `sqi/` namespace and leaves any other
 library entries untouched — and computes each `sha256` over the raw file bytes,
 so the published index always matches what `sqi-server` verifies on install.
 
@@ -283,13 +283,13 @@ unaffected):
 **Manual fallback** (out-of-band publish without a release): from a repo
 checkout, against a checkout of the library repo, run and push:
 ```bash
-go run ./cmd/presetgen -presets presets/dcc -out /path/to/sqi-presets
+go run ./cmd/presetgen -presets presets/sqi -out /path/to/sqi-presets
 ( cd /path/to/sqi-presets && git add -A && git commit -m "publish presets" && git push )
 ```
 
 **Verify:**
 - The published index (`https://uberware.github.io/sqi-presets/index.json`)
-  lists all four presets under `dcc/` with the correct `sha256`.
+  lists all six presets under `sqi/` with the correct `sha256`.
 - In the sqi web UI's Preset Library page, each preset installs successfully
   and its checksum verifies (no 422).
 

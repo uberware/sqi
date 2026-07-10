@@ -41,9 +41,9 @@ func TestBuiltinDetectors_CoverPresets(t *testing.T) {
 	for _, d := range ds {
 		detectorTags[d.Tag] = true
 	}
-	// Extract base software tags required by presets/dcc/*.yaml, dropping any
+	// Extract base software tags required by presets/sqi/*.yaml, dropping any
 	// "-<version>" suffix. Path is relative to this test file's package dir.
-	root := filepath.Join("..", "..", "..", "presets", "dcc")
+	root := filepath.Join("..", "..", "..", "presets", "sqi")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatalf("read presets dir: %v", err)
