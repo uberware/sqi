@@ -4,9 +4,9 @@
 #
 # Parses Conventional Commits and produces a Markdown CHANGELOG grouped by
 # release tag.  Run manually:
+#   make changelog            # regenerates CHANGELOG.md for the next release
 #   git cliff --output CHANGELOG.md
-# Or via the Makefile `changelog` target (if defined).
-# The release workflow calls git-cliff automatically before goreleaser.
+# The release workflow also calls git-cliff automatically before goreleaser.
 
 [changelog]
 # Header rendered once at the top of CHANGELOG.md.
@@ -16,6 +16,12 @@ header = """
 All notable changes to sqi are documented here.
 Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 [Keep a Changelog](https://keepachangelog.com/) conventions.
+
+> This file is generated from the Conventional Commits history by
+> [git-cliff](https://git-cliff.org). Do not edit it by hand — to change an
+> entry, change the commit message. Regenerate with `make changelog` (see
+> `docs/development.md`). It is refreshed during release prep and again by the
+> release workflow, which bundles it into the release archives.
 
 """
 
@@ -33,7 +39,7 @@ body = """
 - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
 {{ commit.message | upper_first }}\
 {% if commit.breaking %} ⚠️ BREAKING{% endif %} \
-([{{ commit.id | truncate(length=7, end="") }}]({{ commit.id }}))
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/uberware/sqi/commit/{{ commit.id }}))
 {%- endfor %}
 {% endfor %}\n
 """
@@ -62,6 +68,10 @@ commit_preprocessors = [
 # Map Conventional Commit types to CHANGELOG groups.
 commit_parsers = [
   { message = "^feat",     group = "Features"          },
+  # Historical typo'd/non-standard type prefixes remapped so they don't produce
+  # stray title-cased groups (e.g. "Fest"/"Ui") from old commits we can't rewrite.
+  { message = "^fest",     group = "Features"          },
+  { message = "^ui",       group = "Features"          },
   { message = "^fix",      group = "Bug Fixes"         },
   { message = "^perf",     group = "Performance"       },
   { message = "^refactor", group = "Refactoring"       },

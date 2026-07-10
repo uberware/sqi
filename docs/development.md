@@ -71,6 +71,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make fmt` | Format all Go files with `gofumpt` and `goimports` |
 | `make vet` | Run `go vet ./...` |
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
+| `make changelog` | Regenerate `CHANGELOG.md` from Conventional Commits via `git-cliff` (`VERSION=x.y.z` tags the pending release) |
 | `make hooks` | Install git hooks via `lefthook` |
 | `make clean` | Remove build artifacts and `coverage.out` |
 | `make ci` | Run the full CI sequence (fmt-check, vet, lint, test-cover) |
@@ -163,6 +164,25 @@ types, and route-mounting helper.
 
 **Conventional Commits.** The `commit-msg` hook enforces the format:
 `type(scope)?: description`. Valid types: `feat fix docs style refactor test chore build ci perf revert`.
+
+**Changelog.** `CHANGELOG.md` is a generated artifact — do not edit it by hand.
+[git-cliff](https://git-cliff.org) derives it from the Conventional Commit
+history (config in `cliff.toml`), so the way to change an entry is to change the
+commit message. `feat`/`fix`/`perf`/`refactor`/`build`/`ci`/`docs`/`test`
+commits become changelog entries grouped by type; `chore` and `release` commits
+are omitted. A commit that doesn't parse as a Conventional Commit is skipped
+entirely, so it never reaches the changelog. Regenerate with:
+
+```sh
+make changelog                 # refresh, leaving pending commits under [Unreleased]
+make changelog VERSION=0.3.0   # roll pending commits into a dated 0.3.0 section
+```
+
+Install git-cliff first (`brew install git-cliff`, or see
+<https://git-cliff.org/docs/installation>). The release workflow also runs
+git-cliff automatically at tag time and bundles the result into the release
+archives — but that copy is not committed back, so the tracked `CHANGELOG.md` is
+refreshed by hand during release prep (see `docs/release-runbook.md`).
 
 ---
 

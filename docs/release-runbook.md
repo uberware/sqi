@@ -213,12 +213,27 @@ VERSION=0.2.0
 2. Confirm the `main` branch is green in CI and all release-blocking tasks are
    merged.
 
-3. Tag and push:
+3. Regenerate and commit the changelog so the tag captures a dated section.
+   `CHANGELOG.md` is generated from the Conventional Commit history by
+   git-cliff — do it as the last commit before tagging so the section date
+   matches the tag date. (The release workflow also regenerates it for the
+   archives, but that copy is not committed back, so the tracked file must be
+   refreshed here.)
+   ```bash
+   make changelog VERSION=$VERSION      # requires git-cliff; rolls pending commits into a dated $VERSION section
+   git add CHANGELOG.md
+   git commit -m "chore(release): update changelog for $VERSION"
+   git push origin main
+   ```
+   Review the diff first: the new `## [$VERSION]` section should list the
+   commits since the previous tag, grouped by type, with no stray groups.
+
+4. Tag and push:
    ```bash
    git tag "v$VERSION" && git push origin "v$VERSION"
    ```
 
-4. Wait for the Release workflow to complete.
+5. Wait for the Release workflow to complete.
 
 **Verify:** The GitHub release `v$VERSION` contains:
 - Archives: `sqi_Linux_x86_64.tar.gz`, `sqi_Linux_arm64.tar.gz`,
