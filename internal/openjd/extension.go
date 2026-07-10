@@ -37,6 +37,9 @@ type Extension struct {
 //     in expand.go.
 //   - REDACTED_ENV_VARS: the openjd_redacted_env stdout directive; implemented
 //     in internal/worker/openjd/envdirective.go and internal/worker/session.
+//   - SQI_CHUNK_BOUNDS: derives Task.Param.<name>.Start/.End for CHUNK[INT]
+//     parameters; implemented in expand.go (DeriveChunkBounds) and wired in
+//     submit.go.
 //
 // Read-only after initialisation; never modified at runtime.
 var registry = map[string]Extension{
@@ -60,6 +63,13 @@ var registry = map[string]Extension{
 		Status:  "supported",
 		Summary: "Per-product path-delivery checklist (swap/file/flags/env/stage).",
 		DocPath: "docs/openjd-extensions/path-translation.md",
+	},
+	"SQI_CHUNK_BOUNDS": {
+		Name:    "SQI_CHUNK_BOUNDS",
+		Origin:  OriginVendor,
+		Status:  "supported",
+		Summary: "Exposes a CHUNK[INT] chunk's first/last integer as Task.Param.<name>.Start/.End.",
+		DocPath: "docs/openjd-extensions/sqi-chunk-bounds.md",
 	},
 }
 
