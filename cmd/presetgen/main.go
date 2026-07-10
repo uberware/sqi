@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command presetgen publishes the repo's authored presets (presets/dcc/*.yaml)
+// Command presetgen publishes the repo's authored presets (presets/sqi/*.yaml)
 // into a checkout of the preset-library repo: it writes the definition files
 // under a namespaced subdir and merges their entries into index.json, leaving
 // any foreign entries untouched. It is a release-time tool (see the
@@ -8,7 +8,7 @@
 //
 // Usage:
 //
-//	presetgen -presets presets/dcc -out /path/to/sqi-presets [-subdir dcc]
+//	presetgen -presets presets/sqi -out /path/to/sqi-presets [-subdir sqi]
 package main
 
 import (
@@ -20,9 +20,9 @@ import (
 )
 
 func main() {
-	presetsDir := flag.String("presets", "presets/dcc", "directory of authored preset YAML files")
+	presetsDir := flag.String("presets", "presets/sqi", "directory of authored preset YAML files")
 	outDir := flag.String("out", "", "preset-library checkout directory to write into (required)")
-	subdir := flag.String("subdir", "dcc", "definition path prefix under the library root")
+	subdir := flag.String("subdir", "sqi", "definition path prefix under the library root")
 	flag.Parse()
 
 	if *outDir == "" {

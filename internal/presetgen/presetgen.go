@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package presetgen generates a preset-library index and definition files from
-// the repo's authored presets (presets/dcc/*.yaml) and publishes them into a
+// the repo's authored presets (presets/sqi/*.yaml) and publishes them into a
 // library checkout. It is the publisher counterpart to internal/presetlib (the
 // server-side client): both share presetlib.IndexEntry so the index format
 // never drifts between what is written and what is read. Not compiled into the
@@ -24,7 +24,7 @@ import (
 )
 
 // Generated is one published preset: its index entry, the path it is written to
-// under the library root (e.g. "dcc/blender-batch-render.yaml"), and the raw
+// under the library root (e.g. "sqi/blender-batch-render.yaml"), and the raw
 // definition bytes served at that path.
 type Generated struct {
 	Entry presetlib.IndexEntry
