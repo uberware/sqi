@@ -223,16 +223,18 @@ sqi ships six reference products under `presets/sqi/`, published through the
 to out of the box. Install them from **Admin → Preset Library** in the web
 UI, or by hand via `POST /api/v1/products` (or **Admin → Products** in the
 web UI) if you're not using a preset index. All use the product `category`
-`Rendering` and declare `TASK_CHUNKING` for frame distribution.
+`Rendering` and declare `TASK_CHUNKING` for frame distribution; the Maya and
+Blender presets additionally declare `SQI_CHUNK_BOUNDS` to expose each chunk's
+start/end frame (see [OpenJD extensions](openjd-extensions.md)).
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
-| `maya-layer-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
-| `maya-scene-render` | `Render -r <renderer> -s/-e <frame> -rd <dir> <scene>` (no `-rl`) | one frame per task | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`) | `attr.worker.tag.maya = "true"` |
+| `maya-layer-render` | `Render -r <renderer> -s/-e <frame> -rl <layer> -rd <dir> <scene>` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`), `RenderLayer` (default `masterLayer`) | `attr.worker.tag.maya = "true"` |
+| `maya-scene-render` | `Render -r <renderer> -s/-e <frame> -rd <dir> <scene>` (no `-rl`) | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputDir`, `Renderer` (default `file`) | `attr.worker.tag.maya = "true"` |
 | `houdini-rop-render` | `hython` running an embedded chunk script that loads the hip file and calls `rop.render()` per frame range | chunks of 10 | `SceneFile`, `Frames`, `RopPath` | `attr.worker.tag.houdini = "true"` |
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
 | `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
-| `blender-batch-render` | `blender -b <file> -o <output> -f <frame>` | one frame per task | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
+| `blender-batch-render` | `blender -b <file> -o <output> -s/-e <frame range> -a` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
 
 Maya and Nuke each ship two variants: a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag — Maya's
@@ -240,13 +242,13 @@ renders the scene's renderable layers, Nuke's renders every enabled Write node.
 Houdini and Blender have one product each (Houdini's output target is a scripted
 `rop.render()` call, not an omittable flag).
 
-Maya and Blender are one-frame-per-task because both commands only take a
-single frame at a time (`Render -s/-e` bounds one call; Blender's `-f` renders
-one frame per invocation) — chunking them further would just mean re-running
-the same single-frame render inside a bigger task for no benefit. Houdini and
-Nuke get real multi-frame chunks (10 by default) because both the embedded
-`hython` script and `nuke -F` natively accept a frame range per invocation, so
-a chunk amortizes DCC startup cost across several frames.
+Maya and Blender default to one frame per task (chunk size 1) but declare the
+`SQI_CHUNK_BOUNDS` extension: their `-s`/`-e` arguments are filled from the
+chunk's `Frame.Start`/`Frame.End`, so raising the task chunk size batches a
+contiguous frame range per DCC launch with no other template change. Houdini and
+Nuke instead get multi-frame chunks (10 by default) natively, because both the
+embedded `hython` script and `nuke -F` accept a frame range per invocation, so a
+chunk amortizes DCC startup cost across several frames.
 
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `sqi-worker` auto-detects a standard

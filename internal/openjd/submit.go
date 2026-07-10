@@ -191,8 +191,9 @@ func (s *Submitter) Submit(
 	// ── 5. Create Step and Task rows ──────────────────────────────────────
 	// Each step is handled by a helper to keep Submit's cyclomatic complexity
 	// within bounds.
+	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
 	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, now)
+		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, deriveBounds, now)
 		if err != nil {
 			return nil, err
 		}
@@ -212,6 +213,7 @@ func (s *Submitter) createStepWithTasks(
 	stepTmpl StepTemplate,
 	stepIdx int,
 	boundParams map[string]string,
+	deriveBounds bool,
 	now time.Time,
 ) (steps []store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
@@ -284,6 +286,10 @@ func (s *Submitter) createStepWithTasks(
 		return nil, nil, &SubmitValidationError{
 			Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),
 		}
+	}
+
+	if deriveBounds {
+		DeriveChunkBounds(taskParamList, resolvedPS)
 	}
 
 	// ── Create one Task row per parameter combination ───────────────────────

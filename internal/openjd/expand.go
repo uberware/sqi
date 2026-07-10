@@ -280,6 +280,45 @@ func formatNoncontiguousChunk(vals []int) string {
 	return strings.Join(parts, ",")
 }
 
+// DeriveChunkBounds adds "<name>.Start" and "<name>.End" keys to every row in
+// rows for each CHUNK[INT] parameter declared in ps. Each chunk value is a
+// contiguous integer range encoding (e.g. "1-10", "5", "1-10:2"); Start is the
+// smallest integer in the chunk and End the largest. It is a no-op when ps is
+// nil or declares no CHUNK[INT] parameter, and is only meaningful (and only
+// called) when the SQI_CHUNK_BOUNDS extension is enabled. A value that fails to
+// parse is left without derived keys — expansion has already validated ranges.
+func DeriveChunkBounds(rows []TaskParams, ps *StepParameterSpace) {
+	if ps == nil {
+		return
+	}
+	for _, tp := range ps.TaskParameterDefinitions {
+		if tp.Type != TaskParamTypeChunkInt {
+			continue
+		}
+		for _, row := range rows {
+			v, ok := row[tp.Name]
+			if !ok {
+				continue
+			}
+			ints, err := parseIntRangeExpr(v)
+			if err != nil || len(ints) == 0 {
+				continue
+			}
+			lo, hi := ints[0], ints[0]
+			for _, n := range ints[1:] {
+				if n < lo {
+					lo = n
+				}
+				if n > hi {
+					hi = n
+				}
+			}
+			row[tp.Name+".Start"] = strconv.Itoa(lo)
+			row[tp.Name+".End"] = strconv.Itoa(hi)
+		}
+	}
+}
+
 // validateIntList checks that every element parses as an integer and returns
 // the canonical string representation.
 func validateIntList(items []string) ([]string, error) {

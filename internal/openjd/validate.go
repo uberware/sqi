@@ -164,6 +164,41 @@ func validatePathTranslation(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
+// validateChunkBounds enforces the SQI_CHUNK_BOUNDS extension's constraints when
+// it is declared: TASK_CHUNKING must also be declared, and every CHUNK[INT] task
+// parameter must be CONTIGUOUS (an empty rangeConstraint defaults to contiguous),
+// because .Start/.End are undefined across the gaps of a NONCONTIGUOUS chunk.
+// Runs unconditionally (not gated by EnforceLimits).
+func validateChunkBounds(t *JobTemplate) ValidationErrors {
+	if !t.hasExtension("SQI_CHUNK_BOUNDS") {
+		return nil
+	}
+	var errs ValidationErrors
+	if !t.hasExtension("TASK_CHUNKING") {
+		errs = append(errs, ValidationError{
+			Pointer: "/extensions",
+			Message: "SQI_CHUNK_BOUNDS requires the TASK_CHUNKING extension to also be declared",
+		})
+	}
+	for i, s := range t.Steps {
+		if s.ParameterSpace == nil {
+			continue
+		}
+		for j, tp := range s.ParameterSpace.TaskParameterDefinitions {
+			if tp.Type != TaskParamTypeChunkInt {
+				continue
+			}
+			if tp.Chunks != nil && tp.Chunks.RangeConstraint == "NONCONTIGUOUS" {
+				errs = append(errs, ValidationError{
+					Pointer: fmt.Sprintf("/steps/%d/parameterSpace/taskParameterDefinitions/%d", i, j),
+					Message: "SQI_CHUNK_BOUNDS requires CHUNK[INT] parameters to be CONTIGUOUS; .Start/.End are undefined for a NONCONTIGUOUS chunk",
+				})
+			}
+		}
+	}
+	return errs
+}
+
 // ─── identifier pattern ───────────────────────────────────────────────────────
 
 var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -287,6 +322,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// mis-run the template.  NOT gated by opts.EnforceLimits.
 	errs = append(errs, validateExtensions(t)...)
 	errs = append(errs, validatePathTranslation(t)...)
+	errs = append(errs, validateChunkBounds(t)...)
 
 	// ── quantitative limits (gated) ───────────────────────────────────────
 	// Every check below MUST stay behind opts.EnforceLimits.
