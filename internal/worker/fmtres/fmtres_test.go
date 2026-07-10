@@ -451,3 +451,31 @@ func TestResolveVars_UnknownVariableErrorsNamingKeyAndRef(t *testing.T) {
 		t.Errorf("error = %q; want it to name the key %q", err.Error(), "BAD")
 	}
 }
+
+// ── SQI_CHUNK_BOUNDS end-to-end resolution ────────────────────────────────────
+
+// TestTaskScope_ResolvesChunkBoundsVars proves the SQI_CHUNK_BOUNDS derived
+// task-parameter keys ("<name>.Start" / "<name>.End", produced server-side by
+// openjd.DeriveChunkBounds and unit-tested there) resolve correctly through
+// the ordinary worker-side Task.Param.* scope and format-string substitution
+// — i.e. no worker-side change is required, matching the claim in
+// docs/openjd-extensions/sqi-chunk-bounds.md.
+func TestTaskScope_ResolvesChunkBoundsVars(t *testing.T) {
+	// Mirrors the task-params shape openjd.DeriveChunkBounds produces for a
+	// CHUNK[INT] parameter named "Frame": the combined range plus derived
+	// ".Start" / ".End" keys, all as ordinary task parameters.
+	taskParams := map[string]string{
+		"Frame":       "1-10",
+		"Frame.Start": "1",
+		"Frame.End":   "10",
+	}
+	scope := fmtres.TaskScope(map[string]string{}, taskParams, t.TempDir(), "", false)
+
+	got, err := fmtstring.Resolve("-s {{Task.Param.Frame.Start}} -e {{Task.Param.Frame.End}}", scope)
+	if err != nil {
+		t.Fatalf("fmtstring.Resolve: %v", err)
+	}
+	if want := "-s 1 -e 10"; got != want {
+		t.Errorf("Resolve = %q; want %q", got, want)
+	}
+}

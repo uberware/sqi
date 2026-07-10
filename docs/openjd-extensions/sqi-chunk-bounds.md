@@ -45,6 +45,11 @@ Example:
   the gaps of a non-contiguous set.
 See `internal/openjd/validate.go` (`validateChunkBounds`).
 
+Note: `.Start`/`.End` describe the enclosing span of the chunk, so a stepped
+range (e.g. `1-10:2` → frames 1,3,5,7,9) yields `Start=1`, `End=9`. A renderer
+invoked with `-s 1 -e 9` will render the full contiguous span, including the
+frames the step skipped — start/end renderers cannot express a step.
+
 ## Worker behavior
 The derived keys are added to each task's parameters during submission
 (`internal/openjd/expand.go` `DeriveChunkBounds`, wired in `submit.go`). They are
