@@ -25,7 +25,7 @@ jobs:
   # ── Change detection ─────────────────────────────────────────────────────────
   # Detects which areas changed so downstream jobs run only when relevant: the
   # Python jobs target `clients/python/`, the submitter jobs target
-  # `clients/submitter/` and `presets/dcc/`, and the actionlint job targets the
+  # `clients/submitter/` and `presets/sqi/`, and the actionlint job targets the
   # workflow files themselves.
   changes:
     name: Detect changed paths
@@ -51,7 +51,7 @@ jobs:
               - '.github/workflows/ci.yml'
             submitter:
               - 'clients/submitter/**'
-              - 'presets/dcc/**'
+              - 'presets/sqi/**'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
