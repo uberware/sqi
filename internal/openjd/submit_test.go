@@ -876,3 +876,44 @@ steps:
 		t.Fatalf("Name = %q, want template fallback", res2.Job.Name)
 	}
 }
+
+func TestSubmitter_Submit_ChunkBoundsDerived(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	template := `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "BoundsJob",
+  "extensions": ["TASK_CHUNKING", "SQI_CHUNK_BOUNDS"],
+  "steps": [
+    {
+      "name": "Render",
+      "script": { "actions": { "onRun": { "command": "render" } } },
+      "parameterSpace": {
+        "taskParameterDefinitions": [
+          { "name": "Frame", "type": "CHUNK[INT]", "range": "1-10",
+            "chunks": { "defaultTaskCount": 10, "rangeConstraint": "CONTIGUOUS" } }
+        ]
+      }
+    }
+  ]
+}`
+	result, err := sub.Submit(t.Context(), template, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("expected 1 task (chunk of 10), got %d", len(result.Tasks))
+	}
+	got := result.Tasks[0].Parameters
+	if got["Frame.Start"] != "1" {
+		t.Errorf("Frame.Start = %q, want 1", got["Frame.Start"])
+	}
+	if got["Frame.End"] != "10" {
+		t.Errorf("Frame.End = %q, want 10", got["Frame.End"])
+	}
+}
