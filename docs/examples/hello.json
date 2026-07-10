@@ -8,7 +8,7 @@
         "actions": {
           "onRun": {
             "command": "echo",
-            "args": ["Hello from sqi v0.1.0"]
+            "args": ["Hello from sqi v0.2.0"]
           }
         }
       }

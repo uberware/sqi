@@ -275,6 +275,12 @@ docs-site-serve: ## Serve the docs site locally with live reload
 
 # ── Release ───────────────────────────────────────────────────────────────────
 
+.PHONY: changelog
+changelog: ## Regenerate CHANGELOG.md from Conventional Commits (VERSION=x.y.z tags unreleased commits)
+	@which git-cliff > /dev/null 2>&1 || { echo "git-cliff not found — install: https://git-cliff.org/docs/installation"; exit 1; }
+	git-cliff $(if $(VERSION),--tag v$(VERSION),) --output CHANGELOG.md
+	@echo "Wrote CHANGELOG.md$(if $(VERSION), (unreleased commits tagged v$(VERSION)),)"
+
 .PHONY: release
 release: ## Build a release with goreleaser (install: https://goreleaser.com)
 	GOVERSION=$(GO_VERSION) goreleaser release --clean

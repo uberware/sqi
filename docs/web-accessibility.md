@@ -1,14 +1,14 @@
 # Web UI Accessibility Baseline
 
 This document states the accessibility baseline the `sqi-server` web UI commits
-to in Phase 1. It is intentionally modest — a floor, not a ceiling — so future
-contributors know the target and do not regress it. Anything below counts as a
-bug; going further is welcome.
+to. It is intentionally modest — a floor, not a ceiling — so future contributors
+know the target and do not regress it. Anything below counts as a bug; going
+further is welcome.
 
 The audience is operators using a keyboard-and-screen-reader workflow or working
 in varied lighting on varied displays, not a formal WCAG 2.1 AA certification
-effort. Phase 1 has no auth UI, no modal-heavy flows, and a small set of views,
-so the baseline is correspondingly focused.
+effort. The UI has no auth flows or modal-heavy interactions today, so the
+baseline is correspondingly focused.
 
 ---
 
@@ -66,7 +66,7 @@ so the baseline is correspondingly focused.
 
 ---
 
-## What is explicitly out of scope for Phase 1
+## What is explicitly out of scope for this baseline
 
 These are not regressions to file against; they are deliberately deferred:
 

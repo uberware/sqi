@@ -1,52 +1,23 @@
 # SPDX License Header Template
 
-Add the following comment block at the top of every source file, **before** any `package`, `import`, or module declarations.
+Add the SPDX license identifier at the top of every source file, **before** any `package`, `import`, or module declarations. Use the comment syntax for the file's language.
 
-## Go (`.go`)
+## Go (`.go`), TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`)
 
 ```go
-// SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
-## TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`)
-
-```ts
-// SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
-// SPDX-License-Identifier: AGPL-3.0-or-later
-```
-
-## YAML (`.yaml`, `.yml`)
+## YAML (`.yaml`, `.yml`), Python (`.py`), Shell (`.sh`), TOML (`.toml`)
 
 ```yaml
-# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
-# SPDX-License-Identifier: AGPL-3.0-or-later
-```
-
-## Python (`.py`)
-
-```python
-# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
-# SPDX-License-Identifier: AGPL-3.0-or-later
-```
-
-## Shell (`.sh`)
-
-```sh
-# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
-# SPDX-License-Identifier: AGPL-3.0-or-later
-```
-
-## TOML (`.toml`)
-
-```toml
-# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
 ## Notes
 
+- The single `SPDX-License-Identifier` line above is the required form and is what every source file in the repo carries.
+- An optional copyright line may precede it — `SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>` — but it is not required and most files omit it.
 - Use `AGPL-3.0-or-later` (not `AGPL-3.0-only`) so future relicensing to a newer AGPL version is permissible.
-- The copyright year should reflect the year the file was first created, not last modified.
+- If you add the copyright line, the year should reflect the year the file was first created, not last modified.
 - Third-party vendored files retain their original SPDX headers; do not overwrite them.
-- `golangci-lint` can enforce header presence via the `goheader` linter — wire this up in `.golangci.yml`.

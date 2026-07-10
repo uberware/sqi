@@ -37,7 +37,7 @@ sha256sum --check --ignore-missing checksums.txt
 
 ### Build from source
 
-Requirements: Go 1.26.3 or later (see `go.mod` for the pinned toolchain version).
+Requirements: Go 1.26.3 or later (the `go` directive in `go.mod` pins the version).
 
 ```sh
 git clone https://github.com/uberware/sqi.git

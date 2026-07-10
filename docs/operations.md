@@ -50,7 +50,7 @@ docker run -d \
 
 ### Build from source
 
-Requirements: Go 1.23 or later (see `go.mod` for the pinned toolchain version)
+Requirements: Go 1.26 or later (the `go` directive in `go.mod` pins 1.26.3)
 and Node.js 24 or later with npm 11 or later (see `.nvmrc`), used to build the
 web UI bundle that is embedded into the `sqi-server` binary.
 
@@ -389,7 +389,7 @@ groups:
           summary: "sqi-server is not reachable"
 
       - alert: SqiHighQueueDepth
-        expr: scheduler_queue_depth > 1000
+        expr: sqi_scheduler_queue_depth > 1000
         for: 5m
         labels:
           severity: warning
@@ -397,7 +397,7 @@ groups:
           summary: "Scheduler queue depth exceeds 1000 ready tasks"
 
       - alert: SqiNoIdleWorkers
-        expr: scheduler_idle_workers == 0 and scheduler_queue_depth > 0
+        expr: sqi_scheduler_idle_workers == 0 and sqi_scheduler_queue_depth > 0
         for: 2m
         labels:
           severity: warning
@@ -471,5 +471,5 @@ sqi-server config print --config /etc/sqi/sqi-server.yaml
 
 ```sh
 sqi-server version
-# sqi-server v0.1.0-alpha (commit abc1234, built 2026-01-15, go1.23.0)
+# sqi-server v0.2.0 (commit abc1234, built 2026-07-09, go1.26.3)
 ```

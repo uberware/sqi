@@ -125,10 +125,15 @@ The body is a raw OpenJD template in YAML or JSON. Required query parameters:
 | `farm_id` | UUID of the target farm |
 | `queue_id` | UUID of the target queue |
 
-Optional query parameters: `owner`, `priority` (default 50), `project`.
+Optional query parameters: `owner`, `submitter`, `priority` (default 50, higher = sooner), `project`.
+
+**Job parameter values.** Values for the template's own job parameters (its
+`parameterDefinitions`) are supplied as `param.<Name>=<value>` query parameters —
+one per parameter. Each `param.<Name>` key must match a declared parameter; a
+parameter with no default must be supplied this way or submission is rejected.
 
 ```sh
-curl -s -X POST "$BASE/jobs?farm_id=FARM_ID&queue_id=QUEUE_ID&owner=alice" \
+curl -s -X POST "$BASE/jobs?farm_id=FARM_ID&queue_id=QUEUE_ID&owner=alice&param.FrameStart=1&param.FrameEnd=100" \
   -H "Content-Type: application/x-yaml" \
   --data-binary @job.yaml | jq .
 ```

@@ -10,7 +10,7 @@ guides for extending the worker.
 
 | Tool | Purpose | Install |
 |---|---|---|
-| Go ≥ 1.23 (see `go.mod` for the pinned toolchain) | Build and test | [go.dev/dl](https://go.dev/dl/) |
+| Go ≥ 1.26 (the `go` directive in `go.mod` pins 1.26.3) | Build and test | [go.dev/dl](https://go.dev/dl/) |
 | Node.js ≥ 24 with npm ≥ 11 (see `.nvmrc` and `web/package.json` `engines`) | Build the web UI bundle embedded in `sqi-server` (`make build` runs it) | [nodejs.org](https://nodejs.org/) or `nvm use` |
 | `gofumpt` | Stricter formatter (superset of `gofmt`) | `go install mvdan.cc/gofumpt@latest` |
 | `goimports` | Import organiser | `go install golang.org/x/tools/cmd/goimports@latest` |
@@ -62,7 +62,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make run-worker` | Build then run a single `sqi-worker` with default config |
 | `make run-workers` | Build then run N `sqi-worker` instances locally (`N=3` default); Ctrl-C stops all |
 | `make test` | Run all tests with the race detector enabled |
-| `make test-cover` | Run tests and print coverage; fails below 60% (the `COVERAGE_MIN` default in the Makefile) |
+| `make test-cover` | Run tests and print coverage; fails below 70% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
 | `make bench` | Run benchmarks |
@@ -71,6 +71,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make fmt` | Format all Go files with `gofumpt` and `goimports` |
 | `make vet` | Run `go vet ./...` |
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
+| `make changelog` | Regenerate `CHANGELOG.md` from Conventional Commits via `git-cliff` (`VERSION=x.y.z` tags the pending release) |
 | `make hooks` | Install git hooks via `lefthook` |
 | `make clean` | Remove build artifacts and `coverage.out` |
 | `make ci` | Run the full CI sequence (fmt-check, vet, lint, test-cover) |
@@ -128,16 +129,16 @@ sqi/
 │   ├── store/             Store interface + SQLite implementation + migrations
 │   ├── ui/                Embeds web/dist; SPA fallback handler
 │   ├── version/           Build metadata (version, commit, date, Go version)
-│   ├── worker/            Server-side handlers for the worker wire protocol
-│   └── ws/                WebSocket hub, subscription management, NATS fanout
-├── pkg/                   Public Go API (empty in Phase 1; see pkg/doc.go)
+│   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server
+│   └── ws/                WebSocket hub, subscription management, scheduler-driven fanout
+├── pkg/                   Public Go API (currently empty; see pkg/doc.go)
 ├── api/                   Source-of-truth specs: OpenAPI 3.1, JSON schemas
-├── web/                   Frontend source (Phase 2); web/dist is embedded
+├── web/                   Frontend source; web/dist is embedded
 ├── config/                Example config files
 ├── deploy/                Docker and infrastructure manifests
 ├── docs/                  Human-readable documentation
 ├── scripts/               Utility scripts (SBOM, signing, etc.)
-└── test/                  Integration test harness (Phase 2)
+└── test/                  Integration test harness
 ```
 
 ### Key conventions
@@ -163,6 +164,25 @@ types, and route-mounting helper.
 
 **Conventional Commits.** The `commit-msg` hook enforces the format:
 `type(scope)?: description`. Valid types: `feat fix docs style refactor test chore build ci perf revert`.
+
+**Changelog.** `CHANGELOG.md` is a generated artifact — do not edit it by hand.
+[git-cliff](https://git-cliff.org) derives it from the Conventional Commit
+history (config in `cliff.toml`), so the way to change an entry is to change the
+commit message. `feat`/`fix`/`perf`/`refactor`/`build`/`ci`/`docs`/`test`
+commits become changelog entries grouped by type; `chore` and `release` commits
+are omitted. A commit that doesn't parse as a Conventional Commit is skipped
+entirely, so it never reaches the changelog. Regenerate with:
+
+```sh
+make changelog                 # refresh, leaving pending commits under [Unreleased]
+make changelog VERSION=0.3.0   # roll pending commits into a dated 0.3.0 section
+```
+
+Install git-cliff first (`brew install git-cliff`, or see
+<https://git-cliff.org/docs/installation>). The release workflow also runs
+git-cliff automatically at tag time and bundles the result into the release
+archives — but that copy is not committed back, so the tracked `CHANGELOG.md` is
+refreshed by hand during release prep (see `docs/release-runbook.md`).
 
 ---
 

@@ -69,7 +69,7 @@ See the [Quickstart](quickstart.md) for a full walkthrough (binary or Docker Com
 
 **Distributed (production mode)**
 
-Separate scheduler, API server, and NATS message broker for high availability. PostgreSQL for durable state. Workers connect to the message broker directly. Deployable via Docker Compose today; Kubernetes manifests are planned for a later phase.
+A planned configuration (Phase 4) for high availability: a standalone NATS message broker and PostgreSQL for durable state, with workers connecting to the broker directly. The same binaries will support this mode; PostgreSQL, the HA scheduler, and Kubernetes manifests are not yet implemented. Today, deployment uses the single-binary or Docker Compose simple mode above.
 
 Both modes run the same software. The difference is configuration.
 
@@ -79,9 +79,9 @@ Both modes run the same software. The difference is configuration.
 
 `sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Authentication and multi-user support (Phase 3) and production-hardening features follow in later phases.
 
-This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose). 
+This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose).
 
-See [ROADMAP.md](roadmap.md) for more information about the design and implementation plan.
+See the [roadmap](roadmap.md) for more information about the design and implementation plan.
 
 ---
 

@@ -8,7 +8,9 @@ layers overriding earlier ones:
    `~/.sqi/sqi-worker.yaml`, and `/etc/sqi/sqi-worker.yaml` by default. Pass
    an explicit path with `--config /path/to/file`.
 3. **Environment variables** — prefixed `SQI_WORKER_`, e.g.
-   `SQI_WORKER_NATS_URL`.
+   `SQI_WORKER_NATS_URL`. (One exception: `diagnostics.enabled` uses
+   `SQI_DIAGNOSTICS_ENABLED`, with no `WORKER` infix — see the `diagnostics`
+   section.)
 4. **CLI flags** — highest priority; available on the `start` subcommand.
 
 Print the effective merged configuration at any time with:
@@ -488,6 +490,71 @@ the fastest way to confirm a detector is (or isn't) firing.
 
 ---
 
+## `staging` — Local path staging (`stage_locally` delivery)
+
+Operator-owned. Required only on workers that run jobs declaring the
+`stage_locally` delivery of the `SQI_PATH_TRANSLATION` extension. sqi never
+copies bytes itself — it invokes `sync_command` once per path. These keys have
+no environment-variable form (config file only); cloud fleets bake them into
+the worker config shipped in the image.
+
+### `staging.scratch_dir`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | — (config file only) |
+
+Base directory for per-attempt staged copies.
+
+### `staging.sync_command`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | — (config file only) |
+
+Command template invoked per path, with `{src}`, `{dest}`, and optional
+`{object_type}` placeholders (e.g. `rsync -a {src} {dest}`). The same template
+serves copy-in and copy-out.
+
+```yaml
+staging:
+  scratch_dir: /scratch/sqi
+  sync_command: "rsync -a {src} {dest}"
+```
+
+---
+
+## `diagnostics` — Diagnostic-log publishing
+
+### `diagnostics.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_DIAGNOSTICS_ENABLED` (note: no `WORKER` infix) |
+
+When enabled (the default) the worker publishes its own `slog` output to the
+ephemeral core-NATS subject `worker.diag.<workerID>`, which the server ingests
+into its diagnostics ring buffer and surfaces in the web UI. Set to `false` to
+suppress publishing (the worker still logs to stderr). This is the worker
+counterpart to the server's `diagnostics.buffer_size` knob.
+
+```yaml
+diagnostics:
+  enabled: true
+```
+
+```sh
+SQI_DIAGNOSTICS_ENABLED=false sqi-worker start
+```
+
+---
+
 ## `log` — Structured logging
 
 ### `log.level`
@@ -717,6 +784,9 @@ log_streamer:
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |
 | `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | — |
 | `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — |
+| `staging.scratch_dir` | string | `""` | — (config file only) | — |
+| `staging.sync_command` | string | `""` | — (config file only) | — |
+| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — |
 | `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |
 | `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |

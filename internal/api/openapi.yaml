@@ -24,7 +24,7 @@ info:
     prefix keeps serving and marks retiring endpoints with the RFC 8594
     deprecation headers (`Deprecation`, `Sunset`, and a
     `Link rel="deprecation"` — see `components.headers`).
-  version: "0.1.0"
+  version: "0.2.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -1196,7 +1196,7 @@ paths:
       summary: Submit an OpenJD job
       tags: [jobs]
       description: |
-        Accepts a raw OpenJD v2025-09 template in YAML or JSON, validates it,
+        Accepts a raw OpenJD jobtemplate-2023-09 template in YAML or JSON, validates it,
         expands the parameter space into concrete tasks, and persists the job.
 
         The `Content-Type` header selects the template format:
@@ -1271,11 +1271,11 @@ paths:
           application/yaml:
             schema:
               type: string
-              description: OpenJD v2025-09 job template in YAML.
+              description: OpenJD jobtemplate-2023-09 job template in YAML.
           application/json:
             schema:
               type: object
-              description: OpenJD v2025-09 job template in JSON.
+              description: OpenJD jobtemplate-2023-09 job template in JSON.
       responses:
         "201":
           description: Job created.
