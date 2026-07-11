@@ -274,6 +274,7 @@ func TestValidate_ReturnsAllErrors(t *testing.T) {
 		"scheduler.heartbeat_timeout",
 		"scheduler.tick_interval",
 		"scheduler.max_tasks_per_worker",
+		"scheduler.default_max_attempts",
 		"discovery.instance_name",
 	}
 	for _, f := range required {
@@ -584,6 +585,135 @@ func TestValidate_UnschedulableGraceZeroAllowed(t *testing.T) {
 	for _, e := range config.Validate(cfg) {
 		if e.Field == "scheduler.unschedulable_grace" {
 			t.Fatalf("zero unschedulable_grace (disabled) should be valid, got %v", e)
+		}
+	}
+}
+
+// ── Scheduler: retry-policy defaults (server-level backstop) ─────────────────
+//
+// default_max_attempts / retry_delay / default_failure_limit are the
+// server-level fallback tier of the layered retry policy (Server -> Farm ->
+// Queue -> Job). This task only adds the config plumbing; RetryPolicy itself
+// is introduced in a later task.
+
+func TestDefaultConfig_RetryDefaults(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Scheduler.DefaultMaxAttempts != 3 {
+		t.Errorf("scheduler.default_max_attempts: got %d, want 3", cfg.Scheduler.DefaultMaxAttempts)
+	}
+	if cfg.Scheduler.RetryDelay != 30*time.Second {
+		t.Errorf("scheduler.retry_delay: got %v, want 30s", cfg.Scheduler.RetryDelay)
+	}
+	if cfg.Scheduler.DefaultFailureLimit != 0 {
+		t.Errorf("scheduler.default_failure_limit: got %d, want 0", cfg.Scheduler.DefaultFailureLimit)
+	}
+}
+
+func TestLoad_RetryDefaultsEnvOverride(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS", "5")
+	t.Setenv("SQI_SCHEDULER_RETRY_DELAY", "10s")
+	t.Setenv("SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT", "2")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Scheduler.DefaultMaxAttempts != 5 {
+		t.Errorf("scheduler.default_max_attempts: got %d, want 5", cfg.Scheduler.DefaultMaxAttempts)
+	}
+	if cfg.Scheduler.RetryDelay != 10*time.Second {
+		t.Errorf("scheduler.retry_delay: got %v, want 10s", cfg.Scheduler.RetryDelay)
+	}
+	if cfg.Scheduler.DefaultFailureLimit != 2 {
+		t.Errorf("scheduler.default_failure_limit: got %d, want 2", cfg.Scheduler.DefaultFailureLimit)
+	}
+}
+
+func TestLoad_RetryDefaultsFileOverride(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yaml := "scheduler:\n  default_max_attempts: 6\n  retry_delay: \"1m\"\n  default_failure_limit: 3\n"
+	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Scheduler.DefaultMaxAttempts != 6 {
+		t.Errorf("scheduler.default_max_attempts: got %d, want 6", cfg.Scheduler.DefaultMaxAttempts)
+	}
+	if cfg.Scheduler.RetryDelay != time.Minute {
+		t.Errorf("scheduler.retry_delay: got %v, want 1m", cfg.Scheduler.RetryDelay)
+	}
+	if cfg.Scheduler.DefaultFailureLimit != 3 {
+		t.Errorf("scheduler.default_failure_limit: got %d, want 3", cfg.Scheduler.DefaultFailureLimit)
+	}
+}
+
+func TestValidate_DefaultMaxAttemptsBelowOneRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.DefaultMaxAttempts = 0
+	errs := config.Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if e.Field == "scheduler.default_max_attempts" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected validation error for scheduler.default_max_attempts, got: %v", errs)
+	}
+}
+
+func TestValidate_RetryDelayNegativeRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.RetryDelay = -1 * time.Second
+	errs := config.Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if e.Field == "scheduler.retry_delay" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected validation error for scheduler.retry_delay, got: %v", errs)
+	}
+}
+
+func TestValidate_RetryDelayZeroAllowed(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.RetryDelay = 0
+	for _, e := range config.Validate(cfg) {
+		if e.Field == "scheduler.retry_delay" {
+			t.Fatalf("zero retry_delay (immediate) should be valid, got %v", e)
+		}
+	}
+}
+
+func TestValidate_DefaultFailureLimitNegativeRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.DefaultFailureLimit = -1
+	errs := config.Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if e.Field == "scheduler.default_failure_limit" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected validation error for scheduler.default_failure_limit, got: %v", errs)
+	}
+}
+
+func TestValidate_DefaultFailureLimitZeroAllowed(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.DefaultFailureLimit = 0
+	for _, e := range config.Validate(cfg) {
+		if e.Field == "scheduler.default_failure_limit" {
+			t.Fatalf("zero default_failure_limit (off) should be valid, got %v", e)
 		}
 	}
 }

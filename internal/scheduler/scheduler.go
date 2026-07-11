@@ -102,6 +102,9 @@ func DefaultConfig() Config {
 		JobRetention:              7 * 24 * time.Hour,
 		JobRetentionIncludeFailed: false,
 		UnschedulableGrace:        30 * time.Second,
+		DefaultMaxAttempts:        3,
+		RetryDelay:                30 * time.Second,
+		DefaultFailureLimit:       0,
 	}
 }
 
@@ -166,6 +169,26 @@ type Config struct {
 	// duration knobs above, this is NOT coerced up to the default in [New],
 	// since 0 is a legitimate "off" setting. Default: 30 s.
 	UnschedulableGrace time.Duration
+
+	// DefaultMaxAttempts is the server-level fallback tier of the layered
+	// retry policy (Server -> Farm -> Queue -> Job): the farm-wide default
+	// number of attempts a task may make before going terminal-failed. A
+	// value <= 0 is coerced up to the [DefaultConfig] value in [New], since
+	// unlike UnschedulableGrace this knob has no meaningful "off" state (the
+	// minimum valid value is 1, which disables auto-retry outright).
+	// Default: 3.
+	DefaultMaxAttempts int
+
+	// RetryDelay is the server-level fallback default backoff before a
+	// failed task re-enters the ready queue. 0 is a legitimate "immediate"
+	// setting; only a negative value is coerced up to the [DefaultConfig]
+	// value in [New]. Default: 30 s.
+	RetryDelay time.Duration
+
+	// DefaultFailureLimit is the server-level fallback default job-level
+	// failure ceiling. 0 = off (no auto-park) and is a legitimate setting —
+	// like UnschedulableGrace, it is NOT coerced up in [New]. Default: 0.
+	DefaultFailureLimit int
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -254,6 +277,12 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	}
 	if cfg.AssignedTaskTimeout <= 0 {
 		cfg.AssignedTaskTimeout = DefaultConfig().AssignedTaskTimeout
+	}
+	if cfg.DefaultMaxAttempts <= 0 {
+		cfg.DefaultMaxAttempts = DefaultConfig().DefaultMaxAttempts
+	}
+	if cfg.RetryDelay < 0 {
+		cfg.RetryDelay = DefaultConfig().RetryDelay
 	}
 	n := notifier
 	if n == nil {

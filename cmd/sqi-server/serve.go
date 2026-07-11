@@ -114,6 +114,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	schedCfg.JobRetention = cfg.Scheduler.JobRetention
 	schedCfg.JobRetentionIncludeFailed = cfg.Scheduler.JobRetentionIncludeFailed
 	schedCfg.UnschedulableGrace = cfg.Scheduler.UnschedulableGrace
+	schedCfg.DefaultMaxAttempts = cfg.Scheduler.DefaultMaxAttempts
+	schedCfg.RetryDelay = cfg.Scheduler.RetryDelay
+	schedCfg.DefaultFailureLimit = cfg.Scheduler.DefaultFailureLimit
 
 	srv := server.New(server.Config{
 		HTTPAddr:              cfg.HTTP.Addr,

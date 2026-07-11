@@ -176,6 +176,33 @@ func validateScheduler(cfg SchedulerConfig) []ValidationError {
 			),
 		})
 	}
+	if cfg.DefaultMaxAttempts < 1 {
+		errs = append(errs, ValidationError{
+			Field: "scheduler.default_max_attempts",
+			Message: fmt.Sprintf(
+				"must be >= 1 (1 disables auto-retry), got %d; set SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS or scheduler.default_max_attempts",
+				cfg.DefaultMaxAttempts,
+			),
+		})
+	}
+	if cfg.RetryDelay < 0 {
+		errs = append(errs, ValidationError{
+			Field: "scheduler.retry_delay",
+			Message: fmt.Sprintf(
+				"must be >= 0 (0 = immediate), got %s; set SQI_SCHEDULER_RETRY_DELAY or scheduler.retry_delay",
+				cfg.RetryDelay,
+			),
+		})
+	}
+	if cfg.DefaultFailureLimit < 0 {
+		errs = append(errs, ValidationError{
+			Field: "scheduler.default_failure_limit",
+			Message: fmt.Sprintf(
+				"must be >= 0 (0 disables the job-level failure ceiling), got %d; set SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT or scheduler.default_failure_limit",
+				cfg.DefaultFailureLimit,
+			),
+		})
+	}
 	return errs
 }
 
