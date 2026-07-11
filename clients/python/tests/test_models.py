@@ -224,6 +224,34 @@ def test_job_list_level_fields() -> None:
     assert job.task_counts is None
 
 
+def test_job_retry_policy_fields_default_when_absent() -> None:
+    # Back-compat: an older/unpatched server's job response carries none of the
+    # retry-policy fields; parsing must not raise and must default gracefully.
+    job = Job.from_dict(load("job"))
+    assert job.max_attempts is None
+    assert job.retry_delay_seconds is None
+    assert job.failure_limit is None
+    assert job.failed_attempts == 0
+    assert job.park_reason is None
+
+
+def test_job_retry_policy_fields_parsed_when_present() -> None:
+    raw = dict(
+        load("job"),
+        max_attempts=5,
+        retry_delay_seconds=30,
+        failure_limit=25,
+        failed_attempts=3,
+        park_reason="failure limit reached (25)",
+    )
+    job = Job.from_dict(raw)
+    assert job.max_attempts == 5
+    assert job.retry_delay_seconds == 30
+    assert job.failure_limit == 25
+    assert job.failed_attempts == 3
+    assert job.park_reason == "failure limit reached (25)"
+
+
 def test_job_detail_nested_steps_and_counts() -> None:
     job = Job.from_dict(load("job_detail"))
     assert job.steps is not None
@@ -390,6 +418,21 @@ def test_farm_fields() -> None:
     assert farm.created_at.tzinfo is not None
 
 
+def test_farm_retry_policy_fields_default_when_absent() -> None:
+    farm = Farm.from_dict(load("farm"))
+    assert farm.max_attempts is None
+    assert farm.retry_delay_seconds is None
+    assert farm.failure_limit is None
+
+
+def test_farm_retry_policy_fields_parsed_when_present() -> None:
+    raw = dict(load("farm"), max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    farm = Farm.from_dict(raw)
+    assert farm.max_attempts == 5
+    assert farm.retry_delay_seconds == 30
+    assert farm.failure_limit == 25
+
+
 def test_queue_fields() -> None:
     queue = Queue.from_dict(load("queue"))
     assert queue.id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002"
@@ -399,6 +442,21 @@ def test_queue_fields() -> None:
     assert queue.priority == 50
     assert queue.max_concurrent_tasks == 200
     assert queue.paused is False
+
+
+def test_queue_retry_policy_fields_default_when_absent() -> None:
+    queue = Queue.from_dict(load("queue"))
+    assert queue.max_attempts is None
+    assert queue.retry_delay_seconds is None
+    assert queue.failure_limit is None
+
+
+def test_queue_retry_policy_fields_parsed_when_present() -> None:
+    raw = dict(load("queue"), max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    queue = Queue.from_dict(raw)
+    assert queue.max_attempts == 5
+    assert queue.retry_delay_seconds == 30
+    assert queue.failure_limit == 25
 
 
 def test_storage_location_fields() -> None:

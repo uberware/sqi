@@ -425,6 +425,20 @@ class Job:
     completed_at: datetime | None = None
     steps: list[Step] | None = None
     task_counts: TaskCounts | None = None
+    max_attempts: int | None = None
+    """Per-job override for the maximum attempts per task. ``None`` means
+    inherit (queue -> farm -> server default)."""
+    retry_delay_seconds: int | None = None
+    """Per-job override for the delay before retrying a failed task. ``None``
+    means inherit (queue -> farm -> server default)."""
+    failure_limit: int | None = None
+    """Per-job override for the number of task failures that auto-parks the
+    job. ``None`` means inherit (queue -> farm -> server default)."""
+    failed_attempts: int = 0
+    """Cumulative count of genuine task failures for this job."""
+    park_reason: str | None = None
+    """Set when the failure-limit sweep auto-parked the job. Empty/``None``
+    for a manual pause."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -460,6 +474,11 @@ class Job:
             task_counts=(
                 TaskCounts.from_dict(raw_counts) if isinstance(raw_counts, dict) else None
             ),
+            max_attempts=_opt_int(data.get("max_attempts")),
+            retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
+            failure_limit=_opt_int(data.get("failure_limit")),
+            failed_attempts=_as_int(data.get("failed_attempts")),
+            park_reason=_opt_str(data.get("park_reason")),
         )
 
 
@@ -747,6 +766,15 @@ class Farm:
     created_at: datetime
     updated_at: datetime
     description: str | None = None
+    max_attempts: int | None = None
+    """Farm-level override for the maximum attempts per task. ``None`` means
+    inherit (server default)."""
+    retry_delay_seconds: int | None = None
+    """Farm-level override for the delay before retrying a failed task.
+    ``None`` means inherit (server default)."""
+    failure_limit: int | None = None
+    """Farm-level override for the number of task failures that auto-parks a
+    job. ``None`` means inherit (server default)."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Farm:
@@ -763,6 +791,9 @@ class Farm:
             created_at=_as_datetime(data.get("created_at")),
             updated_at=_as_datetime(data.get("updated_at")),
             description=_opt_str(data.get("description")),
+            max_attempts=_opt_int(data.get("max_attempts")),
+            retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
+            failure_limit=_opt_int(data.get("failure_limit")),
         )
 
 
@@ -779,6 +810,15 @@ class Queue:
     created_at: datetime
     updated_at: datetime
     description: str | None = None
+    max_attempts: int | None = None
+    """Queue-level override for the maximum attempts per task. ``None`` means
+    inherit (farm -> server default)."""
+    retry_delay_seconds: int | None = None
+    """Queue-level override for the delay before retrying a failed task.
+    ``None`` means inherit (farm -> server default)."""
+    failure_limit: int | None = None
+    """Queue-level override for the number of task failures that auto-parks a
+    job. ``None`` means inherit (farm -> server default)."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Queue:
@@ -798,6 +838,9 @@ class Queue:
             created_at=_as_datetime(data.get("created_at")),
             updated_at=_as_datetime(data.get("updated_at")),
             description=_opt_str(data.get("description")),
+            max_attempts=_opt_int(data.get("max_attempts")),
+            retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
+            failure_limit=_opt_int(data.get("failure_limit")),
         )
 
 

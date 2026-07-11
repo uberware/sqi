@@ -430,6 +430,9 @@ class SqiClient:
         owner: str | None = None,
         priority: int | None = None,
         project: str | None = None,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
     ) -> Job:
         """Submit a raw OpenJD job template and return the created :class:`Job`.
 
@@ -452,6 +455,18 @@ class SqiClient:
             priority: Optional scheduling priority (higher runs sooner); the
                 server defaults to 50 when omitted.
             project: Optional project label for later filtering.
+            max_attempts: Per-job override for the maximum attempts per task.
+                Omitted means inherit (queue -> farm -> server default). Not to
+                be confused with the client constructor's transport-level
+                ``max_attempts`` (HTTP retry count) or :meth:`retry_job`/
+                :meth:`retry_task` (manual one-off retries) — this is the
+                server-side automatic retry policy for the job's tasks.
+            retry_delay_seconds: Per-job override for the delay before retrying
+                a failed task. Omitted means inherit (queue -> farm -> server
+                default).
+            failure_limit: Per-job override for the number of task failures
+                that auto-parks the job. Omitted means inherit (queue -> farm
+                -> server default).
 
         Returns:
             The created :class:`Job`, parsed from the ``201 Created`` body.
@@ -466,13 +481,20 @@ class SqiClient:
                 be serialized to JSON.
         """
         body, content_type = _prepare_template(template)
-        params = {
+        params: dict[str, Any] = {
             "farm_id": farm_id,
             "queue_id": queue_id,
             "owner": owner,
             "priority": priority,
             "project": project,
         }
+        for key, val in (
+            ("max_attempts", max_attempts),
+            ("retry_delay_seconds", retry_delay_seconds),
+            ("failure_limit", failure_limit),
+        ):
+            if val is not None:
+                params[key] = str(val)
         data = self._request_json(
             "POST",
             "/jobs",
@@ -1031,6 +1053,9 @@ class SqiClient:
         name: str,
         description: str | None = None,
         max_concurrent_tasks: int = 0,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
     ) -> Farm:
         """Create a farm and return it.
 
@@ -1039,8 +1064,25 @@ class SqiClient:
             description: Optional human-readable description.
             max_concurrent_tasks: Cap on concurrently-running tasks; ``0`` means
                 unlimited (the default).
+            max_attempts: Farm-level max-attempts retry-policy override.
+                Omitted means inherit (server default). Distinct from the
+                client constructor's transport-level ``max_attempts`` and from
+                :meth:`retry_job`/:meth:`retry_task`.
+            retry_delay_seconds: Farm-level retry-delay retry-policy override.
+                Omitted means inherit (server default).
+            failure_limit: Farm-level failure-limit retry-policy override.
+                Omitted means inherit (server default).
         """
-        return self._farms.create(_farm_body(name, description, max_concurrent_tasks))
+        return self._farms.create(
+            _farm_body(
+                name,
+                description,
+                max_concurrent_tasks,
+                max_attempts,
+                retry_delay_seconds,
+                failure_limit,
+            )
+        )
 
     def list_farms(self) -> list[Farm]:
         """Return all farms. The server returns a bare array (no pagination)."""
@@ -1061,13 +1103,29 @@ class SqiClient:
         name: str,
         description: str | None = None,
         max_concurrent_tasks: int = 0,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
     ) -> Farm:
         """Replace a farm's mutable fields (PUT, full replacement) and return it.
 
         Per the server's PUT semantics this is a full replace: a field left at
         its default (e.g. an omitted ``description``) is cleared, not preserved.
+        This applies to the retry-policy overrides too: an omitted
+        ``max_attempts``/``retry_delay_seconds``/``failure_limit`` is cleared
+        back to "inherit", not left unchanged.
         """
-        return self._farms.update(farm_id, _farm_body(name, description, max_concurrent_tasks))
+        return self._farms.update(
+            farm_id,
+            _farm_body(
+                name,
+                description,
+                max_concurrent_tasks,
+                max_attempts,
+                retry_delay_seconds,
+                failure_limit,
+            ),
+        )
 
     def delete_farm(self, farm_id: str) -> None:
         """Delete a farm. Raises :class:`NotFoundError` if it does not exist."""
@@ -1084,6 +1142,9 @@ class SqiClient:
         priority: int = 0,
         max_concurrent_tasks: int = 0,
         paused: bool = False,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
     ) -> Queue:
         """Create a queue within a farm and return it.
 
@@ -1094,9 +1155,27 @@ class SqiClient:
             priority: Scheduling priority within the farm (higher runs sooner).
             max_concurrent_tasks: Cap on concurrent tasks; ``0`` means unlimited.
             paused: Whether the queue starts paused.
+            max_attempts: Queue-level max-attempts retry-policy override.
+                Omitted means inherit (farm -> server default). Distinct from
+                the client constructor's transport-level ``max_attempts`` and
+                from :meth:`retry_job`/:meth:`retry_task`.
+            retry_delay_seconds: Queue-level retry-delay retry-policy override.
+                Omitted means inherit (farm -> server default).
+            failure_limit: Queue-level failure-limit retry-policy override.
+                Omitted means inherit (farm -> server default).
         """
         return self._queues.create(
-            _queue_body(farm_id, name, description, priority, max_concurrent_tasks, paused)
+            _queue_body(
+                farm_id,
+                name,
+                description,
+                priority,
+                max_concurrent_tasks,
+                paused,
+                max_attempts,
+                retry_delay_seconds,
+                failure_limit,
+            )
         )
 
     def list_queues(
@@ -1168,16 +1247,32 @@ class SqiClient:
         priority: int = 0,
         max_concurrent_tasks: int = 0,
         paused: bool = False,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
     ) -> Queue:
         """Replace a queue's mutable fields (PUT, full replacement) and return it.
 
         Full replace: any field left at its default (e.g. an omitted
         ``description``, or ``priority``/``max_concurrent_tasks``/``paused`` not
         passed) is reset, not preserved — pass every field you want to keep.
+        This applies to the retry-policy overrides too: an omitted
+        ``max_attempts``/``retry_delay_seconds``/``failure_limit`` is cleared
+        back to "inherit", not left unchanged.
         """
         return self._queues.update(
             queue_id,
-            _queue_body(farm_id, name, description, priority, max_concurrent_tasks, paused),
+            _queue_body(
+                farm_id,
+                name,
+                description,
+                priority,
+                max_concurrent_tasks,
+                paused,
+                max_attempts,
+                retry_delay_seconds,
+                failure_limit,
+            ),
         )
 
     def delete_queue(self, queue_id: str) -> None:
@@ -1679,10 +1774,18 @@ def _derive_ws_url(base_url: str) -> str:
 # only when supplied, so a full-replace PUT that omits one clears it server-side.
 
 
-def _farm_body(name: str, description: str | None, max_concurrent_tasks: int) -> dict[str, Any]:
+def _farm_body(
+    name: str,
+    description: str | None,
+    max_concurrent_tasks: int,
+    max_attempts: int | None = None,
+    retry_delay_seconds: int | None = None,
+    failure_limit: int | None = None,
+) -> dict[str, Any]:
     body: dict[str, Any] = {"name": name, "max_concurrent_tasks": max_concurrent_tasks}
     if description is not None:
         body["description"] = description
+    _add_retry_policy(body, max_attempts, retry_delay_seconds, failure_limit)
     return body
 
 
@@ -1693,6 +1796,9 @@ def _queue_body(
     priority: int,
     max_concurrent_tasks: int,
     paused: bool,
+    max_attempts: int | None = None,
+    retry_delay_seconds: int | None = None,
+    failure_limit: int | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "farm_id": farm_id,
@@ -1703,7 +1809,28 @@ def _queue_body(
     }
     if description is not None:
         body["description"] = description
+    _add_retry_policy(body, max_attempts, retry_delay_seconds, failure_limit)
     return body
+
+
+def _add_retry_policy(
+    body: dict[str, Any],
+    max_attempts: int | None,
+    retry_delay_seconds: int | None,
+    failure_limit: int | None,
+) -> None:
+    """Add the retry-policy override keys to a farm/queue request body.
+
+    Each key is included only when its value is supplied, matching the
+    "included only when not ``None``" convention the other optional body
+    fields in this module follow.
+    """
+    if max_attempts is not None:
+        body["max_attempts"] = max_attempts
+    if retry_delay_seconds is not None:
+        body["retry_delay_seconds"] = retry_delay_seconds
+    if failure_limit is not None:
+        body["failure_limit"] = failure_limit
 
 
 def _storage_body(

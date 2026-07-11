@@ -272,6 +272,46 @@ def test_422_becomes_validation_error(make_client: ClientFactory) -> None:
     assert detail in str(err)
 
 
+# ── Retry policy overrides ──────────────────────────────────────────
+
+
+@respx.mock
+def test_submit_retry_policy_params_omitted_by_default(make_client: ClientFactory) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    client.submit_job(_DICT_TEMPLATE, farm_id="farm-1", queue_id="queue-1")
+
+    params = route.calls.last.request.url.params
+    assert "max_attempts" not in params
+    assert "retry_delay_seconds" not in params
+    assert "failure_limit" not in params
+
+
+@respx.mock
+def test_submit_sends_retry_query_params(make_client: ClientFactory) -> None:
+    response = dict(_JOB_RESPONSE, max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    route = respx.post(_JOBS_URL).mock(return_value=httpx.Response(201, json=response))
+    client = make_client()
+
+    job = client.submit_job(
+        _DICT_TEMPLATE,
+        farm_id="farm-1",
+        queue_id="queue-1",
+        max_attempts=5,
+        retry_delay_seconds=30,
+        failure_limit=25,
+    )
+
+    params = route.calls.last.request.url.params
+    assert params["max_attempts"] == "5"
+    assert params["retry_delay_seconds"] == "30"
+    assert params["failure_limit"] == "25"
+    assert job.max_attempts == 5
+    assert job.retry_delay_seconds == 30
+    assert job.failure_limit == 25
+
+
 @respx.mock
 def test_submit_is_not_retried(make_client: ClientFactory) -> None:
     # POST is non-idempotent: a transient 500 must surface immediately, not retry.
