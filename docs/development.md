@@ -255,6 +255,22 @@ Then implement it in `internal/store/sqlite/step.go` using a prepared
 statement, and add a corresponding stub to the in-memory fake in
 `internal/store/fake/store.go` so existing tests keep compiling.
 
+> **Not every new store method is REST-triggered.** The auto-retry +
+> failure-limit feature added `RecordTaskFailure`, `RequeueTaskForRetry`
+> (`internal/store/sqlite/task.go`), and `ParkJob`
+> (`internal/store/sqlite/job.go`) purely for the scheduler's own internal
+> use (`internal/scheduler/failure.go`'s `handleTaskFailed`) — no handler in
+> `internal/api/` calls them directly. They still follow the same shape as
+> REST-triggered methods: declared on the relevant sub-interface
+> (`TaskStore`/`JobStore`), implemented in `internal/store/sqlite/`, and
+> stubbed in `internal/store/fake/` so scheduler tests can inject the fake.
+> Layered policy resolution that isn't itself a store method — e.g. picking
+> the effective retry policy from Job → Queue → Farm → server default — is a
+> plain package-level helper next to its caller rather than a store method:
+> see `resolveRetryPolicy` in `internal/scheduler/retrypolicy.go`. Follow this
+> pattern for scheduler-internal state changes that don't need a REST
+> surface of their own.
+
 ### Step 4 — Update the OpenAPI spec
 
 Add the new path to `internal/api/openapi.yaml`:

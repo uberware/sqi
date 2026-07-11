@@ -290,14 +290,80 @@ heartbeat-sweep tick that handles offline-worker cleanup, controlled by
 ```
 
 Transitions are validated — only the arrows above are permitted. Any other
-transition returns an error from `store.TransitionTask`.
+transition returns an error from `store.TransitionTask`. The auto-retry
+re-queue described below (`running` → `ready` on a transient failure) is a
+**separate, policy-driven store call** (`RequeueTaskForRetry`), not a
+`TransitionTask` arrow — the diagram above still reflects every state a task
+can be validated *into* via `TransitionTask`; auto-retry sends a task back to
+`ready` directly instead of landing it on `failed` at all.
 
-`failed` and `canceled` tasks can be retried — individually via
+### Auto-retry on worker-reported failure
+
+A worker-reported `failed` status no longer routes straight to a terminal
+state. The scheduler (`internal/scheduler/failure.go`) resolves the effective
+[retry policy](configuration.md#retry-failure-limits) (Job → Queue → Farm →
+server default) and records the genuine failure via
+`store.RecordTaskFailure`, then picks one of three outcomes:
+
+- **Retry.** The task's genuine-failure count is still below its resolved
+  `max_attempts` and the job has not hit its `failure_limit` — the attempt
+  closes as failed, usage-pool claims are released, and the task re-enters
+  `ready` (`store.RequeueTaskForRetry`) stamped with a `retry_after` backoff
+  timestamp (`now + retry_delay`). It does **not** go through the terminal /
+  step-completion path, since the step isn't actually done.
+- **Exhausted.** The task's genuine-failure count reaches `max_attempts` with
+  no failure limit tripped — the task goes terminal-`failed`, cascading to its
+  step and job exactly as before this feature.
+- **Auto-park.** The *job's* cumulative genuine-failure count reaches its
+  resolved `failure_limit` — the job is parked first (`store.ParkJob`, sets
+  `status=paused` and a `park_reason` like `"failure limit reached (3)"`),
+  then the tripping task still goes terminal-`failed` so the step/job
+  completion cascade runs normally rather than leaving the job half-running.
+
+**Lost/reclaimed work is separate and uncapped.** A task reclaimed because its
+worker went offline (heartbeat timeout) or because it lingered in `assigned`
+past the stale-assigned reaper's timeout is simply returned to `ready` — it
+never goes through `handleTaskFailed`, so it does not consume any of the
+task's `max_attempts` and never counts toward the job's `failure_limit`. Only
+a *genuine* worker-reported failure counts.
+
+**A parked job is not stuck forever.** Parking only sets `status=paused`; it
+does not force every other task in the job to a terminal state. If the job
+still has non-terminal (`pending`/`ready`) tasks elsewhere — the common case,
+since a job usually parks with work still in flight — it simply stays
+`paused` until an operator resumes it (`PATCH /api/v1/jobs/{id}` with the
+existing resume action), because job completion is still evaluated by "have
+all steps reached a terminal state," which naturally stays false while
+non-terminal work remains. But if the tripping task was the job's last
+non-terminal work, the completion check finalizes the job to `failed`
+immediately — a parked job is not exempted from normal completion. There is
+no separate un-park transition; `paused` here is just the job's `status`
+field, resolved the same way a manually-paused job is.
+
+**Two ready-selection gates support this.** `store.ListReadyTasks` (used by
+the lease-assignment path) now excludes:
+
+1. **Backoff gate** — tasks whose `retry_after` is in the future are skipped
+   until the timestamp passes.
+2. **Job-status gate** — tasks belonging to a `paused` or terminal
+   (`completed`/`failed`/`canceled`) job are skipped.
+
+The job-status gate is defense-in-depth, checked again at the lease-time
+`leaseGatesPass` step to close the read-list→lease race window. It also fixed
+a **pre-existing gap**: before this feature, a job that was *manually* paused
+via the REST API had no gate stopping its `ready` tasks from still being
+leased and run by a worker — pausing only stopped new *scheduling* decisions
+downstream, not in-flight `ready` dispatch. The same gate now protects both
+manually-paused and auto-parked jobs.
+
+`failed` and `canceled` tasks can also be retried manually — individually via
 `POST /api/v1/tasks/{id}/retry` or in bulk via `POST /api/v1/jobs/{id}/retry`.
 On retry the task resets to `pending`, and its step and the job also reset to
 `pending` when they were terminal; the scheduler's step-dependency propagation
 then re-gates `pending`→`ready`, so tasks whose step dependencies are already
-met land in `ready` immediately.
+met land in `ready` immediately. A manual retry also resets the task's and
+job's genuine-failure counters, independent of the automatic retry policy
+above.
 
 ---
 

@@ -132,6 +132,36 @@ mismatch rather than a capacity shortfall.
 
 ---
 
+## Retry and auto-park metrics
+
+`sqi-server` exposes two Prometheus counters (subsystem `scheduler`, served at
+`GET /metrics`) for the auto-retry + failure-limit feature — see
+[`scheduler.default_max_attempts` / `retry_delay` / `default_failure_limit`
+and the Server → Farm → Queue → Job precedence](configuration.md#retry-failure-limits)
+for the policy that drives them, and
+[the task state machine](architecture.md#state-machine-task-status) for how
+retry, exhaustion, and auto-park interact.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_scheduler_task_retries_total` | counter | `queue` | Total tasks re-queued to `ready` by automatic retry after a worker-reported failure. Does **not** include lost/reclaimed work (worker offline, stale-`assigned` reaper) — those never go through the retry decision. |
+| `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Total jobs auto-parked (`status=paused`) because their cumulative genuine task failures reached the job's resolved `failure_limit`. Does not include jobs paused manually via the API. |
+
+Both counters increment inside `internal/scheduler/failure.go`'s
+`handleTaskFailed` path, alongside a structured log line:
+
+- A **retry** logs at `INFO`: `"scheduler: task auto-retry scheduled"` with
+  `task_id`, `failed_attempts`, `max_attempts`, and `retry_delay` attributes.
+- An **auto-park** logs at `WARN`: `"scheduler: job auto-parked at failure
+  limit"` with `job_id` and `failure_limit` attributes.
+
+The retry line carries `task_id`; the auto-park line carries `job_id` — both
+are [diagnostic log correlation keys](#correlation-keys), so these decisions
+are visible (component `server`) in Admin → Server log and
+`GET /api/v1/diagnostics/logs`, in addition to stderr.
+
+---
+
 ## In-UI diagnostics
 
 ### Worker diagnostics panel

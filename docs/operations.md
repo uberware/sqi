@@ -360,6 +360,8 @@ handled outside the process:
 | `sqi_nats_consumed_total` | counter | NATS messages consumed by subject |
 | `sqi_db_query_duration_seconds` | histogram | SQLite query latency by operation |
 | `sqi_usage_active_claims` | gauge | Active usage-pool claims by pool |
+| `sqi_scheduler_task_retries_total` | counter | Tasks re-queued by automatic retry, by queue |
+| `sqi_scheduler_jobs_autoparked_total` | counter | Jobs auto-parked at their failure limit, by queue |
 
 ### Prometheus scrape config
 

@@ -371,6 +371,101 @@ for what the flag means, where it surfaces (task `unschedulable_reason`, job
 
 ---
 
+## Retry & failure limits
+
+Worker-reported task failures auto-retry with backoff up to a per-task attempt
+ceiling, and a job auto-parks (pauses) once its cumulative genuine failures
+reach a failure limit. Three server keys set the farm-wide defaults for this
+policy:
+
+### `scheduler.default_max_attempts`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `3` |
+| **Env var** | `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS` |
+
+Farm-wide default number of genuine attempts a task may make before it goes
+terminal-`failed`. Must be `≥ 1`; `1` disables auto-retry (a single failure is
+immediately terminal, matching pre-retry behavior).
+
+```yaml
+scheduler:
+  default_max_attempts: 3
+```
+
+### `scheduler.retry_delay`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `"30s"` |
+| **Env var** | `SQI_SCHEDULER_RETRY_DELAY` |
+
+Backoff applied before a failed task re-enters the `ready` queue for
+re-lease. `0` means immediate re-queue.
+
+```yaml
+scheduler:
+  retry_delay: "30s"
+```
+
+### `scheduler.default_failure_limit`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `0` |
+| **Env var** | `SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT` |
+
+Farm-wide default ceiling on a job's cumulative genuine task failures. Once
+reached, the job is auto-parked (`status=paused`, with a `park_reason` such as
+`"failure limit reached (N)"`). `0` disables the limit (off — a job never
+auto-parks on failure count alone).
+
+```yaml
+scheduler:
+  default_failure_limit: 0
+```
+
+### Precedence: Server → Farm → Queue → Job
+
+The effective value for each of the three knobs above is resolved
+independently as the **first non-null** of, in order: **Job → Queue → Farm →
+server default**. A farm sets a studio-wide policy; a queue can narrow it for
+a class of work; a job can override it for one submission. Any tier left
+unset (`null`) falls through to the next.
+
+Farm and queue overrides are set via the farm/queue REST resources'
+`max_attempts` / `retry_delay_seconds` / `failure_limit` fields (and the
+matching Python SDK keyword arguments on `create_farm`/`update_farm` and
+`create_queue`/`update_queue`). A job's overrides use the same three names,
+but on `POST /api/v1/jobs` they travel as **query parameters** — alongside
+`priority` — not as a body field, since the body is the raw OpenJD template:
+
+```sh
+curl -X POST "http://localhost:8080/api/v1/jobs?max_attempts=5&retry_delay_seconds=10&failure_limit=20" \
+  -H 'Content-Type: application/yaml' \
+  --data-binary @job.yaml
+```
+
+A manual `POST /api/v1/tasks/{id}/retry` or `POST /api/v1/jobs/{id}/retry`
+resets a task/job's failure counters, independent of this policy. See
+[the task state machine](architecture.md#state-machine-task-status) for how
+retry, exhaustion, and auto-park interact, and
+[Retry and auto-park metrics](observability.md#retry-and-auto-park-metrics)
+for the Prometheus counters.
+
+> **Behavior change on upgrade.** The default `scheduler.default_max_attempts`
+> is `3`, so farms that upgrade into this feature will see transient task
+> failures auto-retry (up to 2 extra attempts) where they previously went
+> straight to terminal-`failed`. To restore the prior no-auto-retry behavior,
+> set `scheduler.default_max_attempts: 1` (or
+> `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS=1`).
+
+---
+
 ## `discovery` — mDNS service advertisement
 
 ### `discovery.enabled`
@@ -613,6 +708,9 @@ for the detector schema reference.
 | `scheduler.job_retention` | duration | `168h` | `SQI_SCHEDULER_JOB_RETENTION` | — |
 | `scheduler.job_retention_include_failed` | bool | `false` | `SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED` | — |
 | `scheduler.unschedulable_grace` | duration | `30s` | `SQI_SCHEDULER_UNSCHEDULABLE_GRACE` | — |
+| `scheduler.default_max_attempts` | int | `3` | `SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS` | — |
+| `scheduler.retry_delay` | duration | `30s` | `SQI_SCHEDULER_RETRY_DELAY` | — |
+| `scheduler.default_failure_limit` | int | `0` | `SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT` | — |
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
