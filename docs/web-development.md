@@ -260,6 +260,18 @@ shows a confirmation dialog before issuing the requests. When adding components
 that display job data from the `jobs` subject, handle the `removed` status to
 avoid stale rows lingering in the UI.
 
+`JobDetail` also surfaces *why* tasks failed: a job-level failure banner
+(built from the `JobDetail.failure_summary` field — omitted until at least one
+task has failed) above the task list, and a per-task reason string next to
+each failed row's status (`Task.failure_reason`). Neither needs a dedicated
+WebSocket message type — both are ordinary REST fields on the existing
+job/task responses, refreshed the same way the rest of the page is: `JobDetail`
+already invalidates the job-detail and task-list queries on `jobs` and
+`jobs/{jobId}/tasks` WebSocket events, so the banner and reason strings update
+live along with everything else. See
+[`docs/observability.md`](observability.md#why-did-my-task-fail) for what the
+reason strings mean and where the underlying data comes from.
+
 ---
 
 ## TypeScript conventions

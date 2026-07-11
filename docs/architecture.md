@@ -217,15 +217,42 @@ sqi-worker
 ```
 NATS consumer (internal/scheduler/taskstatus.go)
   │
-  ├─ Receive task.status message
-  ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time)
+  ├─ Receive task.status message   { …, message }  ← worker's human-readable reason, if any
+  ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time, message)
   ├─ If terminal (succeeded/failed/canceled):
   │     store.TransitionTask(task_id, status)
+  │     If failed/canceled: store.SetTaskFailureReason(task_id, reason)  ← see below
   │     usagePool.ReleaseClaim(claim_id)
   │     checkStepCompletion → propagateStepDependencies   ← marks successor tasks ready
   │     notifier.NotifyTask(...)                          ← triggers WebSocket fanout
   └─ ack message
 ```
+
+**Durable failure reason.** Every `task_attempts` row carries a `message`
+column next to `exit_code` — the worker's human-readable reason for that
+attempt, sent in `TaskStatusMsg.Message` on every failure path (pre-exec/
+staging error, `openjd_fail`, timeout, process error, plain non-zero exit).
+`tasks.failure_reason` denormalizes the *latest terminal* reason onto the task
+itself (mirroring `unschedulable_reason`), so the REST layer and web UI don't
+need to join into attempts to explain a failure. It is set only when a task
+reaches terminal `failed`/`canceled` and cleared on retry (auto or manual).
+The reason is worker-reported where available, or synthesized by the
+scheduler for the paths that have none:
+
+| Path | Reason | Where |
+|---|---|---|
+| Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal` |
+| Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
+| Worker reclaimed (heartbeat timeout) | `"worker went offline"` | stale-worker sweep — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
+| Cascade-canceled (upstream step failed) | `"canceled: upstream step failed"` | `propagateStepDependencies` / re-cancel after a retry that didn't revive the task |
+| User-initiated cancel | `"canceled by user"` | `CancelJob` / `CancelTask`, via `store.SetTaskFailureReasonIfEmpty` so a concurrent cascade-cancel's more specific reason always wins regardless of ordering |
+
+`GET /api/v1/jobs/{id}` (job detail) additionally exposes a `failure_summary`
+(`failed_count`, `dominant_reason`, `distinct_reasons`), aggregated across the
+job's failed tasks by `store.FailureReasonSummary`, and powers the web UI's
+job-level failure banner. See
+[`docs/observability.md`](observability.md#why-did-my-task-fail) for the
+operator-facing view.
 
 ### 6. Log ingestion
 
@@ -363,7 +390,10 @@ On retry the task resets to `pending`, and its step and the job also reset to
 then re-gates `pending`→`ready`, so tasks whose step dependencies are already
 met land in `ready` immediately. A manual retry also resets the task's and
 job's genuine-failure counters, independent of the automatic retry policy
-above.
+above, and clears the task's `failure_reason` — both the automatic and manual
+retry paths above leave a fresh task with no stale reason attached. See
+[Durable failure reason](#5-status-ingestion) for how `failure_reason` is set
+in the first place.
 
 ---
 
