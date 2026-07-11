@@ -542,6 +542,43 @@ func (s *Store) CountUnschedulableTasksByJob(_ context.Context, jobID string) (i
 	return n, nil
 }
 
+// FailureReasonSummary implements [store.TaskStore]. It mirrors the sqlite
+// group-by-then-order-by(n DESC, reason ASC) semantics: the dominant reason
+// is the most frequent one, ties broken by reason string ascending.
+func (s *Store) FailureReasonSummary(_ context.Context, jobID string) (store.FailureSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	counts := make(map[string]int)
+	for _, t := range s.tasks {
+		if t.JobID == jobID && t.Status == store.TaskStatusFailed && t.FailureReason != "" {
+			counts[t.FailureReason]++
+		}
+	}
+	if len(counts) == 0 {
+		return store.FailureSummary{}, nil
+	}
+
+	reasons := make([]string, 0, len(counts))
+	for reason := range counts {
+		reasons = append(reasons, reason)
+	}
+	slices.SortFunc(reasons, func(a, b string) int {
+		if n := counts[b] - counts[a]; n != 0 {
+			return n // descending by count
+		}
+		return cmp.Compare(a, b) // ascending by reason
+	})
+
+	var sum store.FailureSummary
+	sum.DominantReason = reasons[0]
+	sum.DistinctReasons = len(reasons)
+	for _, reason := range reasons {
+		sum.FailedCount += counts[reason]
+	}
+	return sum, nil
+}
+
 // CommittedCores implements [store.TaskStore].
 func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCost int) (int, error) {
 	s.mu.Lock()

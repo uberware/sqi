@@ -703,3 +703,89 @@ func TestTaskAttempt_MessageRoundTrip(t *testing.T) {
 		t.Fatalf("GetTaskAttempt Message = %q, want %q", got.Message, "execution timeout after 120s")
 	}
 }
+
+// failedTaskWithReason creates a task in [store.TaskStatusFailed] carrying
+// the given failure_reason.
+func failedTaskWithReason(t *testing.T, s *sqlite.Store, id, jobID, stepID, reason string) {
+	t.Helper()
+	insertTask(t, s, id, jobID, stepID)
+	ctx := context.Background()
+	if err := s.UpdateTaskStatus(ctx, id, store.TaskStatusFailed); err != nil {
+		t.Fatalf("UpdateTaskStatus(%q): %v", id, err)
+	}
+	if err := s.SetTaskFailureReason(ctx, id, reason); err != nil {
+		t.Fatalf("SetTaskFailureReason(%q): %v", id, err)
+	}
+}
+
+// TestFailureReasonSummary_Mixed asserts the summary counts failed tasks
+// grouped by reason and picks the most frequent reason as dominant.
+func TestFailureReasonSummary_Mixed(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+
+	failedTaskWithReason(t, s, "t0", "j1", "s1", "staging")
+	failedTaskWithReason(t, s, "t1", "j1", "s1", "staging")
+	failedTaskWithReason(t, s, "t2", "j1", "s1", "timeout")
+
+	sum, err := s.FailureReasonSummary(ctx, "j1")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary: %v", err)
+	}
+	if sum.FailedCount != 3 || sum.DominantReason != "staging" || sum.DistinctReasons != 2 {
+		t.Fatalf("got %+v, want {FailedCount:3 DominantReason:staging DistinctReasons:2}", sum)
+	}
+}
+
+// TestFailureReasonSummary_Tie asserts that when two reasons tie on
+// frequency, the dominant reason is the lexicographically smaller one —
+// deterministic regardless of insertion order.
+func TestFailureReasonSummary_Tie(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+
+	failedTaskWithReason(t, s, "t0", "j1", "s1", "timeout")
+	failedTaskWithReason(t, s, "t1", "j1", "s1", "staging")
+
+	sum, err := s.FailureReasonSummary(ctx, "j1")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary: %v", err)
+	}
+	if sum.FailedCount != 2 || sum.DominantReason != "staging" || sum.DistinctReasons != 2 {
+		t.Fatalf("got %+v, want {FailedCount:2 DominantReason:staging DistinctReasons:2}", sum)
+	}
+}
+
+// TestFailureReasonSummary_Empty asserts a job with no failed tasks (or no
+// failure_reason recorded) returns the zero-value summary and no error.
+func TestFailureReasonSummary_Empty(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t0", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t0", store.TaskStatusSucceeded); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	sum, err := s.FailureReasonSummary(ctx, "j1")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary: %v", err)
+	}
+	if (sum != store.FailureSummary{}) {
+		t.Fatalf("got %+v, want zero value", sum)
+	}
+}

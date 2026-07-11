@@ -70,6 +70,20 @@ type Task struct {
 	RetryAfter *time.Time
 }
 
+// FailureSummary aggregates a job's failed tasks by [Task.FailureReason],
+// for the job-detail failure banner. The zero value ({0 "" 0}) means the job
+// has no failed tasks with a recorded reason.
+type FailureSummary struct {
+	// FailedCount is the total number of failed tasks with a non-empty
+	// FailureReason.
+	FailedCount int
+	// DominantReason is the most frequent FailureReason among failed tasks;
+	// ties are broken by reason string ascending for determinism.
+	DominantReason string
+	// DistinctReasons is the number of distinct FailureReason values.
+	DistinctReasons int
+}
+
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.
 type TaskSortField string
 
@@ -239,6 +253,14 @@ type TaskStore interface {
 	// "unschedulable" count alongside the per-status task counts in job
 	// responses.
 	CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error)
+
+	// FailureReasonSummary counts the job's [TaskStatusFailed] tasks that
+	// carry a non-empty FailureReason, grouped by reason. DominantReason is
+	// the most frequent reason; ties are broken by reason string ascending
+	// for determinism. A job with no such tasks returns the zero value and a
+	// nil error. Used by the REST layer to power the job-detail failure
+	// banner.
+	FailureReasonSummary(ctx context.Context, jobID string) (FailureSummary, error)
 
 	// RecordTaskFailure records a genuine (worker-reported) failure of a single
 	// task ATTEMPT exactly once, tying the counter increment to the attempt's

@@ -144,6 +144,16 @@ SELECT COUNT(*)
 FROM   tasks
 WHERE  job_id = ? AND status = 'ready' AND unschedulable_reason <> ''`
 
+	// Groups a job's failed tasks by failure_reason, ordered by frequency
+	// descending then reason ascending so the first row is deterministically
+	// the dominant reason (see FailureReasonSummary).
+	sqlFailureReasonSummary = `
+SELECT failure_reason, COUNT(*) AS n
+FROM   tasks
+WHERE  job_id = ? AND status = 'failed' AND failure_reason != ''
+GROUP  BY failure_reason
+ORDER  BY n DESC, failure_reason ASC`
+
 	// Cancels all non-terminal tasks for a job and returns the number of rows
 	// updated. The caller first SELECTs active tasks within the same
 	// transaction to capture worker IDs before this UPDATE clears them.
@@ -743,6 +753,30 @@ func (s *Store) CountUnschedulableTasksByJob(ctx context.Context, jobID string) 
 		return 0, mapErr(err)
 	}
 	return n, nil
+}
+
+// FailureReasonSummary implements [store.TaskStore].
+func (s *Store) FailureReasonSummary(ctx context.Context, jobID string) (store.FailureSummary, error) {
+	rows, err := s.db.QueryContext(ctx, sqlFailureReasonSummary, jobID)
+	if err != nil {
+		return store.FailureSummary{}, mapErr(err)
+	}
+	defer rows.Close()
+
+	var sum store.FailureSummary
+	for rows.Next() {
+		var reason string
+		var n int
+		if err := rows.Scan(&reason, &n); err != nil {
+			return store.FailureSummary{}, err
+		}
+		if sum.DistinctReasons == 0 {
+			sum.DominantReason = reason // first row = highest n (query is ordered)
+		}
+		sum.DistinctReasons++
+		sum.FailedCount += n
+	}
+	return sum, mapErr(rows.Err())
 }
 
 // CommittedCores implements [store.TaskStore].

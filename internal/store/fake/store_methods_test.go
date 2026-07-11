@@ -574,6 +574,69 @@ func TestCountUnschedulableTasksByJob(t *testing.T) {
 	}
 }
 
+func TestFailureReasonSummary(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+
+	// Mixed reasons: staging x2, timeout x1 — staging dominates.
+	mustCreateTask(t, s, "t0", "j1", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusFailed)
+	for _, tc := range []struct{ id, reason string }{
+		{"t0", "staging"}, {"t1", "staging"}, {"t2", "timeout"},
+	} {
+		if err := s.SetTaskFailureReason(ctx(), tc.id, tc.reason); err != nil {
+			t.Fatalf("SetTaskFailureReason(%q): %v", tc.id, err)
+		}
+	}
+	// A succeeded task must never count, even with a stray reason.
+	succ := mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusSucceeded)
+	if err := s.SetTaskFailureReason(ctx(), succ.ID, "staging"); err != nil {
+		t.Fatalf("SetTaskFailureReason(%q): %v", succ.ID, err)
+	}
+
+	sum, err := s.FailureReasonSummary(ctx(), "j1")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary: %v", err)
+	}
+	if sum.FailedCount != 3 || sum.DominantReason != "staging" || sum.DistinctReasons != 2 {
+		t.Fatalf("got %+v, want {FailedCount:3 DominantReason:staging DistinctReasons:2}", sum)
+	}
+
+	// Tie case: two reasons each with count 1 — dominant is the
+	// lexicographically smaller reason, deterministically.
+	mustCreateJob(t, s, "j2", "farm-f1", "q1")
+	mustCreateTask(t, s, "u0", "j2", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "u1", "j2", "s1", store.TaskStatusFailed)
+	if err := s.SetTaskFailureReason(ctx(), "u0", "timeout"); err != nil {
+		t.Fatalf("SetTaskFailureReason(u0): %v", err)
+	}
+	if err := s.SetTaskFailureReason(ctx(), "u1", "staging"); err != nil {
+		t.Fatalf("SetTaskFailureReason(u1): %v", err)
+	}
+	sum, err = s.FailureReasonSummary(ctx(), "j2")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary(j2): %v", err)
+	}
+	if sum.FailedCount != 2 || sum.DominantReason != "staging" || sum.DistinctReasons != 2 {
+		t.Fatalf("got %+v, want {FailedCount:2 DominantReason:staging DistinctReasons:2}", sum)
+	}
+
+	// Empty case: a job with no failed tasks carrying a reason.
+	mustCreateJob(t, s, "j3", "farm-f1", "q1")
+	mustCreateTask(t, s, "v0", "j3", "s1", store.TaskStatusSucceeded)
+	sum, err = s.FailureReasonSummary(ctx(), "j3")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary(j3): %v", err)
+	}
+	if (sum != store.FailureSummary{}) {
+		t.Fatalf("got %+v, want zero value", sum)
+	}
+}
+
 func TestListTasks_SortFields(t *testing.T) {
 	s := New()
 	defer s.Close()
