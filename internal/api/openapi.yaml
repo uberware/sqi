@@ -714,6 +714,24 @@ components:
         updated_at:
           type: string
           format: date-time
+        max_attempts:
+          type: integer
+          nullable: true
+          description: >-
+            Farm-level override for the maximum attempts per task. Null means
+            inherit (server default).
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: >-
+            Farm-level override for the delay before retrying a failed task.
+            Null means inherit (server default).
+        failure_limit:
+          type: integer
+          nullable: true
+          description: >-
+            Farm-level override for the number of task failures that
+            auto-parks a job. Null means inherit (server default).
 
     CreateFarmRequest:
       type: object
@@ -727,6 +745,18 @@ components:
           type: integer
           minimum: 0
           default: 0
+        max_attempts:
+          type: integer
+          nullable: true
+          description: Farm-level max-attempts retry-policy override. Null means inherit.
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: Farm-level retry-delay retry-policy override. Null means inherit.
+        failure_limit:
+          type: integer
+          nullable: true
+          description: Farm-level failure-limit retry-policy override. Null means inherit.
 
     UpdateFarmRequest:
       type: object
@@ -740,6 +770,18 @@ components:
           type: integer
           minimum: 0
           default: 0
+        max_attempts:
+          type: integer
+          nullable: true
+          description: Farm-level max-attempts retry-policy override. Null means inherit.
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: Farm-level retry-delay retry-policy override. Null means inherit.
+        failure_limit:
+          type: integer
+          nullable: true
+          description: Farm-level failure-limit retry-policy override. Null means inherit.
 
     # ── Queues ────────────────────────────────────────────────────────────────
     Queue:
@@ -777,6 +819,24 @@ components:
         updated_at:
           type: string
           format: date-time
+        max_attempts:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level override for the maximum attempts per task. Null
+            means inherit (farm -> server default).
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level override for the delay before retrying a failed
+            task. Null means inherit (farm -> server default).
+        failure_limit:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level override for the number of task failures that
+            auto-parks a job. Null means inherit (farm -> server default).
 
     CreateQueueRequest:
       type: object
@@ -798,6 +858,22 @@ components:
         paused:
           type: boolean
           default: false
+        max_attempts:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level max-attempts retry-policy override. Null means
+            inherit.
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: Queue-level retry-delay retry-policy override. Null means inherit.
+        failure_limit:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level failure-limit retry-policy override. Null means
+            inherit.
 
     UpdateQueueRequest:
       type: object
@@ -819,6 +895,22 @@ components:
         paused:
           type: boolean
           default: false
+        max_attempts:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level max-attempts retry-policy override. Null means
+            inherit.
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: Queue-level retry-delay retry-policy override. Null means inherit.
+        failure_limit:
+          type: integer
+          nullable: true
+          description: >-
+            Queue-level failure-limit retry-policy override. Null means
+            inherit.
 
     QueueList:
       type: object

@@ -46,6 +46,11 @@ type farmResponse struct {
 	MaxConcurrentTasks int       `json:"max_concurrent_tasks"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are the configured
+	// farm-level retry-policy overrides. Nil means inherit (server default).
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // createFarmRequest is the body accepted by POST /api/v1/farms.
@@ -53,6 +58,11 @@ type createFarmRequest struct {
 	Name               string `json:"name"`
 	Description        string `json:"description"`
 	MaxConcurrentTasks int    `json:"max_concurrent_tasks"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit set the farm's retry
+	// policy overrides. Nil means inherit.
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // updateFarmRequest is the body accepted by PUT /api/v1/farms/{id}.
@@ -60,6 +70,11 @@ type updateFarmRequest struct {
 	Name               string `json:"name"`
 	Description        string `json:"description"`
 	MaxConcurrentTasks int    `json:"max_concurrent_tasks"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit set the farm's retry
+	// policy overrides. Nil means inherit.
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // ── POST /api/v1/farms ────────────────────────────────────────────────────────
@@ -86,6 +101,9 @@ func (h *farmHandler) createFarm(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrentTasks: req.MaxConcurrentTasks,
 		CreatedAt:          now,
 		UpdatedAt:          now,
+		MaxAttempts:        req.MaxAttempts,
+		RetryDelaySeconds:  req.RetryDelaySeconds,
+		FailureLimit:       req.FailureLimit,
 	}
 
 	created, err := h.store.CreateFarm(ctx, farm)
@@ -164,6 +182,9 @@ func (h *farmHandler) updateFarm(w http.ResponseWriter, r *http.Request) {
 		Name:               req.Name,
 		Description:        req.Description,
 		MaxConcurrentTasks: req.MaxConcurrentTasks,
+		MaxAttempts:        req.MaxAttempts,
+		RetryDelaySeconds:  req.RetryDelaySeconds,
+		FailureLimit:       req.FailureLimit,
 	}
 
 	updated, err := h.store.UpdateFarm(ctx, farm)
@@ -213,5 +234,8 @@ func toFarmResponse(f store.Farm) farmResponse {
 		MaxConcurrentTasks: f.MaxConcurrentTasks,
 		CreatedAt:          f.CreatedAt,
 		UpdatedAt:          f.UpdatedAt,
+		MaxAttempts:        f.MaxAttempts,
+		RetryDelaySeconds:  f.RetryDelaySeconds,
+		FailureLimit:       f.FailureLimit,
 	}
 }
