@@ -578,7 +578,7 @@ func (s *Store) RecordTaskFailure(
 	_ context.Context,
 	attemptID, taskID string,
 	exitCode *int,
-	sessionID string,
+	sessionID, message string,
 	now time.Time,
 ) (taskFailed, jobFailed int, err error) {
 	s.mu.Lock()
@@ -606,6 +606,9 @@ func (s *Store) RecordTaskFailure(
 		}
 		if sessionID != "" {
 			attempt.SessionID = sessionID
+		}
+		if message != "" {
+			attempt.Message = message
 		}
 		s.taskAttempts[attemptID] = attempt
 

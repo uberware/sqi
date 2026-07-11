@@ -389,6 +389,48 @@ func TestProcessTaskStatus_Canceled(t *testing.T) {
 	}
 }
 
+// TestProcessTaskStatus_Canceled_PersistsMessageAndReason asserts that a
+// worker-canceled status (whose attempt is closed directly by
+// handleTaskTerminal, not RecordTaskFailure) still persists the worker's
+// Message onto both the closed attempt and the task's durable FailureReason.
+func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "canceled",
+			Message:   "canceled by operator",
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	stored, err := st.GetTask(t.Context(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != store.TaskStatusCanceled {
+		t.Errorf("task status = %q, want canceled", stored.Status)
+	}
+	if stored.FailureReason != "canceled by operator" {
+		t.Errorf("task.failure_reason = %q, want %q", stored.FailureReason, "canceled by operator")
+	}
+
+	storedAttempt, err := st.GetTaskAttempt(t.Context(), attempt.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAttempt: %v", err)
+	}
+	if storedAttempt.Message != "canceled by operator" {
+		t.Errorf("attempt.message = %q, want %q", storedAttempt.Message, "canceled by operator")
+	}
+}
+
 // ── Step and job completion ───────────────────────────────────────────────────
 
 func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {

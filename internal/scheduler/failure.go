@@ -57,7 +57,7 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	}
 	policy := resolveRetryPolicy(job, queue, farm, s.retryDefaults())
 
-	taskFailed, jobFailed, err := s.store.RecordTaskFailure(ctx, attempt.ID, m.TaskID, m.ExitCode, m.SessionID, at)
+	taskFailed, jobFailed, err := s.store.RecordTaskFailure(ctx, attempt.ID, m.TaskID, m.ExitCode, m.SessionID, m.Message, at)
 	if err != nil {
 		return err
 	}

@@ -224,7 +224,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff; enough failures park the job with a reason.
 	att := insertAttempt(t, s, "t1", "w1", 1)
-	if _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", now); err != nil {
+	if _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
 	if err := s.RequeueTaskForRetry(ctx, "t1", now.Add(time.Minute), now); err != nil {
@@ -306,13 +306,13 @@ func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
 	a1 := insertAttempt(t, s, "t1", "w1", 1)
-	tf, jf, err := s.RecordTaskFailure(ctx, a1.ID, "t1", nil, "", now)
+	tf, jf, err := s.RecordTaskFailure(ctx, a1.ID, "t1", nil, "", "", now)
 	if err != nil || tf != 1 || jf != 1 {
 		t.Fatalf("first attempt: tf=%d jf=%d err=%v", tf, jf, err)
 	}
 
 	a2 := insertAttempt(t, s, "t1", "w1", 2)
-	tf, jf, err = s.RecordTaskFailure(ctx, a2.ID, "t1", nil, "", now)
+	tf, jf, err = s.RecordTaskFailure(ctx, a2.ID, "t1", nil, "", "", now)
 	if err != nil || tf != 2 || jf != 2 {
 		t.Fatalf("second attempt: tf=%d jf=%d err=%v", tf, jf, err)
 	}
@@ -348,7 +348,7 @@ func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 	sess := "sess-1"
 
 	// First delivery: closes the attempt as failed and counts once.
-	tf, jf, err := s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, now)
+	tf, jf, err := s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now)
 	if err != nil || tf != 1 || jf != 1 {
 		t.Fatalf("first delivery: tf=%d jf=%d err=%v", tf, jf, err)
 	}
@@ -371,7 +371,7 @@ func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 	}
 
 	// Redelivery: the attempt is already terminal, so the counts must NOT move.
-	tf, jf, err = s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, now.Add(time.Second))
+	tf, jf, err = s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now.Add(time.Second))
 	if err != nil || tf != 1 || jf != 1 {
 		t.Fatalf("redelivery: tf=%d jf=%d err=%v (want 1,1 — no re-count)", tf, jf, err)
 	}
@@ -399,7 +399,7 @@ func TestRecordTaskFailure_NotFound(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	_, _, err := s.RecordTaskFailure(ctx, "missing-attempt", "missing", nil, "", time.Now().UTC())
+	_, _, err := s.RecordTaskFailure(ctx, "missing-attempt", "missing", nil, "", "", time.Now().UTC())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}

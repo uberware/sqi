@@ -168,16 +168,18 @@ SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at 
 WHERE  id = ? AND status = 'ready'`
 
 	// sqlCloseAttemptAsFailed closes a running attempt as failed, stamping
-	// ended_at, and coalescing exit_code/session_id so a nil exit code or empty
-	// session leaves the existing value intact. The `status = 'running'` guard
-	// makes this a no-op (0 rows) on a redelivery whose attempt is already
-	// terminal — the signal RecordTaskFailure uses to avoid double-counting.
+	// ended_at, and coalescing exit_code/session_id/message so a nil exit code
+	// or empty session/message leaves the existing value intact. The
+	// `status = 'running'` guard makes this a no-op (0 rows) on a redelivery
+	// whose attempt is already terminal — the signal RecordTaskFailure uses to
+	// avoid double-counting.
 	sqlCloseAttemptAsFailed = `
 UPDATE task_attempts
 SET    status = 'failed',
        ended_at = ?,
        exit_code = COALESCE(?, exit_code),
-       session_id = COALESCE(NULLIF(?, ''), session_id)
+       session_id = COALESCE(NULLIF(?, ''), session_id),
+       message = COALESCE(NULLIF(?, ''), message)
 WHERE  id = ? AND status = 'running'`
 
 	sqlRecordTaskFailure = `
@@ -763,7 +765,7 @@ func (s *Store) RecordTaskFailure(
 	ctx context.Context,
 	attemptID, taskID string,
 	exitCode *int,
-	sessionID string,
+	sessionID, message string,
 	now time.Time,
 ) (taskFailed, jobFailed int, err error) {
 	nowText := timeToText(now.UTC())
@@ -779,7 +781,7 @@ func (s *Store) RecordTaskFailure(
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, exit, sessionID, attemptID)
+	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, exit, sessionID, message, attemptID)
 	if err != nil {
 		return 0, 0, mapErr(err)
 	}

@@ -290,7 +290,7 @@ func TestGetTask(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateTaskAttempt: %v", err)
 		}
-		if _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", now); err != nil {
+		if _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", "", now); err != nil {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
 		retryAfter := now.Add(30 * time.Second)

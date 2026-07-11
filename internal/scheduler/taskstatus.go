@@ -243,6 +243,9 @@ func (s *Scheduler) handleTaskTerminal(
 	updated.Status = attemptStatus
 	updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
 	updated.EndedAt = &at
+	// Attempt message (covers worker-canceled, whose attempt is closed here;
+	// for failed, RecordTaskFailure already set it — COALESCE keeps it).
+	updated.Message = m.Message
 	if m.ExitCode != nil {
 		code := *m.ExitCode
 		updated.ExitCode = &code
@@ -254,6 +257,14 @@ func (s *Scheduler) handleTaskTerminal(
 	// ── Transition the task ───────────────────────────────────────────────
 	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, taskStatus); err != nil {
 		return err
+	}
+
+	// ── Durable per-task failure reason for terminal non-success ─────────
+	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
+		reason := failureReasonOrFallback(m.Message, m.ExitCode, taskStatus)
+		if err := s.store.SetTaskFailureReason(ctx, m.TaskID, reason); err != nil {
+			return err
+		}
 	}
 
 	// ── Release usage pool slots ──────────────────────────────────────────
@@ -296,6 +307,22 @@ func (s *Scheduler) handleTaskTerminal(
 	})
 
 	return s.checkStepCompletion(ctx, task.StepID, task.JobID)
+}
+
+// failureReasonOrFallback returns m.Message, or a synthesized fallback so a
+// terminal non-success is never blank. Canceled with no message stays blank
+// (server-originated cancels set their own reason via SetTaskFailureReason).
+func failureReasonOrFallback(msg string, exitCode *int, status store.TaskStatus) string {
+	if msg != "" {
+		return msg
+	}
+	if status == store.TaskStatusFailed {
+		if exitCode != nil {
+			return fmt.Sprintf("failed (exit %d)", *exitCode)
+		}
+		return "failed"
+	}
+	return ""
 }
 
 // ── Step and job completion ───────────────────────────────────────────────────

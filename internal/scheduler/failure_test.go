@@ -162,9 +162,18 @@ func (h *failureHarness) newAttempt(taskID, workerID string) store.TaskAttempt {
 // handleTaskStatusMessage uses for a worker-published task.status message).
 func (h *failureHarness) reportFailed(taskID string) {
 	h.t.Helper()
+	h.reportFailedWithMessage(taskID, "")
+}
+
+// reportFailedWithMessage is like reportFailed but sets the worker-reported
+// Message on the TaskStatusMsg, exercising the failure-reason persistence
+// path (RecordTaskFailure's attempt message and, on the terminal branch,
+// SetTaskFailureReason).
+func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
+	h.t.Helper()
 	attempt, ok := h.current[taskID]
 	if !ok {
-		h.t.Fatalf("reportFailed: no attempt recorded for task %s", taskID)
+		h.t.Fatalf("reportFailedWithMessage: no attempt recorded for task %s", taskID)
 	}
 	exitCode := 1
 	msg := protocol.TaskStatusMsg{
@@ -172,6 +181,7 @@ func (h *failureHarness) reportFailed(taskID string) {
 		AttemptID: attempt.ID,
 		Status:    "failed",
 		ExitCode:  &exitCode,
+		Message:   message,
 		At:        time.Now().UTC(),
 	}
 	if err := h.s.processTaskStatus(h.t.Context(), msg); err != nil {
@@ -229,6 +239,30 @@ func (h *failureHarness) jobFailedAttempts(jobID string) int {
 		h.t.Fatalf("GetJob(%s): %v", jobID, err)
 	}
 	return job.FailedAttempts
+}
+
+func (h *failureHarness) taskFailureReason(taskID string) string {
+	h.t.Helper()
+	task, err := h.st.GetTask(h.t.Context(), taskID)
+	if err != nil {
+		h.t.Fatalf("GetTask(%s): %v", taskID, err)
+	}
+	return task.FailureReason
+}
+
+// latestAttemptMessage returns the Message of the most recently created
+// attempt for taskID (the one reportFailed*/newAttempt targets).
+func (h *failureHarness) latestAttemptMessage(taskID string) string {
+	h.t.Helper()
+	attempt, ok := h.current[taskID]
+	if !ok {
+		h.t.Fatalf("latestAttemptMessage: no attempt recorded for task %s", taskID)
+	}
+	stored, err := h.st.GetTaskAttempt(h.t.Context(), attempt.ID)
+	if err != nil {
+		h.t.Fatalf("GetTaskAttempt(%s): %v", attempt.ID, err)
+	}
+	return stored.Message
 }
 
 func (h *failureHarness) parkReason(jobID string) string {
@@ -421,5 +455,44 @@ func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
 	}
 	if pass {
 		t.Fatal("leaseGatesPass should refuse a task whose job is paused")
+	}
+}
+
+// TestHandleTaskFailed_PersistsReason asserts that a worker-reported failure
+// message that goes terminal (max_attempts=1, so the first failure is
+// exhausted, not retried) persists on both the closed attempt's Message and
+// the task's durable FailureReason.
+func TestHandleTaskFailed_PersistsReason(t *testing.T) {
+	// max_attempts=1 so the first failure is terminal.
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 1, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+	h.reportFailedWithMessage("t1", "worker not configured for staging")
+	if got := h.taskFailureReason("t1"); got != "worker not configured for staging" {
+		t.Fatalf("task.failure_reason = %q", got)
+	}
+	if got := h.latestAttemptMessage("t1"); got != "worker not configured for staging" {
+		t.Fatalf("attempt.message = %q", got)
+	}
+}
+
+// TestHandleTaskFailed_RetriedAttemptRecordsMessage_TaskReasonStaysClear
+// asserts that a retried (non-terminal) failure still records the closed
+// attempt's Message via RecordTaskFailure, but does NOT set the task's
+// FailureReason — only handleTaskTerminal does that, and the retry path
+// never calls it.
+func TestHandleTaskFailed_RetriedAttemptRecordsMessage_TaskReasonStaysClear(t *testing.T) {
+	// max_attempts=2: first failure retries (task -> ready, reason clear), but
+	// the closed attempt still records its message.
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 2, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+	h.reportFailedWithMessage("t1", "process exited with code 1")
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("want ready, got %s", got)
+	}
+	if got := h.taskFailureReason("t1"); got != "" {
+		t.Fatalf("retried task must have empty failure_reason, got %q", got)
+	}
+	if got := h.latestAttemptMessage("t1"); got != "process exited with code 1" {
+		t.Fatalf("attempt.message = %q", got)
 	}
 }
