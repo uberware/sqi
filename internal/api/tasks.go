@@ -64,6 +64,9 @@ type taskResponse struct {
 	// UnschedulableReason is set when a ready task cannot currently be
 	// satisfied by any online worker; empty means schedulable.
 	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
+	// FailureReason is the human-readable reason the task reached a terminal
+	// non-success (failed or canceled). Empty for non-terminal tasks.
+	FailureReason string `json:"failure_reason,omitempty"`
 	// FailedAttempts counts attempts that genuinely ran and failed (does not
 	// count worker crashes / unassignments that trigger a retry without a
 	// genuine failure).
@@ -444,6 +447,7 @@ func toTaskResponse(t store.Task) taskResponse {
 		CreatedAt:           t.CreatedAt,
 		UpdatedAt:           t.UpdatedAt,
 		UnschedulableReason: t.UnschedulableReason,
+		FailureReason:       t.FailureReason,
 		FailedAttempts:      t.FailedAttempts,
 		RetryAfter:          t.RetryAfter,
 	}

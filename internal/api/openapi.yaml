@@ -320,6 +320,28 @@ components:
                 $ref: "#/components/schemas/Step"
             task_counts:
               $ref: "#/components/schemas/TaskCounts"
+            failure_summary:
+              $ref: "#/components/schemas/FailureSummary"
+              description: >-
+                Aggregate of the job's failed tasks by failure reason. Omitted
+                when the job has no failed tasks with a recorded reason.
+
+    FailureSummary:
+      type: object
+      required: [failed_count, distinct_reasons]
+      properties:
+        failed_count:
+          type: integer
+          description: >-
+            Total number of failed tasks with a non-empty failure_reason.
+        dominant_reason:
+          type: string
+          description: >-
+            The most frequent failure_reason among the job's failed tasks;
+            ties are broken by reason string ascending.
+        distinct_reasons:
+          type: integer
+          description: Number of distinct failure_reason values.
 
     JobList:
       type: object
@@ -410,6 +432,12 @@ components:
             worker (e.g. no worker matches its required capabilities or core
             reservation). Empty/absent means schedulable. An annotation on the
             task, not a status.
+        failure_reason:
+          type: string
+          description: >-
+            Human-readable reason the task reached a terminal non-success
+            (failed or canceled). Empty/absent for non-terminal tasks; cleared
+            on retry.
         failed_attempts:
           type: integer
           description: >-

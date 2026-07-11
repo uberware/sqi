@@ -700,6 +700,82 @@ func TestGetJob(t *testing.T) {
 	})
 }
 
+func TestJobDetail_FailureSummary(t *testing.T) {
+	t.Run("includes failure_summary when the job has failed tasks with reasons", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		ctx := t.Context()
+		job := seedJob(t, st, store.JobStatusRunning)
+
+		now := time.Now()
+		step, err := st.CreateStep(ctx, store.Step{
+			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
+			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateStep: %v", err)
+		}
+		for range 2 {
+			tk, err := st.CreateTask(ctx, store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+				Name: "t", Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			if err := st.SetTaskFailureReason(ctx, tk.ID, "staging"); err != nil {
+				t.Fatalf("SetTaskFailureReason: %v", err)
+			}
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		fs, ok := resp["failure_summary"].(map[string]any)
+		if !ok {
+			t.Fatalf("failure_summary missing or wrong type: %v", resp["failure_summary"])
+		}
+		if fs["failed_count"] != float64(2) {
+			t.Errorf("failure_summary.failed_count = %v, want 2", fs["failed_count"])
+		}
+		if fs["dominant_reason"] != "staging" {
+			t.Errorf("failure_summary.dominant_reason = %v, want %q", fs["dominant_reason"], "staging")
+		}
+		if fs["distinct_reasons"] != float64(1) {
+			t.Errorf("failure_summary.distinct_reasons = %v, want 1", fs["distinct_reasons"])
+		}
+	})
+
+	t.Run("omits failure_summary when the job has no failed tasks", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		job := seedJob(t, st, store.JobStatusPending)
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if _, ok := resp["failure_summary"]; ok {
+			t.Errorf("failure_summary should be omitted, got %v", resp["failure_summary"])
+		}
+	})
+}
+
 // ── PATCH /api/v1/jobs/{id} ───────────────────────────────────────────────────
 
 func TestPatchJob(t *testing.T) {

@@ -316,6 +316,32 @@ func TestGetTask(t *testing.T) {
 			t.Errorf("retry_after = %v, want %v", resp.RetryAfter, retryAfter)
 		}
 	})
+
+	t.Run("includes failure_reason when set", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		const reason = "staging"
+		if err := st.SetTaskFailureReason(t.Context(), tk.ID, reason); err != nil {
+			t.Fatalf("SetTaskFailureReason: %v", err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.FailureReason != reason {
+			t.Errorf("failure_reason = %q, want %q", resp.FailureReason, reason)
+		}
+	})
 }
 
 // ── GET /api/v1/tasks/{id}/logs ───────────────────────────────────────────────

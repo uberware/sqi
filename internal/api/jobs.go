@@ -118,6 +118,17 @@ type jobDetailResponse struct {
 
 	Steps      []stepResponse     `json:"steps"`
 	TaskCounts taskCountsResponse `json:"task_counts"`
+	// FailureSummary aggregates the job's failed tasks by failure reason. Nil
+	// when the job has no failed tasks with a recorded reason.
+	FailureSummary *failureSummaryResponse `json:"failure_summary,omitempty"`
+}
+
+// failureSummaryResponse is the JSON representation of [store.FailureSummary],
+// included in job detail when the job has failed tasks with recorded reasons.
+type failureSummaryResponse struct {
+	FailedCount     int    `json:"failed_count"`
+	DominantReason  string `json:"dominant_reason,omitempty"`
+	DistinctReasons int    `json:"distinct_reasons"`
 }
 
 // jobListItemResponse is a single entry in the job list. It carries the base
@@ -379,6 +390,16 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		jobResponse: jr,
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
+	}
+
+	if summary, err := h.store.FailureReasonSummary(ctx, id); err == nil && summary.FailedCount > 0 {
+		resp.FailureSummary = &failureSummaryResponse{
+			FailedCount:     summary.FailedCount,
+			DominantReason:  summary.DominantReason,
+			DistinctReasons: summary.DistinctReasons,
+		}
+	} else if err != nil {
+		h.logger.WarnContext(ctx, "jobs: failure reason summary failed", slog.String("id", id), slog.Any("error", err))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
