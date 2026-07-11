@@ -225,6 +225,14 @@ type TaskStore interface {
 	// ErrNotFound if id is unknown.
 	SetTaskFailureReason(ctx context.Context, id, reason string) error
 
+	// SetTaskFailureReasonIfEmpty sets the failure reason only when the task
+	// currently has no reason recorded (an empty failure_reason). It is a
+	// legitimate no-op — not an error — when the task already carries a reason,
+	// so a more specific cause (e.g. a cascade-cancel) is never clobbered by a
+	// later, less specific one (e.g. a user cancel). A zero-row update (task
+	// unknown or already annotated) is NOT reported as ErrNotFound.
+	SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason string) error
+
 	// CountUnschedulableTasksByJob returns the number of tasks for the given
 	// job that are currently in [TaskStatusReady] with a non-empty
 	// UnschedulableReason. Used by the REST layer to surface an

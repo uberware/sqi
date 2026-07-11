@@ -553,6 +553,50 @@ func TestSetTaskFailureReason_NotFound(t *testing.T) {
 	}
 }
 
+// TestSetTaskFailureReasonIfEmpty asserts the guarded setter writes when the
+// task has no reason yet and is a no-op (preserving the existing reason) when
+// one is already recorded — the invariant that lets a cascade-cancel reason
+// survive a later user-cancel.
+func TestSetTaskFailureReasonIfEmpty(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+
+	// Empty → sets.
+	if err := s.SetTaskFailureReasonIfEmpty(ctx, "t1", "canceled by user"); err != nil {
+		t.Fatalf("SetTaskFailureReasonIfEmpty (empty): %v", err)
+	}
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != "canceled by user" {
+		t.Fatalf("FailureReason = %q, want %q", got.FailureReason, "canceled by user")
+	}
+
+	// Non-empty → no-op, existing reason preserved.
+	if err := s.SetTaskFailureReasonIfEmpty(ctx, "t1", "something else"); err != nil {
+		t.Fatalf("SetTaskFailureReasonIfEmpty (non-empty): %v", err)
+	}
+	got, err = s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != "canceled by user" {
+		t.Fatalf("FailureReason overwritten: got %q, want %q", got.FailureReason, "canceled by user")
+	}
+
+	// Unknown task → legitimate no-op, not an error.
+	if err := s.SetTaskFailureReasonIfEmpty(ctx, "missing", "x"); err != nil {
+		t.Fatalf("SetTaskFailureReasonIfEmpty (missing) = %v, want nil", err)
+	}
+}
+
 // TestTaskAttempt_MessageRoundTrip asserts that a TaskAttempt's Message
 // persists through CreateTaskAttempt and can be set via UpdateTaskAttempt.
 func TestTaskAttempt_MessageRoundTrip(t *testing.T) {

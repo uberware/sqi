@@ -201,6 +201,37 @@ func TestCancelJob_TasksAreCanceledInStore(t *testing.T) {
 	}
 }
 
+// TestCancelJob_DoesNotClobberCascadeReason asserts that a task already carrying
+// a cascade-cancel reason keeps it when CancelJob runs — cascade (the specific
+// cause) always wins over user-cancel, regardless of ordering. The guarded
+// SetTaskFailureReasonIfEmpty makes this hold even under real concurrency; here
+// we pre-set the reason to model a cascade that landed first.
+func TestCancelJob_DoesNotClobberCascadeReason(t *testing.T) {
+	st := fake.New()
+	s := newTestScheduler(st, &stubBus{})
+
+	job := seedCancelJob(t, st)
+	tk := seedTaskForJob(t, st, job, "", store.TaskStatusRunning)
+
+	// A cascade-cancel already recorded the specific cause.
+	if err := st.SetTaskFailureReason(t.Context(), tk.ID, "canceled: upstream step failed"); err != nil {
+		t.Fatalf("pre-set cascade reason: %v", err)
+	}
+
+	if err := s.CancelJob(t.Context(), job.ID); err != nil {
+		t.Fatalf("CancelJob: %v", err)
+	}
+
+	stored, err := st.GetTask(t.Context(), tk.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.FailureReason != "canceled: upstream step failed" {
+		t.Errorf("task failure_reason = %q, want cascade reason preserved %q",
+			stored.FailureReason, "canceled: upstream step failed")
+	}
+}
+
 // ── CancelTask tests ──────────────────────────────────────────────────────────
 
 func TestCancelTask_NotFound(t *testing.T) {
@@ -268,6 +299,32 @@ func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
 	}
 	if len(bus.cancelCalls) != 1 {
 		t.Errorf("expected 1 NATS cancel signal, got %d", len(bus.cancelCalls))
+	}
+}
+
+// TestCancelTask_DoesNotClobberCascadeReason mirrors the CancelJob case: a task
+// already annotated with a cascade-cancel reason keeps it through CancelTask.
+func TestCancelTask_DoesNotClobberCascadeReason(t *testing.T) {
+	st := fake.New()
+	s := newTestScheduler(st, &stubBus{})
+
+	job := seedCancelJob(t, st)
+	tk := seedTaskForJob(t, st, job, "worker-1", store.TaskStatusRunning)
+
+	if err := st.SetTaskFailureReason(t.Context(), tk.ID, "canceled: upstream step failed"); err != nil {
+		t.Fatalf("pre-set cascade reason: %v", err)
+	}
+
+	if err := s.CancelTask(t.Context(), tk.ID); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	stored, err := st.GetTask(t.Context(), tk.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.FailureReason != "canceled: upstream step failed" {
+		t.Errorf("task failure_reason = %q, want cascade reason preserved", stored.FailureReason)
 	}
 }
 

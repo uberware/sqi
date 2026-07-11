@@ -152,6 +152,7 @@ type Store struct {
 	stmtUpdateTaskStatus             *sql.Stmt
 	stmtSetTaskUnschedulableReason   *sql.Stmt
 	stmtSetTaskFailureReason         *sql.Stmt
+	stmtSetTaskFailureReasonIfEmpty  *sql.Stmt
 	stmtAssignTask                   *sql.Stmt
 	stmtListReadyTasks               *sql.Stmt
 	stmtReclaimWorkerTasks           *sql.Stmt
@@ -472,6 +473,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtSetTaskFailureReason, err = s.prepare(ctx, sqlSetTaskFailureReason); err != nil {
+		return err
+	}
+	if s.stmtSetTaskFailureReasonIfEmpty, err = s.prepare(ctx, sqlSetTaskFailureReasonIfEmpty); err != nil {
 		return err
 	}
 	if s.stmtAssignTask, err = s.prepare(ctx, sqlAssignTask); err != nil {

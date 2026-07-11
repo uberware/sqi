@@ -40,6 +40,12 @@ UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
 	sqlSetTaskFailureReason = `
 UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ?`
 
+	// sqlSetTaskFailureReasonIfEmpty only writes when no reason is set yet, so a
+	// more specific cause already recorded (e.g. a cascade-cancel) survives a
+	// later user-cancel. Zero rows updated is a legitimate no-op.
+	sqlSetTaskFailureReasonIfEmpty = `
+UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ? AND failure_reason = ''`
+
 	sqlAssignTask = `
 UPDATE tasks
 SET assigned_worker_id = ?, assigned_at = ?, status = 'assigned', updated_at = ?, unschedulable_reason = ''
@@ -416,6 +422,15 @@ func (s *Store) SetTaskFailureReason(ctx context.Context, id, reason string) err
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// SetTaskFailureReasonIfEmpty implements [store.TaskStore]. A zero-row update
+// (task unknown or already carrying a reason) is a legitimate no-op, not an error.
+func (s *Store) SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason string) error {
+	if _, err := s.stmtSetTaskFailureReasonIfEmpty.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id); err != nil {
+		return mapErr(err)
+	}
+	return nil
 }
 
 // AssignTask implements [store.TaskStore].

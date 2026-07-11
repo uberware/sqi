@@ -88,11 +88,13 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	s.publishCancelSignals(ctx, activeTasks, now)
 
 	// Annotate every task this call just canceled with the durable reason.
-	// Best-effort: a failure here does not roll back the cancellation itself,
-	// since the reason is an explanatory annotation, not part of the state
-	// machine.
+	// Guarded (IfEmpty) so a concurrent cascade-cancel that already recorded a
+	// more specific cause ("canceled: upstream step failed") is never clobbered
+	// — cascade always wins regardless of ordering. Best-effort: a failure here
+	// does not roll back the cancellation itself, since the reason is an
+	// explanatory annotation, not part of the state machine.
 	for _, id := range toAnnotate {
-		if err := s.store.SetTaskFailureReason(ctx, id, "canceled by user"); err != nil {
+		if err := s.store.SetTaskFailureReasonIfEmpty(ctx, id, "canceled by user"); err != nil {
 			s.logger.WarnContext(
 				ctx, "scheduler: set failure reason for canceled task failed",
 				slog.String("task_id", id),
@@ -169,9 +171,10 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("scheduler: transition task %s to canceled: %w", taskID, err)
 	}
 
-	// Annotate the durable failure reason. Best-effort: does not roll back the
-	// cancellation itself — the reason is an explanatory annotation.
-	if err = s.store.SetTaskFailureReason(ctx, taskID, "canceled by user"); err != nil {
+	// Annotate the durable failure reason. Guarded (IfEmpty) so a concurrent
+	// cascade-cancel's more specific reason is never clobbered. Best-effort:
+	// does not roll back the cancellation itself — the reason is an annotation.
+	if err = s.store.SetTaskFailureReasonIfEmpty(ctx, taskID, "canceled by user"); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: set failure reason for canceled task failed",
 			slog.String("task_id", taskID),
@@ -256,13 +259,14 @@ func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []stor
 }
 
 // nonTerminalTaskIDs returns the IDs of every task in jobID that is not yet in
-// a terminal state. Used by CancelJob to snapshot exactly which tasks it is
-// about to cancel, before CancelJobTasks flips them, so the "canceled by
-// user" annotation lands only on tasks this call transitioned — not on tasks
-// that were already canceled earlier for a different reason (e.g. a
-// cascade-cancel). Best-effort: a lookup failure is logged and yields an
-// empty (not partial) result, since annotating the wrong tasks would be worse
-// than annotating none.
+// a terminal state. Used by CancelJob to enumerate the tasks it is about to
+// cancel (including pending/ready ones, which CancelJobTasks cancels but does
+// not return), so the "canceled by user" annotation can be applied to all of
+// them. It is snapshotted before CancelJobTasks flips the rows; correctness of
+// the annotation itself does not depend on this timing — the guarded
+// SetTaskFailureReasonIfEmpty ensures a more specific reason (e.g. a
+// cascade-cancel) is never overwritten regardless of ordering. Best-effort: a
+// lookup failure is logged and yields an empty (not partial) result.
 func (s *Scheduler) nonTerminalTaskIDs(ctx context.Context, jobID string) []string {
 	page, err := s.store.ListTasks(ctx, store.ListTasksOptions{
 		JobID: jobID,

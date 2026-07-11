@@ -109,6 +109,23 @@ func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error
 	return nil
 }
 
+// SetTaskFailureReasonIfEmpty implements [store.TaskStore]. It writes the reason
+// only when the task currently has none; an unknown task or one that already
+// carries a reason is a legitimate no-op, not an error.
+func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[id]
+	if !ok || task.FailureReason != "" {
+		return nil
+	}
+	task.FailureReason = reason
+	task.UpdatedAt = time.Now()
+	s.tasks[id] = task
+	return nil
+}
+
 // TransitionStepPendingTasks transitions every pending task of the step to `to`,
 // updates UpdatedAt, and returns the affected tasks.
 func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus) ([]store.Task, error) {
