@@ -553,10 +553,19 @@ func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now t
 	return true, nil
 }
 
-// RecordTaskFailure implements [store.TaskStore]. It atomically (under the
-// store lock) increments the task's and its job's FailedAttempts counters and
-// returns both post-increment values.
-func (s *Store) RecordTaskFailure(_ context.Context, taskID string, now time.Time) (taskFailed, jobFailed int, err error) {
+// RecordTaskFailure implements [store.TaskStore]. Under the store lock it
+// closes the attempt as failed and increments the task's and job's
+// FailedAttempts counters ONLY when the attempt is still running (the first
+// delivery of the failure). A redelivery — whose attempt is already terminal,
+// or whose attempt is unknown — does not re-count; it returns the current
+// counters so the caller's retry/park decision is stable across redeliveries.
+func (s *Store) RecordTaskFailure(
+	_ context.Context,
+	attemptID, taskID string,
+	exitCode *int,
+	sessionID string,
+	now time.Time,
+) (taskFailed, jobFailed int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -564,17 +573,35 @@ func (s *Store) RecordTaskFailure(_ context.Context, taskID string, now time.Tim
 	if !ok {
 		return 0, 0, store.ErrNotFound
 	}
-	t.FailedAttempts++
-	t.UpdatedAt = now
-	s.tasks[taskID] = t
-
 	j, ok := s.jobs[t.JobID]
 	if !ok {
 		return 0, 0, store.ErrNotFound
 	}
-	j.FailedAttempts++
-	j.UpdatedAt = now
-	s.jobs[t.JobID] = j
+
+	// Gate the increment on the attempt's running→failed transition. Only the
+	// first close of a still-running attempt counts; redeliveries no-op.
+	attempt, ok := s.taskAttempts[attemptID]
+	if ok && attempt.Status == store.AttemptStatusRunning {
+		attempt.Status = store.AttemptStatusFailed
+		endedAt := now
+		attempt.EndedAt = &endedAt
+		if exitCode != nil {
+			code := *exitCode
+			attempt.ExitCode = &code
+		}
+		if sessionID != "" {
+			attempt.SessionID = sessionID
+		}
+		s.taskAttempts[attemptID] = attempt
+
+		t.FailedAttempts++
+		t.UpdatedAt = now
+		s.tasks[taskID] = t
+
+		j.FailedAttempts++
+		j.UpdatedAt = now
+		s.jobs[t.JobID] = j
+	}
 
 	return t.FailedAttempts, j.FailedAttempts, nil
 }

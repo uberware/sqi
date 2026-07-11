@@ -222,10 +222,22 @@ type TaskStore interface {
 	// responses.
 	CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error)
 
-	// RecordTaskFailure atomically increments the task's and its enclosing
-	// job's FailedAttempts counters in a single transaction and returns both
-	// post-increment values. Returns [ErrNotFound] if the task does not exist.
-	RecordTaskFailure(ctx context.Context, taskID string, now time.Time) (taskFailed, jobFailed int, err error)
+	// RecordTaskFailure records a genuine (worker-reported) failure of a single
+	// task ATTEMPT exactly once, tying the counter increment to the attempt's
+	// running→failed transition so an at-least-once redelivery of the same
+	// status message cannot double-count.
+	//
+	// In one transaction it closes the attempt as failed (setting ended_at,
+	// exit_code, and session_id) ONLY when the attempt is still running; on that
+	// first close it increments both the task's and its enclosing job's
+	// FailedAttempts counters. When the attempt is already terminal (a
+	// redelivery), it does NOT increment — it simply returns the CURRENT
+	// counters so the caller's retry/park decision is stable across
+	// redeliveries. exitCode nil leaves the attempt's exit_code unchanged;
+	// sessionID "" leaves the session_id unchanged. Returns the authoritative
+	// post-call task and job FailedAttempts values. Returns [ErrNotFound] if the
+	// task does not exist.
+	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID string, now time.Time) (taskFailed, jobFailed int, err error)
 
 	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],
 	// clearing AssignedWorkerID and AssignedAt, and stamps RetryAfter so the

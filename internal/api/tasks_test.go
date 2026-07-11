@@ -283,7 +283,14 @@ func TestGetTask(t *testing.T) {
 		_, tk := seedTask(t, st, store.TaskStatusReady)
 
 		now := time.Now()
-		if _, _, err := st.RecordTaskFailure(t.Context(), tk.ID, now); err != nil {
+		att, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+			ID: uuid.NewString(), TaskID: tk.ID, WorkerID: "w1",
+			AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateTaskAttempt: %v", err)
+		}
+		if _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", now); err != nil {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
 		retryAfter := now.Add(30 * time.Second)

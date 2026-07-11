@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 func TestRetryTasks_SQLite(t *testing.T) {
@@ -222,7 +223,8 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff; enough failures park the job with a reason.
-	if _, _, err := s.RecordTaskFailure(ctx, "t1", now); err != nil {
+	att := insertAttempt(t, s, "t1", "w1", 1)
+	if _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
 	if err := s.RequeueTaskForRetry(ctx, "t1", now.Add(time.Minute), now); err != nil {
@@ -274,10 +276,11 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	}
 }
 
-// TestRecordTaskFailure_IncrementsBothCounters asserts that RecordTaskFailure
-// atomically increments a task's and its job's failed_attempts counters,
-// returning the post-increment values on each call.
-func TestRecordTaskFailure_IncrementsBothCounters(t *testing.T) {
+// recordFailureFixture seeds a running farm/queue/job/step/task and returns the
+// store, ctx, and a now stamp — the shared setup for the RecordTaskFailure
+// tests below.
+func recordFailureFixture(t *testing.T) (*sqlite.Store, context.Context, time.Time) {
+	t.Helper()
 	s := openTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -293,14 +296,25 @@ func TestRecordTaskFailure_IncrementsBothCounters(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
+	return s, ctx, now
+}
 
-	tf, jf, err := s.RecordTaskFailure(ctx, "t1", now)
+// TestRecordTaskFailure_CountsEachAttempt asserts that RecordTaskFailure
+// increments the task's and job's failed_attempts counters once per DISTINCT
+// attempt: two genuine attempts of the same task raise both counters to two.
+func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
+	s, ctx, now := recordFailureFixture(t)
+
+	a1 := insertAttempt(t, s, "t1", "w1", 1)
+	tf, jf, err := s.RecordTaskFailure(ctx, a1.ID, "t1", nil, "", now)
 	if err != nil || tf != 1 || jf != 1 {
-		t.Fatalf("first: tf=%d jf=%d err=%v", tf, jf, err)
+		t.Fatalf("first attempt: tf=%d jf=%d err=%v", tf, jf, err)
 	}
-	tf, jf, err = s.RecordTaskFailure(ctx, "t1", now)
+
+	a2 := insertAttempt(t, s, "t1", "w1", 2)
+	tf, jf, err = s.RecordTaskFailure(ctx, a2.ID, "t1", nil, "", now)
 	if err != nil || tf != 2 || jf != 2 {
-		t.Fatalf("second: tf=%d jf=%d err=%v", tf, jf, err)
+		t.Fatalf("second attempt: tf=%d jf=%d err=%v", tf, jf, err)
 	}
 
 	// Persisted state matches the returned counters.
@@ -320,13 +334,72 @@ func TestRecordTaskFailure_IncrementsBothCounters(t *testing.T) {
 	}
 }
 
+// TestRecordTaskFailure_IdempotentPerAttempt is the IMP-1 regression: because a
+// worker's "failed" status message is delivered at-least-once, RecordTaskFailure
+// must count exactly once per attempt. The first call closes the running
+// attempt and increments both counters; a second call for the SAME attempt (a
+// redelivery) finds the attempt already terminal, returns the SAME counts, and
+// does NOT re-increment.
+func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
+	s, ctx, now := recordFailureFixture(t)
+
+	att := insertAttempt(t, s, "t1", "w1", 1)
+	exit := 7
+	sess := "sess-1"
+
+	// First delivery: closes the attempt as failed and counts once.
+	tf, jf, err := s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, now)
+	if err != nil || tf != 1 || jf != 1 {
+		t.Fatalf("first delivery: tf=%d jf=%d err=%v", tf, jf, err)
+	}
+
+	closed, err := s.GetTaskAttempt(ctx, att.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAttempt: %v", err)
+	}
+	if closed.Status != store.AttemptStatusFailed {
+		t.Errorf("attempt status = %q, want failed", closed.Status)
+	}
+	if closed.EndedAt == nil {
+		t.Error("attempt EndedAt not stamped on close")
+	}
+	if closed.ExitCode == nil || *closed.ExitCode != exit {
+		t.Errorf("attempt ExitCode = %v, want %d", closed.ExitCode, exit)
+	}
+	if closed.SessionID != sess {
+		t.Errorf("attempt SessionID = %q, want %q", closed.SessionID, sess)
+	}
+
+	// Redelivery: the attempt is already terminal, so the counts must NOT move.
+	tf, jf, err = s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, now.Add(time.Second))
+	if err != nil || tf != 1 || jf != 1 {
+		t.Fatalf("redelivery: tf=%d jf=%d err=%v (want 1,1 — no re-count)", tf, jf, err)
+	}
+
+	// Persisted counters incremented exactly once.
+	task, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.FailedAttempts != 1 {
+		t.Errorf("task.FailedAttempts = %d, want 1 (exactly once)", task.FailedAttempts)
+	}
+	job, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.FailedAttempts != 1 {
+		t.Errorf("job.FailedAttempts = %d, want 1 (exactly once)", job.FailedAttempts)
+	}
+}
+
 // TestRecordTaskFailure_NotFound asserts that recording a failure for an
 // unknown task returns [store.ErrNotFound] and leaves nothing modified.
 func TestRecordTaskFailure_NotFound(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	_, _, err := s.RecordTaskFailure(ctx, "missing", time.Now().UTC())
+	_, _, err := s.RecordTaskFailure(ctx, "missing-attempt", "missing", nil, "", time.Now().UTC())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}

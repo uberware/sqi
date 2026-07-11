@@ -164,6 +164,19 @@ UPDATE tasks
 SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?, unschedulable_reason = ''
 WHERE  id = ? AND status = 'ready'`
 
+	// sqlCloseAttemptAsFailed closes a running attempt as failed, stamping
+	// ended_at, and coalescing exit_code/session_id so a nil exit code or empty
+	// session leaves the existing value intact. The `status = 'running'` guard
+	// makes this a no-op (0 rows) on a redelivery whose attempt is already
+	// terminal — the signal RecordTaskFailure uses to avoid double-counting.
+	sqlCloseAttemptAsFailed = `
+UPDATE task_attempts
+SET    status = 'failed',
+       ended_at = ?,
+       exit_code = COALESCE(?, exit_code),
+       session_id = COALESCE(NULLIF(?, ''), session_id)
+WHERE  id = ? AND status = 'running'`
+
 	sqlRecordTaskFailure = `
 UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ?
 WHERE id = ? RETURNING failed_attempts, job_id`
@@ -171,6 +184,14 @@ WHERE id = ? RETURNING failed_attempts, job_id`
 	sqlIncrementJobFailure = `
 UPDATE jobs SET failed_attempts = failed_attempts + 1, updated_at = ?
 WHERE id = ? RETURNING failed_attempts`
+
+	// sqlReadFailureCounts reads the current task and job FailedAttempts without
+	// incrementing — used on a redelivery where the attempt is already terminal
+	// so the caller's retry/park decision stays stable. No rows ⇒ ErrNotFound.
+	sqlReadFailureCounts = `
+SELECT t.failed_attempts, j.failed_attempts
+FROM   tasks t JOIN jobs j ON t.job_id = j.id
+WHERE  t.id = ?`
 
 	// sqlRequeueTaskForRetry returns a task to ready, clearing its worker
 	// assignment and stamping retry_after so [Store.ListReadyTasks] excludes it
@@ -718,11 +739,27 @@ func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now
 
 // RecordTaskFailure implements [store.TaskStore].
 //
-// Both counters are incremented inside a single transaction so a crash
-// between the two UPDATEs can never leave the task and job counts out of
-// sync: either both increment or neither does.
-func (s *Store) RecordTaskFailure(ctx context.Context, taskID string, now time.Time) (taskFailed, jobFailed int, err error) {
+// The attempt close, task increment, and job increment run inside a single
+// transaction. The counter increments are GATED on the attempt's running→failed
+// transition: closing the attempt (which only affects a row while it is still
+// running) is what authorizes the increment, so an at-least-once redelivery of
+// the same status message — whose attempt is already terminal — counts zero
+// rows, skips both increments, and returns the current counts instead. This
+// makes the failure count exactly-once per attempt, and keeps the two counters
+// in lockstep: either both increment or neither does.
+func (s *Store) RecordTaskFailure(
+	ctx context.Context,
+	attemptID, taskID string,
+	exitCode *int,
+	sessionID string,
+	now time.Time,
+) (taskFailed, jobFailed int, err error) {
 	nowText := timeToText(now.UTC())
+
+	var exit sql.NullInt64
+	if exitCode != nil {
+		exit = sql.NullInt64{Int64: int64(*exitCode), Valid: true}
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -730,11 +767,33 @@ func (s *Store) RecordTaskFailure(ctx context.Context, taskID string, now time.T
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
+	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, exit, sessionID, attemptID)
+	if err != nil {
+		return 0, 0, mapErr(err)
+	}
+	closed, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if closed == 0 {
+		// Redelivery (or unknown attempt): the attempt is already terminal, so
+		// do NOT re-count. Return the current counters so the caller's decision
+		// is identical to the first delivery. No matching task ⇒ ErrNotFound.
+		if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&taskFailed, &jobFailed); err != nil {
+			return 0, 0, mapErr(err)
+		}
+		if err = tx.Commit(); err != nil {
+			return 0, 0, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
+		}
+		return taskFailed, jobFailed, nil
+	}
+
+	// First close of this attempt: count the failure exactly once.
 	var jobID string
 	if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
 		return 0, 0, mapErr(err)
 	}
-
 	if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
 		return 0, 0, mapErr(err)
 	}

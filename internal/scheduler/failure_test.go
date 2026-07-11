@@ -222,6 +222,15 @@ func (h *failureHarness) jobStatus(jobID string) store.JobStatus {
 	return job.Status
 }
 
+func (h *failureHarness) jobFailedAttempts(jobID string) int {
+	h.t.Helper()
+	job, err := h.st.GetJob(h.t.Context(), jobID)
+	if err != nil {
+		h.t.Fatalf("GetJob(%s): %v", jobID, err)
+	}
+	return job.FailedAttempts
+}
+
 func (h *failureHarness) parkReason(jobID string) string {
 	h.t.Helper()
 	job, err := h.st.GetJob(h.t.Context(), jobID)
@@ -262,6 +271,67 @@ func TestHandleTaskFailed_RetriesUntilCeiling(t *testing.T) {
 	// have cascaded to failed too (checkStepCompletion/checkJobCompletion).
 	if got := h.jobStatus("j1"); got != store.JobStatusFailed {
 		t.Fatalf("job should be failed once the task is exhausted, got %s", got)
+	}
+}
+
+// TestHandleTaskFailed_RedeliveryCountsOnce is the IMP-1 regression at the
+// scheduler layer. The task-status JetStream consumer is at-least-once, so the
+// same "failed" message can be delivered more than once (NAK, AckWait expiry,
+// MaxDeliver). A redelivery of an already-processed attempt must be counted
+// exactly once — it must not push the task toward its ceiling or the job toward
+// its failure limit, and must not strand the task.
+func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 3, RetryDelay: 0, FailureLimit: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+
+	exit := 1
+	msg := protocol.TaskStatusMsg{
+		TaskID:    "t1",
+		AttemptID: h.current["t1"].ID,
+		Status:    "failed",
+		ExitCode:  &exit,
+		At:        time.Now().UTC(),
+	}
+
+	// First delivery: one genuine failure → retry, task back to ready.
+	if err := h.s.processTaskStatus(t.Context(), msg); err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+	if got := h.taskFailedAttempts("t1"); got != 1 {
+		t.Fatalf("after first delivery want task failed_attempts 1, got %d", got)
+	}
+	if got := h.jobFailedAttempts("j1"); got != 1 {
+		t.Fatalf("after first delivery want job failed_attempts 1, got %d", got)
+	}
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("after first delivery want ready, got %s", got)
+	}
+
+	// Redelivery of the SAME message (same attempt): the attempt is already
+	// failed, so RecordTaskFailure returns the current counts without
+	// re-incrementing, the retry decision is re-made identically, and the
+	// requeue is re-applied harmlessly.
+	if err := h.s.processTaskStatus(t.Context(), msg); err != nil {
+		t.Fatalf("redelivery: %v", err)
+	}
+	if got := h.taskFailedAttempts("t1"); got != 1 {
+		t.Fatalf("redelivery must not re-count task: want 1, got %d", got)
+	}
+	if got := h.jobFailedAttempts("j1"); got != 1 {
+		t.Fatalf("redelivery must not re-count job: want 1, got %d", got)
+	}
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("redelivery must leave task ready (not exhausted), got %s", got)
+	}
+	if got := h.jobStatus("j1"); got != store.JobStatusRunning {
+		t.Fatalf("job should remain running across a redelivery, got %s", got)
+	}
+
+	// A genuine SECOND attempt still counts: the exactly-once gate is per
+	// attempt, not per task.
+	h.reassignAndReportFailed("t1", "w1")
+	if got := h.taskFailedAttempts("t1"); got != 2 {
+		t.Fatalf("a genuine second attempt must count: want 2, got %d", got)
 	}
 }
 

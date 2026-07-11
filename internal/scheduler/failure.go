@@ -57,7 +57,7 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	}
 	policy := resolveRetryPolicy(job, queue, farm, s.retryDefaults())
 
-	taskFailed, jobFailed, err := s.store.RecordTaskFailure(ctx, m.TaskID, at)
+	taskFailed, jobFailed, err := s.store.RecordTaskFailure(ctx, attempt.ID, m.TaskID, m.ExitCode, m.SessionID, at)
 	if err != nil {
 		return err
 	}
@@ -91,10 +91,9 @@ func (s *Scheduler) retryTaskAfterFailure(
 	taskFailed int,
 	at time.Time,
 ) error {
-	// RETRY: close the attempt, release usage, re-queue with backoff.
-	if err := s.closeAttemptFailed(ctx, attempt, m, at); err != nil {
-		return err
-	}
+	// RETRY: the attempt was already closed as failed inside RecordTaskFailure;
+	// here we only release its usage claims and re-queue with backoff.
+	s.releaseRetryAttemptUsage(ctx, attempt)
 	retryAfter := at.Add(policy.RetryDelay)
 	if err := s.store.RequeueTaskForRetry(ctx, m.TaskID, retryAfter, at); err != nil {
 		return err
@@ -129,26 +128,17 @@ func (s *Scheduler) parkJobAtFailureLimit(ctx context.Context, jobID, queueID st
 	return nil
 }
 
-// closeAttemptFailed closes attempt as failed and releases its usage-pool
-// claims, WITHOUT transitioning the task — used by the retry path where the
-// task returns to ready rather than a terminal state.
-func (s *Scheduler) closeAttemptFailed(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg, at time.Time) error {
-	updated := attempt
-	updated.Status = store.AttemptStatusFailed
-	updated.SessionID = m.SessionID
-	updated.EndedAt = &at
-	if m.ExitCode != nil {
-		code := *m.ExitCode
-		updated.ExitCode = &code
-	}
-	if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-		return err
-	}
+// releaseRetryAttemptUsage releases the failed attempt's usage-pool claims on
+// the retry path. The attempt itself is already closed as failed inside
+// [store.TaskStore.RecordTaskFailure]; this only frees the pool slots so the
+// retried task can re-lease. Best-effort and idempotent: a leaked slot is
+// recovered by the next usage sweep, and a redelivery that re-releases an
+// already-released claim is a no-op.
+func (s *Scheduler) releaseRetryAttemptUsage(ctx context.Context, attempt store.TaskAttempt) {
 	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
 		s.logger.WarnContext(ctx, "scheduler: retry: release usage failed",
 			slog.String("attempt_id", attempt.ID), slog.Any("error", err))
 	}
-	return nil
 }
 
 // scheduleRetryWake wakes the task's queue once its backoff delay elapses so a
