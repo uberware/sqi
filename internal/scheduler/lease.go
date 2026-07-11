@@ -165,6 +165,10 @@ func (s *Scheduler) leaseGatesPass(
 	}
 	d.job = job
 
+	if job.Status == store.JobStatusPaused || isTerminalJobStatus(job.Status) {
+		return d, false, nil // paused/terminal job: skip (defends the ready-list→lease window)
+	}
+
 	step, err := s.store.GetStep(ctx, task.StepID)
 	if err != nil {
 		return d, false, fmt.Errorf("lease: get step %s: %w", task.StepID, err)

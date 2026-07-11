@@ -946,6 +946,7 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			// Refresh instrumentation gauges on the same tick so Prometheus
 			// reflects current farm state without a dedicated metrics loop.
 			s.refreshQueueDepthGauge(ctx)
+			s.wakeQueuesWithReadyWork(ctx)
 			s.refreshIdleWorkerGauge(ctx)
 			s.refreshUsageClaimGauge(ctx)
 		}
@@ -1314,6 +1315,21 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	}
 	for queueID, n := range counts {
 		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
+	}
+}
+
+// wakeQueuesWithReadyWork wakes lease waiters on queues that currently have
+// ready work whose backoff has elapsed. It is the restart-safe backstop for
+// scheduleRetryWake's in-process timers.
+func (s *Scheduler) wakeQueuesWithReadyWork(ctx context.Context) {
+	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID)
+	if err != nil {
+		return
+	}
+	for queueID, n := range counts {
+		if n > 0 {
+			s.WakeQueue(queueID)
+		}
 	}
 }
 

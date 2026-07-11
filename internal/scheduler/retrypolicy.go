@@ -49,8 +49,6 @@ func resolveRetryPolicy(job store.Job, queue store.Queue, farm store.Farm, def R
 }
 
 // retryDefaults returns the server-level fallback retry policy from config.
-//
-//nolint:unused // used by task-7
 func (s *Scheduler) retryDefaults() RetryPolicy {
 	return RetryPolicy{
 		MaxAttempts:  s.cfg.DefaultMaxAttempts,

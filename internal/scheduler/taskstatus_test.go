@@ -30,11 +30,17 @@ func newStatusTestScheduler(st store.Store) *Scheduler {
 }
 
 func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *Scheduler {
+	// MaxAttempts=1 (retry disabled) so these generic terminal-cascade tests
+	// keep asserting the pre-auto-retry behavior: a single genuine failure
+	// goes straight to store.TaskStatusFailed. Retry/park-specific behavior is
+	// covered separately in failure_test.go.
+	cfg := DefaultConfig()
+	cfg.DefaultMaxAttempts = 1
 	return New(
-		DefaultConfig(),
+		cfg,
 		st,
 		nil, // bus — not called by processTaskStatus
-		nil, // metrics — not used
+		nil, // metrics — not used (retry/park branches are disabled by MaxAttempts=1 above)
 		slog.New(slog.DiscardHandler),
 		notifier,
 		nil, // diagBuf — diagnostics disabled
@@ -82,6 +88,15 @@ func seedStatusFixtureWithJobStatus(
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now()
+
+	// handleTaskFailed resolves retry policy via GetQueue/GetFarm, so a real
+	// job needs real farm/queue rows behind its FarmID/QueueID below.
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
 
 	job, err := st.CreateJob(ctx, store.Job{
 		ID:             uuid.NewString(),
