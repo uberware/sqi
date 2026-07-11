@@ -73,6 +73,16 @@ type jobResponse struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	// FailedAttempts is the job's cumulative count of genuine task failures.
+	FailedAttempts int `json:"failed_attempts"`
+	// ParkReason is set when the failure-limit sweep auto-parked the job.
+	ParkReason string `json:"park_reason,omitempty"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are the configured
+	// per-job retry-policy overrides. Nil means inherit (queue -> farm ->
+	// server default).
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // stepResponse is the JSON representation of a step within a job detail response.
@@ -136,6 +146,11 @@ type patchJobRequest struct {
 	QueueID string `json:"queue_id,omitempty"`
 	// Action must be "pause" or "resume" when non-empty.
 	Action string `json:"action,omitempty"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit update the job's retry
+	// policy overrides when non-nil.
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // ── Handler constructors ──────────────────────────────────────────────────────
@@ -167,7 +182,10 @@ func newJobHandler(
 //   - anything else (or absent) → JSON
 //
 // Query parameters: farm_id (required), queue_id (required), owner,
-// submitter, priority (integer ≥ 1; defaults to 50), project.
+// submitter, priority (integer ≥ 1; defaults to 50), project, max_attempts,
+// retry_delay_seconds, failure_limit (all optional per-job retry-policy
+// overrides; omitted or unparseable means inherit queue -> farm -> server
+// default).
 // Job-parameter values are supplied as param.<Name>=<value> query parameters
 // (e.g. ?param.FrameStart=1&param.Quality=high).
 func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
@@ -196,13 +214,16 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := openjd.SubmitOptions{
-		FarmID:     farmID,
-		QueueID:    queueID,
-		Owner:      r.URL.Query().Get("owner"),
-		Submitter:  r.URL.Query().Get("submitter"),
-		Priority:   priority,
-		Project:    r.URL.Query().Get("project"),
-		Parameters: parseParamQueryParams(r.URL.Query()),
+		FarmID:            farmID,
+		QueueID:           queueID,
+		Owner:             r.URL.Query().Get("owner"),
+		Submitter:         r.URL.Query().Get("submitter"),
+		Priority:          priority,
+		Project:           r.URL.Query().Get("project"),
+		Parameters:        parseParamQueryParams(r.URL.Query()),
+		MaxAttempts:       parseOptionalIntQuery(r.URL.Query().Get("max_attempts")),
+		RetryDelaySeconds: parseOptionalIntQuery(r.URL.Query().Get("retry_delay_seconds")),
+		FailureLimit:      parseOptionalIntQuery(r.URL.Query().Get("failure_limit")),
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
@@ -397,6 +418,16 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		job.QueueID = req.QueueID
+	}
+
+	if req.MaxAttempts != nil {
+		job.MaxAttempts = req.MaxAttempts
+	}
+	if req.RetryDelaySeconds != nil {
+		job.RetryDelaySeconds = req.RetryDelaySeconds
+	}
+	if req.FailureLimit != nil {
+		job.FailureLimit = req.FailureLimit
 	}
 
 	newStatus, ok := h.resolveAction(w, r, job.Status, req.Action)
@@ -692,6 +723,12 @@ func toJobResponse(j store.Job) jobResponse {
 		UpdatedAt:      j.UpdatedAt,
 		StartedAt:      j.StartedAt,
 		CompletedAt:    j.CompletedAt,
+
+		FailedAttempts:    j.FailedAttempts,
+		ParkReason:        j.ParkReason,
+		MaxAttempts:       j.MaxAttempts,
+		RetryDelaySeconds: j.RetryDelaySeconds,
+		FailureLimit:      j.FailureLimit,
 	}
 }
 
@@ -796,6 +833,19 @@ func parseIntQuery(s string, fallback int) int {
 		return n
 	}
 	return fallback
+}
+
+// parseOptionalIntQuery returns a pointer to the parsed int, or nil when the
+// value is empty or unparseable (meaning "inherit").
+func parseOptionalIntQuery(s string) *int {
+	if s == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return &n
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────

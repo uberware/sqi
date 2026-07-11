@@ -114,11 +114,13 @@ type JobStore interface {
 
 	// UpdateJob replaces the mutable user-settable fields of an existing job
 	// (farm_id, queue_id, name, owner, submitter, priority, project,
-	// raw_template, template_format) and updates UpdatedAt.
+	// raw_template, template_format, max_attempts, retry_delay_seconds,
+	// failure_limit) and updates UpdatedAt.
 	//
-	// status, started_at, and completed_at are lifecycle columns and are
-	// intentionally excluded — use [UpdateJobStatus] or [CancelJobStatus]
-	// for those. The returned Job reflects the current DB state of all columns.
+	// status, started_at, completed_at, failed_attempts, and park_reason are
+	// lifecycle columns and are intentionally excluded — use [UpdateJobStatus],
+	// [CancelJobStatus], or the scheduler's failure-limit sweep for those. The
+	// returned Job reflects the current DB state of all columns.
 	//
 	// Returns [ErrNotFound] if the job does not exist.
 	UpdateJob(ctx context.Context, job Job) (Job, error)

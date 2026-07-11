@@ -32,11 +32,15 @@ RETURNING ` + jobCols
 	// status, started_at, and completed_at are lifecycle columns managed
 	// exclusively by UpdateJobStatus / CancelJobStatus and are intentionally
 	// excluded here — writing them via UpdateJob would race with concurrent
-	// scheduler status transitions.
+	// scheduler status transitions. failed_attempts and park_reason are
+	// likewise lifecycle-managed (by the scheduler's failure-limit sweep) and
+	// are excluded for the same reason; max_attempts, retry_delay_seconds,
+	// and failure_limit are the user-settable retry-policy overrides.
 	sqlUpdateJob = `
 UPDATE jobs
 SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
 	project = ?, raw_template = ?, template_format = ?,
+	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?,
 	updated_at = ?
 WHERE id = ?
 RETURNING ` + jobCols
@@ -272,14 +276,17 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 
 // UpdateJob implements [store.JobStore].
 // Only mutable user-settable fields are written (farm_id, queue_id, name,
-// owner, submitter, priority, project, raw_template, template_format).
-// status, started_at, and completed_at are never touched here; use
-// UpdateJobStatus or CancelJobStatus for those.
+// owner, submitter, priority, project, raw_template, template_format,
+// max_attempts, retry_delay_seconds, failure_limit).
+// status, started_at, completed_at, failed_attempts, and park_reason are
+// never touched here; use UpdateJobStatus, CancelJobStatus, or the
+// scheduler's failure-limit sweep for those.
 func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateJob.QueryRowContext(ctx,
 		job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter, job.Priority,
 		job.Project, job.RawTemplate, string(job.TemplateFormat),
+		nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
 		now, job.ID)
 	out, err := scanJob(row)
 	return out, mapErr(err)

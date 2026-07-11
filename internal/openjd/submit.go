@@ -81,6 +81,11 @@ type SubmitOptions struct {
 	// parameter's Default; parameters with neither a supplied value nor a
 	// default produce a [SubmitValidationError].
 	Parameters map[string]string
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are optional per-job
+	// retry overrides. Nil means inherit (queue -> farm -> server default).
+	MaxAttempts       *int
+	RetryDelaySeconds *int
+	FailureLimit      *int
 }
 
 // ── SubmitResult ──────────────────────────────────────────────────────────────
@@ -176,9 +181,12 @@ func (s *Submitter) Submit(
 		TemplateFormat: format,
 		// Persist the fully-bound parameter values so the scheduler can carry
 		// them to the worker without re-deriving from the raw template.
-		Parameters: boundParams,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		Parameters:        boundParams,
+		MaxAttempts:       opts.MaxAttempts,
+		RetryDelaySeconds: opts.RetryDelaySeconds,
+		FailureLimit:      opts.FailureLimit,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 
 	job, err = s.st.CreateJob(ctx, job)

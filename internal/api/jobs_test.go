@@ -293,6 +293,60 @@ steps:
 	})
 }
 
+// TestSubmitJob_PersistsRetryPolicy verifies that the max_attempts,
+// retry_delay_seconds, and failure_limit query parameters are threaded through
+// to the persisted job and echoed in the create response.
+func TestSubmitJob_PersistsRetryPolicy(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+
+	body := strings.NewReader(minimalOpenJDJSON("RetryPolicyTest"))
+	req := newReq(t, http.MethodPost,
+		"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&max_attempts=5&retry_delay_seconds=10&failure_limit=25", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+	}
+
+	var resp jobResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.MaxAttempts == nil || *resp.MaxAttempts != 5 {
+		t.Errorf("max_attempts = %v, want 5", resp.MaxAttempts)
+	}
+	if resp.RetryDelaySeconds == nil || *resp.RetryDelaySeconds != 10 {
+		t.Errorf("retry_delay_seconds = %v, want 10", resp.RetryDelaySeconds)
+	}
+	if resp.FailureLimit == nil || *resp.FailureLimit != 25 {
+		t.Errorf("failure_limit = %v, want 25", resp.FailureLimit)
+	}
+
+	stored, err := st.GetJob(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if stored.MaxAttempts == nil || *stored.MaxAttempts != 5 {
+		t.Errorf("stored max_attempts = %v, want 5", stored.MaxAttempts)
+	}
+	if stored.RetryDelaySeconds == nil || *stored.RetryDelaySeconds != 10 {
+		t.Errorf("stored retry_delay_seconds = %v, want 10", stored.RetryDelaySeconds)
+	}
+	if stored.FailureLimit == nil || *stored.FailureLimit != 25 {
+		t.Errorf("stored failure_limit = %v, want 25", stored.FailureLimit)
+	}
+}
+
 // TestSubmitJobWakesQueue verifies Fix 2a: a successful submission wakes parked
 // lease waiters on the created job's queue.
 func TestSubmitJobWakesQueue(t *testing.T) {
@@ -677,6 +731,50 @@ func TestPatchJob(t *testing.T) {
 		}
 		if stored.Priority != 99 {
 			t.Errorf("stored priority = %d, want 99", stored.Priority)
+		}
+	})
+
+	t.Run("update retry policy persists the new values", func(t *testing.T) {
+		j := seedJob(t, st, store.JobStatusPending)
+		maxAttempts, delay, limit := 7, 30, 40
+		body := jsonBody(t, patchJobRequest{
+			MaxAttempts:       &maxAttempts,
+			RetryDelaySeconds: &delay,
+			FailureLimit:      &limit,
+		})
+		req := newReq(t, http.MethodPatch, "/api/v1/jobs/"+j.ID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.MaxAttempts == nil || *resp.MaxAttempts != 7 {
+			t.Errorf("max_attempts = %v, want 7", resp.MaxAttempts)
+		}
+		if resp.RetryDelaySeconds == nil || *resp.RetryDelaySeconds != 30 {
+			t.Errorf("retry_delay_seconds = %v, want 30", resp.RetryDelaySeconds)
+		}
+		if resp.FailureLimit == nil || *resp.FailureLimit != 40 {
+			t.Errorf("failure_limit = %v, want 40", resp.FailureLimit)
+		}
+		// Verify the store was updated.
+		stored, err := st.GetJob(t.Context(), j.ID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if stored.MaxAttempts == nil || *stored.MaxAttempts != 7 {
+			t.Errorf("stored max_attempts = %v, want 7", stored.MaxAttempts)
+		}
+		if stored.RetryDelaySeconds == nil || *stored.RetryDelaySeconds != 30 {
+			t.Errorf("stored retry_delay_seconds = %v, want 30", stored.RetryDelaySeconds)
+		}
+		if stored.FailureLimit == nil || *stored.FailureLimit != 40 {
+			t.Errorf("stored failure_limit = %v, want 40", stored.FailureLimit)
 		}
 	})
 

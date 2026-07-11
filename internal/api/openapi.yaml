@@ -221,6 +221,32 @@ components:
           description: >-
             Aggregate task counts by status. Present on job list items and job
             detail; omitted from the create-job response.
+        failed_attempts:
+          type: integer
+          description: Cumulative count of genuine task failures for this job.
+        park_reason:
+          type: string
+          description: >-
+            Set when the failure-limit sweep auto-parked the job (e.g. "failure
+            limit reached (25)"). Empty for a manual pause.
+        max_attempts:
+          type: integer
+          nullable: true
+          description: >-
+            Per-job override for the maximum attempts per task. Null means
+            inherit (queue -> farm -> server default).
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: >-
+            Per-job override for the delay before retrying a failed task. Null
+            means inherit (queue -> farm -> server default).
+        failure_limit:
+          type: integer
+          nullable: true
+          description: >-
+            Per-job override for the number of task failures that auto-parks
+            the job. Null means inherit (queue -> farm -> server default).
 
     Step:
       type: object
@@ -324,6 +350,18 @@ components:
           type: string
           enum: [pause, resume]
           description: pause or resume the job.
+        max_attempts:
+          type: integer
+          nullable: true
+          description: Update the per-job max-attempts retry-policy override.
+        retry_delay_seconds:
+          type: integer
+          nullable: true
+          description: Update the per-job retry-delay retry-policy override.
+        failure_limit:
+          type: integer
+          nullable: true
+          description: Update the per-job failure-limit retry-policy override.
 
     # ── Tasks ─────────────────────────────────────────────────────────────────
     Task:
@@ -1261,6 +1299,29 @@ paths:
           schema:
             type: string
           description: Arbitrary project label for filtering.
+        - name: max_attempts
+          in: query
+          schema:
+            type: integer
+          description: >-
+            Per-job override for the maximum attempts per task. Omitted or
+            unparseable means inherit (queue -> farm -> server default).
+        - name: retry_delay_seconds
+          in: query
+          schema:
+            type: integer
+          description: >-
+            Per-job override for the delay before retrying a failed task.
+            Omitted or unparseable means inherit (queue -> farm -> server
+            default).
+        - name: failure_limit
+          in: query
+          schema:
+            type: integer
+          description: >-
+            Per-job override for the number of task failures that auto-parks
+            the job. Omitted or unparseable means inherit (queue -> farm ->
+            server default).
       # Note: param.<Name>=<value> query parameters are intentionally omitted
       # from this parameters list because OpenAPI 3.x does not support
       # arbitrary-suffix parameters.  Full semantics are documented in the
