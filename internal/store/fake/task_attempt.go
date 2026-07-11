@@ -142,7 +142,7 @@ func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.
 }
 
 // UpdateTaskAttempt replaces the mutable fields of an existing attempt
-// (Status, ExitCode, EndedAt, and SessionID if non-empty).
+// (Status, ExitCode, EndedAt, and SessionID/Message if non-empty).
 func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,6 +159,10 @@ func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) 
 	// matching the COALESCE(NULLIF(?, ''), session_id) behavior in SQLite.
 	if attempt.SessionID != "" {
 		existing.SessionID = attempt.SessionID
+	}
+	// Likewise for Message, matching COALESCE(NULLIF(?, ''), message) in SQLite.
+	if attempt.Message != "" {
+		existing.Message = attempt.Message
 	}
 	s.taskAttempts[attempt.ID] = existing
 	return existing, nil

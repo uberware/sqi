@@ -1397,6 +1397,25 @@ func TestUpdateTaskAttempt_SessionIDNotOverwrittenByEmpty(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskAttempt_MessageNotOverwrittenByEmpty(t *testing.T) {
+	s := New()
+	defer s.Close()
+	a := mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
+	// Set a message.
+	a.Message = "boom"
+	updated := mustUpdateTaskAttempt(t, s, a)
+	if updated.Message != "boom" {
+		t.Errorf("message = %q, want boom", updated.Message)
+	}
+
+	// Update with empty message — should not overwrite.
+	a.Message = ""
+	updated = mustUpdateTaskAttempt(t, s, a)
+	if updated.Message != "boom" {
+		t.Errorf("message = %q, want boom (not overwritten by empty)", updated.Message)
+	}
+}
+
 func TestUpdateTaskAttempt_NotFound(t *testing.T) {
 	s := New()
 	defer s.Close()
