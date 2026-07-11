@@ -410,6 +410,20 @@ components:
             worker (e.g. no worker matches its required capabilities or core
             reservation). Empty/absent means schedulable. An annotation on the
             task, not a status.
+        failed_attempts:
+          type: integer
+          description: >-
+            Count of attempts that genuinely ran and failed for this task
+            (does not count worker crashes/unassignments that trigger a retry
+            without a genuine failure).
+        retry_after:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Set and in the future while a ready task is backing off after a
+            failed attempt; the task will not be assigned to a worker until
+            this time passes.
 
     TaskList:
       type: object

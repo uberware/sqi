@@ -64,6 +64,14 @@ type taskResponse struct {
 	// UnschedulableReason is set when a ready task cannot currently be
 	// satisfied by any online worker; empty means schedulable.
 	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
+	// FailedAttempts counts attempts that genuinely ran and failed (does not
+	// count worker crashes / unassignments that trigger a retry without a
+	// genuine failure).
+	FailedAttempts int `json:"failed_attempts"`
+	// RetryAfter, when set and in the future, holds the task in the ready
+	// state as a retry backoff; a worker will not be assigned the task until
+	// this time passes.
+	RetryAfter *time.Time `json:"retry_after,omitempty"`
 }
 
 // taskListResponse is the paginated result returned by GET /api/v1/jobs/{id}/tasks.
@@ -436,6 +444,8 @@ func toTaskResponse(t store.Task) taskResponse {
 		CreatedAt:           t.CreatedAt,
 		UpdatedAt:           t.UpdatedAt,
 		UnschedulableReason: t.UnschedulableReason,
+		FailedAttempts:      t.FailedAttempts,
+		RetryAfter:          t.RetryAfter,
 	}
 }
 

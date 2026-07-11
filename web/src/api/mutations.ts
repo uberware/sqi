@@ -36,6 +36,11 @@ export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   if (input.submitter !== undefined) qs.set('submitter', input.submitter)
   if (input.priority !== undefined) qs.set('priority', String(input.priority))
   if (input.project !== undefined) qs.set('project', input.project)
+  if (input.maxAttempts !== undefined) qs.set('max_attempts', String(input.maxAttempts))
+  if (input.retryDelaySeconds !== undefined) {
+    qs.set('retry_delay_seconds', String(input.retryDelaySeconds))
+  }
+  if (input.failureLimit !== undefined) qs.set('failure_limit', String(input.failureLimit))
 
   return apiFetch<Job>(`/jobs?${qs.toString()}`, {
     method: 'POST',
@@ -59,6 +64,15 @@ export function fetchRetryJob(id: string): Promise<RetryJobResponse> {
 /** Hard-delete a job and all its data via `DELETE /jobs/{id}`. */
 export async function fetchDeleteJob(id: string): Promise<void> {
   await apiFetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** Resume a paused job via `PATCH /jobs/{id}` with `{ action: "resume" }`. */
+export function fetchResumeJob(id: string): Promise<Job> {
+  return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'resume' }),
+  })
 }
 
 /** Retry a failed or canceled task via `POST /tasks/{id}/retry`. */
@@ -148,6 +162,20 @@ export function useDeleteJob() {
   })
 }
 
+/**
+ * Resume a paused job (manual pause or auto-park). Invalidates all job
+ * queries on success.
+ */
+export function useResumeJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchResumeJob(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all })
+    },
+  })
+}
+
 /** Retry a failed or canceled task. Invalidates all task and job queries. */
 export function useRetryTask() {
   const queryClient = useQueryClient()
@@ -211,6 +239,12 @@ export interface FarmInput {
   name: string
   description: string
   max_concurrent_tasks: number
+  /** Farm-level default for the maximum attempts per task; omitted means inherit the server default. */
+  max_attempts?: number
+  /** Farm-level default for the delay (seconds) before retrying a failed task; omitted means inherit. */
+  retry_delay_seconds?: number
+  /** Farm-level default for the number of task failures that auto-parks a job; omitted means inherit. */
+  failure_limit?: number
 }
 
 export function fetchCreateFarm(input: FarmInput): Promise<Farm> {
@@ -272,6 +306,12 @@ export interface QueueInput {
   priority: number
   max_concurrent_tasks: number
   paused: boolean
+  /** Queue-level override for the maximum attempts per task; omitted means inherit (farm -> server default). */
+  max_attempts?: number
+  /** Queue-level override for the delay (seconds) before retrying a failed task; omitted means inherit. */
+  retry_delay_seconds?: number
+  /** Queue-level override for the number of task failures that auto-parks a job; omitted means inherit. */
+  failure_limit?: number
 }
 
 export function fetchCreateQueue(input: QueueInput): Promise<Queue> {

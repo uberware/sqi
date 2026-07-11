@@ -17,6 +17,9 @@ interface Defaults {
   name: string
   description: string
   maxConcurrent: string
+  maxAttempts: string
+  retryDelaySeconds: string
+  failureLimit: string
 }
 
 interface InnerProps {
@@ -34,6 +37,9 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
   const [name, setName] = useState(defaults.name)
   const [description, setDescription] = useState(defaults.description)
   const [maxConcurrent, setMaxConcurrent] = useState(defaults.maxConcurrent)
+  const [maxAttempts, setMaxAttempts] = useState(defaults.maxAttempts)
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState(defaults.retryDelaySeconds)
+  const [failureLimit, setFailureLimit] = useState(defaults.failureLimit)
 
   const isPending = createFarm.isPending || updateFarm.isPending
   const canSubmit = name.trim().length > 0 && !isPending
@@ -45,6 +51,11 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
       name: name.trim(),
       description: description.trim(),
       max_concurrent_tasks: Math.trunc(Number(maxConcurrent) || 0),
+      ...(maxAttempts.trim() !== '' ? { max_attempts: Math.trunc(Number(maxAttempts)) } : {}),
+      ...(retryDelaySeconds.trim() !== ''
+        ? { retry_delay_seconds: Math.trunc(Number(retryDelaySeconds)) }
+        : {}),
+      ...(failureLimit.trim() !== '' ? { failure_limit: Math.trunc(Number(failureLimit)) } : {}),
     }
     try {
       if (mode === 'create') {
@@ -109,6 +120,51 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
           />
         </div>
 
+        <div className={styles.field}>
+          <label htmlFor="maxAttempts" className={styles.label}>
+            Max attempts per task
+          </label>
+          <input
+            id="maxAttempts"
+            type="number"
+            min={1}
+            className={styles.input}
+            value={maxAttempts}
+            onChange={(e) => setMaxAttempts(e.target.value)}
+            placeholder="Inherit server default"
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label htmlFor="retryDelaySeconds" className={styles.label}>
+            Retry delay (seconds)
+          </label>
+          <input
+            id="retryDelaySeconds"
+            type="number"
+            min={0}
+            className={styles.input}
+            value={retryDelaySeconds}
+            onChange={(e) => setRetryDelaySeconds(e.target.value)}
+            placeholder="Inherit server default"
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label htmlFor="failureLimit" className={styles.label}>
+            Failure limit (auto-park after N failures)
+          </label>
+          <input
+            id="failureLimit"
+            type="number"
+            min={1}
+            className={styles.input}
+            value={failureLimit}
+            onChange={(e) => setFailureLimit(e.target.value)}
+            placeholder="Inherit server default"
+          />
+        </div>
+
         <div className={styles.footer}>
           <button type="submit" className={styles.submitBtn} disabled={!canSubmit}>
             {mode === 'create' ? 'Create Farm' : 'Save'}
@@ -142,6 +198,10 @@ export default function FarmForm({ mode }: Props) {
           name: data.name,
           description: data.description ?? '',
           maxConcurrent: String(data.max_concurrent_tasks),
+          maxAttempts: data.max_attempts !== undefined ? String(data.max_attempts) : '',
+          retryDelaySeconds:
+            data.retry_delay_seconds !== undefined ? String(data.retry_delay_seconds) : '',
+          failureLimit: data.failure_limit !== undefined ? String(data.failure_limit) : '',
         }}
       />
     )
@@ -151,7 +211,14 @@ export default function FarmForm({ mode }: Props) {
     <FarmFormInner
       mode="create"
       id=""
-      defaults={{ name: '', description: '', maxConcurrent: '0' }}
+      defaults={{
+        name: '',
+        description: '',
+        maxConcurrent: '0',
+        maxAttempts: '',
+        retryDelaySeconds: '',
+        failureLimit: '',
+      }}
     />
   )
 }

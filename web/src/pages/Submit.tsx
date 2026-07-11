@@ -102,6 +102,9 @@ export default function Submit() {
   const [owner, setOwner] = useState('')
   const [priority, setPriority] = useState('')
   const [project, setProject] = useState('')
+  const [maxAttempts, setMaxAttempts] = useState('')
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
+  const [failureLimit, setFailureLimit] = useState('')
 
   // Example loader select — controlled so it resets to placeholder after each pick.
   const [exampleKey, setExampleKey] = useState('')
@@ -138,6 +141,11 @@ export default function Submit() {
         const trimmedOwner = owner.trim()
         const trimmedProject = project.trim()
         const parsedPriority = priority ? Number(priority) : undefined
+        const parsedMaxAttempts = maxAttempts.trim() ? Number(maxAttempts) : undefined
+        const parsedRetryDelaySeconds = retryDelaySeconds.trim()
+          ? Number(retryDelaySeconds)
+          : undefined
+        const parsedFailureLimit = failureLimit.trim() ? Number(failureLimit) : undefined
 
         const job = await submitJob.mutateAsync({
           farmId: selectedQueue.farm_id,
@@ -147,6 +155,11 @@ export default function Submit() {
           ...(trimmedOwner ? { owner: trimmedOwner } : {}),
           ...(parsedPriority !== undefined ? { priority: parsedPriority } : {}),
           ...(trimmedProject ? { project: trimmedProject } : {}),
+          ...(parsedMaxAttempts !== undefined ? { maxAttempts: parsedMaxAttempts } : {}),
+          ...(parsedRetryDelaySeconds !== undefined
+            ? { retryDelaySeconds: parsedRetryDelaySeconds }
+            : {}),
+          ...(parsedFailureLimit !== undefined ? { failureLimit: parsedFailureLimit } : {}),
         })
         showToast(`Job submitted — ID: ${job.id}`, 'success')
         navigate(`/jobs/${job.id}`)
@@ -154,7 +167,19 @@ export default function Submit() {
         // Error is surfaced via submitJob.isError / submitJob.error below.
       }
     },
-    [selectedQueue, template, owner, priority, project, submitJob, navigate, showToast],
+    [
+      selectedQueue,
+      template,
+      owner,
+      priority,
+      project,
+      maxAttempts,
+      retryDelaySeconds,
+      failureLimit,
+      submitJob,
+      navigate,
+      showToast,
+    ],
   )
 
   const canSubmit = Boolean(selectedQueue) && template.trim().length > 0 && !submitJob.isPending
@@ -253,6 +278,58 @@ export default function Submit() {
                   value={project}
                   onChange={(e) => setProject(e.target.value)}
                   placeholder="my-project"
+                />
+              </div>
+            </section>
+
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>Retry Policy</h2>
+              <p className={styles.sectionNote}>
+                Optional overrides; unset fields inherit from the queue/farm/server.
+              </p>
+
+              <div className={styles.field}>
+                <label htmlFor="maxAttempts" className={styles.label}>
+                  Max attempts per task
+                </label>
+                <input
+                  id="maxAttempts"
+                  type="number"
+                  className={styles.input}
+                  value={maxAttempts}
+                  onChange={(e) => setMaxAttempts(e.target.value)}
+                  placeholder="Inherit"
+                  min={1}
+                />
+              </div>
+
+              <div className={styles.field}>
+                <label htmlFor="retryDelaySeconds" className={styles.label}>
+                  Retry delay (seconds)
+                </label>
+                <input
+                  id="retryDelaySeconds"
+                  type="number"
+                  className={styles.input}
+                  value={retryDelaySeconds}
+                  onChange={(e) => setRetryDelaySeconds(e.target.value)}
+                  placeholder="Inherit"
+                  min={0}
+                />
+              </div>
+
+              <div className={styles.field}>
+                <label htmlFor="failureLimit" className={styles.label}>
+                  Failure limit (auto-park after N failures)
+                </label>
+                <input
+                  id="failureLimit"
+                  type="number"
+                  className={styles.input}
+                  value={failureLimit}
+                  onChange={(e) => setFailureLimit(e.target.value)}
+                  placeholder="Inherit"
+                  min={1}
                 />
               </div>
             </section>

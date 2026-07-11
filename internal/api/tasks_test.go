@@ -276,6 +276,39 @@ func TestGetTask(t *testing.T) {
 			t.Errorf("unschedulable_reason = %q, want %q", resp.UnschedulableReason, reason)
 		}
 	})
+
+	t.Run("includes failed_attempts and retry_after when set", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusReady)
+
+		now := time.Now()
+		if _, _, err := st.RecordTaskFailure(t.Context(), tk.ID, now); err != nil {
+			t.Fatalf("RecordTaskFailure: %v", err)
+		}
+		retryAfter := now.Add(30 * time.Second)
+		if err := st.RequeueTaskForRetry(t.Context(), tk.ID, retryAfter, now); err != nil {
+			t.Fatalf("RequeueTaskForRetry: %v", err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.FailedAttempts != 1 {
+			t.Errorf("failed_attempts = %d, want 1", resp.FailedAttempts)
+		}
+		if resp.RetryAfter == nil || !resp.RetryAfter.Equal(retryAfter) {
+			t.Errorf("retry_after = %v, want %v", resp.RetryAfter, retryAfter)
+		}
+	})
 }
 
 // ── GET /api/v1/tasks/{id}/logs ───────────────────────────────────────────────

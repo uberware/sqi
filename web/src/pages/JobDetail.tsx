@@ -15,10 +15,10 @@ import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
-import { useRetryTask, useCancelTask } from '@/api/mutations'
+import { useRetryTask, useCancelTask, useResumeJob } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
-import { formatTimespan } from '@/lib/time'
+import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
@@ -64,6 +64,33 @@ function stepDepsSatisfied(step: Step, statusByName: Map<string, StepStatus>): b
 /** Lower-cased substring match of a term against a task's name. */
 function taskMatches(task: Task, term: string): boolean {
   return task.name.toLowerCase().includes(term)
+}
+
+/** Formats an inherited-or-configured retry-policy field for display. */
+function policyField(value: number | undefined, unit = ''): string {
+  return value === undefined ? 'inherited' : `${value}${unit}`
+}
+
+/**
+ * "attempt N" label for a task that has genuinely failed at least once,
+ * where N is the attempt currently in play (failed_attempts + 1).
+ * Undefined when the task has never failed.
+ */
+function attemptLabel(task: Task): string | undefined {
+  const failed = task.failed_attempts
+  if (failed === undefined || failed <= 0) return undefined
+  return `attempt ${failed + 1}`
+}
+
+/**
+ * "retrying in Ns" hint for a ready task still backing off after a failed
+ * attempt. Undefined once retry_after has passed or is unset.
+ */
+function retryingHint(task: Task, now: number): string | undefined {
+  if (task.status !== 'ready' || task.retry_after === undefined) return undefined
+  const retryAt = new Date(task.retry_after).getTime()
+  if (retryAt <= now) return undefined
+  return `retrying in ${formatDuration(retryAt - now)}`
 }
 
 // ── IdCell ────────────────────────────────────────────────────────────────────
@@ -173,6 +200,18 @@ function MetadataCard({ job }: { job: JobDetailType }) {
           <dt>Ended</dt>
           <dd>{formatDateTime(job.completed_at)}</dd>
         </div>
+        <div className={styles.metaField}>
+          <dt>Max attempts</dt>
+          <dd>{policyField(job.max_attempts)}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Retry delay</dt>
+          <dd>{policyField(job.retry_delay_seconds, 's')}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Failure limit</dt>
+          <dd>{policyField(job.failure_limit)}</dd>
+        </div>
       </dl>
     </div>
   )
@@ -245,6 +284,12 @@ function TaskRow({
         </td>
         <td>
           <StatusBadge status={displayStatus} />
+          {attemptLabel(task) !== undefined && (
+            <span className={styles.attemptLabel ?? ''}>{attemptLabel(task)}</span>
+          )}
+          {retryingHint(task, now) !== undefined && (
+            <span className={styles.retryingHint ?? ''}>{retryingHint(task, now)}</span>
+          )}
           {task.unschedulable_reason !== undefined && (
             <UnschedulableBadge
               reason={task.unschedulable_reason}
@@ -482,6 +527,8 @@ export default function JobDetail() {
   const cancelTask = useCancelTask()
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
   const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
+  const resumeJob = useResumeJob()
+  const [resumeError, setResumeError] = useState<string | undefined>(undefined)
 
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set())
   const [taskSearch, setTaskSearch] = useState('')
@@ -698,6 +745,17 @@ export default function JobDetail() {
     [cancelTask],
   )
 
+  // ── Resume (manual pause or auto-park) ──────────────────────────────────────
+
+  const handleResume = useCallback(async () => {
+    setResumeError(undefined)
+    try {
+      await resumeJob.mutateAsync(jobId)
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : 'Resume failed')
+    }
+  }, [resumeJob, jobId])
+
   // ── Bulk selection ────────────────────────────────────────────────────────
 
   const selectedTasks = useMemo(
@@ -779,6 +837,23 @@ export default function JobDetail() {
           </RefreshControls>
         }
       />
+
+      {job.park_reason !== undefined && job.park_reason !== '' && (
+        <div className={styles.autoParkBanner ?? ''} role="alert">
+          <span>Auto-parked — {job.park_reason}</span>
+          <button
+            type="button"
+            className={styles.resumeBtn ?? ''}
+            onClick={() => void handleResume()}
+            disabled={resumeJob.isPending}
+          >
+            {resumeJob.isPending ? 'Resuming…' : 'Resume'}
+          </button>
+          {resumeError !== undefined && (
+            <span className={styles.resumeError ?? ''}>{resumeError}</span>
+          )}
+        </div>
+      )}
 
       <div className={styles.jobNameArea}>
         <h2 className={styles.jobName}>{job.name}</h2>

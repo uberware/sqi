@@ -12,6 +12,7 @@ import {
   fetchEnableWorker,
   fetchRemoveWorker,
   fetchDeleteJob,
+  fetchResumeJob,
   useSubmitJob,
   useCancelJob,
   useRetryTask,
@@ -20,6 +21,7 @@ import {
   useEnableWorker,
   useRemoveWorker,
   useDeleteJob,
+  useResumeJob,
   fetchCreateStorageLocation,
   fetchUpdateStorageLocation,
   fetchDeleteStorageLocation,
@@ -132,6 +134,32 @@ describe('fetchSubmitJob', () => {
     expect(url).not.toContain('priority=')
   })
 
+  it('includes retry-policy overrides in the query string when provided', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1' }))
+    await fetchSubmitJob({
+      farmId: 'f1',
+      queueId: 'q1',
+      template: '{}',
+      format: 'json',
+      maxAttempts: 5,
+      retryDelaySeconds: 30,
+      failureLimit: 10,
+    })
+    const url = calledUrl()
+    expect(url).toContain('max_attempts=5')
+    expect(url).toContain('retry_delay_seconds=30')
+    expect(url).toContain('failure_limit=10')
+  })
+
+  it('omits retry-policy overrides when undefined', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1' }))
+    await fetchSubmitJob({ farmId: 'f1', queueId: 'q1', template: '{}', format: 'json' })
+    const url = calledUrl()
+    expect(url).not.toContain('max_attempts=')
+    expect(url).not.toContain('retry_delay_seconds=')
+    expect(url).not.toContain('failure_limit=')
+  })
+
   it('sends the template as the request body', async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1' }))
     const template = '{"name":"render"}'
@@ -159,6 +187,18 @@ describe('fetchDeleteJob', () => {
     await fetchDeleteJob('job-1')
     expect(calledUrl()).toBe('/api/v1/jobs/job-1')
     expect(calledInit().method).toBe('DELETE')
+  })
+})
+
+// ── fetchResumeJob ────────────────────────────────────────────────────────────
+
+describe('fetchResumeJob', () => {
+  it('sends PATCH to /api/v1/jobs/:id with { action: "resume" }', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1', status: 'running' }))
+    await fetchResumeJob('job-1')
+    expect(calledUrl()).toBe('/api/v1/jobs/job-1')
+    expect(calledInit().method).toBe('PATCH')
+    expect(JSON.parse(calledInit().body as string)).toEqual({ action: 'resume' })
   })
 })
 
@@ -297,6 +337,37 @@ describe('useDeleteJob', () => {
 
     expect(calledUrl()).toContain('/jobs/job-1')
     expect(calledInit().method).toBe('DELETE')
+  })
+})
+
+describe('useResumeJob', () => {
+  it('invalidates jobs on success', async () => {
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1', status: 'running' }))
+
+    const { result } = renderHook(() => useResumeJob(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('job-1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.jobs.all })
+  })
+
+  it('issues PATCH /jobs/{id} with { action: "resume" }', async () => {
+    const client = makeClient()
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1', status: 'running' }))
+
+    const { result } = renderHook(() => useResumeJob(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('job-1')
+    })
+
+    expect(calledUrl()).toBe('/api/v1/jobs/job-1')
+    expect(calledInit().method).toBe('PATCH')
+    expect(JSON.parse(calledInit().body as string)).toEqual({ action: 'resume' })
   })
 })
 
