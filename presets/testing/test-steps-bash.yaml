@@ -70,7 +70,8 @@ template:
               output_dir="{{Param.OutputDir}}"
 
               in_list() {
-                local needle="$1" list="$2" item
+                local needle="$1" list="$2" item _items
+                [[ -z "$list" ]] && return 1
                 IFS=',' read -ra _items <<< "$list"
                 for item in "${_items[@]}"; do
                   item="${item// /}"
