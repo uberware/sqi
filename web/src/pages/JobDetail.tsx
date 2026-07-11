@@ -23,6 +23,7 @@ import { truncateId } from '@/lib/id'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
   JobDetail as JobDetailType,
+  FailureSummary,
   Step,
   StepStatus,
   Task,
@@ -91,6 +92,19 @@ function retryingHint(task: Task, now: number): string | undefined {
   const retryAt = new Date(task.retry_after).getTime()
   if (retryAt <= now) return undefined
   return `retrying in ${formatDuration(retryAt - now)}`
+}
+
+/**
+ * Job-level failure banner text built from the job's `failure_summary`
+ * (present once at least one task has failed), e.g. "3 tasks failed —
+ * execution timeout after 120s (2 reasons)".
+ */
+function failureBannerText(summary: FailureSummary): string {
+  const { failed_count, dominant_reason, distinct_reasons } = summary
+  const noun = failed_count === 1 ? 'task' : 'tasks'
+  const reason = dominant_reason ?? 'see task details'
+  const suffix = distinct_reasons > 1 ? ` (${distinct_reasons} reasons)` : ''
+  return `${failed_count} ${noun} failed — ${reason}${suffix}`
 }
 
 // ── IdCell ────────────────────────────────────────────────────────────────────
@@ -295,6 +309,11 @@ function TaskRow({
               reason={task.unschedulable_reason}
               className={styles.unschedulableBadge ?? ''}
             />
+          )}
+          {task.failure_reason !== undefined && task.failure_reason !== '' && (
+            <span className={styles.failureReason ?? ''} title={task.failure_reason}>
+              {task.failure_reason}
+            </span>
           )}
         </td>
         <td>
@@ -837,6 +856,12 @@ export default function JobDetail() {
           </RefreshControls>
         }
       />
+
+      {job.failure_summary !== undefined && (
+        <div className={styles.failureBanner ?? ''} role="alert">
+          <span>{failureBannerText(job.failure_summary)}</span>
+        </div>
+      )}
 
       {job.park_reason !== undefined && job.park_reason !== '' && (
         <div className={styles.autoParkBanner ?? ''} role="alert">

@@ -95,10 +95,18 @@ export interface TaskCounts {
   unschedulable?: number
 }
 
+/** Aggregate summary of task failures for a job; absent when no tasks have failed. */
+export interface FailureSummary {
+  failed_count: number
+  dominant_reason?: string
+  distinct_reasons: number
+}
+
 /** Wire shape returned by GET /api/v1/jobs/{id}. */
 export interface JobDetail extends Job {
   steps: Step[]
   task_counts: TaskCounts
+  failure_summary?: FailureSummary
 }
 
 // ── Step ──────────────────────────────────────────────────────────────────────
@@ -134,6 +142,8 @@ export interface Task {
   failed_attempts?: number
   /** Set and in the future while a ready task is backing off after a failed attempt. */
   retry_after?: string
+  /** Human-readable reason the task's most recent attempt failed; set only for failed tasks. */
+  failure_reason?: string
 }
 
 /** Wire shape returned by POST /api/v1/tasks/{id}/retry. */

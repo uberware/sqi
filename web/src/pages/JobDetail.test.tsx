@@ -1421,4 +1421,64 @@ describe('JobDetail', () => {
       expect(screen.queryByText(/retrying in/)).not.toBeInTheDocument()
     })
   })
+
+  // ── Failure banner and per-task failure reason ───────────────────────────
+
+  describe('failure banner', () => {
+    it('shows a failure banner with the dominant reason and count', async () => {
+      const job = makeJob({
+        status: 'failed',
+        failure_summary: {
+          failed_count: 50,
+          dominant_reason: 'worker not configured for staging',
+          distinct_reasons: 1,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const banner = await screen.findByRole('alert')
+      expect(banner).toHaveTextContent(/50 tasks failed/i)
+      expect(banner).toHaveTextContent(/worker not configured for staging/i)
+    })
+
+    it('notes multiple reasons when they differ', async () => {
+      const job = makeJob({
+        status: 'failed',
+        failure_summary: { failed_count: 50, dominant_reason: 'staging', distinct_reasons: 3 },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const banner = await screen.findByRole('alert')
+      expect(banner).toHaveTextContent(/3 reasons/i)
+    })
+
+    it('does not render the banner when failure_summary is absent', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Test Render Job'))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it("shows a failed task's own failure reason", async () => {
+      const task = makeTask({
+        status: 'failed',
+        failure_reason: 'execution timeout after 120s',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText(/execution timeout after 120s/i)).toBeInTheDocument()
+    })
+  })
 })
