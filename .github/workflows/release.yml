@@ -348,6 +348,7 @@ jobs:
           git clone --depth 1 \
             "https://x-access-token:${SQI_PRESETS_TOKEN}@github.com/uberware/sqi-presets.git" "$lib"
           go run ./cmd/presetgen -presets presets/sqi -out "$lib"
+          go run ./cmd/presetgen -presets presets/testing -subdir testing -out "$lib"
           cd "$lib"
           git add -A
           if git diff --cached --quiet; then
