@@ -218,6 +218,17 @@ type TaskStore interface {
 	// "unschedulable" count alongside the per-status task counts in job
 	// responses.
 	CountUnschedulableTasksByJob(ctx context.Context, jobID string) (int, error)
+
+	// RecordTaskFailure atomically increments the task's and its enclosing
+	// job's FailedAttempts counters in a single transaction and returns both
+	// post-increment values. Returns [ErrNotFound] if the task does not exist.
+	RecordTaskFailure(ctx context.Context, taskID string, now time.Time) (taskFailed, jobFailed int, err error)
+
+	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],
+	// clearing AssignedWorkerID and AssignedAt, and stamps RetryAfter so the
+	// task is excluded from [ListReadyTasks] until the backoff elapses.
+	// Returns [ErrNotFound] if the task does not exist.
+	RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) error
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

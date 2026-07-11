@@ -165,6 +165,13 @@ type JobStore interface {
 	// Active jobs are never removed. Each removed job's children are deleted via
 	// the same cascade as [DeleteJob].
 	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
+
+	// ParkJob transitions a job to [JobStatusPaused] and records reason in
+	// ParkReason, but only while the job is non-terminal (not completed,
+	// failed, or canceled). A terminal job is a legitimate no-op: ParkJob
+	// returns nil without modifying it. Returns [ErrNotFound] if the job does
+	// not exist.
+	ParkJob(ctx context.Context, jobID, reason string, now time.Time) error
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

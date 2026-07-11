@@ -110,6 +110,13 @@ SELECT id, name, farm_id, queue_id FROM jobs
 WHERE status IN (`
 	sqlSelectExpiredJobsSuffix = `)
   AND COALESCE(completed_at, updated_at) < ?`
+
+	// sqlParkJob pauses a job and records why, but only while it is
+	// non-terminal — a job that has already reached completed/failed/canceled
+	// is left alone (zero rows affected is a legitimate no-op, not an error).
+	sqlParkJob = `
+UPDATE jobs SET status = 'paused', park_reason = ?, updated_at = ?
+WHERE id = ? AND status NOT IN ('completed','failed','canceled')`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -455,4 +462,31 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 		return store.ErrNotFound
 	}
 	return mapErr(tx.Commit())
+}
+
+// ParkJob implements [store.JobStore].
+//
+// A zero-row UPDATE is ambiguous between "job not found" and "job already
+// terminal"; a follow-up GetJob disambiguates the same way [Store.CancelJobStatus]
+// does — terminal is a legitimate no-op (nil), missing propagates [store.ErrNotFound].
+func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time) error {
+	nowText := timeToText(now.UTC())
+
+	res, err := s.db.ExecContext(ctx, sqlParkJob, reason, nowText, jobID)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // successfully parked
+	}
+
+	// Zero rows: job was not found or was already terminal.
+	if _, err := s.GetJob(ctx, jobID); err != nil {
+		return err // propagates ErrNotFound
+	}
+	return nil // already terminal — legitimate no-op
 }

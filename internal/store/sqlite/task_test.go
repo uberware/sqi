@@ -4,6 +4,7 @@ package sqlite_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -194,5 +195,161 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 	}
 	if step.Status != store.StepStatusPending {
 		t.Errorf("step = %v, want pending (has a pending task now)", step.Status)
+	}
+}
+
+// TestRecordTaskFailure_IncrementsBothCounters asserts that RecordTaskFailure
+// atomically increments a task's and its job's failed_attempts counters,
+// returning the post-increment values on each call.
+func TestRecordTaskFailure_IncrementsBothCounters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	tf, jf, err := s.RecordTaskFailure(ctx, "t1", now)
+	if err != nil || tf != 1 || jf != 1 {
+		t.Fatalf("first: tf=%d jf=%d err=%v", tf, jf, err)
+	}
+	tf, jf, err = s.RecordTaskFailure(ctx, "t1", now)
+	if err != nil || tf != 2 || jf != 2 {
+		t.Fatalf("second: tf=%d jf=%d err=%v", tf, jf, err)
+	}
+
+	// Persisted state matches the returned counters.
+	task, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.FailedAttempts != 2 {
+		t.Errorf("task.FailedAttempts = %d, want 2", task.FailedAttempts)
+	}
+	job, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.FailedAttempts != 2 {
+		t.Errorf("job.FailedAttempts = %d, want 2", job.FailedAttempts)
+	}
+}
+
+// TestRecordTaskFailure_NotFound asserts that recording a failure for an
+// unknown task returns [store.ErrNotFound] and leaves nothing modified.
+func TestRecordTaskFailure_NotFound(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	_, _, err := s.RecordTaskFailure(ctx, "missing", time.Now().UTC())
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRequeueTaskForRetry_ResetsAssignment asserts that RequeueTaskForRetry
+// returns an assigned task to ready, clears its worker assignment, and stamps
+// retry_after with the supplied backoff time.
+func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertWorker(t, s, "w1", "f1")
+	insertTask(t, s, "t1", "j1", "s1")
+	if err := s.AssignTask(ctx, "t1", "w1", now); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+
+	future := now.Add(30 * time.Second)
+	if err := s.RequeueTaskForRetry(ctx, "t1", future, now); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != store.TaskStatusReady || got.AssignedWorkerID != "" || got.RetryAfter == nil {
+		t.Fatalf("bad state: %+v", got)
+	}
+}
+
+// TestRequeueTaskForRetry_NotFound asserts that requeuing an unknown task
+// returns [store.ErrNotFound].
+func TestRequeueTaskForRetry_NotFound(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	err := s.RequeueTaskForRetry(ctx, "missing", now.Add(time.Second), now)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestParkJob_SkipsTerminal asserts that ParkJob transitions a non-terminal
+// job to paused with a reason, but is a no-op (not an error) once the job has
+// reached a terminal status.
+func TestParkJob_SkipsTerminal(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+
+	if err := s.ParkJob(ctx, "j1", "failure limit reached (2)", now); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusPaused || got.ParkReason == "" {
+		t.Fatalf("bad park: %+v", got)
+	}
+
+	// A terminal job is left untouched — no error, no state change.
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
+		t.Fatalf("UpdateJobStatus(failed): %v", err)
+	}
+	if err := s.ParkJob(ctx, "j1", "x", now); err != nil {
+		t.Fatalf("park terminal (expected no-op, no error): %v", err)
+	}
+	got, err = s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusFailed {
+		t.Fatalf("terminal job should not be parked: %+v", got)
+	}
+}
+
+// TestParkJob_NotFound asserts that parking an unknown job returns
+// [store.ErrNotFound].
+func TestParkJob_NotFound(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	err := s.ParkJob(ctx, "missing", "x", time.Now().UTC())
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }

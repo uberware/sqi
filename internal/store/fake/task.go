@@ -549,6 +549,52 @@ func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now t
 	return true, nil
 }
 
+// RecordTaskFailure implements [store.TaskStore]. It atomically (under the
+// store lock) increments the task's and its job's FailedAttempts counters and
+// returns both post-increment values.
+func (s *Store) RecordTaskFailure(_ context.Context, taskID string, now time.Time) (taskFailed, jobFailed int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return 0, 0, store.ErrNotFound
+	}
+	t.FailedAttempts++
+	t.UpdatedAt = now
+	s.tasks[taskID] = t
+
+	j, ok := s.jobs[t.JobID]
+	if !ok {
+		return 0, 0, store.ErrNotFound
+	}
+	j.FailedAttempts++
+	j.UpdatedAt = now
+	s.jobs[t.JobID] = j
+
+	return t.FailedAttempts, j.FailedAttempts, nil
+}
+
+// RequeueTaskForRetry implements [store.TaskStore]. It returns the task to
+// [store.TaskStatusReady], clears its worker assignment, and stamps RetryAfter.
+func (s *Store) RequeueTaskForRetry(_ context.Context, taskID string, retryAfter, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	t.Status = store.TaskStatusReady
+	t.AssignedWorkerID = ""
+	t.AssignedAt = nil
+	ra := retryAfter
+	t.RetryAfter = &ra
+	t.UpdatedAt = now
+	s.tasks[taskID] = t
+	return nil
+}
+
 // cmpReadyTask orders tasks by job priority descending, then CreatedAt ascending.
 func cmpReadyTask(a, b store.Task, jobPriority map[string]int) int {
 	if n := cmp.Compare(jobPriority[b.JobID], jobPriority[a.JobID]); n != 0 {

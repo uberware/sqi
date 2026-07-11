@@ -164,6 +164,23 @@ UPDATE tasks
 SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?, unschedulable_reason = ''
 WHERE  id = ? AND status = 'ready'`
 
+	sqlRecordTaskFailure = `
+UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ?
+WHERE id = ? RETURNING failed_attempts, job_id`
+
+	sqlIncrementJobFailure = `
+UPDATE jobs SET failed_attempts = failed_attempts + 1, updated_at = ?
+WHERE id = ? RETURNING failed_attempts`
+
+	// sqlRequeueTaskForRetry returns a task to ready, clearing its worker
+	// assignment and stamping retry_after so [Store.ListReadyTasks] excludes it
+	// until the backoff elapses.
+	sqlRequeueTaskForRetry = `
+UPDATE tasks
+SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
+    retry_after = ?, updated_at = ?
+WHERE id = ?`
+
 	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
 	// that a retry will revive. The optional "AND id IN (?, …)" suffix is
 	// appended at call time when a task-ID subset is supplied.
@@ -691,4 +708,42 @@ func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now
 		return false, err
 	}
 	return n == 1, nil
+}
+
+// RecordTaskFailure implements [store.TaskStore].
+//
+// Both counters are incremented inside a single transaction so a crash
+// between the two UPDATEs can never leave the task and job counts out of
+// sync: either both increment or neither does.
+func (s *Store) RecordTaskFailure(ctx context.Context, taskID string, now time.Time) (taskFailed, jobFailed int, err error) {
+	nowText := timeToText(now.UTC())
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("sqlite: begin tx for record task failure: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	var jobID string
+	if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
+		return 0, 0, mapErr(err)
+	}
+
+	if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
+		return 0, 0, mapErr(err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
+	}
+	return taskFailed, jobFailed, nil
+}
+
+// RequeueTaskForRetry implements [store.TaskStore].
+func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry, timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID)
+	if err != nil {
+		return mapErr(err)
+	}
+	return checkRowsAffected(res)
 }
