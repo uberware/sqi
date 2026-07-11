@@ -502,3 +502,91 @@ func TestParkJob_NotFound(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestSetTaskFailureReason_RoundTrip asserts that SetTaskFailureReason
+// persists a reason and that a subsequent call with an empty string clears it.
+func TestSetTaskFailureReason_RoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
+		t.Fatalf("SetTaskFailureReason: %v", err)
+	}
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != "boom" {
+		t.Fatalf("FailureReason = %q, want %q", got.FailureReason, "boom")
+	}
+
+	if err := s.SetTaskFailureReason(ctx, "t1", ""); err != nil {
+		t.Fatalf("SetTaskFailureReason (clear): %v", err)
+	}
+	got, err = s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != "" {
+		t.Fatalf("FailureReason not cleared: %q", got.FailureReason)
+	}
+}
+
+// TestSetTaskFailureReason_NotFound asserts that setting the failure reason of
+// an unknown task returns [store.ErrNotFound].
+func TestSetTaskFailureReason_NotFound(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	err := s.SetTaskFailureReason(ctx, "missing", "x")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestTaskAttempt_MessageRoundTrip asserts that a TaskAttempt's Message
+// persists through CreateTaskAttempt and can be set via UpdateTaskAttempt.
+func TestTaskAttempt_MessageRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+
+	a := insertAttempt(t, s, "t1", "w1", 1)
+	if a.Message != "" {
+		t.Fatalf("new attempt Message = %q, want empty", a.Message)
+	}
+
+	a.Status = store.AttemptStatusFailed
+	end := time.Now().UTC()
+	a.EndedAt = &end
+	a.Message = "execution timeout after 120s"
+	updated, err := s.UpdateTaskAttempt(ctx, a)
+	if err != nil {
+		t.Fatalf("UpdateTaskAttempt: %v", err)
+	}
+	if updated.Message != "execution timeout after 120s" {
+		t.Fatalf("updated.Message = %q, want %q", updated.Message, "execution timeout after 120s")
+	}
+
+	got, err := s.GetTaskAttempt(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAttempt: %v", err)
+	}
+	if got.Message != "execution timeout after 120s" {
+		t.Fatalf("GetTaskAttempt Message = %q, want %q", got.Message, "execution timeout after 120s")
+	}
+}

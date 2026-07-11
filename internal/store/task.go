@@ -56,6 +56,11 @@ type Task struct {
 	// status.
 	UnschedulableReason string
 
+	// FailureReason is the human-readable reason the task reached a terminal
+	// non-success (failed or canceled). Empty for non-terminal tasks; cleared
+	// on retry. A denormalized copy of the latest terminal attempt's reason.
+	FailureReason string
+
 	// FailedAttempts counts attempts that GENUINELY ran and failed
 	// (worker-reported "failed"). Lost/reclaimed attempts never increment it.
 	FailedAttempts int
@@ -214,6 +219,11 @@ type TaskStore interface {
 	// SetTaskUnschedulableReason sets (or, with an empty string, clears) the
 	// reason a ready task cannot be scheduled. Returns ErrNotFound if id is unknown.
 	SetTaskUnschedulableReason(ctx context.Context, id, reason string) error
+
+	// SetTaskFailureReason sets (or, with an empty string, clears) the
+	// human-readable reason the task reached a terminal non-success. Returns
+	// ErrNotFound if id is unknown.
+	SetTaskFailureReason(ctx context.Context, id, reason string) error
 
 	// CountUnschedulableTasksByJob returns the number of tasks for the given
 	// job that are currently in [TaskStatusReady] with a non-empty

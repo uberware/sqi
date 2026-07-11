@@ -94,6 +94,21 @@ func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string)
 	return nil
 }
 
+// SetTaskFailureReason implements [store.TaskStore].
+func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	task.FailureReason = reason
+	task.UpdatedAt = time.Now()
+	s.tasks[id] = task
+	return nil
+}
+
 // TransitionStepPendingTasks transitions every pending task of the step to `to`,
 // updates UpdatedAt, and returns the affected tasks.
 func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus) ([]store.Task, error) {

@@ -15,15 +15,15 @@ import (
 const taskCols = `
 	id, job_id, step_id, name, parameters, status,
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-	unschedulable_reason, failed_attempts, retry_after`
+	unschedulable_reason, failed_attempts, retry_after, failure_reason`
 
 const (
 	sqlInsertTask = `
 INSERT INTO tasks (
 	id, job_id, step_id, name, parameters, status,
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-	unschedulable_reason, failed_attempts, retry_after)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	unschedulable_reason, failed_attempts, retry_after, failure_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
@@ -36,6 +36,9 @@ UPDATE tasks SET status = ?, updated_at = ?, unschedulable_reason = '' WHERE id 
 
 	sqlSetTaskUnschedulableReason = `
 UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
+
+	sqlSetTaskFailureReason = `
+UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ?`
 
 	sqlAssignTask = `
 UPDATE tasks
@@ -59,7 +62,7 @@ WHERE id = ?`
 	sqlListReadyTasks = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
        t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores,
-       t.unschedulable_reason, t.failed_attempts, t.retry_after
+       t.unschedulable_reason, t.failed_attempts, t.retry_after, t.failure_reason
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
@@ -249,7 +252,7 @@ func scanTask(row scanner) (store.Task, error) {
 	if err := row.Scan(
 		&t.ID, &t.JobID, &t.StepID, &t.Name, &paramsJSON, &status,
 		&assignedWorkerID, &assignedAt, &createdAt, &updatedAt, &reqCores,
-		&t.UnschedulableReason, &t.FailedAttempts, &retryAfter,
+		&t.UnschedulableReason, &t.FailedAttempts, &retryAfter, &t.FailureReason,
 	); err != nil {
 		return store.Task{}, err
 	}
@@ -288,7 +291,7 @@ func (s *Store) CreateTask(ctx context.Context, task store.Task) (store.Task, er
 	row := s.stmtInsertTask.QueryRowContext(ctx,
 		task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
 		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
-		task.UnschedulableReason, task.FailedAttempts, nullTimeToText(task.RetryAfter))
+		task.UnschedulableReason, task.FailedAttempts, nullTimeToText(task.RetryAfter), task.FailureReason)
 	out, err := scanTask(row)
 	return out, mapErr(err)
 }
@@ -398,6 +401,15 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.Ta
 // SetTaskUnschedulableReason implements [store.TaskStore].
 func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) error {
 	res, err := s.stmtSetTaskUnschedulableReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
+	if err != nil {
+		return mapErr(err)
+	}
+	return checkRowsAffected(res)
+}
+
+// SetTaskFailureReason implements [store.TaskStore]. An empty reason clears it.
+func (s *Store) SetTaskFailureReason(ctx context.Context, id, reason string) error {
+	res, err := s.stmtSetTaskFailureReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -552,7 +564,7 @@ func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time)
 		rows, queryErr := tx.QueryContext(ctx, `
 SELECT id, job_id, step_id, name, parameters, status,
        assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-       unschedulable_reason, failed_attempts, retry_after
+       unschedulable_reason, failed_attempts, retry_after, failure_reason
 FROM   tasks
 WHERE  job_id = ?
   AND  status IN ('assigned', 'running')`, jobID)
