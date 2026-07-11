@@ -431,6 +431,57 @@ func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
 	}
 }
 
+// TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason is the
+// regression for the bug where a user-canceled RUNNING task lost its
+// "canceled by user" reason. CancelTask/CancelJob set the task's
+// failure_reason up front, then kill the worker; the worker always echoes
+// back "canceled" with an empty Message (internal/worker/executor/run.go).
+// Before the fix, handleTaskTerminal unconditionally called
+// SetTaskFailureReason with the synthesized (empty, for canceled) reason,
+// clobbering the server-set one. The fix guards that write so an empty
+// synthesized reason never overwrites an existing reason.
+func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+
+	// Simulate what CancelTask/CancelJob did before killing the worker: stamp
+	// the authoritative reason directly via the store.
+	if err := st.SetTaskFailureReason(t.Context(), task.ID, "canceled by user"); err != nil {
+		t.Fatalf("SetTaskFailureReason: %v", err)
+	}
+
+	// The killed worker's terminal echo always carries an empty Message.
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "canceled",
+			Message:   "",
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.acked {
+		t.Fatal("expected message to be acked")
+	}
+
+	stored, err := st.GetTask(t.Context(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != store.TaskStatusCanceled {
+		t.Errorf("task status = %q, want canceled", stored.Status)
+	}
+	if stored.FailureReason != "canceled by user" {
+		t.Errorf("task.failure_reason = %q, want %q (must not be clobbered by the empty worker echo)",
+			stored.FailureReason, "canceled by user")
+	}
+}
+
 // ── Step and job completion ───────────────────────────────────────────────────
 
 func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {

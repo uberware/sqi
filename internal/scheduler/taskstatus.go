@@ -260,10 +260,15 @@ func (s *Scheduler) handleTaskTerminal(
 	}
 
 	// ── Durable per-task failure reason for terminal non-success ─────────
+	// An empty synthesized reason (worker "canceled" echoes always carry an
+	// empty Message — see internal/worker/executor/run.go) must never
+	// overwrite an existing, server-set reason (e.g. CancelTask/CancelJob's
+	// "canceled by user" or the cascade's "canceled: upstream step failed").
 	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
-		reason := failureReasonOrFallback(m.Message, m.ExitCode, taskStatus)
-		if err := s.store.SetTaskFailureReason(ctx, m.TaskID, reason); err != nil {
-			return err
+		if reason := failureReasonOrFallback(m.Message, m.ExitCode, taskStatus); reason != "" {
+			if err := s.store.SetTaskFailureReason(ctx, m.TaskID, reason); err != nil {
+				return err
+			}
 		}
 	}
 
