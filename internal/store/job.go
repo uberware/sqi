@@ -57,7 +57,17 @@ type Job struct {
 	// Nil or empty for jobs with no declared parameters or submitted before
 	// the parameters-persistence migration (back-compat: scheduler falls back
 	// to template defaults).
-	Parameters  map[string]string
+	Parameters map[string]string
+	// FailedAttempts is the job's cumulative count of genuine task failures.
+	FailedAttempts int
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are per-job retry policy
+	// overrides. Nil means "inherit" (Queue -> Farm -> server default).
+	MaxAttempts       *int
+	RetryDelaySeconds *int
+	FailureLimit      *int
+	// ParkReason is empty for a manual pause; set when the failure-limit sweep
+	// auto-parks the job (e.g. "failure limit reached (25)").
+	ParkReason  string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	StartedAt   *time.Time

@@ -15,8 +15,13 @@ type Farm struct {
 	Name               string
 	Description        string
 	MaxConcurrentTasks int // 0 = unlimited; farm-level policy
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are farm-level retry
+	// policy overrides. Nil means "inherit" (server default).
+	MaxAttempts       *int
+	RetryDelaySeconds *int
+	FailureLimit      *int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // FarmStore is the persistence interface for [Farm] records.

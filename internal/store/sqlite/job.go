@@ -14,14 +14,16 @@ import (
 
 const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
-	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at`
+	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
+	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason`
 
 const (
 	sqlInsertJob = `
 INSERT INTO jobs (
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
-	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
+	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
@@ -115,12 +117,14 @@ func scanJob(row scanner) (store.Job, error) {
 	var status, templateFormat, paramsJSON string
 	var createdAt, updatedAt string
 	var startedAt, completedAt sql.NullString
+	var maxAtt, delay, failLim sql.NullInt64
 
 	if err := row.Scan(
 		&j.ID, &j.FarmID, &j.QueueID, &j.Name, &j.Owner, &j.Submitter,
 		&j.Priority, &status, &j.Project,
 		&j.RawTemplate, &templateFormat, &paramsJSON,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
+		&j.FailedAttempts, &maxAtt, &delay, &failLim, &j.ParkReason,
 	); err != nil {
 		return store.Job{}, err
 	}
@@ -131,6 +135,7 @@ func scanJob(row scanner) (store.Job, error) {
 	j.UpdatedAt = mustTime(updatedAt)
 	j.StartedAt = nullTextToTime(startedAt)
 	j.CompletedAt = nullTextToTime(completedAt)
+	j.MaxAttempts, j.RetryDelaySeconds, j.FailureLimit = intPtr(maxAtt), intPtr(delay), intPtr(failLim)
 
 	params, err := unmarshalJSON(paramsJSON, map[string]string{})
 	if err != nil {
@@ -153,7 +158,9 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 		job.Priority, string(job.Status), job.Project,
 		job.RawTemplate, string(job.TemplateFormat), paramsJSON,
 		now, now,
-		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt))
+		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
+		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
+		job.ParkReason)
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }

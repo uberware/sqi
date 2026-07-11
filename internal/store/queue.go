@@ -18,8 +18,13 @@ type Queue struct {
 	Priority           int
 	MaxConcurrentTasks int // 0 = unlimited
 	Paused             bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are queue-level retry
+	// policy overrides. Nil means "inherit" (Farm -> server default).
+	MaxAttempts       *int
+	RetryDelaySeconds *int
+	FailureLimit      *int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // QueueSortField is a column by which [QueueStore.ListQueues] results can be

@@ -15,15 +15,15 @@ import (
 const taskCols = `
 	id, job_id, step_id, name, parameters, status,
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-	unschedulable_reason`
+	unschedulable_reason, failed_attempts, retry_after`
 
 const (
 	sqlInsertTask = `
 INSERT INTO tasks (
 	id, job_id, step_id, name, parameters, status,
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-	unschedulable_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	unschedulable_reason, failed_attempts, retry_after)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
@@ -58,7 +58,7 @@ WHERE id = ?`
 	sqlListReadyTasks = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
        t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores,
-       t.unschedulable_reason
+       t.unschedulable_reason, t.failed_attempts, t.retry_after
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
@@ -197,11 +197,12 @@ func scanTask(row scanner) (store.Task, error) {
 	var assignedWorkerID, assignedAt sql.NullString
 	var createdAt, updatedAt string
 	var reqCores sql.NullInt64
+	var retryAfter sql.NullString
 
 	if err := row.Scan(
 		&t.ID, &t.JobID, &t.StepID, &t.Name, &paramsJSON, &status,
 		&assignedWorkerID, &assignedAt, &createdAt, &updatedAt, &reqCores,
-		&t.UnschedulableReason,
+		&t.UnschedulableReason, &t.FailedAttempts, &retryAfter,
 	); err != nil {
 		return store.Task{}, err
 	}
@@ -211,6 +212,7 @@ func scanTask(row scanner) (store.Task, error) {
 	t.AssignedAt = nullTextToTime(assignedAt)
 	t.CreatedAt = mustTime(createdAt)
 	t.UpdatedAt = mustTime(updatedAt)
+	t.RetryAfter = nullTextToTime(retryAfter)
 	if reqCores.Valid {
 		v := int(reqCores.Int64)
 		t.RequiredCores = &v
@@ -239,7 +241,7 @@ func (s *Store) CreateTask(ctx context.Context, task store.Task) (store.Task, er
 	row := s.stmtInsertTask.QueryRowContext(ctx,
 		task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
 		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
-		task.UnschedulableReason)
+		task.UnschedulableReason, task.FailedAttempts, nullTimeToText(task.RetryAfter))
 	out, err := scanTask(row)
 	return out, mapErr(err)
 }
@@ -503,7 +505,7 @@ func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time)
 		rows, queryErr := tx.QueryContext(ctx, `
 SELECT id, job_id, step_id, name, parameters, status,
        assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-       unschedulable_reason
+       unschedulable_reason, failed_attempts, retry_after
 FROM   tasks
 WHERE  job_id = ?
   AND  status IN ('assigned', 'running')`, jobID)

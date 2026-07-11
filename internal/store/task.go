@@ -55,6 +55,14 @@ type Task struct {
 	// online worker (empty = schedulable). An annotation on the task, not a
 	// status.
 	UnschedulableReason string
+
+	// FailedAttempts counts attempts that GENUINELY ran and failed
+	// (worker-reported "failed"). Lost/reclaimed attempts never increment it.
+	FailedAttempts int
+
+	// RetryAfter, when non-nil and in the future, holds the task in the ready
+	// queue until the backoff delay elapses. Nil means immediately eligible.
+	RetryAfter *time.Time
 }
 
 // TaskSortField is a column by which [TaskStore.ListTasks] results can be ordered.
