@@ -101,6 +101,9 @@ func (s *Scheduler) retry(ctx context.Context, jobID string, taskIDs []string) (
 		if revivedIDs[ct.ID] {
 			continue
 		}
+		if err := s.store.SetTaskFailureReason(ctx, ct.ID, "canceled: upstream step failed"); err != nil {
+			return 0, fmt.Errorf("scheduler: set failure reason for re-canceled task %s: %w", ct.ID, err)
+		}
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     jobID,
 			TaskID:    ct.ID,

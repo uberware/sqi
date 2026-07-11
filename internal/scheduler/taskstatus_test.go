@@ -674,6 +674,9 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 	if stored2.Status != store.TaskStatusCanceled {
 		t.Errorf("task2 status = %q, want canceled", stored2.Status)
 	}
+	if stored2.FailureReason != "canceled: upstream step failed" {
+		t.Errorf("task2 failure_reason = %q, want %q", stored2.FailureReason, "canceled: upstream step failed")
+	}
 
 	// The job must reach a terminal state, not hang in running.
 	storedJob, err := st.GetJob(ctx, job.ID)

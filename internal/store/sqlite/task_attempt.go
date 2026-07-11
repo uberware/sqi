@@ -75,7 +75,7 @@ RETURNING ` + attemptCols
 	// ReclaimWorkerTasks so that assigned_worker_id is still set on the tasks.
 	sqlTerminateWorkerAttempts = `
 UPDATE task_attempts
-SET status = ?, ended_at = ?
+SET status = ?, ended_at = ?, message = 'worker went offline'
 WHERE status = 'running'
   AND task_id IN (
     SELECT id FROM tasks

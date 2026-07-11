@@ -455,9 +455,13 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 	}
 
 	// Fan the cascade-canceled tasks out to WebSocket subscribers; they were never
-	// assigned, so there is no worker to attribute.
+	// assigned, so there is no worker to attribute. Also record the durable
+	// failure reason so the UI can explain why the task never ran.
 	now := time.Now().UTC()
 	for _, t := range canceledTasks {
+		if err := s.store.SetTaskFailureReason(ctx, t.ID, "canceled: upstream step failed"); err != nil {
+			return err
+		}
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     t.JobID,
 			TaskID:    t.ID,

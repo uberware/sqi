@@ -123,6 +123,9 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 	if att.EndedAt == nil {
 		t.Error("expected attempt EndedAt set")
 	}
+	if att.Message != "worker went offline" {
+		t.Errorf("attempt message = %q, want %q", att.Message, "worker went offline")
+	}
 
 	// Task reclaimed back to ready, worker reference cleared.
 	tk, err := st.GetTask(t.Context(), taskID)
@@ -134,6 +137,10 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 	}
 	if tk.AssignedWorkerID != "" {
 		t.Errorf("task still assigned to %q, want cleared", tk.AssignedWorkerID)
+	}
+	// Reclaim is not a task failure — no durable failure_reason on the task.
+	if tk.FailureReason != "" {
+		t.Errorf("task failure_reason = %q, want empty (reclaim only annotates the attempt)", tk.FailureReason)
 	}
 }
 

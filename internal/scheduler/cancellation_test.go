@@ -196,6 +196,9 @@ func TestCancelJob_TasksAreCanceledInStore(t *testing.T) {
 	if stored.Status != store.TaskStatusCanceled {
 		t.Errorf("task status = %q, want canceled", stored.Status)
 	}
+	if stored.FailureReason != "canceled by user" {
+		t.Errorf("task failure_reason = %q, want %q", stored.FailureReason, "canceled by user")
+	}
 }
 
 // ── CancelTask tests ──────────────────────────────────────────────────────────
@@ -259,6 +262,9 @@ func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
 	}
 	if stored.Status != store.TaskStatusCanceled {
 		t.Errorf("task status = %q, want canceled", stored.Status)
+	}
+	if stored.FailureReason != "canceled by user" {
+		t.Errorf("task failure_reason = %q, want %q", stored.FailureReason, "canceled by user")
 	}
 	if len(bus.cancelCalls) != 1 {
 		t.Errorf("expected 1 NATS cancel signal, got %d", len(bus.cancelCalls))

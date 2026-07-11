@@ -70,6 +70,13 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 		)
 	}
 
+	// Snapshot the IDs of tasks about to be canceled by this call (all
+	// non-terminal tasks in the job right now) *before* CancelJobTasks runs,
+	// so the "canceled by user" annotation below lands only on tasks this
+	// call actually transitioned — not on tasks that were already canceled
+	// earlier for a different reason (e.g. a cascade-cancel).
+	toAnnotate := s.nonTerminalTaskIDs(ctx, jobID)
+
 	// Step 2: cancel all non-terminal tasks; capture the previously active
 	// tasks so we know which workers to notify.
 	activeTasks, err := s.store.CancelJobTasks(ctx, jobID, now)
@@ -79,6 +86,20 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 
 	// Step 3: publish cancel signals to all workers that had active tasks.
 	s.publishCancelSignals(ctx, activeTasks, now)
+
+	// Annotate every task this call just canceled with the durable reason.
+	// Best-effort: a failure here does not roll back the cancellation itself,
+	// since the reason is an explanatory annotation, not part of the state
+	// machine.
+	for _, id := range toAnnotate {
+		if err := s.store.SetTaskFailureReason(ctx, id, "canceled by user"); err != nil {
+			s.logger.WarnContext(
+				ctx, "scheduler: set failure reason for canceled task failed",
+				slog.String("task_id", id),
+				slog.Any("error", err),
+			)
+		}
+	}
 
 	// Step 4: release all usage pool slots held by the job.
 	n, err := s.store.ReleaseJobClaims(ctx, jobID, now)
@@ -146,6 +167,16 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 
 	if err = s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusCanceled); err != nil {
 		return fmt.Errorf("scheduler: transition task %s to canceled: %w", taskID, err)
+	}
+
+	// Annotate the durable failure reason. Best-effort: does not roll back the
+	// cancellation itself — the reason is an explanatory annotation.
+	if err = s.store.SetTaskFailureReason(ctx, taskID, "canceled by user"); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: set failure reason for canceled task failed",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
 	}
 
 	// Publish a cancel signal to the assigned worker (if any).
@@ -222,6 +253,48 @@ func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []stor
 			slog.String("worker_id", t.AssignedWorkerID),
 		)
 	}
+}
+
+// nonTerminalTaskIDs returns the IDs of every task in jobID that is not yet in
+// a terminal state. Used by CancelJob to snapshot exactly which tasks it is
+// about to cancel, before CancelJobTasks flips them, so the "canceled by
+// user" annotation lands only on tasks this call transitioned — not on tasks
+// that were already canceled earlier for a different reason (e.g. a
+// cascade-cancel). Best-effort: a lookup failure is logged and yields an
+// empty (not partial) result, since annotating the wrong tasks would be worse
+// than annotating none.
+func (s *Scheduler) nonTerminalTaskIDs(ctx context.Context, jobID string) []string {
+	page, err := s.store.ListTasks(ctx, store.ListTasksOptions{
+		JobID: jobID,
+		Statuses: []store.TaskStatus{
+			store.TaskStatusPending, store.TaskStatusReady,
+			store.TaskStatusAssigned, store.TaskStatusRunning,
+		},
+		Pagination: store.Pagination{Limit: store.MaxLimit},
+	})
+	if err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: list non-terminal tasks for cancel-reason annotation failed",
+			slog.String("job_id", jobID),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+	if page.Total > store.MaxLimit {
+		// Same truncation guard as checkStepCompletion: rather than
+		// mis-annotate a subset, skip annotation for this outsized job.
+		s.logger.WarnContext(
+			ctx, "scheduler: job exceeds MaxLimit — skipping cancel-reason annotation",
+			slog.String("job_id", jobID),
+			slog.Int("total", page.Total),
+		)
+		return nil
+	}
+	ids := make([]string, len(page.Items))
+	for i, t := range page.Items {
+		ids[i] = t.ID
+	}
+	return ids
 }
 
 // closeSingleTaskAttempt marks the latest running attempt for taskID as
