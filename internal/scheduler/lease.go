@@ -125,7 +125,7 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		return nil, nil
 	}
 
-	candidates, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, s.cfg.AssignBatchSize)
+	candidates, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, time.Now().UTC(), s.cfg.AssignBatchSize)
 	if err != nil {
 		return nil, fmt.Errorf("lease: list ready tasks: %w", err)
 	}

@@ -191,9 +191,10 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 }
 
 // ListReadyTasks returns up to limit tasks in [store.TaskStatusReady] that
-// belong to non-paused queues within the given farm, ordered by job priority
-// descending then CreatedAt ascending.
-func (s *Store) ListReadyTasks(_ context.Context, farmID string, limit int) ([]store.Task, error) {
+// belong to non-paused queues within the given farm, excluding tasks still
+// backing off (RetryAfter after now) and tasks whose job is paused or
+// terminal, ordered by job priority descending then CreatedAt ascending.
+func (s *Store) ListReadyTasks(_ context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -215,7 +216,7 @@ func (s *Store) ListReadyTasks(_ context.Context, farmID string, limit int) ([]s
 
 	var readyTasks []store.Task
 	for _, t := range s.tasks {
-		if isReadyInFarm(t, farmID, s.jobs, queuePaused) {
+		if isReadyInFarm(t, farmID, now, s.jobs, queuePaused) {
 			t.Parameters = copyMap(t.Parameters)
 			readyTasks = append(readyTasks, t)
 		}
@@ -436,9 +437,10 @@ func (s *Store) CountReadyTasksByQueue(_ context.Context, farmID string) (map[st
 }
 
 // isReadyInFarm reports whether t is eligible for assignment: status Ready,
-// job belongs to farmID (or farmID is "" meaning all farms), and the job's
-// queue is not paused.
-func isReadyInFarm(t store.Task, farmID string, jobs map[string]store.Job, queuePaused map[string]bool) bool {
+// job belongs to farmID (or farmID is "" meaning all farms), the job's queue
+// is not paused, the job itself is not paused or terminal, and t is not
+// still backing off (RetryAfter, if set, must not be after now).
+func isReadyInFarm(t store.Task, farmID string, now time.Time, jobs map[string]store.Job, queuePaused map[string]bool) bool {
 	if t.Status != store.TaskStatusReady {
 		return false
 	}
@@ -449,7 +451,28 @@ func isReadyInFarm(t store.Task, farmID string, jobs map[string]store.Job, queue
 	if farmID != "" && job.FarmID != farmID {
 		return false
 	}
-	return !queuePaused[job.QueueID]
+	if queuePaused[job.QueueID] {
+		return false
+	}
+	if job.Status == store.JobStatusPaused || isTerminalJobStatus(job.Status) {
+		return false
+	}
+	if t.RetryAfter != nil && t.RetryAfter.After(now) {
+		return false
+	}
+	return true
+}
+
+// isTerminalJobStatus reports whether status is a terminal job state
+// (completed, failed, canceled) — tasks belonging to such a job are never
+// eligible for assignment.
+func isTerminalJobStatus(status store.JobStatus) bool {
+	switch status {
+	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 // CountTasksByJob returns the number of tasks for the given job keyed by status.

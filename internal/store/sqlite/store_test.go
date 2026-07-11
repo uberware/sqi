@@ -1156,7 +1156,7 @@ func TestTask_ListReadyTasks(t *testing.T) {
 		t.Fatalf("CreateTask t2: %v", err)
 	}
 
-	ready, err := s.ListReadyTasks(ctx, "f1", 10)
+	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -1184,12 +1184,78 @@ func TestTask_ListReadyTasks_PausedQueue(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	ready, err := s.ListReadyTasks(ctx, "f1", 10)
+	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
 	if len(ready) != 0 {
 		t.Errorf("paused queue should yield no ready tasks; got %d", len(ready))
+	}
+}
+
+func TestTask_ListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+
+	// j1 stays pending (a non-terminal, non-paused status): its ready task
+	// is eligible.
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t-ready", JobID: "j1", StepID: "s1",
+		Name: "ready", Status: store.TaskStatusReady,
+		Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t-ready: %v", err)
+	}
+
+	// t-backoff is ready but its retry_after is in the future.
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Minute)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t-backoff", JobID: "j1", StepID: "s1",
+		Name: "backoff", Status: store.TaskStatusReady,
+		Parameters: map[string]string{}, RetryAfter: &future,
+	}); err != nil {
+		t.Fatalf("CreateTask t-backoff: %v", err)
+	}
+
+	// j2 is paused: its ready task must be excluded even though the task
+	// itself is otherwise eligible.
+	insertJob(t, s, "j2", "f1", "q1")
+	insertStep(t, s, "s2", "j2", "S2", 0)
+	if err := s.UpdateJobStatus(ctx, "j2", store.JobStatusPaused); err != nil {
+		t.Fatalf("UpdateJobStatus j2: %v", err)
+	}
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t-paused", JobID: "j2", StepID: "s2",
+		Name: "paused", Status: store.TaskStatusReady,
+		Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t-paused: %v", err)
+	}
+
+	ready, err := s.ListReadyTasks(ctx, "f1", now, 50)
+	if err != nil {
+		t.Fatalf("ListReadyTasks: %v", err)
+	}
+	var ids []string
+	for _, task := range ready {
+		ids = append(ids, task.ID)
+	}
+	foundReady := false
+	for _, id := range ids {
+		if id == "t-ready" {
+			foundReady = true
+		}
+		if id == "t-backoff" || id == "t-paused" {
+			t.Fatalf("backoff/paused tasks must be excluded, got %v", ids)
+		}
+	}
+	if !foundReady {
+		t.Fatalf("want t-ready selected, got %v", ids)
 	}
 }
 

@@ -54,7 +54,8 @@ WHERE id = ?`
 	// sqlListReadyTasks fetches tasks eligible for assignment.
 	// farmID = '' means "all farms" (used when the scheduler manages every farm).
 	// Two bind parameters are required for farmID: one for the empty check and
-	// one for the value filter.
+	// one for the value filter. A task backing off (retry_after in the
+	// future) or belonging to a paused/terminal job is excluded.
 	sqlListReadyTasks = `
 SELECT t.id, t.job_id, t.step_id, t.name, t.parameters, t.status,
        t.assigned_worker_id, t.assigned_at, t.created_at, t.updated_at, t.required_cores,
@@ -66,6 +67,8 @@ JOIN   steps  s ON t.step_id  = s.id
 WHERE  t.status  = 'ready'
   AND  (? = '' OR j.farm_id = ?)
   AND  q.paused  = 0
+  AND  j.status NOT IN ('paused','completed','failed','canceled')
+  AND  (t.retry_after IS NULL OR t.retry_after <= ?)
 ORDER BY j.priority DESC, j.created_at ASC, s.step_order ASC, t.created_at ASC
 LIMIT ?`
 
@@ -430,8 +433,8 @@ func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time)
 }
 
 // ListReadyTasks implements [store.TaskStore].
-func (s *Store) ListReadyTasks(ctx context.Context, farmID string, limit int) ([]store.Task, error) {
-	rows, err := s.stmtListReadyTasks.QueryContext(ctx, farmID, farmID, limit)
+func (s *Store) ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]store.Task, error) {
+	rows, err := s.stmtListReadyTasks.QueryContext(ctx, farmID, farmID, timeToText(now), limit)
 	if err != nil {
 		return nil, mapErr(err)
 	}

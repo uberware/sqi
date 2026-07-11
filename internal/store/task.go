@@ -103,14 +103,18 @@ type TaskStore interface {
 	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
-	// belong to non-paused queues within the given farm, ordered by:
+	// belong to non-paused queues within the given farm, excluding:
+	//   - tasks whose RetryAfter is set and after now (still backing off), and
+	//   - tasks whose job is paused or in a terminal status (completed,
+	//     failed, canceled),
+	// ordered by:
 	//   1. job priority descending (higher values first),
 	//   2. job submission time ascending (earlier jobs win ties),
 	//   3. step order ascending (earlier steps in a job run before later ones),
 	//   4. task creation time ascending (stable tiebreaker within a step).
 	//
 	// Used by the scheduler's assignment loop.
-	ListReadyTasks(ctx context.Context, farmID string, limit int) ([]Task, error)
+	ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]Task, error)
 
 	// ReclaimWorkerTasks resets all tasks assigned to workerID that are still
 	// in [TaskStatusAssigned] or [TaskStatusRunning] back to [TaskStatusReady]

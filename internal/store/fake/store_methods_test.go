@@ -364,12 +364,53 @@ func TestListReadyTasks(t *testing.T) {
 	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
 	mustCreateTask(t, s, "t-running", "j1", "s1", store.TaskStatusRunning)
 
-	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", 10)
+	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].ID != "t-ready" {
 		t.Errorf("got %v, want [t-ready]", tasks)
+	}
+}
+
+func TestListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
+
+	now := time.Now()
+	future := now.Add(time.Minute)
+	backoff := mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusReady)
+	backoff.RetryAfter = &future
+	s.mu.Lock()
+	s.tasks[backoff.ID] = backoff
+	s.mu.Unlock()
+
+	j2, err := s.CreateJob(ctx(), store.Job{
+		ID: "j2", FarmID: "farm-f1", QueueID: "q1", Name: "j2",
+		Status: store.JobStatusPaused, Priority: 50,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(j2): %v", err)
+	}
+	mustCreateTask(t, s, "t-paused", j2.ID, "s1", store.TaskStatusReady)
+
+	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", now, 10)
+	if err != nil {
+		t.Fatalf("ListReadyTasks: %v", err)
+	}
+	var ids []string
+	for _, tk := range tasks {
+		ids = append(ids, tk.ID)
+	}
+	if !slices.Contains(ids, "t-ready") {
+		t.Fatalf("want t-ready selected, got %v", ids)
+	}
+	if slices.Contains(ids, "t-backoff") || slices.Contains(ids, "t-paused") {
+		t.Fatalf("backoff/paused tasks must be excluded, got %v", ids)
 	}
 }
 
@@ -381,7 +422,7 @@ func TestListReadyTasks_AllFarms(t *testing.T) {
 	mustCreateJob(t, s, "j1", "farm-f1", "q1")
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
 
-	tasks, err := s.ListReadyTasks(ctx(), "", 10)
+	tasks, err := s.ListReadyTasks(ctx(), "", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
