@@ -189,11 +189,14 @@ SELECT ` + taskCols + `
 FROM   tasks
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 
-	// sqlRetryTasksPrefix reverts the selected tasks to pending.
+	// sqlRetryTasksPrefix reverts the selected tasks to pending, clearing the
+	// genuine-failure state (Tasks 1-3) a manual retry gives a clean slate:
+	// failed_attempts back to zero and any backoff stamp removed.
 	// The optional "AND id IN (?, …)" suffix is appended at call time.
 	sqlRetryTasksPrefix = `
 UPDATE tasks
-SET    status = 'pending', updated_at = ?, unschedulable_reason = ''
+SET    status = 'pending', updated_at = ?, unschedulable_reason = '',
+       failed_attempts = 0, retry_after = NULL
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 
 	// sqlRetryResetSteps resets any terminal step that now owns a pending task
@@ -204,10 +207,13 @@ SET    status = 'pending', updated_at = ?
 WHERE  job_id = ? AND status IN ('failed', 'canceled')
   AND  EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'pending')`
 
-	// sqlRetryResetJob resets the job to pending when it is currently terminal.
+	// sqlRetryResetJob resets the job to pending when it is currently terminal,
+	// also clearing its genuine-failure state (Tasks 1-3) so the job restarts
+	// with a clean failure count and no stale park reason.
 	sqlRetryResetJob = `
 UPDATE jobs
-SET    status = 'pending', completed_at = NULL, updated_at = ?
+SET    status = 'pending', completed_at = NULL, updated_at = ?,
+       failed_attempts = 0, park_reason = ''
 WHERE  id = ? AND status IN ('failed', 'canceled')`
 )
 

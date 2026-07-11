@@ -198,6 +198,82 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 	}
 }
 
+// TestRetryTasks_ResetsFailureCounters asserts that a manual retry via
+// RetryTasks clears the genuine-failure state Tasks 1-3 introduced: a revived
+// task's FailedAttempts and RetryAfter are zeroed/cleared, and — when the
+// retry resets a terminal job back to pending — the job's FailedAttempts and
+// ParkReason are cleared too.
+func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
+	// and stamps a backoff; enough failures park the job with a reason.
+	if _, _, err := s.RecordTaskFailure(ctx, "t1", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
+	}
+	if err := s.RequeueTaskForRetry(ctx, "t1", now.Add(time.Minute), now); err != nil {
+		t.Fatalf("RequeueTaskForRetry: %v", err)
+	}
+	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	// Drive the task and job to the terminal states RetryTasks operates on
+	// (park leaves the job paused, not terminal — so move both to failed
+	// directly, as the production failure sweep would eventually do).
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
+		t.Fatalf("UpdateTaskStatus(failed): %v", err)
+	}
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
+		t.Fatalf("UpdateJobStatus(failed): %v", err)
+	}
+
+	// Sanity-check the fixture actually has nonzero state before retrying.
+	preTask, err := s.GetTask(ctx, "t1")
+	if err != nil || preTask.FailedAttempts == 0 || preTask.RetryAfter == nil {
+		t.Fatalf("pre-retry task fixture not as expected: %+v err=%v", preTask, err)
+	}
+	preJob, err := s.GetJob(ctx, "j1")
+	if err != nil || preJob.FailedAttempts == 0 || preJob.ParkReason == "" {
+		t.Fatalf("pre-retry job fixture not as expected: %+v err=%v", preJob, err)
+	}
+
+	revived, err := s.RetryTasks(ctx, "j1", nil, now)
+	if err != nil || len(revived) == 0 {
+		t.Fatalf("RetryTasks: %v revived=%d", err, len(revived))
+	}
+
+	task, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.FailedAttempts != 0 || task.RetryAfter != nil {
+		t.Fatalf("task counters not reset: %+v", task)
+	}
+
+	job, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.FailedAttempts != 0 || job.ParkReason != "" {
+		t.Fatalf("job counters not reset: %+v", job)
+	}
+}
+
 // TestRecordTaskFailure_IncrementsBothCounters asserts that RecordTaskFailure
 // atomically increments a task's and its job's failed_attempts counters,
 // returning the post-increment values on each call.

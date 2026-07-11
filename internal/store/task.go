@@ -166,11 +166,14 @@ type TaskStore interface {
 	// RetryTasks revives failed/canceled tasks so they can run again. It
 	// transitions every task of jobID in [TaskStatusFailed] or
 	// [TaskStatusCanceled] — or, when taskIDs is non-nil, only those of the
-	// given IDs that are failed/canceled — back to [TaskStatusPending]. Any of
-	// their enclosing steps that are currently in a terminal status are reset to
-	// [StepStatusPending], and the job itself is reset to [JobStatusPending]
-	// when it is currently terminal (failed/canceled); a non-terminal job is
-	// left unchanged. All updates run in a single transaction.
+	// given IDs that are failed/canceled — back to [TaskStatusPending],
+	// clearing each revived task's genuine-failure state (FailedAttempts reset
+	// to zero, RetryAfter cleared). Any of their enclosing steps that are
+	// currently in a terminal status are reset to [StepStatusPending], and the
+	// job itself is reset to [JobStatusPending] when it is currently terminal
+	// (failed/canceled) — likewise clearing the job's FailedAttempts and
+	// ParkReason; a non-terminal job is left unchanged. All updates run in a
+	// single transaction.
 	//
 	// Resetting to pending (rather than ready) lets the caller re-run
 	// [openjd.ResolveDependencies] to re-gate the revived tasks in dependency

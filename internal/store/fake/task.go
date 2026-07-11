@@ -375,6 +375,8 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 		}
 		t.Status = store.TaskStatusPending
 		t.UnschedulableReason = ""
+		t.FailedAttempts = 0
+		t.RetryAfter = nil
 		t.UpdatedAt = now
 		s.tasks[id] = t
 		affectedSteps[t.StepID] = struct{}{}
@@ -408,6 +410,8 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 		case store.JobStatusFailed, store.JobStatusCanceled:
 			job.Status = store.JobStatusPending
 			job.CompletedAt = nil
+			job.FailedAttempts = 0
+			job.ParkReason = ""
 			job.UpdatedAt = now
 			s.jobs[jobID] = job
 		}

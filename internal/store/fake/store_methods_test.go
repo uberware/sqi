@@ -719,6 +719,49 @@ func TestRetryTasks_SubsetAndNonTerminalJobUntouched(t *testing.T) {
 	}
 }
 
+// TestRetryTasks_ResetsFailureCounters asserts that RetryTasks clears the
+// genuine-failure state (Tasks 1-3): a revived task's FailedAttempts and
+// RetryAfter, and — since this retry also resets the terminal job — the
+// job's FailedAttempts and ParkReason.
+func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+
+	j, err := s.CreateJob(ctx(), store.Job{
+		ID: "j1", FarmID: "farm-f1", QueueID: "q1", Name: "j1",
+		Status: store.JobStatusFailed, Priority: 50,
+		FailedAttempts: 1, ParkReason: "failure limit reached (1)",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	mustCreateStep(t, s, "s1", j.ID, store.StepStatusFailed)
+	retryAfter := time.Now().Add(time.Minute)
+	if _, err := s.CreateTask(ctx(), store.Task{
+		ID: "t1", JobID: j.ID, StepID: "s1", Name: "t1",
+		Status: store.TaskStatusFailed, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		FailedAttempts: 1, RetryAfter: &retryAfter,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	revived, err := s.RetryTasks(ctx(), j.ID, nil, time.Now())
+	if err != nil || len(revived) != 1 {
+		t.Fatalf("RetryTasks: %v revived=%d", err, len(revived))
+	}
+
+	task := mustGetTask(t, s, "t1")
+	if task.FailedAttempts != 0 || task.RetryAfter != nil {
+		t.Fatalf("task counters not reset: %+v", task)
+	}
+	job := mustGetJob(t, s, j.ID)
+	if job.FailedAttempts != 0 || job.ParkReason != "" {
+		t.Fatalf("job counters not reset: %+v", job)
+	}
+}
+
 func TestRetryTasks_NothingEligible(t *testing.T) {
 	s := New()
 	defer s.Close()
