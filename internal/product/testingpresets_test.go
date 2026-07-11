@@ -22,6 +22,7 @@ func TestTestingPresets(t *testing.T) {
 	want := map[string][]string{
 		"test-render-bash":       sharedParams,
 		"test-render-powershell": sharedParams,
+		"test-steps-bash":        sharedParams,
 	}
 	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "testing", "*.yaml"))
 	if err != nil {

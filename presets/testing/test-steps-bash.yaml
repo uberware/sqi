@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: test-steps-bash
+title: Test Steps (Bash)
+description: >-
+  Multi-step no-op job (render then publish then notify) that exercises step
+  dependency gating: publish waits for all render tasks; notify waits for both
+  render and publish. Runs bash scripts. A test/QA job, not a real renderer.
+category: Testing
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Test Steps
+  extensions: [SQI_PATH_TRANSLATION]
+  parameterDefinitions:
+    - name: FrameRange
+      type: STRING
+      default: "1-50"
+      userInterface: { control: LINE_EDIT, label: Frame Range, groupLabel: Frames }
+    - name: SleepSeconds
+      type: INT
+      default: 5
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Sleep (seconds), groupLabel: Render }
+    - name: EmitProgress
+      type: STRING
+      default: "true"
+      allowedValues: ["true", "false"]
+      userInterface: { control: CHECK_BOX, label: Emit Progress, groupLabel: Behavior }
+    - name: FailFrames
+      type: STRING
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Fail Frames, groupLabel: Behavior }
+    - name: HangFrames
+      type: STRING
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Hang Frames, groupLabel: Behavior }
+    - name: HangSeconds
+      type: INT
+      default: 300
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Hang Duration (seconds), groupLabel: Behavior }
+    - name: OutputDir
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: OUT
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Output Directory, groupLabel: Output }
+  steps:
+    - name: render
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: INT
+            range: "{{Param.FrameRange}}"
+      script:
+        embeddedFiles:
+          - name: main
+            type: TEXT
+            runnable: true
+            data: |
+              #!/usr/bin/env bash
+              set -uo pipefail
+
+              frame="{{Task.Param.Frame}}"
+              sleep_seconds="{{Param.SleepSeconds}}"
+              emit_progress="{{Param.EmitProgress}}"
+              fail_frames="{{Param.FailFrames}}"
+              hang_frames="{{Param.HangFrames}}"
+              hang_seconds="{{Param.HangSeconds}}"
+              output_dir="{{Param.OutputDir}}"
+
+              in_list() {
+                local needle="$1" list="$2" item
+                IFS=',' read -ra _items <<< "$list"
+                for item in "${_items[@]}"; do
+                  item="${item// /}"
+                  [[ -n "$item" && "$item" == "$needle" ]] && return 0
+                done
+                return 1
+              }
+
+              echo "$(date +"%Y-%m-%d %H:%M:%S") frame ${frame}: start"
+              [[ "$emit_progress" == "true" ]] && echo "openjd_status: rendering frame ${frame}"
+
+              slice="$(awk "BEGIN { s = ${sleep_seconds} / 10; if (s < 0.1) s = 0.1; printf \"%.3f\", s }")"
+              for k in $(seq 1 10); do
+                sleep "$slice"
+                [[ "$emit_progress" == "true" ]] && echo "openjd_progress: $((k * 10))"
+              done
+
+              if [[ -n "$output_dir" ]]; then
+                mkdir -p "$output_dir"
+                printf 'frame %s rendered at %s\n' "$frame" "$(date +"%Y-%m-%d %H:%M:%S")" \
+                  > "${output_dir}/frame.$(printf '%04d' "$frame").txt"
+              fi
+
+              if in_list "$frame" "$hang_frames"; then
+                echo "openjd_status: frame ${frame} hanging for ${hang_seconds}s"
+                sleep "$hang_seconds"
+              fi
+
+              if in_list "$frame" "$fail_frames"; then
+                echo "ERROR: simulated failure on frame ${frame}" >&2
+                exit 1
+              fi
+
+              echo "$(date +"%Y-%m-%d %H:%M:%S") frame ${frame}: done"
+        actions:
+          onRun:
+            command: "{{Task.File.main}}"
+            timeoutSeconds: 120
+    - name: publish
+      dependencies:
+        - dependsOn: render
+      script:
+        embeddedFiles:
+          - name: main
+            type: TEXT
+            runnable: true
+            data: |
+              #!/usr/bin/env bash
+              set -uo pipefail
+              emit_progress="{{Param.EmitProgress}}"
+              output_dir="{{Param.OutputDir}}"
+              echo "$(date +"%Y-%m-%d %H:%M:%S"): publish start"
+              [[ "$emit_progress" == "true" ]] && echo "openjd_status: publishing"
+              for k in $(seq 1 5); do
+                sleep 0.4
+                [[ "$emit_progress" == "true" ]] && echo "openjd_progress: $((k * 20))"
+              done
+              if [[ -n "$output_dir" ]]; then
+                mkdir -p "$output_dir"
+                printf 'published at %s\n' "$(date +"%Y-%m-%d %H:%M:%S")" > "${output_dir}/manifest.txt"
+              fi
+              echo "$(date +"%Y-%m-%d %H:%M:%S"): publish done"
+        actions:
+          onRun:
+            command: "{{Task.File.main}}"
+            timeoutSeconds: 120
+    - name: notify
+      dependencies:
+        - dependsOn: render
+        - dependsOn: publish
+      script:
+        embeddedFiles:
+          - name: main
+            type: TEXT
+            runnable: true
+            data: |
+              #!/usr/bin/env bash
+              set -uo pipefail
+              emit_progress="{{Param.EmitProgress}}"
+              output_dir="{{Param.OutputDir}}"
+              echo "$(date +"%Y-%m-%d %H:%M:%S"): notify start"
+              [[ "$emit_progress" == "true" ]] && echo "openjd_status: notifying"
+              for k in $(seq 1 5); do
+                sleep 0.4
+                [[ "$emit_progress" == "true" ]] && echo "openjd_progress: $((k * 20))"
+              done
+              if [[ -n "$output_dir" ]]; then
+                mkdir -p "$output_dir"
+                printf 'notified at %s\n' "$(date +"%Y-%m-%d %H:%M:%S")" > "${output_dir}/notified.txt"
+              fi
+              echo "$(date +"%Y-%m-%d %H:%M:%S"): notify done"
+        actions:
+          onRun:
+            command: "{{Task.File.main}}"
+            timeoutSeconds: 120
+  SQI_PATH_TRANSLATION:
+    deliveries: [stage_locally]
