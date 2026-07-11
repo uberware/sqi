@@ -276,6 +276,41 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	}
 }
 
+// TestRetryTasks_ClearsFailureReason asserts that a manual retry via RetryTasks
+// clears a task's stale failure_reason (Task 4) — a revived task must not carry
+// forward the reason from its prior terminal failure.
+func TestRetryTasks_ClearsFailureReason(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertTask(t, s, "t1", "j1", "s1")
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
+		t.Fatalf("SetTaskFailureReason: %v", err)
+	}
+
+	if _, err := s.RetryTasks(ctx, "j1", nil, time.Now().UTC()); err != nil {
+		t.Fatalf("RetryTasks: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != "" {
+		t.Fatalf("manual retry did not clear failure_reason: %q", got.FailureReason)
+	}
+}
+
 // recordFailureFixture seeds a running farm/queue/job/step/task and returns the
 // store, ctx, and a now stamp — the shared setup for the RecordTaskFailure
 // tests below.
@@ -433,6 +468,40 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	}
 	if got.Status != store.TaskStatusReady || got.AssignedWorkerID != "" || got.RetryAfter == nil {
 		t.Fatalf("bad state: %+v", got)
+	}
+}
+
+// TestRequeueTaskForRetry_ClearsFailureReason asserts that the auto-retry path
+// clears a task's stale failure_reason (Task 4) — a requeued task must not
+// carry forward the reason from its prior failed attempt.
+func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	insertWorker(t, s, "w1", "f1")
+	insertTask(t, s, "t1", "j1", "s1")
+	if err := s.AssignTask(ctx, "t1", "w1", now); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
+		t.Fatalf("SetTaskFailureReason: %v", err)
+	}
+
+	if err := s.RequeueTaskForRetry(ctx, "t1", now.Add(30*time.Second), now); err != nil {
+		t.Fatalf("RequeueTaskForRetry: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != "" {
+		t.Fatalf("auto retry did not clear failure_reason: %q", got.FailureReason)
 	}
 }
 

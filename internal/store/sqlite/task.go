@@ -210,7 +210,7 @@ WHERE  t.id = ?`
 	sqlRequeueTaskForRetry = `
 UPDATE tasks
 SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
-    retry_after = ?, updated_at = ?
+    retry_after = ?, updated_at = ?, failure_reason = ''
 WHERE id = ?`
 
 	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
@@ -228,7 +228,7 @@ WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 	sqlRetryTasksPrefix = `
 UPDATE tasks
 SET    status = 'pending', updated_at = ?, unschedulable_reason = '',
-       failed_attempts = 0, retry_after = NULL
+       failed_attempts = 0, retry_after = NULL, failure_reason = ''
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
 
 	// sqlRetryResetSteps resets any terminal step that now owns a pending task

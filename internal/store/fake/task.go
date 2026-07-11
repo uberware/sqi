@@ -409,6 +409,7 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 		t.UnschedulableReason = ""
 		t.FailedAttempts = 0
 		t.RetryAfter = nil
+		t.FailureReason = ""
 		t.UpdatedAt = now
 		s.tasks[id] = t
 		affectedSteps[t.StepID] = struct{}{}
@@ -656,6 +657,7 @@ func (s *Store) RequeueTaskForRetry(_ context.Context, taskID string, retryAfter
 	t.AssignedAt = nil
 	ra := retryAfter
 	t.RetryAfter = &ra
+	t.FailureReason = ""
 	t.UpdatedAt = now
 	s.tasks[taskID] = t
 	return nil
