@@ -14,6 +14,7 @@ package scheduler
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,6 +117,27 @@ func (h *failureHarness) seedRunningTask(jobID, taskID, workerID string) {
 	h.newAttempt(taskID, workerID)
 }
 
+// seedSiblingTask adds a second, still-ready task to the step already created
+// by seedRunningTask for parentTaskID. Because this task is non-terminal, the
+// step (and therefore the job) is NOT complete when parentTaskID fails — which
+// is exactly what a park must survive: holding a job that still has work.
+func (h *failureHarness) seedSiblingTask(parentTaskID, siblingTaskID string) {
+	h.t.Helper()
+	ctx := h.t.Context()
+	now := time.Now().UTC()
+
+	parent, err := h.st.GetTask(ctx, parentTaskID)
+	if err != nil {
+		h.t.Fatalf("GetTask(%s): %v", parentTaskID, err)
+	}
+	if _, err := h.st.CreateTask(ctx, store.Task{
+		ID: siblingTaskID, JobID: parent.JobID, StepID: parent.StepID, Name: siblingTaskID,
+		Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		h.t.Fatalf("CreateTask(sibling): %v", err)
+	}
+}
+
 // newAttempt creates a fresh running attempt for taskID on workerID and
 // records it as the "current" attempt reportFailed will target.
 func (h *failureHarness) newAttempt(taskID, workerID string) store.TaskAttempt {
@@ -200,6 +222,15 @@ func (h *failureHarness) jobStatus(jobID string) store.JobStatus {
 	return job.Status
 }
 
+func (h *failureHarness) parkReason(jobID string) string {
+	h.t.Helper()
+	job, err := h.st.GetJob(h.t.Context(), jobID)
+	if err != nil {
+		h.t.Fatalf("GetJob(%s): %v", jobID, err)
+	}
+	return job.ParkReason
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 func TestHandleTaskFailed_RetriesUntilCeiling(t *testing.T) {
@@ -235,8 +266,13 @@ func TestHandleTaskFailed_RetriesUntilCeiling(t *testing.T) {
 }
 
 func TestHandleTaskFailed_ParksJobAtFailureLimit(t *testing.T) {
+	// The real park scenario: a job with work still remaining. The step holds
+	// two tasks — t1 fails and trips FailureLimit:1, while t2 stays ready. The
+	// step is therefore NOT complete when t1 fails, so checkStepCompletion /
+	// checkJobCompletion naturally no-op and the park holds without any guard.
 	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 5, RetryDelay: 0, FailureLimit: 1})
 	h.seedRunningTask("j1", "t1", "w1")
+	h.seedSiblingTask("t1", "t2") // second task, still ready (non-terminal)
 
 	h.reportFailed("t1")
 
@@ -245,6 +281,13 @@ func TestHandleTaskFailed_ParksJobAtFailureLimit(t *testing.T) {
 	}
 	if got := h.taskStatus("t1"); got != store.TaskStatusFailed {
 		t.Fatalf("tripping task should be terminal failed, got %s", got)
+	}
+	// The sibling still has work to do — parking must not have finalized it.
+	if got := h.taskStatus("t2"); got != store.TaskStatusReady {
+		t.Fatalf("sibling task should remain ready under a park, got %s", got)
+	}
+	if reason := h.parkReason("j1"); !strings.Contains(reason, "failure limit") {
+		t.Fatalf("park_reason should record the failure limit, got %q", reason)
 	}
 }
 
@@ -261,5 +304,52 @@ func TestHandleTaskFailed_LostWorkDoesNotCount(t *testing.T) {
 	}
 	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
 		t.Fatalf("reclaimed task should be back to ready, got %s", got)
+	}
+}
+
+// TestLeaseGatesPass_SkipsPausedJob covers the defense-in-depth skip added to
+// leaseGatesPass: even if a ready task for a paused job reaches the lease gate
+// (the ready-list→lease race window), the gate must refuse it so a parked job's
+// leftover work is never dispatched.
+func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 2, RetryDelay: 0})
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	worker, err := h.st.RegisterWorker(ctx, store.Worker{
+		ID: "w1", FarmID: "farm-1", Hostname: "w1",
+		Status: store.WorkerStatusOnline, CPUCount: 4,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	if _, err := h.st.CreateJob(ctx, store.Job{
+		ID: "jp", FarmID: "farm-1", QueueID: "queue-1", Name: "jp",
+		Status: store.JobStatusPaused, TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	step, err := h.st.CreateStep(ctx, store.Step{
+		ID: "sp", JobID: "jp", Name: "Step1",
+		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateStep: %v", err)
+	}
+	task, err := h.st.CreateTask(ctx, store.Task{
+		ID: "tp", JobID: "jp", StepID: step.ID, Name: "tp",
+		Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	_, pass, err := h.s.leaseGatesPass(ctx, task, worker)
+	if err != nil {
+		t.Fatalf("leaseGatesPass: unexpected error: %v", err)
+	}
+	if pass {
+		t.Fatal("leaseGatesPass should refuse a task whose job is paused")
 	}
 }

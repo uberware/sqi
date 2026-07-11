@@ -445,20 +445,6 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 // checkJobCompletion inspects all steps in the job.  If every step has reached
 // a terminal state it transitions the job to the matching terminal status.
 func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error {
-	// A paused job (administratively paused, or auto-parked by handleTaskFailed
-	// at its failure limit) must stay paused until explicitly resumed — a
-	// coincidental full step-completion cascade (e.g. the one tripping task
-	// that triggered the park finishing its own terminal-failed transition)
-	// must not silently promote it to a terminal status. An already-terminal
-	// job is settled and likewise left alone.
-	job, err := s.store.GetJob(ctx, jobID)
-	if err != nil {
-		return err
-	}
-	if job.Status == store.JobStatusPaused || isTerminalJobStatus(job.Status) {
-		return nil
-	}
-
 	steps, err := s.store.ListSteps(ctx, jobID)
 	if err != nil {
 		return err
