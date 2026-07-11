@@ -1,0 +1,184 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: test-steps-powershell
+title: Test Steps (PowerShell)
+description: >-
+  Multi-step no-op job (render then publish then notify) that exercises step
+  dependency gating: publish waits for all render tasks; notify waits for both
+  render and publish. Runs PowerShell scripts; for Windows workers. A test/QA
+  job, not a real renderer.
+category: Testing
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Test Steps
+  extensions: [SQI_PATH_TRANSLATION]
+  parameterDefinitions:
+    - name: FrameRange
+      type: STRING
+      default: "1-50"
+      userInterface: { control: LINE_EDIT, label: Frame Range, groupLabel: Frames }
+    - name: SleepSeconds
+      type: INT
+      default: 5
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Sleep (seconds), groupLabel: Render }
+    - name: EmitProgress
+      type: STRING
+      default: "true"
+      allowedValues: ["true", "false"]
+      userInterface: { control: CHECK_BOX, label: Emit Progress, groupLabel: Behavior }
+    - name: FailFrames
+      type: STRING
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Fail Frames, groupLabel: Behavior }
+    - name: HangFrames
+      type: STRING
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Hang Frames, groupLabel: Behavior }
+    - name: HangSeconds
+      type: INT
+      default: 300
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Hang Duration (seconds), groupLabel: Behavior }
+    - name: OutputDir
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: OUT
+      default: ""
+      userInterface: { control: LINE_EDIT, label: Output Directory, groupLabel: Output }
+  steps:
+    - name: render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: INT
+            range: "{{Param.FrameRange}}"
+      script:
+        embeddedFiles:
+          - name: main
+            filename: render.ps1
+            type: TEXT
+            data: |
+              $ErrorActionPreference = 'Stop'
+
+              $frame        = '{{Task.Param.Frame}}'
+              $sleepSeconds = [double]'{{Param.SleepSeconds}}'
+              $emitProgress = '{{Param.EmitProgress}}'
+              $failFrames   = '{{Param.FailFrames}}'
+              $hangFrames   = '{{Param.HangFrames}}'
+              $hangSeconds  = [int]'{{Param.HangSeconds}}'
+              $outputDir    = '{{Param.OutputDir}}'
+
+              function Test-InList($needle, $list) {
+                foreach ($item in ($list -split ',')) {
+                  if ($item.Trim() -ne '' -and $item.Trim() -eq $needle) { return $true }
+                }
+                return $false
+              }
+              function Stamp { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
+
+              Write-Output ("{0} frame {1}: start" -f (Stamp), $frame)
+              if ($emitProgress -eq 'true') { Write-Output "openjd_status: rendering frame $frame" }
+
+              $sliceMs = [int](($sleepSeconds / 10) * 1000)
+              if ($sliceMs -lt 100) { $sliceMs = 100 }
+              for ($k = 1; $k -le 10; $k++) {
+                Start-Sleep -Milliseconds $sliceMs
+                if ($emitProgress -eq 'true') { Write-Output ("openjd_progress: {0}" -f ($k * 10)) }
+              }
+
+              if ($outputDir -ne '') {
+                New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+                $name = 'frame.{0:D4}.txt' -f [int]$frame
+                ("frame {0} rendered at {1}" -f $frame, (Stamp)) | Set-Content -Path (Join-Path $outputDir $name)
+              }
+
+              if (Test-InList $frame $hangFrames) {
+                Write-Output "openjd_status: frame $frame hanging for $hangSeconds s"
+                Start-Sleep -Seconds $hangSeconds
+              }
+
+              if (Test-InList $frame $failFrames) {
+                [Console]::Error.WriteLine("ERROR: simulated failure on frame $frame")
+                exit 1
+              }
+
+              Write-Output ("{0} frame {1}: done" -f (Stamp), $frame)
+        actions:
+          onRun:
+            command: powershell
+            args: ["-NoProfile", "-ExecutionPolicy", "Unrestricted", "-File", "{{Task.File.main}}"]
+            timeoutSeconds: 120
+    - name: publish
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      dependencies:
+        - dependsOn: render
+      script:
+        embeddedFiles:
+          - name: main
+            filename: publish.ps1
+            type: TEXT
+            data: |
+              $ErrorActionPreference = 'Stop'
+              $emitProgress = '{{Param.EmitProgress}}'
+              $outputDir    = '{{Param.OutputDir}}'
+              function Stamp { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
+              Write-Output ("{0}: publish start" -f (Stamp))
+              if ($emitProgress -eq 'true') { Write-Output "openjd_status: publishing" }
+              for ($k = 1; $k -le 5; $k++) {
+                Start-Sleep -Milliseconds 400
+                if ($emitProgress -eq 'true') { Write-Output ("openjd_progress: {0}" -f ($k * 20)) }
+              }
+              if ($outputDir -ne '') {
+                New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+                ("published at {0}" -f (Stamp)) | Set-Content -Path (Join-Path $outputDir 'manifest.txt')
+              }
+              Write-Output ("{0}: publish done" -f (Stamp))
+        actions:
+          onRun:
+            command: powershell
+            args: ["-NoProfile", "-ExecutionPolicy", "Unrestricted", "-File", "{{Task.File.main}}"]
+            timeoutSeconds: 120
+    - name: notify
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      dependencies:
+        - dependsOn: render
+        - dependsOn: publish
+      script:
+        embeddedFiles:
+          - name: main
+            filename: notify.ps1
+            type: TEXT
+            data: |
+              $ErrorActionPreference = 'Stop'
+              $emitProgress = '{{Param.EmitProgress}}'
+              $outputDir    = '{{Param.OutputDir}}'
+              function Stamp { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
+              Write-Output ("{0}: notify start" -f (Stamp))
+              if ($emitProgress -eq 'true') { Write-Output "openjd_status: notifying" }
+              for ($k = 1; $k -le 5; $k++) {
+                Start-Sleep -Milliseconds 400
+                if ($emitProgress -eq 'true') { Write-Output ("openjd_progress: {0}" -f ($k * 20)) }
+              }
+              if ($outputDir -ne '') {
+                New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+                ("notified at {0}" -f (Stamp)) | Set-Content -Path (Join-Path $outputDir 'notified.txt')
+              }
+              Write-Output ("{0}: notify done" -f (Stamp))
+        actions:
+          onRun:
+            command: powershell
+            args: ["-NoProfile", "-ExecutionPolicy", "Unrestricted", "-File", "{{Task.File.main}}"]
+            timeoutSeconds: 120
+  SQI_PATH_TRANSLATION:
+    deliveries: [stage_locally]
