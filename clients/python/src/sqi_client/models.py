@@ -31,6 +31,7 @@ __all__ = [
     "CancelResult",
     "ComputeLocation",
     "CurrentTask",
+    "FailureSummary",
     "Farm",
     "GPUInfo",
     "Job",
@@ -401,6 +402,33 @@ class TaskCounts:
 
 
 @dataclass(frozen=True)
+class FailureSummary:
+    """Aggregate of a job's failed-task reasons (OpenAPI ``failure_summary``).
+
+    Populated only on the ``JobDetail`` response (see :class:`Job`); ``None``
+    on a list-level job or when a task failed without a rich reason.
+    """
+
+    failed_count: int
+    dominant_reason: str | None
+    distinct_reasons: int
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> FailureSummary:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            failed_count=_as_int(data.get("failed_count")),
+            dominant_reason=_opt_str(data.get("dominant_reason")),
+            distinct_reasons=_as_int(data.get("distinct_reasons")),
+        )
+
+
+@dataclass(frozen=True)
 class Job:
     """A submitted job.
 
@@ -439,6 +467,10 @@ class Job:
     park_reason: str | None = None
     """Set when the failure-limit sweep auto-parked the job. Empty/``None``
     for a manual pause."""
+    failure_summary: FailureSummary | None = None
+    """Aggregate of this job's failed-task reasons. Populated only by
+    :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
+    ``None`` on a list-level job."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -479,6 +511,11 @@ class Job:
             failure_limit=_opt_int(data.get("failure_limit")),
             failed_attempts=_as_int(data.get("failed_attempts")),
             park_reason=_opt_str(data.get("park_reason")),
+            failure_summary=(
+                FailureSummary.from_dict(fs)
+                if isinstance(fs := data.get("failure_summary"), dict)
+                else None
+            ),
         )
 
 
@@ -499,6 +536,9 @@ class Task:
     parameters: dict[str, str] = field(default_factory=dict)
     assigned_worker_id: str | None = None
     assigned_at: datetime | None = None
+    failure_reason: str | None = None
+    """Human-readable reason the task's most recent attempt failed. ``None``
+    when the task has not failed or the server predates this field."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Task:
@@ -519,6 +559,7 @@ class Task:
             parameters=_str_dict(data.get("parameters")),
             assigned_worker_id=_opt_str(data.get("assigned_worker_id")),
             assigned_at=_opt_datetime(data.get("assigned_at")),
+            failure_reason=_opt_str(data.get("failure_reason")),
         )
 
 

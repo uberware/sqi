@@ -15,6 +15,7 @@ from typing import Any
 
 from sqi_client.models import (
     CurrentTask,
+    FailureSummary,
     Farm,
     GPUInfo,
     Job,
@@ -252,6 +253,30 @@ def test_job_retry_policy_fields_parsed_when_present() -> None:
     assert job.park_reason == "failure limit reached (25)"
 
 
+def test_job_failure_summary_parsed_when_present() -> None:
+    raw = dict(
+        load("job_detail"),
+        failure_summary={
+            "failed_count": 50,
+            "dominant_reason": "staging",
+            "distinct_reasons": 2,
+        },
+    )
+    job = Job.from_dict(raw)
+    assert job.failure_summary is not None
+    assert isinstance(job.failure_summary, FailureSummary)
+    assert job.failure_summary.failed_count == 50
+    assert job.failure_summary.dominant_reason == "staging"
+    assert job.failure_summary.distinct_reasons == 2
+
+
+def test_job_failure_summary_absent_defaults_to_none() -> None:
+    # Back-compat: an older/unpatched server's job response carries no
+    # failure_summary; parsing must not raise and must default to None.
+    assert Job.from_dict(load("job")).failure_summary is None
+    assert Job.from_dict(load("job_detail")).failure_summary is None
+
+
 def test_job_detail_nested_steps_and_counts() -> None:
     job = Job.from_dict(load("job_detail"))
     assert job.steps is not None
@@ -320,6 +345,18 @@ def test_task_optional_fields_default() -> None:
     assert task.parameters == {}
     assert task.assigned_worker_id is None
     assert task.assigned_at is None
+
+
+def test_task_failure_reason_parsed() -> None:
+    raw = dict(load("task"), failure_reason="worker not configured for staging")
+    task = Task.from_dict(raw)
+    assert task.failure_reason == "worker not configured for staging"
+
+
+def test_task_failure_reason_absent_defaults_to_none() -> None:
+    # Back-compat: an older/unpatched server's task response carries no
+    # failure_reason; parsing must not raise and must default to None.
+    assert Task.from_dict(load("task")).failure_reason is None
 
 
 # ── Worker, GPUInfo, CurrentTask ────────────────────────────────────
