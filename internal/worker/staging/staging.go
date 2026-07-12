@@ -18,26 +18,53 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// Stager copies staged paths via an external sync command.
+// Stager copies staged paths via an external sync command, or the built-in
+// copy when unconfigured/defaults are enabled.
 type Stager struct {
 	scratchBase string
 	syncCommand string
+	defaults    bool
 	logger      *slog.Logger
+	warnOnce    sync.Once
 }
 
-// New returns a Stager. scratchBase and syncCommand come from worker config.
-func New(scratchBase, syncCommand string, logger *slog.Logger) *Stager {
-	return &Stager{scratchBase: scratchBase, syncCommand: syncCommand, logger: logger}
+// New returns a Stager. scratchBase/syncCommand come from worker config;
+// defaults enables the built-in copy + TEMP scratch when staging is
+// otherwise unconfigured.
+func New(scratchBase, syncCommand string, defaults bool, logger *slog.Logger) *Stager {
+	return &Stager{scratchBase: scratchBase, syncCommand: syncCommand, defaults: defaults, logger: logger}
 }
 
-// Configured reports whether both scratch dir and sync command are set.
+const builtinSentinel = "builtin"
+
+// useBuiltin reports whether the built-in copy handles transfers (no explicit
+// shell sync command).
+func (s *Stager) useBuiltin() bool {
+	return s.syncCommand == "" || s.syncCommand == builtinSentinel
+}
+
+// effectiveScratch returns the configured scratch base, or the TEMP default.
+func (s *Stager) effectiveScratch() string {
+	if s.scratchBase != "" {
+		return s.scratchBase
+	}
+	return filepath.Join(os.TempDir(), "sqi-staging")
+}
+
+// Configured reports whether staging can proceed: explicitly configured
+// (scratch + shell command), or the built-in copy is available (defaults on,
+// or the `builtin` sentinel was set explicitly).
 func (s *Stager) Configured() bool {
-	return s.scratchBase != "" && s.syncCommand != ""
+	if s.scratchBase != "" && s.syncCommand != "" && s.syncCommand != builtinSentinel {
+		return true
+	}
+	return s.defaults || s.syncCommand == builtinSentinel
 }
 
 // StageIn prepares a per-attempt scratch directory for every staged entry and
@@ -50,7 +77,7 @@ func (s *Stager) Configured() bool {
 // copy-out fails on a missing scratch file. On any failure the partial scratch
 // directory is removed.
 func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry) ([]protocol.PathMapRule, string, error) {
-	scratchDir := filepath.Join(s.scratchBase, jobID, attemptID)
+	scratchDir := filepath.Join(s.effectiveScratch(), jobID, attemptID)
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch dir %q: %w", scratchDir, err)
 	}
@@ -83,7 +110,7 @@ func (s *Stager) prepareEntries(ctx context.Context, scratchDir string, entries 
 		dest := filepath.Join(subDir, filepath.Base(e.Path))
 		// Copy existing bytes in only for inputs; outputs are produced by the task.
 		if e.Direction == "IN" || e.Direction == "INOUT" {
-			if err := s.runSync(ctx, e.Path, dest, e.ObjectType); err != nil {
+			if err := s.transfer(ctx, e.Path, dest, e.ObjectType); err != nil {
 				return nil, fmt.Errorf("staging: copy-in %q: %w", e.Path, err)
 			}
 		}
@@ -105,7 +132,7 @@ func (s *Stager) StageOut(ctx context.Context, scratchDir string, entries []prot
 			continue
 		}
 		src := filepath.Join(scratchDir, strconv.Itoa(i), filepath.Base(e.Path))
-		if err := s.runSync(ctx, src, e.Path, e.ObjectType); err != nil {
+		if err := s.transfer(ctx, src, e.Path, e.ObjectType); err != nil {
 			return fmt.Errorf("staging: copy-out %q: %w", e.Path, err)
 		}
 	}
@@ -120,6 +147,29 @@ func (s *Stager) Cleanup(scratchDir string) {
 	if err := os.RemoveAll(scratchDir); err != nil {
 		s.logger.WarnContext(context.Background(), "staging: cleanup failed", slog.String("scratch_dir", scratchDir), slog.Any("error", err))
 	}
+}
+
+// transfer moves bytes for one staged path, via the built-in copy or the
+// shell sync command. It logs a one-time warning when defaults are in effect.
+func (s *Stager) transfer(ctx context.Context, src, dest, objectType string) error {
+	if s.useBuiltin() {
+		s.warnDefaults()
+		return builtinCopy(ctx, src, dest, objectType)
+	}
+	return s.runSync(ctx, src, dest, objectType)
+}
+
+// warnDefaults logs a one-time warning when staging fell back to defaults
+// (not an explicit scratch dir or `builtin` sentinel).
+func (s *Stager) warnDefaults() {
+	if s.scratchBase != "" || s.syncCommand == builtinSentinel {
+		return
+	}
+	s.warnOnce.Do(func() {
+		s.logger.WarnContext(context.Background(),
+			"staging not configured — using default scratch and built-in copy; set staging.scratch_dir/staging.sync_command for production",
+			slog.String("scratch_dir", s.effectiveScratch()))
+	})
 }
 
 // runSync renders the sync command template and executes it. The template is

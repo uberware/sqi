@@ -290,7 +290,7 @@ func New(
 		outputHandler: outputHandler,
 		logger:        logger,
 		cfg:           cfg,
-		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, logger),
+		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, true, logger), // TODO(task-3): wire defaults from config
 		activeTasks:   make(map[string]*taskRun),
 		execCtx:       execCtx,
 		execCancel:    execCancel,
