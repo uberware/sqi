@@ -31,6 +31,7 @@ from sqi_submitter.core import (
     prefill,
     submit_form,
 )
+from sqi_submitter.core.joboptions import JobOptions
 
 bl_info = {
     "name": "sqi Submitter",
@@ -96,6 +97,23 @@ def field_rows(
 
 def _prop_name(field_name: str) -> str:
     return f"sqi_field_{field_name}"
+
+
+def _job_options_from_props(props: Any) -> JobOptions | None:
+    """Build JobOptions from panel props; 0 / '' means unset (inherit)."""
+
+    def _opt(v: int) -> int | None:
+        return v if v > 0 else None
+
+    opts = JobOptions(
+        owner=(props.owner or None),
+        project=(props.project or None),
+        priority=_opt(props.priority),
+        max_attempts=_opt(props.max_attempts),
+        retry_delay_seconds=_opt(props.retry_delay_seconds),
+        failure_limit=_opt(props.failure_limit),
+    )
+    return None if opts.is_empty() else opts
 
 
 def _run_async(fn: Callable[[], Any], on_done: Callable[[Any, BaseException | None], None]) -> None:
@@ -451,6 +469,7 @@ def _make_classes() -> list[Any]:
                     job_name=props.job_name or None,
                     adapter=_state["adapter"],
                     save_scene=props.save_before_submit,
+                    job_options=_job_options_from_props(props),
                 )
             except FormInvalidError as exc:
                 _state["field_errors"] = dict(exc.errors)
@@ -497,6 +516,16 @@ def _make_classes() -> list[Any]:
             layout.prop(props, "farm", text="Farm")
             layout.prop(props, "queue", text="Queue")
             layout.prop(props, "save_before_submit", text="Save scene before submit")
+
+            adv = layout.box()
+            adv.label(text="Advanced (job overrides)")
+            adv.prop(props, "owner")
+            adv.prop(props, "priority")
+            adv.prop(props, "project")
+            adv.prop(props, "max_attempts")
+            adv.prop(props, "retry_delay_seconds")
+            adv.prop(props, "failure_limit")
+
             layout.operator(SQI_OT_submit.bl_idname, icon="EXPORT")
 
     return [SQI_OT_refresh, SQI_OT_submit, SQI_PT_panel]
@@ -517,6 +546,14 @@ def _make_settings_class() -> Any:
         "product": bpy.props.EnumProperty(name="Product", items=_product_enum_items),
         "target": bpy.props.EnumProperty(name="Target", items=_target_enum_items),
         "job_name": bpy.props.StringProperty(name="Job name", default=""),
+        "owner": bpy.props.StringProperty(name="Owner", default=""),
+        "project": bpy.props.StringProperty(name="Project", default=""),
+        "priority": bpy.props.IntProperty(name="Priority (0=default)", default=0, min=0, max=100),
+        "max_attempts": bpy.props.IntProperty(name="Max attempts (0=inherit)", default=0, min=0),
+        "retry_delay_seconds": bpy.props.IntProperty(
+            name="Retry delay s (0=inherit)", default=0, min=0
+        ),
+        "failure_limit": bpy.props.IntProperty(name="Failure limit (0=inherit)", default=0, min=0),
         "farm": bpy.props.EnumProperty(
             name="Farm", items=_farm_enum_items, update=_on_farm_changed
         ),
