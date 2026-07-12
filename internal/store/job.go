@@ -19,6 +19,12 @@ const (
 	// JobStatusPaused means the job has been administratively paused; no new
 	// task assignments will be made until it is resumed.
 	JobStatusPaused JobStatus = "paused"
+	// JobStatusBlocked means the job is waiting on one or more cross-job
+	// dependencies (other whole jobs) to complete. Its tasks are held pending
+	// and never leased until every upstream job reaches JobStatusCompleted, at
+	// which point it is released to JobStatusPending. If any upstream fails, is
+	// canceled, or is deleted, the blocked job is canceled (upstream-failed).
+	JobStatusBlocked JobStatus = "blocked"
 	// JobStatusCompleted means all tasks across all steps succeeded.
 	JobStatusCompleted JobStatus = "completed"
 	// JobStatusFailed means one or more tasks failed and the job cannot proceed.
@@ -69,6 +75,10 @@ type Job struct {
 	// the parameters-persistence migration (back-compat: scheduler falls back
 	// to template defaults).
 	Parameters map[string]string
+	// DependsOn holds the IDs of the upstream jobs this job waits on (whole-job
+	// cross-job dependencies). Populated by GetJob; ListJobs leaves it nil to
+	// avoid N+1 queries. Empty for jobs with no cross-job dependencies.
+	DependsOn []string
 	// FailedAttempts is the job's cumulative count of genuine task failures.
 	FailedAttempts int
 	// MaxAttempts, RetryDelaySeconds, and FailureLimit are per-job retry policy

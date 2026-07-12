@@ -258,3 +258,78 @@ func TestStore_DeleteTerminalJobsBefore(t *testing.T) {
 		})
 	}
 }
+
+// TestJob_BlockedStatusAndDependencyTable verifies the Task 1 deliverables in
+// isolation, before Task 2 adds CreateJobDependencies/ListJobDependencyIDs:
+// a job created with JobStatusBlocked round-trips through CreateJob/GetJob,
+// and the job_dependencies table exists and accepts rows shaped as designed.
+func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	upstream := seedJob(t, st, "upstream")
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "blocked-farm", Name: "blocked-farm"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "blocked-queue", FarmID: "blocked-farm", Name: "blocked-queue"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	created, err := st.CreateJob(ctx, store.Job{
+		ID:             "blocked",
+		FarmID:         "blocked-farm",
+		QueueID:        "blocked-queue",
+		Name:           "comp",
+		Priority:       50,
+		Status:         store.JobStatusBlocked,
+		RawTemplate:    "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(blocked): %v", err)
+	}
+	if created.Status != store.JobStatusBlocked {
+		t.Fatalf("CreateJob status = %q, want blocked", created.Status)
+	}
+
+	got, err := st.GetJob(ctx, "blocked")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusBlocked {
+		t.Fatalf("GetJob status = %q, want blocked", got.Status)
+	}
+
+	// job_dependencies table exists (created by the 00020 migration).
+	var name string
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='job_dependencies'`,
+	).Scan(&name); err != nil {
+		t.Fatalf("job_dependencies table missing: %v", err)
+	}
+	if name != "job_dependencies" {
+		t.Fatalf("unexpected sqlite_master name %q", name)
+	}
+
+	// A raw edge insert round-trips with the designed shape (job_id,
+	// depends_on_job_id, created_at), confirming the schema Task 2's
+	// CreateJobDependencies/ListJobDependencyIDs will build on.
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at) VALUES (?, ?, ?)`,
+		"blocked", upstream.ID, time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("raw insert into job_dependencies: %v", err)
+	}
+
+	var depID string
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT depends_on_job_id FROM job_dependencies WHERE job_id = ?`, "blocked",
+	).Scan(&depID); err != nil {
+		t.Fatalf("query job_dependencies: %v", err)
+	}
+	if depID != upstream.ID {
+		t.Fatalf("depends_on_job_id = %q, want %q", depID, upstream.ID)
+	}
+}
