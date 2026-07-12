@@ -30,7 +30,65 @@ func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 	if !ok {
 		return store.Job{}, store.ErrNotFound
 	}
+	job.DependsOn = slices.Clone(s.jobDependencies[id])
 	return job, nil
+}
+
+// CreateJobDependencies records that jobID waits on each upstream ID.
+// Duplicate edges (already-recorded upstream IDs) are ignored.
+func (s *Store) CreateJobDependencies(_ context.Context, jobID string, upstreamIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := s.jobDependencies[jobID]
+	for _, up := range upstreamIDs {
+		if slices.Contains(existing, up) {
+			continue
+		}
+		existing = append(existing, up)
+	}
+	s.jobDependencies[jobID] = existing
+	return nil
+}
+
+// ListJobDependencyIDs returns the upstream job IDs jobID waits on, in
+// insertion order.
+func (s *Store) ListJobDependencyIDs(_ context.Context, jobID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.jobDependencies[jobID]), nil
+}
+
+// ListDependents returns the IDs of jobs that declared a dependency on
+// upstreamJobID.
+func (s *Store) ListDependents(_ context.Context, upstreamJobID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []string
+	for jobID, ups := range s.jobDependencies {
+		if slices.Contains(ups, upstreamJobID) {
+			out = append(out, jobID)
+		}
+	}
+	slices.Sort(out) // deterministic for tests
+	return out, nil
+}
+
+// ListBlockedJobs returns every job currently in [store.JobStatusBlocked].
+func (s *Store) ListBlockedJobs(_ context.Context) ([]store.Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []store.Job
+	for _, j := range s.jobs {
+		if j.Status == store.JobStatusBlocked {
+			out = append(out, j)
+		}
+	}
+	slices.SortFunc(out, func(a, b store.Job) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 // ListJobs returns a paginated, filtered, and sorted page of jobs matching opts.
@@ -282,6 +340,9 @@ func (s *Store) DeleteJob(_ context.Context, id string) error {
 			delete(s.steps, sid)
 		}
 	}
+	// Outgoing job_dependencies edges only; incoming edges (other jobs
+	// depending on id) are deliberately left for the reconciler.
+	delete(s.jobDependencies, id)
 	delete(s.jobs, id)
 	return nil
 }

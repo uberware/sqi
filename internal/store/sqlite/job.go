@@ -102,9 +102,24 @@ WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
 DELETE FROM task_attempts
 WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
 
-	sqlDeleteJobTasks = `DELETE FROM tasks WHERE job_id = ?`
-	sqlDeleteJobSteps = `DELETE FROM steps WHERE job_id = ?`
-	sqlDeleteJobRow   = `DELETE FROM jobs WHERE id = ?`
+	sqlDeleteJobTasks        = `DELETE FROM tasks WHERE job_id = ?`
+	sqlDeleteJobSteps        = `DELETE FROM steps WHERE job_id = ?`
+	sqlDeleteJobDependencies = `DELETE FROM job_dependencies WHERE job_id = ?`
+	sqlDeleteJobRow          = `DELETE FROM jobs WHERE id = ?`
+
+	sqlInsertJobDependency = `
+INSERT OR IGNORE INTO job_dependencies (job_id, depends_on_job_id, created_at)
+VALUES (?, ?, ?)`
+
+	sqlListJobDependencyIDs = `
+SELECT depends_on_job_id FROM job_dependencies
+WHERE job_id = ? ORDER BY created_at, depends_on_job_id`
+
+	sqlListDependents = `
+SELECT job_id FROM job_dependencies
+WHERE depends_on_job_id = ? ORDER BY created_at, job_id`
+
+	sqlListBlockedJobs = `SELECT ` + jobCols + ` FROM jobs WHERE status = 'blocked' ORDER BY created_at`
 
 	// Selects terminal jobs whose effective completion time is before the
 	// cutoff. The status set is closed by the caller appending 'failed'. The
@@ -191,7 +206,91 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 func (s *Store) GetJob(ctx context.Context, id string) (store.Job, error) {
 	row := s.stmtGetJob.QueryRowContext(ctx, id)
 	out, err := scanJob(row)
-	return out, mapErr(err)
+	if err != nil {
+		return store.Job{}, mapErr(err)
+	}
+
+	deps, err := s.ListJobDependencyIDs(ctx, id)
+	if err != nil {
+		return store.Job{}, err
+	}
+	out.DependsOn = deps
+
+	return out, nil
+}
+
+// CreateJobDependencies implements [store.JobStore]. It records that jobID
+// waits on each upstream ID; duplicate edges (job_id, depends_on_job_id) are
+// silently ignored via INSERT OR IGNORE.
+func (s *Store) CreateJobDependencies(ctx context.Context, jobID string, upstreamIDs []string) error {
+	if len(upstreamIDs) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, up := range upstreamIDs {
+		if _, err := tx.ExecContext(ctx, sqlInsertJobDependency, jobID, up, timeToText(now)); err != nil {
+			return fmt.Errorf("sqlite: create job dependency %s->%s: %w", jobID, up, mapErr(err))
+		}
+	}
+	return mapErr(tx.Commit())
+}
+
+// ListJobDependencyIDs implements [store.JobStore]. It returns the upstream
+// job IDs jobID waits on, in insertion order.
+func (s *Store) ListJobDependencyIDs(ctx context.Context, jobID string) ([]string, error) {
+	return s.queryIDs(ctx, sqlListJobDependencyIDs, jobID)
+}
+
+// ListDependents implements [store.JobStore]. It returns the IDs of jobs
+// waiting on upstreamJobID.
+func (s *Store) ListDependents(ctx context.Context, upstreamJobID string) ([]string, error) {
+	return s.queryIDs(ctx, sqlListDependents, upstreamJobID)
+}
+
+// ListBlockedJobs implements [store.JobStore]. It returns every job currently
+// in [store.JobStatusBlocked].
+func (s *Store) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
+	rows, err := s.db.QueryContext(ctx, sqlListBlockedJobs)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list blocked jobs: %w", mapErr(err))
+	}
+	defer rows.Close()
+
+	var jobs []store.Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// queryIDs runs a single-column string query and returns the values.
+func (s *Store) queryIDs(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: query ids: %w", mapErr(err))
+	}
+	defer rows.Close()
+
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // jobSortColumns maps [store.JobSortField] values to their safe, hard-coded
@@ -433,7 +532,7 @@ func (s *Store) DeleteTerminalJobsBefore(
 	for _, d := range deleted {
 		for _, q := range []string{
 			sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
-			sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobRow,
+			sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies, sqlDeleteJobRow,
 		} {
 			if _, err := tx.ExecContext(ctx, q, d.ID); err != nil {
 				return nil, mapErr(err)
@@ -462,6 +561,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 		sqlDeleteJobAttempts,
 		sqlDeleteJobTasks,
 		sqlDeleteJobSteps,
+		sqlDeleteJobDependencies,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
 			return mapErr(err)

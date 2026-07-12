@@ -333,3 +333,99 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 		t.Fatalf("depends_on_job_id = %q, want %q", depID, upstream.ID)
 	}
 }
+
+// TestJob_ListDependentsAndBlocked exercises CreateJobDependencies,
+// ListDependents, ListBlockedJobs, and GetJob's DependsOn population together.
+func TestJob_ListDependentsAndBlocked(t *testing.T) {
+	// Not t.Parallel(): sqlite.Open calls goose.SetBaseFS/SetDialect, which
+	// mutate package-level goose state; running concurrently with another
+	// parallel Open (e.g. TestJob_BlockedStatusAndDependencyTable in this
+	// same file) trips the race detector on that pre-existing global state.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	up := seedJob(t, st, "up-listdeps")
+	down := store.Job{
+		ID: "down-listdeps", FarmID: up.FarmID, QueueID: up.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	if _, err := st.CreateJob(ctx, down); err != nil {
+		t.Fatalf("CreateJob(down): %v", err)
+	}
+	if err := st.CreateJobDependencies(ctx, down.ID, []string{up.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies: %v", err)
+	}
+
+	deps, err := st.ListDependents(ctx, up.ID)
+	if err != nil {
+		t.Fatalf("ListDependents: %v", err)
+	}
+	if len(deps) != 1 || deps[0] != down.ID {
+		t.Fatalf("ListDependents = %v, want [%s]", deps, down.ID)
+	}
+
+	blocked, err := st.ListBlockedJobs(ctx)
+	if err != nil {
+		t.Fatalf("ListBlockedJobs: %v", err)
+	}
+	if len(blocked) != 1 || blocked[0].ID != down.ID {
+		t.Fatalf("ListBlockedJobs = %v, want [%s]", blocked, down.ID)
+	}
+
+	// GetJob populates DependsOn.
+	got, err := st.GetJob(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(got.DependsOn) != 1 || got.DependsOn[0] != up.ID {
+		t.Fatalf("GetJob DependsOn = %v, want [%s]", got.DependsOn, up.ID)
+	}
+}
+
+// TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming verifies the asymmetric
+// delete behavior: deleting the downstream job removes its outgoing edges,
+// but deleting the upstream job leaves the (now-dangling) edge intact so the
+// reconciler can observe "upstream deleted".
+func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
+	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	up := seedJob(t, st, "up-delcascade")
+	down := store.Job{
+		ID: "down-delcascade", FarmID: up.FarmID, QueueID: up.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	if _, err := st.CreateJob(ctx, down); err != nil {
+		t.Fatalf("CreateJob(down): %v", err)
+	}
+	if err := st.CreateJobDependencies(ctx, down.ID, []string{up.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies: %v", err)
+	}
+
+	// Deleting the UPSTREAM must NOT delete the edge (no FK on depends_on_job_id):
+	if err := st.DeleteJob(ctx, up.ID); err != nil {
+		t.Fatalf("DeleteJob(up): %v", err)
+	}
+	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	if len(deps) != 1 || deps[0] != up.ID {
+		t.Fatalf("after upstream delete, edge should survive: got %v", deps)
+	}
+
+	// Deleting the DOWNSTREAM removes its outgoing edges (job_id cascade):
+	if err := st.DeleteJob(ctx, down.ID); err != nil {
+		t.Fatalf("DeleteJob(down): %v", err)
+	}
+	deps, err = st.ListDependents(ctx, up.ID)
+	if err != nil {
+		t.Fatalf("ListDependents: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Fatalf("after downstream delete, no edges should remain: got %v", deps)
+	}
+}
