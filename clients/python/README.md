@@ -123,6 +123,7 @@ with SqiClient("http://localhost:8080") as sqi:
         queue_id="<queue-id>",
         job_name="My Script Run",
         parameters={"Script": "print('hello')", "Interpreter": "python3"},
+        max_attempts=5,  # optional per-job retry overrides; omit to inherit
     )
     print("submitted job", job.id)
 ```
@@ -131,7 +132,10 @@ with SqiClient("http://localhost:8080") as sqi:
 and `ValidationError` when the stored template cannot be parsed (HTTP 422).
 `submit_product_job` uses the keyword argument `job_name=` (not `name=`) to
 avoid shadowing the positional product `name` argument; the wire field sent to
-the server is `"name"`.
+the server is `"name"`. `submit_product_job` also accepts optional `owner`,
+`submitter`, `priority`, `project`, and the retry overrides `max_attempts`,
+`retry_delay_seconds`, `failure_limit`; each is sent only when set and
+otherwise inherits the queue → farm → server default.
 
 ## Documentation
 

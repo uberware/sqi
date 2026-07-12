@@ -1527,6 +1527,9 @@ class SqiClient:
         priority: int | None = None,
         project: str | None = None,
         parameters: Mapping[str, str] | None = None,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
     ) -> Job:
         """Submit a job from a product and return the created :class:`Job`.
 
@@ -1538,6 +1541,8 @@ class SqiClient:
                 to avoid shadowing the positional product ``name`` argument.
             owner, submitter, priority, project: Optional job metadata.
             parameters: Job-parameter values (name → string).
+            max_attempts, retry_delay_seconds, failure_limit: Per-job retry
+                overrides; ``None`` means inherit.
         """
         body: dict[str, Any] = {"farm_id": farm_id, "queue_id": queue_id}
         if job_name is not None:
@@ -1552,6 +1557,7 @@ class SqiClient:
             body["project"] = project
         if parameters is not None:
             body["parameters"] = dict(parameters)
+        _add_retry_policy(body, max_attempts, retry_delay_seconds, failure_limit)
         data = self._request_json("POST", f"/products/{name}/jobs", json=body)
         return Job.from_dict(data)
 
