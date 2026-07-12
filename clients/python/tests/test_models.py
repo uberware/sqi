@@ -15,6 +15,8 @@ from typing import Any
 
 from sqi_client.models import (
     CurrentTask,
+    EffectiveRetryPolicy,
+    FailureSummary,
     Farm,
     GPUInfo,
     Job,
@@ -26,6 +28,7 @@ from sqi_client.models import (
     Step,
     StorageLocation,
     Task,
+    TaskAttempt,
     TaskCounts,
     TaskStatus,
     UsagePool,
@@ -224,6 +227,88 @@ def test_job_list_level_fields() -> None:
     assert job.task_counts is None
 
 
+def test_job_retry_policy_fields_default_when_absent() -> None:
+    # Back-compat: an older/unpatched server's job response carries none of the
+    # retry-policy fields; parsing must not raise and must default gracefully.
+    job = Job.from_dict(load("job"))
+    assert job.max_attempts is None
+    assert job.retry_delay_seconds is None
+    assert job.failure_limit is None
+    assert job.failed_attempts == 0
+    assert job.park_reason is None
+
+
+def test_job_retry_policy_fields_parsed_when_present() -> None:
+    raw = dict(
+        load("job"),
+        max_attempts=5,
+        retry_delay_seconds=30,
+        failure_limit=25,
+        failed_attempts=3,
+        park_reason="failure limit reached (25)",
+    )
+    job = Job.from_dict(raw)
+    assert job.max_attempts == 5
+    assert job.retry_delay_seconds == 30
+    assert job.failure_limit == 25
+    assert job.failed_attempts == 3
+    assert job.park_reason == "failure limit reached (25)"
+
+
+def test_job_failure_summary_parsed_when_present() -> None:
+    raw = dict(
+        load("job_detail"),
+        failure_summary={
+            "failed_count": 50,
+            "dominant_reason": "staging",
+            "distinct_reasons": 2,
+        },
+    )
+    job = Job.from_dict(raw)
+    assert job.failure_summary is not None
+    assert isinstance(job.failure_summary, FailureSummary)
+    assert job.failure_summary.failed_count == 50
+    assert job.failure_summary.dominant_reason == "staging"
+    assert job.failure_summary.distinct_reasons == 2
+
+
+def test_job_failure_summary_absent_defaults_to_none() -> None:
+    # Back-compat: an older/unpatched server's job response carries no
+    # failure_summary; parsing must not raise and must default to None.
+    assert Job.from_dict(load("job")).failure_summary is None
+    assert Job.from_dict(load("job_detail")).failure_summary is None
+
+
+def test_job_effective_retry_parsed_when_present() -> None:
+    raw = dict(
+        load("job_detail"),
+        effective_retry={
+            "max_attempts": 3,
+            "retry_delay_seconds": 30,
+            "failure_limit": 0,
+        },
+    )
+    job = Job.from_dict(raw)
+    assert job.effective_retry is not None
+    assert isinstance(job.effective_retry, EffectiveRetryPolicy)
+    assert job.effective_retry.max_attempts == 3
+    assert job.effective_retry.retry_delay_seconds == 30
+    # failure_limit 0 (auto-park off) must survive as a real 0, not a falsy drop.
+    assert job.effective_retry.failure_limit == 0
+
+
+def test_job_effective_retry_absent_defaults_to_none() -> None:
+    # Back-compat: an older/unpatched server's job response carries no
+    # effective_retry; parsing must not raise and must default to None.
+    assert Job.from_dict(load("job")).effective_retry is None
+    assert Job.from_dict(load("job_detail")).effective_retry is None
+
+
+def test_job_effective_retry_mistyped_becomes_none() -> None:
+    raw = dict(load("job_detail"), effective_retry="not-an-object")
+    assert Job.from_dict(raw).effective_retry is None
+
+
 def test_job_detail_nested_steps_and_counts() -> None:
     job = Job.from_dict(load("job_detail"))
     assert job.steps is not None
@@ -292,6 +377,18 @@ def test_task_optional_fields_default() -> None:
     assert task.parameters == {}
     assert task.assigned_worker_id is None
     assert task.assigned_at is None
+
+
+def test_task_failure_reason_parsed() -> None:
+    raw = dict(load("task"), failure_reason="worker not configured for staging")
+    task = Task.from_dict(raw)
+    assert task.failure_reason == "worker not configured for staging"
+
+
+def test_task_failure_reason_absent_defaults_to_none() -> None:
+    # Back-compat: an older/unpatched server's task response carries no
+    # failure_reason; parsing must not raise and must default to None.
+    assert Task.from_dict(load("task")).failure_reason is None
 
 
 # ── Worker, GPUInfo, CurrentTask ────────────────────────────────────
@@ -390,6 +487,21 @@ def test_farm_fields() -> None:
     assert farm.created_at.tzinfo is not None
 
 
+def test_farm_retry_policy_fields_default_when_absent() -> None:
+    farm = Farm.from_dict(load("farm"))
+    assert farm.max_attempts is None
+    assert farm.retry_delay_seconds is None
+    assert farm.failure_limit is None
+
+
+def test_farm_retry_policy_fields_parsed_when_present() -> None:
+    raw = dict(load("farm"), max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    farm = Farm.from_dict(raw)
+    assert farm.max_attempts == 5
+    assert farm.retry_delay_seconds == 30
+    assert farm.failure_limit == 25
+
+
 def test_queue_fields() -> None:
     queue = Queue.from_dict(load("queue"))
     assert queue.id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f10002"
@@ -399,6 +511,21 @@ def test_queue_fields() -> None:
     assert queue.priority == 50
     assert queue.max_concurrent_tasks == 200
     assert queue.paused is False
+
+
+def test_queue_retry_policy_fields_default_when_absent() -> None:
+    queue = Queue.from_dict(load("queue"))
+    assert queue.max_attempts is None
+    assert queue.retry_delay_seconds is None
+    assert queue.failure_limit is None
+
+
+def test_queue_retry_policy_fields_parsed_when_present() -> None:
+    raw = dict(load("queue"), max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    queue = Queue.from_dict(raw)
+    assert queue.max_attempts == 5
+    assert queue.retry_delay_seconds == 30
+    assert queue.failure_limit == 25
 
 
 def test_storage_location_fields() -> None:
@@ -445,6 +572,37 @@ def test_log_page_wraps_chunks_with_cursor() -> None:
     # Items preserve server order (ascending nats_seq).
     assert [c.nats_seq for c in page.items] == [1001, 1002]
     assert page.items[1].stream == "stderr"
+
+
+# ── TaskAttempt ───────────────────────────────────────────────────────
+
+
+def test_task_attempt_from_dict() -> None:
+    a = TaskAttempt.from_dict(load("task_attempt"))
+    assert a.attempt_number == 1
+    assert a.status == "failed"
+    assert a.worker_id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1c001"
+    assert a.exit_code == 1
+    assert a.message == "worker not configured for staging"
+    assert a.started_at.tzinfo is not None
+    assert a.ended_at is not None
+    assert a.ended_at.tzinfo is not None
+
+
+def test_task_attempt_running_has_no_terminal_fields() -> None:
+    a = TaskAttempt.from_dict(
+        {
+            "attempt_number": 2,
+            "status": "running",
+            "started_at": "2026-07-11T19:00:02Z",
+        }
+    )
+    assert a.attempt_number == 2
+    assert a.status == "running"
+    assert a.worker_id is None
+    assert a.exit_code is None
+    assert a.message is None
+    assert a.ended_at is None
 
 
 # ── CancelResult ────────────────────────────────────────────────────

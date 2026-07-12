@@ -351,7 +351,7 @@ handled outside the process:
 |---|---|---|
 | `sqi_http_requests_total` | counter | HTTP requests by method, path, and status |
 | `sqi_http_request_duration_seconds` | histogram | HTTP request latency |
-| `sqi_scheduler_queue_depth` | gauge | Ready tasks waiting for assignment, by queue |
+| `sqi_scheduler_queue_depth` | gauge | Leasable ready tasks waiting for assignment, by queue (excludes tasks in retry backoff and tasks under paused/parked jobs) |
 | `sqi_scheduler_tasks_total` | counter | Tasks processed by final status |
 | `sqi_scheduler_assignment_duration_seconds` | histogram | Time from ready → assigned |
 | `sqi_scheduler_idle_workers` | gauge | Workers online but not assigned a task |
@@ -360,6 +360,8 @@ handled outside the process:
 | `sqi_nats_consumed_total` | counter | NATS messages consumed by subject |
 | `sqi_db_query_duration_seconds` | histogram | SQLite query latency by operation |
 | `sqi_usage_active_claims` | gauge | Active usage-pool claims by pool |
+| `sqi_scheduler_task_retries_total` | counter | Tasks re-queued by automatic retry, by queue |
+| `sqi_scheduler_jobs_autoparked_total` | counter | Jobs auto-parked at their failure limit, by queue |
 
 ### Prometheus scrape config
 

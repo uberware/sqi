@@ -14,14 +14,16 @@ import (
 
 const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
-	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at`
+	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
+	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason`
 
 const (
 	sqlInsertJob = `
 INSERT INTO jobs (
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
-	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
+	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
@@ -30,11 +32,15 @@ RETURNING ` + jobCols
 	// status, started_at, and completed_at are lifecycle columns managed
 	// exclusively by UpdateJobStatus / CancelJobStatus and are intentionally
 	// excluded here — writing them via UpdateJob would race with concurrent
-	// scheduler status transitions.
+	// scheduler status transitions. failed_attempts and park_reason are
+	// likewise lifecycle-managed (by the scheduler's failure-limit sweep) and
+	// are excluded for the same reason; max_attempts, retry_delay_seconds,
+	// and failure_limit are the user-settable retry-policy overrides.
 	sqlUpdateJob = `
 UPDATE jobs
 SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
 	project = ?, raw_template = ?, template_format = ?,
+	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?,
 	updated_at = ?
 WHERE id = ?
 RETURNING ` + jobCols
@@ -108,6 +114,24 @@ SELECT id, name, farm_id, queue_id FROM jobs
 WHERE status IN (`
 	sqlSelectExpiredJobsSuffix = `)
   AND COALESCE(completed_at, updated_at) < ?`
+
+	// sqlParkJob pauses a job and records why, but only while it is
+	// non-terminal — a job that has already reached completed/failed/canceled
+	// is left alone (zero rows affected is a legitimate no-op, not an error).
+	sqlParkJob = `
+UPDATE jobs SET status = 'paused', park_reason = ?, updated_at = ?
+WHERE id = ? AND status NOT IN ('completed','failed','canceled')`
+
+	// sqlResumeJob is the inverse of sqlParkJob: only a paused job is resumed.
+	// An auto-parked job (non-empty park_reason) also gets its failure counter
+	// reset — otherwise the very next genuine failure would re-park it — while
+	// a manual pause/resume keeps the accumulated count.
+	sqlResumeJob = `
+UPDATE jobs
+SET status = 'pending', updated_at = ?,
+    failed_attempts = CASE WHEN park_reason != '' THEN 0 ELSE failed_attempts END,
+    park_reason = ''
+WHERE id = ? AND status = 'paused'`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -115,12 +139,14 @@ func scanJob(row scanner) (store.Job, error) {
 	var status, templateFormat, paramsJSON string
 	var createdAt, updatedAt string
 	var startedAt, completedAt sql.NullString
+	var maxAtt, delay, failLim sql.NullInt64
 
 	if err := row.Scan(
 		&j.ID, &j.FarmID, &j.QueueID, &j.Name, &j.Owner, &j.Submitter,
 		&j.Priority, &status, &j.Project,
 		&j.RawTemplate, &templateFormat, &paramsJSON,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
+		&j.FailedAttempts, &maxAtt, &delay, &failLim, &j.ParkReason,
 	); err != nil {
 		return store.Job{}, err
 	}
@@ -131,6 +157,7 @@ func scanJob(row scanner) (store.Job, error) {
 	j.UpdatedAt = mustTime(updatedAt)
 	j.StartedAt = nullTextToTime(startedAt)
 	j.CompletedAt = nullTextToTime(completedAt)
+	j.MaxAttempts, j.RetryDelaySeconds, j.FailureLimit = intPtr(maxAtt), intPtr(delay), intPtr(failLim)
 
 	params, err := unmarshalJSON(paramsJSON, map[string]string{})
 	if err != nil {
@@ -153,7 +180,9 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 		job.Priority, string(job.Status), job.Project,
 		job.RawTemplate, string(job.TemplateFormat), paramsJSON,
 		now, now,
-		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt))
+		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
+		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
+		job.ParkReason)
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }
@@ -258,14 +287,17 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 
 // UpdateJob implements [store.JobStore].
 // Only mutable user-settable fields are written (farm_id, queue_id, name,
-// owner, submitter, priority, project, raw_template, template_format).
-// status, started_at, and completed_at are never touched here; use
-// UpdateJobStatus or CancelJobStatus for those.
+// owner, submitter, priority, project, raw_template, template_format,
+// max_attempts, retry_delay_seconds, failure_limit).
+// status, started_at, completed_at, failed_attempts, and park_reason are
+// never touched here; use UpdateJobStatus, CancelJobStatus, or the
+// scheduler's failure-limit sweep for those.
 func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateJob.QueryRowContext(ctx,
 		job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter, job.Priority,
 		job.Project, job.RawTemplate, string(job.TemplateFormat),
+		nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
 		now, job.ID)
 	out, err := scanJob(row)
 	return out, mapErr(err)
@@ -448,4 +480,55 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 		return store.ErrNotFound
 	}
 	return mapErr(tx.Commit())
+}
+
+// ParkJob implements [store.JobStore].
+//
+// A zero-row UPDATE is ambiguous between "job not found" and "job already
+// terminal"; a follow-up GetJob disambiguates the same way [Store.CancelJobStatus]
+// does — terminal is a legitimate no-op (nil), missing propagates [store.ErrNotFound].
+func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time) error {
+	nowText := timeToText(now.UTC())
+
+	res, err := s.db.ExecContext(ctx, sqlParkJob, reason, nowText, jobID)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // successfully parked
+	}
+
+	// Zero rows: job was not found or was already terminal.
+	if _, err := s.GetJob(ctx, jobID); err != nil {
+		return err // propagates ErrNotFound
+	}
+	return nil // already terminal — legitimate no-op
+}
+
+// ResumeJob implements [store.JobStore].
+//
+// A zero-row UPDATE is ambiguous between "job not found" and "job no longer
+// paused"; a follow-up GetJob disambiguates the same way [Store.ParkJob] does —
+// not-paused is a legitimate no-op (nil), missing propagates [store.ErrNotFound].
+func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, sqlResumeJob, timeToText(now.UTC()), jobID)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // successfully resumed
+	}
+
+	if _, err := s.GetJob(ctx, jobID); err != nil {
+		return err // propagates ErrNotFound
+	}
+	return nil // no longer paused — legitimate no-op
 }

@@ -816,6 +816,62 @@ func TestJob_UpdateJob(t *testing.T) {
 	}
 }
 
+// TestJob_UpdateJob_RetryPolicy verifies that UpdateJob persists the per-job
+// retry-policy overrides (max_attempts, retry_delay_seconds, failure_limit)
+// added in Task 8, and that it never touches failed_attempts or park_reason —
+// those are lifecycle-managed by the scheduler.
+func TestJob_UpdateJob_RetryPolicy(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	j := insertJob(t, s, "j1", "f1", "q1")
+
+	maxAttempts, delay, limit := 7, 30, 40
+	j.MaxAttempts = &maxAttempts
+	j.RetryDelaySeconds = &delay
+	j.FailureLimit = &limit
+	// These are lifecycle-managed and must not be written by UpdateJob even
+	// when the caller's struct carries non-zero values (e.g. re-fetched then
+	// mutated only for the fields above).
+	j.FailedAttempts = 3
+	j.ParkReason = "should not persist"
+
+	updated, err := s.UpdateJob(ctx, j)
+	if err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	if updated.MaxAttempts == nil || *updated.MaxAttempts != 7 {
+		t.Errorf("MaxAttempts: got %v, want 7", updated.MaxAttempts)
+	}
+	if updated.RetryDelaySeconds == nil || *updated.RetryDelaySeconds != 30 {
+		t.Errorf("RetryDelaySeconds: got %v, want 30", updated.RetryDelaySeconds)
+	}
+	if updated.FailureLimit == nil || *updated.FailureLimit != 40 {
+		t.Errorf("FailureLimit: got %v, want 40", updated.FailureLimit)
+	}
+
+	fetched, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if fetched.MaxAttempts == nil || *fetched.MaxAttempts != 7 {
+		t.Errorf("fetched MaxAttempts: got %v, want 7", fetched.MaxAttempts)
+	}
+	if fetched.RetryDelaySeconds == nil || *fetched.RetryDelaySeconds != 30 {
+		t.Errorf("fetched RetryDelaySeconds: got %v, want 30", fetched.RetryDelaySeconds)
+	}
+	if fetched.FailureLimit == nil || *fetched.FailureLimit != 40 {
+		t.Errorf("fetched FailureLimit: got %v, want 40", fetched.FailureLimit)
+	}
+	if fetched.FailedAttempts != 0 {
+		t.Errorf("fetched FailedAttempts: got %d, want 0 (UpdateJob must not write it)", fetched.FailedAttempts)
+	}
+	if fetched.ParkReason != "" {
+		t.Errorf("fetched ParkReason: got %q, want empty (UpdateJob must not write it)", fetched.ParkReason)
+	}
+}
+
 func TestJob_CancelJobStatus(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

@@ -130,6 +130,77 @@ and the task's reason string together: a `queue affinity` or
 `compute location mismatch` reason usually points at a worker configuration
 mismatch rather than a capacity shortfall.
 
+### Why did my task fail?
+
+sqi has two separate places that can answer "why did this fail," and they
+serve different questions:
+
+| | Durable failure reason | Diagnostics ring buffer |
+|---|---|---|
+| **What** | A short, human-readable string on the task itself (`failure_reason`) explaining the *last* terminal failure/cancel | Deep operational log lines (scheduler decisions, worker executor errors, NATS/DB issues) |
+| **Survives a restart?** | Yes — stored in SQLite on the task row | No — in-memory ring buffer, lost on server restart |
+| **Where** | `GET /api/v1/tasks/{id}` `failure_reason` field, the job detail's `failure_summary`, and the web UI (per-task reason string + job-level failure banner on `JobDetail`) | Worker diagnostics panel, Admin → Server log, `GET /api/v1/diagnostics/logs` |
+| **Look here first** | Yes — for "which reason, how many tasks" | Only when the reason string isn't enough context |
+
+**Start with `failure_reason`.** Every task that reaches terminal `failed` or
+`canceled` carries one: the worker's own reported message when it sent one
+(e.g. an OpenJD validation failure, a timeout, a non-zero exit), a scheduler
+fallback like `"failed (exit 1)"` when the worker didn't, or a
+scheduler-synthesized reason for cancellations — `"canceled: upstream step
+failed"` for a cascade-cancel, `"canceled by user"` for an operator-initiated
+one. It is cleared automatically on retry, so a task that's currently `ready`
+or `running` again never shows a stale reason from a previous attempt.
+(Reclaiming a task because its worker went offline is *not* a failure — the
+reclaim reason lands only on the closed attempt, never on the task's durable
+`failure_reason`.) See
+[the task state machine's durable-failure-reason table](architecture.md#5-status-ingestion)
+for the full list of reasons and which code path sets each one.
+
+**Job detail rolls this up.** `GET /api/v1/jobs/{id}` includes a
+`failure_summary` (`failed_count`, `dominant_reason`, `distinct_reasons`)
+aggregated across the job's failed tasks, and the web UI's job detail page
+shows it as a failure banner (e.g. "3 tasks failed — execution timeout after
+120s (2 reasons)") above the task list, next to the per-task reason string
+shown alongside each failed row.
+
+**Reach for the diagnostics ring buffer when the reason string isn't enough.**
+`failure_reason` answers *what* happened to the task; the diagnostic logs
+answer *why the worker process behaved that way* — e.g. the executor line
+that shows exactly which path it tried and failed to find, or a scheduler WARN
+explaining a redelivery. See [Failed-task fallback](#failed-task-fallback-the-process-not-found-case),
+which surfaces exactly this pairing on the task detail page when the task log
+itself is empty.
+
+---
+
+## Retry and auto-park metrics
+
+`sqi-server` exposes two Prometheus counters (subsystem `scheduler`, served at
+`GET /metrics`) for the auto-retry + failure-limit feature — see
+[`scheduler.default_max_attempts` / `retry_delay` / `default_failure_limit`
+and the Server → Farm → Queue → Job precedence](configuration.md#retry-failure-limits)
+for the policy that drives them, and
+[the task state machine](architecture.md#state-machine-task-status) for how
+retry, exhaustion, and auto-park interact.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_scheduler_task_retries_total` | counter | `queue` | Total tasks re-queued to `ready` by automatic retry after a worker-reported failure. Does **not** include lost/reclaimed work (worker offline, stale-`assigned` reaper) — those never go through the retry decision. |
+| `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Total jobs auto-parked (`status=paused`) because their cumulative genuine task failures reached the job's resolved `failure_limit`. Does not include jobs paused manually via the API. |
+
+Both counters increment inside `internal/scheduler/failure.go`'s
+`handleTaskFailed` path, alongside a structured log line:
+
+- A **retry** logs at `INFO`: `"scheduler: task auto-retry scheduled"` with
+  `task_id`, `failed_attempts`, `max_attempts`, and `retry_delay` attributes.
+- An **auto-park** logs at `WARN`: `"scheduler: job auto-parked at failure
+  limit"` with `job_id` and `failure_limit` attributes.
+
+The retry line carries `task_id`; the auto-park line carries `job_id` — both
+are [diagnostic log correlation keys](#correlation-keys), so these decisions
+are visible (component `server`) in Admin → Server log and
+`GET /api/v1/diagnostics/logs`, in addition to stderr.
+
 ---
 
 ## In-UI diagnostics

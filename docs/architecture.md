@@ -217,15 +217,84 @@ sqi-worker
 ```
 NATS consumer (internal/scheduler/taskstatus.go)
   │
-  ├─ Receive task.status message
-  ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time)
+  ├─ Receive task.status message   { …, message }  ← worker's human-readable reason, if any
+  ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time, message)
   ├─ If terminal (succeeded/failed/canceled):
   │     store.TransitionTask(task_id, status)
+  │     If failed/canceled: store.SetTaskFailureReason(task_id, reason)  ← see below
   │     usagePool.ReleaseClaim(claim_id)
   │     checkStepCompletion → propagateStepDependencies   ← marks successor tasks ready
   │     notifier.NotifyTask(...)                          ← triggers WebSocket fanout
   └─ ack message
 ```
+
+**Durable failure reason.** Every `task_attempts` row carries a `message`
+column next to `exit_code` — the worker's human-readable reason for that
+attempt, sent in `TaskStatusMsg.Message` on every failure path (pre-exec/
+staging error, `openjd_fail`, timeout, process error, plain non-zero exit).
+`tasks.failure_reason` denormalizes the *latest terminal* reason onto the task
+itself (mirroring `unschedulable_reason`), so the REST layer and web UI don't
+need to join into attempts to explain a failure. It is set only when a task
+reaches terminal `failed`/`canceled` and cleared on retry (auto or manual).
+The reason is worker-reported where available, or synthesized by the
+scheduler for the paths that have none:
+
+| Path | Reason | Where |
+|---|---|---|
+| Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal` |
+| Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
+| Worker reclaimed (heartbeat timeout) | `"worker went offline"` | stale-worker sweep — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
+| Cascade-canceled (upstream step failed) | `"canceled: upstream step failed"` | stamped by `openjd.CancelDependents` inside the same UPDATE that cancels the tasks (`store.TransitionStepPendingTasks`) |
+| User-initiated cancel | `"canceled by user"` | `CancelJob` stamps it inside the bulk-cancel UPDATE (`store.CancelJobTasks`); `CancelTask` uses `store.SetTaskFailureReasonIfEmpty`. Both are only-if-empty, so a cascade-cancel's more specific reason always wins regardless of ordering |
+
+These server-originated reason strings are shared constants in `internal/store`
+(`FailureReasonCanceledByUser`, `FailureReasonUpstreamFailed`,
+`FailureReasonWorkerOffline`) — `FailureReasonSummary` groups by exact string,
+so producers must not drift.
+
+**Attempt history.** Each attempt's `message` — previously visible only by
+reading the raw `task_attempts.message` column, with no REST surface — is now
+served directly: `GET /api/v1/tasks/{id}/attempts` (backed by
+`store.ListTaskAttempts`) returns the task's full attempt history, oldest
+first:
+
+```json
+{
+  "items": [
+    {
+      "attempt_number": 1,
+      "status": "failed",
+      "worker_id": "worker-abc",
+      "exit_code": 1,
+      "message": "openjd_fail: ...",
+      "started_at": "2026-07-10T12:00:00Z",
+      "ended_at": "2026-07-10T12:00:05Z"
+    }
+  ]
+}
+```
+
+`status` is the attempt's own terminal/in-flight status
+(`running`/`succeeded`/`failed`/`canceled`) — independent of the task's
+current status, since a retried task's latest attempt may be `running` while
+earlier attempts read `failed`. `worker_id`, `exit_code`, `message`, and
+`ended_at` are omitted rather than sent empty (an in-flight attempt has no
+`exit_code`/`ended_at`; a synthesized reclaim has no `worker_id`). Returns
+`404` for an unknown task id, and `{"items":[]}` (not `404`) for a task with
+no attempts yet.
+
+This closes the gap left by `failure_reason`'s clear-on-retry behavior: a
+**mid-retry task** — one that failed, was retried, and is now `running` or
+`ready` again — has an empty task-level `failure_reason`, but the attempt row
+where the earlier failure actually happened still carries its `message`, so
+the reason is never lost, only relocated to the attempt it belongs to.
+
+`GET /api/v1/jobs/{id}` (job detail) additionally exposes a `failure_summary`
+(`failed_count`, `dominant_reason`, `distinct_reasons`), aggregated across the
+job's failed tasks by `store.FailureReasonSummary`, and powers the web UI's
+job-level failure banner. See
+[`docs/observability.md`](observability.md#why-did-my-task-fail) for the
+operator-facing view.
 
 ### 6. Log ingestion
 
@@ -290,14 +359,90 @@ heartbeat-sweep tick that handles offline-worker cleanup, controlled by
 ```
 
 Transitions are validated — only the arrows above are permitted. Any other
-transition returns an error from `store.TransitionTask`.
+transition returns an error from `store.TransitionTask`. The auto-retry
+re-queue described below (`running` → `ready` on a transient failure) is a
+**separate, policy-driven store call** (`RequeueTaskForRetry`), not a
+`TransitionTask` arrow — the diagram above still reflects every state a task
+can be validated *into* via `TransitionTask`; auto-retry sends a task back to
+`ready` directly instead of landing it on `failed` at all.
 
-`failed` and `canceled` tasks can be retried — individually via
+### Auto-retry on worker-reported failure
+
+A worker-reported `failed` status no longer routes straight to a terminal
+state. The scheduler (`internal/scheduler/failure.go`) resolves the effective
+[retry policy](configuration.md#retry-failure-limits) (Job → Queue → Farm →
+server default) and records the genuine failure via
+`store.RecordTaskFailure`, then picks one of three outcomes:
+
+- **Retry.** The task's genuine-failure count is still below its resolved
+  `max_attempts` and the job has not hit its `failure_limit` — the attempt
+  closes as failed, usage-pool claims are released, and the task re-enters
+  `ready` (`store.RequeueTaskForRetry`) stamped with a `retry_after` backoff
+  timestamp (`now + retry_delay`). It does **not** go through the terminal /
+  step-completion path, since the step isn't actually done.
+- **Exhausted.** The task's genuine-failure count reaches `max_attempts` with
+  no failure limit tripped — the task goes terminal-`failed`, cascading to its
+  step and job exactly as before this feature.
+- **Auto-park.** The *job's* cumulative genuine-failure count reaches its
+  resolved `failure_limit` — the job is parked first (`store.ParkJob`, sets
+  `status=paused` and a `park_reason` like `"failure limit reached (3)"`),
+  then the tripping task still goes terminal-`failed` so the step/job
+  completion cascade runs normally rather than leaving the job half-running.
+
+**Lost/reclaimed work is separate and uncapped.** A task reclaimed because its
+worker went offline (heartbeat timeout) or because it lingered in `assigned`
+past the stale-assigned reaper's timeout is simply returned to `ready` — it
+never goes through `handleTaskFailed`, so it does not consume any of the
+task's `max_attempts` and never counts toward the job's `failure_limit`. Only
+a *genuine* worker-reported failure counts.
+
+**A parked job is not stuck forever.** Parking only sets `status=paused`; it
+does not force every other task in the job to a terminal state. If the job
+still has non-terminal (`pending`/`ready`) tasks elsewhere — the common case,
+since a job usually parks with work still in flight — it simply stays
+`paused` until an operator resumes it (`PATCH /api/v1/jobs/{id}` with the
+existing resume action), because job completion is still evaluated by "have
+all steps reached a terminal state," which naturally stays false while
+non-terminal work remains. But if the tripping task was the job's last
+non-terminal work, the completion check finalizes the job to `failed`
+immediately — a parked job is not exempted from normal completion.
+
+**Un-parking re-arms the failure limit.** Both recovery paths clear the park
+state (`store.ResumeJob` for the resume action, the retry reset inside
+`store.RetryTasks` for a manual retry): `park_reason` is cleared and the
+job's `failed_attempts` is reset to zero — without the reset, the very next
+genuine failure would compare against the already-tripped counter and
+instantly re-park the job. A *manually* paused job (empty `park_reason`)
+keeps its accumulated `failed_attempts` across pause/resume, and a manual
+pause is never overridden by a task retry.
+
+**Two ready-selection gates support this.** `store.ListReadyTasks` (used by
+the lease-assignment path) now excludes:
+
+1. **Backoff gate** — tasks whose `retry_after` is in the future are skipped
+   until the timestamp passes.
+2. **Job-status gate** — tasks belonging to a `paused` or terminal
+   (`completed`/`failed`/`canceled`) job are skipped.
+
+The job-status gate is defense-in-depth, checked again at the lease-time
+`leaseGatesPass` step to close the read-list→lease race window. It also fixed
+a **pre-existing gap**: before this feature, a job that was *manually* paused
+via the REST API had no gate stopping its `ready` tasks from still being
+leased and run by a worker — pausing only stopped new *scheduling* decisions
+downstream, not in-flight `ready` dispatch. The same gate now protects both
+manually-paused and auto-parked jobs.
+
+`failed` and `canceled` tasks can also be retried manually — individually via
 `POST /api/v1/tasks/{id}/retry` or in bulk via `POST /api/v1/jobs/{id}/retry`.
 On retry the task resets to `pending`, and its step and the job also reset to
 `pending` when they were terminal; the scheduler's step-dependency propagation
 then re-gates `pending`→`ready`, so tasks whose step dependencies are already
-met land in `ready` immediately.
+met land in `ready` immediately. A manual retry also resets the task's and
+job's genuine-failure counters, independent of the automatic retry policy
+above, and clears the task's `failure_reason` — both the automatic and manual
+retry paths above leave a fresh task with no stale reason attached. See
+[Durable failure reason](#5-status-ingestion) for how `failure_reason` is set
+in the first place.
 
 ---
 

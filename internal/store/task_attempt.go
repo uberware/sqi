@@ -38,9 +38,12 @@ type TaskAttempt struct {
 	AttemptNumber int    // 1-based; incremented on each retry
 	Status        AttemptStatus
 	ExitCode      *int // nil while running or if the process was signaled
-	StartedAt     time.Time
-	EndedAt       *time.Time // nil while running
-	CreatedAt     time.Time
+	// Message is the human-readable reason for a terminal attempt (worker- or
+	// server-supplied); empty while running or on success.
+	Message   string
+	StartedAt time.Time
+	EndedAt   *time.Time // nil while running
+	CreatedAt time.Time
 }
 
 // TaskAttemptStore is the persistence interface for [TaskAttempt] records.

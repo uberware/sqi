@@ -123,6 +123,9 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 	if att.EndedAt == nil {
 		t.Error("expected attempt EndedAt set")
 	}
+	if att.Message != "worker went offline" {
+		t.Errorf("attempt message = %q, want %q", att.Message, "worker went offline")
+	}
 
 	// Task reclaimed back to ready, worker reference cleared.
 	tk, err := st.GetTask(t.Context(), taskID)
@@ -134,6 +137,10 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 	}
 	if tk.AssignedWorkerID != "" {
 		t.Errorf("task still assigned to %q, want cleared", tk.AssignedWorkerID)
+	}
+	// Reclaim is not a task failure — no durable failure_reason on the task.
+	if tk.FailureReason != "" {
+		t.Errorf("task failure_reason = %q, want empty (reclaim only annotates the attempt)", tk.FailureReason)
 	}
 }
 
@@ -427,6 +434,62 @@ func TestScheduler_SweepRetiredJobs_DisabledWhenZero(t *testing.T) {
 func TestDefaultConfig_AssignedTaskTimeoutTightened(t *testing.T) {
 	if got := DefaultConfig().AssignedTaskTimeout; got > 60*time.Second {
 		t.Errorf("AssignedTaskTimeout = %v, want <= 60s after lease cutover", got)
+	}
+}
+
+// TestDefaultConfig_RetryDefaults verifies the server-level retry-policy
+// backstop (Server -> Farm -> Queue -> Job layering) defaults to 3 attempts,
+// a 30s retry delay, and no job-level failure limit.
+func TestDefaultConfig_RetryDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.DefaultMaxAttempts != 3 {
+		t.Errorf("DefaultMaxAttempts = %d, want 3", cfg.DefaultMaxAttempts)
+	}
+	if cfg.RetryDelay != 30*time.Second {
+		t.Errorf("RetryDelay = %v, want 30s", cfg.RetryDelay)
+	}
+	if cfg.DefaultFailureLimit != 0 {
+		t.Errorf("DefaultFailureLimit = %d, want 0", cfg.DefaultFailureLimit)
+	}
+}
+
+// TestNew_RetryDefaults_ZeroValueCoercedUp verifies New normalizes a
+// zero-value Config's retry knobs: DefaultMaxAttempts <= 0 is coerced up to
+// the DefaultConfig value (0 attempts is meaningless), while RetryDelay and
+// DefaultFailureLimit are left at 0 since 0 is a legitimate setting for both
+// ("immediate" retry and "off", respectively — mirrors UnschedulableGrace).
+func TestNew_RetryDefaults_ZeroValueCoercedUp(t *testing.T) {
+	st := fake.New()
+	s := New(Config{}, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), nil, nil)
+
+	if s.cfg.DefaultMaxAttempts != DefaultConfig().DefaultMaxAttempts {
+		t.Errorf("DefaultMaxAttempts = %d, want coerced default %d", s.cfg.DefaultMaxAttempts, DefaultConfig().DefaultMaxAttempts)
+	}
+	if s.cfg.RetryDelay != 0 {
+		t.Errorf("RetryDelay = %v, want 0 (not coerced — immediate is legitimate)", s.cfg.RetryDelay)
+	}
+	if s.cfg.DefaultFailureLimit != 0 {
+		t.Errorf("DefaultFailureLimit = %d, want 0 (not coerced)", s.cfg.DefaultFailureLimit)
+	}
+}
+
+// TestNew_RetryDefaults_NegativeRetryDelayCoercedUp verifies a negative
+// RetryDelay (which should never reach New in practice — config validation
+// rejects it — but New must not misbehave defensively) is coerced to the
+// default rather than left negative.
+func TestNew_RetryDefaults_NegativeRetryDelayCoercedUp(t *testing.T) {
+	st := fake.New()
+	cfg := Config{DefaultMaxAttempts: 7, RetryDelay: -time.Second, DefaultFailureLimit: 5}
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), nil, nil)
+
+	if s.cfg.DefaultMaxAttempts != 7 {
+		t.Errorf("DefaultMaxAttempts = %d, want unchanged 7", s.cfg.DefaultMaxAttempts)
+	}
+	if s.cfg.RetryDelay != DefaultConfig().RetryDelay {
+		t.Errorf("RetryDelay = %v, want coerced default %v", s.cfg.RetryDelay, DefaultConfig().RetryDelay)
+	}
+	if s.cfg.DefaultFailureLimit != 5 {
+		t.Errorf("DefaultFailureLimit = %d, want unchanged 5", s.cfg.DefaultFailureLimit)
 	}
 }
 

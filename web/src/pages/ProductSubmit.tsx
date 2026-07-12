@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import ProductParamField from '@/components/ProductParamField'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useProduct, useProductParameters, useFarmsWithQueues } from '@/api/queries'
 import { useSubmitProductJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { initialValue, defaultJobName, paramGroup, selectWidget } from '@/lib/productForm'
+import { parseOptionalInt } from '@/lib/parse'
 import { validateAll } from '@/lib/productValidation'
 import type { ProductParameter } from '@/api/types'
 import styles from './ProductSubmit.module.css'
@@ -28,6 +30,12 @@ export default function ProductSubmit() {
   const [jobName, setJobName] = useState('')
   const [queueId, setQueueId] = useState(() => localStorage.getItem(QUEUE_STORAGE_KEY) ?? '')
   const [formError, setFormError] = useState('')
+  const [owner, setOwner] = useState('')
+  const [priority, setPriority] = useState('')
+  const [project, setProject] = useState('')
+  const [maxAttempts, setMaxAttempts] = useState('')
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
+  const [failureLimit, setFailureLimit] = useState('')
 
   // Seed parameter defaults when data arrives, and re-seed fields the user has
   // not yet edited whenever the product's parameter payload changes (e.g. after
@@ -104,6 +112,11 @@ export default function ProductSubmit() {
     // Guard: no queues configured (effectiveQueueId = ''); safe early return.
     if (!farmForQueue) return
 
+    const priorityNum = parseOptionalInt(priority)
+    const maxAttemptsNum = parseOptionalInt(maxAttempts)
+    const retryDelaySecondsNum = parseOptionalInt(retryDelaySeconds)
+    const failureLimitNum = parseOptionalInt(failureLimit)
+
     try {
       const job = await submit.mutateAsync({
         productName: name,
@@ -115,6 +128,12 @@ export default function ProductSubmit() {
             .filter((p) => selectWidget(p) !== 'hidden')
             .map((p) => [p.name, values[p.name] ?? '']),
         ),
+        ...(owner.trim() !== '' ? { owner: owner.trim() } : {}),
+        ...(priorityNum !== undefined ? { priority: priorityNum } : {}),
+        ...(project.trim() !== '' ? { project: project.trim() } : {}),
+        ...(maxAttemptsNum !== undefined ? { maxAttempts: maxAttemptsNum } : {}),
+        ...(retryDelaySecondsNum !== undefined ? { retryDelaySeconds: retryDelaySecondsNum } : {}),
+        ...(failureLimitNum !== undefined ? { failureLimit: failureLimitNum } : {}),
       })
       localStorage.setItem(QUEUE_STORAGE_KEY, effectiveQueueId)
       showToast('Job submitted', 'success')
@@ -178,6 +197,47 @@ export default function ProductSubmit() {
             {formError}
           </p>
         )}
+
+        <details className={styles.advanced}>
+          <summary className={styles.advancedSummary}>Advanced (job overrides)</summary>
+          <p className={styles.advancedNote}>
+            Optional; leave blank to inherit the queue → farm → server default.
+          </p>
+          <div className={styles.advancedGroup}>
+            <div className={styles.row}>
+              <label htmlFor="owner">Owner</label>
+              <input id="owner" value={owner} onChange={(e) => setOwner(e.target.value)} />
+            </div>
+            <div className={styles.row}>
+              <label htmlFor="priority">Priority</label>
+              <input
+                id="priority"
+                type="number"
+                min={0}
+                max={100}
+                placeholder="50"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+              />
+            </div>
+            <div className={styles.row}>
+              <label htmlFor="project">Project</label>
+              <input id="project" value={project} onChange={(e) => setProject(e.target.value)} />
+            </div>
+            <RetryPolicyFields
+              maxAttempts={maxAttempts}
+              onMaxAttemptsChange={setMaxAttempts}
+              retryDelaySeconds={retryDelaySeconds}
+              onRetryDelaySecondsChange={setRetryDelaySeconds}
+              failureLimit={failureLimit}
+              onFailureLimitChange={setFailureLimit}
+              placeholder="Inherit"
+              labelVariant="short"
+              fieldClassName={styles.row}
+            />
+          </div>
+        </details>
+
         <button type="submit" className={styles.submitBtn} disabled={submit.isPending}>
           Submit job
         </button>

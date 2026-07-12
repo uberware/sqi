@@ -260,6 +260,33 @@ shows a confirmation dialog before issuing the requests. When adding components
 that display job data from the `jobs` subject, handle the `removed` status to
 avoid stale rows lingering in the UI.
 
+`JobDetail` also surfaces *why* tasks failed: a job-level failure banner
+(built from the `JobDetail.failure_summary` field — omitted until at least one
+task has failed) above the task list, and a per-task reason string next to
+each failed row's status (`Task.failure_reason`). Neither needs a dedicated
+WebSocket message type — both are ordinary REST fields on the existing
+job/task responses, refreshed the same way the rest of the page is: `JobDetail`
+already invalidates the job-detail and task-list queries on `jobs` and
+`jobs/{jobId}/tasks` WebSocket events, so the banner and reason strings update
+live along with everything else. See
+[`docs/observability.md`](observability.md#why-did-my-task-fail) for what the
+reason strings mean and where the underlying data comes from.
+
+Each task row is also independently expandable to a full **attempt
+timeline**: a disclosure button toggles a detail row rendering every attempt
+(number, status, worker, exit code, the per-attempt message, and
+started→ended duration) via `GET /api/v1/tasks/{id}/attempts`. Unlike the
+failure banner and reason string above, this data is fetched lazily — the
+`useTaskAttempts(id, { enabled })` hook (`src/api/queries.ts`) only queries
+once a row is expanded, so collapsed rows cost nothing. The `jobs/{jobId}/tasks`
+WebSocket handler invalidates `queryKeys.tasks.attempts(payload.task_id)` on
+every task event; TanStack Query only refetches an invalidated query while it
+has an active (i.e. expanded) observer, so an open timeline stays live and a
+collapsed one just refetches on next expand. This is what lets an operator
+see the reason a specific attempt failed even for a task mid-retry, whose
+task-level `failure_reason` has already been cleared — see
+[Attempt history](architecture.md#5-status-ingestion) in the architecture doc.
+
 ---
 
 ## TypeScript conventions

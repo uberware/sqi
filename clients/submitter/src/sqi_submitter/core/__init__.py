@@ -4,6 +4,7 @@
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext, frame_range_str
 from sqi_submitter.core.errors import FormInvalidError, SubmitterError
+from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.mapping import is_output_path_param, is_scene_path_param, prefill
 from sqi_submitter.core.schema import FormField, FormModel
 from sqi_submitter.core.session import (
@@ -19,6 +20,7 @@ __all__ = [
     "FormInvalidError",
     "FormModel",
     "HostAdapter",
+    "JobOptions",
     "RenderTarget",
     "SceneContext",
     "Settings",

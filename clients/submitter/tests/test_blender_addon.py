@@ -117,3 +117,37 @@ def test_selected_queue_by_index() -> None:
     queue = addon._selected_queue(SimpleNamespace(queue="0"))
     assert queue is not None
     assert queue.id == "q1"
+
+
+def test_job_options_from_props_builds_overrides() -> None:
+    from sqi_submitter.hosts.blender.addon import _job_options_from_props
+
+    class P:  # stand-in for the SQI_Settings PropertyGroup
+        owner = "alice"
+        project = ""
+        priority = 80
+        max_attempts = 5
+        retry_delay_seconds = 0
+        failure_limit = 0
+
+    opts = _job_options_from_props(P())
+    assert opts is not None
+    assert opts.owner == "alice"
+    assert opts.priority == 80
+    assert opts.max_attempts == 5
+    assert opts.retry_delay_seconds is None
+    assert opts.project is None
+
+
+def test_job_options_from_props_empty_is_none() -> None:
+    from sqi_submitter.hosts.blender.addon import _job_options_from_props
+
+    class P:
+        owner = ""
+        project = ""
+        priority = 0
+        max_attempts = 0
+        retry_delay_seconds = 0
+        failure_limit = 0
+
+    assert _job_options_from_props(P()) is None

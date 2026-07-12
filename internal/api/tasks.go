@@ -64,6 +64,17 @@ type taskResponse struct {
 	// UnschedulableReason is set when a ready task cannot currently be
 	// satisfied by any online worker; empty means schedulable.
 	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
+	// FailureReason is the human-readable reason the task reached a terminal
+	// non-success (failed or canceled). Empty for non-terminal tasks.
+	FailureReason string `json:"failure_reason,omitempty"`
+	// FailedAttempts counts attempts that genuinely ran and failed (does not
+	// count worker crashes / unassignments that trigger a retry without a
+	// genuine failure).
+	FailedAttempts int `json:"failed_attempts"`
+	// RetryAfter, when set and in the future, holds the task in the ready
+	// state as a retry backoff; a worker will not be assigned the task until
+	// this time passes.
+	RetryAfter *time.Time `json:"retry_after,omitempty"`
 }
 
 // taskListResponse is the paginated result returned by GET /api/v1/jobs/{id}/tasks.
@@ -92,6 +103,22 @@ type taskLogsResponse struct {
 	Items        []taskLogResponse `json:"items"`
 	AfterNATSSeq int64             `json:"after_nats_seq"`
 	Limit        int               `json:"limit"`
+}
+
+// taskAttemptResponse is the JSON representation of one task attempt.
+type taskAttemptResponse struct {
+	AttemptNumber int        `json:"attempt_number"`
+	Status        string     `json:"status"`
+	WorkerID      string     `json:"worker_id,omitempty"`
+	ExitCode      *int       `json:"exit_code,omitempty"`
+	Message       string     `json:"message,omitempty"`
+	StartedAt     time.Time  `json:"started_at"`
+	EndedAt       *time.Time `json:"ended_at,omitempty"`
+}
+
+// taskAttemptsResponse is the list returned by GET /api/v1/tasks/{id}/attempts.
+type taskAttemptsResponse struct {
+	Items []taskAttemptResponse `json:"items"`
 }
 
 // retryResponse is returned by POST /api/v1/tasks/{id}/retry.
@@ -278,6 +305,36 @@ func (h *taskHandler) getTaskLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// getTaskAttempts returns the attempt history for a task, ordered by
+// attempt_number ascending. Mirrors getTaskLogs' task-existence check.
+func (h *taskHandler) getTaskAttempts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	if _, err := h.store.GetTask(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "task not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "tasks: get task for attempts failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task")
+		return
+	}
+
+	attempts, err := h.store.ListTaskAttempts(ctx, id)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "tasks: list attempts failed", slog.String("task_id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task attempts")
+		return
+	}
+
+	items := make([]taskAttemptResponse, len(attempts))
+	for i, a := range attempts {
+		items[i] = toTaskAttemptResponse(a)
+	}
+	writeJSON(w, http.StatusOK, taskAttemptsResponse{Items: items})
+}
+
 // streamTaskLogs streams log chunks to the client using chunked transfer
 // encoding. Each emitted line is a newline-delimited JSON [taskLogResponse].
 // Streaming continues until the task reaches a terminal state (succeeded,
@@ -436,6 +493,9 @@ func toTaskResponse(t store.Task) taskResponse {
 		CreatedAt:           t.CreatedAt,
 		UpdatedAt:           t.UpdatedAt,
 		UnschedulableReason: t.UnschedulableReason,
+		FailureReason:       t.FailureReason,
+		FailedAttempts:      t.FailedAttempts,
+		RetryAfter:          t.RetryAfter,
 	}
 }
 
@@ -451,6 +511,19 @@ func toTaskLogResponse(l store.TaskLog) taskLogResponse {
 		Data:       l.Data,
 		At:         l.At,
 		ReceivedAt: l.ReceivedAt,
+	}
+}
+
+// toTaskAttemptResponse converts a [store.TaskAttempt] into the API wire type.
+func toTaskAttemptResponse(a store.TaskAttempt) taskAttemptResponse {
+	return taskAttemptResponse{
+		AttemptNumber: a.AttemptNumber,
+		Status:        string(a.Status),
+		WorkerID:      a.WorkerID,
+		ExitCode:      a.ExitCode,
+		Message:       a.Message,
+		StartedAt:     a.StartedAt,
+		EndedAt:       a.EndedAt,
 	}
 }
 

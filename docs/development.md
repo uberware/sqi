@@ -255,6 +255,40 @@ Then implement it in `internal/store/sqlite/step.go` using a prepared
 statement, and add a corresponding stub to the in-memory fake in
 `internal/store/fake/store.go` so existing tests keep compiling.
 
+> **Not every new store method is REST-triggered.** The auto-retry +
+> failure-limit feature added `RecordTaskFailure`, `RequeueTaskForRetry`
+> (`internal/store/sqlite/task.go`), and `ParkJob`
+> (`internal/store/sqlite/job.go`) purely for the scheduler's own internal
+> use (`internal/scheduler/failure.go`'s `handleTaskFailed`) — no handler in
+> `internal/api/` calls them directly. They still follow the same shape as
+> REST-triggered methods: declared on the relevant sub-interface
+> (`TaskStore`/`JobStore`), implemented in `internal/store/sqlite/`, and
+> stubbed in `internal/store/fake/` so scheduler tests can inject the fake.
+> Layered policy resolution that isn't itself a store method — e.g. picking
+> the effective retry policy from Job → Queue → Farm → server default — is a
+> plain package-level helper next to its caller rather than a store method:
+> see `resolveRetryPolicy` in `internal/scheduler/retrypolicy.go`. Follow this
+> pattern for scheduler-internal state changes that don't need a REST
+> surface of their own.
+
+> **Every terminal non-success must leave a reason.** `task_attempts.message`
+> is the per-attempt reason (next to `exit_code`); `tasks.failure_reason`
+> denormalizes the latest terminal reason onto the task (mirroring
+> `unschedulable_reason`), cleared on retry. Two `TaskStore` methods write it:
+> `SetTaskFailureReason(ctx, id, reason)` (unconditional) and
+> `SetTaskFailureReasonIfEmpty(ctx, id, reason)` (a no-op, not an error, when
+> the task already carries a reason). `FailureReasonSummary(ctx, jobID)`
+> aggregates a job's failed tasks by reason (`FailedCount`, `DominantReason`,
+> `DistinctReasons`) for the job-detail failure banner. **The rule for new
+> code:** any new code path that drives a task to a terminal `failed` or
+> `canceled` must call one of the two setters — reach for
+> `SetTaskFailureReasonIfEmpty` whenever a more-specific reason may already be
+> set by another path (the pattern cascade-cancel and user-cancel use so
+> cascade always wins regardless of ordering), and the unconditional
+> `SetTaskFailureReason` only when your path is authoritative. See
+> [the durable-failure-reason table](architecture.md#5-status-ingestion) for
+> every existing path and its reason string.
+
 ### Step 4 — Update the OpenAPI spec
 
 Add the new path to `internal/api/openapi.yaml`:

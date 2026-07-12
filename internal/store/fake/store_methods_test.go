@@ -283,7 +283,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if _, err := s.CancelJobTasks(ctx(), "j1", time.Now()); err != nil {
+	if _, err := s.CancelJobTasks(ctx(), "j1", time.Now(), ""); err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
 
@@ -364,12 +364,53 @@ func TestListReadyTasks(t *testing.T) {
 	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
 	mustCreateTask(t, s, "t-running", "j1", "s1", store.TaskStatusRunning)
 
-	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", 10)
+	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].ID != "t-ready" {
 		t.Errorf("got %v, want [t-ready]", tasks)
+	}
+}
+
+func TestListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
+
+	now := time.Now()
+	future := now.Add(time.Minute)
+	backoff := mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusReady)
+	backoff.RetryAfter = &future
+	s.mu.Lock()
+	s.tasks[backoff.ID] = backoff
+	s.mu.Unlock()
+
+	j2, err := s.CreateJob(ctx(), store.Job{
+		ID: "j2", FarmID: "farm-f1", QueueID: "q1", Name: "j2",
+		Status: store.JobStatusPaused, Priority: 50,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(j2): %v", err)
+	}
+	mustCreateTask(t, s, "t-paused", j2.ID, "s1", store.TaskStatusReady)
+
+	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", now, 10)
+	if err != nil {
+		t.Fatalf("ListReadyTasks: %v", err)
+	}
+	var ids []string
+	for _, tk := range tasks {
+		ids = append(ids, tk.ID)
+	}
+	if !slices.Contains(ids, "t-ready") {
+		t.Fatalf("want t-ready selected, got %v", ids)
+	}
+	if slices.Contains(ids, "t-backoff") || slices.Contains(ids, "t-paused") {
+		t.Fatalf("backoff/paused tasks must be excluded, got %v", ids)
 	}
 }
 
@@ -381,7 +422,7 @@ func TestListReadyTasks_AllFarms(t *testing.T) {
 	mustCreateJob(t, s, "j1", "farm-f1", "q1")
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
 
-	tasks, err := s.ListReadyTasks(ctx(), "", 10)
+	tasks, err := s.ListReadyTasks(ctx(), "", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -437,7 +478,7 @@ func TestCancelJobTasks(t *testing.T) {
 	mustCreateTask(t, s, "t-running", "j1", "s1", store.TaskStatusRunning)
 	mustCreateTask(t, s, "t-done", "j1", "s1", store.TaskStatusSucceeded)
 
-	active, err := s.CancelJobTasks(ctx(), "j1", time.Now())
+	active, err := s.CancelJobTasks(ctx(), "j1", time.Now(), "")
 	if err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
@@ -466,12 +507,111 @@ func TestCountReadyTasksByQueue(t *testing.T) {
 	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
 	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusRunning)
 
-	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1")
+	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("CountReadyTasksByQueue: %v", err)
 	}
 	if counts["q1"] != 2 {
 		t.Errorf("q1 count = %d, want 2", counts["q1"])
+	}
+}
+
+// TestCountReadyTasksByQueue_ExcludesIneligible asserts the count uses the
+// same eligibility predicate as ListReadyTasks: ready tasks still backing off
+// (retry_after in the future) or under a paused/parked job are not counted —
+// so the heartbeat sweep does not wake lease waiters for work nothing can
+// lease. Also covers the farmID = "" (all farms) convention.
+func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
+	s := New()
+	defer s.Close()
+	now := time.Now().UTC()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusReady)
+
+	// Backing off: ready but retry_after has not elapsed (requeued from
+	// running through the real auto-retry path).
+	mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusRunning)
+	if requeued, err := s.RequeueTaskForRetry(ctx(), "t-backoff", now.Add(time.Minute), now); err != nil || !requeued {
+		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
+	}
+
+	// Under an auto-parked job.
+	mustCreateJob(t, s, "j-parked", "farm-f1", "q1")
+	mustCreateTask(t, s, "t-parked", "j-parked", "s1", store.TaskStatusReady)
+	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (2)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1", now)
+	if err != nil {
+		t.Fatalf("CountReadyTasksByQueue: %v", err)
+	}
+	if counts["q1"] != 1 {
+		t.Errorf("q1 count = %d, want 1 (backoff + parked-job tasks excluded)", counts["q1"])
+	}
+
+	allFarms, err := s.CountReadyTasksByQueue(ctx(), "", now)
+	if err != nil {
+		t.Fatalf("CountReadyTasksByQueue(all farms): %v", err)
+	}
+	if allFarms["q1"] != 1 {
+		t.Errorf("all-farms q1 count = %d, want 1", allFarms["q1"])
+	}
+}
+
+// TestResumeJob_Fake mirrors the sqlite ResumeJob contract: resuming an
+// auto-parked job clears park state and resets the failure counter; a manual
+// pause/resume keeps the counter; a non-paused job is a no-op; an unknown job
+// is ErrNotFound.
+func TestResumeJob_Fake(t *testing.T) {
+	s := New()
+	defer s.Close()
+	now := time.Now().UTC()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+
+	// Auto-parked: reset everything.
+	parked := mustCreateJob(t, s, "j-parked", "farm-f1", "q1")
+	parked.FailedAttempts = 3
+	if _, err := s.UpdateJob(ctx(), parked); err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (3)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+	if err := s.ResumeJob(ctx(), "j-parked", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	got := mustGetJob(t, s, "j-parked")
+	if got.Status != store.JobStatusPending || got.ParkReason != "" || got.FailedAttempts != 0 {
+		t.Errorf("auto-parked resume: %+v, want pending with cleared park state", got)
+	}
+
+	// Manual pause: counter survives.
+	manual := mustCreateJob(t, s, "j-manual", "farm-f1", "q1")
+	manual.FailedAttempts = 2
+	if _, err := s.UpdateJob(ctx(), manual); err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	if err := s.UpdateJobStatus(ctx(), "j-manual", store.JobStatusPaused); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	if err := s.ResumeJob(ctx(), "j-manual", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	got = mustGetJob(t, s, "j-manual")
+	if got.Status != store.JobStatusPending || got.FailedAttempts != 2 {
+		t.Errorf("manual resume: %+v, want pending with failed_attempts 2", got)
+	}
+
+	// Not paused: no-op. Unknown: ErrNotFound.
+	if err := s.ResumeJob(ctx(), "j-manual", now); err != nil {
+		t.Fatalf("resume of non-paused job should be a no-op, got %v", err)
+	}
+	if err := s.ResumeJob(ctx(), "missing", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -530,6 +670,69 @@ func TestCountUnschedulableTasksByJob(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("count after clear = %d, want 1", n)
+	}
+}
+
+func TestFailureReasonSummary(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+
+	// Mixed reasons: staging x2, timeout x1 — staging dominates.
+	mustCreateTask(t, s, "t0", "j1", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusFailed)
+	for _, tc := range []struct{ id, reason string }{
+		{"t0", "staging"}, {"t1", "staging"}, {"t2", "timeout"},
+	} {
+		if err := s.SetTaskFailureReason(ctx(), tc.id, tc.reason); err != nil {
+			t.Fatalf("SetTaskFailureReason(%q): %v", tc.id, err)
+		}
+	}
+	// A succeeded task must never count, even with a stray reason.
+	succ := mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusSucceeded)
+	if err := s.SetTaskFailureReason(ctx(), succ.ID, "staging"); err != nil {
+		t.Fatalf("SetTaskFailureReason(%q): %v", succ.ID, err)
+	}
+
+	sum, err := s.FailureReasonSummary(ctx(), "j1")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary: %v", err)
+	}
+	if sum.FailedCount != 3 || sum.DominantReason != "staging" || sum.DistinctReasons != 2 {
+		t.Fatalf("got %+v, want {FailedCount:3 DominantReason:staging DistinctReasons:2}", sum)
+	}
+
+	// Tie case: two reasons each with count 1 — dominant is the
+	// lexicographically smaller reason, deterministically.
+	mustCreateJob(t, s, "j2", "farm-f1", "q1")
+	mustCreateTask(t, s, "u0", "j2", "s1", store.TaskStatusFailed)
+	mustCreateTask(t, s, "u1", "j2", "s1", store.TaskStatusFailed)
+	if err := s.SetTaskFailureReason(ctx(), "u0", "timeout"); err != nil {
+		t.Fatalf("SetTaskFailureReason(u0): %v", err)
+	}
+	if err := s.SetTaskFailureReason(ctx(), "u1", "staging"); err != nil {
+		t.Fatalf("SetTaskFailureReason(u1): %v", err)
+	}
+	sum, err = s.FailureReasonSummary(ctx(), "j2")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary(j2): %v", err)
+	}
+	if sum.FailedCount != 2 || sum.DominantReason != "staging" || sum.DistinctReasons != 2 {
+		t.Fatalf("got %+v, want {FailedCount:2 DominantReason:staging DistinctReasons:2}", sum)
+	}
+
+	// Empty case: a job with no failed tasks carrying a reason.
+	mustCreateJob(t, s, "j3", "farm-f1", "q1")
+	mustCreateTask(t, s, "v0", "j3", "s1", store.TaskStatusSucceeded)
+	sum, err = s.FailureReasonSummary(ctx(), "j3")
+	if err != nil {
+		t.Fatalf("FailureReasonSummary(j3): %v", err)
+	}
+	if (sum != store.FailureSummary{}) {
+		t.Fatalf("got %+v, want zero value", sum)
 	}
 }
 
@@ -675,6 +878,49 @@ func TestRetryTasks_SubsetAndNonTerminalJobUntouched(t *testing.T) {
 	}
 	if got := mustGetJob(t, s, "j1").Status; got != store.JobStatusRunning {
 		t.Errorf("job = %v, want running (already non-terminal)", got)
+	}
+}
+
+// TestRetryTasks_ResetsFailureCounters asserts that RetryTasks clears the
+// genuine-failure state (Tasks 1-3): a revived task's FailedAttempts and
+// RetryAfter, and — since this retry also resets the terminal job — the
+// job's FailedAttempts and ParkReason.
+func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
+	s := New()
+	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+
+	j, err := s.CreateJob(ctx(), store.Job{
+		ID: "j1", FarmID: "farm-f1", QueueID: "q1", Name: "j1",
+		Status: store.JobStatusFailed, Priority: 50,
+		FailedAttempts: 1, ParkReason: "failure limit reached (1)",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	mustCreateStep(t, s, "s1", j.ID, store.StepStatusFailed)
+	retryAfter := time.Now().Add(time.Minute)
+	if _, err := s.CreateTask(ctx(), store.Task{
+		ID: "t1", JobID: j.ID, StepID: "s1", Name: "t1",
+		Status: store.TaskStatusFailed, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		FailedAttempts: 1, RetryAfter: &retryAfter,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	revived, err := s.RetryTasks(ctx(), j.ID, nil, time.Now())
+	if err != nil || len(revived) != 1 {
+		t.Fatalf("RetryTasks: %v revived=%d", err, len(revived))
+	}
+
+	task := mustGetTask(t, s, "t1")
+	if task.FailedAttempts != 0 || task.RetryAfter != nil {
+		t.Fatalf("task counters not reset: %+v", task)
+	}
+	job := mustGetJob(t, s, j.ID)
+	if job.FailedAttempts != 0 || job.ParkReason != "" {
+		t.Fatalf("job counters not reset: %+v", job)
 	}
 }
 
@@ -1310,6 +1556,25 @@ func TestUpdateTaskAttempt_SessionIDNotOverwrittenByEmpty(t *testing.T) {
 	updated := mustUpdateTaskAttempt(t, s, a)
 	if updated.SessionID != "original" {
 		t.Errorf("session_id = %q, want original", updated.SessionID)
+	}
+}
+
+func TestUpdateTaskAttempt_MessageNotOverwrittenByEmpty(t *testing.T) {
+	s := New()
+	defer s.Close()
+	a := mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
+	// Set a message.
+	a.Message = "boom"
+	updated := mustUpdateTaskAttempt(t, s, a)
+	if updated.Message != "boom" {
+		t.Errorf("message = %q, want boom", updated.Message)
+	}
+
+	// Update with empty message — should not overwrite.
+	a.Message = ""
+	updated = mustUpdateTaskAttempt(t, s, a)
+	if updated.Message != "boom" {
+		t.Errorf("message = %q, want boom (not overwritten by empty)", updated.Message)
 	}
 }
 

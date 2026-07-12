@@ -199,4 +199,23 @@ describe('ProductSubmit', () => {
     rerender(tree(qc))
     await waitFor(() => expect(screen.getByLabelText(/Scene/)).toHaveValue('/user/typed.blend'))
   })
+
+  it('submits retry overrides from the Advanced section', async () => {
+    renderPage()
+    const summary = screen.getByText(/advanced \(job overrides\)/i)
+    const details = summary.closest('details') as HTMLDetailsElement
+    expect(details).not.toBeNull()
+    expect(details.open).toBe(false) // collapsed by default
+
+    fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+    fireEvent.click(summary) // expand (cosmetic in jsdom; inputs are reachable regardless)
+    fireEvent.change(screen.getByLabelText(/max attempts/i), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText(/failure limit/i), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    await waitFor(() => expect(submitMock).toHaveBeenCalled())
+    const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(arg).toMatchObject({ maxAttempts: 5, failureLimit: 3 })
+    expect(arg).not.toHaveProperty('retryDelaySeconds') // left blank -> omitted
+  })
 })

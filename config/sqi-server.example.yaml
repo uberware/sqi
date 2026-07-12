@@ -132,6 +132,24 @@ scheduler:
   # Type: duration   Env: SQI_SCHEDULER_UNSCHEDULABLE_GRACE
   unschedulable_grace: "30s"
 
+  # Farm-wide default number of genuine attempts a task may make before it
+  # goes terminal-failed. Farm/queue/job retry-policy overrides win over this
+  # default (Server -> Farm -> Queue -> Job precedence). Must be >= 1; 1
+  # disables auto-retry.
+  # Type: int   Env: SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS
+  default_max_attempts: 3
+
+  # Backoff applied before a failed task re-enters the ready queue for
+  # re-lease. 0 means immediate re-queue.
+  # Type: duration   Env: SQI_SCHEDULER_RETRY_DELAY
+  retry_delay: "30s"
+
+  # Farm-wide default ceiling on a job's cumulative genuine task failures.
+  # Once reached, the job is auto-parked (status=paused). 0 disables the
+  # limit.
+  # Type: int   Env: SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT
+  default_failure_limit: 0
+
 # ── mDNS service discovery ────────────────────────────────────────────────────
 discovery:
   # When true, sqi-server broadcasts a _sqi._tcp mDNS record so that workers

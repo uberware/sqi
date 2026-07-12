@@ -121,6 +121,9 @@ type fileConfig struct {
 		JobRetention              *string `yaml:"job_retention"`
 		JobRetentionIncludeFailed *bool   `yaml:"job_retention_include_failed"`
 		UnschedulableGrace        *string `yaml:"unschedulable_grace"`
+		DefaultMaxAttempts        *int    `yaml:"default_max_attempts"`
+		RetryDelay                *string `yaml:"retry_delay"`
+		DefaultFailureLimit       *int    `yaml:"default_failure_limit"`
 	} `yaml:"scheduler"`
 
 	Discovery *struct {
@@ -284,6 +287,25 @@ func mergeSchedulerFile(cfg *Config, fc fileConfig) {
 			cfg.Scheduler.UnschedulableGrace = d
 		}
 	}
+	mergeSchedulerRetryFile(cfg, fc)
+}
+
+// mergeSchedulerRetryFile overlays the server-level retry-policy fields
+// (default_max_attempts, retry_delay, default_failure_limit) from fc onto
+// cfg. Split out of [mergeSchedulerFile] to keep its cyclomatic complexity
+// under the lint threshold.
+func mergeSchedulerRetryFile(cfg *Config, fc fileConfig) {
+	if fc.Scheduler.DefaultMaxAttempts != nil {
+		cfg.Scheduler.DefaultMaxAttempts = *fc.Scheduler.DefaultMaxAttempts
+	}
+	if fc.Scheduler.RetryDelay != nil {
+		if d, err := time.ParseDuration(*fc.Scheduler.RetryDelay); err == nil {
+			cfg.Scheduler.RetryDelay = d
+		}
+	}
+	if fc.Scheduler.DefaultFailureLimit != nil {
+		cfg.Scheduler.DefaultFailureLimit = *fc.Scheduler.DefaultFailureLimit
+	}
 }
 
 func mergeDiscoveryFile(cfg *Config, fc fileConfig) {
@@ -348,6 +370,9 @@ func applyEnv(cfg *Config) {
 	setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION")
 	setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED")
 	setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE")
+	setInt(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS")
+	setDuration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY")
+	setInt(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT")
 
 	setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED")
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")

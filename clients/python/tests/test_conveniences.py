@@ -152,6 +152,30 @@ def test_submit_and_wait_returns_finished_job(make_client: ClientFactory) -> Non
 
 
 @respx.mock
+def test_submit_and_wait_forwards_retry_overrides(make_client: ClientFactory) -> None:
+    submit_route = respx.post(_JOBS_URL).mock(
+        return_value=httpx.Response(201, json=_job("pending"))
+    )
+    respx.get(f"{_JOBS_URL}/j1").mock(return_value=httpx.Response(200, json=_job("failed")))
+    client = make_client()
+
+    client.submit_and_wait(
+        {"name": "My Job"},
+        farm_id="farm-1",
+        queue_id="queue-1",
+        max_attempts=1,
+        retry_delay_seconds=5,
+        failure_limit=2,
+        poll_interval=0.0,
+    )
+
+    params = submit_route.calls.last.request.url.params
+    assert params["max_attempts"] == "1"
+    assert params["retry_delay_seconds"] == "5"
+    assert params["failure_limit"] == "2"
+
+
+@respx.mock
 def test_submit_and_wait_times_out(make_client: ClientFactory, fake_clock: None) -> None:
     respx.post(_JOBS_URL).mock(return_value=httpx.Response(201, json=_job("pending")))
     respx.get(f"{_JOBS_URL}/j1").mock(return_value=httpx.Response(200, json=_job("running")))

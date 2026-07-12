@@ -85,6 +85,7 @@ function makeJob(overrides: Partial<JobDetailType> = {}): JobDetailType {
     priority: 50,
     status: 'running',
     template_format: 'yaml',
+    failed_attempts: 0,
     task_counts: {
       total: 3,
       pending: 0,
@@ -488,6 +489,123 @@ describe('JobDetail', () => {
       const taskTable = screen.getByRole('table', { name: /Tasks for step RenderFrames/ })
       const rows = taskTable.querySelectorAll('tbody tr')
       expect(rows[0]).toBeInTheDocument()
+    })
+  })
+
+  describe('attempt timeline', () => {
+    it('expands a task row to show its attempt history with reasons', async () => {
+      const task = makeTask({
+        id: 't1',
+        name: 'render[Frame=2]',
+        status: 'ready',
+        failed_attempts: 1,
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) {
+          return Promise.resolve(
+            okJson({
+              items: [
+                {
+                  attempt_number: 1,
+                  status: 'failed',
+                  worker_id: 'w1',
+                  exit_code: 1,
+                  message: 'worker not configured for staging',
+                  started_at: '2026-07-11T19:00:00Z',
+                  ended_at: '2026-07-11T19:00:01Z',
+                },
+                { attempt_number: 2, status: 'running', started_at: '2026-07-11T19:00:30Z' },
+              ],
+            }),
+          )
+        }
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(makeTaskListResponse([task])))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const toggle = await screen.findByRole('button', {
+        name: /attempts for render\[Frame=2\]/i,
+      })
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+
+      expect(await screen.findByText(/worker not configured for staging/i)).toBeInTheDocument()
+      // Exact, case-sensitive: the row's existing lowercase "attempt 2" retry
+      // indicator (from failed_attempts) must not satisfy this assertion —
+      // only the attempt-history entries ("Attempt 1"/"Attempt 2") should.
+      expect(screen.getByText('Attempt 1')).toBeInTheDocument()
+      expect(screen.getByText('Attempt 2')).toBeInTheDocument()
+      expect(screen.getByText(/exit 1/i)).toBeInTheDocument()
+
+      // The button flips to the "Hide" accessible name and aria-expanded once open.
+      expect(
+        await screen.findByRole('button', { name: /hide attempts for render\[Frame=2\]/i }),
+      ).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('shows an empty state when a task has no recorded attempts', async () => {
+      const task = makeTask({ id: 't2', name: 'render[Frame=3]', status: 'pending' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) return Promise.resolve(okJson({ items: [] }))
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(makeTaskListResponse([task])))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: /attempts for render\[Frame=3\]/i }),
+      )
+
+      expect(await screen.findByText(/no attempts/i)).toBeInTheDocument()
+    })
+
+    it('refetches an expanded task row attempts when a WS task event arrives for it', async () => {
+      const task = makeTask({ id: 't3', name: 'render[Frame=4]', status: 'running' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) return Promise.resolve(okJson({ items: [] }))
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(makeTaskListResponse([task])))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: /attempts for render\[Frame=4\]/i }),
+      )
+
+      const attemptCalls = () =>
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/attempts')).length
+
+      await waitFor(() => expect(attemptCalls()).toBe(1))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 't3',
+            status: 'failed',
+            updated_at: '2024-01-15T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(attemptCalls()).toBeGreaterThan(1))
     })
   })
 
@@ -1265,6 +1383,257 @@ describe('JobDetail', () => {
 
       expect(screen.getByLabelText('View logs for task frame-001')).toBeInTheDocument()
       expect(screen.queryByLabelText('View logs for task frame-099')).not.toBeInTheDocument()
+    })
+  })
+
+  // ── Auto-park banner ─────────────────────────────────────────────────────
+
+  describe('auto-park banner', () => {
+    it('shows an auto-park banner with a resume action when park_reason is set', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okJson(makeJob({ status: 'paused', park_reason: 'failure limit reached (25)' })),
+      )
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText(/failure limit reached \(25\)/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
+    })
+
+    it('does not render the banner when park_reason is absent', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Test Render Job'))
+      expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
+    })
+
+    it('calls PATCH with action=resume when Resume is clicked', async () => {
+      const job = makeJob({ status: 'paused', park_reason: 'failure limit reached (5)' })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
+      fetchMock.mockResolvedValue(okJson({ ...job, status: 'running', park_reason: '' }))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const resumeBtn = await screen.findByRole('button', { name: /resume/i })
+      fireEvent.click(resumeBtn)
+
+      await waitFor(() => {
+        const patchCall = fetchMock.mock.calls.find(
+          ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+        )
+        expect(patchCall).toBeDefined()
+        expect(String(patchCall?.[0])).toContain(`/jobs/${job.id}`)
+        expect(JSON.parse((patchCall?.[1] as RequestInit).body as string)).toEqual({
+          action: 'resume',
+        })
+      })
+    })
+
+    it('shows an inline error when resume fails', async () => {
+      const job = makeJob({ status: 'paused', park_reason: 'failure limit reached (5)' })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+      fetchMock.mockResolvedValueOnce(okJson(makeWorkerListResponse([])))
+      fetchMock.mockResolvedValueOnce(problemJson(409, 'job is not paused'))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const resumeBtn = await screen.findByRole('button', { name: /resume/i })
+      fireEvent.click(resumeBtn)
+
+      await waitFor(() => screen.getByText(/job is not paused/i))
+      expect(screen.getByText(/job is not paused/i)).toBeInTheDocument()
+    })
+  })
+
+  // ── Retry policy display ─────────────────────────────────────────────────
+
+  describe('retry policy', () => {
+    it('shows configured retry policy values', async () => {
+      const job = makeJob({ max_attempts: 7, retry_delay_seconds: 45, failure_limit: 12 })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.getByText('7')).toBeInTheDocument()
+      expect(screen.getByText('45s')).toBeInTheDocument()
+      expect(screen.getByText('12')).toBeInTheDocument()
+    })
+
+    it('shows "inherited" for unset retry policy fields', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.getAllByText('inherited')).toHaveLength(3)
+    })
+
+    it('shows the resolved effective retry policy when present', async () => {
+      const job = makeJob({
+        effective_retry: { max_attempts: 3, retry_delay_seconds: 30, failure_limit: 5 },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.getByText('Retries')).toBeInTheDocument()
+      expect(screen.getByText('3 attempts · 30s delay · limit 5')).toBeInTheDocument()
+    })
+
+    it('shows "limit off" when the effective failure limit is 0', async () => {
+      const job = makeJob({
+        effective_retry: { max_attempts: 1, retry_delay_seconds: 0, failure_limit: 0 },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.getByText('1 attempt · 0s delay · limit off')).toBeInTheDocument()
+    })
+
+    it('renders no effective policy row when effective_retry is absent', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.queryByText('Retries')).not.toBeInTheDocument()
+      expect(screen.queryByText(/limit off/)).not.toBeInTheDocument()
+    })
+  })
+
+  // ── Task attempt indicator and retry countdown ───────────────────────────
+
+  describe('task attempt indicator and retry countdown', () => {
+    it('shows an attempt indicator for a task that has genuinely failed before', async () => {
+      const task = makeTask({ status: 'ready', failed_attempts: 1 })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText('attempt 2')).toBeInTheDocument()
+    })
+
+    it('does not show an attempt indicator for a task that has never failed', async () => {
+      const task = makeTask({ status: 'running', failed_attempts: 0 })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByLabelText('Status: Running'))
+      expect(screen.queryByText(/^attempt /)).not.toBeInTheDocument()
+    })
+
+    it('shows a "retrying in Ns" hint for a ready task backing off with a future retry_after', async () => {
+      const future = new Date(Date.now() + 30_000).toISOString()
+      const task = makeTask({ status: 'ready', retry_after: future, failed_attempts: 1 })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText(/retrying in \d+s/)).toBeInTheDocument()
+    })
+
+    it('does not show a retrying hint once retry_after has passed', async () => {
+      const past = new Date(Date.now() - 5_000).toISOString()
+      const task = makeTask({ status: 'ready', retry_after: past })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByLabelText('Status: Ready'))
+      expect(screen.queryByText(/retrying in/)).not.toBeInTheDocument()
+    })
+
+    it('does not show a retrying hint for a non-ready task even with a future retry_after', async () => {
+      const future = new Date(Date.now() + 30_000).toISOString()
+      const task = makeTask({ status: 'pending', retry_after: future })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getAllByLabelText('Status: Pending'))
+      expect(screen.queryByText(/retrying in/)).not.toBeInTheDocument()
+    })
+  })
+
+  // ── Failure banner and per-task failure reason ───────────────────────────
+
+  describe('failure banner', () => {
+    it('shows a failure banner with the dominant reason and count', async () => {
+      const job = makeJob({
+        status: 'failed',
+        failure_summary: {
+          failed_count: 50,
+          dominant_reason: 'worker not configured for staging',
+          distinct_reasons: 1,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const banner = await screen.findByRole('alert')
+      expect(banner).toHaveTextContent(/50 tasks failed/i)
+      expect(banner).toHaveTextContent(/worker not configured for staging/i)
+    })
+
+    it('notes multiple reasons when they differ', async () => {
+      const job = makeJob({
+        status: 'failed',
+        failure_summary: { failed_count: 50, dominant_reason: 'staging', distinct_reasons: 3 },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const banner = await screen.findByRole('alert')
+      expect(banner).toHaveTextContent(/3 reasons/i)
+    })
+
+    it('does not render the banner when failure_summary is absent', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Test Render Job'))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it("shows a failed task's own failure reason", async () => {
+      const task = makeTask({
+        status: 'failed',
+        failure_reason: 'execution timeout after 120s',
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(await screen.findByText(/execution timeout after 120s/i)).toBeInTheDocument()
     })
   })
 })

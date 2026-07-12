@@ -88,6 +88,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     priority: 50,
     status: 'running',
     template_format: 'yaml',
+    failed_attempts: 0,
     task_counts: {
       total: 10,
       pending: 2,

@@ -30,6 +30,11 @@ import (
 	"strconv"
 )
 
+// configureProcessGroup is a no-op on Windows: sendKILL/sendTERM already
+// terminate the whole process tree via "taskkill /T", so no special
+// process-group setup is required at launch.
+func configureProcessGroup(*exec.Cmd) {}
+
 // sendTERM attempts to terminate proc's process tree on Windows using
 // "taskkill /T /PID <pid>".  Falls back to proc.Kill() (TerminateProcess —
 // an immediate hard kill, not a graceful termination window) on failure.

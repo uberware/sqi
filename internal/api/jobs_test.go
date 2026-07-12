@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/ws"
@@ -90,11 +91,20 @@ func TestListJobs_SearchParam(t *testing.T) {
 	}
 }
 
+// testRetryDefaults is the server-level retry-policy fallback wired into the
+// test router — deliberately non-zero so effective_retry assertions can tell
+// "server default" apart from the clamp floor.
+var testRetryDefaults = scheduler.RetryPolicy{
+	MaxAttempts:  3,
+	RetryDelay:   30 * time.Second,
+	FailureLimit: 0,
+}
+
 // newJobRouter wires a jobHandler onto a chi router with the same paths as
 // router.go, using the provided store and fakeScheduler.
 func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	sub := openjd.NewSubmitter(st)
-	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger())
+	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults)
 	r := chi.NewRouter()
 	r.Post("/api/v1/jobs", h.submitJob)
 	r.Get("/api/v1/jobs", h.listJobs)
@@ -291,6 +301,60 @@ steps:
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 	})
+}
+
+// TestSubmitJob_PersistsRetryPolicy verifies that the max_attempts,
+// retry_delay_seconds, and failure_limit query parameters are threaded through
+// to the persisted job and echoed in the create response.
+func TestSubmitJob_PersistsRetryPolicy(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+
+	body := strings.NewReader(minimalOpenJDJSON("RetryPolicyTest"))
+	req := newReq(t, http.MethodPost,
+		"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&max_attempts=5&retry_delay_seconds=10&failure_limit=25", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d — body: %s", rr.Code, rr.Body)
+	}
+
+	var resp jobResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.MaxAttempts == nil || *resp.MaxAttempts != 5 {
+		t.Errorf("max_attempts = %v, want 5", resp.MaxAttempts)
+	}
+	if resp.RetryDelaySeconds == nil || *resp.RetryDelaySeconds != 10 {
+		t.Errorf("retry_delay_seconds = %v, want 10", resp.RetryDelaySeconds)
+	}
+	if resp.FailureLimit == nil || *resp.FailureLimit != 25 {
+		t.Errorf("failure_limit = %v, want 25", resp.FailureLimit)
+	}
+
+	stored, err := st.GetJob(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if stored.MaxAttempts == nil || *stored.MaxAttempts != 5 {
+		t.Errorf("stored max_attempts = %v, want 5", stored.MaxAttempts)
+	}
+	if stored.RetryDelaySeconds == nil || *stored.RetryDelaySeconds != 10 {
+		t.Errorf("stored retry_delay_seconds = %v, want 10", stored.RetryDelaySeconds)
+	}
+	if stored.FailureLimit == nil || *stored.FailureLimit != 25 {
+		t.Errorf("stored failure_limit = %v, want 25", stored.FailureLimit)
+	}
 }
 
 // TestSubmitJobWakesQueue verifies Fix 2a: a successful submission wakes parked
@@ -646,6 +710,82 @@ func TestGetJob(t *testing.T) {
 	})
 }
 
+func TestJobDetail_FailureSummary(t *testing.T) {
+	t.Run("includes failure_summary when the job has failed tasks with reasons", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		ctx := t.Context()
+		job := seedJob(t, st, store.JobStatusRunning)
+
+		now := time.Now()
+		step, err := st.CreateStep(ctx, store.Step{
+			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
+			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateStep: %v", err)
+		}
+		for range 2 {
+			tk, err := st.CreateTask(ctx, store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+				Name: "t", Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			if err := st.SetTaskFailureReason(ctx, tk.ID, "staging"); err != nil {
+				t.Fatalf("SetTaskFailureReason: %v", err)
+			}
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		fs, ok := resp["failure_summary"].(map[string]any)
+		if !ok {
+			t.Fatalf("failure_summary missing or wrong type: %v", resp["failure_summary"])
+		}
+		if fs["failed_count"] != float64(2) {
+			t.Errorf("failure_summary.failed_count = %v, want 2", fs["failed_count"])
+		}
+		if fs["dominant_reason"] != "staging" {
+			t.Errorf("failure_summary.dominant_reason = %v, want %q", fs["dominant_reason"], "staging")
+		}
+		if fs["distinct_reasons"] != float64(1) {
+			t.Errorf("failure_summary.distinct_reasons = %v, want 1", fs["distinct_reasons"])
+		}
+	})
+
+	t.Run("omits failure_summary when the job has no failed tasks", func(t *testing.T) {
+		st := fake.New()
+		r := newJobRouter(st, &fakeScheduler{})
+		job := seedJob(t, st, store.JobStatusPending)
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if _, ok := resp["failure_summary"]; ok {
+			t.Errorf("failure_summary should be omitted, got %v", resp["failure_summary"])
+		}
+	})
+}
+
 // ── PATCH /api/v1/jobs/{id} ───────────────────────────────────────────────────
 
 func TestPatchJob(t *testing.T) {
@@ -677,6 +817,50 @@ func TestPatchJob(t *testing.T) {
 		}
 		if stored.Priority != 99 {
 			t.Errorf("stored priority = %d, want 99", stored.Priority)
+		}
+	})
+
+	t.Run("update retry policy persists the new values", func(t *testing.T) {
+		j := seedJob(t, st, store.JobStatusPending)
+		maxAttempts, delay, limit := 7, 30, 40
+		body := jsonBody(t, patchJobRequest{
+			MaxAttempts:       &maxAttempts,
+			RetryDelaySeconds: &delay,
+			FailureLimit:      &limit,
+		})
+		req := newReq(t, http.MethodPatch, "/api/v1/jobs/"+j.ID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.MaxAttempts == nil || *resp.MaxAttempts != 7 {
+			t.Errorf("max_attempts = %v, want 7", resp.MaxAttempts)
+		}
+		if resp.RetryDelaySeconds == nil || *resp.RetryDelaySeconds != 30 {
+			t.Errorf("retry_delay_seconds = %v, want 30", resp.RetryDelaySeconds)
+		}
+		if resp.FailureLimit == nil || *resp.FailureLimit != 40 {
+			t.Errorf("failure_limit = %v, want 40", resp.FailureLimit)
+		}
+		// Verify the store was updated.
+		stored, err := st.GetJob(t.Context(), j.ID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if stored.MaxAttempts == nil || *stored.MaxAttempts != 7 {
+			t.Errorf("stored max_attempts = %v, want 7", stored.MaxAttempts)
+		}
+		if stored.RetryDelaySeconds == nil || *stored.RetryDelaySeconds != 30 {
+			t.Errorf("stored retry_delay_seconds = %v, want 30", stored.RetryDelaySeconds)
+		}
+		if stored.FailureLimit == nil || *stored.FailureLimit != 40 {
+			t.Errorf("stored failure_limit = %v, want 40", stored.FailureLimit)
 		}
 	})
 
@@ -715,6 +899,44 @@ func TestPatchJob(t *testing.T) {
 		}
 		if resp.Status != "pending" {
 			t.Errorf("status = %q, want pending after resume", resp.Status)
+		}
+	})
+
+	t.Run("resume an auto-parked job clears park state and re-arms the limit", func(t *testing.T) {
+		j := seedJob(t, st, store.JobStatusRunning)
+		if err := st.ParkJob(t.Context(), j.ID, "failure limit reached (2)", time.Now().UTC()); err != nil {
+			t.Fatalf("ParkJob: %v", err)
+		}
+
+		body := jsonBody(t, patchJobRequest{Action: "resume"})
+		req := newReq(t, http.MethodPatch, "/api/v1/jobs/"+j.ID, body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "pending" {
+			t.Errorf("status = %q, want pending after resume", resp.Status)
+		}
+		if resp.ParkReason != "" {
+			t.Errorf("park_reason = %q, want cleared in the response", resp.ParkReason)
+		}
+		if resp.FailedAttempts != 0 {
+			t.Errorf("failed_attempts = %d, want 0 in the response", resp.FailedAttempts)
+		}
+
+		// And the store agrees — the reset is persisted, not just echoed.
+		stored, err := st.GetJob(t.Context(), j.ID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if stored.ParkReason != "" || stored.FailedAttempts != 0 || stored.Status != store.JobStatusPending {
+			t.Errorf("persisted park state not cleared: %+v", stored)
 		}
 	})
 
@@ -1331,4 +1553,153 @@ func TestJobHandler_DeleteJob_CancelFailureReturns500(t *testing.T) {
 	if _, err := st.GetJob(ctx, "job-run-fail"); err != nil {
 		t.Fatalf("job should still exist after cancel failure: err=%v", err)
 	}
+}
+
+// TestSubmitJob_RetryOverrideQueryValidation asserts the submit endpoint
+// rejects malformed or out-of-range retry-override query parameters with 400
+// instead of silently submitting with different behavior than intended — and
+// still accepts the legitimate boundary value failure_limit=0 ("disable an
+// inherited limit").
+func TestSubmitJob_RetryOverrideQueryValidation(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+	r := newJobRouter(st, &fakeScheduler{})
+
+	tests := []struct {
+		name     string
+		query    string
+		wantCode int
+		wantBody string
+	}{
+		{"non-integer max_attempts", "max_attempts=3O", http.StatusBadRequest, "max_attempts must be an integer"},
+		{"zero max_attempts", "max_attempts=0", http.StatusBadRequest, "max_attempts must be >= 1"},
+		{"negative retry_delay_seconds", "retry_delay_seconds=-1", http.StatusBadRequest, "retry_delay_seconds must be >= 0"},
+		{"negative failure_limit", "failure_limit=-5", http.StatusBadRequest, "failure_limit must be >= 0"},
+		{"failure_limit zero is a valid override", "failure_limit=0", http.StatusCreated, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := strings.NewReader(minimalOpenJDJSON("OverrideValidation-" + tt.name))
+			req := newReq(t, http.MethodPost, "/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&"+tt.query, body)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("code = %d, want %d — body: %s", rr.Code, tt.wantCode, rr.Body)
+			}
+			if tt.wantBody != "" && !strings.Contains(rr.Body.String(), tt.wantBody) {
+				t.Errorf("body %q does not contain %q", rr.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestPatchJob_RejectsInvalidRetryOverrides asserts PATCH validates the retry
+// override fields at the boundary instead of storing nonsense that would be
+// echoed to every client and silently clamped at schedule time.
+func TestPatchJob_RejectsInvalidRetryOverrides(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	j := seedJob(t, st, store.JobStatusPending)
+
+	zero, neg := 0, -1
+	tests := []struct {
+		name string
+		req  patchJobRequest
+		want string
+	}{
+		{"zero max_attempts", patchJobRequest{MaxAttempts: &zero}, "max_attempts must be >= 1"},
+		{"negative retry_delay_seconds", patchJobRequest{RetryDelaySeconds: &neg}, "retry_delay_seconds must be >= 0"},
+		{"negative failure_limit", patchJobRequest{FailureLimit: &neg}, "failure_limit must be >= 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newReq(t, http.MethodPatch, "/api/v1/jobs/"+j.ID, jsonBody(t, tt.req))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400 — body: %s", rr.Code, rr.Body)
+			}
+			if !strings.Contains(rr.Body.String(), tt.want) {
+				t.Errorf("body %q does not contain %q", rr.Body.String(), tt.want)
+			}
+		})
+	}
+}
+
+// TestGetJob_EffectiveRetry asserts the job detail response reports the
+// RESOLVED retry policy after job -> queue -> farm -> server-default
+// inheritance, alongside the configured nullable overrides.
+func TestGetJob_EffectiveRetry(t *testing.T) {
+	st := fake.New()
+	r := newJobRouter(st, &fakeScheduler{})
+	ctx := t.Context()
+
+	t.Run("all inherited from server defaults", func(t *testing.T) {
+		j := seedJob(t, st, store.JobStatusPending)
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+j.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("code = %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobDetailResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.EffectiveRetry == nil {
+			t.Fatal("effective_retry missing from job detail")
+		}
+		want := effectiveRetryResponse{MaxAttempts: 3, RetryDelaySeconds: 30, FailureLimit: 0}
+		if *resp.EffectiveRetry != want {
+			t.Errorf("effective_retry = %+v, want server defaults %+v", *resp.EffectiveRetry, want)
+		}
+	})
+
+	t.Run("job and farm overrides win over defaults", func(t *testing.T) {
+		j := seedJob(t, st, store.JobStatusPending)
+
+		// Farm supplies the delay; the job itself supplies max attempts.
+		farm, err := st.GetFarm(ctx, j.FarmID)
+		if err != nil {
+			t.Fatalf("GetFarm: %v", err)
+		}
+		delay := 60
+		farm.RetryDelaySeconds = &delay
+		if _, err := st.UpdateFarm(ctx, farm); err != nil {
+			t.Fatalf("UpdateFarm: %v", err)
+		}
+		maxAttempts := 5
+		j.MaxAttempts = &maxAttempts
+		if _, err := st.UpdateJob(ctx, j); err != nil {
+			t.Fatalf("UpdateJob: %v", err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+j.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("code = %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp jobDetailResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.EffectiveRetry == nil {
+			t.Fatal("effective_retry missing from job detail")
+		}
+		want := effectiveRetryResponse{MaxAttempts: 5, RetryDelaySeconds: 60, FailureLimit: 0}
+		if *resp.EffectiveRetry != want {
+			t.Errorf("effective_retry = %+v, want %+v", *resp.EffectiveRetry, want)
+		}
+	})
 }

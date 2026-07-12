@@ -69,7 +69,8 @@ template:
               fail_frames="{{Param.FailFrames}}"
               hang_frames="{{Param.HangFrames}}"
               hang_seconds="{{Param.HangSeconds}}"
-              output_dir="{{Param.OutputDir}}"
+              output_dir="$1"  # from the onRun arg (see note below), not embedded,
+                               # so stage_locally path translation rewrites it to scratch
 
               in_list() {
                 local needle="$1" list="$2" item _items
@@ -109,8 +110,18 @@ template:
 
               echo "$(date +"%Y-%m-%d %H:%M:%S") frame ${frame}: done"
         actions:
+          # OutputDir is passed as a command arg so SQI_PATH_TRANSLATION
+          # (stage_locally) rewrites it to the worker scratch dir before the task
+          # runs — path translation only rewrites the command and args, never an
+          # embedded script's body. The script reads it from $1.
           onRun:
             command: "{{Task.File.main}}"
-            timeoutSeconds: 120
+            args: ["{{Param.OutputDir}}"]
+            timeout: 120
   SQI_PATH_TRANSLATION:
-    deliveries: [stage_locally]
+    # stage_locally copies IN/OUT paths to/from the worker scratch dir;
+    # swap_in_place rewrites the task's command/args (e.g. the OutputDir arg
+    # above) to the scratch paths so the task actually reads/writes there.
+    # Both are required — stage_locally alone copies files but leaves the task
+    # pointing at the original paths, so copy-out finds nothing in scratch.
+    deliveries: [stage_locally, swap_in_place]

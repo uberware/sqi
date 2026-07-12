@@ -249,6 +249,94 @@ def test_create_queue_requires_farm_id_in_body(make_client: ClientFactory) -> No
     assert body["paused"] is False
 
 
+# ── Retry policy overrides (farm/queue) ─────────────────────────────
+
+
+@respx.mock
+def test_create_farm_sends_retry_policy_fields(make_client: ClientFactory) -> None:
+    response = dict(_load("farm"), max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    route = respx.post(f"{_API}/farms").mock(return_value=httpx.Response(201, json=response))
+    client = make_client()
+
+    farm = client.create_farm(
+        name="studio-a", max_attempts=5, retry_delay_seconds=30, failure_limit=25
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["max_attempts"] == 5
+    assert body["retry_delay_seconds"] == 30
+    assert body["failure_limit"] == 25
+    assert farm.max_attempts == 5
+    assert farm.retry_delay_seconds == 30
+    assert farm.failure_limit == 25
+
+
+@respx.mock
+def test_create_farm_omits_retry_policy_fields_by_default(make_client: ClientFactory) -> None:
+    route = respx.post(f"{_API}/farms").mock(return_value=httpx.Response(201, json=_load("farm")))
+    client = make_client()
+
+    client.create_farm(name="studio-a")
+
+    body = json.loads(route.calls.last.request.content)
+    assert "max_attempts" not in body
+    assert "retry_delay_seconds" not in body
+    assert "failure_limit" not in body
+
+
+@respx.mock
+def test_update_farm_sends_retry_policy_fields(make_client: ClientFactory) -> None:
+    route = respx.put(f"{_API}/farms/f1").mock(return_value=httpx.Response(200, json=_load("farm")))
+    client = make_client()
+
+    client.update_farm("f1", name="renamed", max_attempts=5, failure_limit=25)
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["max_attempts"] == 5
+    assert body["failure_limit"] == 25
+    assert "retry_delay_seconds" not in body
+
+
+@respx.mock
+def test_create_queue_sends_retry_policy_fields(make_client: ClientFactory) -> None:
+    response = dict(_load("queue"), max_attempts=5, retry_delay_seconds=30, failure_limit=25)
+    route = respx.post(f"{_API}/queues").mock(return_value=httpx.Response(201, json=response))
+    client = make_client()
+
+    queue = client.create_queue(
+        farm_id="farm-1",
+        name="renders",
+        max_attempts=5,
+        retry_delay_seconds=30,
+        failure_limit=25,
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["max_attempts"] == 5
+    assert body["retry_delay_seconds"] == 30
+    assert body["failure_limit"] == 25
+    assert queue.max_attempts == 5
+    assert queue.retry_delay_seconds == 30
+    assert queue.failure_limit == 25
+
+
+@respx.mock
+def test_update_queue_sends_retry_policy_fields(make_client: ClientFactory) -> None:
+    route = respx.put(f"{_API}/queues/q1").mock(
+        return_value=httpx.Response(200, json=_load("queue"))
+    )
+    client = make_client()
+
+    client.update_queue(
+        "q1", farm_id="farm-1", name="renamed", retry_delay_seconds=30, failure_limit=25
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["retry_delay_seconds"] == 30
+    assert body["failure_limit"] == 25
+    assert "max_attempts" not in body
+
+
 # ── Parametrized smoke across all four families ─────────────────────
 
 

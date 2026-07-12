@@ -97,6 +97,8 @@ func (s *Scheduler) retry(ctx context.Context, jobID string, taskIDs []string) (
 	}
 
 	// Notify re-canceled dependents that were not already in the revived set.
+	// Their failure reason was stamped by CancelDependents in the same UPDATE
+	// that re-canceled them.
 	for _, ct := range canceledTasks {
 		if revivedIDs[ct.ID] {
 			continue

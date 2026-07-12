@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/openjd"
 )
 
 // The test-job presets (presets/testing/) are authored in this repo and
@@ -59,6 +61,25 @@ func TestTestingPresets(t *testing.T) {
 			for _, param := range params {
 				if !strings.Contains(p.Template, "name: "+param) {
 					t.Errorf("template missing parameter %q", param)
+				}
+			}
+
+			// Every task's onRun action must carry the per-task timeout
+			// guardrail (the preset descriptions promise a 120 s cap that
+			// Hang Frames exercise). A wrong or misspelled OpenJD key
+			// (e.g. timeoutSeconds instead of timeout) parses to 0 and
+			// silently drops the guardrail, so assert the parsed value.
+			pf := openjd.FormatYAML
+			tmpl, err := openjd.Parse([]byte(p.Template), pf)
+			if err != nil {
+				t.Fatalf("openjd.Parse: %v", err)
+			}
+			for _, step := range tmpl.Steps {
+				if step.Script == nil {
+					continue
+				}
+				if got := step.Script.Actions.OnRun.TimeoutSeconds; got != 120 {
+					t.Errorf("step %q onRun timeout = %d, want 120", step.Name, got)
 				}
 			}
 		})

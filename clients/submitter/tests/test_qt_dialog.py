@@ -153,3 +153,38 @@ def test_dialog_hides_scene_field_with_adapter(app: object) -> None:
     dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
     assert dialog.findChild(QtWidgets.QLineEdit, "field_SceneFile") is None
     assert dialog.findChild(QtWidgets.QLineEdit, "field_Frames") is not None
+
+
+@respx.mock
+def test_advanced_overrides_forwarded(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _mock_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+    group = dialog.findChild(QtWidgets.QGroupBox, "advancedGroup")
+    assert group is not None
+    group.setChecked(True)
+    dialog.findChild(QtWidgets.QSpinBox, "prioritySpin").setValue(80)
+    dialog.findChild(QtWidgets.QSpinBox, "maxAttemptsSpin").setValue(5)
+    dialog.findChild(QtWidgets.QLineEdit, "ownerEdit").setText("alice")
+    dialog.submit_and_wait()
+    body = json.loads(route.calls.last.request.content)
+    assert body["owner"] == "alice"
+    assert body["priority"] == 80
+    assert body["max_attempts"] == 5
+    assert "retry_delay_seconds" not in body  # untouched (0) -> omitted -> inherit
+
+
+@respx.mock
+def test_advanced_unchecked_sends_no_overrides(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_server()
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+    # advancedGroup starts unchecked; set a value that must be ignored while collapsed.
+    dialog.findChild(QtWidgets.QSpinBox, "prioritySpin").setValue(80)
+    dialog.submit_and_wait()
+    body = json.loads(route.calls.last.request.content)
+    assert "owner" not in body
+    assert "priority" not in body
+    assert "max_attempts" not in body

@@ -55,7 +55,7 @@ func ResolveDependencies(ctx context.Context, st store.Store, jobID string) (int
 		}
 
 		// Promote every pending task in this step.
-		if _, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusReady); err != nil {
+		if _, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusReady, ""); err != nil {
 			return promoted, fmt.Errorf(
 				"openjd: resolve deps for job %s: ready pending tasks for step %s: %w",
 				jobID, step.ID, err,
@@ -102,7 +102,9 @@ func allDepsCompleted(deps []string, statusByName map[string]store.StepStatus) b
 //
 // It returns the number of steps newly canceled and the pending tasks that were
 // transitioned to canceled (so the caller can fan those terminal task transitions
-// out to subscribers).
+// out to subscribers). Each canceled task is stamped with
+// [store.FailureReasonUpstreamFailed] in the same UPDATE, unless it already
+// carries a more specific reason.
 //
 // CancelDependents loops to a fixpoint: canceling a step makes it an
 // unsuccessful dependency for its own dependents, so a single call propagates
@@ -147,7 +149,7 @@ func CancelDependents(ctx context.Context, st store.Store, jobID string) (int, [
 					jobID, step.ID, err,
 				)
 			}
-			tasks, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusCanceled)
+			tasks, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusCanceled, store.FailureReasonUpstreamFailed)
 			if err != nil {
 				return canceled, canceledTasks, fmt.Errorf(
 					"openjd: cancel dependents for job %s: cancel pending tasks for step %s: %w",

@@ -1,9 +1,21 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
-.errorBanner {
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   padding: var(--space-4) var(--space-8);
+  font-size: var(--font-size-sm);
+}
+
+.error {
   background: var(--color-error-muted);
   color: var(--color-error);
-  font-size: var(--font-size-sm);
   border-bottom: 1px solid var(--color-error);
+}
+
+.warning {
+  background: var(--color-warning-muted);
+  color: var(--color-warning);
+  border-bottom: 1px solid var(--color-warning);
 }

@@ -7,6 +7,7 @@ import {
   fetchGetJob,
   fetchListTasks,
   fetchGetTask,
+  fetchTaskAttempts,
   fetchListWorkers,
   fetchGetWorker,
   fetchListFarms,
@@ -79,6 +80,10 @@ describe('queryKeys', () => {
 
   it('tasks.detail includes id in key', () => {
     expect(queryKeys.tasks.detail('task-1')).toEqual(['tasks', 'detail', 'task-1'])
+  })
+
+  it('tasks.attempts includes id in key', () => {
+    expect(queryKeys.tasks.attempts('task-1')).toEqual(['tasks', 'attempts', 'task-1'])
   })
 
   it('workers.all equals ["workers"]', () => {
@@ -197,6 +202,16 @@ describe('fetchGetTask', () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'task-1' }))
     await fetchGetTask('task-1')
     expect(calledUrl()).toBe('/api/v1/tasks/task-1')
+  })
+})
+
+// ── fetchTaskAttempts ─────────────────────────────────────────────────────────
+
+describe('fetchTaskAttempts', () => {
+  it('calls /api/v1/tasks/:id/attempts', async () => {
+    fetchMock.mockResolvedValueOnce(listResponse([]))
+    await fetchTaskAttempts('task-1')
+    expect(calledUrl()).toBe('/api/v1/tasks/task-1/attempts')
   })
 })
 

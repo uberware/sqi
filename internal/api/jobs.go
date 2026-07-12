@@ -28,6 +28,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -51,6 +52,10 @@ type jobHandler struct {
 	// clients drop it live. May be nil (no push).
 	notifier ws.Notifier
 	logger   *slog.Logger
+	// retryDefaults is the server-level fallback retry policy, used to report
+	// the resolved effective_retry in job detail responses. The zero value is
+	// tolerated (resolution clamps max attempts up to 1).
+	retryDefaults scheduler.RetryPolicy
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -73,6 +78,16 @@ type jobResponse struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	// FailedAttempts is the job's cumulative count of genuine task failures.
+	FailedAttempts int `json:"failed_attempts"`
+	// ParkReason is set when the failure-limit sweep auto-parked the job.
+	ParkReason string `json:"park_reason,omitempty"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are the configured
+	// per-job retry-policy overrides. Nil means inherit (queue -> farm ->
+	// server default).
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // stepResponse is the JSON representation of a step within a job detail response.
@@ -108,6 +123,29 @@ type jobDetailResponse struct {
 
 	Steps      []stepResponse     `json:"steps"`
 	TaskCounts taskCountsResponse `json:"task_counts"`
+	// FailureSummary aggregates the job's failed tasks by failure reason. Nil
+	// when the job has no failed tasks with a recorded reason.
+	FailureSummary *failureSummaryResponse `json:"failure_summary,omitempty"`
+	// EffectiveRetry is the RESOLVED retry policy the job runs under, after
+	// job -> queue -> farm -> server-default inheritance. Omitted only when
+	// the queue or farm lookup fails.
+	EffectiveRetry *effectiveRetryResponse `json:"effective_retry,omitempty"`
+}
+
+// effectiveRetryResponse is the resolved (non-nullable) retry policy included
+// in job detail. FailureLimit 0 means the auto-park failure limit is off.
+type effectiveRetryResponse struct {
+	MaxAttempts       int `json:"max_attempts"`
+	RetryDelaySeconds int `json:"retry_delay_seconds"`
+	FailureLimit      int `json:"failure_limit"`
+}
+
+// failureSummaryResponse is the JSON representation of [store.FailureSummary],
+// included in job detail when the job has failed tasks with recorded reasons.
+type failureSummaryResponse struct {
+	FailedCount     int    `json:"failed_count"`
+	DominantReason  string `json:"dominant_reason,omitempty"`
+	DistinctReasons int    `json:"distinct_reasons"`
 }
 
 // jobListItemResponse is a single entry in the job list. It carries the base
@@ -136,6 +174,11 @@ type patchJobRequest struct {
 	QueueID string `json:"queue_id,omitempty"`
 	// Action must be "pause" or "resume" when non-empty.
 	Action string `json:"action,omitempty"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit update the job's retry
+	// policy overrides when non-nil.
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // ── Handler constructors ──────────────────────────────────────────────────────
@@ -148,13 +191,15 @@ func newJobHandler(
 	sched jobCanceler,
 	notifier ws.Notifier,
 	logger *slog.Logger,
+	retryDefaults scheduler.RetryPolicy,
 ) *jobHandler {
 	return &jobHandler{
-		store:     st,
-		submitter: sub,
-		sched:     sched,
-		notifier:  notifier,
-		logger:    logger,
+		store:         st,
+		submitter:     sub,
+		sched:         sched,
+		notifier:      notifier,
+		logger:        logger,
+		retryDefaults: retryDefaults,
 	}
 }
 
@@ -167,7 +212,10 @@ func newJobHandler(
 //   - anything else (or absent) → JSON
 //
 // Query parameters: farm_id (required), queue_id (required), owner,
-// submitter, priority (integer ≥ 1; defaults to 50), project.
+// submitter, priority (integer ≥ 1; defaults to 50), project, max_attempts,
+// retry_delay_seconds, failure_limit (all optional per-job retry-policy
+// overrides; omitted or unparseable means inherit queue -> farm -> server
+// default).
 // Job-parameter values are supplied as param.<Name>=<value> query parameters
 // (e.g. ?param.FrameStart=1&param.Quality=high).
 func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
@@ -195,14 +243,23 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	maxAttempts, retryDelaySeconds, failureLimit, problem := parseRetryOverridesQuery(r.URL.Query())
+	if problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
+
 	opts := openjd.SubmitOptions{
-		FarmID:     farmID,
-		QueueID:    queueID,
-		Owner:      r.URL.Query().Get("owner"),
-		Submitter:  r.URL.Query().Get("submitter"),
-		Priority:   priority,
-		Project:    r.URL.Query().Get("project"),
-		Parameters: parseParamQueryParams(r.URL.Query()),
+		FarmID:            farmID,
+		QueueID:           queueID,
+		Owner:             r.URL.Query().Get("owner"),
+		Submitter:         r.URL.Query().Get("submitter"),
+		Priority:          priority,
+		Project:           r.URL.Query().Get("project"),
+		Parameters:        parseParamQueryParams(r.URL.Query()),
+		MaxAttempts:       maxAttempts,
+		RetryDelaySeconds: retryDelaySeconds,
+		FailureLimit:      failureLimit,
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
@@ -350,14 +407,40 @@ func (h *jobHandler) getJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jr := toJobResponse(job)
-	if q, err := h.store.GetQueue(ctx, job.QueueID); err == nil {
-		jr.QueueName = q.Name
+	queue, queueErr := h.store.GetQueue(ctx, job.QueueID)
+	if queueErr == nil {
+		jr.QueueName = queue.Name
 	}
 
 	resp := jobDetailResponse{
 		jobResponse: jr,
 		Steps:       stepResps,
 		TaskCounts:  toTaskCountsResponse(taskCounts, unschedulableCount),
+	}
+
+	// Resolved retry policy (job -> queue -> farm -> server default). Best
+	// effort like QueueName: omitted if the queue or farm lookup fails.
+	if farm, err := h.store.GetFarm(ctx, job.FarmID); err == nil && queueErr == nil {
+		policy := scheduler.ResolveRetryPolicy(job, queue, farm, h.retryDefaults)
+		resp.EffectiveRetry = &effectiveRetryResponse{
+			MaxAttempts:       policy.MaxAttempts,
+			RetryDelaySeconds: int(policy.RetryDelay / time.Second),
+			FailureLimit:      policy.FailureLimit,
+		}
+	}
+
+	// Only worth a query when the job has failed tasks — this endpoint is
+	// refetched on every WS-driven invalidation and most jobs have none.
+	if taskCounts[store.TaskStatusFailed] > 0 {
+		if summary, err := h.store.FailureReasonSummary(ctx, id); err == nil && summary.FailedCount > 0 {
+			resp.FailureSummary = &failureSummaryResponse{
+				FailedCount:     summary.FailedCount,
+				DominantReason:  summary.DominantReason,
+				DistinctReasons: summary.DistinctReasons,
+			}
+		} else if err != nil {
+			h.logger.WarnContext(ctx, "jobs: failure reason summary failed", slog.String("id", id), slog.Any("error", err))
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -383,7 +466,7 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isTerminalJob(job.Status) {
+	if job.Status.IsTerminal() {
 		writeProblem(w, r, http.StatusConflict, "job is in a terminal state and cannot be modified")
 		return
 	}
@@ -399,6 +482,10 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 		job.QueueID = req.QueueID
 	}
 
+	if !applyRetryOverridePatch(w, r, &req, &job) {
+		return
+	}
+
 	newStatus, ok := h.resolveAction(w, r, job.Status, req.Action)
 	if !ok {
 		return
@@ -411,20 +498,13 @@ func (h *jobHandler) patchJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if newStatus != "" {
-		updated, err = h.applyStatusChange(w, r, id, newStatus, updated)
+		updated, err = h.applyStatusChange(w, r, id, req.Action, newStatus, updated)
 		if err != nil {
 			return
 		}
 	}
 
 	writeJSON(w, http.StatusOK, toJobResponse(updated))
-}
-
-// isTerminalJob reports whether a job in the given status cannot be modified.
-func isTerminalJob(s store.JobStatus) bool {
-	return s == store.JobStatusCompleted ||
-		s == store.JobStatusFailed ||
-		s == store.JobStatusCanceled
 }
 
 // validateQueueMove checks that queueID exists and writes an error response if
@@ -445,6 +525,27 @@ func (h *jobHandler) validateQueueMove(w http.ResponseWriter, r *http.Request, q
 	)
 	writeProblem(w, r, http.StatusInternalServerError, "failed to validate queue")
 	return false
+}
+
+// applyRetryOverridePatch validates the PATCH request's optional retry
+// override fields and applies the present ones to job. On an out-of-range
+// value it writes the 400 response and reports false. Extracted from patchJob
+// to keep its cyclomatic complexity in check.
+func applyRetryOverridePatch(w http.ResponseWriter, r *http.Request, req *patchJobRequest, job *store.Job) bool {
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return false
+	}
+	if req.MaxAttempts != nil {
+		job.MaxAttempts = req.MaxAttempts
+	}
+	if req.RetryDelaySeconds != nil {
+		job.RetryDelaySeconds = req.RetryDelaySeconds
+	}
+	if req.FailureLimit != nil {
+		job.FailureLimit = req.FailureLimit
+	}
+	return true
 }
 
 // resolveAction maps a pause/resume action string to the target [store.JobStatus].
@@ -479,14 +580,23 @@ func (*jobHandler) resolveAction(
 
 // applyStatusChange persists a status transition and returns the updated job.
 // It writes an error response and returns a non-nil error when persistence fails.
+// A resume goes through [store.JobStore.ResumeJob] so an auto-parked job also
+// has its park reason cleared and failure counter reset (re-arming the failure
+// limit); other transitions use the plain status update.
 func (h *jobHandler) applyStatusChange(
 	w http.ResponseWriter,
 	r *http.Request,
-	id string,
+	id, action string,
 	newStatus store.JobStatus,
 	job store.Job,
 ) (store.Job, error) {
-	if err := h.store.UpdateJobStatus(r.Context(), id, newStatus); err != nil {
+	var err error
+	if action == "resume" {
+		err = h.store.ResumeJob(r.Context(), id, time.Now().UTC())
+	} else {
+		err = h.store.UpdateJobStatus(r.Context(), id, newStatus)
+	}
+	if err != nil {
 		h.logger.ErrorContext(
 			r.Context(), "jobs: patch status update failed",
 			slog.String("id", id),
@@ -497,6 +607,11 @@ func (h *jobHandler) applyStatusChange(
 		return job, err
 	}
 	job.Status = newStatus
+	if action == "resume" && job.ParkReason != "" {
+		// Mirror ResumeJob's park-state reset in the response body.
+		job.FailedAttempts = 0
+		job.ParkReason = ""
+	}
 	return job, nil
 }
 
@@ -625,7 +740,7 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 
 	// Active job → cancel its tasks immediately so workers stop. Terminal jobs
 	// have nothing in flight, so the cancel is skipped.
-	if !isTerminalJob(job.Status) {
+	if !job.Status.IsTerminal() {
 		if err := h.sched.CancelJob(ctx, id); err != nil {
 			h.logger.ErrorContext(ctx, "jobs: delete cancel failed", slog.String("id", id), slog.Any("error", err))
 			writeProblem(w, r, http.StatusInternalServerError, "failed to cancel job tasks")
@@ -692,6 +807,12 @@ func toJobResponse(j store.Job) jobResponse {
 		UpdatedAt:      j.UpdatedAt,
 		StartedAt:      j.StartedAt,
 		CompletedAt:    j.CompletedAt,
+
+		FailedAttempts:    j.FailedAttempts,
+		ParkReason:        j.ParkReason,
+		MaxAttempts:       j.MaxAttempts,
+		RetryDelaySeconds: j.RetryDelaySeconds,
+		FailureLimit:      j.FailureLimit,
 	}
 }
 

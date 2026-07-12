@@ -28,6 +28,17 @@ const (
 	JobStatusCanceled JobStatus = "canceled"
 )
 
+// IsTerminal reports whether s is a terminal job state (completed, failed,
+// canceled). A terminal job cannot be modified and its tasks are never
+// eligible for assignment.
+func (s JobStatus) IsTerminal() bool {
+	switch s {
+	case JobStatusCompleted, JobStatusFailed, JobStatusCanceled:
+		return true
+	}
+	return false
+}
+
 // TemplateFormat identifies the serialization format of [Job.RawTemplate].
 type TemplateFormat string
 
@@ -57,7 +68,17 @@ type Job struct {
 	// Nil or empty for jobs with no declared parameters or submitted before
 	// the parameters-persistence migration (back-compat: scheduler falls back
 	// to template defaults).
-	Parameters  map[string]string
+	Parameters map[string]string
+	// FailedAttempts is the job's cumulative count of genuine task failures.
+	FailedAttempts int
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are per-job retry policy
+	// overrides. Nil means "inherit" (Queue -> Farm -> server default).
+	MaxAttempts       *int
+	RetryDelaySeconds *int
+	FailureLimit      *int
+	// ParkReason is empty for a manual pause; set when the failure-limit sweep
+	// auto-parks the job (e.g. "failure limit reached (25)").
+	ParkReason  string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	StartedAt   *time.Time
@@ -104,11 +125,13 @@ type JobStore interface {
 
 	// UpdateJob replaces the mutable user-settable fields of an existing job
 	// (farm_id, queue_id, name, owner, submitter, priority, project,
-	// raw_template, template_format) and updates UpdatedAt.
+	// raw_template, template_format, max_attempts, retry_delay_seconds,
+	// failure_limit) and updates UpdatedAt.
 	//
-	// status, started_at, and completed_at are lifecycle columns and are
-	// intentionally excluded — use [UpdateJobStatus] or [CancelJobStatus]
-	// for those. The returned Job reflects the current DB state of all columns.
+	// status, started_at, completed_at, failed_attempts, and park_reason are
+	// lifecycle columns and are intentionally excluded — use [UpdateJobStatus],
+	// [CancelJobStatus], or the scheduler's failure-limit sweep for those. The
+	// returned Job reflects the current DB state of all columns.
 	//
 	// Returns [ErrNotFound] if the job does not exist.
 	UpdateJob(ctx context.Context, job Job) (Job, error)
@@ -155,6 +178,24 @@ type JobStore interface {
 	// Active jobs are never removed. Each removed job's children are deleted via
 	// the same cascade as [DeleteJob].
 	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
+
+	// ParkJob transitions a job to [JobStatusPaused] and records reason in
+	// ParkReason, but only while the job is non-terminal (not completed,
+	// failed, or canceled). A terminal job is a legitimate no-op: ParkJob
+	// returns nil without modifying it. Returns [ErrNotFound] if the job does
+	// not exist.
+	ParkJob(ctx context.Context, jobID, reason string, now time.Time) error
+
+	// ResumeJob transitions a paused job back to [JobStatusPending] — the
+	// inverse of [ParkJob] and of a manual pause. An auto-parked job
+	// (non-empty ParkReason) additionally has its ParkReason cleared and its
+	// FailedAttempts reset to zero, re-arming the failure limit; without the
+	// reset the very next genuine failure would immediately re-park the job.
+	// A manually paused job (empty ParkReason) keeps its FailedAttempts.
+	// A job that is no longer paused is a legitimate no-op: ResumeJob returns
+	// nil without modifying it. Returns [ErrNotFound] if the job does not
+	// exist.
+	ResumeJob(ctx context.Context, jobID string, now time.Time) error
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

@@ -11,32 +11,58 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// Stager copies staged paths via an external sync command.
+// Stager copies staged paths via an external sync command, or the built-in
+// copy when unconfigured/defaults are enabled.
 type Stager struct {
 	scratchBase string
 	syncCommand string
+	defaults    bool
 	logger      *slog.Logger
+	warnOnce    sync.Once
 }
 
-// New returns a Stager. scratchBase and syncCommand come from worker config.
-func New(scratchBase, syncCommand string, logger *slog.Logger) *Stager {
-	return &Stager{scratchBase: scratchBase, syncCommand: syncCommand, logger: logger}
+// New returns a Stager. scratchBase/syncCommand come from worker config;
+// defaults enables the built-in copy + TEMP scratch when staging is
+// otherwise unconfigured.
+func New(scratchBase, syncCommand string, defaults bool, logger *slog.Logger) *Stager {
+	return &Stager{scratchBase: scratchBase, syncCommand: syncCommand, defaults: defaults, logger: logger}
 }
 
-// Configured reports whether both scratch dir and sync command are set.
+const builtinSentinel = "builtin"
+
+// useBuiltin reports whether the built-in copy handles transfers (no explicit
+// shell sync command).
+func (s *Stager) useBuiltin() bool {
+	return s.syncCommand == "" || s.syncCommand == builtinSentinel
+}
+
+// effectiveScratch returns the configured scratch base, or the TEMP default.
+func (s *Stager) effectiveScratch() string {
+	if s.scratchBase != "" {
+		return s.scratchBase
+	}
+	return filepath.Join(os.TempDir(), "sqi-staging")
+}
+
+// Configured reports whether staging can proceed: explicitly configured
+// (scratch + shell command), or the built-in copy is available (defaults on,
+// or the `builtin` sentinel was set explicitly).
 func (s *Stager) Configured() bool {
-	return s.scratchBase != "" && s.syncCommand != ""
+	return s.defaults || s.syncCommand == builtinSentinel ||
+		(s.scratchBase != "" && s.syncCommand != "")
 }
 
 // StageIn prepares a per-attempt scratch directory for every staged entry and
@@ -49,7 +75,7 @@ func (s *Stager) Configured() bool {
 // copy-out fails on a missing scratch file. On any failure the partial scratch
 // directory is removed.
 func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry) ([]protocol.PathMapRule, string, error) {
-	scratchDir := filepath.Join(s.scratchBase, jobID, attemptID)
+	scratchDir := filepath.Join(s.effectiveScratch(), jobID, attemptID)
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch dir %q: %w", scratchDir, err)
 	}
@@ -82,7 +108,7 @@ func (s *Stager) prepareEntries(ctx context.Context, scratchDir string, entries 
 		dest := filepath.Join(subDir, filepath.Base(e.Path))
 		// Copy existing bytes in only for inputs; outputs are produced by the task.
 		if e.Direction == "IN" || e.Direction == "INOUT" {
-			if err := s.runSync(ctx, e.Path, dest, e.ObjectType); err != nil {
+			if err := s.transfer(ctx, e.Path, dest, e.ObjectType); err != nil {
 				return nil, fmt.Errorf("staging: copy-in %q: %w", e.Path, err)
 			}
 		}
@@ -104,7 +130,7 @@ func (s *Stager) StageOut(ctx context.Context, scratchDir string, entries []prot
 			continue
 		}
 		src := filepath.Join(scratchDir, strconv.Itoa(i), filepath.Base(e.Path))
-		if err := s.runSync(ctx, src, e.Path, e.ObjectType); err != nil {
+		if err := s.transfer(ctx, src, e.Path, e.ObjectType); err != nil {
 			return fmt.Errorf("staging: copy-out %q: %w", e.Path, err)
 		}
 	}
@@ -119,6 +145,29 @@ func (s *Stager) Cleanup(scratchDir string) {
 	if err := os.RemoveAll(scratchDir); err != nil {
 		s.logger.WarnContext(context.Background(), "staging: cleanup failed", slog.String("scratch_dir", scratchDir), slog.Any("error", err))
 	}
+}
+
+// transfer moves bytes for one staged path, via the built-in copy or the
+// shell sync command. It logs a one-time warning when defaults are in effect.
+func (s *Stager) transfer(ctx context.Context, src, dest, objectType string) error {
+	if s.useBuiltin() {
+		s.warnDefaults()
+		return builtinCopy(ctx, src, dest)
+	}
+	return s.runSync(ctx, src, dest, objectType)
+}
+
+// warnDefaults logs a one-time warning when staging fell back to defaults
+// (not an explicit scratch dir or `builtin` sentinel).
+func (s *Stager) warnDefaults() {
+	if s.scratchBase != "" || s.syncCommand == builtinSentinel {
+		return
+	}
+	s.warnOnce.Do(func() {
+		s.logger.WarnContext(context.Background(),
+			"staging not configured — using default scratch and built-in copy; set staging.scratch_dir/staging.sync_command for production",
+			slog.String("scratch_dir", s.effectiveScratch()))
+	})
 }
 
 // runSync renders the sync command template and executes it. The template is
@@ -140,4 +189,68 @@ func (s *Stager) runSync(ctx context.Context, src, dest, objectType string) erro
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// builtinCopy copies src to dest without an external command — the default /
+// `builtin` transfer used when no shell sync_command is configured. What src
+// actually is on disk decides the mode (a declared ObjectType cannot override
+// it): a directory is copied as a whole tree, anything else as a single file.
+// Destination parents are created and the source file mode is preserved
+// (ownership and xattrs are not — adequate for worker-local scratch).
+func builtinCopy(ctx context.Context, src, dest string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat %q: %w", src, err)
+	}
+	if info.IsDir() {
+		return copyTree(ctx, src, dest)
+	}
+	return copyFile(src, dest, info.Mode())
+}
+
+func copyFile(src, dest string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+		return fmt.Errorf("mkdir %q: %w", filepath.Dir(dest), err)
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %q: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
+	if err != nil {
+		return fmt.Errorf("create %q: %w", dest, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return fmt.Errorf("copy %q -> %q: %w", src, dest, err)
+	}
+	return out.Close()
+}
+
+func copyTree(ctx context.Context, src, dest string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		}
+		if !d.Type().IsRegular() {
+			return nil // skip symlinks/special files in local scratch
+		}
+		return copyFile(path, target, info.Mode())
+	})
 }

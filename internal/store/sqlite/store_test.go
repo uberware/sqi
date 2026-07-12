@@ -231,6 +231,50 @@ func TestFarm_DeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestStore_Farm_RetryPolicyRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	three := 3
+
+	f, err := s.CreateFarm(ctx, store.Farm{ID: "f1", Name: "farm-a", MaxAttempts: &three})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if f.MaxAttempts == nil || *f.MaxAttempts != 3 {
+		t.Fatalf("MaxAttempts: got %v, want 3", f.MaxAttempts)
+	}
+	if f.RetryDelaySeconds != nil || f.FailureLimit != nil {
+		t.Fatalf("unset fields should be nil (inherit): delay=%v limit=%v", f.RetryDelaySeconds, f.FailureLimit)
+	}
+
+	got, err := s.GetFarm(ctx, "f1")
+	if err != nil {
+		t.Fatalf("GetFarm: %v", err)
+	}
+	if got.MaxAttempts == nil || *got.MaxAttempts != 3 {
+		t.Fatalf("GetFarm MaxAttempts: got %v, want 3", got.MaxAttempts)
+	}
+
+	// UpdateFarm round-trips all three policy fields, including clearing one
+	// back to nil (inherit).
+	delay, limit := 30, 10
+	updated, err := s.UpdateFarm(ctx, store.Farm{
+		ID: "f1", Name: "farm-a", RetryDelaySeconds: &delay, FailureLimit: &limit,
+	})
+	if err != nil {
+		t.Fatalf("UpdateFarm: %v", err)
+	}
+	if updated.MaxAttempts != nil {
+		t.Errorf("UpdateFarm MaxAttempts: got %v, want nil (cleared)", updated.MaxAttempts)
+	}
+	if updated.RetryDelaySeconds == nil || *updated.RetryDelaySeconds != 30 {
+		t.Errorf("UpdateFarm RetryDelaySeconds: got %v, want 30", updated.RetryDelaySeconds)
+	}
+	if updated.FailureLimit == nil || *updated.FailureLimit != 10 {
+		t.Errorf("UpdateFarm FailureLimit: got %v, want 10", updated.FailureLimit)
+	}
+}
+
 // ── Queue CRUD ────────────────────────────────────────────────────────────────
 
 func TestQueue_CreateAndGet(t *testing.T) {
@@ -299,6 +343,49 @@ func TestQueue_Delete(t *testing.T) {
 	_, err := s.GetQueue(ctx, "q1")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
+	}
+}
+
+func TestStore_Queue_RetryPolicyRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+
+	five := 5
+	q, err := s.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1", MaxAttempts: &five})
+	if err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	if q.MaxAttempts == nil || *q.MaxAttempts != 5 {
+		t.Fatalf("MaxAttempts: got %v, want 5", q.MaxAttempts)
+	}
+	if q.RetryDelaySeconds != nil || q.FailureLimit != nil {
+		t.Fatalf("unset fields should be nil (inherit): delay=%v limit=%v", q.RetryDelaySeconds, q.FailureLimit)
+	}
+
+	got, err := s.GetQueue(ctx, "q1")
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if got.MaxAttempts == nil || *got.MaxAttempts != 5 {
+		t.Fatalf("GetQueue MaxAttempts: got %v, want 5", got.MaxAttempts)
+	}
+
+	delay, limit := 60, 20
+	updated, err := s.UpdateQueue(ctx, store.Queue{
+		ID: "q1", FarmID: "f1", Name: "Q1", RetryDelaySeconds: &delay, FailureLimit: &limit,
+	})
+	if err != nil {
+		t.Fatalf("UpdateQueue: %v", err)
+	}
+	if updated.MaxAttempts != nil {
+		t.Errorf("UpdateQueue MaxAttempts: got %v, want nil (cleared)", updated.MaxAttempts)
+	}
+	if updated.RetryDelaySeconds == nil || *updated.RetryDelaySeconds != 60 {
+		t.Errorf("UpdateQueue RetryDelaySeconds: got %v, want 60", updated.RetryDelaySeconds)
+	}
+	if updated.FailureLimit == nil || *updated.FailureLimit != 20 {
+		t.Errorf("UpdateQueue FailureLimit: got %v, want 20", updated.FailureLimit)
 	}
 }
 
@@ -708,6 +795,73 @@ func TestJob_Parameters_NilRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStore_Job_RetryPolicyRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+
+	two, sixty, fifteen := 2, 60, 15
+	j, err := s.CreateJob(ctx, store.Job{
+		ID:                "j1",
+		FarmID:            "f1",
+		QueueID:           "q1",
+		Name:              "RetryJob",
+		Status:            store.JobStatusPending,
+		Priority:          50,
+		TemplateFormat:    store.TemplateFormatYAML,
+		FailedAttempts:    1,
+		MaxAttempts:       &two,
+		RetryDelaySeconds: &sixty,
+		FailureLimit:      &fifteen,
+		ParkReason:        "failure limit reached (15)",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if j.FailedAttempts != 1 {
+		t.Errorf("FailedAttempts: got %d, want 1", j.FailedAttempts)
+	}
+	if j.MaxAttempts == nil || *j.MaxAttempts != 2 {
+		t.Errorf("MaxAttempts: got %v, want 2", j.MaxAttempts)
+	}
+	if j.RetryDelaySeconds == nil || *j.RetryDelaySeconds != 60 {
+		t.Errorf("RetryDelaySeconds: got %v, want 60", j.RetryDelaySeconds)
+	}
+	if j.FailureLimit == nil || *j.FailureLimit != 15 {
+		t.Errorf("FailureLimit: got %v, want 15", j.FailureLimit)
+	}
+	if j.ParkReason != "failure limit reached (15)" {
+		t.Errorf("ParkReason: got %q", j.ParkReason)
+	}
+
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.FailedAttempts != 1 || got.MaxAttempts == nil || *got.MaxAttempts != 2 ||
+		got.RetryDelaySeconds == nil || *got.RetryDelaySeconds != 60 ||
+		got.FailureLimit == nil || *got.FailureLimit != 15 || got.ParkReason != "failure limit reached (15)" {
+		t.Errorf("GetJob round-trip mismatch: %+v", got)
+	}
+
+	// A job with no retry-policy overrides persists nil (inherit) and an empty
+	// park reason.
+	j2, err := s.CreateJob(ctx, store.Job{
+		ID: "j2", FarmID: "f1", QueueID: "q1", Name: "PlainJob",
+		Status: store.JobStatusPending, Priority: 50, TemplateFormat: store.TemplateFormatYAML,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob j2: %v", err)
+	}
+	if j2.MaxAttempts != nil || j2.RetryDelaySeconds != nil || j2.FailureLimit != nil {
+		t.Errorf("j2 policy fields should be nil (inherit): %+v", j2)
+	}
+	if j2.ParkReason != "" {
+		t.Errorf("j2 ParkReason: got %q, want empty", j2.ParkReason)
+	}
+}
+
 func TestJob_UpdateStatus(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -1002,7 +1156,7 @@ func TestTask_ListReadyTasks(t *testing.T) {
 		t.Fatalf("CreateTask t2: %v", err)
 	}
 
-	ready, err := s.ListReadyTasks(ctx, "f1", 10)
+	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
@@ -1030,12 +1184,78 @@ func TestTask_ListReadyTasks_PausedQueue(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	ready, err := s.ListReadyTasks(ctx, "f1", 10)
+	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListReadyTasks: %v", err)
 	}
 	if len(ready) != 0 {
 		t.Errorf("paused queue should yield no ready tasks; got %d", len(ready))
+	}
+}
+
+func TestTask_ListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+
+	// j1 stays pending (a non-terminal, non-paused status): its ready task
+	// is eligible.
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t-ready", JobID: "j1", StepID: "s1",
+		Name: "ready", Status: store.TaskStatusReady,
+		Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t-ready: %v", err)
+	}
+
+	// t-backoff is ready but its retry_after is in the future.
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Minute)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t-backoff", JobID: "j1", StepID: "s1",
+		Name: "backoff", Status: store.TaskStatusReady,
+		Parameters: map[string]string{}, RetryAfter: &future,
+	}); err != nil {
+		t.Fatalf("CreateTask t-backoff: %v", err)
+	}
+
+	// j2 is paused: its ready task must be excluded even though the task
+	// itself is otherwise eligible.
+	insertJob(t, s, "j2", "f1", "q1")
+	insertStep(t, s, "s2", "j2", "S2", 0)
+	if err := s.UpdateJobStatus(ctx, "j2", store.JobStatusPaused); err != nil {
+		t.Fatalf("UpdateJobStatus j2: %v", err)
+	}
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t-paused", JobID: "j2", StepID: "s2",
+		Name: "paused", Status: store.TaskStatusReady,
+		Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t-paused: %v", err)
+	}
+
+	ready, err := s.ListReadyTasks(ctx, "f1", now, 50)
+	if err != nil {
+		t.Fatalf("ListReadyTasks: %v", err)
+	}
+	var ids []string
+	for _, task := range ready {
+		ids = append(ids, task.ID)
+	}
+	foundReady := false
+	for _, id := range ids {
+		if id == "t-ready" {
+			foundReady = true
+		}
+		if id == "t-backoff" || id == "t-paused" {
+			t.Fatalf("backoff/paused tasks must be excluded, got %v", ids)
+		}
+	}
+	if !foundReady {
+		t.Fatalf("want t-ready selected, got %v", ids)
 	}
 }
 
@@ -1259,12 +1479,37 @@ func TestTask_CountReadyTasksByQueue(t *testing.T) {
 		t.Fatalf("CreateTask t3: %v", err)
 	}
 
-	counts, err := s.CountReadyTasksByQueue(ctx, "f1")
+	now := time.Now().UTC()
+
+	// Ineligible ready tasks must not be counted (or wake lease waiters):
+	// a task still backing off, and a task under an auto-parked (paused) job.
+	backoff := now.Add(time.Minute)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t4", JobID: "j1", StepID: "s1",
+		Name: "t4", Status: store.TaskStatusReady,
+		Parameters: map[string]string{}, RetryAfter: &backoff,
+	}); err != nil {
+		t.Fatalf("CreateTask t4: %v", err)
+	}
+	insertJob(t, s, "j3", "f1", "q1")
+	insertStep(t, s, "s3", "j3", "S3", 0)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t5", JobID: "j3", StepID: "s3",
+		Name: "t5", Status: store.TaskStatusReady,
+		Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t5: %v", err)
+	}
+	if err := s.ParkJob(ctx, "j3", "failure limit reached (2)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	counts, err := s.CountReadyTasksByQueue(ctx, "f1", now)
 	if err != nil {
 		t.Fatalf("CountReadyTasksByQueue: %v", err)
 	}
 	if counts["q1"] != 2 {
-		t.Errorf("q1: got %d, want 2", counts["q1"])
+		t.Errorf("q1: got %d, want 2 (backoff and parked-job tasks excluded)", counts["q1"])
 	}
 	if counts["q2"] != 1 {
 		t.Errorf("q2: got %d, want 1", counts["q2"])
@@ -1289,7 +1534,7 @@ func TestTask_CancelJobTasks(t *testing.T) {
 		t.Fatalf("UpdateTaskStatus t2: %v", err)
 	}
 
-	active, err := s.CancelJobTasks(ctx, "j1", time.Now())
+	active, err := s.CancelJobTasks(ctx, "j1", time.Now(), "")
 	if err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
@@ -1327,7 +1572,7 @@ func TestTask_TransitionStepPendingTasks(t *testing.T) {
 		t.Fatalf("UpdateTaskStatus t4: %v", err)
 	}
 
-	affected, err := s.TransitionStepPendingTasks(ctx, "s1", store.TaskStatusCanceled)
+	affected, err := s.TransitionStepPendingTasks(ctx, "s1", store.TaskStatusCanceled, "")
 	if err != nil {
 		t.Fatalf("TransitionStepPendingTasks: %v", err)
 	}
@@ -1451,7 +1696,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if _, err := s.CancelJobTasks(ctx, "j1", time.Now()); err != nil {
+	if _, err := s.CancelJobTasks(ctx, "j1", time.Now(), ""); err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
 
@@ -2007,6 +2252,60 @@ func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 	}
 	if got2.RequiredCores != nil {
 		t.Errorf("undeclared RequiredCores = %v, want nil", got2.RequiredCores)
+	}
+}
+
+func TestStore_Task_RetryPolicyRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	step := insertStep(t, s, "s1", "j1", "render", 0)
+
+	retryAfter := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
+	created, err := s.CreateTask(ctx, store.Task{
+		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
+		Status: store.TaskStatusReady, Parameters: map[string]string{},
+		FailedAttempts: 2, RetryAfter: &retryAfter,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if created.FailedAttempts != 2 {
+		t.Errorf("created FailedAttempts = %d, want 2", created.FailedAttempts)
+	}
+	if created.RetryAfter == nil || !created.RetryAfter.Equal(retryAfter) {
+		t.Errorf("created RetryAfter = %v, want %v", created.RetryAfter, retryAfter)
+	}
+
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailedAttempts != 2 {
+		t.Errorf("GetTask FailedAttempts = %d, want 2", got.FailedAttempts)
+	}
+	if got.RetryAfter == nil || !got.RetryAfter.Equal(retryAfter) {
+		t.Errorf("GetTask RetryAfter = %v, want %v", got.RetryAfter, retryAfter)
+	}
+
+	// Undeclared stays nil / zero.
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t2", JobID: "j1", StepID: step.ID, Name: "t2",
+		Status: store.TaskStatusPending, Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t2: %v", err)
+	}
+	got2, err := s.GetTask(ctx, "t2")
+	if err != nil {
+		t.Fatalf("GetTask t2: %v", err)
+	}
+	if got2.FailedAttempts != 0 {
+		t.Errorf("undeclared FailedAttempts = %d, want 0", got2.FailedAttempts)
+	}
+	if got2.RetryAfter != nil {
+		t.Errorf("undeclared RetryAfter = %v, want nil", got2.RetryAfter)
 	}
 }
 

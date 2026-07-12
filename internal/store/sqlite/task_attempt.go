@@ -19,7 +19,7 @@ func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.Tas
 
 // TerminateWorkerAttempts implements [store.TaskAttemptStore].
 func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
-	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), workerID)
+	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), store.FailureReasonWorkerOffline, workerID)
 	if err != nil {
 		return 0, mapErr(err)
 	}
@@ -39,14 +39,14 @@ func (s *Store) CancelJobAttempts(ctx context.Context, jobID string, endedAt tim
 
 const attemptCols = `
 	id, task_id, worker_id, session_id, attempt_number, status,
-	exit_code, started_at, ended_at, created_at`
+	exit_code, started_at, ended_at, created_at, message`
 
 const (
 	sqlInsertAttempt = `
 INSERT INTO task_attempts (
 	id, task_id, worker_id, session_id, attempt_number, status,
-	exit_code, started_at, ended_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	exit_code, started_at, ended_at, created_at, message)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + attemptCols
 
 	sqlGetAttempt = `SELECT ` + attemptCols + ` FROM task_attempts WHERE id = ?`
@@ -65,16 +65,18 @@ UPDATE task_attempts
 SET status    = ?,
     exit_code = ?,
     ended_at  = ?,
-    session_id = COALESCE(NULLIF(?, ''), session_id)
+    session_id = COALESCE(NULLIF(?, ''), session_id),
+    message = COALESCE(NULLIF(?, ''), message)
 WHERE id = ?
 RETURNING ` + attemptCols
 
 	// sqlTerminateWorkerAttempts closes out all running attempts for tasks
 	// currently assigned to the given worker. Must be called before
 	// ReclaimWorkerTasks so that assigned_worker_id is still set on the tasks.
+	// The message is bound at call time to [store.FailureReasonWorkerOffline].
 	sqlTerminateWorkerAttempts = `
 UPDATE task_attempts
-SET status = ?, ended_at = ?
+SET status = ?, ended_at = ?, message = ?
 WHERE status = 'running'
   AND task_id IN (
     SELECT id FROM tasks
@@ -101,7 +103,7 @@ func scanAttempt(row scanner) (store.TaskAttempt, error) {
 
 	if err := row.Scan(
 		&a.ID, &a.TaskID, &a.WorkerID, &sessionID, &a.AttemptNumber, &status,
-		&exitCode, &startedAt, &endedAt, &createdAt,
+		&exitCode, &startedAt, &endedAt, &createdAt, &a.Message,
 	); err != nil {
 		return store.TaskAttempt{}, err
 	}
@@ -132,7 +134,7 @@ func (s *Store) CreateTaskAttempt(ctx context.Context, attempt store.TaskAttempt
 	row := s.stmtInsertAttempt.QueryRowContext(ctx,
 		attempt.ID, attempt.TaskID, attempt.WorkerID,
 		nullString(attempt.SessionID), attempt.AttemptNumber, string(attempt.Status),
-		exitCode, timeToText(attempt.StartedAt), nullTimeToText(attempt.EndedAt), now)
+		exitCode, timeToText(attempt.StartedAt), nullTimeToText(attempt.EndedAt), now, attempt.Message)
 	out, err := scanAttempt(row)
 	return out, mapErr(err)
 }
@@ -175,6 +177,7 @@ func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt
 	row := s.stmtUpdateAttempt.QueryRowContext(ctx,
 		string(attempt.Status), exitCode, nullTimeToText(attempt.EndedAt),
 		attempt.SessionID, // COALESCE(NULLIF(?, ''), session_id)
+		attempt.Message,   // COALESCE(NULLIF(?, ''), message)
 		attempt.ID)
 	out, err := scanAttempt(row)
 	return out, mapErr(err)

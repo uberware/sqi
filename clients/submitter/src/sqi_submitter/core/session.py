@@ -12,6 +12,7 @@ from typing import Any
 from sqi_client import SqiClient
 from sqi_client.models import Farm, Job, Product, ProductParameter, Queue
 from sqi_submitter.core.errors import translate_errors
+from sqi_submitter.core.joboptions import JobOptions
 
 DEFAULT_SERVER_URL = "http://localhost:8080"
 
@@ -93,7 +94,9 @@ class SubmitterSession:
         farm_id: str,
         queue_id: str,
         job_name: str | None = None,
+        job_options: JobOptions | None = None,
     ) -> Job:
+        opts = job_options or JobOptions()
         with translate_errors(self.server_url):
             return self.client.submit_product_job(
                 product_name,
@@ -101,6 +104,12 @@ class SubmitterSession:
                 queue_id=queue_id,
                 job_name=job_name,
                 parameters=parameters,
+                owner=opts.owner,
+                priority=opts.priority,
+                project=opts.project,
+                max_attempts=opts.max_attempts,
+                retry_delay_seconds=opts.retry_delay_seconds,
+                failure_limit=opts.failure_limit,
             )
 
 

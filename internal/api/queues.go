@@ -49,6 +49,12 @@ type queueResponse struct {
 	Paused             bool      `json:"paused"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit are the configured
+	// queue-level retry-policy overrides. Nil means inherit (farm -> server
+	// default).
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // createQueueRequest is the body accepted by POST /api/v1/queues.
@@ -59,6 +65,11 @@ type createQueueRequest struct {
 	Priority           int    `json:"priority"`
 	MaxConcurrentTasks int    `json:"max_concurrent_tasks"`
 	Paused             bool   `json:"paused"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit set the queue's retry
+	// policy overrides. Nil means inherit.
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // updateQueueRequest is the body accepted by PUT /api/v1/queues/{id}.
@@ -69,6 +80,11 @@ type updateQueueRequest struct {
 	Priority           int    `json:"priority"`
 	MaxConcurrentTasks int    `json:"max_concurrent_tasks"`
 	Paused             bool   `json:"paused"`
+	// MaxAttempts, RetryDelaySeconds, and FailureLimit set the queue's retry
+	// policy overrides. Nil means inherit.
+	MaxAttempts       *int `json:"max_attempts,omitempty"`
+	RetryDelaySeconds *int `json:"retry_delay_seconds,omitempty"`
+	FailureLimit      *int `json:"failure_limit,omitempty"`
 }
 
 // queueListResponse is the paginated result returned by GET /api/v1/queues.
@@ -98,6 +114,10 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
@@ -121,6 +141,9 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 		Paused:             req.Paused,
 		CreatedAt:          now,
 		UpdatedAt:          now,
+		MaxAttempts:        req.MaxAttempts,
+		RetryDelaySeconds:  req.RetryDelaySeconds,
+		FailureLimit:       req.FailureLimit,
 	}
 
 	created, err := h.store.CreateQueue(ctx, queue)
@@ -235,6 +258,10 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
@@ -255,6 +282,9 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		Priority:           req.Priority,
 		MaxConcurrentTasks: req.MaxConcurrentTasks,
 		Paused:             req.Paused,
+		MaxAttempts:        req.MaxAttempts,
+		RetryDelaySeconds:  req.RetryDelaySeconds,
+		FailureLimit:       req.FailureLimit,
 	}
 
 	updated, err := h.store.UpdateQueue(ctx, queue)
@@ -307,6 +337,9 @@ func toQueueResponse(qu store.Queue) queueResponse {
 		Paused:             qu.Paused,
 		CreatedAt:          qu.CreatedAt,
 		UpdatedAt:          qu.UpdatedAt,
+		MaxAttempts:        qu.MaxAttempts,
+		RetryDelaySeconds:  qu.RetryDelaySeconds,
+		FailureLimit:       qu.FailureLimit,
 	}
 }
 

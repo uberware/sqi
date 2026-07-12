@@ -45,7 +45,7 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	scratch := t.TempDir()
-	s := staging.New(scratch, fakeSync(t), discard())
+	s := staging.New(scratch, fakeSync(t), false, discard())
 
 	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
@@ -66,7 +66,7 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 
 func TestStager_StageIn_FailsWhenSyncFails(t *testing.T) {
 	scratch := t.TempDir()
-	s := staging.New(scratch, "false {src} {dest}", discard()) // `false` exits non-zero
+	s := staging.New(scratch, "false {src} {dest}", false, discard()) // `false` exits non-zero
 	_, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: "/nope", Direction: "IN"},
 	})
@@ -77,7 +77,7 @@ func TestStager_StageIn_FailsWhenSyncFails(t *testing.T) {
 
 func TestStager_StageOut_CopiesBack(t *testing.T) {
 	scratch := t.TempDir()
-	s := staging.New(scratch, fakeSync(t), discard())
+	s := staging.New(scratch, fakeSync(t), false, discard())
 	// Create a staged scratch dir with an output file at the index-namespaced
 	// path. StageOut looks for OUT entries at <scratchDir>/<index>/<basename>;
 	// the single OUT entry is at slice index 0, so the staged file lives under
@@ -111,7 +111,7 @@ func TestStager_StageIn_RulesHaveFormat(t *testing.T) {
 	writeFile(t, srcFile, "scene")
 
 	scratch := t.TempDir()
-	s := staging.New(scratch, fakeSync(t), discard())
+	s := staging.New(scratch, fakeSync(t), false, discard())
 
 	rules, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
@@ -139,7 +139,7 @@ func TestStager_StageIn_NoBasenameCollision(t *testing.T) {
 	writeFile(t, src2, "scene-B")
 
 	scratch := t.TempDir()
-	s := staging.New(scratch, fakeSync(t), discard())
+	s := staging.New(scratch, fakeSync(t), false, discard())
 
 	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: src1, Direction: "IN", ObjectType: "FILE"},
@@ -189,7 +189,7 @@ func TestStager_StageOut_ConsistentWithStageIn(t *testing.T) {
 	writeFile(t, src2, "data-B")
 
 	scratch := t.TempDir()
-	s := staging.New(scratch, fakeSync(t), discard())
+	s := staging.New(scratch, fakeSync(t), false, discard())
 
 	entries := []protocol.StageEntry{
 		{Path: src1, Direction: "INOUT", ObjectType: "FILE"},
@@ -242,7 +242,7 @@ func TestStager_StageIn_MapsOutputEntries(t *testing.T) {
 	outOrig := filepath.Join(t.TempDir(), "renders")
 
 	scratch := t.TempDir()
-	s := staging.New(scratch, fakeSync(t), discard())
+	s := staging.New(scratch, fakeSync(t), false, discard())
 
 	entries := []protocol.StageEntry{
 		{Path: inFile, Direction: "IN", ObjectType: "FILE"},
@@ -276,10 +276,10 @@ func TestStager_StageIn_MapsOutputEntries(t *testing.T) {
 }
 
 func TestStager_Configured(t *testing.T) {
-	if staging.New("", "", discard()).Configured() {
+	if staging.New("", "", false, discard()).Configured() {
 		t.Error("empty config should not be Configured")
 	}
-	if !staging.New("/s", "rsync {src} {dest}", discard()).Configured() {
+	if !staging.New("/s", "rsync {src} {dest}", false, discard()).Configured() {
 		t.Error("full config should be Configured")
 	}
 }

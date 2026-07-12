@@ -4,11 +4,13 @@ import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useSubmitJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { detectFormat } from '@/lib/format'
+import { parseOptionalInt } from '@/lib/parse'
 import type { TemplateFormat } from '@/api/types'
 import styles from './Submit.module.css'
 
@@ -102,6 +104,9 @@ export default function Submit() {
   const [owner, setOwner] = useState('')
   const [priority, setPriority] = useState('')
   const [project, setProject] = useState('')
+  const [maxAttempts, setMaxAttempts] = useState('')
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
+  const [failureLimit, setFailureLimit] = useState('')
 
   // Example loader select — controlled so it resets to placeholder after each pick.
   const [exampleKey, setExampleKey] = useState('')
@@ -137,7 +142,10 @@ export default function Submit() {
       try {
         const trimmedOwner = owner.trim()
         const trimmedProject = project.trim()
-        const parsedPriority = priority ? Number(priority) : undefined
+        const parsedPriority = parseOptionalInt(priority)
+        const parsedMaxAttempts = parseOptionalInt(maxAttempts)
+        const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
+        const parsedFailureLimit = parseOptionalInt(failureLimit)
 
         const job = await submitJob.mutateAsync({
           farmId: selectedQueue.farm_id,
@@ -147,6 +155,11 @@ export default function Submit() {
           ...(trimmedOwner ? { owner: trimmedOwner } : {}),
           ...(parsedPriority !== undefined ? { priority: parsedPriority } : {}),
           ...(trimmedProject ? { project: trimmedProject } : {}),
+          ...(parsedMaxAttempts !== undefined ? { maxAttempts: parsedMaxAttempts } : {}),
+          ...(parsedRetryDelaySeconds !== undefined
+            ? { retryDelaySeconds: parsedRetryDelaySeconds }
+            : {}),
+          ...(parsedFailureLimit !== undefined ? { failureLimit: parsedFailureLimit } : {}),
         })
         showToast(`Job submitted — ID: ${job.id}`, 'success')
         navigate(`/jobs/${job.id}`)
@@ -154,7 +167,19 @@ export default function Submit() {
         // Error is surfaced via submitJob.isError / submitJob.error below.
       }
     },
-    [selectedQueue, template, owner, priority, project, submitJob, navigate, showToast],
+    [
+      selectedQueue,
+      template,
+      owner,
+      priority,
+      project,
+      maxAttempts,
+      retryDelaySeconds,
+      failureLimit,
+      submitJob,
+      navigate,
+      showToast,
+    ],
   )
 
   const canSubmit = Boolean(selectedQueue) && template.trim().length > 0 && !submitJob.isPending
@@ -255,6 +280,26 @@ export default function Submit() {
                   placeholder="my-project"
                 />
               </div>
+            </section>
+
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>Retry Policy</h2>
+              <p className={styles.sectionNote}>
+                Optional overrides; unset fields inherit from the queue/farm/server.
+              </p>
+
+              <RetryPolicyFields
+                maxAttempts={maxAttempts}
+                onMaxAttemptsChange={setMaxAttempts}
+                retryDelaySeconds={retryDelaySeconds}
+                onRetryDelaySecondsChange={setRetryDelaySeconds}
+                failureLimit={failureLimit}
+                onFailureLimitChange={setFailureLimit}
+                placeholder="Inherit"
+                fieldClassName={styles.field}
+                labelClassName={styles.label}
+                inputClassName={styles.input}
+              />
             </section>
           </div>
 

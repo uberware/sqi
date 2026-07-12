@@ -286,6 +286,54 @@ func (s *Store) DeleteJob(_ context.Context, id string) error {
 	return nil
 }
 
+// ParkJob implements [store.JobStore]. It transitions the job to
+// [store.JobStatusPaused] and records reason, but only while the job is
+// non-terminal; a terminal job (completed/failed/canceled) is a legitimate
+// no-op.
+func (s *Store) ParkJob(_ context.Context, jobID, reason string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	j, ok := s.jobs[jobID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	switch j.Status {
+	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
+		return nil // terminal: no-op
+	}
+	j.Status = store.JobStatusPaused
+	j.ParkReason = reason
+	j.UpdatedAt = now
+	s.jobs[jobID] = j
+	return nil
+}
+
+// ResumeJob implements [store.JobStore]. It transitions a paused job back to
+// [store.JobStatusPending]; an auto-parked job (non-empty ParkReason) also has
+// its ParkReason cleared and FailedAttempts reset. A job that is no longer
+// paused is a legitimate no-op.
+func (s *Store) ResumeJob(_ context.Context, jobID string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	j, ok := s.jobs[jobID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if j.Status != store.JobStatusPaused {
+		return nil // no longer paused: no-op
+	}
+	j.Status = store.JobStatusPending
+	if j.ParkReason != "" {
+		j.FailedAttempts = 0
+	}
+	j.ParkReason = ""
+	j.UpdatedAt = now
+	s.jobs[jobID] = j
+	return nil
+}
+
 // jobMatchesSearch reports whether j contains the given query string
 // (case-insensitive) in any of its name, id, owner, or project fields.
 func jobMatchesSearch(j store.Job, query string) bool {

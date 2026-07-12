@@ -140,6 +140,23 @@ type SchedulerConfig struct {
 	// online worker before it is flagged unschedulable. 0 disables the sweep.
 	// Default: 30s. Env: SQI_SCHEDULER_UNSCHEDULABLE_GRACE
 	UnschedulableGrace time.Duration `yaml:"unschedulable_grace"`
+
+	// DefaultMaxAttempts is the server-level fallback for the farm-wide default
+	// number of attempts a task may make before going terminal-failed. It is the
+	// bottom tier of the layered retry policy (Server -> Farm -> Queue -> Job).
+	// Must be >= 1; 1 disables auto-retry. Default: 3.
+	// Env: SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS
+	DefaultMaxAttempts int `yaml:"default_max_attempts"`
+
+	// RetryDelay is the server-level fallback default backoff before a failed
+	// task re-enters the ready queue. 0 = immediate. Default: 30s.
+	// Env: SQI_SCHEDULER_RETRY_DELAY
+	RetryDelay time.Duration `yaml:"retry_delay"`
+
+	// DefaultFailureLimit is the server-level fallback default job-level
+	// failure ceiling. 0 = off (no auto-park). Default: 0.
+	// Env: SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT
+	DefaultFailureLimit int `yaml:"default_failure_limit"`
 }
 
 // DiscoveryConfig controls mDNS service advertisement.
@@ -214,6 +231,9 @@ func DefaultConfig() Config {
 			JobRetention:              7 * 24 * time.Hour,
 			JobRetentionIncludeFailed: false,
 			UnschedulableGrace:        30 * time.Second,
+			DefaultMaxAttempts:        3,
+			RetryDelay:                30 * time.Second,
+			DefaultFailureLimit:       0,
 		},
 		Discovery: DiscoveryConfig{
 			Enabled:      true,

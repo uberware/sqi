@@ -16,7 +16,16 @@ import pytest
 import respx
 
 from sqi_client.errors import ConflictError, NotFoundError
-from sqi_client.models import CancelResult, LogChunk, LogPage, Page, RetryResult, Task, TaskStatus
+from sqi_client.models import (
+    CancelResult,
+    LogChunk,
+    LogPage,
+    Page,
+    RetryResult,
+    Task,
+    TaskAttempt,
+    TaskStatus,
+)
 from tests.conftest import BASE_URL, ClientFactory
 
 _API = f"{BASE_URL}/api/v1"
@@ -289,6 +298,57 @@ def test_get_task_logs_encodes_cursor_and_limit(make_client: ClientFactory) -> N
     assert params["after_nats_seq"] == "7"
     # Phase 1 uses only the non-streaming JSON path: never request tail=true.
     assert "tail" not in params
+
+
+# ── list_task_attempts ──────────────────────────────────────────────
+
+
+@respx.mock
+def test_list_task_attempts_returns_models(make_client: ClientFactory) -> None:
+    route = respx.get(f"{_API}/tasks/t1/attempts").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "attempt_number": 1,
+                        "status": "failed",
+                        "message": "boom",
+                        "started_at": "2026-07-11T19:00:00Z",
+                    },
+                    {
+                        "attempt_number": 2,
+                        "status": "running",
+                        "started_at": "2026-07-11T19:00:02Z",
+                    },
+                ]
+            },
+        )
+    )
+    client = make_client()
+
+    attempts = client.list_task_attempts("t1")
+
+    assert route.called
+    assert route.calls.last.request.method == "GET"
+    assert len(attempts) == 2
+    assert all(isinstance(a, TaskAttempt) for a in attempts)
+    assert attempts[0].attempt_number == 1
+    assert attempts[0].message == "boom"
+    assert attempts[1].attempt_number == 2
+    assert attempts[1].exit_code is None
+
+
+@respx.mock
+def test_list_task_attempts_empty(make_client: ClientFactory) -> None:
+    respx.get(f"{_API}/tasks/t1/attempts").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    client = make_client()
+
+    attempts = client.list_task_attempts("t1")
+
+    assert attempts == []
 
 
 # ── tail_task_logs polling ──────────────────────────────────────

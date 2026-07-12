@@ -174,7 +174,10 @@ self-contained flow:
 2. Pick a **Product** and, if it has renderable units, a **Target** (scene ×
    view layer).
 3. Edit the generated parameter fields, job name, farm, and queue.
-4. Click **Submit**.
+4. Optionally expand **Advanced (job overrides)** to set owner, priority,
+   project, or the retry policy (max attempts, retry delay, failure limit);
+   leave a field at 0/blank to inherit the queue → farm → server default.
+5. Click **Submit**.
 
 **Changing the product or target does not automatically refetch parameters —
 click Refresh Products again** after changing either dropdown, or the form
@@ -563,7 +566,7 @@ server every other client uses.
 |---|---|
 | `GET /api/v1/products` | List the product catalog (name, title, description, category). |
 | `GET /api/v1/products/{name}/parameters` | Fetch the chosen product's parsed parameter schema, including `userInterface` hints, to build a form. |
-| `POST /api/v1/products/{name}/jobs` | Submit a job: body `{ "farm_id", "queue_id", "name", "parameters": { "<ParamName>": "<value>", ... } }`. |
+| `POST /api/v1/products/{name}/jobs` | Submit a job: body `{ "farm_id", "queue_id", "name", "parameters": { ... }, plus optional "owner", "submitter", "priority", "project", "max_attempts", "retry_delay_seconds", "failure_limit" }`. |
 
 `internal/api/openapi.yaml` is the authoritative wire contract for all three —
 treat it, not this doc, as the source of truth if they ever disagree. The same

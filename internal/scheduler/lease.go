@@ -125,7 +125,7 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		return nil, nil
 	}
 
-	candidates, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, s.cfg.AssignBatchSize)
+	candidates, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, time.Now().UTC(), s.cfg.AssignBatchSize)
 	if err != nil {
 		return nil, fmt.Errorf("lease: list ready tasks: %w", err)
 	}
@@ -164,6 +164,10 @@ func (s *Scheduler) leaseGatesPass(
 		return d, false, fmt.Errorf("lease: get job %s: %w", task.JobID, err)
 	}
 	d.job = job
+
+	if job.Status == store.JobStatusPaused || job.Status.IsTerminal() {
+		return d, false, nil // paused/terminal job: skip (defends the ready-list→lease window)
+	}
 
 	step, err := s.store.GetStep(ctx, task.StepID)
 	if err != nil {

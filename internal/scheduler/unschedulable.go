@@ -29,7 +29,7 @@ func (s *Scheduler) sweepUnschedulable(ctx context.Context) {
 	// store's `readyTasks[:limit]` slicing. store.MaxLimit mirrors the
 	// "fetch effectively all" convention used elsewhere in this package
 	// (e.g. checkStepCompletion, workers.go's active-task lookup).
-	ready, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, store.MaxLimit)
+	ready, err := s.store.ListReadyTasks(ctx, s.cfg.FarmID, time.Now().UTC(), store.MaxLimit)
 	if err != nil {
 		s.logger.WarnContext(ctx, "scheduler: unschedulable sweep: list ready tasks failed", slog.Any("error", err))
 		return

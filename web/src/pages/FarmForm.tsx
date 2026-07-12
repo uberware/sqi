@@ -3,8 +3,10 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useGetFarm } from '@/api/queries'
+import { parseOptionalInt } from '@/lib/parse'
 import { useCreateFarm, useUpdateFarm } from '@/api/mutations'
 import type { FarmInput } from '@/api/mutations'
 import styles from './FarmForm.module.css'
@@ -17,6 +19,9 @@ interface Defaults {
   name: string
   description: string
   maxConcurrent: string
+  maxAttempts: string
+  retryDelaySeconds: string
+  failureLimit: string
 }
 
 interface InnerProps {
@@ -34,6 +39,9 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
   const [name, setName] = useState(defaults.name)
   const [description, setDescription] = useState(defaults.description)
   const [maxConcurrent, setMaxConcurrent] = useState(defaults.maxConcurrent)
+  const [maxAttempts, setMaxAttempts] = useState(defaults.maxAttempts)
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState(defaults.retryDelaySeconds)
+  const [failureLimit, setFailureLimit] = useState(defaults.failureLimit)
 
   const isPending = createFarm.isPending || updateFarm.isPending
   const canSubmit = name.trim().length > 0 && !isPending
@@ -41,10 +49,18 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
+    const parsedMaxAttempts = parseOptionalInt(maxAttempts)
+    const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
+    const parsedFailureLimit = parseOptionalInt(failureLimit)
     const input: FarmInput = {
       name: name.trim(),
       description: description.trim(),
       max_concurrent_tasks: Math.trunc(Number(maxConcurrent) || 0),
+      ...(parsedMaxAttempts !== undefined ? { max_attempts: parsedMaxAttempts } : {}),
+      ...(parsedRetryDelaySeconds !== undefined
+        ? { retry_delay_seconds: parsedRetryDelaySeconds }
+        : {}),
+      ...(parsedFailureLimit !== undefined ? { failure_limit: parsedFailureLimit } : {}),
     }
     try {
       if (mode === 'create') {
@@ -109,6 +125,19 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
           />
         </div>
 
+        <RetryPolicyFields
+          maxAttempts={maxAttempts}
+          onMaxAttemptsChange={setMaxAttempts}
+          retryDelaySeconds={retryDelaySeconds}
+          onRetryDelaySecondsChange={setRetryDelaySeconds}
+          failureLimit={failureLimit}
+          onFailureLimitChange={setFailureLimit}
+          placeholder="Inherit server default"
+          fieldClassName={styles.field}
+          labelClassName={styles.label}
+          inputClassName={styles.input}
+        />
+
         <div className={styles.footer}>
           <button type="submit" className={styles.submitBtn} disabled={!canSubmit}>
             {mode === 'create' ? 'Create Farm' : 'Save'}
@@ -142,6 +171,10 @@ export default function FarmForm({ mode }: Props) {
           name: data.name,
           description: data.description ?? '',
           maxConcurrent: String(data.max_concurrent_tasks),
+          maxAttempts: data.max_attempts !== undefined ? String(data.max_attempts) : '',
+          retryDelaySeconds:
+            data.retry_delay_seconds !== undefined ? String(data.retry_delay_seconds) : '',
+          failureLimit: data.failure_limit !== undefined ? String(data.failure_limit) : '',
         }}
       />
     )
@@ -151,7 +184,14 @@ export default function FarmForm({ mode }: Props) {
     <FarmFormInner
       mode="create"
       id=""
-      defaults={{ name: '', description: '', maxConcurrent: '0' }}
+      defaults={{
+        name: '',
+        description: '',
+        maxConcurrent: '0',
+        maxAttempts: '',
+        retryDelaySeconds: '',
+        failureLimit: '',
+      }}
     />
   )
 }

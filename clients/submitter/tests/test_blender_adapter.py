@@ -107,6 +107,12 @@ def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any
         "product",
         "target",
         "job_name",
+        "owner",
+        "project",
+        "priority",
+        "max_attempts",
+        "retry_delay_seconds",
+        "failure_limit",
         "farm",
         "queue",
         "save_before_submit",
@@ -116,6 +122,12 @@ def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any
     assert annotations["product"] == ("prop", "EnumProperty")
     assert annotations["target"] == ("prop", "EnumProperty")
     assert annotations["job_name"] == ("prop", "StringProperty")
+    assert annotations["owner"] == ("prop", "StringProperty")
+    assert annotations["project"] == ("prop", "StringProperty")
+    assert annotations["priority"] == ("prop", "IntProperty")
+    assert annotations["max_attempts"] == ("prop", "IntProperty")
+    assert annotations["retry_delay_seconds"] == ("prop", "IntProperty")
+    assert annotations["failure_limit"] == ("prop", "IntProperty")
     assert annotations["farm"] == ("prop", "EnumProperty")
     assert annotations["queue"] == ("prop", "EnumProperty")
     assert annotations["save_before_submit"] == ("prop", "BoolProperty")

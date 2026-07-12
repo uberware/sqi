@@ -66,6 +66,16 @@ export interface Job {
   updated_at: string
   started_at?: string
   completed_at?: string
+  /** Cumulative count of genuine task failures for this job. */
+  failed_attempts: number
+  /** Set when the failure-limit sweep auto-parked the job; empty for a manual pause. */
+  park_reason?: string
+  /** Per-job override for the maximum attempts per task; absent means inherit (queue -> farm -> server default). */
+  max_attempts?: number
+  /** Per-job override for the delay before retrying a failed task; absent means inherit. */
+  retry_delay_seconds?: number
+  /** Per-job override for the number of task failures that auto-parks the job; absent means inherit. */
+  failure_limit?: number
 }
 
 /**
@@ -85,10 +95,31 @@ export interface TaskCounts {
   unschedulable?: number
 }
 
+/** Aggregate summary of task failures for a job; absent when no tasks have failed. */
+export interface FailureSummary {
+  failed_count: number
+  dominant_reason?: string
+  distinct_reasons: number
+}
+
+/**
+ * Resolved retry policy after job -> queue -> farm -> server-default
+ * inheritance; all values are concrete (a `failure_limit` of 0 means the
+ * auto-park failure limit is off).
+ */
+export interface EffectiveRetryPolicy {
+  max_attempts: number
+  retry_delay_seconds: number
+  failure_limit: number
+}
+
 /** Wire shape returned by GET /api/v1/jobs/{id}. */
 export interface JobDetail extends Job {
   steps: Step[]
   task_counts: TaskCounts
+  failure_summary?: FailureSummary
+  /** Resolved retry policy; absent when farm/queue lookups fail server-side. */
+  effective_retry?: EffectiveRetryPolicy
 }
 
 // ── Step ──────────────────────────────────────────────────────────────────────
@@ -120,6 +151,12 @@ export interface Task {
   unschedulable_reason?: string
   created_at: string
   updated_at: string
+  /** Count of attempts that genuinely ran and failed for this task. */
+  failed_attempts?: number
+  /** Set and in the future while a ready task is backing off after a failed attempt. */
+  retry_after?: string
+  /** Human-readable reason the task's most recent attempt failed; set only for failed tasks. */
+  failure_reason?: string
 }
 
 /** Wire shape returned by POST /api/v1/tasks/{id}/retry. */
@@ -166,16 +203,23 @@ export interface TaskLogsResponse {
 
 /** Wire shape for a single task execution attempt. */
 export interface TaskAttempt {
-  id: string
-  task_id: string
-  worker_id: string
-  session_id: string
+  /** 1-based; incremented on each retry. */
   attempt_number: number
   status: AttemptStatus
+  /** ID of the worker that ran this attempt. */
+  worker_id?: string
+  /** Process exit code; absent while running or if signaled. */
   exit_code?: number
+  /** Human-readable reason for a terminal attempt. */
+  message?: string
   started_at: string
+  /** Absent while the attempt is running. */
   ended_at?: string
-  created_at: string
+}
+
+/** Wire shape returned by GET /api/v1/tasks/{id}/attempts (oldest first). */
+export interface TaskAttemptsResponse {
+  items: TaskAttempt[]
 }
 
 // ── Worker ────────────────────────────────────────────────────────────────────
@@ -254,6 +298,12 @@ export interface Farm {
   max_concurrent_tasks: number
   created_at: string
   updated_at: string
+  /** Farm-level default for the maximum attempts per task; absent means inherit the server default. */
+  max_attempts?: number
+  /** Farm-level default for the delay before retrying a failed task; absent means inherit the server default. */
+  retry_delay_seconds?: number
+  /** Farm-level default for the number of task failures that auto-parks a job; absent means inherit the server default. */
+  failure_limit?: number
 }
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
@@ -269,6 +319,12 @@ export interface Queue {
   paused: boolean
   created_at: string
   updated_at: string
+  /** Queue-level override for the maximum attempts per task; absent means inherit (farm -> server default). */
+  max_attempts?: number
+  /** Queue-level override for the delay before retrying a failed task; absent means inherit. */
+  retry_delay_seconds?: number
+  /** Queue-level override for the number of task failures that auto-parks a job; absent means inherit. */
+  failure_limit?: number
 }
 
 // ── Storage location ──────────────────────────────────────────────────────────
@@ -409,6 +465,12 @@ export interface SubmitProductJobInput {
   priority?: number
   project?: string
   parameters: Record<string, string>
+  /** Per-job override for the maximum attempts per task; omitted means inherit. */
+  maxAttempts?: number
+  /** Per-job override for the retry delay (seconds); omitted means inherit. */
+  retryDelaySeconds?: number
+  /** Per-job override for the auto-park failure count; omitted means inherit. */
+  failureLimit?: number
 }
 
 // ── Job submission ────────────────────────────────────────────────────────────
@@ -423,4 +485,10 @@ export interface SubmitJobInput {
   submitter?: string
   priority?: number
   project?: string
+  /** Per-job override for the maximum attempts per task; omitted means inherit. */
+  maxAttempts?: number
+  /** Per-job override for the delay (seconds) before retrying a failed task; omitted means inherit. */
+  retryDelaySeconds?: number
+  /** Per-job override for the number of task failures that auto-parks the job; omitted means inherit. */
+  failureLimit?: number
 }

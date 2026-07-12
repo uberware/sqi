@@ -9,23 +9,26 @@ import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import UnschedulableBadge from '@/components/UnschedulableBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import { Document, Rotate, X } from '@/components/icons'
+import { Document, Rotate, X, ChevronDown } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
-import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
-import { useRetryTask, useCancelTask } from '@/api/mutations'
+import { useGetJob, useListTasks, useListWorkers, useTaskAttempts, queryKeys } from '@/api/queries'
+import { useRetryTask, useCancelTask, useResumeJob } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
-import { formatTimespan } from '@/lib/time'
+import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
   JobDetail as JobDetailType,
+  EffectiveRetryPolicy,
+  FailureSummary,
   Step,
   StepStatus,
   Task,
+  TaskAttempt,
   TaskStatus,
   ListResponse,
 } from '@/api/types'
@@ -64,6 +67,58 @@ function stepDepsSatisfied(step: Step, statusByName: Map<string, StepStatus>): b
 /** Lower-cased substring match of a term against a task's name. */
 function taskMatches(task: Task, term: string): boolean {
   return task.name.toLowerCase().includes(term)
+}
+
+/** Formats an inherited-or-configured retry-policy field for display. */
+function policyField(value: number | undefined, unit = ''): string {
+  return value === undefined ? 'inherited' : `${value}${unit}`
+}
+
+/**
+ * Compact one-line summary of the resolved retry policy, e.g.
+ * "3 attempts · 30s delay · limit off" (a failure_limit of 0 means the
+ * auto-park failure limit is off).
+ */
+function effectiveRetryText(policy: EffectiveRetryPolicy): string {
+  const attempts = `${policy.max_attempts} ${policy.max_attempts === 1 ? 'attempt' : 'attempts'}`
+  const delay = `${policy.retry_delay_seconds}s delay`
+  const limit = policy.failure_limit === 0 ? 'limit off' : `limit ${policy.failure_limit}`
+  return `${attempts} · ${delay} · ${limit}`
+}
+
+/**
+ * "attempt N" label for a task that has genuinely failed at least once,
+ * where N is the attempt currently in play (failed_attempts + 1).
+ * Undefined when the task has never failed.
+ */
+function attemptLabel(task: Task): string | undefined {
+  const failed = task.failed_attempts
+  if (failed === undefined || failed <= 0) return undefined
+  return `attempt ${failed + 1}`
+}
+
+/**
+ * "retrying in Ns" hint for a ready task still backing off after a failed
+ * attempt. Undefined once retry_after has passed or is unset.
+ */
+function retryingHint(task: Task, now: number): string | undefined {
+  if (task.status !== 'ready' || task.retry_after === undefined) return undefined
+  const retryAt = new Date(task.retry_after).getTime()
+  if (retryAt <= now) return undefined
+  return `retrying in ${formatDuration(retryAt - now)}`
+}
+
+/**
+ * Job-level failure banner text built from the job's `failure_summary`
+ * (present once at least one task has failed), e.g. "3 tasks failed —
+ * execution timeout after 120s (2 reasons)".
+ */
+function failureBannerText(summary: FailureSummary): string {
+  const { failed_count, dominant_reason, distinct_reasons } = summary
+  const noun = failed_count === 1 ? 'task' : 'tasks'
+  const reason = dominant_reason ?? 'see task details'
+  const suffix = distinct_reasons > 1 ? ` (${distinct_reasons} reasons)` : ''
+  return `${failed_count} ${noun} failed — ${reason}${suffix}`
 }
 
 // ── IdCell ────────────────────────────────────────────────────────────────────
@@ -173,8 +228,101 @@ function MetadataCard({ job }: { job: JobDetailType }) {
           <dt>Ended</dt>
           <dd>{formatDateTime(job.completed_at)}</dd>
         </div>
+        <div className={styles.metaField}>
+          <dt>Max attempts</dt>
+          <dd>{policyField(job.max_attempts)}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Retry delay</dt>
+          <dd>{policyField(job.retry_delay_seconds, 's')}</dd>
+        </div>
+        <div className={styles.metaField}>
+          <dt>Failure limit</dt>
+          <dd>{policyField(job.failure_limit)}</dd>
+        </div>
+        {job.effective_retry !== undefined && (
+          <div className={styles.metaField}>
+            <dt>Retries</dt>
+            <dd>{effectiveRetryText(job.effective_retry)}</dd>
+          </div>
+        )}
       </dl>
     </div>
+  )
+}
+
+// ── AttemptTimeline ───────────────────────────────────────────────────────────
+
+interface AttemptTimelineProps {
+  taskId: string
+  workerNamesById: ReadonlyMap<string, string>
+  now: number
+}
+
+function AttemptEntry({
+  attempt,
+  workerNamesById,
+  now,
+}: {
+  attempt: TaskAttempt
+  workerNamesById: ReadonlyMap<string, string>
+  now: number
+}) {
+  return (
+    <li className={styles.attemptItem}>
+      <div className={styles.attemptHeader}>
+        <span className={styles.attemptNumber}>Attempt {attempt.attempt_number}</span>
+        <StatusBadge status={attempt.status} />
+        {attempt.worker_id !== undefined && (
+          <Link
+            to={`/workers/${attempt.worker_id}`}
+            className={styles.workerLink}
+            title={attempt.worker_id}
+          >
+            {workerNamesById.get(attempt.worker_id) ?? truncateId(attempt.worker_id)}
+          </Link>
+        )}
+        {attempt.exit_code !== undefined && (
+          <span className={styles.attemptExit}>exit {attempt.exit_code}</span>
+        )}
+        <span className={styles.attemptSpan}>
+          {formatDateTime(attempt.started_at)} → {formatDateTime(attempt.ended_at)} ·{' '}
+          {formatTimespan(attempt.started_at, attempt.ended_at, now)}
+        </span>
+      </div>
+      {attempt.message !== undefined && attempt.message !== '' && (
+        <p className={styles.attemptMessage}>{attempt.message}</p>
+      )}
+    </li>
+  )
+}
+
+/** Attempt-history timeline rendered inside a task row's expanded detail row. */
+function AttemptTimeline({ taskId, workerNamesById, now }: AttemptTimelineProps) {
+  const { data, isLoading, isError } = useTaskAttempts(taskId)
+  const attempts = data?.items ?? []
+
+  if (isLoading) {
+    return <p className={styles.attemptsMuted}>Loading attempts…</p>
+  }
+  if (isError) {
+    return <p className={styles.attemptsMuted}>Failed to load attempts.</p>
+  }
+  if (attempts.length === 0) {
+    return <p className={styles.attemptsMuted}>No attempts recorded yet.</p>
+  }
+
+  return (
+    <ol className={styles.attemptList}>
+      {attempts.map((attempt) => (
+        <AttemptEntry
+          key={attempt.attempt_number}
+          attempt={attempt}
+          workerNamesById={workerNamesById}
+          now={now}
+        />
+      ))}
+    </ol>
   )
 }
 
@@ -217,6 +365,11 @@ function TaskRow({
   const canRetry = RETRYABLE.has(task.status) && !isRetrying && depsSatisfied
   const canCancel = CANCELABLE.has(task.status) && !isCanceling
   const endTime = isTerminalTask(task.status) ? task.updated_at : undefined
+  const attemptText = attemptLabel(task)
+  const retryingText = retryingHint(task, now)
+
+  const [attemptsExpanded, setAttemptsExpanded] = useState(false)
+  const detailRowId = `task-${task.id}-attempts`
 
   return (
     <>
@@ -227,6 +380,20 @@ function TaskRow({
             .join(' ') || undefined
         }
       >
+        <td className={styles.expandCell}>
+          <button
+            type="button"
+            className={styles.expandToggle}
+            aria-expanded={attemptsExpanded}
+            aria-controls={detailRowId}
+            aria-label={
+              attemptsExpanded ? `Hide attempts for ${task.name}` : `Show attempts for ${task.name}`
+            }
+            onClick={() => setAttemptsExpanded((prev) => !prev)}
+          >
+            <ChevronDown className={attemptsExpanded ? styles.expandIconOpen : styles.expandIcon} />
+          </button>
+        </td>
         <td className={styles.checkCell}>
           {(CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
             <input
@@ -245,11 +412,22 @@ function TaskRow({
         </td>
         <td>
           <StatusBadge status={displayStatus} />
+          {attemptText !== undefined && (
+            <span className={styles.attemptLabel ?? ''}>{attemptText}</span>
+          )}
+          {retryingText !== undefined && (
+            <span className={styles.retryingHint ?? ''}>{retryingText}</span>
+          )}
           {task.unschedulable_reason !== undefined && (
             <UnschedulableBadge
               reason={task.unschedulable_reason}
               className={styles.unschedulableBadge ?? ''}
             />
+          )}
+          {task.failure_reason !== undefined && task.failure_reason !== '' && (
+            <span className={styles.failureReason ?? ''} title={task.failure_reason}>
+              {task.failure_reason}
+            </span>
           )}
         </td>
         <td>
@@ -300,9 +478,16 @@ function TaskRow({
           </div>
         </td>
       </tr>
+      {attemptsExpanded && (
+        <tr id={detailRowId} className={styles.attemptsRow}>
+          <td colSpan={9}>
+            <AttemptTimeline taskId={task.id} workerNamesById={workerNamesById} now={now} />
+          </td>
+        </tr>
+      )}
       {(retryError !== undefined || cancelError !== undefined) && (
         <tr className={styles.inlineError}>
-          <td colSpan={8}>
+          <td colSpan={9}>
             {retryError !== undefined && <>Retry failed: {retryError}</>}
             {retryError !== undefined && cancelError !== undefined && ' '}
             {cancelError !== undefined && <>Cancel failed: {cancelError}</>}
@@ -400,6 +585,7 @@ function StepSection({
           <table className={styles.taskTable} aria-label={`Tasks for step ${step.name}`}>
             <thead>
               <tr>
+                <th aria-label="Expand attempts" className={styles.expandCell} />
                 <th className={styles.checkCell}>
                   <input
                     type="checkbox"
@@ -482,6 +668,8 @@ export default function JobDetail() {
   const cancelTask = useCancelTask()
   const [cancelingIds, setCancelingIds] = useState<Set<string>>(new Set())
   const [cancelErrors, setCancelErrors] = useState<Map<string, string>>(new Map())
+  const resumeJob = useResumeJob()
+  const [resumeError, setResumeError] = useState<string | undefined>(undefined)
 
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set())
   const [taskSearch, setTaskSearch] = useState('')
@@ -595,6 +783,12 @@ export default function JobDetail() {
       return { ...old, items: newItems }
     })
 
+    // Invalidate this task's attempt-history query so an expanded row refetches
+    // immediately (e.g. a new attempt lands after a retry) rather than waiting
+    // for the debounced detail sync below. No-op if the row is collapsed — the
+    // query is inactive and only refetches once re-enabled.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.attempts(payload.task_id) })
+
     // Schedule a background sync to refresh step statuses and job aggregate status.
     scheduleDetailInvalidate()
   })
@@ -698,6 +892,17 @@ export default function JobDetail() {
     [cancelTask],
   )
 
+  // ── Resume (manual pause or auto-park) ──────────────────────────────────────
+
+  const handleResume = useCallback(async () => {
+    setResumeError(undefined)
+    try {
+      await resumeJob.mutateAsync(jobId)
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : 'Resume failed')
+    }
+  }, [resumeJob, jobId])
+
   // ── Bulk selection ────────────────────────────────────────────────────────
 
   const selectedTasks = useMemo(
@@ -779,6 +984,29 @@ export default function JobDetail() {
           </RefreshControls>
         }
       />
+
+      {job.failure_summary !== undefined && (
+        <ErrorBanner>
+          <span>{failureBannerText(job.failure_summary)}</span>
+        </ErrorBanner>
+      )}
+
+      {job.park_reason !== undefined && job.park_reason !== '' && (
+        <ErrorBanner variant="warning">
+          <span>Auto-parked — {job.park_reason}</span>
+          <button
+            type="button"
+            className={styles.resumeBtn ?? ''}
+            onClick={() => void handleResume()}
+            disabled={resumeJob.isPending}
+          >
+            {resumeJob.isPending ? 'Resuming…' : 'Resume'}
+          </button>
+          {resumeError !== undefined && (
+            <span className={styles.resumeError ?? ''}>{resumeError}</span>
+          )}
+        </ErrorBanner>
+      )}
 
       <div className={styles.jobNameArea}>
         <h2 className={styles.jobName}>{job.name}</h2>

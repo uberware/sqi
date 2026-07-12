@@ -131,7 +131,7 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, m protocol.TaskStatus
 	case "succeeded":
 		return s.handleTaskTerminal(ctx, attempt, m, store.TaskStatusSucceeded, store.AttemptStatusSucceeded, at)
 	case "failed":
-		return s.handleTaskTerminal(ctx, attempt, m, store.TaskStatusFailed, store.AttemptStatusFailed, at)
+		return s.handleTaskFailed(ctx, attempt, m, at)
 	case "canceled":
 		return s.handleTaskTerminal(ctx, attempt, m, store.TaskStatusCanceled, store.AttemptStatusCanceled, at)
 	default:
@@ -239,21 +239,40 @@ func (s *Scheduler) handleTaskTerminal(
 	at time.Time,
 ) error {
 	// ── Close the attempt record ──────────────────────────────────────────
-	updated := attempt
-	updated.Status = attemptStatus
-	updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
-	updated.EndedAt = &at
-	if m.ExitCode != nil {
-		code := *m.ExitCode
-		updated.ExitCode = &code
-	}
-	if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-		return err
+	// Skipped for failed: that path only arrives here via handleTaskFailed,
+	// whose RecordTaskFailure already closed the attempt (same status, end
+	// time, exit code, session, and message) inside its transaction.
+	if attemptStatus != store.AttemptStatusFailed {
+		updated := attempt
+		updated.Status = attemptStatus
+		updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
+		updated.EndedAt = &at
+		updated.Message = m.Message
+		if m.ExitCode != nil {
+			code := *m.ExitCode
+			updated.ExitCode = &code
+		}
+		if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
+			return err
+		}
 	}
 
 	// ── Transition the task ───────────────────────────────────────────────
 	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, taskStatus); err != nil {
 		return err
+	}
+
+	// ── Durable per-task failure reason for terminal non-success ─────────
+	// An empty synthesized reason (worker "canceled" echoes always carry an
+	// empty Message — see internal/worker/executor/run.go) must never
+	// overwrite an existing, server-set reason (e.g. CancelTask/CancelJob's
+	// "canceled by user" or the cascade's "canceled: upstream step failed").
+	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
+		if reason := failureReasonOrFallback(m.Message, m.ExitCode, taskStatus); reason != "" {
+			if err := s.store.SetTaskFailureReason(ctx, m.TaskID, reason); err != nil {
+				return err
+			}
+		}
 	}
 
 	// ── Release usage pool slots ──────────────────────────────────────────
@@ -296,6 +315,22 @@ func (s *Scheduler) handleTaskTerminal(
 	})
 
 	return s.checkStepCompletion(ctx, task.StepID, task.JobID)
+}
+
+// failureReasonOrFallback returns m.Message, or a synthesized fallback so a
+// terminal non-success is never blank. Canceled with no message stays blank
+// (server-originated cancels set their own reason via SetTaskFailureReason).
+func failureReasonOrFallback(msg string, exitCode *int, status store.TaskStatus) string {
+	if msg != "" {
+		return msg
+	}
+	if status == store.TaskStatusFailed {
+		if exitCode != nil {
+			return fmt.Sprintf("failed (exit %d)", *exitCode)
+		}
+		return "failed"
+	}
+	return ""
 }
 
 // ── Step and job completion ───────────────────────────────────────────────────
@@ -428,7 +463,8 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 	}
 
 	// Fan the cascade-canceled tasks out to WebSocket subscribers; they were never
-	// assigned, so there is no worker to attribute.
+	// assigned, so there is no worker to attribute. The durable failure reason
+	// was stamped by CancelDependents in the same UPDATE that canceled them.
 	now := time.Now().UTC()
 	for _, t := range canceledTasks {
 		s.notifier.NotifyTask(ws.TaskEvent{

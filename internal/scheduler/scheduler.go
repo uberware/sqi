@@ -102,6 +102,9 @@ func DefaultConfig() Config {
 		JobRetention:              7 * 24 * time.Hour,
 		JobRetentionIncludeFailed: false,
 		UnschedulableGrace:        30 * time.Second,
+		DefaultMaxAttempts:        3,
+		RetryDelay:                30 * time.Second,
+		DefaultFailureLimit:       0,
 	}
 }
 
@@ -166,6 +169,26 @@ type Config struct {
 	// duration knobs above, this is NOT coerced up to the default in [New],
 	// since 0 is a legitimate "off" setting. Default: 30 s.
 	UnschedulableGrace time.Duration
+
+	// DefaultMaxAttempts is the server-level fallback tier of the layered
+	// retry policy (Server -> Farm -> Queue -> Job): the farm-wide default
+	// number of attempts a task may make before going terminal-failed. A
+	// value <= 0 is coerced up to the [DefaultConfig] value in [New], since
+	// unlike UnschedulableGrace this knob has no meaningful "off" state (the
+	// minimum valid value is 1, which disables auto-retry outright).
+	// Default: 3.
+	DefaultMaxAttempts int
+
+	// RetryDelay is the server-level fallback default backoff before a
+	// failed task re-enters the ready queue. 0 is a legitimate "immediate"
+	// setting; only a negative value is coerced up to the [DefaultConfig]
+	// value in [New]. Default: 30 s.
+	RetryDelay time.Duration
+
+	// DefaultFailureLimit is the server-level fallback default job-level
+	// failure ceiling. 0 = off (no auto-park) and is a legitimate setting —
+	// like UnschedulableGrace, it is NOT coerced up in [New]. Default: 0.
+	DefaultFailureLimit int
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -225,6 +248,12 @@ type Scheduler struct {
 
 	// cancel is called to stop all internal goroutines; set during [Run].
 	cancel context.CancelFunc
+
+	// retryWakeMu guards retryWakeTimers: the in-flight backoff-wake timers
+	// scheduled by scheduleRetryWake, tracked so shutdown can stop them
+	// instead of leaving fire-and-forget timers alive past [Run].
+	retryWakeMu     sync.Mutex
+	retryWakeTimers map[*time.Timer]struct{}
 }
 
 // New creates a Scheduler. Call [Run] to start its goroutines.
@@ -255,6 +284,12 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if cfg.AssignedTaskTimeout <= 0 {
 		cfg.AssignedTaskTimeout = DefaultConfig().AssignedTaskTimeout
 	}
+	if cfg.DefaultMaxAttempts <= 0 {
+		cfg.DefaultMaxAttempts = DefaultConfig().DefaultMaxAttempts
+	}
+	if cfg.RetryDelay < 0 {
+		cfg.RetryDelay = DefaultConfig().RetryDelay
+	}
 	n := notifier
 	if n == nil {
 		n = ws.NoopNotifier{}
@@ -269,6 +304,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		diagBuf:          diagBuf,
 		waiters:          newWaiterRegistry(),
 		leaseHoldTimeout: 30 * time.Second,
+		retryWakeTimers:  make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).
@@ -382,6 +418,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 
 	s.wg.Wait()
+
+	// Stop any backoff-wake timers still pending so they don't outlive Run.
+	s.stopRetryWakeTimers()
 
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
@@ -1269,14 +1308,16 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 
 // ── Instrumentation helpers ─────────────────────────────────────────
 
-// refreshQueueDepthGauge queries the store for the current number of ready
-// tasks per queue in the scheduler's farm and updates the
-// SchedulerQueueDepth Prometheus gauge.
+// refreshQueueDepthGauge queries the store for the current number of leasable
+// ready tasks per queue in the scheduler's farm (backoff elapsed, queue
+// unpaused, job schedulable), updates the SchedulerQueueDepth Prometheus
+// gauge, and wakes lease waiters on every queue with leasable work — the
+// restart-safe backstop for scheduleRetryWake's in-process backoff timers.
 //
 // Called on every heartbeat-sweep tick so the gauge stays current.  Errors are
 // logged at WARN level and do not abort the sweep.
 func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
-	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID)
+	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID, time.Now().UTC())
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.WarnContext(ctx, "scheduler: refresh queue depth gauge failed", slog.Any("error", err))
@@ -1285,6 +1326,9 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	}
 	for queueID, n := range counts {
 		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
+		if n > 0 {
+			s.WakeQueue(queueID)
+		}
 	}
 }
 

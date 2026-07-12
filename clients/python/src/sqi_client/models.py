@@ -31,6 +31,8 @@ __all__ = [
     "CancelResult",
     "ComputeLocation",
     "CurrentTask",
+    "EffectiveRetryPolicy",
+    "FailureSummary",
     "Farm",
     "GPUInfo",
     "Job",
@@ -48,6 +50,7 @@ __all__ = [
     "Step",
     "StorageLocation",
     "Task",
+    "TaskAttempt",
     "TaskCounts",
     "TaskStatus",
     "UsagePool",
@@ -401,6 +404,62 @@ class TaskCounts:
 
 
 @dataclass(frozen=True)
+class FailureSummary:
+    """Aggregate of a job's failed-task reasons (OpenAPI ``failure_summary``).
+
+    Populated only on the ``JobDetail`` response (see :class:`Job`); ``None``
+    on a list-level job or when a task failed without a rich reason.
+    """
+
+    failed_count: int
+    dominant_reason: str | None
+    distinct_reasons: int
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> FailureSummary:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            failed_count=_as_int(data.get("failed_count")),
+            dominant_reason=_opt_str(data.get("dominant_reason")),
+            distinct_reasons=_as_int(data.get("distinct_reasons")),
+        )
+
+
+@dataclass(frozen=True)
+class EffectiveRetryPolicy:
+    """The resolved retry policy in force for a job (OpenAPI ``effective_retry``).
+
+    The values after job -> queue -> farm -> server-default inheritance; always
+    concrete ints when the object is present. A ``failure_limit`` of ``0`` means
+    auto-park is off. Populated only on the ``JobDetail`` response (see
+    :class:`Job`); ``None`` on a list-level job or an older server.
+    """
+
+    max_attempts: int
+    retry_delay_seconds: int
+    failure_limit: int
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> EffectiveRetryPolicy:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            max_attempts=_as_int(data.get("max_attempts")),
+            retry_delay_seconds=_as_int(data.get("retry_delay_seconds")),
+            failure_limit=_as_int(data.get("failure_limit")),
+        )
+
+
+@dataclass(frozen=True)
 class Job:
     """A submitted job.
 
@@ -425,6 +484,29 @@ class Job:
     completed_at: datetime | None = None
     steps: list[Step] | None = None
     task_counts: TaskCounts | None = None
+    max_attempts: int | None = None
+    """Per-job override for the maximum attempts per task. ``None`` means
+    inherit (queue -> farm -> server default)."""
+    retry_delay_seconds: int | None = None
+    """Per-job override for the delay before retrying a failed task. ``None``
+    means inherit (queue -> farm -> server default)."""
+    failure_limit: int | None = None
+    """Per-job override for the number of task failures that auto-parks the
+    job. ``None`` means inherit (queue -> farm -> server default)."""
+    failed_attempts: int = 0
+    """Cumulative count of genuine task failures for this job."""
+    park_reason: str | None = None
+    """Set when the failure-limit sweep auto-parked the job. Empty/``None``
+    for a manual pause."""
+    failure_summary: FailureSummary | None = None
+    """Aggregate of this job's failed-task reasons. Populated only by
+    :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
+    ``None`` on a list-level job."""
+    effective_retry: EffectiveRetryPolicy | None = None
+    """The resolved retry policy in force for this job after job -> queue ->
+    farm -> server-default inheritance. Populated only by
+    :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
+    ``None`` on a list-level job or when the server predates this field."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -460,6 +542,21 @@ class Job:
             task_counts=(
                 TaskCounts.from_dict(raw_counts) if isinstance(raw_counts, dict) else None
             ),
+            max_attempts=_opt_int(data.get("max_attempts")),
+            retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
+            failure_limit=_opt_int(data.get("failure_limit")),
+            failed_attempts=_as_int(data.get("failed_attempts")),
+            park_reason=_opt_str(data.get("park_reason")),
+            failure_summary=(
+                FailureSummary.from_dict(fs)
+                if isinstance(fs := data.get("failure_summary"), dict)
+                else None
+            ),
+            effective_retry=(
+                EffectiveRetryPolicy.from_dict(er)
+                if isinstance(er := data.get("effective_retry"), dict)
+                else None
+            ),
         )
 
 
@@ -480,6 +577,9 @@ class Task:
     parameters: dict[str, str] = field(default_factory=dict)
     assigned_worker_id: str | None = None
     assigned_at: datetime | None = None
+    failure_reason: str | None = None
+    """Human-readable reason the task's most recent attempt failed. ``None``
+    when the task has not failed or the server predates this field."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Task:
@@ -500,6 +600,7 @@ class Task:
             parameters=_str_dict(data.get("parameters")),
             assigned_worker_id=_opt_str(data.get("assigned_worker_id")),
             assigned_at=_opt_datetime(data.get("assigned_at")),
+            failure_reason=_opt_str(data.get("failure_reason")),
         )
 
 
@@ -575,6 +676,43 @@ class RetryJobResult:
         return cls(
             job_id=_as_str(data.get("job_id")),
             retried=_as_int(data.get("retried")),
+        )
+
+
+@dataclass(frozen=True)
+class TaskAttempt:
+    """One execution attempt of a task (OpenAPI ``TaskAttempt``).
+
+    Returned, oldest first, by
+    :meth:`~sqi_client.client.SqiClient.list_task_attempts`. ``worker_id``,
+    ``exit_code``, ``message``, and ``ended_at`` are ``None`` while the attempt
+    is still running (or for a worker-less/message-less terminal attempt).
+    """
+
+    attempt_number: int
+    status: str
+    started_at: datetime
+    worker_id: str | None = None
+    exit_code: int | None = None
+    message: str | None = None
+    ended_at: datetime | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> TaskAttempt:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            attempt_number=_as_int(data.get("attempt_number")),
+            status=_as_str(data.get("status")),
+            started_at=_as_datetime(data.get("started_at")),
+            worker_id=_opt_str(data.get("worker_id")),
+            exit_code=_opt_int(data.get("exit_code")),
+            message=_opt_str(data.get("message")),
+            ended_at=_opt_datetime(data.get("ended_at")),
         )
 
 
@@ -747,6 +885,15 @@ class Farm:
     created_at: datetime
     updated_at: datetime
     description: str | None = None
+    max_attempts: int | None = None
+    """Farm-level override for the maximum attempts per task. ``None`` means
+    inherit (server default)."""
+    retry_delay_seconds: int | None = None
+    """Farm-level override for the delay before retrying a failed task.
+    ``None`` means inherit (server default)."""
+    failure_limit: int | None = None
+    """Farm-level override for the number of task failures that auto-parks a
+    job. ``None`` means inherit (server default)."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Farm:
@@ -763,6 +910,9 @@ class Farm:
             created_at=_as_datetime(data.get("created_at")),
             updated_at=_as_datetime(data.get("updated_at")),
             description=_opt_str(data.get("description")),
+            max_attempts=_opt_int(data.get("max_attempts")),
+            retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
+            failure_limit=_opt_int(data.get("failure_limit")),
         )
 
 
@@ -779,6 +929,15 @@ class Queue:
     created_at: datetime
     updated_at: datetime
     description: str | None = None
+    max_attempts: int | None = None
+    """Queue-level override for the maximum attempts per task. ``None`` means
+    inherit (farm -> server default)."""
+    retry_delay_seconds: int | None = None
+    """Queue-level override for the delay before retrying a failed task.
+    ``None`` means inherit (farm -> server default)."""
+    failure_limit: int | None = None
+    """Queue-level override for the number of task failures that auto-parks a
+    job. ``None`` means inherit (farm -> server default)."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Queue:
@@ -798,6 +957,9 @@ class Queue:
             created_at=_as_datetime(data.get("created_at")),
             updated_at=_as_datetime(data.get("updated_at")),
             description=_opt_str(data.get("description")),
+            max_attempts=_opt_int(data.get("max_attempts")),
+            retry_delay_seconds=_opt_int(data.get("retry_delay_seconds")),
+            failure_limit=_opt_int(data.get("failure_limit")),
         )
 
 

@@ -71,8 +71,11 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	}
 
 	// Step 2: cancel all non-terminal tasks; capture the previously active
-	// tasks so we know which workers to notify.
-	activeTasks, err := s.store.CancelJobTasks(ctx, jobID, now)
+	// tasks so we know which workers to notify. The durable "canceled by user"
+	// reason rides the same UPDATE, stamped only on tasks with no reason yet so
+	// a more specific cause already recorded (e.g. a cascade-cancel's
+	// "canceled: upstream step failed") is never clobbered.
+	activeTasks, err := s.store.CancelJobTasks(ctx, jobID, now, store.FailureReasonCanceledByUser)
 	if err != nil {
 		return fmt.Errorf("scheduler: cancel tasks for job %s: %w", jobID, err)
 	}
@@ -146,6 +149,17 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 
 	if err = s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusCanceled); err != nil {
 		return fmt.Errorf("scheduler: transition task %s to canceled: %w", taskID, err)
+	}
+
+	// Annotate the durable failure reason. Guarded (IfEmpty) so a concurrent
+	// cascade-cancel's more specific reason is never clobbered. Best-effort:
+	// does not roll back the cancellation itself — the reason is an annotation.
+	if err = s.store.SetTaskFailureReasonIfEmpty(ctx, taskID, store.FailureReasonCanceledByUser); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: set failure reason for canceled task failed",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
 	}
 
 	// Publish a cancel signal to the assigned worker (if any).

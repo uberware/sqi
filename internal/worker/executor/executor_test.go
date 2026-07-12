@@ -1523,3 +1523,76 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 		t.Errorf("scratch dir %q still exists after pipeline failure — stager.Cleanup was not called (leak)", scratchDir)
 	}
 }
+
+// ── StagingDefaults wiring ────────────────────────────────────────────────────
+
+// TestExecutor_Dispatch_stageLocallyProceedsWithStagingDefaults verifies that
+// when Config.StagingDefaults is true and staging is otherwise unconfigured
+// (no ScratchDir/SyncCommand), a stage_locally assignment proceeds using the
+// built-in copy + TEMP scratch rather than failing pre-exec.
+func TestExecutor_Dispatch_stageLocallyProceedsWithStagingDefaults(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	nc := &stubNATS{}
+	m := metrics.New()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mgr := session.NewManager(t.TempDir(), false, logger)
+	cfg := executor.Config{
+		KillGracePeriod: 500 * time.Millisecond,
+		StagingDefaults: true,
+	}
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	exec := executor.New(statusPub, mgr, m, nil, cfg, logger)
+
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	msg.PathDeliveries = []protocol.PathDelivery{{Kind: "stage_locally"}}
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "succeeded" {
+		t.Errorf("terminal status = %q, message = %q; want %q (StagingDefaults must let stage_locally proceed via built-in copy)",
+			last.Status, last.Message, "succeeded")
+	}
+}
+
+// TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults verifies that
+// when Config.StagingDefaults is false and staging is otherwise unconfigured,
+// a stage_locally assignment fails pre-exec with a message naming staging.
+func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess test uses Unix-style exec")
+	}
+
+	nc := &stubNATS{}
+	m := metrics.New()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mgr := session.NewManager(t.TempDir(), false, logger)
+	cfg := executor.Config{
+		KillGracePeriod: 500 * time.Millisecond,
+		StagingDefaults: false,
+	}
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	exec := executor.New(statusPub, mgr, m, nil, cfg, logger)
+
+	msg := makeAssign("exit", map[string]string{"SQI_TEST_EXIT_CODE": "0"})
+	msg.PathDeliveries = []protocol.PathDelivery{{Kind: "stage_locally"}}
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "failed" {
+		t.Fatalf("terminal status = %q, want %q", last.Status, "failed")
+	}
+	if !strings.Contains(last.Message, "staging") {
+		t.Errorf("message = %q; want it to mention staging", last.Message)
+	}
+}

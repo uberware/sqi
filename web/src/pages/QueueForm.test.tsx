@@ -69,4 +69,50 @@ describe('QueueForm (create)', () => {
       name: 'lighting',
     })
   })
+
+  it('includes retry-policy overrides in the POST body when entered', async () => {
+    fetchMock.mockResolvedValueOnce(ok(farms)) // GET /farms for the selector
+    renderAt('/queues/new')
+
+    await screen.findByRole('option', { name: 'render' })
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'lighting' } })
+    fireEvent.change(screen.getByLabelText(/max attempts per task/i), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText(/retry delay/i), { target: { value: '30' } })
+    fireEvent.change(screen.getByLabelText(/failure limit/i), { target: { value: '10' } })
+
+    fetchMock.mockResolvedValueOnce(ok({ id: 'queue-1' }))
+    fireEvent.click(screen.getByRole('button', { name: /create queue/i }))
+
+    await waitFor(() => expect(screen.getByText('queue list')).toBeInTheDocument())
+    const postCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    if (!postCall) throw new Error('expected a POST call')
+    expect(JSON.parse((postCall[1] as RequestInit).body as string)).toMatchObject({
+      max_attempts: 5,
+      retry_delay_seconds: 30,
+      failure_limit: 10,
+    })
+  })
+
+  it('omits retry-policy fields from the POST body when left blank', async () => {
+    fetchMock.mockResolvedValueOnce(ok(farms)) // GET /farms for the selector
+    renderAt('/queues/new')
+
+    await screen.findByRole('option', { name: 'render' })
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'lighting' } })
+
+    fetchMock.mockResolvedValueOnce(ok({ id: 'queue-1' }))
+    fireEvent.click(screen.getByRole('button', { name: /create queue/i }))
+
+    await waitFor(() => expect(screen.getByText('queue list')).toBeInTheDocument())
+    const postCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    if (!postCall) throw new Error('expected a POST call')
+    const body: Record<string, unknown> = JSON.parse((postCall[1] as RequestInit).body as string)
+    expect(body).not.toHaveProperty('max_attempts')
+    expect(body).not.toHaveProperty('retry_delay_seconds')
+    expect(body).not.toHaveProperty('failure_limit')
+  })
 })

@@ -16,6 +16,7 @@ import type {
   ListResponse,
   Queue,
   Task,
+  TaskAttemptsResponse,
   TaskLogsResponse,
   VersionInfo,
   Worker,
@@ -105,6 +106,7 @@ export const queryKeys = {
     list: (jobId: string, params?: ListTasksParams) => ['tasks', 'list', jobId, params] as const,
     detail: (id: string) => ['tasks', 'detail', id] as const,
     logs: (id: string) => ['tasks', 'logs', id] as const,
+    attempts: (id: string) => ['tasks', 'attempts', id] as const,
   },
   workers: {
     all: ['workers'] as const,
@@ -200,6 +202,11 @@ export function fetchListTasks(
 /** Fetch one task from `GET /tasks/{id}`. */
 export function fetchGetTask(id: string): Promise<Task> {
   return apiFetch(`/tasks/${encodeURIComponent(id)}`)
+}
+
+/** Fetch a task's attempt history (oldest first) from `GET /tasks/{id}/attempts`. */
+export function fetchTaskAttempts(id: string): Promise<TaskAttemptsResponse> {
+  return apiFetch(`/tasks/${encodeURIComponent(id)}/attempts`)
 }
 
 /** Fetch a page of workers from `GET /workers`. */
@@ -360,6 +367,14 @@ export function useGetTask(id: string) {
   return useQuery({
     queryKey: queryKeys.tasks.detail(id),
     queryFn: () => fetchGetTask(id),
+  })
+}
+
+/** Fetch a task's attempt history. Mount only while the attempt row is expanded. */
+export function useTaskAttempts(id: string) {
+  return useQuery({
+    queryKey: queryKeys.tasks.attempts(id),
+    queryFn: () => fetchTaskAttempts(id),
   })
 }
 

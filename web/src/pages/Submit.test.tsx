@@ -74,6 +74,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     priority: 50,
     status: 'pending',
     template_format: 'yaml',
+    failed_attempts: 0,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
     ...overrides,
@@ -320,6 +321,69 @@ describe('Submit page', () => {
       await waitFor(() => {
         expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
       })
+    })
+
+    it('sends entered retry-policy overrides as query params', async () => {
+      mockFarmsAndQueues()
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      const user = userEvent.setup()
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+
+      await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+      await user.type(screen.getByLabelText(/max attempts per task/i), '5')
+      await user.type(screen.getByLabelText(/retry delay/i), '30')
+      await user.type(screen.getByLabelText(/failure limit/i), '10')
+      await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+      })
+      const postCall = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      if (!postCall) throw new Error('expected a POST call')
+      const url = String(postCall[0])
+      expect(url).toContain('max_attempts=5')
+      expect(url).toContain('retry_delay_seconds=30')
+      expect(url).toContain('failure_limit=10')
+    })
+
+    it('omits retry-policy query params when left blank', async () => {
+      mockFarmsAndQueues()
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      const user = userEvent.setup()
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+
+      await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+      await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+      })
+      const postCall = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      if (!postCall) throw new Error('expected a POST call')
+      const url = String(postCall[0])
+      expect(url).not.toContain('max_attempts=')
+      expect(url).not.toContain('retry_delay_seconds=')
+      expect(url).not.toContain('failure_limit=')
     })
 
     it('shows a toast notification after successful submission', async () => {

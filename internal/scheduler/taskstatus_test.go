@@ -30,11 +30,17 @@ func newStatusTestScheduler(st store.Store) *Scheduler {
 }
 
 func newStatusTestSchedulerWithNotifier(st store.Store, notifier ws.Notifier) *Scheduler {
+	// MaxAttempts=1 (retry disabled) so these generic terminal-cascade tests
+	// keep asserting the pre-auto-retry behavior: a single genuine failure
+	// goes straight to store.TaskStatusFailed. Retry/park-specific behavior is
+	// covered separately in failure_test.go.
+	cfg := DefaultConfig()
+	cfg.DefaultMaxAttempts = 1
 	return New(
-		DefaultConfig(),
+		cfg,
 		st,
 		nil, // bus — not called by processTaskStatus
-		nil, // metrics — not used
+		nil, // metrics — not used (retry/park branches are disabled by MaxAttempts=1 above)
 		slog.New(slog.DiscardHandler),
 		notifier,
 		nil, // diagBuf — diagnostics disabled
@@ -82,6 +88,15 @@ func seedStatusFixtureWithJobStatus(
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now()
+
+	// handleTaskFailed resolves retry policy via GetQueue/GetFarm, so a real
+	// job needs real farm/queue rows behind its FarmID/QueueID below.
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
 
 	job, err := st.CreateJob(ctx, store.Job{
 		ID:             uuid.NewString(),
@@ -374,6 +389,99 @@ func TestProcessTaskStatus_Canceled(t *testing.T) {
 	}
 }
 
+// TestProcessTaskStatus_Canceled_PersistsMessageAndReason asserts that a
+// worker-canceled status (whose attempt is closed directly by
+// handleTaskTerminal, not RecordTaskFailure) still persists the worker's
+// Message onto both the closed attempt and the task's durable FailureReason.
+func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "canceled",
+			Message:   "canceled by operator",
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	stored, err := st.GetTask(t.Context(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != store.TaskStatusCanceled {
+		t.Errorf("task status = %q, want canceled", stored.Status)
+	}
+	if stored.FailureReason != "canceled by operator" {
+		t.Errorf("task.failure_reason = %q, want %q", stored.FailureReason, "canceled by operator")
+	}
+
+	storedAttempt, err := st.GetTaskAttempt(t.Context(), attempt.ID)
+	if err != nil {
+		t.Fatalf("GetTaskAttempt: %v", err)
+	}
+	if storedAttempt.Message != "canceled by operator" {
+		t.Errorf("attempt.message = %q, want %q", storedAttempt.Message, "canceled by operator")
+	}
+}
+
+// TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason is the
+// regression for the bug where a user-canceled RUNNING task lost its
+// "canceled by user" reason. CancelTask/CancelJob set the task's
+// failure_reason up front, then kill the worker; the worker always echoes
+// back "canceled" with an empty Message (internal/worker/executor/run.go).
+// Before the fix, handleTaskTerminal unconditionally called
+// SetTaskFailureReason with the synthesized (empty, for canceled) reason,
+// clobbering the server-set one. The fix guards that write so an empty
+// synthesized reason never overwrites an existing reason.
+func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+
+	// Simulate what CancelTask/CancelJob did before killing the worker: stamp
+	// the authoritative reason directly via the store.
+	if err := st.SetTaskFailureReason(t.Context(), task.ID, "canceled by user"); err != nil {
+		t.Fatalf("SetTaskFailureReason: %v", err)
+	}
+
+	// The killed worker's terminal echo always carries an empty Message.
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "canceled",
+			Message:   "",
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if !msg.acked {
+		t.Fatal("expected message to be acked")
+	}
+
+	stored, err := st.GetTask(t.Context(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != store.TaskStatusCanceled {
+		t.Errorf("task status = %q, want canceled", stored.Status)
+	}
+	if stored.FailureReason != "canceled by user" {
+		t.Errorf("task.failure_reason = %q, want %q (must not be clobbered by the empty worker echo)",
+			stored.FailureReason, "canceled by user")
+	}
+}
+
 // ── Step and job completion ───────────────────────────────────────────────────
 
 func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {
@@ -617,6 +725,9 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 	if stored2.Status != store.TaskStatusCanceled {
 		t.Errorf("task2 status = %q, want canceled", stored2.Status)
 	}
+	if stored2.FailureReason != "canceled: upstream step failed" {
+		t.Errorf("task2 failure_reason = %q, want %q", stored2.FailureReason, "canceled: upstream step failed")
+	}
 
 	// The job must reach a terminal state, not hang in running.
 	storedJob, err := st.GetJob(ctx, job.ID)
@@ -705,7 +816,7 @@ type cancelTasksErrSt struct {
 	store.Store
 }
 
-func (*cancelTasksErrSt) TransitionStepPendingTasks(_ context.Context, _ string, _ store.TaskStatus) ([]store.Task, error) {
+func (*cancelTasksErrSt) TransitionStepPendingTasks(_ context.Context, _ string, _ store.TaskStatus, _ string) ([]store.Task, error) {
 	return nil, errInjectedLog
 }
 

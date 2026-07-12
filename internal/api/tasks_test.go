@@ -68,6 +68,7 @@ func newTaskRouterCanceler(st store.Store, sched taskCanceler) chi.Router {
 	r.Get("/api/v1/jobs/{id}/tasks", h.listJobTasks)
 	r.Get("/api/v1/tasks/{id}", h.getTask)
 	r.Get("/api/v1/tasks/{id}/logs", h.getTaskLogs)
+	r.Get("/api/v1/tasks/{id}/attempts", h.getTaskAttempts)
 	r.Post("/api/v1/tasks/{id}/retry", h.retryTask)
 	r.Post("/api/v1/tasks/{id}/cancel", h.cancelTask)
 	return r
@@ -276,6 +277,73 @@ func TestGetTask(t *testing.T) {
 			t.Errorf("unschedulable_reason = %q, want %q", resp.UnschedulableReason, reason)
 		}
 	})
+
+	t.Run("includes failed_attempts and retry_after when set", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		// Running: RequeueTaskForRetry only transitions an in-flight task.
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+
+		now := time.Now()
+		att, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+			ID: uuid.NewString(), TaskID: tk.ID, WorkerID: "w1",
+			AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateTaskAttempt: %v", err)
+		}
+		if _, _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", "", now); err != nil {
+			t.Fatalf("RecordTaskFailure: %v", err)
+		}
+		retryAfter := now.Add(30 * time.Second)
+		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, retryAfter, now); err != nil || !requeued {
+			t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.FailedAttempts != 1 {
+			t.Errorf("failed_attempts = %d, want 1", resp.FailedAttempts)
+		}
+		if resp.RetryAfter == nil || !resp.RetryAfter.Equal(retryAfter) {
+			t.Errorf("retry_after = %v, want %v", resp.RetryAfter, retryAfter)
+		}
+	})
+
+	t.Run("includes failure_reason when set", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		const reason = "staging"
+		if err := st.SetTaskFailureReason(t.Context(), tk.ID, reason); err != nil {
+			t.Fatalf("SetTaskFailureReason: %v", err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.FailureReason != reason {
+			t.Errorf("failure_reason = %q, want %q", resp.FailureReason, reason)
+		}
+	})
 }
 
 // ── GET /api/v1/tasks/{id}/logs ───────────────────────────────────────────────
@@ -431,6 +499,128 @@ func TestGetTaskLogs(t *testing.T) {
 		}
 		if resp.AfterNATSSeq != 12 {
 			t.Errorf("empty-page after_nats_seq = %d, want 12 (echo request)", resp.AfterNATSSeq)
+		}
+	})
+}
+
+// ── GET /api/v1/tasks/{id}/attempts ───────────────────────────────────────────
+
+func TestGetTaskAttempts(t *testing.T) {
+	t.Run("returns attempts ordered by attempt number", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		ctx := t.Context()
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
+
+		// Attempt 1: failed with a message and exit code.
+		startedAt1 := time.Now().Add(-time.Hour)
+		endedAt1 := startedAt1.Add(time.Minute)
+		attempt1 := store.TaskAttempt{
+			ID:            uuid.NewString(),
+			TaskID:        tk.ID,
+			WorkerID:      "worker-1",
+			AttemptNumber: 1,
+			Status:        store.AttemptStatusRunning,
+			StartedAt:     startedAt1,
+			CreatedAt:     startedAt1,
+		}
+		attempt1, err := st.CreateTaskAttempt(ctx, attempt1)
+		if err != nil {
+			t.Fatalf("CreateTaskAttempt: %v", err)
+		}
+		exitCode := 1
+		attempt1.Status = store.AttemptStatusFailed
+		attempt1.ExitCode = &exitCode
+		attempt1.Message = "worker not configured for staging"
+		attempt1.EndedAt = &endedAt1
+		if _, err := st.UpdateTaskAttempt(ctx, attempt1); err != nil {
+			t.Fatalf("UpdateTaskAttempt: %v", err)
+		}
+
+		// Attempt 2: still running, no exit code or end time.
+		startedAt2 := time.Now()
+		attempt2 := store.TaskAttempt{
+			ID:            uuid.NewString(),
+			TaskID:        tk.ID,
+			WorkerID:      "worker-2",
+			AttemptNumber: 2,
+			Status:        store.AttemptStatusRunning,
+			StartedAt:     startedAt2,
+			CreatedAt:     startedAt2,
+		}
+		if _, err := st.CreateTaskAttempt(ctx, attempt2); err != nil {
+			t.Fatalf("CreateTaskAttempt: %v", err)
+		}
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/attempts", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Items) != 2 {
+			t.Fatalf("want 2 attempts, got %d", len(resp.Items))
+		}
+		if resp.Items[0]["attempt_number"] != float64(1) ||
+			resp.Items[0]["message"] != "worker not configured for staging" ||
+			resp.Items[0]["exit_code"] != float64(1) ||
+			resp.Items[0]["status"] != "failed" {
+			t.Fatalf("attempt 1 wrong: %v", resp.Items[0])
+		}
+		if resp.Items[1]["attempt_number"] != float64(2) ||
+			resp.Items[1]["status"] != "running" {
+			t.Fatalf("attempt 2 wrong: %v", resp.Items[1])
+		}
+		if _, ok := resp.Items[1]["exit_code"]; ok {
+			t.Errorf("attempt 2 exit_code should be omitted while running, got %v", resp.Items[1]["exit_code"])
+		}
+		if _, ok := resp.Items[1]["ended_at"]; ok {
+			t.Errorf("attempt 2 ended_at should be omitted while running, got %v", resp.Items[1]["ended_at"])
+		}
+		if _, ok := resp.Items[0]["session_id"]; ok {
+			t.Errorf("session_id should be omitted from the wire, got %v", resp.Items[0]["session_id"])
+		}
+		if _, ok := resp.Items[0]["created_at"]; ok {
+			t.Errorf("created_at should be omitted from the wire, got %v", resp.Items[0]["created_at"])
+		}
+	})
+
+	t.Run("unknown task id returns 404", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/ghost/attempts", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+
+	t.Run("task with no attempts returns empty items", func(t *testing.T) {
+		st := fake.New()
+		r := newTaskRouter(st)
+		_, tk := seedTask(t, st, store.TaskStatusReady)
+
+		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/attempts", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp taskAttemptsResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Items == nil || len(resp.Items) != 0 {
+			t.Fatalf("expected empty items, got %v", resp.Items)
 		}
 	})
 }

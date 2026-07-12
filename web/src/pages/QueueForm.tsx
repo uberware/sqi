@@ -4,8 +4,10 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import type { Farm } from '@/api/types'
 import PageHeader from '@/components/PageHeader'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useGetQueue, useListFarms } from '@/api/queries'
+import { parseOptionalInt } from '@/lib/parse'
 import { useCreateQueue, useUpdateQueue } from '@/api/mutations'
 import type { QueueInput } from '@/api/mutations'
 import styles from './QueueForm.module.css'
@@ -21,6 +23,9 @@ interface Defaults {
   priority: string
   maxConcurrent: string
   paused: boolean
+  maxAttempts: string
+  retryDelaySeconds: string
+  failureLimit: string
 }
 
 interface InnerProps {
@@ -42,6 +47,9 @@ function QueueFormInner({ mode, id, farms, defaults }: InnerProps) {
   const [priority, setPriority] = useState(defaults.priority)
   const [maxConcurrent, setMaxConcurrent] = useState(defaults.maxConcurrent)
   const [paused, setPaused] = useState(defaults.paused)
+  const [maxAttempts, setMaxAttempts] = useState(defaults.maxAttempts)
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState(defaults.retryDelaySeconds)
+  const [failureLimit, setFailureLimit] = useState(defaults.failureLimit)
 
   const isPending = createQueue.isPending || updateQueue.isPending
   const canSubmit = name.trim().length > 0 && farmId !== '' && !isPending
@@ -49,6 +57,9 @@ function QueueFormInner({ mode, id, farms, defaults }: InnerProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
+    const parsedMaxAttempts = parseOptionalInt(maxAttempts)
+    const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
+    const parsedFailureLimit = parseOptionalInt(failureLimit)
     const input: QueueInput = {
       farm_id: farmId,
       name: name.trim(),
@@ -56,6 +67,11 @@ function QueueFormInner({ mode, id, farms, defaults }: InnerProps) {
       priority: Math.trunc(Number(priority) || 0),
       max_concurrent_tasks: Math.trunc(Number(maxConcurrent) || 0),
       paused,
+      ...(parsedMaxAttempts !== undefined ? { max_attempts: parsedMaxAttempts } : {}),
+      ...(parsedRetryDelaySeconds !== undefined
+        ? { retry_delay_seconds: parsedRetryDelaySeconds }
+        : {}),
+      ...(parsedFailureLimit !== undefined ? { failure_limit: parsedFailureLimit } : {}),
     }
     try {
       if (mode === 'create') {
@@ -166,6 +182,19 @@ function QueueFormInner({ mode, id, farms, defaults }: InnerProps) {
           </label>
         </div>
 
+        <RetryPolicyFields
+          maxAttempts={maxAttempts}
+          onMaxAttemptsChange={setMaxAttempts}
+          retryDelaySeconds={retryDelaySeconds}
+          onRetryDelaySecondsChange={setRetryDelaySeconds}
+          failureLimit={failureLimit}
+          onFailureLimitChange={setFailureLimit}
+          placeholder="Inherit farm default"
+          fieldClassName={styles.field}
+          labelClassName={styles.label}
+          inputClassName={styles.input}
+        />
+
         <div className={styles.footer}>
           <button type="submit" className={styles.submitBtn} disabled={!canSubmit}>
             {mode === 'create' ? 'Create Queue' : 'Save'}
@@ -212,6 +241,14 @@ export default function QueueForm({ mode }: Props) {
         priority: String(queueQuery.data?.priority ?? 50),
         maxConcurrent: String(queueQuery.data?.max_concurrent_tasks ?? 0),
         paused: queueQuery.data?.paused ?? false,
+        maxAttempts:
+          queueQuery.data?.max_attempts !== undefined ? String(queueQuery.data.max_attempts) : '',
+        retryDelaySeconds:
+          queueQuery.data?.retry_delay_seconds !== undefined
+            ? String(queueQuery.data.retry_delay_seconds)
+            : '',
+        failureLimit:
+          queueQuery.data?.failure_limit !== undefined ? String(queueQuery.data.failure_limit) : '',
       }}
     />
   )

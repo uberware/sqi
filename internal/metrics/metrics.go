@@ -100,6 +100,16 @@ type Metrics struct {
 	// usage-pool claims for each named pool. Updated by the scheduler on every
 	// dispatch tick.
 	UsageActiveClaims *prometheus.GaugeVec
+
+	// ── Auto-retry ────────────────────────────────────────────────────────────
+
+	// TaskRetriesTotal counts tasks re-queued by automatic retry, partitioned
+	// by queue name. Incremented by the scheduler's failure fork.
+	TaskRetriesTotal *prometheus.CounterVec
+
+	// JobsAutoParkedTotal counts jobs auto-parked at their failure limit,
+	// partitioned by queue name. Incremented by the scheduler's failure fork.
+	JobsAutoParkedTotal *prometheus.CounterVec
 }
 
 // New creates a [*Metrics] and registers all metric families — plus the
@@ -228,6 +238,26 @@ func New() *Metrics {
 			},
 			[]string{"pool"},
 		),
+
+		TaskRetriesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "task_retries_total",
+				Help:      "Total tasks re-queued by automatic retry, partitioned by queue name.",
+			},
+			[]string{"queue"},
+		),
+
+		JobsAutoParkedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqi",
+				Subsystem: "scheduler",
+				Name:      "jobs_autoparked_total",
+				Help:      "Total jobs auto-parked at their failure limit, partitioned by queue name.",
+			},
+			[]string{"queue"},
+		),
 	}
 
 	reg.MustRegister(
@@ -242,6 +272,8 @@ func New() *Metrics {
 		m.NATSConsumedTotal,
 		m.DBQueryDuration,
 		m.UsageActiveClaims,
+		m.TaskRetriesTotal,
+		m.JobsAutoParkedTotal,
 	)
 
 	return m
