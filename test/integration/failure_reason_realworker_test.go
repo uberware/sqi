@@ -94,4 +94,25 @@ steps:
 		t.Errorf("job failure_summary.dominant_reason = %q, want it to mention %q",
 			job.FailureSummary.DominantReason, "staging")
 	}
+
+	// The attempt-history endpoint must independently surface the same
+	// staging failure: at least one recorded attempt is "failed" with a
+	// message mentioning "staging". This exercises GET
+	// /api/v1/tasks/{id}/attempts end-to-end against a real worker's
+	// failPreExec path, not just the fake-worker/API-level coverage in
+	// internal/api/tasks_test.go.
+	attempts := getTaskAttempts(t, ts, taskID)
+	if len(attempts.Items) < 1 {
+		t.Fatalf("task attempts: got %d items, want >= 1", len(attempts.Items))
+	}
+	found := false
+	for _, a := range attempts.Items {
+		if a.Status == "failed" && strings.Contains(a.Message, "staging") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("task attempts: no failed attempt with a message mentioning %q, got %+v", "staging", attempts.Items)
+	}
 }

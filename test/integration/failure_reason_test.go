@@ -67,6 +67,28 @@ func getJobFailureDetail(t *testing.T, ts *testServer, jobID string) jobFailureD
 	return resp
 }
 
+// taskAttemptResp is the subset of one item in GET /api/v1/tasks/{id}/attempts'
+// response used by tests (mirrors internal/api/tasks.go's taskAttemptResponse).
+type taskAttemptResp struct {
+	AttemptNumber int    `json:"attempt_number"`
+	Status        string `json:"status"`
+	Message       string `json:"message,omitempty"`
+}
+
+// taskAttemptsResp mirrors internal/api/tasks.go's taskAttemptsResponse.
+type taskAttemptsResp struct {
+	Items []taskAttemptResp `json:"items"`
+}
+
+// getTaskAttempts fetches GET /api/v1/tasks/{id}/attempts and decodes the
+// fields this test needs.
+func getTaskAttempts(t *testing.T, ts *testServer, taskID string) taskAttemptsResp {
+	t.Helper()
+	var resp taskAttemptsResp
+	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/tasks/"+taskID+"/attempts"), nil, "", http.StatusOK, &resp)
+	return resp
+}
+
 // publishStatusWithMessage publishes a [protocol.TaskStatusMsg] to
 // task.status.<jobID> carrying a Message, exercising the same field a real
 // worker's failure report populates (see internal/worker's failPreExec /
