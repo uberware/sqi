@@ -393,6 +393,38 @@ func TestLoad_StagingFromYAML(t *testing.T) {
 	}
 }
 
+func TestDefault_StagingDefaultsTrueByDefault(t *testing.T) {
+	cfg := Default()
+	if !cfg.Staging.Defaults {
+		t.Error("staging.defaults default should be true")
+	}
+}
+
+func TestLoad_StagingDefaultsEnvOverridesToFalse(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222") // satisfy validation
+	t.Setenv("SQI_STAGING_DEFAULTS", "false")
+
+	cfg, err := Load("", FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Staging.Defaults {
+		t.Error("staging.defaults: expected false from env")
+	}
+}
+
+func TestLoad_StagingDefaultsFromYAML(t *testing.T) {
+	body := "staging:\n  defaults: false\n"
+	f := writeTempFile(t, "worker.yaml", []byte(body))
+	cfg, err := Load(f, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Staging.Defaults {
+		t.Error("staging.defaults: expected false from yaml")
+	}
+}
+
 // ── Worker ID persistence ─────────────────────────────────────────────────────
 // Core tests live in workerid_test.go. These tests exercise the integration
 // between Load and the persistence layer.

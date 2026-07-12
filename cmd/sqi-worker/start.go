@@ -293,6 +293,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 			AllowRoot:          cfg.Worker.AllowRoot,
 			StagingScratchDir:  cfg.Staging.ScratchDir,
 			StagingSyncCommand: cfg.Staging.SyncCommand,
+			StagingDefaults:    cfg.Staging.Defaults,
 		},
 		logger,
 	)

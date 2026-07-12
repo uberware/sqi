@@ -164,6 +164,11 @@ type Config struct {
 	// StagingSyncCommand is the operator-configured sync command template.
 	// Passed to staging.New; staging is disabled when empty.
 	StagingSyncCommand string
+
+	// StagingDefaults enables the built-in copy + TEMP scratch when staging is
+	// otherwise unconfigured (no StagingScratchDir/StagingSyncCommand). Passed
+	// to staging.New; when false an unconfigured stage_locally job fails hard.
+	StagingDefaults bool
 }
 
 // ── CancelRegistrar ───────────────────────────────────────────────────────────
@@ -290,7 +295,7 @@ func New(
 		outputHandler: outputHandler,
 		logger:        logger,
 		cfg:           cfg,
-		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, true, logger), // TODO(task-3): wire defaults from config
+		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, cfg.StagingDefaults, logger),
 		activeTasks:   make(map[string]*taskRun),
 		execCtx:       execCtx,
 		execCancel:    execCancel,

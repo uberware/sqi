@@ -72,6 +72,12 @@ type StagingConfig struct {
 	// SyncCommand is the command template invoked per path, with {src}, {dest},
 	// and optional {object_type} placeholders, e.g. "rsync -a {src} {dest}".
 	SyncCommand string `yaml:"sync_command"`
+
+	// Defaults enables the built-in copy + TEMP scratch when staging is
+	// otherwise unconfigured. Default true; set false to make an unconfigured
+	// stage_locally job fail hard instead.
+	// Env: SQI_STAGING_DEFAULTS
+	Defaults bool `yaml:"defaults"`
 }
 
 // DiagnosticsConfig controls the diagnostic-log sink that ships the worker's
@@ -312,6 +318,9 @@ func Default() WorkerConfig {
 		Diagnostics: DiagnosticsConfig{
 			Enabled: true,
 		},
+		Staging: StagingConfig{
+			Defaults: true,
+		},
 	}
 }
 
@@ -421,6 +430,7 @@ func applyEnv(cfg *WorkerConfig) {
 	applyDiscoveryEnv(&cfg.Discovery)
 	applyLogStreamerEnv(&cfg.LogStreamer)
 	applyDiagnosticsEnv(&cfg.Diagnostics)
+	applyStagingEnv(&cfg.Staging)
 	applyCapabilitiesEnv(&cfg.Capabilities)
 }
 
@@ -433,6 +443,12 @@ func applyCapabilitiesEnv(c *capabilities.CapabilitiesConfig) {
 func applyDiagnosticsEnv(c *DiagnosticsConfig) {
 	if v := os.Getenv("SQI_DIAGNOSTICS_ENABLED"); v != "" {
 		c.Enabled = parseBoolEnv(v)
+	}
+}
+
+func applyStagingEnv(c *StagingConfig) {
+	if v := os.Getenv("SQI_STAGING_DEFAULTS"); v != "" {
+		c.Defaults = parseBoolEnv(v)
 	}
 }
 

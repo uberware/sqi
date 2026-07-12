@@ -1019,7 +1019,7 @@ func (e *Executor) buildEffectiveLookup(
 
 	if hasDelivery(msg.PathDeliveries, "stage_locally") {
 		if !e.stager.Configured() {
-			e.failPreExec(msg, sessID, failed, "worker not configured for staging (set staging.scratch_dir and staging.sync_command)")
+			e.failPreExec(msg, sessID, failed, "worker not configured for staging (set staging.scratch_dir and staging.sync_command, or enable staging.defaults)")
 			return nil, "", false
 		}
 		var stErr error
