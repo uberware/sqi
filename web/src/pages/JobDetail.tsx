@@ -9,12 +9,12 @@ import IconButton from '@/components/IconButton'
 import StatusBadge from '@/components/StatusBadge'
 import UnschedulableBadge from '@/components/UnschedulableBadge'
 import TaskProgressBar from '@/components/TaskProgressBar'
-import { Document, Rotate, X } from '@/components/icons'
+import { Document, Rotate, X, ChevronDown } from '@/components/icons'
 import ErrorBanner from '@/components/ErrorBanner'
 import BulkBar from '@/components/BulkBar'
 import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
-import { useGetJob, useListTasks, useListWorkers, queryKeys } from '@/api/queries'
+import { useGetJob, useListTasks, useListWorkers, useTaskAttempts, queryKeys } from '@/api/queries'
 import { useRetryTask, useCancelTask, useResumeJob } from '@/api/mutations'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
@@ -27,6 +27,7 @@ import type {
   Step,
   StepStatus,
   Task,
+  TaskAttempt,
   TaskStatus,
   ListResponse,
 } from '@/api/types'
@@ -231,6 +232,82 @@ function MetadataCard({ job }: { job: JobDetailType }) {
   )
 }
 
+// ── AttemptTimeline ───────────────────────────────────────────────────────────
+
+interface AttemptTimelineProps {
+  taskId: string
+  enabled: boolean
+  workerNamesById: ReadonlyMap<string, string>
+  now: number
+}
+
+function AttemptEntry({
+  attempt,
+  workerNamesById,
+  now,
+}: {
+  attempt: TaskAttempt
+  workerNamesById: ReadonlyMap<string, string>
+  now: number
+}) {
+  return (
+    <li className={styles.attemptItem}>
+      <div className={styles.attemptHeader}>
+        <span className={styles.attemptNumber}>Attempt {attempt.attempt_number}</span>
+        <StatusBadge status={attempt.status} />
+        {attempt.worker_id !== undefined && (
+          <Link
+            to={`/workers/${attempt.worker_id}`}
+            className={styles.workerLink}
+            title={attempt.worker_id}
+          >
+            {workerNamesById.get(attempt.worker_id) ?? truncateId(attempt.worker_id)}
+          </Link>
+        )}
+        {attempt.exit_code !== undefined && (
+          <span className={styles.attemptExit}>exit {attempt.exit_code}</span>
+        )}
+        <span className={styles.attemptSpan}>
+          {formatDateTime(attempt.started_at)} → {formatDateTime(attempt.ended_at)} ·{' '}
+          {formatTimespan(attempt.started_at, attempt.ended_at, now)}
+        </span>
+      </div>
+      {attempt.message !== undefined && attempt.message !== '' && (
+        <p className={styles.attemptMessage}>{attempt.message}</p>
+      )}
+    </li>
+  )
+}
+
+/** Attempt-history timeline rendered inside a task row's expanded detail row. */
+function AttemptTimeline({ taskId, enabled, workerNamesById, now }: AttemptTimelineProps) {
+  const { data, isLoading, isError } = useTaskAttempts(taskId, { enabled })
+  const attempts = data?.items ?? []
+
+  if (isLoading) {
+    return <p className={styles.attemptsMuted}>Loading attempts…</p>
+  }
+  if (isError) {
+    return <p className={styles.attemptsMuted}>Failed to load attempts.</p>
+  }
+  if (attempts.length === 0) {
+    return <p className={styles.attemptsMuted}>No attempts recorded yet.</p>
+  }
+
+  return (
+    <ol className={styles.attemptList}>
+      {attempts.map((attempt) => (
+        <AttemptEntry
+          key={attempt.attempt_number}
+          attempt={attempt}
+          workerNamesById={workerNamesById}
+          now={now}
+        />
+      ))}
+    </ol>
+  )
+}
+
 // ── TaskRow ───────────────────────────────────────────────────────────────────
 
 interface TaskRowProps {
@@ -271,6 +348,9 @@ function TaskRow({
   const canCancel = CANCELABLE.has(task.status) && !isCanceling
   const endTime = isTerminalTask(task.status) ? task.updated_at : undefined
 
+  const [attemptsExpanded, setAttemptsExpanded] = useState(false)
+  const detailRowId = `task-${task.id}-attempts`
+
   return (
     <>
       <tr
@@ -280,6 +360,20 @@ function TaskRow({
             .join(' ') || undefined
         }
       >
+        <td className={styles.expandCell}>
+          <button
+            type="button"
+            className={styles.expandToggle}
+            aria-expanded={attemptsExpanded}
+            aria-controls={detailRowId}
+            aria-label={
+              attemptsExpanded ? `Hide attempts for ${task.name}` : `Show attempts for ${task.name}`
+            }
+            onClick={() => setAttemptsExpanded((prev) => !prev)}
+          >
+            <ChevronDown className={attemptsExpanded ? styles.expandIconOpen : styles.expandIcon} />
+          </button>
+        </td>
         <td className={styles.checkCell}>
           {(CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
             <input
@@ -364,9 +458,21 @@ function TaskRow({
           </div>
         </td>
       </tr>
+      {attemptsExpanded && (
+        <tr id={detailRowId} className={styles.attemptsRow}>
+          <td colSpan={9}>
+            <AttemptTimeline
+              taskId={task.id}
+              enabled={attemptsExpanded}
+              workerNamesById={workerNamesById}
+              now={now}
+            />
+          </td>
+        </tr>
+      )}
       {(retryError !== undefined || cancelError !== undefined) && (
         <tr className={styles.inlineError}>
-          <td colSpan={8}>
+          <td colSpan={9}>
             {retryError !== undefined && <>Retry failed: {retryError}</>}
             {retryError !== undefined && cancelError !== undefined && ' '}
             {cancelError !== undefined && <>Cancel failed: {cancelError}</>}
@@ -464,6 +570,7 @@ function StepSection({
           <table className={styles.taskTable} aria-label={`Tasks for step ${step.name}`}>
             <thead>
               <tr>
+                <th aria-label="Expand attempts" className={styles.expandCell} />
                 <th className={styles.checkCell}>
                   <input
                     type="checkbox"
@@ -660,6 +767,12 @@ export default function JobDetail() {
       newItems[idx] = patched
       return { ...old, items: newItems }
     })
+
+    // Invalidate this task's attempt-history query so an expanded row refetches
+    // immediately (e.g. a new attempt lands after a retry) rather than waiting
+    // for the debounced detail sync below. No-op if the row is collapsed — the
+    // query is inactive and only refetches once re-enabled.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.attempts(payload.task_id) })
 
     // Schedule a background sync to refresh step statuses and job aggregate status.
     scheduleDetailInvalidate()

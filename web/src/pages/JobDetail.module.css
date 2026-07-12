@@ -464,6 +464,105 @@
   padding-right: 0;
 }
 
+/* ── Attempt-history disclosure ──────────────────────────────────────────────── */
+
+.expandCell {
+  width: 2rem;
+  padding-right: 0;
+}
+
+.expandToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.expandToggle:hover {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
+.expandIcon,
+.expandIconOpen {
+  width: 1rem;
+  height: 1rem;
+  transition: transform var(--transition-fast) ease;
+}
+
+.expandIcon {
+  transform: rotate(-90deg);
+}
+
+.attemptsRow td {
+  padding: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-raised);
+}
+
+.attemptsMuted {
+  padding: var(--space-4) var(--space-6);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.attemptList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4) var(--space-6);
+  list-style: none;
+}
+
+.attemptItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.attemptHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.attemptNumber {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.attemptExit {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.attemptSpan {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.attemptMessage {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-error);
+}
+
 /* ── Bulk action bar ─────────────────────────────────────────────────────────── */
 
 .bulkCancelBtn,

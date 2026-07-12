@@ -190,16 +190,23 @@ export interface TaskLogsResponse {
 
 /** Wire shape for a single task execution attempt. */
 export interface TaskAttempt {
-  id: string
-  task_id: string
-  worker_id: string
-  session_id: string
+  /** 1-based; incremented on each retry. */
   attempt_number: number
   status: AttemptStatus
+  /** ID of the worker that ran this attempt. */
+  worker_id?: string
+  /** Process exit code; absent while running or if signaled. */
   exit_code?: number
+  /** Human-readable reason for a terminal attempt. */
+  message?: string
   started_at: string
+  /** Absent while the attempt is running. */
   ended_at?: string
-  created_at: string
+}
+
+/** Wire shape returned by GET /api/v1/tasks/{id}/attempts (oldest first). */
+export interface TaskAttemptsResponse {
+  items: TaskAttempt[]
 }
 
 // ── Worker ────────────────────────────────────────────────────────────────────

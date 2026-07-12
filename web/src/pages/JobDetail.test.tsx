@@ -492,6 +492,123 @@ describe('JobDetail', () => {
     })
   })
 
+  describe('attempt timeline', () => {
+    it('expands a task row to show its attempt history with reasons', async () => {
+      const task = makeTask({
+        id: 't1',
+        name: 'render[Frame=2]',
+        status: 'ready',
+        failed_attempts: 1,
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) {
+          return Promise.resolve(
+            okJson({
+              items: [
+                {
+                  attempt_number: 1,
+                  status: 'failed',
+                  worker_id: 'w1',
+                  exit_code: 1,
+                  message: 'worker not configured for staging',
+                  started_at: '2026-07-11T19:00:00Z',
+                  ended_at: '2026-07-11T19:00:01Z',
+                },
+                { attempt_number: 2, status: 'running', started_at: '2026-07-11T19:00:30Z' },
+              ],
+            }),
+          )
+        }
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(makeTaskListResponse([task])))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      const toggle = await screen.findByRole('button', {
+        name: /attempts for render\[Frame=2\]/i,
+      })
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+
+      expect(await screen.findByText(/worker not configured for staging/i)).toBeInTheDocument()
+      // Exact, case-sensitive: the row's existing lowercase "attempt 2" retry
+      // indicator (from failed_attempts) must not satisfy this assertion —
+      // only the attempt-history entries ("Attempt 1"/"Attempt 2") should.
+      expect(screen.getByText('Attempt 1')).toBeInTheDocument()
+      expect(screen.getByText('Attempt 2')).toBeInTheDocument()
+      expect(screen.getByText(/exit 1/i)).toBeInTheDocument()
+
+      // The button flips to the "Hide" accessible name and aria-expanded once open.
+      expect(
+        await screen.findByRole('button', { name: /hide attempts for render\[Frame=2\]/i }),
+      ).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('shows an empty state when a task has no recorded attempts', async () => {
+      const task = makeTask({ id: 't2', name: 'render[Frame=3]', status: 'pending' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) return Promise.resolve(okJson({ items: [] }))
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(makeTaskListResponse([task])))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: /attempts for render\[Frame=3\]/i }),
+      )
+
+      expect(await screen.findByText(/no attempts/i)).toBeInTheDocument()
+    })
+
+    it('refetches an expanded task row attempts when a WS task event arrives for it', async () => {
+      const task = makeTask({ id: 't3', name: 'render[Frame=4]', status: 'running' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+      fetchMock.mockImplementation((url) => {
+        const u = String(url)
+        if (u.includes('/attempts')) return Promise.resolve(okJson({ items: [] }))
+        if (u.includes('/workers')) return Promise.resolve(okJson(makeWorkerListResponse([])))
+        return Promise.resolve(okJson(makeTaskListResponse([task])))
+      })
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: /attempts for render\[Frame=4\]/i }),
+      )
+
+      const attemptCalls = () =>
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/attempts')).length
+
+      await waitFor(() => expect(attemptCalls()).toBe(1))
+
+      act(() => {
+        wsInstance(0).simulateOpen()
+        wsInstance(0).simulateMessage({
+          type: 'push',
+          subject: 'jobs/job-aabbccdd-eeff/tasks',
+          payload: {
+            job_id: 'job-aabbccdd-eeff',
+            task_id: 't3',
+            status: 'failed',
+            updated_at: '2024-01-15T10:10:00Z',
+          },
+          seq: 1,
+        })
+      })
+
+      await waitFor(() => expect(attemptCalls()).toBeGreaterThan(1))
+    })
+  })
+
   describe('retry button', () => {
     it('shows Retry button for failed tasks', async () => {
       const task = makeTask({ status: 'failed', name: 'task.0' })
