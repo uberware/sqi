@@ -32,6 +32,13 @@ server loads the product's stored template and hands it to the same
 contains a **snapshot** of the template at submission time, so later edits to the
 product do not affect running or queued jobs.
 
+A product submission also accepts the same optional per-job overrides as a raw
+`POST /api/v1/jobs`: `owner`, `submitter`, `priority`, `project`, and the retry
+policy `max_attempts`, `retry_delay_seconds`, `failure_limit`. Each is optional;
+an omitted field inherits the queue → farm → server default. See
+`internal/api/openapi.yaml` (`SubmitProductJobRequest`) for the authoritative
+wire contract.
+
 ---
 
 ## Definition file format
