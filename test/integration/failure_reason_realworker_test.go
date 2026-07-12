@@ -116,3 +116,86 @@ steps:
 		t.Errorf("task attempts: no failed attempt with a message mentioning %q, got %+v", "staging", attempts.Items)
 	}
 }
+
+// TestWorkerBinaryStagingFailureReason_MultipleAttempts is the multi-attempt
+// sibling of TestWorkerBinaryStagingFailureReason: same real worker with no
+// staging configured and the same stage_locally job, but with max_attempts=2
+// and retry_delay_seconds=0, so the task's first failure is retried
+// immediately (RequeueTaskForRetry — see TestAutoRetry_RetryThenSucceed),
+// fails a second time, and only then goes terminal "failed" once
+// max_attempts is exhausted. That guarantees the attempt-history endpoint
+// has recorded (and correctly ordered) two independent attempts, not just
+// one — the thing a single-attempt test cannot prove.
+func TestWorkerBinaryStagingFailureReason_MultipleAttempts(t *testing.T) {
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+
+	// Start the real worker WITHOUT any staging config — stage_locally must fail
+	// pre-exec with an explicit reason, every attempt.
+	startRealWorker(t, ts, farmID, queueID)
+
+	// Same stage_locally job as TestWorkerBinaryStagingFailureReason; the
+	// command is never reached because the worker fails during pre-exec.
+	const jobYAML = `specificationVersion: "jobtemplate-2023-09"
+name: Staging Failure Reason Test (multi-attempt)
+extensions: [ SQI_PATH_TRANSLATION ]
+SQI_PATH_TRANSLATION:
+  deliveries:
+    - stage_locally
+parameterDefinitions:
+  - name: InFile
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+    default: "/tmp/sqi-nonexistent-input.txt"
+steps:
+  - name: Run
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - 'cat "{{Param.InFile}}"'
+`
+
+	jobID := submitJobWithParams(t, ts, farmID, queueID, jobYAML, map[string]string{
+		"max_attempts":        "2",
+		"retry_delay_seconds": "0",
+	})
+	t.Logf("submitted multi-attempt staging-failure job %s", jobID)
+
+	// Bounded polling (no sleeps): reaching a terminal job status guarantees
+	// both attempts (the initial failure and its immediate retry) have
+	// completed, since max_attempts=2 keeps the task non-terminal after the
+	// first failure.
+	final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled", "paused"}, 60*time.Second)
+	if final != "failed" {
+		t.Fatalf("job final status = %q, want failed", final)
+	}
+
+	taskID := firstTaskID(t, ts, jobID)
+	task := getTaskFailure(t, ts, taskID)
+	if task.Status != "failed" {
+		t.Errorf("task status = %q, want failed", task.Status)
+	}
+
+	attempts := getTaskAttempts(t, ts, taskID)
+	if len(attempts.Items) < 2 {
+		t.Fatalf("task attempts: got %d items, want >= 2", len(attempts.Items))
+	}
+	for i, a := range attempts.Items {
+		if a.Status != "failed" {
+			t.Errorf("task attempts[%d]: status = %q, want failed (item: %+v)", i, a.Status, a)
+		}
+		if !strings.Contains(a.Message, "staging") {
+			t.Errorf("task attempts[%d]: message = %q, want it to mention %q (item: %+v)", i, a.Message, "staging", a)
+		}
+	}
+	for i := 1; i < len(attempts.Items); i++ {
+		if attempts.Items[i-1].AttemptNumber >= attempts.Items[i].AttemptNumber {
+			t.Errorf("task attempts: attempt_number not strictly increasing at index %d: %d >= %d (items: %+v)",
+				i, attempts.Items[i-1].AttemptNumber, attempts.Items[i].AttemptNumber, attempts.Items)
+		}
+	}
+}
