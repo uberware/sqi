@@ -452,6 +452,12 @@ export interface SubmitProductJobInput {
   priority?: number
   project?: string
   parameters: Record<string, string>
+  /** Per-job override for the maximum attempts per task; omitted means inherit. */
+  maxAttempts?: number
+  /** Per-job override for the retry delay (seconds); omitted means inherit. */
+  retryDelaySeconds?: number
+  /** Per-job override for the auto-park failure count; omitted means inherit. */
+  failureLimit?: number
 }
 
 // ── Job submission ────────────────────────────────────────────────────────────
