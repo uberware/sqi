@@ -247,6 +247,43 @@ scheduler for the paths that have none:
 | Cascade-canceled (upstream step failed) | `"canceled: upstream step failed"` | `propagateStepDependencies` / re-cancel after a retry that didn't revive the task |
 | User-initiated cancel | `"canceled by user"` | `CancelJob` / `CancelTask`, via `store.SetTaskFailureReasonIfEmpty` so a concurrent cascade-cancel's more specific reason always wins regardless of ordering |
 
+**Attempt history.** Each attempt's `message` — previously visible only by
+reading the raw `task_attempts.message` column, with no REST surface — is now
+served directly: `GET /api/v1/tasks/{id}/attempts` (backed by
+`store.ListTaskAttempts`) returns the task's full attempt history, oldest
+first:
+
+```json
+{
+  "items": [
+    {
+      "attempt_number": 1,
+      "status": "failed",
+      "worker_id": "worker-abc",
+      "exit_code": 1,
+      "message": "openjd_fail: ...",
+      "started_at": "2026-07-10T12:00:00Z",
+      "ended_at": "2026-07-10T12:00:05Z"
+    }
+  ]
+}
+```
+
+`status` is the attempt's own terminal/in-flight status
+(`running`/`succeeded`/`failed`/`canceled`) — independent of the task's
+current status, since a retried task's latest attempt may be `running` while
+earlier attempts read `failed`. `worker_id`, `exit_code`, `message`, and
+`ended_at` are omitted rather than sent empty (an in-flight attempt has no
+`exit_code`/`ended_at`; a synthesized reclaim has no `worker_id`). Returns
+`404` for an unknown task id, and `{"items":[]}` (not `404`) for a task with
+no attempts yet.
+
+This closes the gap left by `failure_reason`'s clear-on-retry behavior: a
+**mid-retry task** — one that failed, was retried, and is now `running` or
+`ready` again — has an empty task-level `failure_reason`, but the attempt row
+where the earlier failure actually happened still carries its `message`, so
+the reason is never lost, only relocated to the attempt it belongs to.
+
 `GET /api/v1/jobs/{id}` (job detail) additionally exposes a `failure_summary`
 (`failed_count`, `dominant_reason`, `distinct_reasons`), aggregated across the
 job's failed tasks by `store.FailureReasonSummary`, and powers the web UI's
