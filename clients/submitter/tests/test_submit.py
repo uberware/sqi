@@ -11,6 +11,7 @@ from sqi_client.models import ProductParameter
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.context import RenderTarget, SceneContext
 from sqi_submitter.core.errors import SubmitterError
+from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.submit import submit_form
 
@@ -134,6 +135,38 @@ def test_output_override_is_kept() -> None:
         save_scene=False,
     )
     assert session.calls[0]["parameters"]["OutputPath"] == "/farm/override/out.####.png"
+
+
+def test_forwards_job_options_to_session() -> None:
+    session = _FakeSession()
+    model = _model_with_scene(value="/shows/a/shot.blend")
+    opts = JobOptions(owner="alice", priority=80, max_attempts=5)
+    submit_form(
+        session,  # type: ignore[arg-type]
+        "blender-batch-render",
+        model,
+        farm_id="f",
+        queue_id="q",
+        adapter=_FakeAdapter("/shows/a/shot.blend"),
+        save_scene=False,
+        job_options=opts,
+    )
+    assert session.calls[0]["job_options"] is opts
+
+
+def test_job_options_defaults_to_none() -> None:
+    session = _FakeSession()
+    model = _model_with_scene(value="/shows/a/shot.blend")
+    submit_form(
+        session,  # type: ignore[arg-type]
+        "blender-batch-render",
+        model,
+        farm_id="f",
+        queue_id="q",
+        adapter=_FakeAdapter("/shows/a/shot.blend"),
+        save_scene=False,
+    )
+    assert session.calls[0]["job_options"] is None
 
 
 def test_blank_output_and_no_scene_output_fails() -> None:

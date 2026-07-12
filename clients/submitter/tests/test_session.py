@@ -10,6 +10,7 @@ import respx
 from sqi_client import SqiClient
 from sqi_client.models import Product
 from sqi_submitter.core.errors import SubmitterError
+from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.session import (
     Settings,
     SubmitterSession,
@@ -57,6 +58,27 @@ def test_submit_posts_parameters_and_returns_job() -> None:
         "name": "My Job",
         "parameters": {"Frames": "1-10"},
     }
+
+
+@respx.mock
+def test_submit_forwards_job_options_to_body() -> None:
+    route = respx.post(f"{BASE}/api/v1/products/p1/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "j1", "name": "My Job"})
+    )
+    _session().submit(
+        "p1",
+        parameters={"Frames": "1-10"},
+        farm_id="f1",
+        queue_id="q1",
+        job_options=JobOptions(priority=90, failure_limit=3),
+    )
+    import json
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["priority"] == 90
+    assert body["failure_limit"] == 3
+    assert "owner" not in body  # unset -> omitted
+    assert "max_attempts" not in body
 
 
 @respx.mock

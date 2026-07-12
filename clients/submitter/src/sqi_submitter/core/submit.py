@@ -6,6 +6,7 @@ from __future__ import annotations
 from sqi_client.models import Job
 from sqi_submitter.core.adapter import HostAdapter
 from sqi_submitter.core.errors import FormInvalidError, SubmitterError
+from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.core.mapping import is_output_path_param, is_scene_path_param
 from sqi_submitter.core.schema import FormModel
 from sqi_submitter.core.session import SubmitterSession
@@ -21,6 +22,7 @@ def submit_form(
     job_name: str | None = None,
     adapter: HostAdapter | None = None,
     save_scene: bool = True,
+    job_options: JobOptions | None = None,
 ) -> Job:
     """Save-if-needed → validate → submit. Raises SubmitterError variants."""
     if adapter is not None:
@@ -61,4 +63,5 @@ def submit_form(
         farm_id=farm_id,
         queue_id=queue_id,
         job_name=job_name,
+        job_options=job_options,
     )
