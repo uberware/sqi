@@ -1,0 +1,9 @@
+{
+  "attempt_number": 1,
+  "status": "failed",
+  "worker_id": "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1c001",
+  "exit_code": 1,
+  "message": "worker not configured for staging",
+  "started_at": "2026-07-11T19:00:00Z",
+  "ended_at": "2026-07-11T19:00:01Z"
+}

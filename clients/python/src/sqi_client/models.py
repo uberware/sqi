@@ -49,6 +49,7 @@ __all__ = [
     "Step",
     "StorageLocation",
     "Task",
+    "TaskAttempt",
     "TaskCounts",
     "TaskStatus",
     "UsagePool",
@@ -635,6 +636,43 @@ class RetryJobResult:
         return cls(
             job_id=_as_str(data.get("job_id")),
             retried=_as_int(data.get("retried")),
+        )
+
+
+@dataclass(frozen=True)
+class TaskAttempt:
+    """One execution attempt of a task (OpenAPI ``TaskAttempt``).
+
+    Returned, oldest first, by
+    :meth:`~sqi_client.client.SqiClient.list_task_attempts`. ``worker_id``,
+    ``exit_code``, ``message``, and ``ended_at`` are ``None`` while the attempt
+    is still running (or for a worker-less/message-less terminal attempt).
+    """
+
+    attempt_number: int
+    status: str
+    started_at: datetime
+    worker_id: str | None = None
+    exit_code: int | None = None
+    message: str | None = None
+    ended_at: datetime | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> TaskAttempt:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            attempt_number=_as_int(data.get("attempt_number")),
+            status=_as_str(data.get("status")),
+            started_at=_as_datetime(data.get("started_at")),
+            worker_id=_opt_str(data.get("worker_id")),
+            exit_code=_opt_int(data.get("exit_code")),
+            message=_opt_str(data.get("message")),
+            ended_at=_opt_datetime(data.get("ended_at")),
         )
 
 

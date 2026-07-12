@@ -54,6 +54,7 @@ from .models import (
     ServerVersion,
     StorageLocation,
     Task,
+    TaskAttempt,
     TaskStatus,
     UsagePool,
     Worker,
@@ -900,6 +901,16 @@ class SqiClient:
 
     def _task_is_terminal(self, task_id: str) -> bool:
         return self.get_task(task_id).status in _TERMINAL_TASK_STATUSES
+
+    def list_task_attempts(self, task_id: str) -> list[TaskAttempt]:
+        """List a task's execution attempts, oldest first
+        (``GET /tasks/{id}/attempts``).
+
+        Raises:
+            NotFoundError: No task with that ID exists (HTTP 404).
+        """
+        data = self._request_json("GET", f"/tasks/{quote(task_id, safe='')}/attempts")
+        return [TaskAttempt.from_dict(item) for item in data.get("items", [])]
 
     # ── Workers ───────────────────────────────────────────────────────────────
 

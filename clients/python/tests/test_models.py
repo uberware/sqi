@@ -27,6 +27,7 @@ from sqi_client.models import (
     Step,
     StorageLocation,
     Task,
+    TaskAttempt,
     TaskCounts,
     TaskStatus,
     UsagePool,
@@ -540,6 +541,37 @@ def test_log_page_wraps_chunks_with_cursor() -> None:
     # Items preserve server order (ascending nats_seq).
     assert [c.nats_seq for c in page.items] == [1001, 1002]
     assert page.items[1].stream == "stderr"
+
+
+# ── TaskAttempt ───────────────────────────────────────────────────────
+
+
+def test_task_attempt_from_dict() -> None:
+    a = TaskAttempt.from_dict(load("task_attempt"))
+    assert a.attempt_number == 1
+    assert a.status == "failed"
+    assert a.worker_id == "018f1a2b-3c4d-7e5f-a6b7-c8d9e0f1c001"
+    assert a.exit_code == 1
+    assert a.message == "worker not configured for staging"
+    assert a.started_at.tzinfo is not None
+    assert a.ended_at is not None
+    assert a.ended_at.tzinfo is not None
+
+
+def test_task_attempt_running_has_no_terminal_fields() -> None:
+    a = TaskAttempt.from_dict(
+        {
+            "attempt_number": 2,
+            "status": "running",
+            "started_at": "2026-07-11T19:00:02Z",
+        }
+    )
+    assert a.attempt_number == 2
+    assert a.status == "running"
+    assert a.worker_id is None
+    assert a.exit_code is None
+    assert a.message is None
+    assert a.ended_at is None
 
 
 # ── CancelResult ────────────────────────────────────────────────────
