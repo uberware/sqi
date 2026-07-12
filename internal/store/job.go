@@ -134,13 +134,14 @@ type JobStore interface {
 	CreateJobDependencies(ctx context.Context, jobID string, upstreamIDs []string) error
 
 	// ListJobDependencyIDs returns the IDs of the upstream jobs jobID waits on,
-	// in insertion order. Some IDs may reference jobs that have since been
-	// deleted — the caller (the reconciler) treats a missing upstream as
+	// ordered by upstream job ID. Some IDs may reference jobs that have since
+	// been deleted — the caller (the reconciler) treats a missing upstream as
 	// unsatisfiable. Returns an empty slice when there are no dependencies.
 	ListJobDependencyIDs(ctx context.Context, jobID string) ([]string, error)
 
 	// ListDependents returns the IDs of jobs that declared a dependency on
-	// upstreamJobID (i.e. jobs waiting for it). Returns an empty slice when none.
+	// upstreamJobID (i.e. jobs waiting for it), ordered by dependent job ID.
+	// Returns an empty slice when none.
 	ListDependents(ctx context.Context, upstreamJobID string) ([]string, error)
 
 	// ListBlockedJobs returns every job currently in JobStatusBlocked, for the

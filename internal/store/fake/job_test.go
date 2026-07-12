@@ -3,6 +3,7 @@
 package fake
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
@@ -97,5 +98,78 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	}
 	if len(deps) != 0 {
 		t.Fatalf("after downstream delete, no edges should remain: got %v", deps)
+	}
+}
+
+// TestJob_CreateJobDependencies_Dedup verifies that calling
+// CreateJobDependencies twice with an overlapping upstream ID does not
+// produce a duplicate edge — the slices.Contains guard makes the operation
+// idempotent, mirroring SQLite's INSERT OR IGNORE + primary key.
+func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
+	s := New()
+	farm := mustCreateFarm(t, s, "dedup")
+	queue := mustCreateQueue(t, s, farm.ID, "queue-dedup", "dedup")
+
+	up1 := mustCreateJob(t, s, "up1-dedup", farm.ID, queue.ID)
+	up2 := mustCreateJob(t, s, "up2-dedup", farm.ID, queue.ID)
+	down := store.Job{
+		ID: "down-dedup", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked,
+	}
+	if _, err := s.CreateJob(ctx(), down); err != nil {
+		t.Fatalf("CreateJob(down): %v", err)
+	}
+
+	if err := s.CreateJobDependencies(ctx(), down.ID, []string{up1.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies (first call): %v", err)
+	}
+	// Second call repeats up1 (already recorded) and adds up2.
+	if err := s.CreateJobDependencies(ctx(), down.ID, []string{up1.ID, up2.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies (second call): %v", err)
+	}
+
+	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	want := []string{up1.ID, up2.ID}
+	slices.Sort(want)
+	if !slices.Equal(deps, want) {
+		t.Fatalf("ListJobDependencyIDs = %v, want %v (no duplicate edge)", deps, want)
+	}
+}
+
+// TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
+// ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
+// the order they were passed to CreateJobDependencies or created in,
+// mirroring the equivalent SQLite test.
+func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
+	s := New()
+	farm := mustCreateFarm(t, s, "order")
+	queue := mustCreateQueue(t, s, farm.ID, "queue-order", "order")
+
+	zeta := mustCreateJob(t, s, "zeta-order", farm.ID, queue.ID)
+	alpha := mustCreateJob(t, s, "alpha-order", farm.ID, queue.ID)
+	mike := mustCreateJob(t, s, "mike-order", farm.ID, queue.ID)
+	down := store.Job{
+		ID: "down-order", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked,
+	}
+	if _, err := s.CreateJob(ctx(), down); err != nil {
+		t.Fatalf("CreateJob(down): %v", err)
+	}
+
+	// Deliberately not alphabetical.
+	if err := s.CreateJobDependencies(ctx(), down.ID, []string{zeta.ID, alpha.ID, mike.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies: %v", err)
+	}
+
+	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	want := []string{alpha.ID, mike.ID, zeta.ID}
+	if !slices.Equal(deps, want) {
+		t.Fatalf("ListJobDependencyIDs = %v, want %v", deps, want)
 	}
 }

@@ -429,3 +429,77 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 		t.Fatalf("after downstream delete, no edges should remain: got %v", deps)
 	}
 }
+
+// TestJob_CreateJobDependencies_Dedup verifies that calling
+// CreateJobDependencies twice with an overlapping upstream ID does not
+// produce a duplicate edge — INSERT OR IGNORE plus the (job_id,
+// depends_on_job_id) primary key make the operation idempotent.
+func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
+	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	up1 := seedJob(t, st, "up1-dedup")
+	up2 := seedJob(t, st, "up2-dedup")
+	down := store.Job{
+		ID: "down-dedup", FarmID: up1.FarmID, QueueID: up1.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	if _, err := st.CreateJob(ctx, down); err != nil {
+		t.Fatalf("CreateJob(down): %v", err)
+	}
+
+	if err := st.CreateJobDependencies(ctx, down.ID, []string{up1.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies (first call): %v", err)
+	}
+	// Second call repeats up1 (already recorded) and adds up2.
+	if err := st.CreateJobDependencies(ctx, down.ID, []string{up1.ID, up2.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies (second call): %v", err)
+	}
+
+	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	want := []string{up1.ID, up2.ID}
+	slices.Sort(want)
+	if !slices.Equal(deps, want) {
+		t.Fatalf("ListJobDependencyIDs = %v, want %v (no duplicate edge)", deps, want)
+	}
+}
+
+// TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
+// ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
+// the order they were passed to CreateJobDependencies or created in.
+func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
+	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	zeta := seedJob(t, st, "zeta-order")
+	alpha := seedJob(t, st, "alpha-order")
+	mike := seedJob(t, st, "mike-order")
+	down := store.Job{
+		ID: "down-order", FarmID: zeta.FarmID, QueueID: zeta.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	if _, err := st.CreateJob(ctx, down); err != nil {
+		t.Fatalf("CreateJob(down): %v", err)
+	}
+
+	// Deliberately not alphabetical.
+	if err := st.CreateJobDependencies(ctx, down.ID, []string{zeta.ID, alpha.ID, mike.ID}); err != nil {
+		t.Fatalf("CreateJobDependencies: %v", err)
+	}
+
+	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	want := []string{alpha.ID, mike.ID, zeta.ID}
+	if !slices.Equal(deps, want) {
+		t.Fatalf("ListJobDependencyIDs = %v, want %v", deps, want)
+	}
+}

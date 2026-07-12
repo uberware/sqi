@@ -113,11 +113,11 @@ VALUES (?, ?, ?)`
 
 	sqlListJobDependencyIDs = `
 SELECT depends_on_job_id FROM job_dependencies
-WHERE job_id = ? ORDER BY created_at, depends_on_job_id`
+WHERE job_id = ? ORDER BY depends_on_job_id`
 
 	sqlListDependents = `
 SELECT job_id FROM job_dependencies
-WHERE depends_on_job_id = ? ORDER BY created_at, job_id`
+WHERE depends_on_job_id = ? ORDER BY job_id`
 
 	sqlListBlockedJobs = `SELECT ` + jobCols + ` FROM jobs WHERE status = 'blocked' ORDER BY created_at`
 
@@ -243,13 +243,13 @@ func (s *Store) CreateJobDependencies(ctx context.Context, jobID string, upstrea
 }
 
 // ListJobDependencyIDs implements [store.JobStore]. It returns the upstream
-// job IDs jobID waits on, in insertion order.
+// job IDs jobID waits on, ordered by upstream job ID.
 func (s *Store) ListJobDependencyIDs(ctx context.Context, jobID string) ([]string, error) {
 	return s.queryIDs(ctx, sqlListJobDependencyIDs, jobID)
 }
 
 // ListDependents implements [store.JobStore]. It returns the IDs of jobs
-// waiting on upstreamJobID.
+// waiting on upstreamJobID, ordered by dependent job ID.
 func (s *Store) ListDependents(ctx context.Context, upstreamJobID string) ([]string, error) {
 	return s.queryIDs(ctx, sqlListDependents, upstreamJobID)
 }

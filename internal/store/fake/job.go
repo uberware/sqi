@@ -31,6 +31,9 @@ func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 		return store.Job{}, store.ErrNotFound
 	}
 	job.DependsOn = slices.Clone(s.jobDependencies[id])
+	if job.DependsOn == nil {
+		job.DependsOn = []string{}
+	}
 	return job, nil
 }
 
@@ -51,22 +54,27 @@ func (s *Store) CreateJobDependencies(_ context.Context, jobID string, upstreamI
 	return nil
 }
 
-// ListJobDependencyIDs returns the upstream job IDs jobID waits on, in
-// insertion order.
+// ListJobDependencyIDs returns the upstream job IDs jobID waits on, ordered
+// by upstream job ID (matching the SQLite implementation's ORDER BY).
 func (s *Store) ListJobDependencyIDs(_ context.Context, jobID string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return slices.Clone(s.jobDependencies[jobID]), nil
+	out := slices.Clone(s.jobDependencies[jobID])
+	slices.Sort(out)
+	if out == nil {
+		out = []string{}
+	}
+	return out, nil
 }
 
 // ListDependents returns the IDs of jobs that declared a dependency on
-// upstreamJobID.
+// upstreamJobID, ordered by dependent job ID.
 func (s *Store) ListDependents(_ context.Context, upstreamJobID string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var out []string
+	out := []string{}
 	for jobID, ups := range s.jobDependencies {
 		if slices.Contains(ups, upstreamJobID) {
 			out = append(out, jobID)
