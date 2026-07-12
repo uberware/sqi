@@ -1479,12 +1479,37 @@ func TestTask_CountReadyTasksByQueue(t *testing.T) {
 		t.Fatalf("CreateTask t3: %v", err)
 	}
 
-	counts, err := s.CountReadyTasksByQueue(ctx, "f1")
+	now := time.Now().UTC()
+
+	// Ineligible ready tasks must not be counted (or wake lease waiters):
+	// a task still backing off, and a task under an auto-parked (paused) job.
+	backoff := now.Add(time.Minute)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t4", JobID: "j1", StepID: "s1",
+		Name: "t4", Status: store.TaskStatusReady,
+		Parameters: map[string]string{}, RetryAfter: &backoff,
+	}); err != nil {
+		t.Fatalf("CreateTask t4: %v", err)
+	}
+	insertJob(t, s, "j3", "f1", "q1")
+	insertStep(t, s, "s3", "j3", "S3", 0)
+	if _, err := s.CreateTask(ctx, store.Task{
+		ID: "t5", JobID: "j3", StepID: "s3",
+		Name: "t5", Status: store.TaskStatusReady,
+		Parameters: map[string]string{},
+	}); err != nil {
+		t.Fatalf("CreateTask t5: %v", err)
+	}
+	if err := s.ParkJob(ctx, "j3", "failure limit reached (2)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	counts, err := s.CountReadyTasksByQueue(ctx, "f1", now)
 	if err != nil {
 		t.Fatalf("CountReadyTasksByQueue: %v", err)
 	}
 	if counts["q1"] != 2 {
-		t.Errorf("q1: got %d, want 2", counts["q1"])
+		t.Errorf("q1: got %d, want 2 (backoff and parked-job tasks excluded)", counts["q1"])
 	}
 	if counts["q2"] != 1 {
 		t.Errorf("q2: got %d, want 1", counts["q2"])
@@ -1509,7 +1534,7 @@ func TestTask_CancelJobTasks(t *testing.T) {
 		t.Fatalf("UpdateTaskStatus t2: %v", err)
 	}
 
-	active, err := s.CancelJobTasks(ctx, "j1", time.Now())
+	active, err := s.CancelJobTasks(ctx, "j1", time.Now(), "")
 	if err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
@@ -1547,7 +1572,7 @@ func TestTask_TransitionStepPendingTasks(t *testing.T) {
 		t.Fatalf("UpdateTaskStatus t4: %v", err)
 	}
 
-	affected, err := s.TransitionStepPendingTasks(ctx, "s1", store.TaskStatusCanceled)
+	affected, err := s.TransitionStepPendingTasks(ctx, "s1", store.TaskStatusCanceled, "")
 	if err != nil {
 		t.Fatalf("TransitionStepPendingTasks: %v", err)
 	}
@@ -1671,7 +1696,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if _, err := s.CancelJobTasks(ctx, "j1", time.Now()); err != nil {
+	if _, err := s.CancelJobTasks(ctx, "j1", time.Now(), ""); err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
 

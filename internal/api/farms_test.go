@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,4 +376,68 @@ func TestDeleteFarm_Success(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("want 204, got %d", rr.Code)
 	}
+}
+
+// TestFarmRetryOverrides_Rejected asserts create/update validate the retry
+// override bounds at the API boundary (max_attempts >= 1, delay >= 0,
+// failure_limit >= 0) instead of storing values the scheduler would silently
+// clamp.
+func TestFarmRetryOverrides_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	r := newFarmRouter(st)
+
+	// One farm to exercise the update path.
+	created := mustCreateFarmViaAPI(t, r, "override-bounds-farm")
+
+	tests := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"zero max_attempts", map[string]any{"name": "x1", "max_attempts": 0}, "max_attempts must be >= 1"},
+		{"negative retry_delay_seconds", map[string]any{"name": "x2", "retry_delay_seconds": -1}, "retry_delay_seconds must be >= 0"},
+		{"negative failure_limit", map[string]any{"name": "x3", "failure_limit": -5}, "failure_limit must be >= 0"},
+	}
+	for _, tt := range tests {
+		t.Run("create "+tt.name, func(t *testing.T) {
+			req := newReq(t, http.MethodPost, "/api/v1/farms", jsonBody(t, tt.body))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400 — body: %s", rr.Code, rr.Body)
+			}
+			if !strings.Contains(rr.Body.String(), tt.want) {
+				t.Errorf("body %q does not contain %q", rr.Body.String(), tt.want)
+			}
+		})
+		t.Run("update "+tt.name, func(t *testing.T) {
+			req := newReq(t, http.MethodPut, "/api/v1/farms/"+created, jsonBody(t, tt.body))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400 — body: %s", rr.Code, rr.Body)
+			}
+		})
+	}
+}
+
+// mustCreateFarmViaAPI creates a farm through the router and returns its id.
+func mustCreateFarmViaAPI(t *testing.T, r chi.Router, name string) string {
+	t.Helper()
+	req := newReq(t, http.MethodPost, "/api/v1/farms", jsonBody(t, map[string]any{"name": name}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create farm: %d — %s", rr.Code, rr.Body)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	id, ok := resp["id"].(string)
+	if !ok || id == "" {
+		t.Fatal("no id in create response")
+	}
+	return id
 }

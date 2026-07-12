@@ -32,6 +32,22 @@ const (
 	TaskStatusCanceled TaskStatus = "canceled"
 )
 
+// Server-originated failure/termination reasons. [TaskStore.FailureReasonSummary]
+// groups by exact string, so every producer of these annotations (scheduler,
+// SQLite store, fake store) must share these values — a wording tweak in one
+// producer would otherwise split the per-job dominant-reason counts.
+const (
+	// FailureReasonCanceledByUser annotates tasks canceled by an explicit
+	// user/API cancel of the task or its job.
+	FailureReasonCanceledByUser = "canceled by user"
+	// FailureReasonUpstreamFailed annotates tasks cascade-canceled because an
+	// upstream step dependency failed or was canceled.
+	FailureReasonUpstreamFailed = "canceled: upstream step failed"
+	// FailureReasonWorkerOffline is the attempt message recorded when the
+	// heartbeat sweep terminates attempts of a worker that went offline.
+	FailureReasonWorkerOffline = "worker went offline"
+)
+
 // Task is the atomic unit of work — one process on one worker. Tasks are
 // derived from an OpenJD step's parameter space expansion.
 type Task struct {
@@ -162,12 +178,16 @@ type TaskStore interface {
 	// [TaskStatusRunning] state. Used by the scheduler's per-farm policy gate.
 	CountActiveTasksInFarm(ctx context.Context, farmID string) (int, error)
 
-	// CountReadyTasksByQueue returns the number of tasks in [TaskStatusReady]
-	// state for each queue within the given farm, keyed by queue ID.
-	// Queues with no ready tasks are omitted from the map.
-	// Used by the scheduler to update the [SchedulerQueueDepth] Prometheus
-	// gauge.
-	CountReadyTasksByQueue(ctx context.Context, farmID string) (map[string]int, error)
+	// CountReadyTasksByQueue returns the number of LEASABLE ready tasks for
+	// each queue within the given farm, keyed by queue ID: tasks in
+	// [TaskStatusReady] whose backoff has elapsed (RetryAfter unset or <= now)
+	// on an unpaused queue under a schedulable (not paused/terminal) job —
+	// the same eligibility predicate as [ListReadyTasks]. Queues with no such
+	// tasks are omitted from the map. Used by the scheduler to update the
+	// [SchedulerQueueDepth] Prometheus gauge and to wake lease waiters; the
+	// filters keep it from waking workers for work nothing can lease (tasks
+	// still backing off, or under an auto-parked job).
+	CountReadyTasksByQueue(ctx context.Context, farmID string, now time.Time) (map[string]int, error)
 
 	// CancelJobTasks transitions all non-terminal tasks for the given job to
 	// [TaskStatusCanceled], clearing AssignedWorkerID and AssignedAt on each,
@@ -176,11 +196,15 @@ type TaskStore interface {
 	// intact) so the caller can publish NATS cancel signals to the appropriate
 	// workers.
 	//
+	// A non-empty reason is stamped as FailureReason on each canceled task
+	// unless the task already carries one, so a more specific cause recorded
+	// earlier (e.g. a cascade-cancel) is never clobbered.
+	//
 	// The SELECT and UPDATE run inside a single database transaction so no
 	// concurrent assignment can race between observation and cancellation.
 	// Tasks already in a terminal state (succeeded, failed, canceled) are not
 	// modified.
-	CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]Task, error)
+	CancelJobTasks(ctx context.Context, jobID string, now time.Time, reason string) ([]Task, error)
 
 	// RetryTasks revives failed/canceled tasks so they can run again. It
 	// transitions every task of jobID in [TaskStatusFailed] or
@@ -207,10 +231,13 @@ type TaskStore interface {
 	// [TaskStatusReady] once its dependencies resolve, and to cancel them when an
 	// upstream dependency fails.
 	//
+	// A non-empty failureReason is stamped on each transitioned task unless it
+	// already carries one (used by cascade-cancel; pass "" when promoting).
+	//
 	// The transition is applied as a single statement covering all matching rows
 	// regardless of count, so it is not subject to the [MaxLimit] pagination
 	// ceiling. Tasks not in pending state are not modified.
-	TransitionStepPendingTasks(ctx context.Context, stepID string, to TaskStatus) ([]Task, error)
+	TransitionStepPendingTasks(ctx context.Context, stepID string, to TaskStatus, failureReason string) ([]Task, error)
 
 	// CountTasksByJob returns the number of tasks for the given job keyed by
 	// status. Statuses with zero tasks are omitted from the returned map.
@@ -276,15 +303,24 @@ type TaskStore interface {
 	// redeliveries. exitCode nil leaves the attempt's exit_code unchanged;
 	// sessionID "" leaves the session_id unchanged; message "" leaves the
 	// attempt's message unchanged. Returns the authoritative post-call task and
-	// job FailedAttempts values. Returns [ErrNotFound] if the task does not
-	// exist.
-	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID, message string, now time.Time) (taskFailed, jobFailed int, err error)
+	// job FailedAttempts values, plus firstClose — true iff this call performed
+	// the running→failed close (i.e. this is the first delivery, so retry/park
+	// ACTIONS are authorized; a redelivery must first check that the attempt is
+	// still relevant before re-driving them). Returns [ErrNotFound] if the task
+	// does not exist.
+	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID, message string, now time.Time) (taskFailed, jobFailed int, firstClose bool, err error)
 
 	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],
 	// clearing AssignedWorkerID and AssignedAt, and stamps RetryAfter so the
 	// task is excluded from [ListReadyTasks] until the backoff elapses.
-	// Returns [ErrNotFound] if the task does not exist.
-	RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) error
+	//
+	// The transition is guarded: only a task currently in [TaskStatusAssigned]
+	// or [TaskStatusRunning] is requeued, so a stale or redelivered failure
+	// report can never resurrect a task that has since been canceled,
+	// succeeded, or already returned to ready. It reports whether the task was
+	// actually requeued; false (task missing or not assigned/running) is a
+	// legitimate no-op, not an error.
+	RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) (bool, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

@@ -4,11 +4,13 @@ import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useSubmitJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { detectFormat } from '@/lib/format'
+import { parseOptionalInt } from '@/lib/parse'
 import type { TemplateFormat } from '@/api/types'
 import styles from './Submit.module.css'
 
@@ -140,12 +142,10 @@ export default function Submit() {
       try {
         const trimmedOwner = owner.trim()
         const trimmedProject = project.trim()
-        const parsedPriority = priority ? Number(priority) : undefined
-        const parsedMaxAttempts = maxAttempts.trim() ? Number(maxAttempts) : undefined
-        const parsedRetryDelaySeconds = retryDelaySeconds.trim()
-          ? Number(retryDelaySeconds)
-          : undefined
-        const parsedFailureLimit = failureLimit.trim() ? Number(failureLimit) : undefined
+        const parsedPriority = parseOptionalInt(priority)
+        const parsedMaxAttempts = parseOptionalInt(maxAttempts)
+        const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
+        const parsedFailureLimit = parseOptionalInt(failureLimit)
 
         const job = await submitJob.mutateAsync({
           farmId: selectedQueue.farm_id,
@@ -288,50 +288,18 @@ export default function Submit() {
                 Optional overrides; unset fields inherit from the queue/farm/server.
               </p>
 
-              <div className={styles.field}>
-                <label htmlFor="maxAttempts" className={styles.label}>
-                  Max attempts per task
-                </label>
-                <input
-                  id="maxAttempts"
-                  type="number"
-                  className={styles.input}
-                  value={maxAttempts}
-                  onChange={(e) => setMaxAttempts(e.target.value)}
-                  placeholder="Inherit"
-                  min={1}
-                />
-              </div>
-
-              <div className={styles.field}>
-                <label htmlFor="retryDelaySeconds" className={styles.label}>
-                  Retry delay (seconds)
-                </label>
-                <input
-                  id="retryDelaySeconds"
-                  type="number"
-                  className={styles.input}
-                  value={retryDelaySeconds}
-                  onChange={(e) => setRetryDelaySeconds(e.target.value)}
-                  placeholder="Inherit"
-                  min={0}
-                />
-              </div>
-
-              <div className={styles.field}>
-                <label htmlFor="failureLimit" className={styles.label}>
-                  Failure limit (auto-park after N failures)
-                </label>
-                <input
-                  id="failureLimit"
-                  type="number"
-                  className={styles.input}
-                  value={failureLimit}
-                  onChange={(e) => setFailureLimit(e.target.value)}
-                  placeholder="Inherit"
-                  min={1}
-                />
-              </div>
+              <RetryPolicyFields
+                maxAttempts={maxAttempts}
+                onMaxAttemptsChange={setMaxAttempts}
+                retryDelaySeconds={retryDelaySeconds}
+                onRetryDelaySecondsChange={setRetryDelaySeconds}
+                failureLimit={failureLimit}
+                onFailureLimitChange={setFailureLimit}
+                placeholder="Inherit"
+                fieldClassName={styles.field}
+                labelClassName={styles.label}
+                inputClassName={styles.input}
+              />
             </section>
           </div>
 

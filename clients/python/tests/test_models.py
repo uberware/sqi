@@ -15,6 +15,7 @@ from typing import Any
 
 from sqi_client.models import (
     CurrentTask,
+    EffectiveRetryPolicy,
     FailureSummary,
     Farm,
     GPUInfo,
@@ -276,6 +277,36 @@ def test_job_failure_summary_absent_defaults_to_none() -> None:
     # failure_summary; parsing must not raise and must default to None.
     assert Job.from_dict(load("job")).failure_summary is None
     assert Job.from_dict(load("job_detail")).failure_summary is None
+
+
+def test_job_effective_retry_parsed_when_present() -> None:
+    raw = dict(
+        load("job_detail"),
+        effective_retry={
+            "max_attempts": 3,
+            "retry_delay_seconds": 30,
+            "failure_limit": 0,
+        },
+    )
+    job = Job.from_dict(raw)
+    assert job.effective_retry is not None
+    assert isinstance(job.effective_retry, EffectiveRetryPolicy)
+    assert job.effective_retry.max_attempts == 3
+    assert job.effective_retry.retry_delay_seconds == 30
+    # failure_limit 0 (auto-park off) must survive as a real 0, not a falsy drop.
+    assert job.effective_retry.failure_limit == 0
+
+
+def test_job_effective_retry_absent_defaults_to_none() -> None:
+    # Back-compat: an older/unpatched server's job response carries no
+    # effective_retry; parsing must not raise and must default to None.
+    assert Job.from_dict(load("job")).effective_retry is None
+    assert Job.from_dict(load("job_detail")).effective_retry is None
+
+
+def test_job_effective_retry_mistyped_becomes_none() -> None:
+    raw = dict(load("job_detail"), effective_retry="not-an-object")
+    assert Job.from_dict(raw).effective_retry is None
 
 
 def test_job_detail_nested_steps_and_counts() -> None:

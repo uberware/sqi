@@ -244,8 +244,13 @@ scheduler for the paths that have none:
 | Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal` |
 | Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
 | Worker reclaimed (heartbeat timeout) | `"worker went offline"` | stale-worker sweep — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
-| Cascade-canceled (upstream step failed) | `"canceled: upstream step failed"` | `propagateStepDependencies` / re-cancel after a retry that didn't revive the task |
-| User-initiated cancel | `"canceled by user"` | `CancelJob` / `CancelTask`, via `store.SetTaskFailureReasonIfEmpty` so a concurrent cascade-cancel's more specific reason always wins regardless of ordering |
+| Cascade-canceled (upstream step failed) | `"canceled: upstream step failed"` | stamped by `openjd.CancelDependents` inside the same UPDATE that cancels the tasks (`store.TransitionStepPendingTasks`) |
+| User-initiated cancel | `"canceled by user"` | `CancelJob` stamps it inside the bulk-cancel UPDATE (`store.CancelJobTasks`); `CancelTask` uses `store.SetTaskFailureReasonIfEmpty`. Both are only-if-empty, so a cascade-cancel's more specific reason always wins regardless of ordering |
+
+These server-originated reason strings are shared constants in `internal/store`
+(`FailureReasonCanceledByUser`, `FailureReasonUpstreamFailed`,
+`FailureReasonWorkerOffline`) — `FailureReasonSummary` groups by exact string,
+so producers must not drift.
 
 **Attempt history.** Each attempt's `message` — previously visible only by
 reading the raw `task_attempts.message` column, with no REST surface — is now
@@ -400,9 +405,16 @@ existing resume action), because job completion is still evaluated by "have
 all steps reached a terminal state," which naturally stays false while
 non-terminal work remains. But if the tripping task was the job's last
 non-terminal work, the completion check finalizes the job to `failed`
-immediately — a parked job is not exempted from normal completion. There is
-no separate un-park transition; `paused` here is just the job's `status`
-field, resolved the same way a manually-paused job is.
+immediately — a parked job is not exempted from normal completion.
+
+**Un-parking re-arms the failure limit.** Both recovery paths clear the park
+state (`store.ResumeJob` for the resume action, the retry reset inside
+`store.RetryTasks` for a manual retry): `park_reason` is cleared and the
+job's `failed_attempts` is reset to zero — without the reset, the very next
+genuine failure would compare against the already-tripped counter and
+instantly re-park the job. A *manually* paused job (empty `park_reason`)
+keeps its accumulated `failed_attempts` across pause/resume, and a manual
+pause is never overridden by a task retry.
 
 **Two ready-selection gates support this.** `store.ListReadyTasks` (used by
 the lease-assignment path) now excludes:

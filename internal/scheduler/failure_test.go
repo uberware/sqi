@@ -13,6 +13,7 @@ package scheduler
 // drives the fork.
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -494,5 +495,249 @@ func TestHandleTaskFailed_RetriedAttemptRecordsMessage_TaskReasonStaysClear(t *t
 	}
 	if got := h.latestAttemptMessage("t1"); got != "process exited with code 1" {
 		t.Fatalf("attempt.message = %q", got)
+	}
+}
+
+// ── stale / raced failure reports ────────────────────────────────────────────
+
+// TestHandleTaskFailed_CancelRace_DoesNotResurrectTask covers the user-cancel
+// vs in-flight-failure race, which needs NO redelivery: the worker publishes
+// "failed", but before the server processes it the user cancels the task —
+// the attempt is closed as canceled and the task goes terminal-canceled with
+// its durable reason. The late failure report must be discarded: it must not
+// flip the canceled task back to ready, wipe its "canceled by user" reason,
+// or count a failure.
+func TestHandleTaskFailed_CancelRace_DoesNotResurrectTask(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 3, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	// The CancelTask sequence lands first: close the attempt as canceled,
+	// cancel the task, stamp the durable reason.
+	att := h.current["t1"]
+	att.Status = store.AttemptStatusCanceled
+	att.EndedAt = &now
+	if _, err := h.st.UpdateTaskAttempt(ctx, att); err != nil {
+		t.Fatalf("UpdateTaskAttempt: %v", err)
+	}
+	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusCanceled); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if err := h.st.SetTaskFailureReasonIfEmpty(ctx, "t1", store.FailureReasonCanceledByUser); err != nil {
+		t.Fatalf("SetTaskFailureReasonIfEmpty: %v", err)
+	}
+
+	// The worker's in-flight "failed" report is processed afterwards.
+	h.reportFailed("t1")
+
+	if got := h.taskStatus("t1"); got != store.TaskStatusCanceled {
+		t.Fatalf("canceled task resurrected: status = %s, want canceled", got)
+	}
+	if got := h.taskFailureReason("t1"); got != store.FailureReasonCanceledByUser {
+		t.Fatalf("failure_reason = %q, want %q preserved", got, store.FailureReasonCanceledByUser)
+	}
+	if got := h.taskFailedAttempts("t1"); got != 0 {
+		t.Fatalf("canceled attempt must not count as a failure: failed_attempts = %d", got)
+	}
+}
+
+// TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone covers the
+// late-failure-after-reclaim race: worker A drops off, the sweep closes its
+// attempt as failed and reclaims the task, and worker B re-leases it (a newer
+// attempt is running). When worker A reconnects and its buffered "failed" for
+// the OLD attempt is delivered, it must be discarded — acting on it would rip
+// the assignment out from under worker B and let a third worker lease the
+// task into duplicate concurrent execution.
+func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 5, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "wA")
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	// The sweep closed worker A's attempt as failed (worker went offline)…
+	stale := h.current["t1"]
+	stale.Status = store.AttemptStatusFailed
+	stale.EndedAt = &now
+	stale.Message = store.FailureReasonWorkerOffline
+	if _, err := h.st.UpdateTaskAttempt(ctx, stale); err != nil {
+		t.Fatalf("UpdateTaskAttempt: %v", err)
+	}
+
+	// …and the task was reclaimed, then re-leased to worker B (newer attempt).
+	if err := h.st.AssignTask(ctx, "t1", "wB", now); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	h.newAttempt("t1", "wB")
+
+	// Worker A reconnects: its buffered "failed" for the stale attempt lands.
+	exitCode := 1
+	msg := protocol.TaskStatusMsg{
+		TaskID:    "t1",
+		AttemptID: stale.ID,
+		Status:    "failed",
+		ExitCode:  &exitCode,
+		At:        time.Now().UTC(),
+	}
+	if err := h.s.processTaskStatus(ctx, msg); err != nil {
+		t.Fatalf("processTaskStatus(stale failed): %v", err)
+	}
+
+	task, err := h.st.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != store.TaskStatusRunning {
+		t.Fatalf("stale report disturbed the re-leased task: status = %s, want running", task.Status)
+	}
+	if task.AssignedWorkerID != "wB" {
+		t.Fatalf("assignment yanked from worker B: assigned to %q", task.AssignedWorkerID)
+	}
+	if task.RetryAfter != nil {
+		t.Fatal("stale report must not stamp retry_after on the re-leased task")
+	}
+}
+
+// TestHandleTaskFailed_CrashRecoveryRedelivery_StillRequeues pins the
+// crash-recovery contract the stale-report gate must NOT break: the server
+// committed RecordTaskFailure (attempt closed, counters incremented) but died
+// before the requeue, so the un-acked message is redelivered after restart.
+// The attempt is closed as failed and is still the task's latest, so the
+// redelivery must complete the lost retry action.
+func TestHandleTaskFailed_CrashRecoveryRedelivery_StillRequeues(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 3, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+	ctx := t.Context()
+
+	// First half of handleTaskFailed only: the counters committed, then the
+	// server crashed before RequeueTaskForRetry ran.
+	att := h.current["t1"]
+	if _, _, first, err := h.st.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", time.Now().UTC()); err != nil || !first {
+		t.Fatalf("RecordTaskFailure: first=%v err=%v", first, err)
+	}
+	if got := h.taskStatus("t1"); got != store.TaskStatusRunning {
+		t.Fatalf("fixture: task should still be running pre-redelivery, got %s", got)
+	}
+
+	// Redelivery after restart drives the full path.
+	h.reportFailed("t1")
+
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("crash-recovery redelivery must requeue: status = %s, want ready", got)
+	}
+	if got := h.taskFailedAttempts("t1"); got != 1 {
+		t.Fatalf("redelivery must not re-count: failed_attempts = %d, want 1", got)
+	}
+}
+
+// ── park recovery ────────────────────────────────────────────────────────────
+
+// TestParkResume_RearmsFailureLimit covers the auto-park recovery loop: a job
+// parks at its failure limit, the operator resumes it, and the NEXT genuine
+// failure must retry normally instead of instantly re-parking. Resume must
+// therefore clear park_reason and reset the job's failure counter.
+func TestParkResume_RearmsFailureLimit(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 10, RetryDelay: 0, FailureLimit: 2})
+	h.seedRunningTask("j1", "t1", "w1")
+	h.seedSiblingTask("t1", "t2") // keeps the step/job non-terminal through the park
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	// Two genuine failures trip the limit and park the job.
+	h.reportFailed("t1")
+	if err := h.st.AssignTask(ctx, "t1", "w1", now); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	h.reassignAndReportFailed("t1", "w1")
+	if got := h.jobStatus("j1"); got != store.JobStatusPaused {
+		t.Fatalf("fixture: job should be parked, got %s", got)
+	}
+	if h.parkReason("j1") == "" {
+		t.Fatal("fixture: parked job should carry a park_reason")
+	}
+
+	// Operator resumes: park state cleared, failure limit re-armed.
+	if err := h.st.ResumeJob(ctx, "j1", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	if got := h.jobStatus("j1"); got != store.JobStatusPending {
+		t.Fatalf("after resume want pending, got %s", got)
+	}
+	if got := h.parkReason("j1"); got != "" {
+		t.Fatalf("resume must clear park_reason, got %q", got)
+	}
+	if got := h.jobFailedAttempts("j1"); got != 0 {
+		t.Fatalf("resume must reset the job failure counter, got %d", got)
+	}
+
+	// The next genuine failure retries normally — no instant re-park.
+	if err := h.st.AssignTask(ctx, "t2", "w1", now); err != nil {
+		t.Fatalf("AssignTask(t2): %v", err)
+	}
+	if err := h.st.UpdateTaskStatus(ctx, "t2", store.TaskStatusRunning); err != nil {
+		t.Fatalf("UpdateTaskStatus(t2): %v", err)
+	}
+	h.newAttempt("t2", "w1")
+	h.reportFailed("t2")
+
+	if got := h.jobStatus("j1"); got == store.JobStatusPaused {
+		t.Fatal("job re-parked immediately after resume — failure limit was not re-armed")
+	}
+	if got := h.taskStatus("t2"); got != store.TaskStatusReady {
+		t.Fatalf("post-resume failure should retry: task status = %s, want ready", got)
+	}
+}
+
+// ── backoff-wake timer lifecycle ─────────────────────────────────────────────
+
+// TestScheduleRetryWake_TimerLifecycle asserts the backoff-wake timers are
+// tracked while pending, remove themselves once fired, are all stopped by
+// shutdown, and are not scheduled at all once the scheduler context is done —
+// so no fire-and-forget timers outlive Run.
+func TestScheduleRetryWake_TimerLifecycle(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 3, RetryDelay: time.Hour})
+
+	pending := func() int {
+		h.s.retryWakeMu.Lock()
+		defer h.s.retryWakeMu.Unlock()
+		return len(h.s.retryWakeTimers)
+	}
+
+	// Pending timers are tracked…
+	h.s.scheduleRetryWake("queue-1", time.Hour)
+	h.s.scheduleRetryWake("queue-1", time.Hour)
+	if got := pending(); got != 2 {
+		t.Fatalf("pending timers = %d, want 2", got)
+	}
+
+	// …and shutdown stops them all.
+	h.s.stopRetryWakeTimers()
+	if got := pending(); got != 0 {
+		t.Fatalf("pending timers after stop = %d, want 0", got)
+	}
+
+	// A fired timer removes itself from the tracking set.
+	h.s.scheduleRetryWake("queue-1", time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for pending() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("fired timer never removed itself from the tracking set")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// After the scheduler context is canceled, no new timers are scheduled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.s.ctx = ctx
+	h.s.scheduleRetryWake("queue-1", time.Hour)
+	if got := pending(); got != 0 {
+		t.Fatalf("timer scheduled after shutdown: pending = %d, want 0", got)
 	}
 }

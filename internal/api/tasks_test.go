@@ -281,7 +281,8 @@ func TestGetTask(t *testing.T) {
 	t.Run("includes failed_attempts and retry_after when set", func(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
-		_, tk := seedTask(t, st, store.TaskStatusReady)
+		// Running: RequeueTaskForRetry only transitions an in-flight task.
+		_, tk := seedTask(t, st, store.TaskStatusRunning)
 
 		now := time.Now()
 		att, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
@@ -291,12 +292,12 @@ func TestGetTask(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateTaskAttempt: %v", err)
 		}
-		if _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", "", now); err != nil {
+		if _, _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", "", now); err != nil {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
 		retryAfter := now.Add(30 * time.Second)
-		if err := st.RequeueTaskForRetry(t.Context(), tk.ID, retryAfter, now); err != nil {
-			t.Fatalf("RequeueTaskForRetry: %v", err)
+		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, retryAfter, now); err != nil || !requeued {
+			t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 		}
 
 		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)

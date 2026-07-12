@@ -18,7 +18,7 @@ func TestBuiltinCopy(t *testing.T) {
 			t.Fatal(err)
 		}
 		dest := filepath.Join(dir, "sub", "out.txt") // parent must be created
-		if err := builtinCopy(ctx, src, dest, "FILE"); err != nil {
+		if err := builtinCopy(ctx, src, dest); err != nil {
 			t.Fatalf("copy: %v", err)
 		}
 		b, err := os.ReadFile(dest)
@@ -46,7 +46,7 @@ func TestBuiltinCopy(t *testing.T) {
 			t.Fatal(err)
 		}
 		dest := filepath.Join(dir, "destdir")
-		if err := builtinCopy(ctx, src, dest, "DIRECTORY"); err != nil {
+		if err := builtinCopy(ctx, src, dest); err != nil {
 			t.Fatalf("copy: %v", err)
 		}
 		for rel, want := range map[string]string{"a.txt": "A", "nested/b.txt": "B"} {
@@ -57,7 +57,7 @@ func TestBuiltinCopy(t *testing.T) {
 		}
 	})
 	t.Run("missing src errors", func(t *testing.T) {
-		if err := builtinCopy(ctx, filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "x"), "FILE"); err == nil {
+		if err := builtinCopy(ctx, filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "x")); err == nil {
 			t.Fatal("want error for missing src")
 		}
 	})

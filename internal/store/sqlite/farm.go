@@ -40,25 +40,6 @@ RETURNING id, name, description, max_concurrent_tasks,
 	sqlDeleteFarm = `DELETE FROM farms WHERE id = ?`
 )
 
-// nullInt converts a nullable Go int pointer to a value usable as a SQLite
-// bind argument: nil becomes SQL NULL, otherwise the dereferenced int64.
-func nullInt(p *int) any {
-	if p == nil {
-		return nil
-	}
-	return int64(*p)
-}
-
-// intPtr converts a sql.NullInt64 read from a nullable INTEGER column back to
-// a Go *int; NULL becomes nil.
-func intPtr(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
-	}
-	v := int(n.Int64)
-	return &v
-}
-
 func scanFarm(row scanner) (store.Farm, error) {
 	var f store.Farm
 	var createdAt, updatedAt string

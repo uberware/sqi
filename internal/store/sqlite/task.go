@@ -117,15 +117,23 @@ JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.farm_id = ?
   AND  t.status IN ('assigned', 'running')`
 
-	// Per-queue count of tasks in 'ready' state for a given farm.
-	// Used to populate the sqi_scheduler_queue_depth Prometheus gauge.
-	// farmID = '' means "all farms".
+	// Per-queue count of LEASABLE ready tasks for a given farm — same
+	// eligibility predicate as sqlListReadyTasks (backoff elapsed, queue
+	// unpaused, job schedulable), so the sweep neither reports depth for nor
+	// wakes lease waiters on queues whose only ready work is backing off or
+	// held under a paused/parked job.
+	// Used for the sqi_scheduler_queue_depth Prometheus gauge and the
+	// heartbeat-sweep queue wake. farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
 SELECT j.queue_id, COUNT(*)
-FROM   tasks t
-JOIN   jobs  j ON t.job_id = j.id
+FROM   tasks  t
+JOIN   jobs   j ON t.job_id   = j.id
+JOIN   queues q ON j.queue_id = q.id
 WHERE  t.status  = 'ready'
   AND  (? = '' OR j.farm_id = ?)
+  AND  q.paused  = 0
+  AND  j.status NOT IN ('paused','completed','failed','canceled')
+  AND  (t.retry_after IS NULL OR t.retry_after <= ?)
 GROUP BY j.queue_id`
 
 	// Counts tasks for a given job grouped by status.
@@ -157,18 +165,24 @@ ORDER  BY n DESC, failure_reason ASC`
 	// Cancels all non-terminal tasks for a job and returns the number of rows
 	// updated. The caller first SELECTs active tasks within the same
 	// transaction to capture worker IDs before this UPDATE clears them.
+	// The reason is stamped only on rows with no failure_reason yet, so a more
+	// specific cause recorded earlier (e.g. a cascade-cancel) survives.
 	sqlCancelJobTasks = `
 UPDATE tasks
-SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
+SET    status = 'canceled', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = '',
+       failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
 WHERE  job_id = ?
   AND  status IN ('pending', 'ready', 'assigned', 'running')`
 
 	// Transitions all pending tasks of a step to a new status and returns the
 	// affected rows. A pending task has never been assigned, so there is no worker
 	// assignment to clear. Single statement — not bounded by MaxLimit.
+	// The failure reason (empty when promoting to ready) is stamped only on rows
+	// with no failure_reason yet, so a more specific cause survives.
 	sqlTransitionStepPendingTasks = `
 UPDATE tasks
-SET    status = ?, updated_at = ?, unschedulable_reason = ''
+SET    status = ?, updated_at = ?, unschedulable_reason = '',
+       failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
 WHERE  step_id = ? AND status = 'pending'
 RETURNING ` + taskCols
 
@@ -216,12 +230,15 @@ WHERE  t.id = ?`
 
 	// sqlRequeueTaskForRetry returns a task to ready, clearing its worker
 	// assignment and stamping retry_after so [Store.ListReadyTasks] excludes it
-	// until the backoff elapses.
+	// until the backoff elapses. Guarded to assigned/running — the only states
+	// a genuine in-flight failure can arrive from — so a stale or redelivered
+	// failure report can never resurrect a canceled/succeeded task or yank a
+	// task that has already been returned to ready.
 	sqlRequeueTaskForRetry = `
 UPDATE tasks
 SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
     retry_after = ?, updated_at = ?, failure_reason = ''
-WHERE id = ?`
+WHERE id = ? AND status IN ('assigned', 'running')`
 
 	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
 	// that a retry will revive. The optional "AND id IN (?, …)" suffix is
@@ -249,14 +266,17 @@ SET    status = 'pending', updated_at = ?
 WHERE  job_id = ? AND status IN ('failed', 'canceled')
   AND  EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'pending')`
 
-	// sqlRetryResetJob resets the job to pending when it is currently terminal,
-	// also clearing its genuine-failure state (Tasks 1-3) so the job restarts
-	// with a clean failure count and no stale park reason.
+	// sqlRetryResetJob resets the job to pending when it is currently terminal
+	// or auto-parked (paused with a park_reason), also clearing its
+	// genuine-failure state so the job restarts with a clean failure count and
+	// no stale park reason. A manually paused job (empty park_reason) is left
+	// paused — retrying its tasks must not override the operator's pause.
 	sqlRetryResetJob = `
 UPDATE jobs
 SET    status = 'pending', completed_at = NULL, updated_at = ?,
        failed_attempts = 0, park_reason = ''
-WHERE  id = ? AND status IN ('failed', 'canceled')`
+WHERE  id = ?
+  AND  (status IN ('failed', 'canceled') OR (status = 'paused' AND park_reason != ''))`
 )
 
 func scanTask(row scanner) (store.Task, error) {
@@ -549,10 +569,10 @@ func (s *Store) CountActiveTasksInFarm(ctx context.Context, farmID string) (int,
 }
 
 // CountReadyTasksByQueue implements [store.TaskStore].
-// Returns a map of queue ID → ready-task count for the given farm.
-// Queues with zero ready tasks are omitted.
-func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string) (map[string]int, error) {
-	rows, err := s.stmtCountReadyTasksByQueue.QueryContext(ctx, farmID, farmID)
+// Returns a map of queue ID → leasable ready-task count for the given farm.
+// Queues with zero leasable tasks are omitted.
+func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string, now time.Time) (map[string]int, error) {
+	rows, err := s.stmtCountReadyTasksByQueue.QueryContext(ctx, farmID, farmID, timeToText(now.UTC()))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -577,7 +597,7 @@ func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string) (map[
 // cancellation.  The rows cursor is closed inside a helper closure before the
 // UPDATE runs, which avoids any potential cursor/write contention on the
 // single-connection pool.
-func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time) ([]store.Task, error) {
+func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: begin tx for cancel job tasks: %w", err)
@@ -616,7 +636,7 @@ WHERE  job_id = ?
 
 	// Transition all non-terminal tasks to canceled, clearing the worker
 	// assignment so stale heartbeat messages cannot re-assign them.
-	if _, err = tx.ExecContext(ctx, sqlCancelJobTasks, timeToText(now), jobID); err != nil {
+	if _, err = tx.ExecContext(ctx, sqlCancelJobTasks, timeToText(now), reason, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: cancel tasks for job %s: %w", jobID, mapErr(err))
 	}
 
@@ -703,8 +723,8 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 //
 // The UPDATE ... RETURNING runs as one statement so the transition is atomic and
 // covers every pending task of the step regardless of count.
-func (s *Store) TransitionStepPendingTasks(ctx context.Context, stepID string, to store.TaskStatus) ([]store.Task, error) {
-	rows, err := s.db.QueryContext(ctx, sqlTransitionStepPendingTasks, string(to), timeToText(time.Now().UTC()), stepID)
+func (s *Store) TransitionStepPendingTasks(ctx context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
+	rows, err := s.db.QueryContext(ctx, sqlTransitionStepPendingTasks, string(to), timeToText(time.Now().UTC()), failureReason, stepID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: transition pending tasks for step %s: %w", stepID, mapErr(err))
 	}
@@ -816,27 +836,22 @@ func (s *Store) RecordTaskFailure(
 	exitCode *int,
 	sessionID, message string,
 	now time.Time,
-) (taskFailed, jobFailed int, err error) {
+) (taskFailed, jobFailed int, firstClose bool, err error) {
 	nowText := timeToText(now.UTC())
-
-	var exit sql.NullInt64
-	if exitCode != nil {
-		exit = sql.NullInt64{Int64: int64(*exitCode), Valid: true}
-	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, fmt.Errorf("sqlite: begin tx for record task failure: %w", mapErr(err))
+		return 0, 0, false, fmt.Errorf("sqlite: begin tx for record task failure: %w", mapErr(err))
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, exit, sessionID, message, attemptID)
+	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
 	if err != nil {
-		return 0, 0, mapErr(err)
+		return 0, 0, false, mapErr(err)
 	}
 	closed, err := res.RowsAffected()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 
 	if closed == 0 {
@@ -844,34 +859,40 @@ func (s *Store) RecordTaskFailure(
 		// do NOT re-count. Return the current counters so the caller's decision
 		// is identical to the first delivery. No matching task ⇒ ErrNotFound.
 		if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&taskFailed, &jobFailed); err != nil {
-			return 0, 0, mapErr(err)
+			return 0, 0, false, mapErr(err)
 		}
 		if err = tx.Commit(); err != nil {
-			return 0, 0, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
+			return 0, 0, false, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
 		}
-		return taskFailed, jobFailed, nil
+		return taskFailed, jobFailed, false, nil
 	}
 
 	// First close of this attempt: count the failure exactly once.
 	var jobID string
 	if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
-		return 0, 0, mapErr(err)
+		return 0, 0, false, mapErr(err)
 	}
 	if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
-		return 0, 0, mapErr(err)
+		return 0, 0, false, mapErr(err)
 	}
 
 	if err = tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
+		return 0, 0, false, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
 	}
-	return taskFailed, jobFailed, nil
+	return taskFailed, jobFailed, true, nil
 }
 
-// RequeueTaskForRetry implements [store.TaskStore].
-func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) error {
+// RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing
+// or no longer assigned/running) is a legitimate no-op reported as false —
+// NOT an error, so a stale redelivery never naks into a redelivery loop.
+func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry, timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID)
 	if err != nil {
-		return mapErr(err)
+		return false, mapErr(err)
 	}
-	return checkRowsAffected(res)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

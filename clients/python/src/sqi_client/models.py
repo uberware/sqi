@@ -31,6 +31,7 @@ __all__ = [
     "CancelResult",
     "ComputeLocation",
     "CurrentTask",
+    "EffectiveRetryPolicy",
     "FailureSummary",
     "Farm",
     "GPUInfo",
@@ -430,6 +431,35 @@ class FailureSummary:
 
 
 @dataclass(frozen=True)
+class EffectiveRetryPolicy:
+    """The resolved retry policy in force for a job (OpenAPI ``effective_retry``).
+
+    The values after job -> queue -> farm -> server-default inheritance; always
+    concrete ints when the object is present. A ``failure_limit`` of ``0`` means
+    auto-park is off. Populated only on the ``JobDetail`` response (see
+    :class:`Job`); ``None`` on a list-level job or an older server.
+    """
+
+    max_attempts: int
+    retry_delay_seconds: int
+    failure_limit: int
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> EffectiveRetryPolicy:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            max_attempts=_as_int(data.get("max_attempts")),
+            retry_delay_seconds=_as_int(data.get("retry_delay_seconds")),
+            failure_limit=_as_int(data.get("failure_limit")),
+        )
+
+
+@dataclass(frozen=True)
 class Job:
     """A submitted job.
 
@@ -472,6 +502,11 @@ class Job:
     """Aggregate of this job's failed-task reasons. Populated only by
     :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
     ``None`` on a list-level job."""
+    effective_retry: EffectiveRetryPolicy | None = None
+    """The resolved retry policy in force for this job after job -> queue ->
+    farm -> server-default inheritance. Populated only by
+    :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
+    ``None`` on a list-level job or when the server predates this field."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -515,6 +550,11 @@ class Job:
             failure_summary=(
                 FailureSummary.from_dict(fs)
                 if isinstance(fs := data.get("failure_summary"), dict)
+                else None
+            ),
+            effective_retry=(
+                EffectiveRetryPolicy.from_dict(er)
+                if isinstance(er := data.get("effective_retry"), dict)
                 else None
             ),
         )

@@ -61,10 +61,8 @@ func (s *Stager) effectiveScratch() string {
 // (scratch + shell command), or the built-in copy is available (defaults on,
 // or the `builtin` sentinel was set explicitly).
 func (s *Stager) Configured() bool {
-	if s.scratchBase != "" && s.syncCommand != "" && s.syncCommand != builtinSentinel {
-		return true
-	}
-	return s.defaults || s.syncCommand == builtinSentinel
+	return s.defaults || s.syncCommand == builtinSentinel ||
+		(s.scratchBase != "" && s.syncCommand != "")
 }
 
 // StageIn prepares a per-attempt scratch directory for every staged entry and
@@ -154,7 +152,7 @@ func (s *Stager) Cleanup(scratchDir string) {
 func (s *Stager) transfer(ctx context.Context, src, dest, objectType string) error {
 	if s.useBuiltin() {
 		s.warnDefaults()
-		return builtinCopy(ctx, src, dest, objectType)
+		return builtinCopy(ctx, src, dest)
 	}
 	return s.runSync(ctx, src, dest, objectType)
 }
@@ -194,20 +192,18 @@ func (s *Stager) runSync(ctx context.Context, src, dest, objectType string) erro
 }
 
 // builtinCopy copies src to dest without an external command — the default /
-// `builtin` transfer used when no shell sync_command is configured. It copies a
-// single file when objectType is FILE (or src is a regular file), else the whole
-// directory tree. Destination parents are created and the source file mode is
-// preserved (ownership and xattrs are not — adequate for worker-local scratch).
-func builtinCopy(ctx context.Context, src, dest, objectType string) error {
+// `builtin` transfer used when no shell sync_command is configured. What src
+// actually is on disk decides the mode (a declared ObjectType cannot override
+// it): a directory is copied as a whole tree, anything else as a single file.
+// Destination parents are created and the source file mode is preserved
+// (ownership and xattrs are not — adequate for worker-local scratch).
+func builtinCopy(ctx context.Context, src, dest string) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return fmt.Errorf("stat %q: %w", src, err)
 	}
-	if info.IsDir() && (objectType == "" || strings.EqualFold(objectType, "DIRECTORY")) {
-		return copyTree(ctx, src, dest)
-	}
 	if info.IsDir() {
-		return copyTree(ctx, src, dest) // src is a dir regardless of declared type
+		return copyTree(ctx, src, dest)
 	}
 	return copyFile(src, dest, info.Mode())
 }

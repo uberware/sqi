@@ -165,7 +165,7 @@ func (s *Scheduler) leaseGatesPass(
 	}
 	d.job = job
 
-	if job.Status == store.JobStatusPaused || isTerminalJobStatus(job.Status) {
+	if job.Status == store.JobStatusPaused || job.Status.IsTerminal() {
 		return d, false, nil // paused/terminal job: skip (defends the ready-list→lease window)
 	}
 

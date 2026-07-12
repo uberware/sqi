@@ -105,7 +105,7 @@ func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, stat
 		}
 		a.Status = status
 		a.EndedAt = &endedAt
-		a.Message = "worker went offline"
+		a.Message = store.FailureReasonWorkerOffline
 		s.taskAttempts[id] = a
 		n++
 	}

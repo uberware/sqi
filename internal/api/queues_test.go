@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -473,5 +474,39 @@ func TestDeleteQueue_Success(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("want 204, got %d", rr.Code)
+	}
+}
+
+// TestQueueRetryOverrides_Rejected asserts queue create validates the retry
+// override bounds at the API boundary, mirroring the farm-level checks.
+func TestQueueRetryOverrides_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	if _, err := st.CreateFarm(t.Context(), store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	r := newQueueRouter(st)
+
+	tests := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"zero max_attempts", map[string]any{"farm_id": "farm-1", "name": "q1", "max_attempts": 0}, "max_attempts must be >= 1"},
+		{"negative retry_delay_seconds", map[string]any{"farm_id": "farm-1", "name": "q2", "retry_delay_seconds": -1}, "retry_delay_seconds must be >= 0"},
+		{"negative failure_limit", map[string]any{"farm_id": "farm-1", "name": "q3", "failure_limit": -1}, "failure_limit must be >= 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, tt.body))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400 — body: %s", rr.Code, rr.Body)
+			}
+			if !strings.Contains(rr.Body.String(), tt.want) {
+				t.Errorf("body %q does not contain %q", rr.Body.String(), tt.want)
+			}
+		})
 	}
 }

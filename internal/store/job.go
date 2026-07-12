@@ -28,6 +28,17 @@ const (
 	JobStatusCanceled JobStatus = "canceled"
 )
 
+// IsTerminal reports whether s is a terminal job state (completed, failed,
+// canceled). A terminal job cannot be modified and its tasks are never
+// eligible for assignment.
+func (s JobStatus) IsTerminal() bool {
+	switch s {
+	case JobStatusCompleted, JobStatusFailed, JobStatusCanceled:
+		return true
+	}
+	return false
+}
+
 // TemplateFormat identifies the serialization format of [Job.RawTemplate].
 type TemplateFormat string
 
@@ -174,6 +185,17 @@ type JobStore interface {
 	// returns nil without modifying it. Returns [ErrNotFound] if the job does
 	// not exist.
 	ParkJob(ctx context.Context, jobID, reason string, now time.Time) error
+
+	// ResumeJob transitions a paused job back to [JobStatusPending] — the
+	// inverse of [ParkJob] and of a manual pause. An auto-parked job
+	// (non-empty ParkReason) additionally has its ParkReason cleared and its
+	// FailedAttempts reset to zero, re-arming the failure limit; without the
+	// reset the very next genuine failure would immediately re-park the job.
+	// A manually paused job (empty ParkReason) keeps its FailedAttempts.
+	// A job that is no longer paused is a legitimate no-op: ResumeJob returns
+	// nil without modifying it. Returns [ErrNotFound] if the job does not
+	// exist.
+	ResumeJob(ctx context.Context, jobID string, now time.Time) error
 }
 
 // ListJobsOptions filters and orders [JobStore.ListJobs] results.

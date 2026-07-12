@@ -25,9 +25,12 @@ func coalesceInt(def int, vals ...*int) int {
 	return def
 }
 
-// resolveRetryPolicy computes the effective policy as the first non-nil of
+// ResolveRetryPolicy computes the effective policy as the first non-nil of
 // Job -> Queue -> Farm for each knob, falling back to the server default def.
-func resolveRetryPolicy(job store.Job, queue store.Queue, farm store.Farm, def RetryPolicy) RetryPolicy {
+// Out-of-range values are clamped to sane bounds as a last-line defense (the
+// API layer rejects them at write time). Exported so the REST layer can
+// report the resolved policy (effective_retry) a job will actually run under.
+func ResolveRetryPolicy(job store.Job, queue store.Queue, farm store.Farm, def RetryPolicy) RetryPolicy {
 	//nolint:gocritic,predeclared // max is a meaningful local variable name here
 	max := coalesceInt(def.MaxAttempts, job.MaxAttempts, queue.MaxAttempts, farm.MaxAttempts)
 	if max < 1 {
@@ -48,8 +51,10 @@ func resolveRetryPolicy(job store.Job, queue store.Queue, farm store.Farm, def R
 	}
 }
 
-// retryDefaults returns the server-level fallback retry policy from config.
-func (s *Scheduler) retryDefaults() RetryPolicy {
+// RetryDefaults returns the server-level fallback retry policy from config.
+// Exported so the server can hand the same defaults to the REST layer for
+// effective-policy reporting.
+func (s *Scheduler) RetryDefaults() RetryPolicy {
 	return RetryPolicy{
 		MaxAttempts:  s.cfg.DefaultMaxAttempts,
 		RetryDelay:   s.cfg.RetryDelay,

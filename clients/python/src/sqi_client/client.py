@@ -488,14 +488,10 @@ class SqiClient:
             "owner": owner,
             "priority": priority,
             "project": project,
+            "max_attempts": max_attempts,
+            "retry_delay_seconds": retry_delay_seconds,
+            "failure_limit": failure_limit,
         }
-        for key, val in (
-            ("max_attempts", max_attempts),
-            ("retry_delay_seconds", retry_delay_seconds),
-            ("failure_limit", failure_limit),
-        ):
-            if val is not None:
-                params[key] = str(val)
         data = self._request_json(
             "POST",
             "/jobs",

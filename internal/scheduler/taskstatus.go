@@ -239,19 +239,22 @@ func (s *Scheduler) handleTaskTerminal(
 	at time.Time,
 ) error {
 	// ── Close the attempt record ──────────────────────────────────────────
-	updated := attempt
-	updated.Status = attemptStatus
-	updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
-	updated.EndedAt = &at
-	// Attempt message (covers worker-canceled, whose attempt is closed here;
-	// for failed, RecordTaskFailure already set it — COALESCE keeps it).
-	updated.Message = m.Message
-	if m.ExitCode != nil {
-		code := *m.ExitCode
-		updated.ExitCode = &code
-	}
-	if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-		return err
+	// Skipped for failed: that path only arrives here via handleTaskFailed,
+	// whose RecordTaskFailure already closed the attempt (same status, end
+	// time, exit code, session, and message) inside its transaction.
+	if attemptStatus != store.AttemptStatusFailed {
+		updated := attempt
+		updated.Status = attemptStatus
+		updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
+		updated.EndedAt = &at
+		updated.Message = m.Message
+		if m.ExitCode != nil {
+			code := *m.ExitCode
+			updated.ExitCode = &code
+		}
+		if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
+			return err
+		}
 	}
 
 	// ── Transition the task ───────────────────────────────────────────────
@@ -460,13 +463,10 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 	}
 
 	// Fan the cascade-canceled tasks out to WebSocket subscribers; they were never
-	// assigned, so there is no worker to attribute. Also record the durable
-	// failure reason so the UI can explain why the task never ran.
+	// assigned, so there is no worker to attribute. The durable failure reason
+	// was stamped by CancelDependents in the same UPDATE that canceled them.
 	now := time.Now().UTC()
 	for _, t := range canceledTasks {
-		if err := s.store.SetTaskFailureReason(ctx, t.ID, "canceled: upstream step failed"); err != nil {
-			return err
-		}
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     t.JobID,
 			TaskID:    t.ID,
@@ -551,15 +551,6 @@ func isTerminalTaskStatus(s store.TaskStatus) bool {
 func isTerminalStepStatus(s store.StepStatus) bool {
 	switch s {
 	case store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled:
-		return true
-	}
-	return false
-}
-
-// isTerminalJobStatus reports whether s is a terminal job state.
-func isTerminalJobStatus(s store.JobStatus) bool {
-	switch s {
-	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
 		return true
 	}
 	return false

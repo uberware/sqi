@@ -121,6 +121,17 @@ WHERE status IN (`
 	sqlParkJob = `
 UPDATE jobs SET status = 'paused', park_reason = ?, updated_at = ?
 WHERE id = ? AND status NOT IN ('completed','failed','canceled')`
+
+	// sqlResumeJob is the inverse of sqlParkJob: only a paused job is resumed.
+	// An auto-parked job (non-empty park_reason) also gets its failure counter
+	// reset — otherwise the very next genuine failure would re-park it — while
+	// a manual pause/resume keeps the accumulated count.
+	sqlResumeJob = `
+UPDATE jobs
+SET status = 'pending', updated_at = ?,
+    failed_attempts = CASE WHEN park_reason != '' THEN 0 ELSE failed_attempts END,
+    park_reason = ''
+WHERE id = ? AND status = 'paused'`
 )
 
 func scanJob(row scanner) (store.Job, error) {
@@ -496,4 +507,28 @@ func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time
 		return err // propagates ErrNotFound
 	}
 	return nil // already terminal — legitimate no-op
+}
+
+// ResumeJob implements [store.JobStore].
+//
+// A zero-row UPDATE is ambiguous between "job not found" and "job no longer
+// paused"; a follow-up GetJob disambiguates the same way [Store.ParkJob] does —
+// not-paused is a legitimate no-op (nil), missing propagates [store.ErrNotFound].
+func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, sqlResumeJob, timeToText(now.UTC()), jobID)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil // successfully resumed
+	}
+
+	if _, err := s.GetJob(ctx, jobID); err != nil {
+		return err // propagates ErrNotFound
+	}
+	return nil // no longer paused — legitimate no-op
 }

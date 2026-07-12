@@ -450,6 +450,14 @@ curl -X POST "http://localhost:8080/api/v1/jobs?max_attempts=5&retry_delay_secon
   --data-binary @job.yaml
 ```
 
+Overrides are validated at the API boundary: `max_attempts` must be >= 1,
+`retry_delay_seconds` and `failure_limit` must be >= 0 (an explicit
+`failure_limit` of 0 disables an inherited limit). Out-of-range or
+non-integer values are rejected with `400` rather than stored or silently
+ignored. The job detail response (`GET /api/v1/jobs/{id}`) reports both the
+configured per-job overrides and `effective_retry` — the fully resolved
+policy the job actually runs under.
+
 A manual `POST /api/v1/tasks/{id}/retry` or `POST /api/v1/jobs/{id}/retry`
 resets a task/job's failure counters, independent of this policy. See
 [the task state machine](architecture.md#state-machine-task-status) for how

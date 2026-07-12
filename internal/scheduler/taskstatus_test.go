@@ -816,7 +816,7 @@ type cancelTasksErrSt struct {
 	store.Store
 }
 
-func (*cancelTasksErrSt) TransitionStepPendingTasks(_ context.Context, _ string, _ store.TaskStatus) ([]store.Task, error) {
+func (*cancelTasksErrSt) TransitionStepPendingTasks(_ context.Context, _ string, _ store.TaskStatus, _ string) ([]store.Task, error) {
 	return nil, errInjectedLog
 }
 

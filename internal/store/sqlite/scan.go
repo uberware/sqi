@@ -56,6 +56,25 @@ func nullTimeToText(t *time.Time) sql.NullString {
 	return sql.NullString{String: timeToText(*t), Valid: true}
 }
 
+// nullInt converts a nullable Go int pointer to a value usable as a SQLite
+// bind argument: nil becomes SQL NULL, otherwise the dereferenced int64.
+func nullInt(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return int64(*p)
+}
+
+// intPtr converts a sql.NullInt64 read from a nullable INTEGER column back to
+// a Go *int; NULL becomes nil.
+func intPtr(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
+}
+
 // nullTextToTime converts a sql.NullString read from a nullable timestamp
 // column back to *time.Time.
 func nullTextToTime(s sql.NullString) *time.Time {

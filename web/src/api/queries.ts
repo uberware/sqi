@@ -370,12 +370,11 @@ export function useGetTask(id: string) {
   })
 }
 
-/** Fetch a task's attempt history. Pass `enabled: false` until the caller expands the row. */
-export function useTaskAttempts(id: string, opts?: { enabled?: boolean }) {
+/** Fetch a task's attempt history. Mount only while the attempt row is expanded. */
+export function useTaskAttempts(id: string) {
   return useQuery({
     queryKey: queryKeys.tasks.attempts(id),
     queryFn: () => fetchTaskAttempts(id),
-    enabled: opts?.enabled ?? true,
   })
 }
 

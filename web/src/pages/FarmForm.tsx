@@ -3,8 +3,10 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useGetFarm } from '@/api/queries'
+import { parseOptionalInt } from '@/lib/parse'
 import { useCreateFarm, useUpdateFarm } from '@/api/mutations'
 import type { FarmInput } from '@/api/mutations'
 import styles from './FarmForm.module.css'
@@ -47,15 +49,18 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
+    const parsedMaxAttempts = parseOptionalInt(maxAttempts)
+    const parsedRetryDelaySeconds = parseOptionalInt(retryDelaySeconds)
+    const parsedFailureLimit = parseOptionalInt(failureLimit)
     const input: FarmInput = {
       name: name.trim(),
       description: description.trim(),
       max_concurrent_tasks: Math.trunc(Number(maxConcurrent) || 0),
-      ...(maxAttempts.trim() !== '' ? { max_attempts: Math.trunc(Number(maxAttempts)) } : {}),
-      ...(retryDelaySeconds.trim() !== ''
-        ? { retry_delay_seconds: Math.trunc(Number(retryDelaySeconds)) }
+      ...(parsedMaxAttempts !== undefined ? { max_attempts: parsedMaxAttempts } : {}),
+      ...(parsedRetryDelaySeconds !== undefined
+        ? { retry_delay_seconds: parsedRetryDelaySeconds }
         : {}),
-      ...(failureLimit.trim() !== '' ? { failure_limit: Math.trunc(Number(failureLimit)) } : {}),
+      ...(parsedFailureLimit !== undefined ? { failure_limit: parsedFailureLimit } : {}),
     }
     try {
       if (mode === 'create') {
@@ -120,50 +125,18 @@ function FarmFormInner({ mode, id, defaults }: InnerProps) {
           />
         </div>
 
-        <div className={styles.field}>
-          <label htmlFor="maxAttempts" className={styles.label}>
-            Max attempts per task
-          </label>
-          <input
-            id="maxAttempts"
-            type="number"
-            min={1}
-            className={styles.input}
-            value={maxAttempts}
-            onChange={(e) => setMaxAttempts(e.target.value)}
-            placeholder="Inherit server default"
-          />
-        </div>
-
-        <div className={styles.field}>
-          <label htmlFor="retryDelaySeconds" className={styles.label}>
-            Retry delay (seconds)
-          </label>
-          <input
-            id="retryDelaySeconds"
-            type="number"
-            min={0}
-            className={styles.input}
-            value={retryDelaySeconds}
-            onChange={(e) => setRetryDelaySeconds(e.target.value)}
-            placeholder="Inherit server default"
-          />
-        </div>
-
-        <div className={styles.field}>
-          <label htmlFor="failureLimit" className={styles.label}>
-            Failure limit (auto-park after N failures)
-          </label>
-          <input
-            id="failureLimit"
-            type="number"
-            min={1}
-            className={styles.input}
-            value={failureLimit}
-            onChange={(e) => setFailureLimit(e.target.value)}
-            placeholder="Inherit server default"
-          />
-        </div>
+        <RetryPolicyFields
+          maxAttempts={maxAttempts}
+          onMaxAttemptsChange={setMaxAttempts}
+          retryDelaySeconds={retryDelaySeconds}
+          onRetryDelaySecondsChange={setRetryDelaySeconds}
+          failureLimit={failureLimit}
+          onFailureLimitChange={setFailureLimit}
+          placeholder="Inherit server default"
+          fieldClassName={styles.field}
+          labelClassName={styles.label}
+          inputClassName={styles.input}
+        />
 
         <div className={styles.footer}>
           <button type="submit" className={styles.submitBtn} disabled={!canSubmit}>

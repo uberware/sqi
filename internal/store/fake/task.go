@@ -127,8 +127,9 @@ func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string
 }
 
 // TransitionStepPendingTasks transitions every pending task of the step to `to`,
-// updates UpdatedAt, and returns the affected tasks.
-func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus) ([]store.Task, error) {
+// updates UpdatedAt, stamps a non-empty failureReason on tasks that carry none,
+// and returns the affected tasks.
+func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -139,6 +140,9 @@ func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to 
 		}
 		t.Status = to
 		t.UnschedulableReason = ""
+		if failureReason != "" && t.FailureReason == "" {
+			t.FailureReason = failureReason
+		}
 		t.UpdatedAt = time.Now()
 		s.tasks[id] = t
 
@@ -347,9 +351,10 @@ func (s *Store) CountActiveTasksInFarm(_ context.Context, farmID string) (int, e
 }
 
 // CancelJobTasks transitions all non-terminal tasks for the given job to
-// [store.TaskStatusCanceled] and returns those that were in
+// [store.TaskStatusCanceled], stamping a non-empty reason on tasks that carry
+// no failure reason yet, and returns those that were in
 // [store.TaskStatusAssigned] or [store.TaskStatusRunning] at call time.
-func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time) ([]store.Task, error) {
+func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -371,6 +376,9 @@ func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time) (
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
 		task.UnschedulableReason = ""
+		if reason != "" && task.FailureReason == "" {
+			task.FailureReason = reason
+		}
 		task.UpdatedAt = now
 		s.tasks[id] = task
 	}
@@ -437,38 +445,53 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 		}
 	}
 
-	// Reset the job when it is currently terminal.
-	if job, ok := s.jobs[jobID]; ok {
-		switch job.Status {
-		case store.JobStatusFailed, store.JobStatusCanceled:
-			job.Status = store.JobStatusPending
-			job.CompletedAt = nil
-			job.FailedAttempts = 0
-			job.ParkReason = ""
-			job.UpdatedAt = now
-			s.jobs[jobID] = job
-		}
-	}
+	s.retryResetJobLocked(jobID, now)
 
 	return revived, nil
 }
 
-// CountReadyTasksByQueue returns the number of tasks in [store.TaskStatusReady]
-// state for each queue in the given farm, keyed by queue ID.
-func (s *Store) CountReadyTasksByQueue(_ context.Context, farmID string) (map[string]int, error) {
+// retryResetJobLocked resets the job to pending when it is currently terminal
+// or auto-parked (paused with a park reason), clearing its failure counter and
+// park reason. A manually paused job (empty park reason) stays paused —
+// retrying its tasks must not override the operator's pause. Caller must hold
+// s.mu.
+func (s *Store) retryResetJobLocked(jobID string, now time.Time) {
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return
+	}
+	terminal := job.Status == store.JobStatusFailed || job.Status == store.JobStatusCanceled
+	autoParked := job.Status == store.JobStatusPaused && job.ParkReason != ""
+	if !terminal && !autoParked {
+		return
+	}
+	job.Status = store.JobStatusPending
+	job.CompletedAt = nil
+	job.FailedAttempts = 0
+	job.ParkReason = ""
+	job.UpdatedAt = now
+	s.jobs[jobID] = job
+}
+
+// CountReadyTasksByQueue returns the number of leasable ready tasks for each
+// queue in the given farm ("" = all farms), keyed by queue ID — the same
+// eligibility predicate as ListReadyTasks (see isReadyInFarm).
+func (s *Store) CountReadyTasksByQueue(_ context.Context, farmID string, now time.Time) (map[string]int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	queuePaused := make(map[string]bool)
+	for _, q := range s.queues {
+		if farmID == "" || q.FarmID == farmID {
+			queuePaused[q.ID] = q.Paused
+		}
+	}
+
 	counts := make(map[string]int)
 	for _, t := range s.tasks {
-		if t.Status != store.TaskStatusReady {
-			continue
+		if isReadyInFarm(t, farmID, now, s.jobs, queuePaused) {
+			counts[s.jobs[t.JobID].QueueID]++
 		}
-		job, ok := s.jobs[t.JobID]
-		if !ok || job.FarmID != farmID {
-			continue
-		}
-		counts[job.QueueID]++
 	}
 	return counts, nil
 }
@@ -491,25 +514,13 @@ func isReadyInFarm(t store.Task, farmID string, now time.Time, jobs map[string]s
 	if queuePaused[job.QueueID] {
 		return false
 	}
-	if job.Status == store.JobStatusPaused || isTerminalJobStatus(job.Status) {
+	if job.Status == store.JobStatusPaused || job.Status.IsTerminal() {
 		return false
 	}
 	if t.RetryAfter != nil && t.RetryAfter.After(now) {
 		return false
 	}
 	return true
-}
-
-// isTerminalJobStatus reports whether status is a terminal job state
-// (completed, failed, canceled) — tasks belonging to such a job are never
-// eligible for assignment.
-func isTerminalJobStatus(status store.JobStatus) bool {
-	switch status {
-	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
-		return true
-	default:
-		return false
-	}
 }
 
 // CountTasksByJob returns the number of tasks for the given job keyed by status.
@@ -635,23 +646,24 @@ func (s *Store) RecordTaskFailure(
 	exitCode *int,
 	sessionID, message string,
 	now time.Time,
-) (taskFailed, jobFailed int, err error) {
+) (taskFailed, jobFailed int, firstClose bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	t, ok := s.tasks[taskID]
 	if !ok {
-		return 0, 0, store.ErrNotFound
+		return 0, 0, false, store.ErrNotFound
 	}
 	j, ok := s.jobs[t.JobID]
 	if !ok {
-		return 0, 0, store.ErrNotFound
+		return 0, 0, false, store.ErrNotFound
 	}
 
 	// Gate the increment on the attempt's running→failed transition. Only the
 	// first close of a still-running attempt counts; redeliveries no-op.
 	attempt, ok := s.taskAttempts[attemptID]
 	if ok && attempt.Status == store.AttemptStatusRunning {
+		firstClose = true
 		attempt.Status = store.AttemptStatusFailed
 		endedAt := now
 		attempt.EndedAt = &endedAt
@@ -676,18 +688,20 @@ func (s *Store) RecordTaskFailure(
 		s.jobs[t.JobID] = j
 	}
 
-	return t.FailedAttempts, j.FailedAttempts, nil
+	return t.FailedAttempts, j.FailedAttempts, firstClose, nil
 }
 
 // RequeueTaskForRetry implements [store.TaskStore]. It returns the task to
 // [store.TaskStatusReady], clears its worker assignment, and stamps RetryAfter.
-func (s *Store) RequeueTaskForRetry(_ context.Context, taskID string, retryAfter, now time.Time) error {
+// Guarded to assigned/running; anything else (including a missing task) is a
+// legitimate no-op reported as false.
+func (s *Store) RequeueTaskForRetry(_ context.Context, taskID string, retryAfter, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	t, ok := s.tasks[taskID]
-	if !ok {
-		return store.ErrNotFound
+	if !ok || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) {
+		return false, nil
 	}
 	t.Status = store.TaskStatusReady
 	t.AssignedWorkerID = ""
@@ -697,7 +711,7 @@ func (s *Store) RequeueTaskForRetry(_ context.Context, taskID string, retryAfter
 	t.FailureReason = ""
 	t.UpdatedAt = now
 	s.tasks[taskID] = t
-	return nil
+	return true, nil
 }
 
 // cmpReadyTask orders tasks by job priority descending, then CreatedAt ascending.

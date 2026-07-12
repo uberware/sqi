@@ -34,7 +34,7 @@ func TestResolveRetryPolicy_Precedence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveRetryPolicy(tt.job, tt.queue, tt.farm, def)
+			got := ResolveRetryPolicy(tt.job, tt.queue, tt.farm, def)
 			if got.MaxAttempts != tt.wantMax || got.FailureLimit != tt.wantLim || got.RetryDelay != tt.wantDelay {
 				t.Fatalf("got %+v want max=%d lim=%d delay=%s", got, tt.wantMax, tt.wantLim, tt.wantDelay)
 			}

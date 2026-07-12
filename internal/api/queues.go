@@ -114,6 +114,10 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
@@ -252,6 +256,10 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "" {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
+		return
+	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
 	}
 

@@ -102,11 +102,24 @@ export interface FailureSummary {
   distinct_reasons: number
 }
 
+/**
+ * Resolved retry policy after job -> queue -> farm -> server-default
+ * inheritance; all values are concrete (a `failure_limit` of 0 means the
+ * auto-park failure limit is off).
+ */
+export interface EffectiveRetryPolicy {
+  max_attempts: number
+  retry_delay_seconds: number
+  failure_limit: number
+}
+
 /** Wire shape returned by GET /api/v1/jobs/{id}. */
 export interface JobDetail extends Job {
   steps: Step[]
   task_counts: TaskCounts
   failure_summary?: FailureSummary
+  /** Resolved retry policy; absent when farm/queue lookups fail server-side. */
+  effective_retry?: EffectiveRetryPolicy
 }
 
 // ── Step ──────────────────────────────────────────────────────────────────────

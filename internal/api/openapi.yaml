@@ -325,6 +325,31 @@ components:
               description: >-
                 Aggregate of the job's failed tasks by failure reason. Omitted
                 when the job has no failed tasks with a recorded reason.
+            effective_retry:
+              $ref: "#/components/schemas/EffectiveRetryPolicy"
+              description: >-
+                The RESOLVED retry policy this job runs under, after
+                job -> queue -> farm -> server-default inheritance. Omitted
+                only when the queue or farm lookup fails.
+
+    EffectiveRetryPolicy:
+      type: object
+      required: [max_attempts, retry_delay_seconds, failure_limit]
+      properties:
+        max_attempts:
+          type: integer
+          minimum: 1
+          description: Resolved maximum genuine attempts per task.
+        retry_delay_seconds:
+          type: integer
+          minimum: 0
+          description: Resolved delay before a failed task is retried.
+        failure_limit:
+          type: integer
+          minimum: 0
+          description: >-
+            Resolved job-level failure ceiling before auto-park; 0 means the
+            limit is off.
 
     FailureSummary:
       type: object
@@ -371,19 +396,34 @@ components:
         action:
           type: string
           enum: [pause, resume]
-          description: pause or resume the job.
+          description: >
+            pause or resume the job. Resuming an auto-parked job (non-empty
+            `park_reason`) also clears `park_reason` and resets the job's
+            `failed_attempts` to zero, re-arming its failure limit.
         max_attempts:
           type: integer
+          minimum: 1
           nullable: true
-          description: Update the per-job max-attempts retry-policy override.
+          description: >
+            Update the per-job max-attempts retry-policy override. Omitted or
+            null leaves the current value unchanged — a job-level override
+            cannot be cleared back to "inherit" via this endpoint.
         retry_delay_seconds:
           type: integer
+          minimum: 0
           nullable: true
-          description: Update the per-job retry-delay retry-policy override.
+          description: >
+            Update the per-job retry-delay retry-policy override. Omitted or
+            null leaves the current value unchanged — a job-level override
+            cannot be cleared back to "inherit" via this endpoint.
         failure_limit:
           type: integer
+          minimum: 0
           nullable: true
-          description: Update the per-job failure-limit retry-policy override.
+          description: >
+            Update the per-job failure-limit retry-policy override. Omitted or
+            null leaves the current value unchanged — a job-level override
+            cannot be cleared back to "inherit" via this endpoint.
 
     # ── Tasks ─────────────────────────────────────────────────────────────────
     Task:
@@ -828,14 +868,17 @@ components:
           default: 0
         max_attempts:
           type: integer
+          minimum: 1
           nullable: true
           description: Farm-level max-attempts retry-policy override. Null means inherit.
         retry_delay_seconds:
           type: integer
+          minimum: 0
           nullable: true
           description: Farm-level retry-delay retry-policy override. Null means inherit.
         failure_limit:
           type: integer
+          minimum: 0
           nullable: true
           description: Farm-level failure-limit retry-policy override. Null means inherit.
 
@@ -853,14 +896,17 @@ components:
           default: 0
         max_attempts:
           type: integer
+          minimum: 1
           nullable: true
           description: Farm-level max-attempts retry-policy override. Null means inherit.
         retry_delay_seconds:
           type: integer
+          minimum: 0
           nullable: true
           description: Farm-level retry-delay retry-policy override. Null means inherit.
         failure_limit:
           type: integer
+          minimum: 0
           nullable: true
           description: Farm-level failure-limit retry-policy override. Null means inherit.
 
@@ -941,16 +987,19 @@ components:
           default: false
         max_attempts:
           type: integer
+          minimum: 1
           nullable: true
           description: >-
             Queue-level max-attempts retry-policy override. Null means
             inherit.
         retry_delay_seconds:
           type: integer
+          minimum: 0
           nullable: true
           description: Queue-level retry-delay retry-policy override. Null means inherit.
         failure_limit:
           type: integer
+          minimum: 0
           nullable: true
           description: >-
             Queue-level failure-limit retry-policy override. Null means
@@ -978,16 +1027,19 @@ components:
           default: false
         max_attempts:
           type: integer
+          minimum: 1
           nullable: true
           description: >-
             Queue-level max-attempts retry-policy override. Null means
             inherit.
         retry_delay_seconds:
           type: integer
+          minimum: 0
           nullable: true
           description: Queue-level retry-delay retry-policy override. Null means inherit.
         failure_limit:
           type: integer
+          minimum: 0
           nullable: true
           description: >-
             Queue-level failure-limit retry-policy override. Null means
@@ -1238,16 +1290,19 @@ components:
           description: Optional job name; overrides the template's name when set.
         max_attempts:
           type: integer
+          minimum: 1
           description: >-
             Per-job override for the maximum attempts per task. Omitted means
             inherit (queue -> farm -> server default).
         retry_delay_seconds:
           type: integer
+          minimum: 0
           description: >-
             Per-job override for the delay before retrying a failed task.
             Omitted means inherit (queue -> farm -> server default).
         failure_limit:
           type: integer
+          minimum: 0
           description: >-
             Per-job override for the task-failure count that auto-parks the job.
             Omitted means inherit (queue -> farm -> server default).
@@ -1491,25 +1546,30 @@ paths:
           in: query
           schema:
             type: integer
+            minimum: 1
           description: >-
-            Per-job override for the maximum attempts per task. Omitted or
-            unparseable means inherit (queue -> farm -> server default).
+            Per-job override for the maximum attempts per task. Omitted means
+            inherit (queue -> farm -> server default); a non-integer or
+            out-of-range value is rejected with 400.
         - name: retry_delay_seconds
           in: query
           schema:
             type: integer
+            minimum: 0
           description: >-
             Per-job override for the delay before retrying a failed task.
-            Omitted or unparseable means inherit (queue -> farm -> server
-            default).
+            Omitted means inherit (queue -> farm -> server default); a
+            non-integer or out-of-range value is rejected with 400.
         - name: failure_limit
           in: query
           schema:
             type: integer
+            minimum: 0
           description: >-
             Per-job override for the number of task failures that auto-parks
-            the job. Omitted or unparseable means inherit (queue -> farm ->
-            server default).
+            the job (0 disables an inherited limit). Omitted means inherit
+            (queue -> farm -> server default); a non-integer or out-of-range
+            value is rejected with 400.
       # Note: param.<Name>=<value> query parameters are intentionally omitted
       # from this parameters list because OpenAPI 3.x does not support
       # arbitrary-suffix parameters.  Full semantics are documented in the
@@ -1628,10 +1688,15 @@ paths:
         Partial update.  Supported mutations:
         - Change `priority` (must be ≥ 1).
         - Move to a different `queue_id`.
-        - `action`: `"pause"` or `"resume"`.
+        - `action`: `"pause"` or `"resume"` (resuming an auto-parked job
+          clears `park_reason` and resets `failed_attempts`).
+        - Set the per-job retry-policy overrides (`max_attempts`,
+          `retry_delay_seconds`, `failure_limit`).
 
-        Only non-null fields in the request body are applied.
-        Terminal jobs (completed, failed, canceled) cannot be modified.
+        Only non-null fields in the request body are applied — an explicit
+        null is treated as absent, so a retry override cannot be cleared back
+        to "inherit" here. Terminal jobs (completed, failed, canceled) cannot
+        be modified.
       requestBody:
         required: true
         content:

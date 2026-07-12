@@ -97,12 +97,11 @@ func (s *Scheduler) retry(ctx context.Context, jobID string, taskIDs []string) (
 	}
 
 	// Notify re-canceled dependents that were not already in the revived set.
+	// Their failure reason was stamped by CancelDependents in the same UPDATE
+	// that re-canceled them.
 	for _, ct := range canceledTasks {
 		if revivedIDs[ct.ID] {
 			continue
-		}
-		if err := s.store.SetTaskFailureReason(ctx, ct.ID, "canceled: upstream step failed"); err != nil {
-			return 0, fmt.Errorf("scheduler: set failure reason for re-canceled task %s: %w", ct.ID, err)
 		}
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     jobID,

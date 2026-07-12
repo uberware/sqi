@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import ProductParamField from '@/components/ProductParamField'
+import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
 import { useProduct, useProductParameters, useFarmsWithQueues } from '@/api/queries'
 import { useSubmitProductJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { initialValue, defaultJobName, paramGroup, selectWidget } from '@/lib/productForm'
+import { parseOptionalInt } from '@/lib/parse'
 import { validateAll } from '@/lib/productValidation'
 import type { ProductParameter } from '@/api/types'
 import styles from './ProductSubmit.module.css'
@@ -110,16 +112,10 @@ export default function ProductSubmit() {
     // Guard: no queues configured (effectiveQueueId = ''); safe early return.
     if (!farmForQueue) return
 
-    const num = (s: string): number | undefined => {
-      const t = s.trim()
-      if (t === '') return undefined
-      const n = Number(t)
-      return Number.isFinite(n) ? n : undefined
-    }
-    const priorityNum = num(priority)
-    const maxAttemptsNum = num(maxAttempts)
-    const retryDelaySecondsNum = num(retryDelaySeconds)
-    const failureLimitNum = num(failureLimit)
+    const priorityNum = parseOptionalInt(priority)
+    const maxAttemptsNum = parseOptionalInt(maxAttempts)
+    const retryDelaySecondsNum = parseOptionalInt(retryDelaySeconds)
+    const failureLimitNum = parseOptionalInt(failureLimit)
 
     try {
       const job = await submit.mutateAsync({
@@ -228,39 +224,17 @@ export default function ProductSubmit() {
               <label htmlFor="project">Project</label>
               <input id="project" value={project} onChange={(e) => setProject(e.target.value)} />
             </div>
-            <div className={styles.row}>
-              <label htmlFor="maxAttempts">Max attempts</label>
-              <input
-                id="maxAttempts"
-                type="number"
-                min={1}
-                placeholder="Inherit"
-                value={maxAttempts}
-                onChange={(e) => setMaxAttempts(e.target.value)}
-              />
-            </div>
-            <div className={styles.row}>
-              <label htmlFor="retryDelaySeconds">Retry delay (seconds)</label>
-              <input
-                id="retryDelaySeconds"
-                type="number"
-                min={0}
-                placeholder="Inherit"
-                value={retryDelaySeconds}
-                onChange={(e) => setRetryDelaySeconds(e.target.value)}
-              />
-            </div>
-            <div className={styles.row}>
-              <label htmlFor="failureLimit">Failure limit</label>
-              <input
-                id="failureLimit"
-                type="number"
-                min={1}
-                placeholder="Inherit"
-                value={failureLimit}
-                onChange={(e) => setFailureLimit(e.target.value)}
-              />
-            </div>
+            <RetryPolicyFields
+              maxAttempts={maxAttempts}
+              onMaxAttemptsChange={setMaxAttempts}
+              retryDelaySeconds={retryDelaySeconds}
+              onRetryDelaySecondsChange={setRetryDelaySeconds}
+              failureLimit={failureLimit}
+              onFailureLimitChange={setFailureLimit}
+              placeholder="Inherit"
+              labelVariant="short"
+              fieldClassName={styles.row}
+            />
           </div>
         </details>
 

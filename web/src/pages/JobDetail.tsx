@@ -23,6 +23,7 @@ import { truncateId } from '@/lib/id'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
   JobDetail as JobDetailType,
+  EffectiveRetryPolicy,
   FailureSummary,
   Step,
   StepStatus,
@@ -71,6 +72,18 @@ function taskMatches(task: Task, term: string): boolean {
 /** Formats an inherited-or-configured retry-policy field for display. */
 function policyField(value: number | undefined, unit = ''): string {
   return value === undefined ? 'inherited' : `${value}${unit}`
+}
+
+/**
+ * Compact one-line summary of the resolved retry policy, e.g.
+ * "3 attempts · 30s delay · limit off" (a failure_limit of 0 means the
+ * auto-park failure limit is off).
+ */
+function effectiveRetryText(policy: EffectiveRetryPolicy): string {
+  const attempts = `${policy.max_attempts} ${policy.max_attempts === 1 ? 'attempt' : 'attempts'}`
+  const delay = `${policy.retry_delay_seconds}s delay`
+  const limit = policy.failure_limit === 0 ? 'limit off' : `limit ${policy.failure_limit}`
+  return `${attempts} · ${delay} · ${limit}`
 }
 
 /**
@@ -227,6 +240,12 @@ function MetadataCard({ job }: { job: JobDetailType }) {
           <dt>Failure limit</dt>
           <dd>{policyField(job.failure_limit)}</dd>
         </div>
+        {job.effective_retry !== undefined && (
+          <div className={styles.metaField}>
+            <dt>Retries</dt>
+            <dd>{effectiveRetryText(job.effective_retry)}</dd>
+          </div>
+        )}
       </dl>
     </div>
   )
@@ -236,7 +255,6 @@ function MetadataCard({ job }: { job: JobDetailType }) {
 
 interface AttemptTimelineProps {
   taskId: string
-  enabled: boolean
   workerNamesById: ReadonlyMap<string, string>
   now: number
 }
@@ -280,8 +298,8 @@ function AttemptEntry({
 }
 
 /** Attempt-history timeline rendered inside a task row's expanded detail row. */
-function AttemptTimeline({ taskId, enabled, workerNamesById, now }: AttemptTimelineProps) {
-  const { data, isLoading, isError } = useTaskAttempts(taskId, { enabled })
+function AttemptTimeline({ taskId, workerNamesById, now }: AttemptTimelineProps) {
+  const { data, isLoading, isError } = useTaskAttempts(taskId)
   const attempts = data?.items ?? []
 
   if (isLoading) {
@@ -347,6 +365,8 @@ function TaskRow({
   const canRetry = RETRYABLE.has(task.status) && !isRetrying && depsSatisfied
   const canCancel = CANCELABLE.has(task.status) && !isCanceling
   const endTime = isTerminalTask(task.status) ? task.updated_at : undefined
+  const attemptText = attemptLabel(task)
+  const retryingText = retryingHint(task, now)
 
   const [attemptsExpanded, setAttemptsExpanded] = useState(false)
   const detailRowId = `task-${task.id}-attempts`
@@ -392,11 +412,11 @@ function TaskRow({
         </td>
         <td>
           <StatusBadge status={displayStatus} />
-          {attemptLabel(task) !== undefined && (
-            <span className={styles.attemptLabel ?? ''}>{attemptLabel(task)}</span>
+          {attemptText !== undefined && (
+            <span className={styles.attemptLabel ?? ''}>{attemptText}</span>
           )}
-          {retryingHint(task, now) !== undefined && (
-            <span className={styles.retryingHint ?? ''}>{retryingHint(task, now)}</span>
+          {retryingText !== undefined && (
+            <span className={styles.retryingHint ?? ''}>{retryingText}</span>
           )}
           {task.unschedulable_reason !== undefined && (
             <UnschedulableBadge
@@ -461,12 +481,7 @@ function TaskRow({
       {attemptsExpanded && (
         <tr id={detailRowId} className={styles.attemptsRow}>
           <td colSpan={9}>
-            <AttemptTimeline
-              taskId={task.id}
-              enabled={attemptsExpanded}
-              workerNamesById={workerNamesById}
-              now={now}
-            />
+            <AttemptTimeline taskId={task.id} workerNamesById={workerNamesById} now={now} />
           </td>
         </tr>
       )}
@@ -971,13 +986,13 @@ export default function JobDetail() {
       />
 
       {job.failure_summary !== undefined && (
-        <div className={styles.failureBanner ?? ''} role="alert">
+        <ErrorBanner>
           <span>{failureBannerText(job.failure_summary)}</span>
-        </div>
+        </ErrorBanner>
       )}
 
       {job.park_reason !== undefined && job.park_reason !== '' && (
-        <div className={styles.autoParkBanner ?? ''} role="alert">
+        <ErrorBanner variant="warning">
           <span>Auto-parked — {job.park_reason}</span>
           <button
             type="button"
@@ -990,7 +1005,7 @@ export default function JobDetail() {
           {resumeError !== undefined && (
             <span className={styles.resumeError ?? ''}>{resumeError}</span>
           )}
-        </div>
+        </ErrorBanner>
       )}
 
       <div className={styles.jobNameArea}>

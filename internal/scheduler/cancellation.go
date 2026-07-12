@@ -70,38 +70,18 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 		)
 	}
 
-	// Snapshot the IDs of tasks about to be canceled by this call (all
-	// non-terminal tasks in the job right now) *before* CancelJobTasks runs,
-	// so the "canceled by user" annotation below lands only on tasks this
-	// call actually transitioned — not on tasks that were already canceled
-	// earlier for a different reason (e.g. a cascade-cancel).
-	toAnnotate := s.nonTerminalTaskIDs(ctx, jobID)
-
 	// Step 2: cancel all non-terminal tasks; capture the previously active
-	// tasks so we know which workers to notify.
-	activeTasks, err := s.store.CancelJobTasks(ctx, jobID, now)
+	// tasks so we know which workers to notify. The durable "canceled by user"
+	// reason rides the same UPDATE, stamped only on tasks with no reason yet so
+	// a more specific cause already recorded (e.g. a cascade-cancel's
+	// "canceled: upstream step failed") is never clobbered.
+	activeTasks, err := s.store.CancelJobTasks(ctx, jobID, now, store.FailureReasonCanceledByUser)
 	if err != nil {
 		return fmt.Errorf("scheduler: cancel tasks for job %s: %w", jobID, err)
 	}
 
 	// Step 3: publish cancel signals to all workers that had active tasks.
 	s.publishCancelSignals(ctx, activeTasks, now)
-
-	// Annotate every task this call just canceled with the durable reason.
-	// Guarded (IfEmpty) so a concurrent cascade-cancel that already recorded a
-	// more specific cause ("canceled: upstream step failed") is never clobbered
-	// — cascade always wins regardless of ordering. Best-effort: a failure here
-	// does not roll back the cancellation itself, since the reason is an
-	// explanatory annotation, not part of the state machine.
-	for _, id := range toAnnotate {
-		if err := s.store.SetTaskFailureReasonIfEmpty(ctx, id, "canceled by user"); err != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: set failure reason for canceled task failed",
-				slog.String("task_id", id),
-				slog.Any("error", err),
-			)
-		}
-	}
 
 	// Step 4: release all usage pool slots held by the job.
 	n, err := s.store.ReleaseJobClaims(ctx, jobID, now)
@@ -174,7 +154,7 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	// Annotate the durable failure reason. Guarded (IfEmpty) so a concurrent
 	// cascade-cancel's more specific reason is never clobbered. Best-effort:
 	// does not roll back the cancellation itself — the reason is an annotation.
-	if err = s.store.SetTaskFailureReasonIfEmpty(ctx, taskID, "canceled by user"); err != nil {
+	if err = s.store.SetTaskFailureReasonIfEmpty(ctx, taskID, store.FailureReasonCanceledByUser); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: set failure reason for canceled task failed",
 			slog.String("task_id", taskID),
@@ -256,49 +236,6 @@ func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []stor
 			slog.String("worker_id", t.AssignedWorkerID),
 		)
 	}
-}
-
-// nonTerminalTaskIDs returns the IDs of every task in jobID that is not yet in
-// a terminal state. Used by CancelJob to enumerate the tasks it is about to
-// cancel (including pending/ready ones, which CancelJobTasks cancels but does
-// not return), so the "canceled by user" annotation can be applied to all of
-// them. It is snapshotted before CancelJobTasks flips the rows; correctness of
-// the annotation itself does not depend on this timing — the guarded
-// SetTaskFailureReasonIfEmpty ensures a more specific reason (e.g. a
-// cascade-cancel) is never overwritten regardless of ordering. Best-effort: a
-// lookup failure is logged and yields an empty (not partial) result.
-func (s *Scheduler) nonTerminalTaskIDs(ctx context.Context, jobID string) []string {
-	page, err := s.store.ListTasks(ctx, store.ListTasksOptions{
-		JobID: jobID,
-		Statuses: []store.TaskStatus{
-			store.TaskStatusPending, store.TaskStatusReady,
-			store.TaskStatusAssigned, store.TaskStatusRunning,
-		},
-		Pagination: store.Pagination{Limit: store.MaxLimit},
-	})
-	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: list non-terminal tasks for cancel-reason annotation failed",
-			slog.String("job_id", jobID),
-			slog.Any("error", err),
-		)
-		return nil
-	}
-	if page.Total > store.MaxLimit {
-		// Same truncation guard as checkStepCompletion: rather than
-		// mis-annotate a subset, skip annotation for this outsized job.
-		s.logger.WarnContext(
-			ctx, "scheduler: job exceeds MaxLimit — skipping cancel-reason annotation",
-			slog.String("job_id", jobID),
-			slog.Int("total", page.Total),
-		)
-		return nil
-	}
-	ids := make([]string, len(page.Items))
-	for i, t := range page.Items {
-		ids[i] = t.ID
-	}
-	return ids
 }
 
 // closeSingleTaskAttempt marks the latest running attempt for taskID as

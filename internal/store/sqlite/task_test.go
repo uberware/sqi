@@ -217,18 +217,18 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	}
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
 
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff; enough failures park the job with a reason.
 	att := insertAttempt(t, s, "t1", "w1", 1)
-	if _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
+	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
-	if err := s.RequeueTaskForRetry(ctx, "t1", now.Add(time.Minute), now); err != nil {
-		t.Fatalf("RequeueTaskForRetry: %v", err)
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", now.Add(time.Minute), now); err != nil || !requeued {
+		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 	}
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
@@ -341,15 +341,15 @@ func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
 	a1 := insertAttempt(t, s, "t1", "w1", 1)
-	tf, jf, err := s.RecordTaskFailure(ctx, a1.ID, "t1", nil, "", "", now)
-	if err != nil || tf != 1 || jf != 1 {
-		t.Fatalf("first attempt: tf=%d jf=%d err=%v", tf, jf, err)
+	tf, jf, first, err := s.RecordTaskFailure(ctx, a1.ID, "t1", nil, "", "", now)
+	if err != nil || tf != 1 || jf != 1 || !first {
+		t.Fatalf("first attempt: tf=%d jf=%d first=%v err=%v", tf, jf, first, err)
 	}
 
 	a2 := insertAttempt(t, s, "t1", "w1", 2)
-	tf, jf, err = s.RecordTaskFailure(ctx, a2.ID, "t1", nil, "", "", now)
-	if err != nil || tf != 2 || jf != 2 {
-		t.Fatalf("second attempt: tf=%d jf=%d err=%v", tf, jf, err)
+	tf, jf, first, err = s.RecordTaskFailure(ctx, a2.ID, "t1", nil, "", "", now)
+	if err != nil || tf != 2 || jf != 2 || !first {
+		t.Fatalf("second attempt: tf=%d jf=%d first=%v err=%v", tf, jf, first, err)
 	}
 
 	// Persisted state matches the returned counters.
@@ -383,9 +383,9 @@ func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 	sess := "sess-1"
 
 	// First delivery: closes the attempt as failed and counts once.
-	tf, jf, err := s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now)
-	if err != nil || tf != 1 || jf != 1 {
-		t.Fatalf("first delivery: tf=%d jf=%d err=%v", tf, jf, err)
+	tf, jf, first, err := s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now)
+	if err != nil || tf != 1 || jf != 1 || !first {
+		t.Fatalf("first delivery: tf=%d jf=%d first=%v err=%v", tf, jf, first, err)
 	}
 
 	closed, err := s.GetTaskAttempt(ctx, att.ID)
@@ -405,10 +405,12 @@ func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 		t.Errorf("attempt SessionID = %q, want %q", closed.SessionID, sess)
 	}
 
-	// Redelivery: the attempt is already terminal, so the counts must NOT move.
-	tf, jf, err = s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now.Add(time.Second))
-	if err != nil || tf != 1 || jf != 1 {
-		t.Fatalf("redelivery: tf=%d jf=%d err=%v (want 1,1 — no re-count)", tf, jf, err)
+	// Redelivery: the attempt is already terminal, so the counts must NOT move
+	// and firstClose must be false — the caller uses it to withhold the
+	// retry/park actions from stale reports.
+	tf, jf, first, err = s.RecordTaskFailure(ctx, att.ID, "t1", &exit, sess, "", now.Add(time.Second))
+	if err != nil || tf != 1 || jf != 1 || first {
+		t.Fatalf("redelivery: tf=%d jf=%d first=%v err=%v (want 1,1,false — no re-count)", tf, jf, first, err)
 	}
 
 	// Persisted counters incremented exactly once.
@@ -434,7 +436,7 @@ func TestRecordTaskFailure_NotFound(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	_, _, err := s.RecordTaskFailure(ctx, "missing-attempt", "missing", nil, "", "", time.Now().UTC())
+	_, _, _, err := s.RecordTaskFailure(ctx, "missing-attempt", "missing", nil, "", "", time.Now().UTC())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -459,8 +461,8 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	}
 
 	future := now.Add(30 * time.Second)
-	if err := s.RequeueTaskForRetry(ctx, "t1", future, now); err != nil {
-		t.Fatalf("requeue: %v", err)
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", future, now); err != nil || !requeued {
+		t.Fatalf("requeue: requeued=%v err=%v", requeued, err)
 	}
 	got, err := s.GetTask(ctx, "t1")
 	if err != nil {
@@ -492,8 +494,8 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 		t.Fatalf("SetTaskFailureReason: %v", err)
 	}
 
-	if err := s.RequeueTaskForRetry(ctx, "t1", now.Add(30*time.Second), now); err != nil {
-		t.Fatalf("RequeueTaskForRetry: %v", err)
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", now.Add(30*time.Second), now); err != nil || !requeued {
+		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 	}
 
 	got, err := s.GetTask(ctx, "t1")
@@ -505,16 +507,65 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	}
 }
 
-// TestRequeueTaskForRetry_NotFound asserts that requeuing an unknown task
-// returns [store.ErrNotFound].
-func TestRequeueTaskForRetry_NotFound(t *testing.T) {
+// TestRequeueTaskForRetry_GuardedToInFlight asserts the status guard: only an
+// assigned/running task is requeued. A missing task and — critically — a task
+// that has since been canceled, succeeded, or already returned to ready are
+// legitimate no-ops (false, nil), never a resurrection: a stale or redelivered
+// failure report must not flip a terminal task back to ready or clear its
+// failure reason.
+func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	err := s.RequeueTaskForRetry(ctx, "missing", now.Add(time.Second), now)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	insertStep(t, s, "s1", "j1", "S1", 0)
+
+	if requeued, err := s.RequeueTaskForRetry(ctx, "missing", now.Add(time.Second), now); err != nil || requeued {
+		t.Fatalf("missing task: requeued=%v err=%v, want false,nil", requeued, err)
+	}
+
+	for i, tc := range []struct {
+		status store.TaskStatus
+		reason string
+	}{
+		{store.TaskStatusCanceled, store.FailureReasonCanceledByUser},
+		{store.TaskStatusSucceeded, ""},
+		{store.TaskStatusReady, ""},
+	} {
+		t.Run(string(tc.status), func(t *testing.T) {
+			id := "t" + string(rune('1'+i))
+			insertTask(t, s, id, "j1", "s1")
+			if err := s.UpdateTaskStatus(ctx, id, tc.status); err != nil {
+				t.Fatalf("UpdateTaskStatus: %v", err)
+			}
+			if tc.reason != "" {
+				if err := s.SetTaskFailureReason(ctx, id, tc.reason); err != nil {
+					t.Fatalf("SetTaskFailureReason: %v", err)
+				}
+			}
+
+			requeued, err := s.RequeueTaskForRetry(ctx, id, now.Add(time.Second), now)
+			if err != nil || requeued {
+				t.Fatalf("requeued=%v err=%v, want false,nil", requeued, err)
+			}
+
+			got, err := s.GetTask(ctx, id)
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			if got.Status != tc.status {
+				t.Errorf("status = %q, want untouched %q", got.Status, tc.status)
+			}
+			if got.FailureReason != tc.reason {
+				t.Errorf("failure_reason = %q, want untouched %q", got.FailureReason, tc.reason)
+			}
+			if got.RetryAfter != nil {
+				t.Errorf("retry_after stamped on ineligible task")
+			}
+		})
 	}
 }
 
@@ -569,6 +620,163 @@ func TestParkJob_NotFound(t *testing.T) {
 	err := s.ParkJob(ctx, "missing", "x", time.Now().UTC())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResumeJob_AutoParked_ClearsParkStateAndCounter asserts that resuming an
+// auto-parked job clears park_reason AND resets the job's failure counter —
+// re-arming the failure limit so the next genuine failure retries instead of
+// instantly re-parking the job.
+func TestResumeJob_AutoParked_ClearsParkStateAndCounter(t *testing.T) {
+	s, ctx, now := recordFailureFixture(t)
+
+	// One genuine failure gives the job a nonzero counter, then park it.
+	att := insertAttempt(t, s, "t1", "w1", 1)
+	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
+	}
+	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	if err := s.ResumeJob(ctx, "j1", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusPending {
+		t.Errorf("status = %s, want pending", got.Status)
+	}
+	if got.ParkReason != "" {
+		t.Errorf("park_reason = %q, want cleared", got.ParkReason)
+	}
+	if got.FailedAttempts != 0 {
+		t.Errorf("failed_attempts = %d, want 0 (limit re-armed)", got.FailedAttempts)
+	}
+}
+
+// TestResumeJob_ManualPause_KeepsCounter asserts that resuming a MANUALLY
+// paused job (empty park_reason) does not touch its accumulated failure
+// counter — only an auto-park reset is implied by resume.
+func TestResumeJob_ManualPause_KeepsCounter(t *testing.T) {
+	s, ctx, now := recordFailureFixture(t)
+
+	att := insertAttempt(t, s, "t1", "w1", 1)
+	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
+	}
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusPaused); err != nil {
+		t.Fatalf("UpdateJobStatus(paused): %v", err)
+	}
+
+	if err := s.ResumeJob(ctx, "j1", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusPending {
+		t.Errorf("status = %s, want pending", got.Status)
+	}
+	if got.FailedAttempts != 1 {
+		t.Errorf("failed_attempts = %d, want 1 (manual resume keeps the count)", got.FailedAttempts)
+	}
+}
+
+// TestResumeJob_NotPausedAndNotFound asserts the edge semantics: a job that is
+// not paused is a legitimate no-op, an unknown job is ErrNotFound.
+func TestResumeJob_NotPausedAndNotFound(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	insertJob(t, s, "j1", "f1", "q1")
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+
+	if err := s.ResumeJob(ctx, "j1", now); err != nil {
+		t.Fatalf("resume of non-paused job should be a no-op, got %v", err)
+	}
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusRunning {
+		t.Errorf("non-paused job modified by resume: %+v", got)
+	}
+
+	if err := s.ResumeJob(ctx, "missing", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRetryTasks_UnparksAutoParkedJob asserts the spec §4.5 contract: a manual
+// retry of an AUTO-PARKED job (paused with a park_reason — not terminal)
+// resets the job to pending and clears its failure counter and park reason,
+// exactly as it does for a terminal job.
+func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
+	s, ctx, now := recordFailureFixture(t)
+
+	att := insertAttempt(t, s, "t1", "w1", 1)
+	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
+	}
+	// The tripping task went terminal-failed and the job parked.
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
+		t.Fatalf("UpdateTaskStatus(failed): %v", err)
+	}
+	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	revived, err := s.RetryTasks(ctx, "j1", nil, now)
+	if err != nil || len(revived) != 1 {
+		t.Fatalf("RetryTasks: revived=%d err=%v", len(revived), err)
+	}
+
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusPending {
+		t.Errorf("status = %s, want pending (retry un-parks)", got.Status)
+	}
+	if got.ParkReason != "" || got.FailedAttempts != 0 {
+		t.Errorf("park state not cleared: reason=%q failed_attempts=%d", got.ParkReason, got.FailedAttempts)
+	}
+}
+
+// TestRetryTasks_LeavesManualPauseAlone asserts the counterpart guard: a
+// manually paused job (no park_reason) is NOT un-paused by retrying its tasks
+// — the operator's pause outranks the retry.
+func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
+	s, ctx, now := recordFailureFixture(t)
+
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
+		t.Fatalf("UpdateTaskStatus(failed): %v", err)
+	}
+	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusPaused); err != nil {
+		t.Fatalf("UpdateJobStatus(paused): %v", err)
+	}
+
+	if _, err := s.RetryTasks(ctx, "j1", nil, now); err != nil {
+		t.Fatalf("RetryTasks: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, "j1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusPaused {
+		t.Errorf("manually paused job un-paused by retry: status = %s", got.Status)
 	}
 }
 

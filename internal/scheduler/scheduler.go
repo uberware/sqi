@@ -248,6 +248,12 @@ type Scheduler struct {
 
 	// cancel is called to stop all internal goroutines; set during [Run].
 	cancel context.CancelFunc
+
+	// retryWakeMu guards retryWakeTimers: the in-flight backoff-wake timers
+	// scheduled by scheduleRetryWake, tracked so shutdown can stop them
+	// instead of leaving fire-and-forget timers alive past [Run].
+	retryWakeMu     sync.Mutex
+	retryWakeTimers map[*time.Timer]struct{}
 }
 
 // New creates a Scheduler. Call [Run] to start its goroutines.
@@ -298,6 +304,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		diagBuf:          diagBuf,
 		waiters:          newWaiterRegistry(),
 		leaseHoldTimeout: 30 * time.Second,
+		retryWakeTimers:  make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).
@@ -411,6 +418,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 
 	s.wg.Wait()
+
+	// Stop any backoff-wake timers still pending so they don't outlive Run.
+	s.stopRetryWakeTimers()
 
 	s.logger.InfoContext(ctx, "scheduler: stopped")
 	return nil
@@ -946,7 +956,6 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 			// Refresh instrumentation gauges on the same tick so Prometheus
 			// reflects current farm state without a dedicated metrics loop.
 			s.refreshQueueDepthGauge(ctx)
-			s.wakeQueuesWithReadyWork(ctx)
 			s.refreshIdleWorkerGauge(ctx)
 			s.refreshUsageClaimGauge(ctx)
 		}
@@ -1299,14 +1308,16 @@ func (s *Scheduler) refreshWorkerGauge(ctx context.Context) {
 
 // ── Instrumentation helpers ─────────────────────────────────────────
 
-// refreshQueueDepthGauge queries the store for the current number of ready
-// tasks per queue in the scheduler's farm and updates the
-// SchedulerQueueDepth Prometheus gauge.
+// refreshQueueDepthGauge queries the store for the current number of leasable
+// ready tasks per queue in the scheduler's farm (backoff elapsed, queue
+// unpaused, job schedulable), updates the SchedulerQueueDepth Prometheus
+// gauge, and wakes lease waiters on every queue with leasable work — the
+// restart-safe backstop for scheduleRetryWake's in-process backoff timers.
 //
 // Called on every heartbeat-sweep tick so the gauge stays current.  Errors are
 // logged at WARN level and do not abort the sweep.
 func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
-	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID)
+	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID, time.Now().UTC())
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.WarnContext(ctx, "scheduler: refresh queue depth gauge failed", slog.Any("error", err))
@@ -1315,18 +1326,6 @@ func (s *Scheduler) refreshQueueDepthGauge(ctx context.Context) {
 	}
 	for queueID, n := range counts {
 		s.metrics.SchedulerQueueDepth.WithLabelValues(queueID).Set(float64(n))
-	}
-}
-
-// wakeQueuesWithReadyWork wakes lease waiters on queues that currently have
-// ready work whose backoff has elapsed. It is the restart-safe backstop for
-// scheduleRetryWake's in-process timers.
-func (s *Scheduler) wakeQueuesWithReadyWork(ctx context.Context) {
-	counts, err := s.store.CountReadyTasksByQueue(ctx, s.cfg.FarmID)
-	if err != nil {
-		return
-	}
-	for queueID, n := range counts {
 		if n > 0 {
 			s.WakeQueue(queueID)
 		}

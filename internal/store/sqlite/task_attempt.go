@@ -19,7 +19,7 @@ func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.Tas
 
 // TerminateWorkerAttempts implements [store.TaskAttemptStore].
 func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
-	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), workerID)
+	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), store.FailureReasonWorkerOffline, workerID)
 	if err != nil {
 		return 0, mapErr(err)
 	}
@@ -73,9 +73,10 @@ RETURNING ` + attemptCols
 	// sqlTerminateWorkerAttempts closes out all running attempts for tasks
 	// currently assigned to the given worker. Must be called before
 	// ReclaimWorkerTasks so that assigned_worker_id is still set on the tasks.
+	// The message is bound at call time to [store.FailureReasonWorkerOffline].
 	sqlTerminateWorkerAttempts = `
 UPDATE task_attempts
-SET status = ?, ended_at = ?, message = 'worker went offline'
+SET status = ?, ended_at = ?, message = ?
 WHERE status = 'running'
   AND task_id IN (
     SELECT id FROM tasks

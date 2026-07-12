@@ -213,7 +213,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Hub != nil {
 		jobNotifier = deps.Hub
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger)
+	// Server-level retry defaults for effective-policy reporting; zero value
+	// when no live scheduler is wired (resolution clamps sanely).
+	var retryDefaults scheduler.RetryPolicy
+	if deps.Scheduler != nil {
+		retryDefaults = deps.Scheduler.RetryDefaults()
+	}
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	// Pass the hub as a notifier only when non-nil so the worker handler's
 	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).

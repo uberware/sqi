@@ -1477,6 +1477,44 @@ describe('JobDetail', () => {
       await screen.findByText('Test Render Job')
       expect(screen.getAllByText('inherited')).toHaveLength(3)
     })
+
+    it('shows the resolved effective retry policy when present', async () => {
+      const job = makeJob({
+        effective_retry: { max_attempts: 3, retry_delay_seconds: 30, failure_limit: 5 },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.getByText('Retries')).toBeInTheDocument()
+      expect(screen.getByText('3 attempts · 30s delay · limit 5')).toBeInTheDocument()
+    })
+
+    it('shows "limit off" when the effective failure limit is 0', async () => {
+      const job = makeJob({
+        effective_retry: { max_attempts: 1, retry_delay_seconds: 0, failure_limit: 0 },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.getByText('1 attempt · 0s delay · limit off')).toBeInTheDocument()
+    })
+
+    it('renders no effective policy row when effective_retry is absent', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await screen.findByText('Test Render Job')
+      expect(screen.queryByText('Retries')).not.toBeInTheDocument()
+      expect(screen.queryByText(/limit off/)).not.toBeInTheDocument()
+    })
   })
 
   // ── Task attempt indicator and retry countdown ───────────────────────────

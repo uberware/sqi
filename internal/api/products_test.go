@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -437,5 +438,27 @@ func TestProducts_SubmitWithRetryOverrides(t *testing.T) {
 	}
 	if job.FailureLimit == nil || *job.FailureLimit != 7 {
 		t.Errorf("failure_limit = %v, want 7", job.FailureLimit)
+	}
+}
+
+// TestProducts_SubmitRejectsInvalidRetryOverrides asserts the product submit
+// endpoint applies the same retry-override bounds as direct job submission.
+func TestProducts_SubmitRejectsInvalidRetryOverrides(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+	body := jsonBody(t, map[string]any{
+		"farm_id":      farmID,
+		"queue_id":     queueID,
+		"parameters":   map[string]string{"Script": "print('hi')"},
+		"max_attempts": 0,
+	})
+	req := newReq(t, http.MethodPost, "/api/v1/products/python/jobs", bytes.NewReader(body.Bytes()))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400 — body: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "max_attempts must be >= 1") {
+		t.Errorf("body %q missing bound message", rec.Body.String())
 	}
 }

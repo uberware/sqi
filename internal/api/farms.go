@@ -92,6 +92,10 @@ func (h *farmHandler) createFarm(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
 		return
 	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	now := time.Now().UTC()
 	farm := store.Farm{
@@ -174,6 +178,10 @@ func (h *farmHandler) updateFarm(w http.ResponseWriter, r *http.Request) {
 
 	if req.Name == "" {
 		writeProblem(w, r, http.StatusBadRequest, "name is required")
+		return
+	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
 	}
 

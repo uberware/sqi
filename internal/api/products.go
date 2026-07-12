@@ -262,6 +262,10 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		writeProblem(w, r, http.StatusBadRequest, "farm_id and queue_id are required")
 		return
 	}
+	if problem := validateRetryOverrides(req.MaxAttempts, req.RetryDelaySeconds, req.FailureLimit); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	result, err := h.submitter.Submit(ctx, p.Template, p.Format, openjd.SubmitOptions{
 		FarmID:            req.FarmID,

@@ -283,7 +283,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if _, err := s.CancelJobTasks(ctx(), "j1", time.Now()); err != nil {
+	if _, err := s.CancelJobTasks(ctx(), "j1", time.Now(), ""); err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
 
@@ -478,7 +478,7 @@ func TestCancelJobTasks(t *testing.T) {
 	mustCreateTask(t, s, "t-running", "j1", "s1", store.TaskStatusRunning)
 	mustCreateTask(t, s, "t-done", "j1", "s1", store.TaskStatusSucceeded)
 
-	active, err := s.CancelJobTasks(ctx(), "j1", time.Now())
+	active, err := s.CancelJobTasks(ctx(), "j1", time.Now(), "")
 	if err != nil {
 		t.Fatalf("CancelJobTasks: %v", err)
 	}
@@ -507,12 +507,111 @@ func TestCountReadyTasksByQueue(t *testing.T) {
 	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
 	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusRunning)
 
-	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1")
+	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("CountReadyTasksByQueue: %v", err)
 	}
 	if counts["q1"] != 2 {
 		t.Errorf("q1 count = %d, want 2", counts["q1"])
+	}
+}
+
+// TestCountReadyTasksByQueue_ExcludesIneligible asserts the count uses the
+// same eligibility predicate as ListReadyTasks: ready tasks still backing off
+// (retry_after in the future) or under a paused/parked job are not counted —
+// so the heartbeat sweep does not wake lease waiters for work nothing can
+// lease. Also covers the farmID = "" (all farms) convention.
+func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
+	s := New()
+	defer s.Close()
+	now := time.Now().UTC()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusReady)
+
+	// Backing off: ready but retry_after has not elapsed (requeued from
+	// running through the real auto-retry path).
+	mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusRunning)
+	if requeued, err := s.RequeueTaskForRetry(ctx(), "t-backoff", now.Add(time.Minute), now); err != nil || !requeued {
+		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
+	}
+
+	// Under an auto-parked job.
+	mustCreateJob(t, s, "j-parked", "farm-f1", "q1")
+	mustCreateTask(t, s, "t-parked", "j-parked", "s1", store.TaskStatusReady)
+	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (2)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+
+	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1", now)
+	if err != nil {
+		t.Fatalf("CountReadyTasksByQueue: %v", err)
+	}
+	if counts["q1"] != 1 {
+		t.Errorf("q1 count = %d, want 1 (backoff + parked-job tasks excluded)", counts["q1"])
+	}
+
+	allFarms, err := s.CountReadyTasksByQueue(ctx(), "", now)
+	if err != nil {
+		t.Fatalf("CountReadyTasksByQueue(all farms): %v", err)
+	}
+	if allFarms["q1"] != 1 {
+		t.Errorf("all-farms q1 count = %d, want 1", allFarms["q1"])
+	}
+}
+
+// TestResumeJob_Fake mirrors the sqlite ResumeJob contract: resuming an
+// auto-parked job clears park state and resets the failure counter; a manual
+// pause/resume keeps the counter; a non-paused job is a no-op; an unknown job
+// is ErrNotFound.
+func TestResumeJob_Fake(t *testing.T) {
+	s := New()
+	defer s.Close()
+	now := time.Now().UTC()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+
+	// Auto-parked: reset everything.
+	parked := mustCreateJob(t, s, "j-parked", "farm-f1", "q1")
+	parked.FailedAttempts = 3
+	if _, err := s.UpdateJob(ctx(), parked); err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (3)", now); err != nil {
+		t.Fatalf("ParkJob: %v", err)
+	}
+	if err := s.ResumeJob(ctx(), "j-parked", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	got := mustGetJob(t, s, "j-parked")
+	if got.Status != store.JobStatusPending || got.ParkReason != "" || got.FailedAttempts != 0 {
+		t.Errorf("auto-parked resume: %+v, want pending with cleared park state", got)
+	}
+
+	// Manual pause: counter survives.
+	manual := mustCreateJob(t, s, "j-manual", "farm-f1", "q1")
+	manual.FailedAttempts = 2
+	if _, err := s.UpdateJob(ctx(), manual); err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	if err := s.UpdateJobStatus(ctx(), "j-manual", store.JobStatusPaused); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	if err := s.ResumeJob(ctx(), "j-manual", now); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	got = mustGetJob(t, s, "j-manual")
+	if got.Status != store.JobStatusPending || got.FailedAttempts != 2 {
+		t.Errorf("manual resume: %+v, want pending with failed_attempts 2", got)
+	}
+
+	// Not paused: no-op. Unknown: ErrNotFound.
+	if err := s.ResumeJob(ctx(), "j-manual", now); err != nil {
+		t.Fatalf("resume of non-paused job should be a no-op, got %v", err)
+	}
+	if err := s.ResumeJob(ctx(), "missing", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
 
