@@ -199,7 +199,7 @@ class SubmitDialog(QtWidgets.QDialog):
 
         self._priority_spin = QtWidgets.QSpinBox(group)
         self._priority_spin.setObjectName("prioritySpin")
-        self._priority_spin.setRange(0, 1000)
+        self._priority_spin.setRange(0, 100)
         self._priority_spin.setSpecialValueText("Inherit")
 
         self._project_edit = QtWidgets.QLineEdit(group)
