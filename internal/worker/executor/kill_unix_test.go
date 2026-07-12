@@ -24,7 +24,7 @@ func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
 	// then echo a marker and wait. Reading the marker guarantees the `sleep`
 	// grandchild already exists before we kill — otherwise the kill could race
 	// the fork and trivially "pass".
-	cmd := exec.Command("sh", "-c", "sleep 30 & echo started; wait")
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "sleep 30 & echo started; wait")
 	configureProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -50,7 +50,8 @@ func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
 	// this read blocks until `sleep 30` exits and the 5 s guard fails.
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(io.Discard, br)
+		//nolint:errcheck // draining stdout to EOF; a read error also ends the copy and closes done
+		io.Copy(io.Discard, br)
 		close(done)
 	}()
 
@@ -61,5 +62,5 @@ func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
 		t.Fatal("stdout did not reach EOF within 5s: grandchild process survived the kill")
 	}
 
-	_ = cmd.Wait()
+	cmd.Wait() //nolint:errcheck // process was killed; Wait only reaps the zombie, a non-nil error is expected
 }
