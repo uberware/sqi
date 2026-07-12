@@ -1236,6 +1236,21 @@ components:
         name:
           type: string
           description: Optional job name; overrides the template's name when set.
+        max_attempts:
+          type: integer
+          description: >-
+            Per-job override for the maximum attempts per task. Omitted means
+            inherit (queue -> farm -> server default).
+        retry_delay_seconds:
+          type: integer
+          description: >-
+            Per-job override for the delay before retrying a failed task.
+            Omitted means inherit (queue -> farm -> server default).
+        failure_limit:
+          type: integer
+          description: >-
+            Per-job override for the task-failure count that auto-parks the job.
+            Omitted means inherit (queue -> farm -> server default).
         parameters:
           type: object
           additionalProperties:

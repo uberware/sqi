@@ -226,14 +226,17 @@ func (h *productHandler) deleteProduct(w http.ResponseWriter, r *http.Request) {
 
 // submitProductRequest is the JSON body accepted by POST /api/v1/products/{name}/jobs.
 type submitProductRequest struct {
-	FarmID     string            `json:"farm_id"`
-	QueueID    string            `json:"queue_id"`
-	Owner      string            `json:"owner"`
-	Submitter  string            `json:"submitter"`
-	Priority   int               `json:"priority"`
-	Project    string            `json:"project"`
-	Name       string            `json:"name"`
-	Parameters map[string]string `json:"parameters"`
+	FarmID            string            `json:"farm_id"`
+	QueueID           string            `json:"queue_id"`
+	Owner             string            `json:"owner"`
+	Submitter         string            `json:"submitter"`
+	Priority          int               `json:"priority"`
+	Project           string            `json:"project"`
+	Name              string            `json:"name"`
+	Parameters        map[string]string `json:"parameters"`
+	MaxAttempts       *int              `json:"max_attempts"`
+	RetryDelaySeconds *int              `json:"retry_delay_seconds"`
+	FailureLimit      *int              `json:"failure_limit"`
 }
 
 // submitProductJob loads the named product's template and submits a job via
@@ -261,14 +264,17 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 	}
 
 	result, err := h.submitter.Submit(ctx, p.Template, p.Format, openjd.SubmitOptions{
-		FarmID:     req.FarmID,
-		QueueID:    req.QueueID,
-		Owner:      req.Owner,
-		Submitter:  req.Submitter,
-		Priority:   req.Priority,
-		Project:    req.Project,
-		Name:       req.Name,
-		Parameters: req.Parameters,
+		FarmID:            req.FarmID,
+		QueueID:           req.QueueID,
+		Owner:             req.Owner,
+		Submitter:         req.Submitter,
+		Priority:          req.Priority,
+		Project:           req.Project,
+		Name:              req.Name,
+		Parameters:        req.Parameters,
+		MaxAttempts:       req.MaxAttempts,
+		RetryDelaySeconds: req.RetryDelaySeconds,
+		FailureLimit:      req.FailureLimit,
 	})
 	if err != nil {
 		if isSubmitValidationError(err) {

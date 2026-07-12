@@ -407,3 +407,35 @@ func TestProducts_SubmitWithNameOverride(t *testing.T) {
 		t.Fatalf("job name = %q, want override", job.Name)
 	}
 }
+
+func TestProducts_SubmitWithRetryOverrides(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+	body := jsonBody(t, map[string]any{
+		"farm_id":             farmID,
+		"queue_id":            queueID,
+		"parameters":          map[string]string{"Script": "print('hi')"},
+		"max_attempts":        5,
+		"retry_delay_seconds": 30,
+		"failure_limit":       7,
+	})
+	req := newReq(t, http.MethodPost, "/api/v1/products/python/jobs", bytes.NewReader(body.Bytes()))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var job jobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.MaxAttempts == nil || *job.MaxAttempts != 5 {
+		t.Errorf("max_attempts = %v, want 5", job.MaxAttempts)
+	}
+	if job.RetryDelaySeconds == nil || *job.RetryDelaySeconds != 30 {
+		t.Errorf("retry_delay_seconds = %v, want 30", job.RetryDelaySeconds)
+	}
+	if job.FailureLimit == nil || *job.FailureLimit != 7 {
+		t.Errorf("failure_limit = %v, want 7", job.FailureLimit)
+	}
+}
