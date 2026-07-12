@@ -452,6 +452,13 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	cmd := exec.Command(action.Command, action.Args...) //nolint:gosec,noctx // command from server-signed assignment; context handled manually
 	cmd.Dir = sess.WorkDir
 
+	// Start the task in its own process group so a timeout/cancel can terminate
+	// the whole tree — the task and any children it spawns — not just the direct
+	// child. Without this, a shell's orphaned grandchild (e.g. a `sleep`) keeps
+	// the inherited stdout/stderr pipes open and stalls cmd.Wait() until it
+	// exits on its own, defeating the per-task timeout.
+	configureProcessGroup(cmd)
+
 	// Merge the session's dynamic environment (accumulated from openjd_env /
 	// openjd_redacted_env / openjd_unset_env directives emitted by environment
 	// actions) on top of the task's static environment variables. Precedence:

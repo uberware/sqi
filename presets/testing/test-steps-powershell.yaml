@@ -116,7 +116,7 @@ template:
           onRun:
             command: powershell
             args: ["-NoProfile", "-ExecutionPolicy", "Unrestricted", "-File", "{{Task.File.main}}", "{{Param.OutputDir}}"]
-            timeoutSeconds: 120
+            timeout: 120
     - name: publish
       hostRequirements:
         attributes:
@@ -153,7 +153,7 @@ template:
           onRun:
             command: powershell
             args: ["-NoProfile", "-ExecutionPolicy", "Unrestricted", "-File", "{{Task.File.main}}", "{{Param.OutputDir}}"]
-            timeoutSeconds: 120
+            timeout: 120
     - name: notify
       hostRequirements:
         attributes:
@@ -191,7 +191,7 @@ template:
           onRun:
             command: powershell
             args: ["-NoProfile", "-ExecutionPolicy", "Unrestricted", "-File", "{{Task.File.main}}", "{{Param.OutputDir}}"]
-            timeoutSeconds: 120
+            timeout: 120
   SQI_PATH_TRANSLATION:
     # stage_locally copies IN/OUT paths to/from the worker scratch dir;
     # swap_in_place rewrites the task's command/args (e.g. the OutputDir arg
