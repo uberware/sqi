@@ -19,6 +19,7 @@ from sqi_submitter.core import (
     prefill,
     submit_form,
 )
+from sqi_submitter.core.joboptions import JobOptions
 from sqi_submitter.qt._compat import QtCore, QtGui, QtWidgets, require_qt
 from sqi_submitter.qt.widgets import build_form
 
@@ -53,6 +54,7 @@ class _SubmitWorker(QtCore.QThread):
         job_name: str | None,
         adapter: HostAdapter | None,
         save_scene: bool,
+        job_options: JobOptions | None,
     ) -> None:
         super().__init__()
         self._session = session
@@ -63,6 +65,7 @@ class _SubmitWorker(QtCore.QThread):
         self._job_name = job_name
         self._adapter = adapter
         self._save_scene = save_scene
+        self._job_options = job_options
 
     def run(self) -> None:
         try:
@@ -75,6 +78,7 @@ class _SubmitWorker(QtCore.QThread):
                 job_name=self._job_name,
                 adapter=self._adapter,
                 save_scene=self._save_scene,
+                job_options=self._job_options,
             )
         except SubmitterError as exc:
             self.failed.emit(exc)
@@ -145,6 +149,8 @@ class SubmitDialog(QtWidgets.QDialog):
                 bool(self.session.settings.get("save_before_submit", True))
             )
 
+        self._advanced_group = self._build_advanced_group()
+
         self._submit_button = QtWidgets.QPushButton("Submit", self)
         self._submit_button.setObjectName("submitButton")
         self._close_button = QtWidgets.QPushButton("Close", self)
@@ -172,7 +178,56 @@ class SubmitDialog(QtWidgets.QDialog):
         layout.addWidget(self._job_name_edit)
         layout.addLayout(farm_row)
         layout.addWidget(self._save_scene_check)
+        layout.addWidget(self._advanced_group)
         layout.addLayout(button_row)
+
+    def _build_advanced_group(self) -> QtWidgets.QGroupBox:
+        """Collapsible, initially-unchecked per-job override editors.
+
+        Each spin box uses ``0`` as the "unset" sentinel (real minimums, e.g.
+        priority, start at 1 server-side) so a field left untouched maps to
+        ``None`` and is omitted from the submit payload — see
+        :meth:`_job_options`.
+        """
+        group = QtWidgets.QGroupBox("Advanced (job overrides)", self)
+        group.setObjectName("advancedGroup")
+        group.setCheckable(True)
+        group.setChecked(False)
+
+        self._owner_edit = QtWidgets.QLineEdit(group)
+        self._owner_edit.setObjectName("ownerEdit")
+
+        self._priority_spin = QtWidgets.QSpinBox(group)
+        self._priority_spin.setObjectName("prioritySpin")
+        self._priority_spin.setRange(0, 1000)
+        self._priority_spin.setSpecialValueText("Inherit")
+
+        self._project_edit = QtWidgets.QLineEdit(group)
+        self._project_edit.setObjectName("projectEdit")
+
+        self._max_attempts_spin = QtWidgets.QSpinBox(group)
+        self._max_attempts_spin.setObjectName("maxAttemptsSpin")
+        self._max_attempts_spin.setRange(0, 1000)
+        self._max_attempts_spin.setSpecialValueText("Inherit")
+
+        self._retry_delay_spin = QtWidgets.QSpinBox(group)
+        self._retry_delay_spin.setObjectName("retryDelaySpin")
+        self._retry_delay_spin.setRange(0, 86_400)
+        self._retry_delay_spin.setSpecialValueText("Inherit")
+
+        self._failure_limit_spin = QtWidgets.QSpinBox(group)
+        self._failure_limit_spin.setObjectName("failureLimitSpin")
+        self._failure_limit_spin.setRange(0, 1000)
+        self._failure_limit_spin.setSpecialValueText("Inherit")
+
+        form = QtWidgets.QFormLayout(group)
+        form.addRow("Owner", self._owner_edit)
+        form.addRow("Priority", self._priority_spin)
+        form.addRow("Project", self._project_edit)
+        form.addRow("Max attempts", self._max_attempts_spin)
+        form.addRow("Retry delay (s)", self._retry_delay_spin)
+        form.addRow("Failure limit", self._failure_limit_spin)
+        return group
 
     def _wire_signals(self) -> None:
         self._product_combo.currentIndexChanged.connect(self._on_product_changed)
@@ -349,6 +404,26 @@ class SubmitDialog(QtWidgets.QDialog):
 
     # -- submit -----------------------------------------------------------
 
+    def _job_options(self) -> JobOptions | None:
+        """Advanced-group editors -> ``JobOptions``, or ``None`` when inactive.
+
+        The group is opt-in: collapsed (unchecked) means "no overrides" even
+        if widgets hold stale values from a prior expand. When checked, a
+        spin box left at its ``0`` sentinel or a blank line edit maps to
+        ``None`` (inherit) rather than an explicit override.
+        """
+        if not self._advanced_group.isChecked():
+            return None
+        opts = JobOptions(
+            owner=self._owner_edit.text() or None,
+            priority=self._priority_spin.value() or None,
+            project=self._project_edit.text() or None,
+            max_attempts=self._max_attempts_spin.value() or None,
+            retry_delay_seconds=self._retry_delay_spin.value() or None,
+            failure_limit=self._failure_limit_spin.value() or None,
+        )
+        return None if opts.is_empty() else opts
+
     def _submit_kwargs(self) -> dict[str, Any]:
         farm = self._farm_combo.currentData()
         queue = self._queue_combo.currentData()
@@ -360,6 +435,7 @@ class SubmitDialog(QtWidgets.QDialog):
             "save_scene": (
                 self._save_scene_check.isChecked() if self.adapter is not None else True
             ),
+            "job_options": self._job_options(),
         }
 
     def _ready_product(self) -> Product | None:
