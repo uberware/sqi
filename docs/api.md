@@ -434,6 +434,48 @@ if no task with that ID exists, or `409` if the task is already terminal
 
 ---
 
+### Get task attempt history
+
+`GET /api/v1/tasks/{id}/attempts`
+
+Returns the task's execution attempts, oldest first. Each retry adds a new
+attempt, so this is the record of every time the task ran.
+
+```sh
+curl -s "$BASE/tasks/$TASK_ID/attempts" | jq .
+```
+
+Response shape:
+
+```json
+{
+  "items": [
+    {
+      "attempt_number": 1,
+      "status": "failed",
+      "worker_id": "worker-abc",
+      "exit_code": 1,
+      "message": "openjd_fail: step action returned non-zero",
+      "started_at": "2026-01-15T10:05:40.000Z",
+      "ended_at": "2026-01-15T10:05:45.000Z"
+    }
+  ]
+}
+```
+
+`status` is the attempt's own state (`running`, `succeeded`, `failed`, or
+`canceled`), independent of the task's current status. `worker_id`,
+`exit_code`, `message`, and `ended_at` are omitted when they do not apply (an
+in-flight attempt has no `exit_code`/`ended_at`). Returns `404` if no task with
+that ID exists; a task that has not yet run returns `200` with an empty list
+(`{ "items": [] }`), not `404`.
+
+Use this to see why each attempt failed via its per-attempt `message` —
+including for a mid-retry task, whose task-level `failure_reason` is cleared on
+retry even though the earlier attempt's `message` is preserved here.
+
+---
+
 ### Worker endpoints
 
 ```sh

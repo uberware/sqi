@@ -206,6 +206,7 @@ sqi.delete_job(job_id)   # hard-delete; all data permanently removed
 | `list_job_tasks(job_id, *, status, sort_by, sort_dir, limit, offset) -> Page[Task]` | One page of a job's tasks. |
 | `iter_job_tasks(job_id, ...) -> Iterator[Task]` | Auto-paged companion. |
 | `get_task(task_id) -> Task` | A single task. |
+| `list_task_attempts(task_id) -> list[TaskAttempt]` | List a task's execution attempts, oldest first — each attempt's status, exit code, and failure message. |
 | `retry_task(task_id) -> RetryResult` | Retry a failed/canceled task; revives the task, its step, and the job (when terminal); response `status` is `ready` or `pending` depending on step dependencies; invalid state → `ConflictError`. |
 | `cancel_task(task_id) -> CancelResult` | Cancel a non-terminal task; terminal task → `ConflictError`. |
 | `get_task_logs(task_id, limit=100, after_nats_seq=0) -> LogPage` | One page of log chunks plus the cursor. |
