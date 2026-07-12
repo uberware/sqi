@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -140,4 +141,70 @@ func (s *Stager) runSync(ctx context.Context, src, dest, objectType string) erro
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// builtinCopy copies src to dest without an external command — the default /
+// `builtin` transfer used when no shell sync_command is configured. It copies a
+// single file when objectType is FILE (or src is a regular file), else the whole
+// directory tree. Destination parents are created and the source file mode is
+// preserved (ownership and xattrs are not — adequate for worker-local scratch).
+func builtinCopy(ctx context.Context, src, dest, objectType string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat %q: %w", src, err)
+	}
+	if info.IsDir() && (objectType == "" || strings.EqualFold(objectType, "DIRECTORY")) {
+		return copyTree(ctx, src, dest)
+	}
+	if info.IsDir() {
+		return copyTree(ctx, src, dest) // src is a dir regardless of declared type
+	}
+	return copyFile(src, dest, info.Mode())
+}
+
+func copyFile(src, dest string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+		return fmt.Errorf("mkdir %q: %w", filepath.Dir(dest), err)
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %q: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
+	if err != nil {
+		return fmt.Errorf("create %q: %w", dest, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return fmt.Errorf("copy %q -> %q: %w", src, dest, err)
+	}
+	return out.Close()
+}
+
+func copyTree(ctx context.Context, src, dest string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		}
+		if !d.Type().IsRegular() {
+			return nil // skip symlinks/special files in local scratch
+		}
+		return copyFile(path, target, info.Mode())
+	})
 }
