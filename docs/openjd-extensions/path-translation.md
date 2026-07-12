@@ -46,13 +46,29 @@ A delivery is a bare string (no settings) or a single-key map (with settings).
 Deliveries run in fixed order: stage_locally → swap_in_place → translation_file →
 command_flags → environment. Staging copies job-level PATH parameters
 (`dataFlow` IN/INOUT) to worker-local scratch before the run and copies OUT/INOUT
-back after, via the operator-configured `staging.sync_command`. The other
-deliveries advertise the effective (post-staging) mappings. `command_flags`
-appends `pattern` rendered per pair; `environment` sets `variable` to `src=dest`
-pairs joined by the OS path-list separator. When the extension is absent, the
-default is `swap_in_place` + `translation_file` (today's behavior, unchanged).
+back after, via `staging.sync_command` when the operator has configured one.
+The other deliveries advertise the effective (post-staging) mappings.
+`command_flags` appends `pattern` rendered per pair; `environment` sets
+`variable` to `src=dest` pairs joined by the OS path-list separator. When the
+extension is absent, the default is `swap_in_place` + `translation_file`
+(today's behavior, unchanged).
 
-`stage_locally` is the primary mechanism for accessing S3-backed storage on
-ephemeral cloud workers. See [`docs/storage-s3.md`](../storage-s3.md) for
-setup instructions, per-provider `sync_command` recipes (AWS, MinIO, R2, B2),
-and the mounted-vs-staged decision guide.
+`stage_locally` now works with **no worker configuration**: an unconfigured
+worker falls back to a TEMP scratch directory
+(`<os.TempDir()>/sqi-staging`) and sqi's own built-in copy in place of a shell
+`sync_command`, logging a one-time WARN the first time it does so
+(`staging.defaults`, on by default — see
+[Worker configuration → `staging`](../worker-configuration.md#staging-local-path-staging-stage_locally-delivery)).
+Set `staging.defaults: false` to restore the previous fail-hard behavior for
+an unconfigured worker.
+
+The built-in copy only moves bytes the worker can already reach (local disk,
+or a filesystem already shared/mounted on that worker) — it is a local/dev
+convenience, not a substitute for real remote transfer. `stage_locally` is
+the primary mechanism for accessing S3-backed storage on ephemeral cloud
+workers and, more generally, for a farm whose workers span multiple compute
+locations: that setup needs an explicit `staging.sync_command`
+(`rsync`/`aws-cli`/etc.), not the built-in copy fallback. See
+[`docs/storage-s3.md`](../storage-s3.md) for setup instructions, per-provider
+`sync_command` recipes (AWS, MinIO, R2, B2), and the mounted-vs-staged
+decision guide.

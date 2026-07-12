@@ -616,22 +616,25 @@ software auto-detection.
 
 ### Staging (`stage_locally` path delivery)
 
-Operator-owned. Required only on workers that run jobs declaring the
-`stage_locally` delivery of `SQI_PATH_TRANSLATION`.
+Used by workers that run jobs declaring the `stage_locally` delivery of
+`SQI_PATH_TRANSLATION`.
 
 | Key | Type | Description |
 |---|---|---|
-| `staging.scratch_dir` | string | Base directory for per-attempt staged copies. |
-| `staging.sync_command` | string | Command template invoked per path, with `{src}`, `{dest}`, and optional `{object_type}` placeholders (e.g. `rsync -a {src} {dest}`). The same template serves copy-in and copy-out. |
-
-sqi never copies bytes itself — it invokes `sync_command`. If a job needs staging
-and these keys are unset, the task fails immediately with a clear message.
+| `staging.scratch_dir` | string | Base directory for per-attempt staged copies. Defaults to `<os.TempDir()>/sqi-staging` when unset. |
+| `staging.sync_command` | string | Command template invoked per path, with `{src}`, `{dest}`, and optional `{object_type}` placeholders (e.g. `rsync -a {src} {dest}`). The same template serves copy-in and copy-out. Left unset (or set to `builtin`), sqi copies the bytes itself instead of shelling out. |
+| `staging.defaults` | bool | Default `true`. When true, an otherwise-unconfigured worker still runs `stage_locally` jobs via the TEMP scratch dir and built-in copy above (one-time WARN logged). Set `false` to make an unconfigured worker fail `stage_locally` jobs immediately instead. |
 
 ```yaml
 staging:
   scratch_dir: "/tmp/sqi-staging"
   sync_command: "rsync -a {src} {dest}"
+  defaults: true
 ```
+
+Full detail, including the built-in copy's local/dev caveat and the
+`staging.defaults` behavior change, is in
+[Worker configuration → `staging`](worker-configuration.md#staging-local-path-staging-stage_locally-delivery).
 
 ### Diagnostics (`diagnostics.enabled`)
 

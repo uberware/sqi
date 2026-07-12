@@ -8,9 +8,10 @@ layers overriding earlier ones:
    `~/.sqi/sqi-worker.yaml`, and `/etc/sqi/sqi-worker.yaml` by default. Pass
    an explicit path with `--config /path/to/file`.
 3. **Environment variables** — prefixed `SQI_WORKER_`, e.g.
-   `SQI_WORKER_NATS_URL`. (One exception: `diagnostics.enabled` uses
-   `SQI_DIAGNOSTICS_ENABLED`, with no `WORKER` infix — see the `diagnostics`
-   section.)
+   `SQI_WORKER_NATS_URL`. (Exceptions: `diagnostics.enabled` uses
+   `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
+   `SQI_STAGING_DEFAULTS`, both with no `WORKER` infix — see the
+   `diagnostics` and `staging` sections.)
 4. **CLI flags** — highest priority; available on the `start` subcommand.
 
 Print the effective merged configuration at any time with:
@@ -492,39 +493,92 @@ the fastest way to confirm a detector is (or isn't) firing.
 
 ## `staging` — Local path staging (`stage_locally` delivery)
 
-Operator-owned. Required only on workers that run jobs declaring the
-`stage_locally` delivery of the `SQI_PATH_TRANSLATION` extension. sqi never
-copies bytes itself — it invokes `sync_command` once per path. These keys have
-no environment-variable form (config file only); cloud fleets bake them into
-the worker config shipped in the image.
+Used by jobs that run a `stage_locally` delivery of the `SQI_PATH_TRANSLATION`
+extension. `scratch_dir` and `sync_command` are operator-owned and have no
+environment-variable form (config file only); cloud fleets bake them into the
+worker config shipped in the image. `defaults` (with its `SQI_STAGING_DEFAULTS`
+env var) controls whether an otherwise-unconfigured worker still runs
+`stage_locally` jobs — see below.
 
 ### `staging.scratch_dir`
 
 | | |
 |---|---|
 | **Type** | `string` |
-| **Default** | `""` |
+| **Default** | `""` → `<os.TempDir()>/sqi-staging` whenever unset |
 | **Env var** | — (config file only) |
 
-Base directory for per-attempt staged copies.
+Base directory for per-attempt staged copies. Leave unset to use the
+platform temp directory (e.g. `/tmp/sqi-staging` on Linux/macOS,
+`%TEMP%\sqi-staging` on Windows) — convenient for local/dev workers, but a
+persistent, purpose-built scratch volume is recommended for production. This
+fallback applies whenever `scratch_dir` is unset, independent of
+`staging.defaults`; what `staging.defaults` controls is whether staging is
+allowed to proceed at all on an otherwise-unconfigured worker (see below).
 
 ### `staging.sync_command`
 
 | | |
 |---|---|
 | **Type** | `string` |
-| **Default** | `""` |
+| **Default** | `""` → built-in copy when unset and `staging.defaults` is true |
 | **Env var** | — (config file only) |
 
 Command template invoked per path, with `{src}`, `{dest}`, and optional
 `{object_type}` placeholders (e.g. `rsync -a {src} {dest}`). The same template
 serves copy-in and copy-out.
 
+Leave unset, or set explicitly to the sentinel value `builtin`, to use sqi's
+built-in cross-platform copy instead of shelling out — sqi then copies bytes
+itself (single file or recursive directory tree, preserving file mode but not
+ownership/xattrs) rather than invoking an external command. Any other value is
+treated as a shell command template exactly as before.
+
+Explicitly setting `sync_command: builtin` selects the built-in copy — and,
+via the TEMP-scratch fallback above, lets staging proceed with `scratch_dir`
+left unset — even when `staging.defaults` is `false`. It's an intentional
+per-worker opt-in, distinct from the automatic fallback described under
+`staging.defaults`, so it does not log the one-time WARN either.
+
+> **The built-in copy only moves bytes the worker can already reach** (local
+> disk or a filesystem already shared/mounted on that worker). It is a
+> local/dev convenience, not a substitute for remote transfer. A farm whose
+> workers span multiple compute locations (see
+> [`docs/compute-locations.md`](compute-locations.md)) needs a real
+> `sync_command` (`rsync`, `aws s3 cp`, etc.) to move data between them —
+> configure one explicitly rather than relying on the built-in copy.
+
+### `staging.defaults`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_STAGING_DEFAULTS` |
+
+When true (the default), a worker that hasn't configured `scratch_dir` and
+`sync_command` at all still runs `stage_locally` jobs: it falls back to the
+TEMP scratch directory and the built-in copy described above, logging a
+one-time WARN the first time it does so. Set `staging.defaults: false` to
+disable that automatic fallback — a worker with neither key set then fails
+`stage_locally` jobs immediately with a pre-execution error, as every worker
+did before this setting existed. (An explicit `sync_command: builtin` still
+works even with `defaults: false` — see above.)
+
 ```yaml
 staging:
   scratch_dir: /scratch/sqi
   sync_command: "rsync -a {src} {dest}"
+  defaults: true
 ```
+
+> **Behavior change on upgrade.** Before this setting existed, any worker that
+> ran a `stage_locally` job without `staging.scratch_dir` and
+> `staging.sync_command` configured failed the task immediately with a
+> staging error. `staging.defaults` now defaults to `true`, so those same
+> workers instead run the job using TEMP scratch and the built-in copy. Set
+> `staging.defaults: false` (or `SQI_STAGING_DEFAULTS=false`) to restore the
+> old fail-hard behavior.
 
 ---
 
@@ -786,6 +840,7 @@ log_streamer:
 | `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — |
 | `staging.scratch_dir` | string | `""` | — (config file only) | — |
 | `staging.sync_command` | string | `""` | — (config file only) | — |
+| `staging.defaults` | bool | `true` | `SQI_STAGING_DEFAULTS` | — |
 | `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — |
 | `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |

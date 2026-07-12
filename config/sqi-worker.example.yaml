@@ -264,6 +264,32 @@ diagnostics:
   # Type: bool   Env: SQI_DIAGNOSTICS_ENABLED
   enabled: true
 
+# ── Local path staging (stage_locally delivery) ────────────────────────────────
+# Used by jobs that declare the stage_locally delivery of the SQI_PATH_TRANSLATION
+# extension. scratch_dir/sync_command are config-file only (no env var); defaults
+# has an env var since cloud fleets may want to flip it without touching the image.
+# staging:
+#   # Base directory for per-attempt staged copies. Left unset (the default),
+#   # falls back to <os.TempDir()>/sqi-staging when staging.defaults is true.
+#   # Type: string   Env: — (config file only)
+#   scratch_dir: /scratch/sqi
+#
+#   # Command template invoked per path, with {src}, {dest}, and optional
+#   # {object_type} placeholders (e.g. "rsync -a {src} {dest}"). Left unset, or
+#   # set to the sentinel "builtin", sqi copies the bytes itself instead of
+#   # shelling out (local/dev convenience — not a substitute for a real
+#   # sync_command on a farm spanning multiple compute locations).
+#   # Type: string   Env: — (config file only)
+#   sync_command: "rsync -a {src} {dest}"
+#
+#   # When true (the default), an otherwise-unconfigured worker still runs
+#   # stage_locally jobs via TEMP scratch + the built-in copy above (one-time
+#   # WARN logged). Set false to make an unconfigured worker fail stage_locally
+#   # jobs immediately instead — the behavior every worker had before this key
+#   # existed.
+#   # Type: bool   Env: SQI_STAGING_DEFAULTS
+#   defaults: true
+
 # ── Capability auto-detection ─────────────────────────────────────────────────
 # Built-in detectors for Maya, Nuke, Houdini, and Blender run automatically and
 # advertise a presence tag (e.g. `maya`, plus `maya-2025`) when the app is found,
