@@ -4,6 +4,7 @@ package openjd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -86,6 +87,11 @@ type SubmitOptions struct {
 	MaxAttempts       *int
 	RetryDelaySeconds *int
 	FailureLimit      *int
+	// DependsOn lists the IDs of upstream jobs this job must wait for (whole-job
+	// cross-job dependencies). Each must already exist and be in the same farm;
+	// none may already be failed or canceled. When any is not yet completed, the
+	// job is created in store.JobStatusBlocked with all tasks held pending.
+	DependsOn []string
 }
 
 // ── SubmitResult ──────────────────────────────────────────────────────────────
@@ -155,6 +161,12 @@ func (s *Submitter) Submit(
 		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
 	}
 
+	// ── 2d. Validate cross-job dependencies ────────────────────────────────
+	blocked, err := s.resolveDependencies(ctx, opts.DependsOn, opts.FarmID)
+	if err != nil {
+		return nil, err
+	}
+
 	// ── 3. Resolve priority default ───────────────────────────────────────
 	priority := opts.Priority
 	if priority <= 0 {
@@ -175,7 +187,7 @@ func (s *Submitter) Submit(
 		Owner:          opts.Owner,
 		Submitter:      opts.Submitter,
 		Priority:       priority,
-		Status:         store.JobStatusPending,
+		Status:         jobStatusForDeps(blocked),
 		Project:        opts.Project,
 		RawTemplate:    rawTemplate,
 		TemplateFormat: format,
@@ -194,6 +206,12 @@ func (s *Submitter) Submit(
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
+	if len(opts.DependsOn) > 0 {
+		if err := s.st.CreateJobDependencies(ctx, job.ID, opts.DependsOn); err != nil {
+			return nil, fmt.Errorf("openjd: submit: create job dependencies: %w", err)
+		}
+	}
+
 	result := &SubmitResult{Job: job, BoundParameters: boundParams}
 
 	// ── 5. Create Step and Task rows ──────────────────────────────────────
@@ -201,7 +219,7 @@ func (s *Submitter) Submit(
 	// within bounds.
 	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
 	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, deriveBounds, now)
+		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
 		if err != nil {
 			return nil, err
 		}
@@ -222,6 +240,7 @@ func (s *Submitter) createStepWithTasks(
 	stepIdx int,
 	boundParams map[string]string,
 	deriveBounds bool,
+	holdPending bool,
 	now time.Time,
 ) (steps []store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
@@ -230,9 +249,10 @@ func (s *Submitter) createStepWithTasks(
 		dependsOn = append(dependsOn, dep.DependsOn)
 	}
 
-	// Initial step status: ready immediately when there are no deps.
+	// Initial step status: ready immediately when there are no deps AND the job
+	// is not blocked on a cross-job dependency.
 	stepStatus := store.StepStatusReady
-	if len(dependsOn) > 0 {
+	if holdPending || len(dependsOn) > 0 {
 		stepStatus = store.StepStatusPending
 	}
 
@@ -263,41 +283,9 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	// ── Expand parameter space ──────────────────────────────────────────────
-	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first.
-	resolvedPS, resolveErrs := ResolveParameterSpaceParams(stepTmpl.ParameterSpace, boundParams)
-	if len(resolveErrs) > 0 {
-		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
-		for k := range resolveErrs {
-			resolveErrs[k].Pointer = stepPrefix + resolveErrs[k].Pointer
-		}
-		return nil, nil, &SubmitValidationError{
-			Cause: fmt.Errorf("openjd: submit: resolve step %q parameter space: %w", stepTmpl.Name, resolveErrs),
-		}
-	}
-
-	// Re-run the gated per-parameter value-count and overlap limits on the
-	// RESOLVED space. Validation (step 2) runs on the unresolved template and
-	// skips ranges containing {{...}}; without this re-check a parameterized
-	// range like "{{Param.Start}}-{{Param.End}}" would bypass maxTaskParamValues
-	// and overlap detection entirely. Gated by enforceLimits to match validation.
-	if s.enforceLimits && resolvedPS != nil {
-		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
-		if errs := validateParameterSpaceLimits(*resolvedPS, stepPrefix+"/parameterSpace"); len(errs) > 0 {
-			return nil, nil, &SubmitValidationError{
-				Cause: fmt.Errorf("openjd: submit: step %q resolved parameter space: %w", stepTmpl.Name, errs),
-			}
-		}
-	}
-
-	taskParamList, err := ExpandParameterSpace(resolvedPS)
+	taskParamList, err := s.expandStepTaskParams(stepTmpl, stepIdx, boundParams, deriveBounds)
 	if err != nil {
-		return nil, nil, &SubmitValidationError{
-			Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),
-		}
-	}
-
-	if deriveBounds {
-		DeriveChunkBounds(taskParamList, resolvedPS)
+		return nil, nil, err
 	}
 
 	// ── Create one Task row per parameter combination ───────────────────────
@@ -331,6 +319,100 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	return []store.Step{step}, tasks, nil
+}
+
+// expandStepTaskParams resolves {{Param.*}} / {{RawParam.*}} references in the
+// step's parameter space, re-validates the resolved space's quantitative
+// limits, expands it into one parameter set per task, and derives chunk
+// bounds when requested. It is extracted from [Submitter.createStepWithTasks]
+// to keep that function's cyclomatic complexity within bounds.
+func (s *Submitter) expandStepTaskParams(
+	stepTmpl StepTemplate,
+	stepIdx int,
+	boundParams map[string]string,
+	deriveBounds bool,
+) ([]TaskParams, error) {
+	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first.
+	resolvedPS, resolveErrs := ResolveParameterSpaceParams(stepTmpl.ParameterSpace, boundParams)
+	if len(resolveErrs) > 0 {
+		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
+		for k := range resolveErrs {
+			resolveErrs[k].Pointer = stepPrefix + resolveErrs[k].Pointer
+		}
+		return nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: resolve step %q parameter space: %w", stepTmpl.Name, resolveErrs),
+		}
+	}
+
+	// Re-run the gated per-parameter value-count and overlap limits on the
+	// RESOLVED space. Validation (step 2) runs on the unresolved template and
+	// skips ranges containing {{...}}; without this re-check a parameterized
+	// range like "{{Param.Start}}-{{Param.End}}" would bypass maxTaskParamValues
+	// and overlap detection entirely. Gated by enforceLimits to match validation.
+	if s.enforceLimits && resolvedPS != nil {
+		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
+		if errs := validateParameterSpaceLimits(*resolvedPS, stepPrefix+"/parameterSpace"); len(errs) > 0 {
+			return nil, &SubmitValidationError{
+				Cause: fmt.Errorf("openjd: submit: step %q resolved parameter space: %w", stepTmpl.Name, errs),
+			}
+		}
+	}
+
+	taskParamList, err := ExpandParameterSpace(resolvedPS)
+	if err != nil {
+		return nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),
+		}
+	}
+
+	if deriveBounds {
+		DeriveChunkBounds(taskParamList, resolvedPS)
+	}
+
+	return taskParamList, nil
+}
+
+// resolveDependencies validates the requested cross-job dependencies against the
+// store and reports whether the new job must start blocked. It returns a
+// *SubmitValidationError (client fault) when a dependency is missing, in a
+// different farm, or already terminated unsuccessfully.
+func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string, farmID string) (blocked bool, err error) {
+	seen := make(map[string]struct{}, len(dependsOn))
+	for _, id := range dependsOn {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+
+		up, gerr := s.st.GetJob(ctx, id)
+		if errors.Is(gerr, store.ErrNotFound) {
+			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q not found", id)}
+		}
+		if gerr != nil {
+			return false, fmt.Errorf("openjd: submit: look up depends_on job %q: %w", id, gerr)
+		}
+		if up.FarmID != farmID {
+			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q is in a different farm", id)}
+		}
+		switch up.Status {
+		case store.JobStatusFailed, store.JobStatusCanceled:
+			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q already terminated unsuccessfully (%s)", id, up.Status)}
+		case store.JobStatusCompleted:
+			// already satisfied — does not block
+		default:
+			blocked = true
+		}
+	}
+	return blocked, nil
+}
+
+// jobStatusForDeps returns the initial job status given whether the job is
+// blocked on unfinished cross-job dependencies.
+func jobStatusForDeps(blocked bool) store.JobStatus {
+	if blocked {
+		return store.JobStatusBlocked
+	}
+	return store.JobStatusPending
 }
 
 // ── Storage location validation ────────────────────────────────────
