@@ -260,6 +260,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/jobs/{id}/tasks", tasks.listJobTasks)
 		api.Get("/tasks/{id}", tasks.getTask)
 		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)
+		api.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
 		api.Post("/tasks/{id}/retry", tasks.retryTask)
 		api.Post("/tasks/{id}/cancel", tasks.cancelTask)
 

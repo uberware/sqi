@@ -520,6 +520,45 @@ components:
         limit:
           type: integer
 
+    TaskAttempt:
+      type: object
+      required: [attempt_number, status, started_at]
+      properties:
+        attempt_number:
+          type: integer
+          description: 1-based; incremented on each retry.
+        status:
+          type: string
+          enum: [running, succeeded, failed, canceled]
+        worker_id:
+          type: string
+          description: ID of the worker that ran this attempt.
+        exit_code:
+          type: integer
+          nullable: true
+          description: Process exit code; null while running or if signaled.
+        message:
+          type: string
+          nullable: true
+          description: Human-readable reason for a terminal attempt.
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null while the attempt is running.
+
+    TaskAttemptsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskAttempt"
+
     RetryResponse:
       type: object
       required: [task_id, status]
@@ -1777,6 +1816,31 @@ paths:
             application/x-ndjson:
               schema:
                 $ref: "#/components/schemas/TaskLog"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tasks/{id}/attempts:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getTaskAttempts
+      summary: Get task attempt history
+      tags: [tasks]
+      description: |
+        Returns the attempt history for a task, ordered by `attempt_number`
+        ascending. When the task has no attempts yet, `items` is an empty
+        array (rather than 404) so pollers do not need to handle that case
+        specially.
+      responses:
+        "200":
+          description: Attempt history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskAttemptsResponse"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":

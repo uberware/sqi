@@ -105,6 +105,22 @@ type taskLogsResponse struct {
 	Limit        int               `json:"limit"`
 }
 
+// taskAttemptResponse is the JSON representation of one task attempt.
+type taskAttemptResponse struct {
+	AttemptNumber int        `json:"attempt_number"`
+	Status        string     `json:"status"`
+	WorkerID      string     `json:"worker_id,omitempty"`
+	ExitCode      *int       `json:"exit_code,omitempty"`
+	Message       string     `json:"message,omitempty"`
+	StartedAt     time.Time  `json:"started_at"`
+	EndedAt       *time.Time `json:"ended_at,omitempty"`
+}
+
+// taskAttemptsResponse is the list returned by GET /api/v1/tasks/{id}/attempts.
+type taskAttemptsResponse struct {
+	Items []taskAttemptResponse `json:"items"`
+}
+
 // retryResponse is returned by POST /api/v1/tasks/{id}/retry.
 type retryResponse struct {
 	TaskID string `json:"task_id"`
@@ -289,6 +305,36 @@ func (h *taskHandler) getTaskLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// getTaskAttempts returns the attempt history for a task, ordered by
+// attempt_number ascending. Mirrors getTaskLogs' task-existence check.
+func (h *taskHandler) getTaskAttempts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	if _, err := h.store.GetTask(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "task not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "tasks: get task for attempts failed", slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task")
+		return
+	}
+
+	attempts, err := h.store.ListTaskAttempts(ctx, id)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "tasks: list attempts failed", slog.String("task_id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve task attempts")
+		return
+	}
+
+	items := make([]taskAttemptResponse, len(attempts))
+	for i, a := range attempts {
+		items[i] = toTaskAttemptResponse(a)
+	}
+	writeJSON(w, http.StatusOK, taskAttemptsResponse{Items: items})
+}
+
 // streamTaskLogs streams log chunks to the client using chunked transfer
 // encoding. Each emitted line is a newline-delimited JSON [taskLogResponse].
 // Streaming continues until the task reaches a terminal state (succeeded,
@@ -465,6 +511,19 @@ func toTaskLogResponse(l store.TaskLog) taskLogResponse {
 		Data:       l.Data,
 		At:         l.At,
 		ReceivedAt: l.ReceivedAt,
+	}
+}
+
+// toTaskAttemptResponse converts a [store.TaskAttempt] into the API wire type.
+func toTaskAttemptResponse(a store.TaskAttempt) taskAttemptResponse {
+	return taskAttemptResponse{
+		AttemptNumber: a.AttemptNumber,
+		Status:        string(a.Status),
+		WorkerID:      a.WorkerID,
+		ExitCode:      a.ExitCode,
+		Message:       a.Message,
+		StartedAt:     a.StartedAt,
+		EndedAt:       a.EndedAt,
 	}
 }
 
