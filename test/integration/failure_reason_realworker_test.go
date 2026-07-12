@@ -15,6 +15,9 @@ package integration
 // asserts that reason now surfaces all the way through to the REST API.
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,9 +35,15 @@ func TestWorkerBinaryStagingFailureReason(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Start the real worker WITHOUT any staging config — stage_locally must fail
-	// pre-exec with an explicit reason.
-	startRealWorker(t, ts, farmID, queueID)
+	// Start the real worker with staging.defaults explicitly disabled — with
+	// defaults on, an unconfigured worker now stages successfully by default
+	// (built-in copy + TEMP scratch), so this test must opt out to keep
+	// exercising the failPreExec path.
+	stagingCfg := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	if err := os.WriteFile(stagingCfg, []byte("staging:\n  defaults: false\n"), 0o600); err != nil {
+		t.Fatalf("write staging config: %v", err)
+	}
+	startRealWorkerWithOptions(t, ts, farmID, queueID, []string{"--config", stagingCfg}, nil)
 
 	// A job requesting the stage_locally delivery. The command is never reached:
 	// the worker fails during pre-exec because staging is unconfigured. A PATH
@@ -130,9 +139,14 @@ func TestWorkerBinaryStagingFailureReason_MultipleAttempts(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
-	// Start the real worker WITHOUT any staging config — stage_locally must fail
-	// pre-exec with an explicit reason, every attempt.
-	startRealWorker(t, ts, farmID, queueID)
+	// Start the real worker with staging.defaults explicitly disabled — see
+	// TestWorkerBinaryStagingFailureReason for why this opt-out is now
+	// required to keep exercising the failPreExec path.
+	stagingCfg := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	if err := os.WriteFile(stagingCfg, []byte("staging:\n  defaults: false\n"), 0o600); err != nil {
+		t.Fatalf("write staging config: %v", err)
+	}
+	startRealWorkerWithOptions(t, ts, farmID, queueID, []string{"--config", stagingCfg}, nil)
 
 	// Same stage_locally job as TestWorkerBinaryStagingFailureReason; the
 	// command is never reached because the worker fails during pre-exec.
@@ -197,5 +211,94 @@ steps:
 			t.Errorf("task attempts: attempt_number not strictly increasing at index %d: %d >= %d (items: %+v)",
 				i, attempts.Items[i-1].AttemptNumber, attempts.Items[i].AttemptNumber, attempts.Items)
 		}
+	}
+}
+
+// TestWorkerBinaryStagingDefault_Succeeds is the positive counterpart to
+// TestWorkerBinaryStagingFailureReason: it starts a real worker with NO
+// staging config at all (staging.defaults defaults to true), submits the
+// same stage_locally shape of job as TestWorkerBinaryStaging (an IN and an
+// OUT PATH parameter), and asserts the task succeeds with the OUT file
+// copied back to its real path — proving the built-in copy + TEMP scratch
+// default works out of the box on an unconfigured worker.
+func TestWorkerBinaryStagingDefault_Succeeds(t *testing.T) {
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+
+	// Start the real worker with no staging config — staging.defaults is on
+	// by default, so stage_locally must succeed using the built-in copy and a
+	// TEMP scratch directory.
+	startRealWorker(t, ts, farmID, queueID)
+
+	// Input file that must be staged into scratch for the job to read it.
+	inFile := filepath.Join(t.TempDir(), "scene.txt")
+	if err := os.WriteFile(inFile, []byte("hello-default-staged"), 0o644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	// Output path the job writes to; it must be redirected into scratch during
+	// the run and copied back here afterward. The directory exists; the file
+	// does not.
+	outFile := filepath.Join(t.TempDir(), "result.txt")
+
+	// The task copies InFile → OutFile. With swap_in_place both are rewritten
+	// to their scratch paths, so the job reads the staged input and writes the
+	// staged output; stage-out then copies the staged output back to the real
+	// OutFile.
+	jobYAML := fmt.Sprintf(`specificationVersion: "jobtemplate-2023-09"
+name: Staging Default Success Test
+extensions: [ SQI_PATH_TRANSLATION ]
+SQI_PATH_TRANSLATION:
+  deliveries:
+    - swap_in_place
+    - stage_locally
+parameterDefinitions:
+  - name: InFile
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+    default: %q
+  - name: OutFile
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+    default: %q
+steps:
+  - name: Copy
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - 'cat "{{Param.InFile}}" > "{{Param.OutFile}}"'
+`, inFile, outFile)
+
+	jobID := submitJobWithParams(t, ts, farmID, queueID, jobYAML, map[string]string{
+		"max_attempts":        "1",
+		"retry_delay_seconds": "0",
+	})
+	t.Logf("submitted default-staging-success job %s", jobID)
+
+	final := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled", "paused"}, 60*time.Second)
+	if final != "completed" {
+		t.Fatalf("job final status = %q, want completed", final)
+	}
+
+	taskID := firstTaskID(t, ts, jobID)
+	task := getTaskFailure(t, ts, taskID)
+	if task.Status != "succeeded" {
+		t.Errorf("task status = %q, want succeeded", task.Status)
+	}
+
+	// The output must exist at its REAL path (copied back from scratch) and
+	// carry the staged input's content, proving the built-in copy staged the
+	// output back from scratch without any operator-provided staging config.
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("output not copied back to %q: %v", outFile, err)
+	}
+	if string(data) != "hello-default-staged" {
+		t.Errorf("output content = %q, want %q", string(data), "hello-default-staged")
 	}
 }
