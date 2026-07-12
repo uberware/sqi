@@ -1678,14 +1678,18 @@ class SqiClient:
         owner: str | None = None,
         priority: int | None = None,
         project: str | None = None,
+        max_attempts: int | None = None,
+        retry_delay_seconds: int | None = None,
+        failure_limit: int | None = None,
         poll_interval: float = 2.0,
         timeout: float | None = None,
     ) -> Job:
         """Submit a job and block until it finishes — the one-call pipeline path.
 
         Composes :meth:`submit_job` and :meth:`wait_for_job`: accepts the same
-        submission arguments as the former plus the ``poll_interval``/``timeout``
-        of the latter.
+        submission arguments as the former (including the ``max_attempts`` /
+        ``retry_delay_seconds`` / ``failure_limit`` retry-policy overrides) plus
+        the ``poll_interval``/``timeout`` of the latter.
 
         Returns:
             The finished :class:`Job` in its terminal state.
@@ -1701,6 +1705,9 @@ class SqiClient:
             owner=owner,
             priority=priority,
             project=project,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+            failure_limit=failure_limit,
         )
         return self.wait_for_job(job.id, poll_interval=poll_interval, timeout=timeout)
 

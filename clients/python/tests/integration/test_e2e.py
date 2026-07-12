@@ -141,10 +141,14 @@ def test_management_endpoints(client: SqiClient, worker_farm: WorkerFarm) -> Non
     assert client.get_job(job.id).status is JobStatus.CANCELED
 
     # Retry needs a genuinely failed task, so run a failing job on the worker.
+    # Pin max_attempts=1 so the task goes terminal-failed on its first attempt
+    # rather than exhausting the default auto-retry policy (3 attempts, 30s
+    # backoff), which would blow past the wait timeout below.
     failed = client.submit_and_wait(
         _FAILING_JOB,
         farm_id=worker_farm.farm_id,
         queue_id=worker_farm.queue_id,
+        max_attempts=1,
         poll_interval=0.5,
         timeout=60.0,
     )
