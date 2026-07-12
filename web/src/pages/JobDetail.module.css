@@ -492,6 +492,9 @@
 .expandIconOpen {
   width: 1rem;
   height: 1rem;
+  /* min-width guards against the icon's main-axis width collapsing to 0 inside
+     the inline-flex .expandToggle button (which would hide the chevron). */
+  min-width: 1rem;
   transition: transform var(--transition-fast) ease;
 }
 
