@@ -434,6 +434,7 @@ class SqiClient:
         max_attempts: int | None = None,
         retry_delay_seconds: int | None = None,
         failure_limit: int | None = None,
+        depends_on: list[str] | None = None,
     ) -> Job:
         """Submit a raw OpenJD job template and return the created :class:`Job`.
 
@@ -468,6 +469,11 @@ class SqiClient:
             failure_limit: Per-job override for the number of task failures
                 that auto-parks the job. Omitted means inherit (queue -> farm
                 -> server default).
+            depends_on: IDs of upstream jobs this job must wait for (whole-job
+                cross-job dependencies). Each must already exist and be in the
+                same farm; none may already be failed or canceled. When any is
+                not yet completed the created job is returned in the ``blocked``
+                status and starts only once every upstream completes.
 
         Returns:
             The created :class:`Job`, parsed from the ``201 Created`` body.
@@ -491,6 +497,7 @@ class SqiClient:
             "max_attempts": max_attempts,
             "retry_delay_seconds": retry_delay_seconds,
             "failure_limit": failure_limit,
+            "depends_on": depends_on,
         }
         data = self._request_json(
             "POST",
@@ -1681,6 +1688,7 @@ class SqiClient:
         max_attempts: int | None = None,
         retry_delay_seconds: int | None = None,
         failure_limit: int | None = None,
+        depends_on: list[str] | None = None,
         poll_interval: float = 2.0,
         timeout: float | None = None,
     ) -> Job:
@@ -1688,8 +1696,9 @@ class SqiClient:
 
         Composes :meth:`submit_job` and :meth:`wait_for_job`: accepts the same
         submission arguments as the former (including the ``max_attempts`` /
-        ``retry_delay_seconds`` / ``failure_limit`` retry-policy overrides) plus
-        the ``poll_interval``/``timeout`` of the latter.
+        ``retry_delay_seconds`` / ``failure_limit`` retry-policy overrides and
+        the ``depends_on`` cross-job dependencies) plus the
+        ``poll_interval``/``timeout`` of the latter.
 
         Returns:
             The finished :class:`Job` in its terminal state.
@@ -1708,6 +1717,7 @@ class SqiClient:
             max_attempts=max_attempts,
             retry_delay_seconds=retry_delay_seconds,
             failure_limit=failure_limit,
+            depends_on=depends_on,
         )
         return self.wait_for_job(job.id, poll_interval=poll_interval, timeout=timeout)
 
