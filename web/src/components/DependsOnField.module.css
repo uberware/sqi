@@ -33,9 +33,22 @@
   background: var(--color-surface-raised);
 }
 
-.checkbox {
+/*
+ * `.row .checkbox` (specificity 0,2,0) rather than a bare `.checkbox` so it
+ * defeats host form rules like `.row input { width: 100% }` (0,1,1) that would
+ * otherwise stretch the checkbox to fill the row (the field wrapper inherits
+ * the host's class via fieldClassName). The explicit box size keeps it 16px in
+ * any host context.
+ */
+.row .checkbox {
   flex: none;
+  box-sizing: border-box;
+  width: 1rem;
+  height: 1rem;
   margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
   accent-color: var(--color-accent);
   cursor: pointer;
 }
