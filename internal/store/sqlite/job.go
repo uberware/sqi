@@ -124,11 +124,24 @@ WHERE depends_on_job_id = ? ORDER BY job_id`
 	// Selects terminal jobs whose effective completion time is before the
 	// cutoff. The status set is closed by the caller appending 'failed'. The
 	// {STATUS} and time predicate are assembled in Go with bound parameters.
+	//
+	// The trailing NOT EXISTS excludes a candidate that is still referenced as
+	// depends_on_job_id by a non-terminal dependent: purging it would leave
+	// the dependent's reconciler reading a GetJob ErrNotFound for an upstream
+	// that actually succeeded, which the reconciler treats as "missing" and
+	// wrongly cancels the dependent. Manual DELETE (DeleteJob) intentionally
+	// keeps the cancel-dependents behavior — this guard only applies to the
+	// automatic retention sweep.
 	sqlSelectExpiredJobsPrefix = `
 SELECT id, name, farm_id, queue_id FROM jobs
 WHERE status IN (`
 	sqlSelectExpiredJobsSuffix = `)
-  AND COALESCE(completed_at, updated_at) < ?`
+  AND COALESCE(completed_at, updated_at) < ?
+  AND NOT EXISTS (
+        SELECT 1 FROM job_dependencies jd
+        JOIN jobs d ON d.id = jd.job_id
+        WHERE jd.depends_on_job_id = jobs.id
+          AND d.status NOT IN ('completed', 'failed', 'canceled'))`
 
 	// sqlParkJob pauses a job and records why, but only while it is
 	// non-terminal — a job that has already reached completed/failed/canceled

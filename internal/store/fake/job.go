@@ -247,6 +247,13 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 // DeleteTerminalJobsBefore implements [store.JobStore]. completed and canceled
 // jobs are always eligible; failed jobs only when includeFailed. Effective
 // completion time is CompletedAt, falling back to UpdatedAt when nil.
+//
+// A candidate still referenced as an upstream (depends_on_job_id) by a
+// non-terminal dependent is skipped: purging it would leave the dependent's
+// reconciler reading a GetJob ErrNotFound for an upstream that actually
+// succeeded, which it treats as "missing" and wrongly cancels the dependent.
+// Manual DeleteJob intentionally keeps the cancel-dependents behavior — this
+// guard only applies to the automatic retention sweep.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
@@ -261,6 +268,9 @@ func (s *Store) DeleteTerminalJobsBefore(
 			completed = *j.CompletedAt
 		}
 		if !completed.Before(cutoff) {
+			continue
+		}
+		if s.neededByNonTerminalDependentLocked(id) {
 			continue
 		}
 		ids = append(ids, id)
@@ -280,6 +290,21 @@ func (s *Store) DeleteTerminalJobsBefore(
 		})
 	}
 	return deleted, nil
+}
+
+// neededByNonTerminalDependentLocked reports whether candidateID is recorded
+// as an upstream (depends_on_job_id) of some dependent job that has not yet
+// reached a terminal status. Callers must hold s.mu.
+func (s *Store) neededByNonTerminalDependentLocked(candidateID string) bool {
+	for dependentID, ups := range s.jobDependencies {
+		if !slices.Contains(ups, candidateID) {
+			continue
+		}
+		if dep, ok := s.jobs[dependentID]; ok && !dep.Status.IsTerminal() {
+			return true
+		}
+	}
+	return false
 }
 
 // terminalJobEligible reports whether a job in the given status is eligible for

@@ -259,6 +259,56 @@ func TestStore_DeleteTerminalJobsBefore(t *testing.T) {
 	}
 }
 
+// TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent
+// verifies the retention-purge fix: a completed upstream older than the
+// cutoff must NOT be purged while a dependent still waits on it (blocked),
+// because the reconciler would read the purge as a missing upstream and
+// wrongly cancel the dependent even though the upstream actually succeeded.
+// Once the dependent reaches a terminal status, the upstream becomes
+// eligible for purge again.
+func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+
+	seedTerminalJobAt(t, st, "upstream-old", store.JobStatusCompleted, old)
+	dependent := seedJob(t, st, "dependent-blocked")
+	if err := st.CreateJobDependencies(ctx, dependent.ID, []string{"upstream-old"}); err != nil {
+		t.Fatalf("CreateJobDependencies: %v", err)
+	}
+	if err := st.UpdateJobStatus(ctx, dependent.ID, store.JobStatusBlocked); err != nil {
+		t.Fatalf("UpdateJobStatus(blocked): %v", err)
+	}
+
+	got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+	}
+	if ids := deletedJobIDs(got); len(ids) != 0 {
+		t.Fatalf("deleted = %v, want none (upstream still needed by blocked dependent)", ids)
+	}
+	if _, err := st.GetJob(ctx, "upstream-old"); err != nil {
+		t.Fatalf("GetJob(upstream-old) after guarded sweep: %v", err)
+	}
+
+	// Once the dependent is terminal, the upstream is no longer protected.
+	if err := st.UpdateJobStatus(ctx, dependent.ID, store.JobStatusCanceled); err != nil {
+		t.Fatalf("UpdateJobStatus(canceled): %v", err)
+	}
+	got, err = st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore (2nd sweep): %v", err)
+	}
+	if ids := deletedJobIDs(got); !slices.Equal(ids, []string{"upstream-old"}) {
+		t.Fatalf("deleted = %v, want [upstream-old]", ids)
+	}
+	if _, err := st.GetJob(ctx, "upstream-old"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob(upstream-old) after unblock sweep = %v, want ErrNotFound", err)
+	}
+}
+
 // TestJob_BlockedStatusAndDependencyTable verifies the Task 1 deliverables in
 // isolation, before Task 2 adds CreateJobDependencies/ListJobDependencyIDs:
 // a job created with JobStatusBlocked round-trips through CreateJob/GetJob,
