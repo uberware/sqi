@@ -297,19 +297,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		h.sched.WakeQueue(result.Job.QueueID)
 	}
 
-	respJob := result.Job
-	if len(req.DependsOn) > 0 {
-		// Submit's returned job doesn't carry DependsOn (only GetJob populates
-		// it, via a join over job_dependencies); refetch so the create
-		// response echoes what was persisted. Best-effort: on failure, fall
-		// back to the unpopulated job rather than failing the whole request.
-		if full, getErr := h.store.GetJob(ctx, result.Job.ID); getErr == nil {
-			respJob = full
-		} else {
-			h.logger.ErrorContext(ctx, "products: refetch after submit for depends_on failed",
-				slog.String("job_id", result.Job.ID), slog.Any("error", getErr))
-		}
-	}
+	respJob := refetchDependsOn(ctx, h.store, h.logger, result.Job, req.DependsOn, "products")
 	writeJSON(w, http.StatusCreated, toJobResponse(respJob))
 }
 
