@@ -11,11 +11,13 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
 	fakestore "github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // ── test harness ────────────────────────────────────────────────────────────
@@ -28,6 +30,11 @@ type jobDepsHarness struct {
 	notif   *retryNotifier
 	farmID  string
 	queueID string
+
+	// task/attempt back the single-task job built by seedRunnableJob, for
+	// completeJob to report succeeded on.
+	task    store.Task
+	attempt store.TaskAttempt
 }
 
 // newJobDepsHarness builds a Scheduler safe for calling ReconcileDependents /
@@ -140,6 +147,83 @@ func (h *jobDepsHarness) seedBlockedJobDependingOn(t *testing.T, upstreamIDs ...
 		t.Fatalf("CreateJobDependencies: %v", err)
 	}
 	return job
+}
+
+// seedRunnableJob creates a real job with a single running step, a single
+// running task, and an open attempt on it — the fixture needed to drive the
+// job to completion through the same status-handling path a worker uses (see
+// completeJob), rather than mutating job status directly.
+func (h *jobDepsHarness) seedRunnableJob(t *testing.T) store.Job {
+	t.Helper()
+	ctx := context.Background()
+	job, err := h.store.CreateJob(ctx, store.Job{
+		ID:             uuid.NewString(),
+		FarmID:         h.farmID,
+		QueueID:        h.queueID,
+		Name:           "up-" + uuid.NewString(),
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	step, err := h.store.CreateStep(ctx, store.Step{
+		ID:     uuid.NewString(),
+		JobID:  job.ID,
+		Name:   "s1",
+		Status: store.StepStatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("CreateStep: %v", err)
+	}
+	task, err := h.store.CreateTask(ctx, store.Task{
+		ID:     uuid.NewString(),
+		JobID:  job.ID,
+		StepID: step.ID,
+		Name:   "t1",
+		Status: store.TaskStatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	h.attempt, err = h.store.CreateTaskAttempt(ctx, store.TaskAttempt{
+		ID:            uuid.NewString(),
+		TaskID:        task.ID,
+		AttemptNumber: 1,
+		Status:        store.AttemptStatusRunning,
+		StartedAt:     time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+	h.task = task
+	return job
+}
+
+// completeJob drives the job seeded by seedRunnableJob to succeeded via the
+// same handler a worker's "succeeded" task.status message reaches
+// (handleTaskStatusMessage → processTaskStatus → handleTaskTerminal →
+// checkStepCompletion → checkJobCompletion), exercising the real completion
+// path rather than calling checkJobCompletion in isolation.
+func (h *jobDepsHarness) completeJob(t *testing.T, jobID string) {
+	t.Helper()
+	if h.sched.ctx == nil {
+		h.sched.ctx = context.Background()
+	}
+	exitCode := 0
+	msg := &fakeJSMsg{
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			TaskID:    h.task.ID,
+			AttemptID: h.attempt.ID,
+			Status:    "succeeded",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+	h.sched.handleTaskStatusMessage(msg)
+	if !msg.acked {
+		t.Fatalf("completeJob(%s): expected task.status message to be acked", jobID)
+	}
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -361,5 +445,35 @@ func TestReconcile_NotifiesJobAndTaskEvents(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected a job event for the canceled dependent job")
+	}
+}
+
+// TestCheckJobCompletion_ReleasesDependent proves the completion hook is
+// wired end-to-end: driving a real upstream job to completion through the
+// same status handler a worker's succeeded task.status message reaches
+// (handleTaskStatusMessage, via completeJob) must release a dependent job
+// blocked on it — without any direct call to ReconcileDependents.
+func TestCheckJobCompletion_ReleasesDependent(t *testing.T) {
+	ctx := context.Background()
+	h := newJobDepsHarness(t)
+	up := h.seedRunnableJob(t)
+	down := h.seedBlockedJobDependingOn(t, up.ID)
+
+	h.completeJob(t, up.ID)
+
+	gotUp, err := h.store.GetJob(ctx, up.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUp.Status != store.JobStatusCompleted {
+		t.Fatalf("upstream status = %q, want completed", gotUp.Status)
+	}
+
+	gotDown, err := h.store.GetJob(ctx, down.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDown.Status != store.JobStatusPending {
+		t.Fatalf("down status = %q, want pending after upstream completion", gotDown.Status)
 	}
 }

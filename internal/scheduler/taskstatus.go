@@ -533,6 +533,14 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 		Status:    string(newJobStatus),
 		UpdatedAt: time.Now().UTC(),
 	})
+
+	// Release or cancel any jobs blocked on this one now that it is terminal.
+	// Non-fatal: the periodic sweep is the backstop, so a failure here must not
+	// block completion of the upstream job itself.
+	if err := s.ReconcileDependents(ctx, jobID); err != nil {
+		s.logger.ErrorContext(ctx, "scheduler: reconcile dependents after completion failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+	}
 	return nil
 }
 
