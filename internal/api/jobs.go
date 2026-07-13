@@ -290,21 +290,31 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	// promptly rather than after the long-poll hold elapses.
 	h.sched.WakeQueue(result.Job.QueueID)
 
-	respJob := result.Job
-	if len(opts.DependsOn) > 0 {
-		// Submit's returned job doesn't carry DependsOn (only GetJob populates
-		// it, via a join over job_dependencies); refetch so the create
-		// response echoes what was persisted. Best-effort: on failure, fall
-		// back to the unpopulated job rather than failing the whole request.
-		if full, getErr := h.store.GetJob(ctx, result.Job.ID); getErr == nil {
-			respJob = full
-		} else {
-			h.logger.ErrorContext(ctx, "jobs: refetch after submit for depends_on failed",
-				slog.String("job_id", result.Job.ID), slog.Any("error", getErr))
-		}
-	}
+	respJob := refetchDependsOn(ctx, h.store, h.logger, result.Job, opts.DependsOn, "jobs")
 
 	writeJSON(w, http.StatusCreated, toJobResponse(respJob))
+}
+
+// refetchDependsOn re-fetches job by ID when requested is non-empty, so a
+// submit response echoes the persisted DependsOn edges: openjd.Submitter's
+// returned job never carries DependsOn (only [store.Store.GetJob] populates
+// it, via a join over job_dependencies). Best-effort: on failure it logs
+// under component (e.g. "jobs" or "products", matching each handler's other
+// log lines) and falls back to the unpopulated job rather than failing the
+// whole request. Shared by submitJob and productHandler.submitProductJob.
+func refetchDependsOn(
+	ctx context.Context, st store.Store, logger *slog.Logger, job store.Job, requested []string, component string,
+) store.Job {
+	if len(requested) == 0 {
+		return job
+	}
+	full, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		logger.ErrorContext(ctx, component+": refetch after submit for depends_on failed",
+			slog.String("job_id", job.ID), slog.Any("error", err))
+		return job
+	}
+	return full
 }
 
 // ── GET /api/v1/jobs ──────────────────────────────────────────────────────────
@@ -697,6 +707,13 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		h.logger.ErrorContext(ctx, "jobs: cancel status update failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update job status")
 		return
+	}
+
+	// A canceled upstream can never satisfy jobs blocked on it — cancel them
+	// now rather than waiting for the periodic sweep, matching deleteJob.
+	if err := h.sched.ReconcileDependents(ctx, id); err != nil {
+		h.logger.ErrorContext(ctx, "jobs: reconcile dependents after cancel failed",
+			slog.String("job_id", id), slog.Any("error", err))
 	}
 
 	w.WriteHeader(http.StatusNoContent)

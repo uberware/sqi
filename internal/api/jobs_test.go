@@ -1294,6 +1294,52 @@ func TestJobHandler_DeleteJob_ReconcilesDependents(t *testing.T) {
 	}
 }
 
+// TestJobHandler_CancelJob_ReconcilesDependents verifies that canceling a job
+// calls the scheduler's ReconcileDependents so any jobs blocked on it are
+// canceled immediately rather than waiting for the periodic sweep, mirroring
+// TestJobHandler_DeleteJob_ReconcilesDependents. The API layer test only
+// exercises the handler's wiring (spy on the interface); the actual
+// cancel-on-reconcile behavior is covered by the scheduler tests.
+func TestJobHandler_CancelJob_ReconcilesDependents(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := context.Background()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-up",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "upstream",
+		Owner:          "alice",
+		Priority:       50,
+		Status:         store.JobStatusRunning,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	sched := &fakeScheduler{}
+	r := newJobRouter(st, sched)
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/job-up/cancel", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("cancel status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+	if len(sched.reconciledJobs) != 1 || sched.reconciledJobs[0] != "job-up" {
+		t.Errorf("ReconcileDependents calls = %v, want [job-up]", sched.reconciledJobs)
+	}
+}
+
 func TestJobHandler_CancelJob_NewRoute(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
