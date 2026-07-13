@@ -1533,6 +1533,7 @@ class SqiClient:
         max_attempts: int | None = None,
         retry_delay_seconds: int | None = None,
         failure_limit: int | None = None,
+        depends_on: list[str] | None = None,
     ) -> Job:
         """Submit a job from a product and return the created :class:`Job`.
 
@@ -1546,6 +1547,11 @@ class SqiClient:
             parameters: Job-parameter values (name → string).
             max_attempts, retry_delay_seconds, failure_limit: Per-job retry
                 overrides; ``None`` means inherit.
+            depends_on: IDs of upstream jobs this job must wait for (whole-job
+                cross-job dependencies). Each must already exist and be in the
+                same farm; none may already be failed or canceled. When any is
+                not yet completed the created job is returned in the ``blocked``
+                status and starts only once every upstream completes.
         """
         body: dict[str, Any] = {"farm_id": farm_id, "queue_id": queue_id}
         if job_name is not None:
@@ -1561,6 +1567,8 @@ class SqiClient:
         if parameters is not None:
             body["parameters"] = dict(parameters)
         _add_retry_policy(body, max_attempts, retry_delay_seconds, failure_limit)
+        if depends_on is not None:
+            body["depends_on"] = list(depends_on)
         data = self._request_json("POST", f"/products/{name}/jobs", json=body)
         return Job.from_dict(data)
 
