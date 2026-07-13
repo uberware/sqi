@@ -18,6 +18,7 @@ type productHandler struct {
 	catalog   *product.Catalog
 	submitter *openjd.Submitter
 	sched     *scheduler.Scheduler
+	store     store.Store
 	logger    *slog.Logger
 }
 
@@ -25,9 +26,10 @@ func newProductHandler(
 	catalog *product.Catalog,
 	submitter *openjd.Submitter,
 	sched *scheduler.Scheduler,
+	st store.Store,
 	logger *slog.Logger,
 ) *productHandler {
-	return &productHandler{catalog: catalog, submitter: submitter, sched: sched, logger: logger}
+	return &productHandler{catalog: catalog, submitter: submitter, sched: sched, store: st, logger: logger}
 }
 
 type productResponse struct {
@@ -237,6 +239,7 @@ type submitProductRequest struct {
 	MaxAttempts       *int              `json:"max_attempts"`
 	RetryDelaySeconds *int              `json:"retry_delay_seconds"`
 	FailureLimit      *int              `json:"failure_limit"`
+	DependsOn         []string          `json:"depends_on"`
 }
 
 // submitProductJob loads the named product's template and submits a job via
@@ -279,6 +282,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		MaxAttempts:       req.MaxAttempts,
 		RetryDelaySeconds: req.RetryDelaySeconds,
 		FailureLimit:      req.FailureLimit,
+		DependsOn:         req.DependsOn,
 	})
 	if err != nil {
 		if isSubmitValidationError(err) {
@@ -292,7 +296,21 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 	if h.sched != nil {
 		h.sched.WakeQueue(result.Job.QueueID)
 	}
-	writeJSON(w, http.StatusCreated, toJobResponse(result.Job))
+
+	respJob := result.Job
+	if len(req.DependsOn) > 0 {
+		// Submit's returned job doesn't carry DependsOn (only GetJob populates
+		// it, via a join over job_dependencies); refetch so the create
+		// response echoes what was persisted. Best-effort: on failure, fall
+		// back to the unpopulated job rather than failing the whole request.
+		if full, getErr := h.store.GetJob(ctx, result.Job.ID); getErr == nil {
+			respJob = full
+		} else {
+			h.logger.ErrorContext(ctx, "products: refetch after submit for depends_on failed",
+				slog.String("job_id", result.Job.ID), slog.Any("error", getErr))
+		}
+	}
+	writeJSON(w, http.StatusCreated, toJobResponse(respJob))
 }
 
 // decodeProductBody decodes and validates a product create/update body. When

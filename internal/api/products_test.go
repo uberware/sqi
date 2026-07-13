@@ -44,7 +44,7 @@ type productTestSrv struct {
 func newProductTestServer(t *testing.T) *productTestSrv {
 	t.Helper()
 	st := fake.New()
-	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, newTestLogger())
+	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/products", h.listProducts)
 	r.Post("/api/v1/products", h.createProduct)
@@ -59,7 +59,7 @@ func newProductTestServer(t *testing.T) *productTestSrv {
 // newProductRouter builds a product router for CRUD-only tests (no Submitter
 // needed). Also registers the submit route so route resolution is consistent.
 func newProductRouter(st store.Store) chi.Router {
-	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, newTestLogger())
+	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/products", h.listProducts)
 	r.Post("/api/v1/products", h.createProduct)
@@ -438,6 +438,74 @@ func TestProducts_SubmitWithRetryOverrides(t *testing.T) {
 	}
 	if job.FailureLimit == nil || *job.FailureLimit != 7 {
 		t.Errorf("failure_limit = %v, want 7", job.FailureLimit)
+	}
+}
+
+// TestProducts_SubmitWithDependsOn_ReturnsBlocked verifies that submitting a
+// product job with depends_on pointing at a still-pending upstream job
+// creates the new job in the "blocked" status and echoes depends_on in the
+// create response, mirroring TestSubmitJob_DependsOn_ReturnsBlocked for raw
+// job submission.
+func TestProducts_SubmitWithDependsOn_ReturnsBlocked(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+
+	// Submit the upstream job and leave it pending (no worker completes it).
+	upBody := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters": map[string]string{"Command": "echo up"},
+	})
+	upReq := newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(upBody.Bytes()))
+	upRR := httptest.NewRecorder()
+	srv.ServeHTTP(upRR, upReq)
+	if upRR.Code != http.StatusCreated {
+		t.Fatalf("upstream submit: expected 201, got %d — body: %s", upRR.Code, upRR.Body)
+	}
+	var up jobResponse
+	if err := json.Unmarshal(upRR.Body.Bytes(), &up); err != nil {
+		t.Fatalf("decode upstream: %v", err)
+	}
+
+	depBody := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters": map[string]string{"Command": "echo dep"},
+		"depends_on": []string{up.ID},
+	})
+	depReq := newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(depBody.Bytes()))
+	depRR := httptest.NewRecorder()
+	srv.ServeHTTP(depRR, depReq)
+	if depRR.Code != http.StatusCreated {
+		t.Fatalf("dependent submit: expected 201, got %d — body: %s", depRR.Code, depRR.Body)
+	}
+	var dep jobResponse
+	if err := json.Unmarshal(depRR.Body.Bytes(), &dep); err != nil {
+		t.Fatalf("decode dependent: %v", err)
+	}
+	if dep.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", dep.Status)
+	}
+	if len(dep.DependsOn) != 1 || dep.DependsOn[0] != up.ID {
+		t.Errorf("depends_on = %v, want [%s]", dep.DependsOn, up.ID)
+	}
+}
+
+// TestProducts_SubmitWithDependsOn_MissingUpstreamIs422 verifies that
+// depends_on referencing a nonexistent job is rejected with 422 (validation
+// error), same as raw job submission.
+func TestProducts_SubmitWithDependsOn_MissingUpstreamIs422(t *testing.T) {
+	srv := newProductTestServer(t)
+	farmID, queueID := seedProductSubmitPrereqs(t, srv)
+
+	body := jsonBody(t, map[string]any{
+		"farm_id": farmID, "queue_id": queueID,
+		"parameters": map[string]string{"Command": "echo hi"},
+		"depends_on": []string{"nope"},
+	})
+	req := newReq(t, http.MethodPost, "/api/v1/products/script/jobs", bytes.NewReader(body.Bytes()))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 — body: %s", rec.Code, rec.Body)
 	}
 }
 

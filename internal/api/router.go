@@ -233,7 +233,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, logger)
+	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)

@@ -1314,6 +1314,13 @@ components:
           description: >-
             Per-job override for the task-failure count that auto-parks the job.
             Omitted means inherit (queue -> farm -> server default).
+        depends_on:
+          type: array
+          items:
+            type: string
+          description: >-
+            IDs of upstream jobs this job waits for; same farm; job starts
+            blocked until all complete.
         parameters:
           type: object
           additionalProperties:
