@@ -172,3 +172,22 @@ the box, and each gates on an operator-configured worker capability tag (see
 [worker capability tags](worker-capabilities.md)). See
 [`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
 including the chunking behavior and worker requirements per preset.
+
+## Testing presets
+
+The official library also ships four `Testing`-category presets — authored in
+this repo under `presets/testing/` and published to the library under a
+`testing/` namespace — for smoke-testing a fresh farm without a DCC installed:
+
+- `test-render-bash` / `test-render-powershell` — a no-op render simulator that
+  sleeps per frame and can inject failures, hangs, and progress (bash and
+  PowerShell variants), to exercise task chunking, the worker process executor,
+  and the retry/timeout paths.
+- `test-steps-bash` / `test-steps-powershell` — a multi-step job (render →
+  publish → notify) that exercises step-dependency gating and cross-step
+  ordering.
+
+Install them exactly like the reference presets (Browse → Install as a product),
+then submit with the generated form. Because they depend on no software, they
+require no worker capability tags — any online worker on the matching OS can run
+them.

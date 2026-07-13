@@ -245,20 +245,23 @@ VERSION=0.2.0
 
 ---
 
-## Step 6b: Publish DCC reference presets to the preset library
+## Step 6b: Publish reference and testing presets to the preset library
 
-The six reference presets authored in this repo (`presets/sqi/*.yaml` —
-Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch) are not
-distributed as part of the GitHub
-release or PyPI packages; they are published to the separate
+The presets authored in this repo — the six `presets/sqi/*.yaml` reference
+presets (Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch)
+and the four `presets/testing/*.yaml` smoke-test presets (test-render and
+test-steps, each in bash + PowerShell) — are not distributed as part of the
+GitHub release or PyPI packages; they are published to the separate
 `uberware/sqi-presets` repository that backs the default `preset_library.url`
 (see `docs/preset-library.md`). This is **automated** by the `publish-presets`
 job in `.github/workflows/release.yml`: after a successful release, on a
-non-`-rc` tag, it runs `cmd/presetgen` to regenerate `index.json` + the `sqi/`
-definition files in a checkout of the library repo and pushes only if something
-changed. `presetgen` merges — it owns the `sqi/` namespace and leaves any other
-library entries untouched — and computes each `sha256` over the raw file bytes,
-so the published index always matches what `sqi-server` verifies on install.
+non-`-rc` tag, it runs `cmd/presetgen` twice against a checkout of the library
+repo — once for `presets/sqi` (the `sqi/` namespace) and once for
+`presets/testing` under the `testing/` subdir — to regenerate `index.json` +
+the definition files, and pushes only if something changed. `presetgen`
+merges — each pass owns its own namespace and leaves any other library entries
+untouched — and computes each `sha256` over the raw file bytes, so the
+published index always matches what `sqi-server` verifies on install.
 
 **One-time setup** (until done, the job is skipped and the release is
 unaffected):
@@ -284,12 +287,14 @@ unaffected):
 checkout, against a checkout of the library repo, run and push:
 ```bash
 go run ./cmd/presetgen -presets presets/sqi -out /path/to/sqi-presets
+go run ./cmd/presetgen -presets presets/testing -subdir testing -out /path/to/sqi-presets
 ( cd /path/to/sqi-presets && git add -A && git commit -m "publish presets" && git push )
 ```
 
 **Verify:**
 - The published index (`https://uberware.github.io/sqi-presets/index.json`)
-  lists all six presets under `sqi/` with the correct `sha256`.
+  lists all six presets under `sqi/` and the four test presets under `testing/`
+  with the correct `sha256`.
 - In the sqi web UI's Preset Library page, each preset installs successfully
   and its checksum verifies (no 422).
 

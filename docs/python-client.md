@@ -149,7 +149,7 @@ are equivalent. `None` filters are omitted from the request entirely.
 
 ## Submitting jobs
 
-`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, depends_on=None) -> Job`
+`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None) -> Job`
 
 The template may be a `str` (sent verbatim), a `pathlib.Path` (read from disk),
 or a `dict` (serialized to JSON). The `Content-Type` is chosen automatically —
@@ -162,6 +162,14 @@ wait for; if any is not yet `completed` the returned job's `status` is
 `blocked` instead of `pending`, and it is released automatically once every
 upstream completes (or canceled if one fails, is canceled, or is deleted).
 `submit_product_job` accepts the same `depends_on` keyword.
+
+`max_attempts`, `retry_delay_seconds`, and `failure_limit` are optional per-job
+retry-policy overrides; each left `None` inherits the queue → farm → server
+default. They are also accepted by `submit_and_wait` and `submit_product_job`,
+and (as create/update fields) by `create_farm`/`create_queue`. The resolved
+policy is returned on `get_job` as `Job.effective_retry` (an
+`EffectiveRetryPolicy` with `max_attempts`/`retry_delay_seconds`/`failure_limit`),
+alongside `Job.failed_attempts` and, once a job is auto-parked, `Job.park_reason`.
 
 ```python
 from pathlib import Path
@@ -271,8 +279,8 @@ reset, so pass every field you want to keep.
 
 | Family | Create | List | Get / Update / Delete |
 |---|---|---|---|
-| Farms | `create_farm(*, name, description=None, max_concurrent_tasks=0)` | `list_farms() -> list[Farm]`, `iter_farms()` | `get_farm`, `update_farm`, `delete_farm` |
-| Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset) -> Page[Queue]`, `iter_queues(...)` | `get_queue`, `update_queue`, `delete_queue` |
+| Farms | `create_farm(*, name, description=None, max_concurrent_tasks=0, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_farms() -> list[Farm]`, `iter_farms()` | `get_farm`, `update_farm`, `delete_farm` |
+| Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset) -> Page[Queue]`, `iter_queues(...)` | `get_queue`, `update_queue`, `delete_queue` |
 | Storage locations | `create_storage_location(*, name, description=None, roots=None)` | `list_storage_locations() -> list[StorageLocation]`, `iter_storage_locations()` | `get_storage_location`, `update_storage_location`, `delete_storage_location` |
 | Usage pools | `create_usage_pool(*, name, max_concurrent, server_hint=None)` | `list_usage_pools() -> list[UsagePool]`, `iter_usage_pools()` | `get_usage_pool`, `update_usage_pool`, `delete_usage_pool` |
 
@@ -331,7 +339,7 @@ returning the final `Job`. It raises `SqiTimeoutError` if `timeout` elapses
 first. Note that `paused` is **not** terminal — pass a `timeout` if a job might
 be paused indefinitely.
 
-`submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`
+`submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`
 composes `submit_job` + `wait_for_job` for the simplest pipeline script (a
 `depends_on`-blocked job simply polls through `blocked` → `pending` →
 `running` → terminal like any other):

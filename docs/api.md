@@ -126,7 +126,11 @@ The body is a raw OpenJD template in YAML or JSON. Required query parameters:
 | `queue_id` | UUID of the target queue |
 
 Optional query parameters: `owner`, `submitter`, `priority` (default 50, higher = sooner),
-`project`. Also `depends_on` (repeatable) — IDs of upstream jobs, in the same
+`project`. Also the per-job retry-policy overrides `max_attempts` (≥ 1),
+`retry_delay_seconds` (≥ 0), and `failure_limit` (≥ 0; the job-level failure
+ceiling that auto-parks the job, 0 disables an inherited limit) — each omitted
+means inherit the queue → farm → server default, and an out-of-range value is
+rejected with 400. Also `depends_on` (repeatable) — IDs of upstream jobs, in the same
 farm, this job must wait for; if any is not yet `completed` the job is created
 `blocked` instead of `pending` and its tasks are held until every dependency
 completes (see [`docs/architecture.md`](architecture.md#job-lifecycle-data-flow)).
@@ -230,7 +234,11 @@ curl -s "$BASE/jobs?status=failed&limit=10&offset=0" | jq .items[].id
 
 `GET /api/v1/jobs/{id}`
 
-Returns the job with its steps and per-status task counts.
+Returns the job with its steps and per-status task counts. The response also
+carries `effective_retry` — the resolved retry policy for this job
+(`max_attempts`, `retry_delay_seconds`, `failure_limit`) after the
+server → farm → queue → job cascade — plus `failed_attempts` and, when the job
+has been auto-parked, a `park_reason`.
 
 ```sh
 JOB_ID=018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345
@@ -335,7 +343,18 @@ curl -s -X PATCH "$BASE/jobs/$JOB_ID" \
 curl -s -X PATCH "$BASE/jobs/$JOB_ID" \
   -H "Content-Type: application/json" \
   -d '{"priority": 90}'
+
+# Update per-job retry-policy overrides
+curl -s -X PATCH "$BASE/jobs/$JOB_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"max_attempts": 5, "retry_delay_seconds": 60, "failure_limit": 10}'
 ```
+
+The same endpoint sets the per-job retry-policy overrides (`max_attempts`,
+`retry_delay_seconds`, `failure_limit`); omitting a field (or sending `null`)
+leaves it unchanged — a job-level override cannot be cleared back to "inherit"
+this way. Resuming an auto-parked job (`action: resume`) also clears
+`park_reason` and resets `failed_attempts` to zero, re-arming its failure limit.
 
 ---
 

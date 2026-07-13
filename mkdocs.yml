@@ -73,6 +73,7 @@ nav:
           - Extensions Overview: openjd-extensions.md
           - Extension Details:
               - Task Chunking: openjd-extensions/task-chunking.md
+              - Chunk Bounds: openjd-extensions/sqi-chunk-bounds.md
               - Path Translation: openjd-extensions/path-translation.md
               - Redacted Env Vars: openjd-extensions/redacted-env-vars.md
       - Cross-Platform Validation: cross-platform-validation.md
