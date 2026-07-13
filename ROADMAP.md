@@ -75,7 +75,7 @@ The scheduler is intentionally stateless with respect to the running process —
 - **Step**: Component of a job with optional dependencies on other steps
 - **Task**: Atomic unit of work (one process on one worker)
 
-Configuration cascades: farm defaults → queue overrides. This avoids repeating settings across every job submission.
+Configuration cascades: farm defaults → queue overrides, with retry policy (max attempts, retry delay, failure limit) resolved over four tiers — server default → farm → queue → job override. This avoids repeating settings across every job submission.
 
 **Scheduling considers:** job priority, task dependencies, queue and farm policy (concurrency limits, scheduling mode), compute location affinity, worker capability tags (OS, GPU, installed software), and usage pool availability.
  - *Design:* ready tasks remain `ready` until a worker sends a core-NATS
@@ -225,6 +225,10 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
 - Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)
+- Chunk bounds (`SQI_CHUNK_BOUNDS` vendor extension) — expose each task chunk's frame start/end to the command line, used by the Maya and Blender reference presets
+- Auto-retry and failure limits — per-task retry policy (max attempts, retry delay) and a job-level failure ceiling that auto-parks a job, resolved over four tiers (server → farm → queue → job) with per-task attempt history
+- Cross-job dependencies — a submission may declare `depends_on` upstream jobs (same farm, across queues); dependents are held `blocked` until every upstream completes, then released (or canceled if an upstream fails)
+- Testing job presets — ready-to-run `test-render`/`test-steps` presets (bash and PowerShell) published to the preset library for smoke-testing a farm
 
 ### Phase 3: Auth and Multi-User (v0.3)
 

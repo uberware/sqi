@@ -853,6 +853,9 @@ clients/submitter/
   tests/                     pytest; tests/integration/ is env-gated (see below)
 presets/sqi/                 the six reference preset YAML fixtures, validated by
                               internal/product/dccpresets_test.go
+presets/testing/             the four test/QA preset fixtures (test-render, test-steps;
+                              bash + PowerShell), validated by
+                              internal/product/testingpresets_test.go
 ```
 
 Gate command line (from `clients/submitter`, with `sqi-sdk` resolvable —

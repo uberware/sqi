@@ -153,7 +153,7 @@ canceled with an upstream-failed reason, and the cancellation cascades to any
 of *its* own dependents in turn. This reconcile is primarily **event-driven** —
 triggered from the same choke point that detects job completion
 (`checkJobCompletion` in `internal/scheduler/taskstatus.go`) and from the job
-delete path — with the periodic heartbeat sweep acting as a backstop pass over
+cancel and delete paths — with the periodic heartbeat sweep acting as a backstop pass over
 all `blocked` jobs to catch anything missed by the event-driven path.
 
 ### 2. Task readiness
