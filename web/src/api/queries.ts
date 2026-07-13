@@ -341,10 +341,11 @@ export async function fetchFarmsWithQueues(): Promise<FarmWithQueues[]> {
 // ── Query hooks ───────────────────────────────────────────────────────────────
 
 /** List jobs with optional filters, pagination, and sort. */
-export function useListJobs(params: ListJobsParams) {
+export function useListJobs(params: ListJobsParams, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.jobs.list(params),
     queryFn: () => fetchListJobs(params),
+    enabled: options?.enabled ?? true,
   })
 }
 

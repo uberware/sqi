@@ -45,10 +45,13 @@ export default function DependsOnField({
   selectClassName,
   noteClassName,
 }: DependsOnFieldProps) {
-  const { data: candidateJobsPage } = useListJobs({
-    ...(farmId ? { farm_id: farmId } : {}),
-    limit: CANDIDATE_LIMIT,
-  })
+  const { data: candidateJobsPage } = useListJobs(
+    {
+      ...(farmId ? { farm_id: farmId } : {}),
+      limit: CANDIDATE_LIMIT,
+    },
+    { enabled: Boolean(farmId) },
+  )
   const candidates = (candidateJobsPage?.items ?? []).filter(
     (job) => !TERMINAL_JOB_STATUSES.has(job.status),
   )

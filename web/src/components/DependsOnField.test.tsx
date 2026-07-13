@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -9,13 +9,18 @@ import type { Job } from '@/api/types'
 
 const h = vi.hoisted(() => ({ jobs: [] as Job[] }))
 
+const useListJobsMock = vi.fn()
+
 vi.mock('@/api/queries', async (orig) => ({
   ...(await orig<typeof import('@/api/queries')>()),
-  useListJobs: () => ({
-    data: { items: h.jobs, total: h.jobs.length, limit: 200, offset: 0 },
-    isLoading: false,
-    error: null,
-  }),
+  useListJobs: (...args: unknown[]) => {
+    useListJobsMock(...args)
+    return {
+      data: { items: h.jobs, total: h.jobs.length, limit: 200, offset: 0 },
+      isLoading: false,
+      error: null,
+    }
+  },
 }))
 
 function makeJob(overrides: Partial<Job> = {}): Job {
@@ -37,6 +42,29 @@ function makeJob(overrides: Partial<Job> = {}): Job {
 }
 
 describe('DependsOnField', () => {
+  beforeEach(() => {
+    useListJobsMock.mockClear()
+  })
+
+  it('does not enable the candidate query until a farm is selected', () => {
+    h.jobs = []
+    render(<DependsOnField farmId={undefined} value={[]} onChange={vi.fn()} />)
+
+    expect(useListJobsMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 200 }), {
+      enabled: false,
+    })
+  })
+
+  it('enables the candidate query once a farm is selected', () => {
+    h.jobs = []
+    render(<DependsOnField farmId="farm-1" value={[]} onChange={vi.fn()} />)
+
+    expect(useListJobsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ farm_id: 'farm-1', limit: 200 }),
+      { enabled: true },
+    )
+  })
+
   it('lists non-terminal jobs as candidates and excludes terminal ones', () => {
     h.jobs = [
       makeJob({ id: 'job-a', name: 'Upstream A', status: 'running' }),
