@@ -41,14 +41,15 @@
 }
 
 .name {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .status {
-  margin-left: auto;
-  padding-left: var(--space-2);
+  flex: none;
   color: var(--color-text-muted);
 }
 
