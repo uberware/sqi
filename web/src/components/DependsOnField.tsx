@@ -14,7 +14,7 @@
  * field wrapper / label / note classes to match each form's surrounding look.
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useListJobs } from '@/api/queries'
 import styles from './DependsOnField.module.css'
 
@@ -64,6 +64,17 @@ export default function DependsOnField({
     (job) => !TERMINAL_JOB_STATUSES.has(job.status),
   )
 
+  // Free-text filter: each whitespace-separated word is an independent,
+  // case-insensitive substring term, ANDed together and matched anywhere in the
+  // job's name/status. So "foo bar" keeps "fool-grabbing-rebar" and "barfoo".
+  const [filter, setFilter] = useState('')
+  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean)
+  const shown = candidates.filter((job) => {
+    if (terms.length === 0) return true
+    const haystack = `${job.name} ${job.status}`.toLowerCase()
+    return terms.every((term) => haystack.includes(term))
+  })
+
   const toggle = useCallback(
     (id: string) => {
       onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id])
@@ -79,6 +90,7 @@ export default function DependsOnField({
     if (prevFarmIdRef.current !== farmId) {
       prevFarmIdRef.current = farmId
       onChange([])
+      setFilter('')
     }
   }, [farmId, onChange])
 
@@ -103,20 +115,36 @@ export default function DependsOnField({
       ) : candidates.length === 0 ? (
         note('No eligible upstream jobs in this farm.')
       ) : (
-        <div role="group" aria-labelledby={LABEL_ID} className={styles.list}>
-          {candidates.map((job) => (
-            <label key={job.id} className={styles.row}>
-              <input
-                type="checkbox"
-                className={styles.checkbox}
-                checked={value.includes(job.id)}
-                onChange={() => toggle(job.id)}
-              />
-              <span className={styles.name}>{job.name}</span>
-              <span className={styles.status}>{job.status}</span>
-            </label>
-          ))}
-        </div>
+        <>
+          <input
+            type="search"
+            className={styles.filter}
+            placeholder="Filter jobs…"
+            aria-label="Filter jobs"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <div role="group" aria-labelledby={LABEL_ID} className={styles.list}>
+            {shown.length === 0 ? (
+              <p className={cx(noteClassName, noteClassName ? undefined : styles.note)}>
+                No jobs match the filter.
+              </p>
+            ) : (
+              shown.map((job) => (
+                <label key={job.id} className={styles.row}>
+                  <input
+                    type="checkbox"
+                    className={styles.checkbox}
+                    checked={value.includes(job.id)}
+                    onChange={() => toggle(job.id)}
+                  />
+                  <span className={styles.name}>{job.name}</span>
+                  <span className={styles.status}>{job.status}</span>
+                </label>
+              ))
+            )}
+          </div>
+        </>
       )}
     </div>
   )

@@ -76,6 +76,40 @@ describe('DependsOnField', () => {
     expect(screen.queryByRole('checkbox', { name: /Upstream B/ })).not.toBeInTheDocument()
   })
 
+  it('filters candidates by ANDed, case-insensitive substring terms', async () => {
+    h.jobs = [
+      makeJob({ id: 'job-a', name: 'fool-grabbing-rebar' }),
+      makeJob({ id: 'job-b', name: 'barfoo' }),
+      makeJob({ id: 'job-c', name: 'unrelated-thing' }),
+    ]
+    const user = userEvent.setup()
+    render(<DependsOnField farmId="farm-1" value={[]} onChange={vi.fn()} />)
+
+    // No filter: all three show.
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3)
+
+    // "foo bar" — each word is an independent substring term, order-independent.
+    await user.type(screen.getByLabelText(/filter jobs/i), 'foo bar')
+
+    expect(screen.getByRole('checkbox', { name: /fool-grabbing-rebar/ })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /barfoo/ })).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /unrelated-thing/ })).not.toBeInTheDocument()
+  })
+
+  it('shows a hint when the filter matches nothing, without dropping the selection', async () => {
+    h.jobs = [makeJob({ id: 'job-a', name: 'Upstream A' })]
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<DependsOnField farmId="farm-1" value={['job-a']} onChange={onChange} />)
+
+    await user.type(screen.getByLabelText(/filter jobs/i), 'zzz-nomatch')
+
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(screen.getByText(/no jobs match the filter/i)).toBeInTheDocument()
+    // Filtering only hides rows — the selection itself is untouched.
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('reflects the current selection as checked and toggles on click', async () => {
     h.jobs = [
       makeJob({ id: 'job-a', name: 'Upstream A' }),
