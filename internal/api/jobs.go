@@ -41,6 +41,10 @@ type jobCanceler interface {
 	// WakeQueue wakes parked lease waiters on queueID so a newly-submitted
 	// job's ready tasks are leased without waiting out the long-poll hold.
 	WakeQueue(queueID string)
+	// ReconcileDependents cancels or unblocks jobs waiting on upstreamJobID,
+	// used to react immediately when the upstream is deleted rather than
+	// waiting for the periodic sweep.
+	ReconcileDependents(ctx context.Context, upstreamJobID string) error
 }
 
 // jobHandler handles all job-related REST endpoints.
@@ -72,6 +76,7 @@ type jobResponse struct {
 	Submitter      string     `json:"submitter"`
 	Priority       int        `json:"priority"`
 	Status         string     `json:"status"`
+	DependsOn      []string   `json:"depends_on,omitempty"`
 	Project        string     `json:"project,omitempty"`
 	TemplateFormat string     `json:"template_format"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -260,6 +265,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		MaxAttempts:       maxAttempts,
 		RetryDelaySeconds: retryDelaySeconds,
 		FailureLimit:      failureLimit,
+		DependsOn:         r.URL.Query()["depends_on"],
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
@@ -284,7 +290,21 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	// promptly rather than after the long-poll hold elapses.
 	h.sched.WakeQueue(result.Job.QueueID)
 
-	writeJSON(w, http.StatusCreated, toJobResponse(result.Job))
+	respJob := result.Job
+	if len(opts.DependsOn) > 0 {
+		// Submit's returned job doesn't carry DependsOn (only GetJob populates
+		// it, via a join over job_dependencies); refetch so the create
+		// response echoes what was persisted. Best-effort: on failure, fall
+		// back to the unpopulated job rather than failing the whole request.
+		if full, getErr := h.store.GetJob(ctx, result.Job.ID); getErr == nil {
+			respJob = full
+		} else {
+			h.logger.ErrorContext(ctx, "jobs: refetch after submit for depends_on failed",
+				slog.String("job_id", result.Job.ID), slog.Any("error", getErr))
+		}
+	}
+
+	writeJSON(w, http.StatusCreated, toJobResponse(respJob))
 }
 
 // ── GET /api/v1/jobs ──────────────────────────────────────────────────────────
@@ -768,6 +788,13 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// A deleted upstream can never satisfy jobs blocked on it — cancel them now
+	// rather than waiting for the periodic sweep.
+	if err := h.sched.ReconcileDependents(ctx, id); err != nil {
+		h.logger.ErrorContext(ctx, "jobs: reconcile dependents after delete failed",
+			slog.String("job_id", id), slog.Any("error", err))
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -801,6 +828,7 @@ func toJobResponse(j store.Job) jobResponse {
 		Submitter:      j.Submitter,
 		Priority:       j.Priority,
 		Status:         string(j.Status),
+		DependsOn:      j.DependsOn,
 		Project:        j.Project,
 		TemplateFormat: string(j.TemplateFormat),
 		CreatedAt:      j.CreatedAt,

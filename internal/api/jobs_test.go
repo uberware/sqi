@@ -33,12 +33,14 @@ import (
 // fakeScheduler implements [jobCanceler] for tests so cancelJob and retryJob
 // can run without a live NATS/scheduler instance.
 type fakeScheduler struct {
-	cancelErr    error    // non-nil forces CancelJob to return this error
-	retryCount   int      // value returned by RetryJob
-	retryErr     error    // non-nil forces RetryJob to return this error
-	wokenQueue   []string // queue IDs passed to WakeQueue, in call order
-	canceledJobs []string // job IDs passed to CancelJob, in call order
-	retriedJobs  []string // job IDs passed to RetryJob, in call order
+	cancelErr      error    // non-nil forces CancelJob to return this error
+	retryCount     int      // value returned by RetryJob
+	retryErr       error    // non-nil forces RetryJob to return this error
+	reconcileErr   error    // non-nil forces ReconcileDependents to return this error
+	wokenQueue     []string // queue IDs passed to WakeQueue, in call order
+	canceledJobs   []string // job IDs passed to CancelJob, in call order
+	retriedJobs    []string // job IDs passed to RetryJob, in call order
+	reconciledJobs []string // upstream job IDs passed to ReconcileDependents, in call order
 }
 
 func (f *fakeScheduler) CancelJob(_ context.Context, id string) error {
@@ -53,6 +55,11 @@ func (f *fakeScheduler) RetryJob(_ context.Context, id string) (int, error) {
 
 func (f *fakeScheduler) WakeQueue(queueID string) {
 	f.wokenQueue = append(f.wokenQueue, queueID)
+}
+
+func (f *fakeScheduler) ReconcileDependents(_ context.Context, upstreamJobID string) error {
+	f.reconciledJobs = append(f.reconciledJobs, upstreamJobID)
+	return f.reconcileErr
 }
 
 // ── router helpers ────────────────────────────────────────────────────────────
@@ -383,6 +390,81 @@ func TestSubmitJobWakesQueue(t *testing.T) {
 	}
 	if len(sched.wokenQueue) != 1 || sched.wokenQueue[0] != "queue-1" {
 		t.Errorf("WakeQueue calls = %v, want [queue-1]", sched.wokenQueue)
+	}
+}
+
+// TestSubmitJob_DependsOn_ReturnsBlocked verifies that submitting a job with
+// depends_on pointing at a still-pending upstream job creates the new job in
+// the "blocked" status and echoes depends_on in the create response.
+func TestSubmitJob_DependsOn_ReturnsBlocked(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+
+	// Submit the upstream job and leave it pending (no worker completes it).
+	upBody := strings.NewReader(minimalOpenJDJSON("Upstream"))
+	upReq := newReq(t, http.MethodPost, "/api/v1/jobs?farm_id=farm-1&queue_id=queue-1", upBody)
+	upReq.Header.Set("Content-Type", "application/json")
+	upRR := httptest.NewRecorder()
+	r.ServeHTTP(upRR, upReq)
+	if upRR.Code != http.StatusCreated {
+		t.Fatalf("upstream submit: expected 201, got %d — body: %s", upRR.Code, upRR.Body)
+	}
+	var up jobResponse
+	if err := json.NewDecoder(upRR.Body).Decode(&up); err != nil {
+		t.Fatalf("decode upstream: %v", err)
+	}
+
+	depBody := strings.NewReader(minimalOpenJDJSON("Dependent"))
+	depReq := newReq(t, http.MethodPost,
+		"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&depends_on="+up.ID, depBody)
+	depReq.Header.Set("Content-Type", "application/json")
+	depRR := httptest.NewRecorder()
+	r.ServeHTTP(depRR, depReq)
+	if depRR.Code != http.StatusCreated {
+		t.Fatalf("dependent submit: expected 201, got %d — body: %s", depRR.Code, depRR.Body)
+	}
+	var dep jobResponse
+	if err := json.NewDecoder(depRR.Body).Decode(&dep); err != nil {
+		t.Fatalf("decode dependent: %v", err)
+	}
+	if dep.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", dep.Status)
+	}
+	if len(dep.DependsOn) != 1 || dep.DependsOn[0] != up.ID {
+		t.Errorf("depends_on = %v, want [%s]", dep.DependsOn, up.ID)
+	}
+}
+
+// TestSubmitJob_DependsOn_MissingUpstream422 verifies that depends_on
+// referencing a nonexistent job is rejected with 422 (validation error).
+func TestSubmitJob_DependsOn_MissingUpstream422(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+
+	r := newJobRouter(st, &fakeScheduler{})
+
+	body := strings.NewReader(minimalOpenJDJSON("MissingUpstream"))
+	req := newReq(t, http.MethodPost,
+		"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&depends_on=nope", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d — body: %s", rr.Code, rr.Body)
 	}
 }
 
@@ -1164,6 +1246,51 @@ func TestJobHandler_DeleteJob_NotFound(t *testing.T) {
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
+// TestJobHandler_DeleteJob_ReconcilesDependents verifies that deleting a job
+// calls the scheduler's ReconcileDependents so any jobs blocked on it are
+// canceled immediately rather than waiting for the periodic sweep. The API
+// layer test only exercises the handler's wiring (spy on the interface); the
+// actual cancel-on-reconcile behavior is covered by the scheduler tests.
+func TestJobHandler_DeleteJob_ReconcilesDependents(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := context.Background()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-up",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "upstream",
+		Owner:          "alice",
+		Priority:       50,
+		Status:         store.JobStatusCompleted,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	sched := &fakeScheduler{}
+	r := newJobRouter(st, sched)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-up", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+	if len(sched.reconciledJobs) != 1 || sched.reconciledJobs[0] != "job-up" {
+		t.Errorf("ReconcileDependents calls = %v, want [job-up]", sched.reconciledJobs)
 	}
 }
 
