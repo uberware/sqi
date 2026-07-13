@@ -125,7 +125,13 @@ The body is a raw OpenJD template in YAML or JSON. Required query parameters:
 | `farm_id` | UUID of the target farm |
 | `queue_id` | UUID of the target queue |
 
-Optional query parameters: `owner`, `submitter`, `priority` (default 50, higher = sooner), `project`.
+Optional query parameters: `owner`, `submitter`, `priority` (default 50, higher = sooner),
+`project`. Also `depends_on` (repeatable) — IDs of upstream jobs, in the same
+farm, this job must wait for; if any is not yet `completed` the job is created
+`blocked` instead of `pending` and its tasks are held until every dependency
+completes (see [`docs/architecture.md`](architecture.md#job-lifecycle-data-flow)).
+The same `depends_on` field is accepted in the JSON body when submitting from
+a product (below).
 
 **Job parameter values.** Values for the template's own job parameters (its
 `parameterDefinitions`) are supplied as `param.<Name>=<value>` query parameters —
@@ -184,7 +190,9 @@ curl -s -X POST http://localhost:8080/api/v1/products/python/jobs \
 
 The `name` field overrides the template's job name; when omitted the template's
 own name is used. `farm_id` and `queue_id` are required. `parameters` is a flat
-string→string map matching the template's `parameterDefinitions`. The
+string→string map matching the template's `parameterDefinitions`. `depends_on`
+is an optional array of upstream job IDs, same semantics as the raw-submit
+query parameter above. The
 `/parameters` endpoint returns each parameter's type, default, allowed values,
 and `user_interface` hints.
 
@@ -198,7 +206,7 @@ Filter parameters (all optional):
 
 | Parameter | Values | Description |
 |---|---|---|
-| `status` | `pending`, `running`, `completed`, `failed`, `canceled`, `paused` | Filter by job status |
+| `status` | `pending`, `blocked`, `paused`, `running`, `completed`, `failed`, `canceled` | Filter by job status |
 | `queue_id` | UUID | Filter by queue |
 | `farm_id` | UUID | Filter by farm |
 | `owner` | string | Filter by owner |

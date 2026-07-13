@@ -149,13 +149,19 @@ are equivalent. `None` filters are omitted from the request entirely.
 
 ## Submitting jobs
 
-`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None) -> Job`
+`submit_job(template, *, farm_id, queue_id, owner=None, priority=None, project=None, depends_on=None) -> Job`
 
 The template may be a `str` (sent verbatim), a `pathlib.Path` (read from disk),
 or a `dict` (serialized to JSON). The `Content-Type` is chosen automatically —
 `application/json` for dicts and JSON-parseable strings/files, `application/x-yaml`
 otherwise (and always for `.yaml`/`.yml` paths). Serializing a dict needs only
 the standard library; the `yaml` extra is **not** required to submit.
+
+`depends_on` is an optional list of upstream job IDs (same farm) this job must
+wait for; if any is not yet `completed` the returned job's `status` is
+`blocked` instead of `pending`, and it is released automatically once every
+upstream completes (or canceled if one fails, is canceled, or is deleted).
+`submit_product_job` accepts the same `depends_on` keyword.
 
 ```python
 from pathlib import Path
@@ -325,8 +331,10 @@ returning the final `Job`. It raises `SqiTimeoutError` if `timeout` elapses
 first. Note that `paused` is **not** terminal — pass a `timeout` if a job might
 be paused indefinitely.
 
-`submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, poll_interval=2.0, timeout=None) -> Job`
-composes `submit_job` + `wait_for_job` for the simplest pipeline script:
+`submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`
+composes `submit_job` + `wait_for_job` for the simplest pipeline script (a
+`depends_on`-blocked job simply polls through `blocked` → `pending` →
+`running` → terminal like any other):
 
 ```python
 from pathlib import Path

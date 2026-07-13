@@ -304,7 +304,8 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 
 	// job_dependencies table exists (created by the 00020 migration).
 	var name string
-	if err := st.db.QueryRowContext(ctx,
+	if err := st.db.QueryRowContext(
+		ctx,
 		`SELECT name FROM sqlite_master WHERE type='table' AND name='job_dependencies'`,
 	).Scan(&name); err != nil {
 		t.Fatalf("job_dependencies table missing: %v", err)
@@ -316,7 +317,8 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 	// A raw edge insert round-trips with the designed shape (job_id,
 	// depends_on_job_id, created_at), confirming the schema Task 2's
 	// CreateJobDependencies/ListJobDependencyIDs will build on.
-	if _, err := st.db.ExecContext(ctx,
+	if _, err := st.db.ExecContext(
+		ctx,
 		`INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at) VALUES (?, ?, ?)`,
 		"blocked", upstream.ID, time.Now().UTC(),
 	); err != nil {
@@ -324,7 +326,8 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 	}
 
 	var depID string
-	if err := st.db.QueryRowContext(ctx,
+	if err := st.db.QueryRowContext(
+		ctx,
 		`SELECT depends_on_job_id FROM job_dependencies WHERE job_id = ?`, "blocked",
 	).Scan(&depID); err != nil {
 		t.Fatalf("query job_dependencies: %v", err)
