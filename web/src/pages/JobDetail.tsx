@@ -1039,12 +1039,11 @@ export default function JobDetail() {
         {tasksLoading && <p className={styles.muted}>Loading tasks…</p>}
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
-          const visibleTasks =
-            !hasTaskSearch
+          const visibleTasks = !hasTaskSearch
+            ? stepTasks
+            : stepMatchesByName(step)
               ? stepTasks
-              : stepMatchesByName(step)
-                ? stepTasks
-                : stepTasks.filter((t) => matchesSearch(t.name, taskSearch))
+              : stepTasks.filter((t) => matchesSearch(t.name, taskSearch))
           if (hasTaskSearch && !stepMatchesByName(step) && visibleTasks.length === 0) return null
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
           // select-all is scoped to the tasks visible under the active search filter
