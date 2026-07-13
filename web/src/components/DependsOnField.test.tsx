@@ -72,19 +72,19 @@ describe('DependsOnField', () => {
     ]
     render(<DependsOnField farmId="farm-1" value={[]} onChange={vi.fn()} />)
 
-    expect(screen.getByRole('option', { name: /Upstream A/ })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: /Upstream B/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /Upstream A/ })).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /Upstream B/ })).not.toBeInTheDocument()
   })
 
-  it('calls onChange with the selected job IDs', async () => {
+  it('reflects the current selection as checked and toggles on click', async () => {
     h.jobs = [
       makeJob({ id: 'job-a', name: 'Upstream A' }),
       makeJob({ id: 'job-b', name: 'Upstream B' }),
     ]
     const onChange = vi.fn()
-    // A controlled multi-select must reflect each change back into `value`
-    // for the next selection to accumulate — mirror that with a tiny stateful
-    // wrapper, same as a real host form would (Submit.tsx / ProductSubmit.tsx).
+    // A controlled checklist reflects each change back into `value` so the next
+    // toggle accumulates — mirror that with a tiny stateful wrapper, same as a
+    // real host form would (Submit.tsx / ProductSubmit.tsx).
     function Wrapper() {
       const [value, setValue] = useState<string[]>([])
       return (
@@ -101,21 +101,38 @@ describe('DependsOnField', () => {
     const user = userEvent.setup()
     render(<Wrapper />)
 
-    await user.selectOptions(screen.getByLabelText(/depends on jobs/i), ['job-a', 'job-b'])
+    const a = screen.getByRole('checkbox', { name: /Upstream A/ })
+    const b = screen.getByRole('checkbox', { name: /Upstream B/ })
+    expect(a).not.toBeChecked()
+
+    await user.click(a)
+    expect(onChange).toHaveBeenLastCalledWith(['job-a'])
+    expect(a).toBeChecked()
+
+    await user.click(b)
     expect(onChange).toHaveBeenLastCalledWith(['job-a', 'job-b'])
+
+    // Toggling an already-checked box removes it.
+    await user.click(a)
+    expect(onChange).toHaveBeenLastCalledWith(['job-b'])
   })
 
-  it('is disabled when there is no farm selected', () => {
+  it('shows a disabled placeholder when no farm is selected', () => {
     h.jobs = []
     render(<DependsOnField farmId={undefined} value={[]} onChange={vi.fn()} />)
-    expect(screen.getByLabelText(/depends on jobs/i)).toBeDisabled()
+    const group = screen.getByRole('group', { name: /depends on jobs/i })
+    expect(group).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText(/select a farm and queue first/i)).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 
-  it('is disabled and shows a hint when a farm has no eligible candidates', () => {
+  it('shows a hint when a farm has no eligible candidates', () => {
     h.jobs = []
     render(<DependsOnField farmId="farm-1" value={[]} onChange={vi.fn()} />)
-    expect(screen.getByLabelText(/depends on jobs/i)).toBeDisabled()
+    const group = screen.getByRole('group', { name: /depends on jobs/i })
+    expect(group).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByText(/no eligible upstream jobs/i)).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 
   it('clears the selection when the farm changes', () => {

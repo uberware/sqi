@@ -529,11 +529,11 @@ describe('Submit page', () => {
 
       await waitFor(() => screen.getByRole('option', { name: 'Default' }))
       await waitFor(() => {
-        expect(screen.getByRole('option', { name: /Upstream A/ })).toBeInTheDocument()
+        expect(screen.getByRole('checkbox', { name: /Upstream A/ })).toBeInTheDocument()
       })
       // Terminal (completed) job and a job from a different farm are excluded.
-      expect(screen.queryByRole('option', { name: /Upstream B/ })).not.toBeInTheDocument()
-      expect(screen.queryByRole('option', { name: /Other Farm Job/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: /Upstream B/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: /Other Farm Job/ })).not.toBeInTheDocument()
     })
 
     it('submits selected depends-on jobs as repeated depends_on params', async () => {
@@ -555,10 +555,11 @@ describe('Submit page', () => {
       render(<Submit />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByRole('option', { name: 'Default' }))
-      await waitFor(() => screen.getByRole('option', { name: /Upstream A/ }))
+      await waitFor(() => screen.getByRole('checkbox', { name: /Upstream A/ }))
 
       await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
-      await user.selectOptions(screen.getByLabelText(/depends on jobs/i), ['job-a', 'job-b'])
+      await user.click(screen.getByRole('checkbox', { name: /Upstream A/ }))
+      await user.click(screen.getByRole('checkbox', { name: /Upstream B/ }))
       await user.click(screen.getByRole('button', { name: /submit job/i }))
 
       await waitFor(() => {
@@ -640,8 +641,8 @@ describe('Submit page', () => {
       const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
 
-      await waitFor(() => screen.getByRole('option', { name: /Upstream A/ }))
-      await user.selectOptions(screen.getByLabelText(/depends on jobs/i), ['job-a'])
+      await waitFor(() => screen.getByRole('checkbox', { name: /Upstream A/ }))
+      await user.click(screen.getByRole('checkbox', { name: /Upstream A/ }))
 
       const queueSelect = screen.getByRole('combobox', { name: /queue/i })
       await user.selectOptions(queueSelect, 'q-b')
@@ -649,7 +650,7 @@ describe('Submit page', () => {
       // The now-irrelevant candidate drops out of the picker once its farm's
       // jobs are no longer in scope.
       await waitFor(() => {
-        expect(screen.queryByRole('option', { name: /Upstream A/ })).not.toBeInTheDocument()
+        expect(screen.queryByRole('checkbox', { name: /Upstream A/ })).not.toBeInTheDocument()
       })
 
       await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')

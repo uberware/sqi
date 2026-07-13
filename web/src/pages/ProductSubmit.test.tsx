@@ -255,7 +255,7 @@ describe('ProductSubmit', () => {
       fireEvent.click(summary.closest('details') as HTMLDetailsElement)
 
       fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
-      await user.selectOptions(screen.getByLabelText(/depends on jobs/i), ['job-a'])
+      await user.click(screen.getByRole('checkbox', { name: /Upstream A/ }))
       fireEvent.click(screen.getByRole('button', { name: /submit/i }))
 
       await waitFor(() => expect(submitMock).toHaveBeenCalled())

@@ -318,7 +318,6 @@ export default function Submit() {
                 onChange={setDependsOn}
                 fieldClassName={styles.field}
                 labelClassName={styles.label}
-                selectClassName={styles.select}
                 noteClassName={styles.sectionNote}
               />
             </section>

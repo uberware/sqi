@@ -1,25 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Farm-scoped "Depends on jobs" multi-select, shared by the raw job Submit
+ * Farm-scoped "Depends on jobs" checkbox list, shared by the raw job Submit
  * form and the product Submit form. Candidates come from the farm-scoped job
  * list (excluding terminal jobs — nothing meaningful to wait on there), and
  * the current selection is cleared whenever the target farm changes, since a
  * dependency in a farm the job is no longer targeting would be rejected by
  * the server (422) if it silently rode along.
  *
- * Styling comes from the host page via the className props, matching
- * RetryPolicyFields' pattern, so each form keeps its existing look.
+ * Rendered as a scrollable checklist (rather than a native <select multiple>)
+ * so every candidate and its checked state is visible at a glance. The list
+ * owns its height via a co-located CSS module; the host page only supplies the
+ * field wrapper / label / note classes to match each form's surrounding look.
  */
 
 import { useCallback, useEffect, useRef } from 'react'
 import { useListJobs } from '@/api/queries'
+import styles from './DependsOnField.module.css'
 
 /** Job statuses that can no longer be depended on meaningfully (already finished). */
 const TERMINAL_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'canceled'])
 
 /** Candidate upstream jobs are capped so the picker never silently truncates. */
 const CANDIDATE_LIMIT = 200
+
+const LABEL_ID = 'dependsOn-label'
 
 export interface DependsOnFieldProps {
   /** Farm the target queue belongs to; candidates are scoped to this farm. Undefined disables the field. */
@@ -31,9 +36,13 @@ export interface DependsOnFieldProps {
   /** Class for the field's wrapping element. */
   fieldClassName?: string | undefined
   labelClassName?: string | undefined
-  selectClassName?: string | undefined
   /** Class for the "no eligible upstream jobs" hint text. */
   noteClassName?: string | undefined
+}
+
+/** Joins optional class names, dropping the undefined ones. */
+function cx(...classes: (string | undefined)[]): string {
+  return classes.filter(Boolean).join(' ')
 }
 
 export default function DependsOnField({
@@ -42,7 +51,6 @@ export default function DependsOnField({
   onChange,
   fieldClassName,
   labelClassName,
-  selectClassName,
   noteClassName,
 }: DependsOnFieldProps) {
   const { data: candidateJobsPage } = useListJobs(
@@ -56,11 +64,11 @@ export default function DependsOnField({
     (job) => !TERMINAL_JOB_STATUSES.has(job.status),
   )
 
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      onChange(Array.from(e.target.selectedOptions, (option) => option.value))
+  const toggle = useCallback(
+    (id: string) => {
+      onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id])
     },
-    [onChange],
+    [onChange, value],
   )
 
   // Switching to a queue in a different farm invalidates any selected
@@ -74,28 +82,41 @@ export default function DependsOnField({
     }
   }, [farmId, onChange])
 
+  const note = (text: string) => (
+    <div
+      role="group"
+      aria-labelledby={LABEL_ID}
+      aria-disabled="true"
+      className={cx(styles.list, styles.listEmpty)}
+    >
+      <p className={cx(noteClassName, noteClassName ? undefined : styles.note)}>{text}</p>
+    </div>
+  )
+
   return (
     <div className={fieldClassName}>
-      <label htmlFor="dependsOn" className={labelClassName}>
+      <span id={LABEL_ID} className={labelClassName}>
         Depends on jobs
-      </label>
-      <select
-        id="dependsOn"
-        multiple
-        className={selectClassName}
-        value={value}
-        onChange={handleChange}
-        size={4}
-        disabled={!farmId || candidates.length === 0}
-      >
-        {candidates.map((job) => (
-          <option key={job.id} value={job.id}>
-            {job.name} ({job.status})
-          </option>
-        ))}
-      </select>
-      {farmId && candidates.length === 0 && (
-        <p className={noteClassName}>No eligible upstream jobs in this farm.</p>
+      </span>
+      {!farmId ? (
+        note('Select a farm and queue first to choose dependencies.')
+      ) : candidates.length === 0 ? (
+        note('No eligible upstream jobs in this farm.')
+      ) : (
+        <div role="group" aria-labelledby={LABEL_ID} className={styles.list}>
+          {candidates.map((job) => (
+            <label key={job.id} className={styles.row}>
+              <input
+                type="checkbox"
+                className={styles.checkbox}
+                checked={value.includes(job.id)}
+                onChange={() => toggle(job.id)}
+              />
+              <span className={styles.name}>{job.name}</span>
+              <span className={styles.status}>{job.status}</span>
+            </label>
+          ))}
+        </div>
       )}
     </div>
   )

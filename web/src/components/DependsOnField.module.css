@@ -1,0 +1,60 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 9rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* Placeholder state (no farm / no candidates): shrink to fit the hint. */
+.listEmpty {
+  min-height: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.row:hover {
+  background: var(--color-surface-raised);
+}
+
+.checkbox {
+  flex: none;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status {
+  margin-left: auto;
+  padding-left: var(--space-2);
+  color: var(--color-text-muted);
+}
+
+.note {
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
