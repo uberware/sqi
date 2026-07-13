@@ -50,6 +50,12 @@
   color: var(--color-status-canceled-text);
 }
 
+/* Blocked = waiting on an upstream job; reuses the pending/waiting token. */
+.blocked {
+  background-color: var(--color-status-pending-bg);
+  color: var(--color-status-pending-text);
+}
+
 .online {
   background-color: var(--color-status-succeeded-bg);
   color: var(--color-status-succeeded-text);

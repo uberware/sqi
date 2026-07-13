@@ -1014,6 +1014,21 @@ export default function JobDetail() {
 
       <MetadataCard job={job} />
 
+      {job.depends_on !== undefined && job.depends_on.length > 0 && (
+        <div className={styles.dependsOnSection}>
+          <h2 className={styles.sectionTitle}>Waiting on</h2>
+          <ul className={styles.dependsOnList}>
+            {job.depends_on.map((upstreamId) => (
+              <li key={upstreamId}>
+                <Link to={`/jobs/${upstreamId}`} className={styles.dependsOnLink}>
+                  {upstreamId}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className={styles.stepsContainer}>
         <div className={styles.stepsHeader}>
           <h2 className={styles.sectionTitle}>Steps</h2>

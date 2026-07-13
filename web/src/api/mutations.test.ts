@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   fetchRetryJob,
+  fetchSubmitJob,
   fetchCreateProduct,
   fetchUpdateProduct,
   fetchDeleteProduct,
@@ -12,6 +13,31 @@ import type { ProductInput } from './mutations'
 import { apiFetch } from './client'
 
 vi.mock('./client', () => ({ apiFetch: vi.fn() }))
+
+describe('fetchSubmitJob', () => {
+  beforeEach(() => vi.mocked(apiFetch).mockReset())
+
+  it('appends repeated depends_on params', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitJob({
+      farmId: 'f',
+      queueId: 'q',
+      template: '{}',
+      format: 'json',
+      dependsOn: ['a', 'b'],
+    })
+    const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
+    expect(url).toContain('depends_on=a')
+    expect(url).toContain('depends_on=b')
+  })
+
+  it('omits depends_on when undefined', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitJob({ farmId: 'f', queueId: 'q', template: '{}', format: 'json' })
+    const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
+    expect(url).not.toContain('depends_on')
+  })
+})
 
 describe('fetchRetryJob', () => {
   beforeEach(() => vi.mocked(apiFetch).mockReset())

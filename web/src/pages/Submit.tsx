@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
 import RetryPolicyFields from '@/components/RetryPolicyFields'
 import { useToast } from '@/components/Toast'
-import { useFarmsWithQueues } from '@/api/queries'
+import { useFarmsWithQueues, useListJobs } from '@/api/queries'
 import { useSubmitJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { detectFormat } from '@/lib/format'
@@ -17,6 +17,9 @@ import styles from './Submit.module.css'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const QUEUE_STORAGE_KEY = 'sqi:submit:last-queue-id'
+
+/** Job statuses that can no longer be depended on meaningfully (already finished). */
+const TERMINAL_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'canceled'])
 
 const EXAMPLES: Record<'shell' | 'parameter-space' | 'usage-limit', string> = {
   shell: `specificationVersion: "jobtemplate-2023-09"
@@ -107,6 +110,33 @@ export default function Submit() {
   const [maxAttempts, setMaxAttempts] = useState('')
   const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
   const [failureLimit, setFailureLimit] = useState('')
+  const [dependsOn, setDependsOn] = useState<string[]>([])
+
+  // Candidate upstream jobs, scoped to the selected queue's farm; excludes
+  // terminal jobs (nothing meaningful to wait on there).
+  const { data: candidateJobsPage } = useListJobs({
+    ...(selectedQueue ? { farm_id: selectedQueue.farm_id } : {}),
+    limit: 200,
+  })
+  const dependencyCandidates = (candidateJobsPage?.items ?? []).filter(
+    (job) => !TERMINAL_JOB_STATUSES.has(job.status),
+  )
+
+  const handleDependsOnChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setDependsOn(Array.from(e.target.selectedOptions, (option) => option.value))
+  }, [])
+
+  // Switching to a queue in a different farm invalidates any selected
+  // upstream jobs (dependencies must be in the same farm) — clear them so a
+  // stale, now-hidden selection can't silently ride along on submit.
+  const dependsOnFarmId = selectedQueue?.farm_id
+  const prevDependsOnFarmIdRef = useRef(dependsOnFarmId)
+  useEffect(() => {
+    if (prevDependsOnFarmIdRef.current !== dependsOnFarmId) {
+      prevDependsOnFarmIdRef.current = dependsOnFarmId
+      setDependsOn([])
+    }
+  }, [dependsOnFarmId])
 
   // Example loader select — controlled so it resets to placeholder after each pick.
   const [exampleKey, setExampleKey] = useState('')
@@ -160,6 +190,7 @@ export default function Submit() {
             ? { retryDelaySeconds: parsedRetryDelaySeconds }
             : {}),
           ...(parsedFailureLimit !== undefined ? { failureLimit: parsedFailureLimit } : {}),
+          ...(dependsOn.length > 0 ? { dependsOn } : {}),
         })
         showToast(`Job submitted — ID: ${job.id}`, 'success')
         navigate(`/jobs/${job.id}`)
@@ -176,6 +207,7 @@ export default function Submit() {
       maxAttempts,
       retryDelaySeconds,
       failureLimit,
+      dependsOn,
       submitJob,
       navigate,
       showToast,
@@ -300,6 +332,37 @@ export default function Submit() {
                 labelClassName={styles.label}
                 inputClassName={styles.input}
               />
+            </section>
+
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>Dependencies</h2>
+              <p className={styles.sectionNote}>
+                Optional — this job waits until every selected upstream job finishes.
+              </p>
+
+              <div className={styles.field}>
+                <label htmlFor="dependsOn" className={styles.label}>
+                  Depends on jobs
+                </label>
+                <select
+                  id="dependsOn"
+                  multiple
+                  className={styles.select}
+                  value={dependsOn}
+                  onChange={handleDependsOnChange}
+                  size={4}
+                  disabled={!selectedQueue || dependencyCandidates.length === 0}
+                >
+                  {dependencyCandidates.map((job) => (
+                    <option key={job.id} value={job.id}>
+                      {job.name} ({job.status})
+                    </option>
+                  ))}
+                </select>
+                {selectedQueue && dependencyCandidates.length === 0 && (
+                  <p className={styles.sectionNote}>No eligible upstream jobs in this farm.</p>
+                )}
+              </div>
             </section>
           </div>
 

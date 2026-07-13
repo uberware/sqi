@@ -15,6 +15,7 @@ const STATUS_LABELS: [BadgeStatus, string][] = [
   ['failed', 'Failed'],
   ['canceled', 'Canceled'],
   ['paused', 'Paused'],
+  ['blocked', 'Blocked'],
 ]
 
 describe('StatusBadge', () => {

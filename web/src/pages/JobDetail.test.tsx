@@ -376,6 +376,32 @@ describe('JobDetail', () => {
     })
   })
 
+  describe('cross-job dependencies', () => {
+    it('renders a "Waiting on" section linking each upstream job when depends_on is non-empty', async () => {
+      const job = makeJob({ depends_on: ['job-upstream-1', 'job-upstream-2'] })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Waiting on'))
+      const upstreamLink1 = screen.getByRole('link', { name: 'job-upstream-1' })
+      const upstreamLink2 = screen.getByRole('link', { name: 'job-upstream-2' })
+      expect(upstreamLink1).toHaveAttribute('href', '/jobs/job-upstream-1')
+      expect(upstreamLink2).toHaveAttribute('href', '/jobs/job-upstream-2')
+    })
+
+    it('omits the "Waiting on" section when depends_on is absent', async () => {
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('RenderFrames'))
+      expect(screen.queryByText('Waiting on')).not.toBeInTheDocument()
+    })
+  })
+
   describe('task table', () => {
     it('renders tasks within their parent step section', async () => {
       const task = makeTask({ id: 'task-99887766', step_id: 'step-1', name: 'task.0' })

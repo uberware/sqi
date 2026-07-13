@@ -101,6 +101,51 @@ function queuesResponse(queues: Queue[]): ListResponse<Queue> {
   return { items: queues, total: queues.length, limit: 100, offset: 0 }
 }
 
+function jobsResponse(jobs: Job[]): ListResponse<Job> {
+  return { items: jobs, total: jobs.length, limit: 200, offset: 0 }
+}
+
+/**
+ * Set (or cleared in `beforeEach`) by {@link mockJobSubmit} to answer the
+ * `POST /jobs` submission call. Routed by method rather than call order
+ * because the Submit page now fires the farms+queues query and the
+ * depends-on candidate-jobs query independently — their relative timing
+ * isn't guaranteed, so a strictly-ordered `mockResolvedValueOnce` queue could
+ * have an early GET consume the response meant for the POST.
+ */
+let jobSubmitResponder: (() => Promise<Response>) | null = null
+
+/** Queue the response for the next `POST /jobs` submission call. */
+function mockJobSubmit(response: Response) {
+  jobSubmitResponder = () => Promise.resolve(response)
+}
+
+/**
+ * URL/method-routed fetch responder for farms/queues/job-list GETs and the
+ * job-submission POST, used in place of strictly-ordered `mockResolvedValueOnce`
+ * chaining (see {@link jobSubmitResponder}).
+ */
+function routeFetch(farm: Farm, queues: Queue[], jobs: Job[] = []) {
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    if (method === 'POST' && url.includes('/jobs')) {
+      if (jobSubmitResponder) return jobSubmitResponder()
+      return Promise.reject(new Error(`POST /jobs called without a mocked response: ${url}`))
+    }
+    if (url.includes('/queues')) return Promise.resolve(okJson(queuesResponse(queues)))
+    if (url.includes('/farms')) return Promise.resolve(okJson([farm]))
+    if (url.includes('/jobs')) {
+      // Mirror the real server's farm_id filter so tests can exercise
+      // farm-scoping of the depends-on candidate list.
+      const farmId = new URL(url, 'http://localhost').searchParams.get('farm_id')
+      const filtered = farmId ? jobs.filter((j) => j.farm_id === farmId) : jobs
+      return Promise.resolve(okJson(jobsResponse(filtered)))
+    }
+    return Promise.reject(new Error(`unmocked fetch: ${method} ${url}`))
+  }
+}
+
 // ── Test setup ────────────────────────────────────────────────────────────────
 
 // jsdom uses a null origin by default, which blocks localStorage access.
@@ -129,6 +174,7 @@ const fetchMock = vi.fn<typeof fetch>()
 
 beforeEach(() => {
   fetchMock.mockReset()
+  jobSubmitResponder = null
   vi.stubGlobal('fetch', fetchMock)
   vi.stubGlobal('localStorage', localStorageMock)
   localStorageMock.clear()
@@ -171,12 +217,12 @@ function Wrapper({ children }: { children: ReactNode }) {
   )
 }
 
-/** Set up fetch mocks for farms + queues list (used by useFarmsWithQueues). */
-function mockFarmsAndQueues(farm = makeFarm(), queues = [makeQueue()]) {
-  // GET /api/v1/farms
-  fetchMock.mockResolvedValueOnce(okJson([farm]))
-  // GET /api/v1/queues?farm_id=...
-  fetchMock.mockResolvedValueOnce(okJson(queuesResponse(queues)))
+/**
+ * Set up fetch mocks for farms + queues list (used by useFarmsWithQueues) and
+ * the depends-on candidate-jobs list (used by the Dependencies section).
+ */
+function mockFarmsAndQueues(farm = makeFarm(), queues = [makeQueue()], jobs: Job[] = []) {
+  fetchMock.mockImplementation(routeFetch(farm, queues, jobs))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -251,9 +297,7 @@ describe('Submit page', () => {
     it('shows the server detail string below the editor when submission fails', async () => {
       mockFarmsAndQueues()
       // POST /api/v1/jobs returns a 422 validation error
-      fetchMock.mockResolvedValueOnce(
-        problemJson(422, 'openjd: validate: step "main" has no script'),
-      )
+      mockJobSubmit(problemJson(422, 'openjd: validate: step "main" has no script'))
 
       const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
@@ -277,7 +321,7 @@ describe('Submit page', () => {
 
     it('shows a generic error message for unexpected failures', async () => {
       mockFarmsAndQueues()
-      fetchMock.mockResolvedValueOnce(problemJson(500, 'internal server error'))
+      mockJobSubmit(problemJson(500, 'internal server error'))
 
       const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
@@ -300,7 +344,7 @@ describe('Submit page', () => {
     it('redirects to the job detail page after a successful submit', async () => {
       mockFarmsAndQueues()
       // POST /api/v1/jobs → 201 with the new job
-      fetchMock.mockResolvedValueOnce(
+      mockJobSubmit(
         new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
@@ -325,7 +369,7 @@ describe('Submit page', () => {
 
     it('sends entered retry-policy overrides as query params', async () => {
       mockFarmsAndQueues()
-      fetchMock.mockResolvedValueOnce(
+      mockJobSubmit(
         new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
@@ -358,7 +402,7 @@ describe('Submit page', () => {
 
     it('omits retry-policy query params when left blank', async () => {
       mockFarmsAndQueues()
-      fetchMock.mockResolvedValueOnce(
+      mockJobSubmit(
         new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
@@ -388,7 +432,7 @@ describe('Submit page', () => {
 
     it('shows a toast notification after successful submission', async () => {
       mockFarmsAndQueues()
-      fetchMock.mockResolvedValueOnce(
+      mockJobSubmit(
         new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
@@ -416,9 +460,7 @@ describe('Submit page', () => {
         makeQueue({ id: 'q-1', name: 'Queue A' }),
         makeQueue({ id: 'q-2', name: 'Queue B' }),
       ]
-      // Two fetches: farms list then queues list
-      fetchMock.mockResolvedValueOnce(okJson([farm]))
-      fetchMock.mockResolvedValueOnce(okJson(queuesResponse(queues)))
+      mockFarmsAndQueues(farm, queues)
 
       const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
@@ -441,8 +483,7 @@ describe('Submit page', () => {
         makeQueue({ id: 'q-1', name: 'Queue A' }),
         makeQueue({ id: 'q-2', name: 'Queue B' }),
       ]
-      fetchMock.mockResolvedValueOnce(okJson([farm]))
-      fetchMock.mockResolvedValueOnce(okJson(queuesResponse(queues)))
+      mockFarmsAndQueues(farm, queues)
 
       render(<Submit />, { wrapper: Wrapper })
 
@@ -458,20 +499,171 @@ describe('Submit page', () => {
 
       const farm = makeFarm()
       const queues = [makeQueue({ id: 'q-1', name: 'Queue A' })]
-      fetchMock.mockResolvedValueOnce(okJson([farm]))
-      fetchMock.mockResolvedValueOnce(okJson(queuesResponse(queues)))
+      mockFarmsAndQueues(farm, queues)
 
+      const user = userEvent.setup()
       render(<Submit />, { wrapper: Wrapper })
 
       await waitFor(() => screen.getByRole('option', { name: 'Queue A' }))
       // Selector should fall back to the first available queue.
       expect(screen.getByRole('combobox', { name: /queue/i })).toHaveValue('q-1')
+
       // Submit button is not disabled by the missing queue (form is usable).
+      await user.type(screen.getByTestId('template-editor'), 'some content')
+      expect(screen.getByRole('button', { name: /submit job/i })).toBeEnabled()
+    })
+  })
+
+  describe('Dependencies section', () => {
+    it('lists non-terminal jobs from the selected farm as depends-on candidates', async () => {
+      const farm = makeFarm()
+      const queues = [makeQueue()]
+      const jobs = [
+        makeJob({ id: 'job-a', name: 'Upstream A', status: 'running' }),
+        makeJob({ id: 'job-b', name: 'Upstream B', status: 'completed' }),
+        makeJob({ id: 'job-c', name: 'Other Farm Job', farm_id: 'farm-2' }),
+      ]
+      mockFarmsAndQueues(farm, queues, jobs)
+
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: 'Default' }))
       await waitFor(() => {
-        const editor = screen.getByTestId('template-editor') as HTMLTextAreaElement
-        // Simulate typing to make the form submittable.
-        Object.defineProperty(editor, 'value', { value: 'some content' })
+        expect(screen.getByRole('option', { name: /Upstream A/ })).toBeInTheDocument()
       })
+      // Terminal (completed) job and a job from a different farm are excluded.
+      expect(screen.queryByRole('option', { name: /Upstream B/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: /Other Farm Job/ })).not.toBeInTheDocument()
+    })
+
+    it('submits selected depends-on jobs as repeated depends_on params', async () => {
+      const farm = makeFarm()
+      const queues = [makeQueue()]
+      const jobs = [
+        makeJob({ id: 'job-a', name: 'Upstream A', status: 'running' }),
+        makeJob({ id: 'job-b', name: 'Upstream B', status: 'pending' }),
+      ]
+      mockFarmsAndQueues(farm, queues, jobs)
+      mockJobSubmit(
+        new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      const user = userEvent.setup()
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+      await waitFor(() => screen.getByRole('option', { name: /Upstream A/ }))
+
+      await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+      await user.selectOptions(screen.getByLabelText(/depends on jobs/i), ['job-a', 'job-b'])
+      await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+      })
+      const postCall = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      if (!postCall) throw new Error('expected a POST call')
+      const url = String(postCall[0])
+      expect(url).toContain('depends_on=job-a')
+      expect(url).toContain('depends_on=job-b')
+    })
+
+    it('omits depends_on when no upstream jobs are selected', async () => {
+      mockFarmsAndQueues()
+      mockJobSubmit(
+        new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      const user = userEvent.setup()
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+      await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+      await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+      })
+      const postCall = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      if (!postCall) throw new Error('expected a POST call')
+      expect(String(postCall[0])).not.toContain('depends_on')
+    })
+
+    it('clears selected depends-on jobs when switching to a queue in a different farm', async () => {
+      const farmA = makeFarm({ id: 'farm-a', name: 'Farm A' })
+      const farmB = makeFarm({ id: 'farm-b', name: 'Farm B' })
+      const queueA = makeQueue({ id: 'q-a', farm_id: 'farm-a', name: 'Queue A' })
+      const queueB = makeQueue({ id: 'q-b', farm_id: 'farm-b', name: 'Queue B' })
+      const jobs = [
+        makeJob({ id: 'job-a', name: 'Upstream A', farm_id: 'farm-a', status: 'running' }),
+      ]
+
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        if (method === 'POST' && url.includes('/jobs')) {
+          return jobSubmitResponder
+            ? jobSubmitResponder()
+            : Promise.reject(new Error(`POST /jobs called without a mocked response: ${url}`))
+        }
+        if (url.includes('/queues')) {
+          const farmId = new URL(url, 'http://localhost').searchParams.get('farm_id')
+          return Promise.resolve(
+            okJson(queuesResponse([queueA, queueB].filter((q) => q.farm_id === farmId))),
+          )
+        }
+        if (url.includes('/farms')) return Promise.resolve(okJson([farmA, farmB]))
+        if (url.includes('/jobs')) {
+          const farmId = new URL(url, 'http://localhost').searchParams.get('farm_id')
+          const filtered = farmId ? jobs.filter((j) => j.farm_id === farmId) : jobs
+          return Promise.resolve(okJson(jobsResponse(filtered)))
+        }
+        return Promise.reject(new Error(`unmocked fetch: ${method} ${url}`))
+      })
+      mockJobSubmit(
+        new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      const user = userEvent.setup()
+      render(<Submit />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('option', { name: /Upstream A/ }))
+      await user.selectOptions(screen.getByLabelText(/depends on jobs/i), ['job-a'])
+
+      const queueSelect = screen.getByRole('combobox', { name: /queue/i })
+      await user.selectOptions(queueSelect, 'q-b')
+
+      // The now-irrelevant candidate drops out of the picker once its farm's
+      // jobs are no longer in scope.
+      await waitFor(() => {
+        expect(screen.queryByRole('option', { name: /Upstream A/ })).not.toBeInTheDocument()
+      })
+
+      await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+      await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+      })
+      const postCall = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      if (!postCall) throw new Error('expected a POST call')
+      // The stale farm-A selection must not silently ride along on the farm-B submission.
+      expect(String(postCall[0])).not.toContain('depends_on')
     })
   })
 
