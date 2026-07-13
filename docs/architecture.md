@@ -128,13 +128,43 @@ REST handler (internal/api/jobs.go)
   └─ HTTP 201 Created  { id, name, status, step_count, task_count }
 ```
 
+**Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
+or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
+Python SDK (`submit_job`/`submit_and_wait`/`submit_product_job`) — may include
+`depends_on`, a list of upstream job IDs that must all reach `completed` before
+this job's work may run. The upstreams must already exist and be in the same
+farm as the new job (cross-farm dependencies are not supported); this is
+validated at submit time and recorded as edges in `job_dependencies`. A job
+with a non-empty `depends_on` is created in a new `blocked` status instead of
+`pending`, and — unlike a normal submission — **every** step and task is
+written `pending` up front, even steps with no step-level dependencies that
+would otherwise be immediately `ready`; the job is held entirely until it is
+released. Dependencies work **across queues** within a farm — readiness is
+farm-wide and queue affinity is only applied when a worker leases work, so a
+released job's tasks are immediately leasable regardless of which queue they
+or their upstreams belong to.
+
+A `blocked` job is reconciled whenever an upstream job reaches a terminal
+status: if every upstream in its `depends_on` list is now `completed`, the job
+is released to `pending` and `openjd.ResolveDependencies` re-runs to promote
+its no-dependency steps' tasks to `ready`, same as a fresh submission; if any
+upstream is `failed`, `canceled`, or deleted, the blocked job is itself
+canceled with an upstream-failed reason, and the cancellation cascades to any
+of *its* own dependents in turn. This reconcile is primarily **event-driven** —
+triggered from the same choke point that detects job completion
+(`checkJobCompletion` in `internal/scheduler/taskstatus.go`) and from the job
+delete path — with the periodic heartbeat sweep acting as a backstop pass over
+all `blocked` jobs to catch anything missed by the event-driven path.
+
 ### 2. Task readiness
 
 After a job is created, the store marks tasks `ready` when their step's
 dependencies are satisfied. For jobs with no step dependencies (the common
 case), all tasks of the first step are immediately `ready`. Tasks in later
 steps become `ready` only after all tasks in their dependency steps have
-reached `succeeded`.
+reached `succeeded`. A `blocked` job's steps and tasks skip this evaluation at
+submit time and are all held `pending` regardless of step dependencies, until
+the job is released and this same evaluation runs (see above).
 
 This evaluation runs inside the `CreateJob` transaction for the initial set,
 and again via the scheduler's `handleTaskTerminal` → `propagateStepDependencies`

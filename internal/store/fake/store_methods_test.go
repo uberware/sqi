@@ -1985,3 +1985,56 @@ func TestFakeStore_DeleteTerminalJobsBefore(t *testing.T) {
 		t.Fatalf("failed job should survive without includeFailed: %v", err)
 	}
 }
+
+// TestFakeStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent
+// mirrors the sqlite retention-purge fix test: a completed upstream older
+// than the cutoff must not be purged while a dependent still waits on it
+// (blocked), since purging it would make the reconciler read a missing
+// upstream and wrongly cancel the dependent despite the upstream having
+// succeeded. Once the dependent reaches a terminal status, the upstream
+// becomes eligible for purge again.
+func TestFakeStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t *testing.T) {
+	ctx := context.Background()
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+
+	st := New()
+	c := old
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID: "upstream-old", Status: store.JobStatusCompleted, CompletedAt: &c, UpdatedAt: old,
+	}); err != nil {
+		t.Fatalf("CreateJob(upstream-old): %v", err)
+	}
+	if _, err := st.CreateJob(ctx, store.Job{ID: "dependent-blocked", Status: store.JobStatusBlocked}); err != nil {
+		t.Fatalf("CreateJob(dependent-blocked): %v", err)
+	}
+	if err := st.CreateJobDependencies(ctx, "dependent-blocked", []string{"upstream-old"}); err != nil {
+		t.Fatalf("CreateJobDependencies: %v", err)
+	}
+
+	got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("deleted = %v, want none (upstream still needed by blocked dependent)", got)
+	}
+	if _, err := st.GetJob(ctx, "upstream-old"); err != nil {
+		t.Fatalf("GetJob(upstream-old) after guarded sweep: %v", err)
+	}
+
+	// Once the dependent is terminal, the upstream is no longer protected.
+	if err := st.UpdateJobStatus(ctx, "dependent-blocked", store.JobStatusCanceled); err != nil {
+		t.Fatalf("UpdateJobStatus(canceled): %v", err)
+	}
+	got, err = st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore (2nd sweep): %v", err)
+	}
+	if ids := deletedFakeIDs(got); !slices.Equal(ids, []string{"upstream-old"}) {
+		t.Fatalf("deleted = %v, want [upstream-old]", ids)
+	}
+	if _, err := st.GetJob(ctx, "upstream-old"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob(upstream-old) after unblock sweep = %v, want ErrNotFound", err)
+	}
+}

@@ -8,6 +8,7 @@ package openjd_test
 // All tests use fake.New() as the store so no real database is required.
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -915,5 +916,122 @@ func TestSubmitter_Submit_ChunkBoundsDerived(t *testing.T) {
 	}
 	if got["Frame.End"] != "10" {
 		t.Errorf("Frame.End = %q, want 10", got["Frame.End"])
+	}
+}
+
+// ── Cross-job dependencies (SubmitOptions.DependsOn) ───────────────────────────
+
+// submitFixture bundles a Submitter over a fake store with a seeded farm/queue
+// and a reusable minimal template, for tests that only care about job-level
+// behavior (not step/task shape).
+type submitFixture struct {
+	submitter *openjd.Submitter
+	store     *fake.Store
+	farmID    string
+	queueID   string
+	template  string
+	format    store.TemplateFormat
+}
+
+// newSubmitFixture returns a submitFixture backed by a fresh fake store.
+func newSubmitFixture(t *testing.T) submitFixture {
+	t.Helper()
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	return submitFixture{
+		submitter: openjd.NewSubmitter(st),
+		store:     st,
+		farmID:    farmID,
+		queueID:   queueID,
+		template:  minimalJSON("DepsJob-" + uuid.NewString()[:8]),
+		format:    store.TemplateFormatJSON,
+	}
+}
+
+func TestSubmit_DependsOn_BlocksWhenUpstreamPending(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmitFixture(t)
+
+	// Upstream job, left pending.
+	up, err := f.submitter.Submit(ctx, f.template, f.format,
+		openjd.SubmitOptions{FarmID: f.farmID, QueueID: f.queueID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := f.submitter.Submit(ctx, f.template, f.format, openjd.SubmitOptions{
+		FarmID: f.farmID, QueueID: f.queueID, DependsOn: []string{up.Job.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Job.Status != store.JobStatusBlocked {
+		t.Fatalf("status = %q, want blocked", res.Job.Status)
+	}
+	for _, tk := range res.Tasks {
+		if tk.Status != store.TaskStatusPending {
+			t.Fatalf("task %s status = %q, want pending (held)", tk.Name, tk.Status)
+		}
+	}
+	ids, err := f.store.ListJobDependencyIDs(ctx, res.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != up.Job.ID {
+		t.Fatalf("edges = %v, want [%s]", ids, up.Job.ID)
+	}
+}
+
+func TestSubmit_DependsOn_RunsWhenUpstreamAlreadyCompleted(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmitFixture(t)
+
+	up, err := f.submitter.Submit(ctx, f.template, f.format,
+		openjd.SubmitOptions{FarmID: f.farmID, QueueID: f.queueID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.UpdateJobStatus(ctx, up.Job.ID, store.JobStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := f.submitter.Submit(ctx, f.template, f.format, openjd.SubmitOptions{
+		FarmID: f.farmID, QueueID: f.queueID, DependsOn: []string{up.Job.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Job.Status != store.JobStatusPending {
+		t.Fatalf("status = %q, want pending (upstream already done)", res.Job.Status)
+	}
+}
+
+func TestSubmit_DependsOn_Rejections(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmitFixture(t)
+
+	// (a) missing upstream
+	_, err := f.submitter.Submit(ctx, f.template, f.format, openjd.SubmitOptions{
+		FarmID: f.farmID, QueueID: f.queueID, DependsOn: []string{"does-not-exist"},
+	})
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("missing upstream: got %v, want validation error", err)
+	}
+
+	// (b) already-failed upstream
+	up, err := f.submitter.Submit(ctx, f.template, f.format,
+		openjd.SubmitOptions{FarmID: f.farmID, QueueID: f.queueID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.UpdateJobStatus(ctx, up.Job.ID, store.JobStatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.submitter.Submit(ctx, f.template, f.format, openjd.SubmitOptions{
+		FarmID: f.farmID, QueueID: f.queueID, DependsOn: []string{up.Job.ID},
+	})
+	if !errors.As(err, &ve) {
+		t.Fatalf("failed upstream: got %v, want validation error", err)
 	}
 }

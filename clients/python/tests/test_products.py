@@ -137,3 +137,30 @@ def test_submit_product_job_omits_unset_retry_overrides(make_client: ClientFacto
     assert "max_attempts" not in sent
     assert "retry_delay_seconds" not in sent
     assert "failure_limit" not in sent
+
+
+@respx.mock
+def test_submit_product_job_includes_depends_on(make_client: ClientFactory) -> None:
+    route = respx.post(f"{API}/products/blender/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "job-1", "name": "x"})
+    )
+    client = make_client()
+    client.submit_product_job(
+        "blender",
+        farm_id="f1",
+        queue_id="q1",
+        depends_on=["a", "b"],
+    )
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["depends_on"] == ["a", "b"]
+
+
+@respx.mock
+def test_submit_product_job_omits_unset_depends_on(make_client: ClientFactory) -> None:
+    route = respx.post(f"{API}/products/blender/jobs").mock(
+        return_value=httpx.Response(201, json={"id": "job-1", "name": "x"})
+    )
+    client = make_client()
+    client.submit_product_job("blender", farm_id="f1", queue_id="q1")
+    sent = json.loads(route.calls.last.request.content)
+    assert "depends_on" not in sent

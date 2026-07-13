@@ -60,6 +60,7 @@ export type ListJobsParams = {
   status?: string
   search?: string
   owner?: string
+  farm_id?: string
   queue_id?: string
   project?: string
   sort_by?: 'created_at' | 'priority' | 'status' | 'updated_at' | 'name'
@@ -168,6 +169,7 @@ export function fetchListJobs(params: ListJobsParams): Promise<ListResponse<Job>
       status: params.status,
       search: params.search,
       owner: params.owner,
+      farm_id: params.farm_id,
       queue_id: params.queue_id,
       project: params.project,
       sort_by: params.sort_by,
@@ -339,10 +341,11 @@ export async function fetchFarmsWithQueues(): Promise<FarmWithQueues[]> {
 // ── Query hooks ───────────────────────────────────────────────────────────────
 
 /** List jobs with optional filters, pagination, and sort. */
-export function useListJobs(params: ListJobsParams) {
+export function useListJobs(params: ListJobsParams, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.jobs.list(params),
     queryFn: () => fetchListJobs(params),
+    enabled: options?.enabled ?? true,
   })
 }
 

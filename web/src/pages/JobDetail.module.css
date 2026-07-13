@@ -79,6 +79,35 @@
   margin: 0;
 }
 
+/* ── Depends-on ("Waiting on") section ───────────────────────────────────────── */
+
+.dependsOnSection {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding: var(--space-4) var(--space-8);
+}
+
+.dependsOnList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dependsOnLink {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-link);
+  text-decoration: none;
+}
+
+.dependsOnLink:hover {
+  text-decoration: underline;
+  color: var(--color-text-link-hover);
+}
+
 /* ── Steps container ─────────────────────────────────────────────────────────── */
 
 .stepsContainer {

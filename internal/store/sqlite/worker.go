@@ -204,10 +204,9 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		where += ` AND status = ?`
 		args = append(args, string(opts.Status))
 	}
-	if opts.Search != "" {
-		where += ` AND (name LIKE ? OR hostname LIKE ? OR id LIKE ? OR compute_location LIKE ?)`
-		like := "%" + opts.Search + "%"
-		args = append(args, like, like, like, like)
+	if frag, sargs := searchClause([]string{"name", "hostname", "id", "compute_location"}, opts.Search); frag != "" {
+		where += frag
+		args = append(args, sargs...)
 	}
 
 	var total int

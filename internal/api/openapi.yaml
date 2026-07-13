@@ -195,7 +195,15 @@ components:
           example: 50
         status:
           type: string
-          enum: [pending, paused, running, completed, failed, canceled]
+          enum: [pending, blocked, paused, running, completed, failed, canceled]
+        depends_on:
+          type: array
+          items:
+            type: string
+          description: >-
+            IDs of upstream jobs (same farm) this job waits on before its
+            tasks become ready. Present on the create response and job
+            detail; omitted from list items.
         project:
           type: string
           example: my-film
@@ -1306,6 +1314,13 @@ components:
           description: >-
             Per-job override for the task-failure count that auto-parks the job.
             Omitted means inherit (queue -> farm -> server default).
+        depends_on:
+          type: array
+          items:
+            type: string
+          description: >-
+            IDs of upstream jobs this job waits for; same farm; job starts
+            blocked until all complete.
         parameters:
           type: object
           additionalProperties:
@@ -1570,6 +1585,22 @@ paths:
             the job (0 disables an inherited limit). Omitted means inherit
             (queue -> farm -> server default); a non-integer or out-of-range
             value is rejected with 400.
+        - name: depends_on
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: >-
+            IDs of upstream jobs this job waits for (same farm); repeat for
+            multiple. If any listed job is not yet in a terminal-successful
+            state, the new job is created with status `blocked` instead of
+            `pending` and its tasks are held until every dependency
+            completes. A dependency ID that does not resolve to a job in the
+            same farm, or that already failed/was canceled, is rejected with
+            422.
       # Note: param.<Name>=<value> query parameters are intentionally omitted
       # from this parameters list because OpenAPI 3.x does not support
       # arbitrary-suffix parameters.  Full semantics are documented in the
@@ -1610,7 +1641,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [pending, paused, running, completed, failed, canceled]
+            enum: [pending, blocked, paused, running, completed, failed, canceled]
           description: Filter by job status.
         - name: owner
           in: query
@@ -1636,7 +1667,11 @@ paths:
           in: query
           schema:
             type: string
-          description: Case-insensitive substring over name, id, owner, project.
+          description: >-
+            Case-insensitive substring over name, id, owner, project.
+            Whitespace-separated words are matched as independent terms, ANDed
+            and order-independent (e.g. "night alice" matches a job named
+            "Nightly" owned by "alice").
         - name: sort_by
           in: query
           schema:
@@ -2013,7 +2048,10 @@ paths:
           in: query
           schema:
             type: string
-          description: Case-insensitive substring over name, hostname, id, compute_location.
+          description: >-
+            Case-insensitive substring over name, hostname, id,
+            compute_location. Whitespace-separated words are matched as
+            independent terms, ANDed and order-independent.
         - name: sort_by
           in: query
           schema:

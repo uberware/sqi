@@ -20,6 +20,7 @@ import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
+import { matchesSearch } from '@/utils/filterBySearch'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
   JobDetail as JobDetailType,
@@ -62,11 +63,6 @@ function isTerminalTask(status: TaskStatus): boolean {
 /** Returns true when all of the step's declared dependencies have status "completed". */
 function stepDepsSatisfied(step: Step, statusByName: Map<string, StepStatus>): boolean {
   return (step.depends_on ?? []).every((name) => statusByName.get(name) === 'completed')
-}
-
-/** Lower-cased substring match of a term against a task's name. */
-function taskMatches(task: Task, term: string): boolean {
-  return task.name.toLowerCase().includes(term)
 }
 
 /** Formats an inherited-or-configured retry-policy field for display. */
@@ -966,8 +962,8 @@ export default function JobDetail() {
     )
   }
 
-  const term = taskSearch.trim().toLowerCase()
-  const stepMatchesByName = (step: Step) => step.name.toLowerCase().includes(term)
+  const hasTaskSearch = taskSearch.trim() !== ''
+  const stepMatchesByName = (step: Step) => matchesSearch(step.name, taskSearch)
 
   return (
     <div className={styles.page}>
@@ -1014,6 +1010,21 @@ export default function JobDetail() {
 
       <MetadataCard job={job} />
 
+      {job.depends_on !== undefined && job.depends_on.length > 0 && (
+        <div className={styles.dependsOnSection}>
+          <h2 className={styles.sectionTitle}>Waiting on</h2>
+          <ul className={styles.dependsOnList}>
+            {job.depends_on.map((upstreamId) => (
+              <li key={upstreamId}>
+                <Link to={`/jobs/${upstreamId}`} className={styles.dependsOnLink}>
+                  {upstreamId}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className={styles.stepsContainer}>
         <div className={styles.stepsHeader}>
           <h2 className={styles.sectionTitle}>Steps</h2>
@@ -1028,13 +1039,12 @@ export default function JobDetail() {
         {tasksLoading && <p className={styles.muted}>Loading tasks…</p>}
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
-          const visibleTasks =
-            term === ''
+          const visibleTasks = !hasTaskSearch
+            ? stepTasks
+            : stepMatchesByName(step)
               ? stepTasks
-              : stepMatchesByName(step)
-                ? stepTasks
-                : stepTasks.filter((t) => taskMatches(t, term))
-          if (term !== '' && !stepMatchesByName(step) && visibleTasks.length === 0) return null
+              : stepTasks.filter((t) => matchesSearch(t.name, taskSearch))
+          if (hasTaskSearch && !stepMatchesByName(step) && visibleTasks.length === 0) return null
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
           // select-all is scoped to the tasks visible under the active search filter
           const selectable = visibleTasks.filter(

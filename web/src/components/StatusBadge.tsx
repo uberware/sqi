@@ -15,6 +15,7 @@ const LABELS: Record<BadgeStatus, string> = {
   failed: 'Failed',
   canceled: 'Canceled',
   paused: 'Paused',
+  blocked: 'Blocked',
   online: 'Online',
   offline: 'Offline',
   disabled: 'Disabled',

@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"context"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -30,7 +29,73 @@ func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 	if !ok {
 		return store.Job{}, store.ErrNotFound
 	}
+	job.DependsOn = slices.Clone(s.jobDependencies[id])
+	if job.DependsOn == nil {
+		job.DependsOn = []string{}
+	}
 	return job, nil
+}
+
+// CreateJobDependencies records that jobID waits on each upstream ID.
+// Duplicate edges (already-recorded upstream IDs) are ignored.
+func (s *Store) CreateJobDependencies(_ context.Context, jobID string, upstreamIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := s.jobDependencies[jobID]
+	for _, up := range upstreamIDs {
+		if slices.Contains(existing, up) {
+			continue
+		}
+		existing = append(existing, up)
+	}
+	s.jobDependencies[jobID] = existing
+	return nil
+}
+
+// ListJobDependencyIDs returns the upstream job IDs jobID waits on, ordered
+// by upstream job ID (matching the SQLite implementation's ORDER BY).
+func (s *Store) ListJobDependencyIDs(_ context.Context, jobID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := slices.Clone(s.jobDependencies[jobID])
+	slices.Sort(out)
+	if out == nil {
+		out = []string{}
+	}
+	return out, nil
+}
+
+// ListDependents returns the IDs of jobs that declared a dependency on
+// upstreamJobID, ordered by dependent job ID.
+func (s *Store) ListDependents(_ context.Context, upstreamJobID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := []string{}
+	for jobID, ups := range s.jobDependencies {
+		if slices.Contains(ups, upstreamJobID) {
+			out = append(out, jobID)
+		}
+	}
+	slices.Sort(out) // deterministic for tests
+	return out, nil
+}
+
+// ListBlockedJobs returns every job currently in [store.JobStatusBlocked].
+func (s *Store) ListBlockedJobs(_ context.Context) ([]store.Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []store.Job
+	for _, j := range s.jobs {
+		if j.Status == store.JobStatusBlocked {
+			out = append(out, j)
+		}
+	}
+	slices.SortFunc(out, func(a, b store.Job) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 // ListJobs returns a paginated, filtered, and sorted page of jobs matching opts.
@@ -181,6 +246,13 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 // DeleteTerminalJobsBefore implements [store.JobStore]. completed and canceled
 // jobs are always eligible; failed jobs only when includeFailed. Effective
 // completion time is CompletedAt, falling back to UpdatedAt when nil.
+//
+// A candidate still referenced as an upstream (depends_on_job_id) by a
+// non-terminal dependent is skipped: purging it would leave the dependent's
+// reconciler reading a GetJob ErrNotFound for an upstream that actually
+// succeeded, which it treats as "missing" and wrongly cancels the dependent.
+// Manual DeleteJob intentionally keeps the cancel-dependents behavior — this
+// guard only applies to the automatic retention sweep.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
@@ -195,6 +267,9 @@ func (s *Store) DeleteTerminalJobsBefore(
 			completed = *j.CompletedAt
 		}
 		if !completed.Before(cutoff) {
+			continue
+		}
+		if s.neededByNonTerminalDependentLocked(id) {
 			continue
 		}
 		ids = append(ids, id)
@@ -214,6 +289,21 @@ func (s *Store) DeleteTerminalJobsBefore(
 		})
 	}
 	return deleted, nil
+}
+
+// neededByNonTerminalDependentLocked reports whether candidateID is recorded
+// as an upstream (depends_on_job_id) of some dependent job that has not yet
+// reached a terminal status. Callers must hold s.mu.
+func (s *Store) neededByNonTerminalDependentLocked(candidateID string) bool {
+	for dependentID, ups := range s.jobDependencies {
+		if !slices.Contains(ups, candidateID) {
+			continue
+		}
+		if dep, ok := s.jobs[dependentID]; ok && !dep.Status.IsTerminal() {
+			return true
+		}
+	}
+	return false
 }
 
 // terminalJobEligible reports whether a job in the given status is eligible for
@@ -282,6 +372,9 @@ func (s *Store) DeleteJob(_ context.Context, id string) error {
 			delete(s.steps, sid)
 		}
 	}
+	// Outgoing job_dependencies edges only; incoming edges (other jobs
+	// depending on id) are deliberately left for the reconciler.
+	delete(s.jobDependencies, id)
 	delete(s.jobs, id)
 	return nil
 }
@@ -334,14 +427,12 @@ func (s *Store) ResumeJob(_ context.Context, jobID string, now time.Time) error 
 	return nil
 }
 
-// jobMatchesSearch reports whether j contains the given query string
-// (case-insensitive) in any of its name, id, owner, or project fields.
+// jobMatchesSearch reports whether every whitespace-separated term in query
+// matches (case-insensitive substring) one of j's name, id, owner, or project
+// fields. Uses the shared matcher so it stays in lockstep with the SQLite
+// LIKE search.
 func jobMatchesSearch(j store.Job, query string) bool {
-	q := strings.ToLower(query)
-	return strings.Contains(strings.ToLower(j.Name), q) ||
-		strings.Contains(strings.ToLower(j.ID), q) ||
-		strings.Contains(strings.ToLower(j.Owner), q) ||
-		strings.Contains(strings.ToLower(j.Project), q)
+	return store.MatchesSearch(query, j.Name, j.ID, j.Owner, j.Project)
 }
 
 // filterJob reports whether j matches all non-zero filter fields in opts.

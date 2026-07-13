@@ -507,6 +507,10 @@ class Job:
     farm -> server-default inheritance. Populated only by
     :meth:`~sqi_client.client.SqiClient.get_job` (the ``JobDetail`` response);
     ``None`` on a list-level job or when the server predates this field."""
+    depends_on: list[str] = field(default_factory=list)
+    """IDs of upstream jobs this job waits for (whole-job cross-job
+    dependencies). Populated only by :meth:`~sqi_client.client.SqiClient.get_job`
+    (the ``JobDetail`` response); empty on a list-level job."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Job:
@@ -557,6 +561,7 @@ class Job:
                 if isinstance(er := data.get("effective_retry"), dict)
                 else None
             ),
+            depends_on=_str_list(data.get("depends_on")),
         )
 
 

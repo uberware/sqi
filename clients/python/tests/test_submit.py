@@ -312,6 +312,43 @@ def test_submit_sends_retry_query_params(make_client: ClientFactory) -> None:
     assert job.failure_limit == 25
 
 
+# ── Cross-job dependencies ───────────────────────────────────────────
+
+
+@respx.mock
+def test_submit_depends_on_omitted_by_default(make_client: ClientFactory) -> None:
+    route = respx.post(_JOBS_URL).mock(return_value=_created())
+    client = make_client()
+
+    client.submit_job(_DICT_TEMPLATE, farm_id="farm-1", queue_id="queue-1")
+
+    params = route.calls.last.request.url.params
+    assert "depends_on" not in params
+
+
+@respx.mock
+def test_submit_sends_depends_on_as_repeated_query_params(make_client: ClientFactory) -> None:
+    response = dict(_JOB_RESPONSE, status="blocked", depends_on=["a", "b"])
+    route = respx.post(_JOBS_URL).mock(return_value=httpx.Response(201, json=response))
+    client = make_client()
+
+    job = client.submit_job(
+        _DICT_TEMPLATE,
+        farm_id="farm-1",
+        queue_id="queue-1",
+        depends_on=["a", "b"],
+    )
+
+    # httpx encodes a list-valued param as repeated query keys.
+    assert route.calls.last.request.url.params.get_list("depends_on") == ["a", "b"]
+    assert job.depends_on == ["a", "b"]
+
+
+def test_job_from_dict_depends_on_defaults_to_empty_list() -> None:
+    job = Job.from_dict(_JOB_RESPONSE)
+    assert job.depends_on == []
+
+
 @respx.mock
 def test_submit_is_not_retried(make_client: ClientFactory) -> None:
     # POST is non-idempotent: a transient 500 must surface immediately, not retry.

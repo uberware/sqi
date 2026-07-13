@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
 import RetryPolicyFields from '@/components/RetryPolicyFields'
+import DependsOnField from '@/components/DependsOnField'
 import { useToast } from '@/components/Toast'
 import { useFarmsWithQueues } from '@/api/queries'
 import { useSubmitJob } from '@/api/mutations'
@@ -107,6 +108,7 @@ export default function Submit() {
   const [maxAttempts, setMaxAttempts] = useState('')
   const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
   const [failureLimit, setFailureLimit] = useState('')
+  const [dependsOn, setDependsOn] = useState<string[]>([])
 
   // Example loader select — controlled so it resets to placeholder after each pick.
   const [exampleKey, setExampleKey] = useState('')
@@ -160,6 +162,7 @@ export default function Submit() {
             ? { retryDelaySeconds: parsedRetryDelaySeconds }
             : {}),
           ...(parsedFailureLimit !== undefined ? { failureLimit: parsedFailureLimit } : {}),
+          ...(dependsOn.length > 0 ? { dependsOn } : {}),
         })
         showToast(`Job submitted — ID: ${job.id}`, 'success')
         navigate(`/jobs/${job.id}`)
@@ -176,6 +179,7 @@ export default function Submit() {
       maxAttempts,
       retryDelaySeconds,
       failureLimit,
+      dependsOn,
       submitJob,
       navigate,
       showToast,
@@ -299,6 +303,22 @@ export default function Submit() {
                 fieldClassName={styles.field}
                 labelClassName={styles.label}
                 inputClassName={styles.input}
+              />
+            </section>
+
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>Dependencies</h2>
+              <p className={styles.sectionNote}>
+                Optional — this job waits until every selected upstream job finishes.
+              </p>
+
+              <DependsOnField
+                farmId={selectedQueue?.farm_id}
+                value={dependsOn}
+                onChange={setDependsOn}
+                fieldClassName={styles.field}
+                labelClassName={styles.label}
+                noteClassName={styles.sectionNote}
               />
             </section>
           </div>

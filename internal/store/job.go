@@ -19,6 +19,12 @@ const (
 	// JobStatusPaused means the job has been administratively paused; no new
 	// task assignments will be made until it is resumed.
 	JobStatusPaused JobStatus = "paused"
+	// JobStatusBlocked means the job is waiting on one or more cross-job
+	// dependencies (other whole jobs) to complete. Its tasks are held pending
+	// and never leased until every upstream job reaches JobStatusCompleted, at
+	// which point it is released to JobStatusPending. If any upstream fails, is
+	// canceled, or is deleted, the blocked job is canceled (upstream-failed).
+	JobStatusBlocked JobStatus = "blocked"
 	// JobStatusCompleted means all tasks across all steps succeeded.
 	JobStatusCompleted JobStatus = "completed"
 	// JobStatusFailed means one or more tasks failed and the job cannot proceed.
@@ -69,6 +75,10 @@ type Job struct {
 	// the parameters-persistence migration (back-compat: scheduler falls back
 	// to template defaults).
 	Parameters map[string]string
+	// DependsOn holds the IDs of the upstream jobs this job waits on (whole-job
+	// cross-job dependencies). Populated by GetJob; ListJobs leaves it nil to
+	// avoid N+1 queries. Empty for jobs with no cross-job dependencies.
+	DependsOn []string
 	// FailedAttempts is the job's cumulative count of genuine task failures.
 	FailedAttempts int
 	// MaxAttempts, RetryDelaySeconds, and FailureLimit are per-job retry policy
@@ -118,6 +128,26 @@ type JobStore interface {
 	// GetJob returns the job with the given ID, or [ErrNotFound].
 	GetJob(ctx context.Context, id string) (Job, error)
 
+	// CreateJobDependencies records that jobID waits on each ID in upstreamIDs
+	// (whole-job cross-job dependencies). Duplicate edges are ignored. Called
+	// right after CreateJob during submission.
+	CreateJobDependencies(ctx context.Context, jobID string, upstreamIDs []string) error
+
+	// ListJobDependencyIDs returns the IDs of the upstream jobs jobID waits on,
+	// ordered by upstream job ID. Some IDs may reference jobs that have since
+	// been deleted — the caller (the reconciler) treats a missing upstream as
+	// unsatisfiable. Returns an empty slice when there are no dependencies.
+	ListJobDependencyIDs(ctx context.Context, jobID string) ([]string, error)
+
+	// ListDependents returns the IDs of jobs that declared a dependency on
+	// upstreamJobID (i.e. jobs waiting for it), ordered by dependent job ID.
+	// Returns an empty slice when none.
+	ListDependents(ctx context.Context, upstreamJobID string) ([]string, error)
+
+	// ListBlockedJobs returns every job currently in JobStatusBlocked, for the
+	// scheduler's periodic reconciliation sweep.
+	ListBlockedJobs(ctx context.Context) ([]Job, error)
+
 	// ListJobs returns a paginated, filtered, and sorted page of jobs matching
 	// opts. Call [Pagination.Validate] on opts.Pagination before passing it to
 	// ensure sensible defaults are applied.
@@ -166,9 +196,13 @@ type JobStore interface {
 
 	// DeleteJob hard-deletes a job and every row that belongs to it, in one
 	// transaction and FK-safe order: usage_claims (for the job's task attempts),
-	// task_logs, task_attempts, tasks, steps, then the jobs row.
-	// Returns [ErrNotFound] when the job does not exist. The audit_log is left
-	// intact (it references entities by id, not by foreign key).
+	// task_logs, task_attempts, tasks, steps, the job's own job_dependencies
+	// rows (its outgoing edges), then the jobs row. Incoming edges — rows where
+	// the deleted job is the depends_on_job_id of some other job — are
+	// deliberately left intact for the reconciler to observe as "upstream
+	// deleted". Returns [ErrNotFound] when the job does not exist. The
+	// audit_log is left intact (it references entities by id, not by foreign
+	// key).
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time

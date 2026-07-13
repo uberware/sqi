@@ -7,7 +7,8 @@
 // ── Status enums ──────────────────────────────────────────────────────────────
 
 /** Aggregate lifecycle status of a job. */
-export type JobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled'
+export type JobStatus =
+  'pending' | 'running' | 'paused' | 'blocked' | 'completed' | 'failed' | 'canceled'
 /** Aggregate status of a step within a job. */
 export type StepStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'canceled'
 /** Lifecycle status of an individual task. */
@@ -76,6 +77,8 @@ export interface Job {
   retry_delay_seconds?: number
   /** Per-job override for the number of task failures that auto-parks the job; absent means inherit. */
   failure_limit?: number
+  /** IDs of upstream jobs this job is waiting on; present (non-empty) on job detail, omitted on list. */
+  depends_on?: string[]
 }
 
 /**
@@ -471,6 +474,8 @@ export interface SubmitProductJobInput {
   retryDelaySeconds?: number
   /** Per-job override for the auto-park failure count; omitted means inherit. */
   failureLimit?: number
+  /** IDs of upstream jobs this job waits for (whole-job, same farm). */
+  dependsOn?: string[]
 }
 
 // ── Job submission ────────────────────────────────────────────────────────────
@@ -491,4 +496,6 @@ export interface SubmitJobInput {
   retryDelaySeconds?: number
   /** Per-job override for the number of task failures that auto-parks the job; omitted means inherit. */
   failureLimit?: number
+  /** IDs of upstream jobs this job waits for (whole-job, same farm). */
+  dependsOn?: string[]
 }

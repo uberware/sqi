@@ -46,5 +46,24 @@ def main(argv: list[str]) -> int:
     return 0 if job.status == JobStatus.COMPLETED else 1
 
 
+# Cross-job dependencies: pass depends_on=[<upstream job id>] to submit_job /
+# submit_and_wait to hold a job until its upstreams finish (e.g. a comp job
+# that must wait for a render job). The dependency job must already exist, be
+# in the same farm, and not already be failed/canceled; while any dependency
+# is unfinished the new job is returned in the "blocked" status rather than
+# "pending", and starts once every dependency completes. For example:
+#
+#     with SqiClient(server_url) as sqi:
+#         render = sqi.submit_job(
+#             "render.yaml", farm_id=farm_id, queue_id=queue_id
+#         )
+#         comp = sqi.submit_job(
+#             "comp.yaml",
+#             farm_id=farm_id,
+#             queue_id=queue_id,
+#             depends_on=[render.id],
+#         )
+
+
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))

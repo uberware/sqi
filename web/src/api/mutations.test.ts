@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   fetchRetryJob,
+  fetchSubmitJob,
   fetchCreateProduct,
   fetchUpdateProduct,
   fetchDeleteProduct,
@@ -12,6 +13,31 @@ import type { ProductInput } from './mutations'
 import { apiFetch } from './client'
 
 vi.mock('./client', () => ({ apiFetch: vi.fn() }))
+
+describe('fetchSubmitJob', () => {
+  beforeEach(() => vi.mocked(apiFetch).mockReset())
+
+  it('appends repeated depends_on params', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitJob({
+      farmId: 'f',
+      queueId: 'q',
+      template: '{}',
+      format: 'json',
+      dependsOn: ['a', 'b'],
+    })
+    const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
+    expect(url).toContain('depends_on=a')
+    expect(url).toContain('depends_on=b')
+  })
+
+  it('omits depends_on when undefined', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1' })
+    await fetchSubmitJob({ farmId: 'f', queueId: 'q', template: '{}', format: 'json' })
+    const url = vi.mocked(apiFetch).mock.calls[0]?.[0] as string
+    expect(url).not.toContain('depends_on')
+  })
+})
 
 describe('fetchRetryJob', () => {
   beforeEach(() => vi.mocked(apiFetch).mockReset())
@@ -93,5 +119,32 @@ describe('fetchSubmitProductJob', () => {
       queue_id: 'q1',
       parameters: { Scene: '/a.blend' },
     })
+  })
+
+  it('includes depends_on in the JSON body when set', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1', name: 'Shot010' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: {},
+      dependsOn: ['job-a', 'job-b'],
+    })
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string)
+    expect(body).toMatchObject({ depends_on: ['job-a', 'job-b'] })
+  })
+
+  it('omits depends_on from the JSON body when undefined', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1', name: 'Shot010' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: {},
+    })
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string)
+    expect(body).not.toHaveProperty('depends_on')
   })
 })

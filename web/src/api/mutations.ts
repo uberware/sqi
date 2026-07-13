@@ -25,8 +25,9 @@ import type {
 /**
  * Submit a raw OpenJD template via `POST /jobs`. The body content type is set
  * from `input.format` (`application/yaml` or `application/json`); `farm_id`,
- * `queue_id`, `owner`, `submitter`, `priority`, and `project` travel as query
- * parameters.
+ * `queue_id`, `owner`, `submitter`, `priority`, `project`, and the retry-policy
+ * overrides travel as query parameters. `depends_on` (upstream job IDs) is
+ * sent as a repeated query parameter, one per dependency.
  */
 export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   const contentType = input.format === 'yaml' ? 'application/yaml' : 'application/json'
@@ -41,6 +42,9 @@ export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
     qs.set('retry_delay_seconds', String(input.retryDelaySeconds))
   }
   if (input.failureLimit !== undefined) qs.set('failure_limit', String(input.failureLimit))
+  if (input.dependsOn !== undefined) {
+    for (const id of input.dependsOn) qs.append('depends_on', id)
+  }
 
   return apiFetch<Job>(`/jobs?${qs.toString()}`, {
     method: 'POST',
@@ -630,6 +634,7 @@ export function fetchSubmitProductJob(input: SubmitProductJobInput): Promise<Job
   if (input.maxAttempts !== undefined) body.max_attempts = input.maxAttempts
   if (input.retryDelaySeconds !== undefined) body.retry_delay_seconds = input.retryDelaySeconds
   if (input.failureLimit !== undefined) body.failure_limit = input.failureLimit
+  if (input.dependsOn !== undefined) body.depends_on = input.dependsOn
   return apiFetch<Job>(`/products/${encodeURIComponent(input.productName)}/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

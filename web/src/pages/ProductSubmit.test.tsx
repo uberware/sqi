@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ToastProvider } from '@/components/Toast'
@@ -47,7 +48,28 @@ const h = vi.hoisted(() => {
     },
   })
   const defaultParams = () => [sceneParam(null), internalParam()]
-  return { sceneParam, internalParam, defaultParams, state: { params: defaultParams() } }
+  const makeJob = (overrides: Partial<Record<string, unknown>> = {}) => ({
+    id: 'job-a',
+    farm_id: 'f1',
+    queue_id: 'q1',
+    name: 'Upstream A',
+    owner: 'user',
+    submitter: 'user',
+    priority: 50,
+    status: 'running',
+    template_format: 'yaml',
+    failed_attempts: 0,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+    ...overrides,
+  })
+  return {
+    sceneParam,
+    internalParam,
+    defaultParams,
+    makeJob,
+    state: { params: defaultParams(), jobs: [makeJob()] },
+  }
 })
 
 vi.mock('react-router-dom', async (orig) => ({
@@ -104,6 +126,11 @@ vi.mock('@/api/queries', async (orig) => ({
     isLoading: false,
     error: null,
   }),
+  useListJobs: () => ({
+    data: { items: h.state.jobs, total: h.state.jobs.length, limit: 200, offset: 0 },
+    isLoading: false,
+    error: null,
+  }),
 }))
 
 vi.mock('@/api/mutations', async (orig) => ({
@@ -115,6 +142,7 @@ beforeEach(() => {
   submitMock.mockClear()
   navigateMock.mockClear()
   h.state.params = h.defaultParams()
+  h.state.jobs = [h.makeJob()]
   // jsdom uses a null origin by default which blocks localStorage access.
   vi.stubGlobal('localStorage', {
     getItem: vi.fn().mockReturnValue(null),
@@ -217,5 +245,32 @@ describe('ProductSubmit', () => {
     const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
     expect(arg).toMatchObject({ maxAttempts: 5, failureLimit: 3 })
     expect(arg).not.toHaveProperty('retryDelaySeconds') // left blank -> omitted
+  })
+
+  describe('Dependencies', () => {
+    it('includes dependsOn in the submitted payload when an upstream job is selected', async () => {
+      const user = userEvent.setup()
+      renderPage()
+      const summary = screen.getByText(/advanced \(job overrides\)/i)
+      fireEvent.click(summary.closest('details') as HTMLDetailsElement)
+
+      fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+      await user.click(screen.getByRole('checkbox', { name: /Upstream A/ }))
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+      await waitFor(() => expect(submitMock).toHaveBeenCalled())
+      const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+      expect(arg).toMatchObject({ dependsOn: ['job-a'] })
+    })
+
+    it('omits dependsOn when no upstream job is selected', async () => {
+      renderPage()
+      fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+      await waitFor(() => expect(submitMock).toHaveBeenCalled())
+      const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+      expect(arg).not.toHaveProperty('dependsOn')
+    })
   })
 })

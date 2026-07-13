@@ -23,6 +23,7 @@ type Store struct {
 	usageClaims      map[string]store.UsageClaim
 	workers          map[string]store.Worker
 	jobs             map[string]store.Job
+	jobDependencies  map[string][]string // jobID -> upstream IDs (insertion order)
 	steps            map[string]store.Step
 	tasks            map[string]store.Task
 	taskAttempts     map[string]store.TaskAttempt
@@ -44,6 +45,7 @@ func New() *Store {
 		usageClaims:      make(map[string]store.UsageClaim),
 		workers:          make(map[string]store.Worker),
 		jobs:             make(map[string]store.Job),
+		jobDependencies:  make(map[string][]string),
 		steps:            make(map[string]store.Step),
 		tasks:            make(map[string]store.Task),
 		taskAttempts:     make(map[string]store.TaskAttempt),
@@ -72,6 +74,7 @@ func (s *Store) Reset() {
 	s.usageClaims = make(map[string]store.UsageClaim)
 	s.workers = make(map[string]store.Worker)
 	s.jobs = make(map[string]store.Job)
+	s.jobDependencies = make(map[string][]string)
 	s.steps = make(map[string]store.Step)
 	s.tasks = make(map[string]store.Task)
 	s.taskAttempts = make(map[string]store.TaskAttempt)
