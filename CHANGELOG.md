@@ -10,7 +10,7 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 > `docs/development.md`). It is refreshed during release prep and again by the
 > release workflow, which bundles it into the release archives.
 
-## [0.2.0] — 2026-07-10
+## [0.2.0] — 2026-07-13
 
 
 ### Documentation
@@ -18,7 +18,6 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 - Usage pools are product limits ([5f308b7](https://github.com/uberware/sqi/commit/5f308b7a417b68ae0f0056dec4f92cab071fbea8))
 - Integrate MkDocs site with GitHub Pages deployment on release ([#65](https://github.com/uberware/sqi/issues/65)) ([34d41ce](https://github.com/uberware/sqi/commit/34d41cec3aeec0fdfdcc3fdb8affb5ebce6fe185))
 - Update to version 0.2.0 ([#69](https://github.com/uberware/sqi/issues/69)) ([8da5a79](https://github.com/uberware/sqi/commit/8da5a796e6abbc434fa8a1de220d8a4f9d2b1d70))
-- Fix accuracy, clarity, and consistency issues from v0.2.0 documentation audit ([6bb6492](https://github.com/uberware/sqi/commit/6bb6492c594e9f65ba4748004244c927bc67c973))
 
 
 ### Features
@@ -35,6 +34,15 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 - Dcc submitter framework ([#64](https://github.com/uberware/sqi/issues/64)) ([f216d08](https://github.com/uberware/sqi/commit/f216d086567fae3f00022b11dedcd68cf7f0a4e9))
 - Auto detect worker capabilities ([#70](https://github.com/uberware/sqi/issues/70)) ([d2bfb2c](https://github.com/uberware/sqi/commit/d2bfb2c2fa29732bc5b4725c9563ceba97f3ddd5))
 - Unschedulable ux ([#71](https://github.com/uberware/sqi/issues/71)) ([641b752](https://github.com/uberware/sqi/commit/641b7522d9ef25f5fe2836da77a847b4ff3c0768))
+- Sqi chunk bounds ([#74](https://github.com/uberware/sqi/issues/74)) ([45b35c9](https://github.com/uberware/sqi/commit/45b35c9d6f1ba2b8acbb00a9b5c9db56edd8f341))
+- Test job presets ([#75](https://github.com/uberware/sqi/issues/75)) ([c575315](https://github.com/uberware/sqi/commit/c575315cfbaaee742bbb5f9ea27ddbe0cbe84fe4))
+- Auto retry failure limits ([#76](https://github.com/uberware/sqi/issues/76)) ([2e12fed](https://github.com/uberware/sqi/commit/2e12fed672bf20ec31a3c124720ce75695b8ad7c))
+- Cross job dependencies ([#77](https://github.com/uberware/sqi/issues/77)) ([3ad1af8](https://github.com/uberware/sqi/commit/3ad1af83c55e7d3a7700d809cf0a1f80fbd3fb39))
+
+
+### Refactoring
+
+- Preset namespace sqi ([#73](https://github.com/uberware/sqi/issues/73)) ([3dae608](https://github.com/uberware/sqi/commit/3dae60875c921aaeebe4da90eb7317589384dd3c))
 
 
 ### Testing
