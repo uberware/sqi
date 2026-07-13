@@ -1667,7 +1667,11 @@ paths:
           in: query
           schema:
             type: string
-          description: Case-insensitive substring over name, id, owner, project.
+          description: >-
+            Case-insensitive substring over name, id, owner, project.
+            Whitespace-separated words are matched as independent terms, ANDed
+            and order-independent (e.g. "night alice" matches a job named
+            "Nightly" owned by "alice").
         - name: sort_by
           in: query
           schema:
@@ -2044,7 +2048,10 @@ paths:
           in: query
           schema:
             type: string
-          description: Case-insensitive substring over name, hostname, id, compute_location.
+          description: >-
+            Case-insensitive substring over name, hostname, id,
+            compute_location. Whitespace-separated words are matched as
+            independent terms, ANDed and order-independent.
         - name: sort_by
           in: query
           schema:

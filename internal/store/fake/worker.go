@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"context"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -224,14 +223,12 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	return true
 }
 
-// workerMatchesSearch reports whether w matches query as a case-insensitive
-// substring of name, hostname, id, or compute_location.
+// workerMatchesSearch reports whether every whitespace-separated term in query
+// matches (case-insensitive substring) one of w's name, hostname, id, or
+// compute_location fields. Uses the shared matcher so it stays in lockstep with
+// the SQLite LIKE search.
 func workerMatchesSearch(w store.Worker, query string) bool {
-	q := strings.ToLower(query)
-	return strings.Contains(strings.ToLower(w.Name), q) ||
-		strings.Contains(strings.ToLower(w.Hostname), q) ||
-		strings.Contains(strings.ToLower(w.ID), q) ||
-		strings.Contains(strings.ToLower(w.ComputeLocation), q)
+	return store.MatchesSearch(query, w.Name, w.Hostname, w.ID, w.ComputeLocation)
 }
 
 // cmpWorker returns a comparison value for two workers by the given sort field

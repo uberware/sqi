@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"context"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -428,14 +427,12 @@ func (s *Store) ResumeJob(_ context.Context, jobID string, now time.Time) error 
 	return nil
 }
 
-// jobMatchesSearch reports whether j contains the given query string
-// (case-insensitive) in any of its name, id, owner, or project fields.
+// jobMatchesSearch reports whether every whitespace-separated term in query
+// matches (case-insensitive substring) one of j's name, id, owner, or project
+// fields. Uses the shared matcher so it stays in lockstep with the SQLite
+// LIKE search.
 func jobMatchesSearch(j store.Job, query string) bool {
-	q := strings.ToLower(query)
-	return strings.Contains(strings.ToLower(j.Name), q) ||
-		strings.Contains(strings.ToLower(j.ID), q) ||
-		strings.Contains(strings.ToLower(j.Owner), q) ||
-		strings.Contains(strings.ToLower(j.Project), q)
+	return store.MatchesSearch(query, j.Name, j.ID, j.Owner, j.Project)
 }
 
 // filterJob reports whether j matches all non-zero filter fields in opts.

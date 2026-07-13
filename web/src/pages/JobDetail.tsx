@@ -20,6 +20,7 @@ import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan, formatDuration } from '@/lib/time'
 import { truncateId } from '@/lib/id'
+import { matchesSearch } from '@/utils/filterBySearch'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
 import type {
   JobDetail as JobDetailType,
@@ -62,11 +63,6 @@ function isTerminalTask(status: TaskStatus): boolean {
 /** Returns true when all of the step's declared dependencies have status "completed". */
 function stepDepsSatisfied(step: Step, statusByName: Map<string, StepStatus>): boolean {
   return (step.depends_on ?? []).every((name) => statusByName.get(name) === 'completed')
-}
-
-/** Lower-cased substring match of a term against a task's name. */
-function taskMatches(task: Task, term: string): boolean {
-  return task.name.toLowerCase().includes(term)
 }
 
 /** Formats an inherited-or-configured retry-policy field for display. */
@@ -966,8 +962,8 @@ export default function JobDetail() {
     )
   }
 
-  const term = taskSearch.trim().toLowerCase()
-  const stepMatchesByName = (step: Step) => step.name.toLowerCase().includes(term)
+  const hasTaskSearch = taskSearch.trim() !== ''
+  const stepMatchesByName = (step: Step) => matchesSearch(step.name, taskSearch)
 
   return (
     <div className={styles.page}>
@@ -1044,12 +1040,12 @@ export default function JobDetail() {
         {sortedSteps.map((step) => {
           const stepTasks = tasksByStepId.get(step.id) ?? []
           const visibleTasks =
-            term === ''
+            !hasTaskSearch
               ? stepTasks
               : stepMatchesByName(step)
                 ? stepTasks
-                : stepTasks.filter((t) => taskMatches(t, term))
-          if (term !== '' && !stepMatchesByName(step) && visibleTasks.length === 0) return null
+                : stepTasks.filter((t) => matchesSearch(t.name, taskSearch))
+          if (hasTaskSearch && !stepMatchesByName(step) && visibleTasks.length === 0) return null
           const depsSatisfied = depsSatisfiedByStepId.get(step.id) ?? true
           // select-all is scoped to the tasks visible under the active search filter
           const selectable = visibleTasks.filter(

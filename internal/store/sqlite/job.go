@@ -348,10 +348,9 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 		where += ` AND project = ?`
 		args = append(args, opts.Project)
 	}
-	if opts.Search != "" {
-		where += ` AND (name LIKE ? OR id LIKE ? OR owner LIKE ? OR project LIKE ?)`
-		like := "%" + opts.Search + "%"
-		args = append(args, like, like, like, like)
+	if frag, sargs := searchClause([]string{"name", "id", "owner", "project"}, opts.Search); frag != "" {
+		where += frag
+		args = append(args, sargs...)
 	}
 
 	// COUNT total matching rows (same WHERE, no ORDER/LIMIT).

@@ -953,6 +953,12 @@ func TestJob_ListJobs_Search(t *testing.T) {
 		{"by id substring", "comp-", 1},
 		{"no match", "zzz", 0},
 		{"empty matches all", "", 2},
+		// Multi-term: each whitespace word is an independent substring, ANDed
+		// across the searchable fields, order-independent.
+		{"multi-term across name and owner", "nightly alice", 1},
+		{"multi-term order-independent", "alice nightly", 1},
+		{"multi-term across name and project", "render moonshot", 1},
+		{"multi-term with one non-matching term", "nightly bob", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2045,6 +2051,10 @@ func TestWorker_ListWorkers_Search(t *testing.T) {
 		{"case-insensitive", "US-WEST", 1},
 		{"no match", "zzz", 0},
 		{"empty matches all", "", 2},
+		// Multi-term: whitespace words ANDed across fields, order-independent.
+		{"multi-term across name and location", "render us-west", 1},
+		{"multi-term order-independent", "us-west render", 1},
+		{"multi-term with one non-matching term", "render eu-central", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

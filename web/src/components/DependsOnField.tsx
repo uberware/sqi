@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useListJobs } from '@/api/queries'
+import { filterBySearch } from '@/utils/filterBySearch'
 import styles from './DependsOnField.module.css'
 
 /** Job statuses that can no longer be depended on meaningfully (already finished). */
@@ -65,15 +66,11 @@ export default function DependsOnField({
   )
 
   // Free-text filter: each whitespace-separated word is an independent,
-  // case-insensitive substring term, ANDed together and matched anywhere in the
-  // job's name/status. So "foo bar" keeps "fool-grabbing-rebar" and "barfoo".
+  // case-insensitive substring term, ANDed and matched anywhere in the job's
+  // name/status (shared multi-term matcher). So "foo bar" keeps
+  // "fool-grabbing-rebar" and "barfoo".
   const [filter, setFilter] = useState('')
-  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean)
-  const shown = candidates.filter((job) => {
-    if (terms.length === 0) return true
-    const haystack = `${job.name} ${job.status}`.toLowerCase()
-    return terms.every((term) => haystack.includes(term))
-  })
+  const shown = filterBySearch(candidates, filter, (job) => [job.name, job.status])
 
   const toggle = useCallback(
     (id: string) => {
