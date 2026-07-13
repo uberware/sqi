@@ -634,6 +634,7 @@ export function fetchSubmitProductJob(input: SubmitProductJobInput): Promise<Job
   if (input.maxAttempts !== undefined) body.max_attempts = input.maxAttempts
   if (input.retryDelaySeconds !== undefined) body.retry_delay_seconds = input.retryDelaySeconds
   if (input.failureLimit !== undefined) body.failure_limit = input.failureLimit
+  if (input.dependsOn !== undefined) body.depends_on = input.dependsOn
   return apiFetch<Job>(`/products/${encodeURIComponent(input.productName)}/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

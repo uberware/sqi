@@ -120,4 +120,31 @@ describe('fetchSubmitProductJob', () => {
       parameters: { Scene: '/a.blend' },
     })
   })
+
+  it('includes depends_on in the JSON body when set', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1', name: 'Shot010' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: {},
+      dependsOn: ['job-a', 'job-b'],
+    })
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string)
+    expect(body).toMatchObject({ depends_on: ['job-a', 'job-b'] })
+  })
+
+  it('omits depends_on from the JSON body when undefined', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ id: 'job-1', name: 'Shot010' })
+    await fetchSubmitProductJob({
+      productName: 'blender',
+      name: 'Shot010',
+      farmId: 'f1',
+      queueId: 'q1',
+      parameters: {},
+    })
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0]?.[1] as RequestInit).body as string)
+    expect(body).not.toHaveProperty('depends_on')
+  })
 })

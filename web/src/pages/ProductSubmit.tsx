@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
 import ProductParamField from '@/components/ProductParamField'
 import RetryPolicyFields from '@/components/RetryPolicyFields'
+import DependsOnField from '@/components/DependsOnField'
 import { useToast } from '@/components/Toast'
 import { useProduct, useProductParameters, useFarmsWithQueues } from '@/api/queries'
 import { useSubmitProductJob } from '@/api/mutations'
@@ -36,6 +37,7 @@ export default function ProductSubmit() {
   const [maxAttempts, setMaxAttempts] = useState('')
   const [retryDelaySeconds, setRetryDelaySeconds] = useState('')
   const [failureLimit, setFailureLimit] = useState('')
+  const [dependsOn, setDependsOn] = useState<string[]>([])
 
   // Seed parameter defaults when data arrives, and re-seed fields the user has
   // not yet edited whenever the product's parameter payload changes (e.g. after
@@ -134,6 +136,7 @@ export default function ProductSubmit() {
         ...(maxAttemptsNum !== undefined ? { maxAttempts: maxAttemptsNum } : {}),
         ...(retryDelaySecondsNum !== undefined ? { retryDelaySeconds: retryDelaySecondsNum } : {}),
         ...(failureLimitNum !== undefined ? { failureLimit: failureLimitNum } : {}),
+        ...(dependsOn.length > 0 ? { dependsOn } : {}),
       })
       localStorage.setItem(QUEUE_STORAGE_KEY, effectiveQueueId)
       showToast('Job submitted', 'success')
@@ -234,6 +237,13 @@ export default function ProductSubmit() {
               placeholder="Inherit"
               labelVariant="short"
               fieldClassName={styles.row}
+            />
+            <DependsOnField
+              farmId={farmForQueue?.farm.id}
+              value={dependsOn}
+              onChange={setDependsOn}
+              fieldClassName={styles.row}
+              noteClassName={styles.advancedNote}
             />
           </div>
         </details>

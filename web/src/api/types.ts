@@ -474,6 +474,8 @@ export interface SubmitProductJobInput {
   retryDelaySeconds?: number
   /** Per-job override for the auto-park failure count; omitted means inherit. */
   failureLimit?: number
+  /** IDs of upstream jobs this job waits for (whole-job, same farm). */
+  dependsOn?: string[]
 }
 
 // ── Job submission ────────────────────────────────────────────────────────────
