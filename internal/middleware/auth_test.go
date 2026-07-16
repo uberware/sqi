@@ -28,7 +28,7 @@ func TestAuth_FailingAuthenticator_Returns401AndSkipsHandler(t *testing.T) {
 	h := middleware.Auth(stubAuthenticator{err: errors.New("bad token")}, discardLogger())(next)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/jobs", nil))
+	h.ServeHTTP(rec, newReq("GET", "/api/v1/jobs"))
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -51,7 +51,7 @@ func TestAuth_SuccessfulAuthenticator_InjectsPrincipal(t *testing.T) {
 	h := middleware.Auth(stubAuthenticator{p: want}, discardLogger())(next)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/jobs", nil))
+	h.ServeHTTP(rec, newReq("GET", "/api/v1/jobs"))
 
 	if !ok {
 		t.Fatal("principal not found in context")
@@ -69,7 +69,7 @@ func TestAuth_NilAuthenticator_TreatedAsAnonymousSuperuser(t *testing.T) {
 	h := middleware.Auth(nil, discardLogger())(next)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/jobs", nil))
+	h.ServeHTTP(rec, newReq("GET", "/api/v1/jobs"))
 
 	if rec.Code == http.StatusUnauthorized {
 		t.Fatal("nil authenticator produced 401, want anonymous passthrough")

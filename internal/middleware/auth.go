@@ -15,7 +15,7 @@ import (
 // does not call the wrapped handler.
 //
 // A nil authn is treated as auth.Anonymous() (auth disabled), so every request
-// receives the anonymous superuser principal and behaviour is unchanged.
+// receives the anonymous superuser principal and behavior is unchanged.
 //
 // Mount it on the REST resource routes only (not /ws, which is gated by its own
 // upgrade hook, and not the public probes on the root router).
