@@ -45,6 +45,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
@@ -119,6 +120,11 @@ type Deps struct {
 	// Version is the server build metadata reported by GET /api/v1/version.
 	// The zero value is acceptable (fields default to empty strings).
 	Version version.Info
+
+	// Auth authenticates each REST request and the WebSocket upgrade. Nil is
+	// treated as auth.Anonymous() (auth disabled): every request is the
+	// anonymous superuser principal and behavior is unchanged.
+	Auth auth.Authenticator
 }
 
 // NewRouter builds and returns the chi router that serves the full sqi-server
@@ -238,11 +244,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 
+	wsH := newWSHandler(logger, deps.Hub, deps.Auth)
+
 	r.Route("/api/v1", func(api chi.Router) {
 		// 7. Versioning header — X-API-Version: 1 on every response.
 		api.Use(middleware.APIVersion("1"))
 
-		// 8. Per-IP token-bucket rate limiting (Phase 1; no auth yet).
+		// 8. Per-IP token-bucket rate limiting (applies to REST + /ws).
 		//    20 req/s sustained, burst of 40.  Replace with auth-aware
 		//    per-client limits when Phase 3 auth lands.
 		//    Disabled via cfg.DisableRateLimit (tests/benchmarks).
@@ -253,93 +261,96 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			}, logger))
 		}
 
-		// ── Job endpoints ───────────────────────────────────
-		api.Post("/jobs", jobs.submitJob)
-		api.Get("/jobs", jobs.listJobs)
-		api.Get("/jobs/{id}", jobs.getJob)
-		api.Patch("/jobs/{id}", jobs.patchJob)
-		api.Post("/jobs/{id}/cancel", jobs.cancelJob)
-		api.Post("/jobs/{id}/retry", jobs.retryJob)
-		api.Delete("/jobs/{id}", jobs.deleteJob)
+		// WebSocket upgrade — gated by its own hook (WS token transport quirk),
+		// so it stays outside the middleware.Auth group.
+		api.Get("/ws", wsH.ServeHTTP)
 
-		// ── Task endpoints ──────────────────────────────────
-		api.Get("/jobs/{id}/tasks", tasks.listJobTasks)
-		api.Get("/tasks/{id}", tasks.getTask)
-		api.Get("/tasks/{id}/logs", tasks.getTaskLogs)
-		api.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
-		api.Post("/tasks/{id}/retry", tasks.retryTask)
-		api.Post("/tasks/{id}/cancel", tasks.cancelTask)
-
-		// ── Worker endpoints ───────────────────────────────
-		api.Get("/workers", workers.listWorkers)
-		api.Get("/workers/{id}", workers.getWorker)
-		api.Post("/workers/{id}/disable", workers.disableWorker)
-		api.Post("/workers/{id}/enable", workers.enableWorker)
-		api.Delete("/workers/{id}", workers.removeWorker)
-
-		// ── Farm endpoints ──────────────────────────────────────
-		api.Post("/farms", farms.createFarm)
-		api.Get("/farms", farms.listFarms)
-		api.Get("/farms/{id}", farms.getFarm)
-		api.Put("/farms/{id}", farms.updateFarm)
-		api.Delete("/farms/{id}", farms.deleteFarm)
-
-		// ── Queue endpoints ─────────────────────────────────────
-		api.Post("/queues", queues.createQueue)
-		api.Get("/queues", queues.listQueues)
-		api.Get("/queues/{id}", queues.getQueue)
-		api.Put("/queues/{id}", queues.updateQueue)
-		api.Delete("/queues/{id}", queues.deleteQueue)
-
-		// ── Storage-location endpoints ──────────────────────────
-		api.Post("/storage-locations", storageLocs.createStorageLocation)
-		api.Get("/storage-locations", storageLocs.listStorageLocations)
-		api.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
-		api.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
-		api.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
-
-		// ── Compute-location endpoints ──────────────────────────
-		api.Post("/compute-locations", computeLocs.createComputeLocation)
-		api.Get("/compute-locations", computeLocs.listComputeLocations)
-		api.Get("/compute-locations/{id}", computeLocs.getComputeLocation)
-		api.Put("/compute-locations/{id}", computeLocs.updateComputeLocation)
-		api.Delete("/compute-locations/{id}", computeLocs.deleteComputeLocation)
-
-		// ── Product endpoints ───────────────────────────────────
-		api.Get("/products", products.listProducts)
-		api.Post("/products", products.createProduct)
-		api.Get("/products/{name}", products.getProduct)
-		api.Put("/products/{name}", products.updateProduct)
-		api.Delete("/products/{name}", products.deleteProduct)
-		api.Post("/products/{name}/jobs", products.submitProductJob)
-		api.Get("/products/{name}/parameters", products.getProductParameters)
-
-		// ── Preset endpoints ────────────────────────────────────
-		api.Get("/presets", presets.listPresets)
-		api.Get("/presets/{name}", presets.getPreset)
-		api.Post("/presets/{name}/install", presets.installPreset)
-
-		// ── Usage-pool endpoints ────────────────────────────────
-		api.Post("/usage-pools", usagePools.createUsagePool)
-		api.Get("/usage-pools", usagePools.listUsagePools)
-		api.Get("/usage-pools/{id}", usagePools.getUsagePool)
-		api.Put("/usage-pools/{id}", usagePools.updateUsagePool)
-		api.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
-
-		// ── Diagnostics endpoints ───────────────────────────────
-		api.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
-
-		// ── Version endpoint ────────────────────────────────────
-		api.Get("/version", versionH.getVersion)
-
-		// OpenAPI spec.
+		// OpenAPI spec — left public in A0.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
-		// WebSocket upgrade.
-		// TODO: wire a real auth.Authenticator through deps once available; nil
-		// defaults to auth.Anonymous(), preserving today's always-pass behavior.
-		wsH := newWSHandler(logger, deps.Hub, nil)
-		api.Get("/ws", wsH.ServeHTTP)
+		// REST resource routes — gated by the auth middleware.
+		api.Group(func(rest chi.Router) {
+			rest.Use(middleware.Auth(deps.Auth, logger))
+
+			// ── Job endpoints ───────────────────────────────────
+			rest.Post("/jobs", jobs.submitJob)
+			rest.Get("/jobs", jobs.listJobs)
+			rest.Get("/jobs/{id}", jobs.getJob)
+			rest.Patch("/jobs/{id}", jobs.patchJob)
+			rest.Post("/jobs/{id}/cancel", jobs.cancelJob)
+			rest.Post("/jobs/{id}/retry", jobs.retryJob)
+			rest.Delete("/jobs/{id}", jobs.deleteJob)
+
+			// ── Task endpoints ──────────────────────────────────
+			rest.Get("/jobs/{id}/tasks", tasks.listJobTasks)
+			rest.Get("/tasks/{id}", tasks.getTask)
+			rest.Get("/tasks/{id}/logs", tasks.getTaskLogs)
+			rest.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
+			rest.Post("/tasks/{id}/retry", tasks.retryTask)
+			rest.Post("/tasks/{id}/cancel", tasks.cancelTask)
+
+			// ── Worker endpoints ───────────────────────────────
+			rest.Get("/workers", workers.listWorkers)
+			rest.Get("/workers/{id}", workers.getWorker)
+			rest.Post("/workers/{id}/disable", workers.disableWorker)
+			rest.Post("/workers/{id}/enable", workers.enableWorker)
+			rest.Delete("/workers/{id}", workers.removeWorker)
+
+			// ── Farm endpoints ──────────────────────────────────────
+			rest.Post("/farms", farms.createFarm)
+			rest.Get("/farms", farms.listFarms)
+			rest.Get("/farms/{id}", farms.getFarm)
+			rest.Put("/farms/{id}", farms.updateFarm)
+			rest.Delete("/farms/{id}", farms.deleteFarm)
+
+			// ── Queue endpoints ─────────────────────────────────────
+			rest.Post("/queues", queues.createQueue)
+			rest.Get("/queues", queues.listQueues)
+			rest.Get("/queues/{id}", queues.getQueue)
+			rest.Put("/queues/{id}", queues.updateQueue)
+			rest.Delete("/queues/{id}", queues.deleteQueue)
+
+			// ── Storage-location endpoints ──────────────────────────
+			rest.Post("/storage-locations", storageLocs.createStorageLocation)
+			rest.Get("/storage-locations", storageLocs.listStorageLocations)
+			rest.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
+			rest.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
+			rest.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
+
+			// ── Compute-location endpoints ──────────────────────────
+			rest.Post("/compute-locations", computeLocs.createComputeLocation)
+			rest.Get("/compute-locations", computeLocs.listComputeLocations)
+			rest.Get("/compute-locations/{id}", computeLocs.getComputeLocation)
+			rest.Put("/compute-locations/{id}", computeLocs.updateComputeLocation)
+			rest.Delete("/compute-locations/{id}", computeLocs.deleteComputeLocation)
+
+			// ── Product endpoints ───────────────────────────────────
+			rest.Get("/products", products.listProducts)
+			rest.Post("/products", products.createProduct)
+			rest.Get("/products/{name}", products.getProduct)
+			rest.Put("/products/{name}", products.updateProduct)
+			rest.Delete("/products/{name}", products.deleteProduct)
+			rest.Post("/products/{name}/jobs", products.submitProductJob)
+			rest.Get("/products/{name}/parameters", products.getProductParameters)
+
+			// ── Preset endpoints ────────────────────────────────────
+			rest.Get("/presets", presets.listPresets)
+			rest.Get("/presets/{name}", presets.getPreset)
+			rest.Post("/presets/{name}/install", presets.installPreset)
+
+			// ── Usage-pool endpoints ────────────────────────────────
+			rest.Post("/usage-pools", usagePools.createUsagePool)
+			rest.Get("/usage-pools", usagePools.listUsagePools)
+			rest.Get("/usage-pools/{id}", usagePools.getUsagePool)
+			rest.Put("/usage-pools/{id}", usagePools.updateUsagePool)
+			rest.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
+
+			// ── Diagnostics endpoints ───────────────────────────────
+			rest.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
+
+			// ── Version endpoint ────────────────────────────────────
+			rest.Get("/version", versionH.getVersion)
+		})
 	})
 
 	// ── Embedded web UI ────────────────────────────────────────
