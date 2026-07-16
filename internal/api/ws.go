@@ -11,7 +11,7 @@ package api
 // # Lifecycle
 //
 //  1. The client sends a standard WebSocket upgrade request.
-//  2. authenticateWS runs (Phase 1: always passes; Phase 3 will validate tokens).
+//  2. h.authn.Authenticate(r) runs; a nil authn defaults to auth.Anonymous().
 //  3. websocket.Accept completes the handshake (101 Switching Protocols).
 //  4. readLoop starts and blocks for the lifetime of the connection:
 // a. Registers the client with the hub and starts a send goroutine.
@@ -74,6 +74,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/middleware"
 	internalws "github.com/uberware/sqi/internal/ws"
 )
@@ -99,10 +100,14 @@ const wsIdleTimeout = 5 * time.Minute
 type wsHandler struct {
 	logger *slog.Logger
 	hub    *internalws.Hub // nil when no hub is wired (subscriptions are accepted but produce no pushes)
+	authn  auth.Authenticator
 }
 
-func newWSHandler(logger *slog.Logger, hub *internalws.Hub) *wsHandler {
-	return &wsHandler{logger: logger, hub: hub}
+func newWSHandler(logger *slog.Logger, hub *internalws.Hub, authn auth.Authenticator) *wsHandler {
+	if authn == nil {
+		authn = auth.Anonymous()
+	}
+	return &wsHandler{logger: logger, hub: hub, authn: authn}
 }
 
 // ServeHTTP upgrades the connection and runs the per-connection message loop.
@@ -110,13 +115,14 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reqID := middleware.RequestIDFromContext(r.Context())
 	log := h.logger.With(slog.String("request_id", reqID), slog.String("remote", r.RemoteAddr))
 
-	if err := authenticateWS(r); err != nil {
+	principal, err := h.authn.Authenticate(r)
+	if err != nil {
 		log.WarnContext(r.Context(), "ws: authentication failed", slog.String("err", err.Error()))
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+	conn, acceptErr := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// InsecureSkipVerify skips the Origin header check (not TLS verification).
 		// Acceptable in Phase 1 — no session or CSRF surface to protect.
 		// TODO(Phase 3): replace with OriginPatterns once auth is introduced.
@@ -126,8 +132,8 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// zlib.Writer per message without pooling; revisit when profiling warrants.
 		CompressionMode: websocket.CompressionDisabled,
 	})
-	if err != nil {
-		log.WarnContext(r.Context(), "ws: upgrade failed", slog.String("err", err.Error()))
+	if acceptErr != nil {
+		log.WarnContext(r.Context(), "ws: upgrade failed", slog.String("err", acceptErr.Error()))
 		return
 	}
 
@@ -140,15 +146,10 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		hub:    h.hub,
 	}
 
-	log.InfoContext(r.Context(), "ws: connection established", slog.String("client_id", wc.id))
-	wc.readLoop(r.Context())
-	log.InfoContext(r.Context(), "ws: connection closed", slog.String("client_id", wc.id))
-}
-
-// authenticateWS validates the WebSocket upgrade request.
-// Phase 1 — always nil. Phase 3 will inspect Authorization or a session cookie.
-func authenticateWS(_ *http.Request) error {
-	return nil
+	ctx := auth.NewContext(r.Context(), principal)
+	log.InfoContext(ctx, "ws: connection established", slog.String("client_id", wc.id))
+	wc.readLoop(ctx)
+	log.InfoContext(ctx, "ws: connection closed", slog.String("client_id", wc.id))
 }
 
 // wsConn wraps a [websocket.Conn] with serialized write access and hub

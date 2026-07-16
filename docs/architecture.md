@@ -61,7 +61,7 @@ through scheduling, worker execution, and final state.
 | OpenJD | `internal/openjd` | Template parser, validator, parameter-space expansion |
 | Worker protocol | `internal/worker/protocol` | Shared worker wire-protocol types (the rest of `internal/worker` is the sqi-worker binary; the server-side status/log ingestion lives in `internal/scheduler`) |
 | Config | `internal/config` | Typed config struct, layered loader (defaults → file → env → flags) |
-| Middleware | `internal/middleware` | Recovery, CORS, request ID, gzip, structured-logging |
+| Middleware | `internal/middleware` | Recovery, CORS, request ID, gzip, structured-logging, auth (see [`docs/auth.md`](auth.md)) |
 | Metrics | `internal/metrics` | Prometheus counter, gauge, and histogram definitions |
 | Health | `internal/health` | `/healthz` (liveness) and `/readyz` (readiness) handlers |
 | Discovery | `internal/discovery` | mDNS `_sqi._tcp` responder |
@@ -102,6 +102,11 @@ main()
 ---
 
 ## Job lifecycle data flow
+
+Every `/api/v1` REST call below passes through the auth middleware first
+(anonymous superuser by default, auth off); `/api/v1/ws` is gated by its own
+upgrade hook instead, and `/healthz`, `/readyz`, `/metrics`, and
+`/api/v1/openapi.yaml` stay public regardless. See [`docs/auth.md`](auth.md).
 
 ### 1. Submission
 

@@ -29,6 +29,9 @@ type FlagOverrides struct {
 	// lower layers intact while an explicit --openjd-enforce-limits=false can turn
 	// the (default-true) gate off.
 	EnforceLimits *bool
+	// AuthEnabled overrides Auth.Enabled when non-nil. Bound to --auth-enabled.
+	// A pointer so an unset flag leaves the lower layers intact.
+	AuthEnabled *bool
 }
 
 // defaultSearchPaths returns the ordered list of config file locations
@@ -142,6 +145,10 @@ type fileConfig struct {
 	PresetLibrary *struct {
 		URL *string `yaml:"url"`
 	} `yaml:"preset_library"`
+
+	Auth *struct {
+		Enabled *bool `yaml:"enabled"`
+	} `yaml:"auth"`
 }
 
 func applyFile(cfg *Config, explicit string) error {
@@ -197,6 +204,7 @@ func mergeFileConfig(cfg *Config, fc fileConfig) {
 	mergeOpenJDFile(cfg, fc)
 	mergeDiagnosticsFile(cfg, fc)
 	mergePresetLibraryFile(cfg, fc)
+	mergeAuthFile(cfg, fc)
 }
 
 func mergeHTTPFile(cfg *Config, fc fileConfig) {
@@ -347,6 +355,15 @@ func mergePresetLibraryFile(cfg *Config, fc fileConfig) {
 	}
 }
 
+func mergeAuthFile(cfg *Config, fc fileConfig) {
+	if fc.Auth == nil {
+		return
+	}
+	if fc.Auth.Enabled != nil {
+		cfg.Auth.Enabled = *fc.Auth.Enabled
+	}
+}
+
 // ── Environment variable layer ────────────────────────────────────────────────
 
 func applyEnv(cfg *Config) {
@@ -382,6 +399,8 @@ func applyEnv(cfg *Config) {
 	setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE")
 
 	setString(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
+
+	setBool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED")
 }
 
 func setString(dst *string, key string) {
@@ -431,5 +450,8 @@ func applyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.EnforceLimits != nil {
 		cfg.OpenJD.EnforceLimits = *f.EnforceLimits
+	}
+	if f.AuthEnabled != nil {
+		cfg.Auth.Enabled = *f.AuthEnabled
 	}
 }

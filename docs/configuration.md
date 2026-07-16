@@ -604,6 +604,37 @@ index format and full integration guide.
 
 ---
 
+## `auth` — Authentication (Phase 3, opt-in)
+
+### `auth.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_AUTH_ENABLED` |
+| **CLI flag** | `--auth-enabled` |
+
+The single switch for sqi's authentication gate. Default `false` — the server
+is open on a trusted local network and every request is served as an anonymous
+superuser.
+
+> **A0 status:** this is a reserved seam, not a working gate. It is fully
+> plumbed and validated (config file, env, flag all flip it), but flipping it
+> to `true` has **no runtime effect yet** — there is no credential backend, so
+> the server still authenticates every request as the anonymous superuser.
+> Local accounts and login land in A1, at which point `auth.enabled=true`
+> starts requiring real credentials.
+
+```yaml
+auth:
+  enabled: false
+```
+
+See [`docs/auth.md`](auth.md) for the full authentication model.
+
+---
+
 ## Worker configuration
 
 Worker configuration applies to `sqi-worker` instances, not the server. Workers
@@ -727,6 +758,7 @@ for the detector schema reference.
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 | `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
+| `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |
 
 ---
 

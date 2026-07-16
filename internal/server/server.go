@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/api"
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/discovery"
@@ -111,6 +112,11 @@ type Config struct {
 	// When empty the /api/v1/presets endpoints respond 503.
 	// Mirror of config.PresetLibraryConfig.URL.
 	PresetLibraryURL string
+
+	// AuthEnabled mirrors config.AuthConfig.Enabled. In A0 it is threaded but
+	// not yet consumed to select a real authenticator (A1); the anonymous
+	// authenticator is always wired. Default false.
+	AuthEnabled bool
 
 	// SeedDefaults, when true, creates a "default" farm and queue on first
 	// startup if the store has no farms yet. No-op once any farm exists.
@@ -335,6 +341,9 @@ func (s *Server) start(ctx context.Context) error {
 	if s.cfg.PresetLibraryURL != "" {
 		deps.PresetLib = presetlib.New(s.cfg.PresetLibraryURL, presetlib.DefaultCacheTTL)
 	}
+	// A0: always the anonymous authenticator. A1 selects a real authenticator
+	// here when s.cfg.AuthEnabled is true.
+	deps.Auth = auth.Anonymous()
 	router := api.NewRouter(
 		api.Config{
 			CORSOrigins:            s.cfg.CORSOrigins,
