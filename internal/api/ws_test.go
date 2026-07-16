@@ -32,12 +32,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/uberware/sqi/internal/auth"
 	internalws "github.com/uberware/sqi/internal/ws"
 )
 
@@ -47,10 +49,17 @@ import (
 // hub may be nil when the test does not need fan-out.
 func newWSTestServer(t *testing.T, hub *internalws.Hub) *httptest.Server {
 	t.Helper()
-	h := newWSHandler(newTestLogger(), hub)
+	h := newWSHandler(newTestLogger(), hub, auth.Anonymous())
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// stubWSAuthenticator is a test [auth.Authenticator] that always returns err.
+type stubWSAuthenticator struct{ err error }
+
+func (s stubWSAuthenticator) Authenticate(*http.Request) (auth.Principal, error) {
+	return auth.Principal{}, s.err
 }
 
 // wsTestURL converts the http://… address of srv to ws://….
@@ -125,6 +134,22 @@ func mustAck(t *testing.T, ctx context.Context, conn *websocket.Conn, clientSeq 
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
+
+func TestWS_FailingAuthenticator_Returns401BeforeUpgrade(t *testing.T) {
+	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL) //nolint:noctx // simple synchronous test request
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
 
 func TestWSHandler_Upgrade(t *testing.T) {
 	srv := newWSTestServer(t, nil)

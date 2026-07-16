@@ -336,7 +336,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
 		// WebSocket upgrade.
-		wsH := newWSHandler(logger, deps.Hub)
+		// TODO: wire a real auth.Authenticator through deps once available; nil
+		// defaults to auth.Anonymous(), preserving today's always-pass behavior.
+		wsH := newWSHandler(logger, deps.Hub, nil)
 		api.Get("/ws", wsH.ServeHTTP)
 	})
 
