@@ -139,6 +139,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		DiscoveryInstanceName: cfg.Discovery.InstanceName,
 		EnforceOpenJDLimits:   cfg.OpenJD.EnforceLimits,
 		PresetLibraryURL:      cfg.PresetLibrary.URL,
+		AuthEnabled:           cfg.Auth.Enabled,
 		Scheduler:             schedCfg,
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
