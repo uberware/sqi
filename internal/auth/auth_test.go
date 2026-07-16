@@ -11,7 +11,7 @@ import (
 )
 
 func TestAnonymous_ReturnsSuperuserPrincipal(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	p, err := auth.Anonymous().Authenticate(r)
 	if err != nil {
 		t.Fatalf("Anonymous().Authenticate: unexpected error: %v", err)
