@@ -717,3 +717,45 @@ func TestValidate_DefaultFailureLimitZeroAllowed(t *testing.T) {
 		}
 	}
 }
+
+// ── Auth: opt-in gate (file, env, flag) ──────────────────────────────────────
+
+func TestLoad_AuthEnabled_DefaultFalse(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Auth.Enabled {
+		t.Error("default Auth.Enabled = true, want false")
+	}
+}
+
+func TestLoad_AuthEnabled_EnvFlips(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("Auth.Enabled = false after SQI_AUTH_ENABLED=true, want true")
+	}
+}
+
+func TestLoad_AuthEnabled_FlagFlips(t *testing.T) {
+	enabled := true
+	cfg, err := config.Load("", config.FlagOverrides{AuthEnabled: &enabled})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("Auth.Enabled = false after --auth-enabled=true, want true")
+	}
+}
+
+func TestLoad_AuthEnabled_UnsetFlagDoesNotClobberEnv(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true")
+	cfg, err := config.Load("", config.FlagOverrides{AuthEnabled: nil})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("unset --auth-enabled clobbered SQI_AUTH_ENABLED=true")
+	}
+}

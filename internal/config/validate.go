@@ -38,6 +38,7 @@ func Validate(cfg Config) []ValidationError {
 	errs = append(errs, validateScheduler(cfg.Scheduler)...)
 	errs = append(errs, validateDiscovery(cfg.Discovery)...)
 	errs = append(errs, validateDiagnostics(cfg.Diagnostics)...)
+	errs = append(errs, validateAuth(cfg.Auth)...)
 	return errs
 }
 
@@ -226,6 +227,12 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 			),
 		}}
 	}
+	return nil
+}
+
+// validateAuth validates the auth config. Reserved: AuthConfig currently holds
+// only a bool (nothing to reject). A1 adds credential sub-fields to validate.
+func validateAuth(_ AuthConfig) []ValidationError {
 	return nil
 }
 

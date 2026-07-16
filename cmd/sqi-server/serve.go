@@ -24,6 +24,7 @@ import (
 var serveFlags struct {
 	HTTPAddr            string
 	OpenJDEnforceLimits bool
+	AuthEnabled         bool
 }
 
 var serveCmd = &cobra.Command{
@@ -49,6 +50,11 @@ func init() {
 		"openjd-enforce-limits", true,
 		"enforce OpenJD quantitative limits during submission (overrides config file and SQI_OPENJD_ENFORCE_LIMITS)",
 	)
+	serveCmd.Flags().BoolVar(
+		&serveFlags.AuthEnabled,
+		"auth-enabled", false,
+		"enable the authentication gate (overrides config file and SQI_AUTH_ENABLED)",
+	)
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -59,6 +65,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if cmd.Flags().Changed("openjd-enforce-limits") {
 		overrides.EnforceLimits = &serveFlags.OpenJDEnforceLimits
+	}
+	if cmd.Flags().Changed("auth-enabled") {
+		overrides.AuthEnabled = &serveFlags.AuthEnabled
 	}
 	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
 	if err != nil {

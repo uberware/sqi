@@ -37,6 +37,7 @@ type Config struct {
 	OpenJD        OpenJDConfig        `yaml:"openjd"`
 	Diagnostics   DiagnosticsConfig   `yaml:"diagnostics"`
 	PresetLibrary PresetLibraryConfig `yaml:"preset_library"`
+	Auth          AuthConfig          `yaml:"auth"`
 }
 
 // HTTPConfig controls the REST and WebSocket listener.
@@ -172,6 +173,16 @@ type DiscoveryConfig struct {
 	InstanceName string `yaml:"instance_name"`
 }
 
+// AuthConfig controls the opt-in authentication gate (Phase 3).
+type AuthConfig struct {
+	// Enabled turns on the authentication gate. Default false — the server is
+	// open on a trusted local network. In A0 this is a reserved seam: it is
+	// plumbed and validated but does not yet change runtime behavior (a real
+	// authenticator is selected in A1).
+	// Env: SQI_AUTH_ENABLED
+	Enabled bool `yaml:"enabled"`
+}
+
 // DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
 // in the web UI.
 type DiagnosticsConfig struct {
@@ -247,6 +258,9 @@ func DefaultConfig() Config {
 		},
 		PresetLibrary: PresetLibraryConfig{
 			URL: "https://uberware.github.io/sqi-presets/index.json",
+		},
+		Auth: AuthConfig{
+			Enabled: false,
 		},
 	}
 }
