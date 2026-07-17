@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -148,9 +149,15 @@ class SqiClient:
             component is preserved, so a reverse-proxy subpath works:
             ``http://host/sqi`` sends requests to ``http://host/sqi/api/v1/…``.
         timeout: Per-request timeout in seconds (default 30).
-        headers: Extra default headers merged into every request. This is the
-            forward-compatible hook for Phase 3 authentication; supplied headers
-            take precedence over the client's own defaults on conflict.
+        headers: Extra default headers merged into every request. Supplied
+            headers take precedence over the client's own defaults on
+            conflict — including the ``Authorization`` header resolved from
+            ``token``, so passing one explicitly always wins.
+        token: Bearer credential sent as ``Authorization: Bearer <token>``.
+            Falls back to the ``$SQI_TOKEN`` then ``$SQI_API_KEY`` environment
+            variables when not passed explicitly; when none is available no
+            ``Authorization`` header is added. An explicit ``headers``
+            argument containing ``Authorization`` overrides it.
         max_attempts: Total attempts for a retried (idempotent GET) request,
             including the first (default 3). ``1`` disables retries.
         retry_backoff: Base delay in seconds for exponential backoff between
@@ -173,6 +180,7 @@ class SqiClient:
         *,
         timeout: float = 30.0,
         headers: Mapping[str, str] | None = None,
+        token: str | None = None,
         max_attempts: int = 3,
         retry_backoff: float = 0.5,
         retry_backoff_max: float = 30.0,
@@ -183,11 +191,13 @@ class SqiClient:
             "User-Agent": f"sqi-sdk/{__version__}",
             "Accept": "application/json",
         }
+        resolved_token = token or os.environ.get("SQI_TOKEN") or os.environ.get("SQI_API_KEY")
+        if resolved_token:
+            default_headers["Authorization"] = f"Bearer {resolved_token}"
         if headers:
-            default_headers.update(headers)
+            default_headers.update(headers)  # explicit headers still win
         # Retained for the WebSocket upgrade (events()), which uses a separate
-        # connection but should carry the same headers (User-Agent, the Phase 3
-        # auth hook).
+        # connection but should carry the same headers (User-Agent, auth).
         self._default_headers = default_headers
         self._http = httpx.Client(
             base_url=self._base_url,

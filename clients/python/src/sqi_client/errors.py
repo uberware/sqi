@@ -23,6 +23,7 @@ __all__ = [
     "NotFoundError",
     "RateLimitError",
     "ServerError",
+    "SqiAuthError",
     "SqiConnectionError",
     "SqiError",
     "SqiTimeoutError",
@@ -115,10 +116,16 @@ class ServerError(APIError):
     """HTTP 5xx — the server failed to process a valid request."""
 
 
+class SqiAuthError(APIError):
+    """HTTP 401/403 — authentication is required or the credential is rejected."""
+
+
 # Exact status-code → subclass mapping. 5xx falls through to ServerError and any
 # other unmapped status to the APIError base (see _class_for_status).
 _STATUS_TO_CLASS = {
     400: BadRequestError,
+    401: SqiAuthError,
+    403: SqiAuthError,
     404: NotFoundError,
     409: ConflictError,
     422: ValidationError,

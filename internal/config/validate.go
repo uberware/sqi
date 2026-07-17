@@ -230,10 +230,70 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 	return nil
 }
 
-// validateAuth validates the auth config. Reserved: AuthConfig currently holds
-// only a bool (nothing to reject). A1 adds credential sub-fields to validate.
-func validateAuth(_ AuthConfig) []ValidationError {
-	return nil
+// validateAuth validates the auth config. Rules only apply when auth is
+// enabled — a disabled auth block must never produce validation errors, since
+// its sub-fields carry no operational meaning until the gate is turned on.
+//
+// Bootstrap.Password is intentionally never echoed here: validation errors
+// name the field, never the value.
+func validateAuth(cfg AuthConfig) []ValidationError {
+	var errs []ValidationError
+	if !cfg.Enabled {
+		return errs
+	}
+	if cfg.Session.TTL <= 0 {
+		errs = append(errs, ValidationError{
+			Field:   "auth.session.ttl",
+			Message: "must be > 0 when auth is enabled; set SQI_AUTH_SESSION_TTL or auth.session.ttl",
+		})
+	}
+	if cfg.Session.CookieName == "" {
+		// An empty name defaults quietly in session.New and newAuthHandler, but
+		// middleware.CSRF reads it raw via r.Cookie(""), which always errors —
+		// every mutating request would then take the "no session cookie" exempt
+		// path and CSRF would be silently disabled. Require it explicitly so
+		// all three consumers agree on the name instead of relying on
+		// convention.
+		errs = append(errs, ValidationError{
+			Field:   "auth.session.cookie_name",
+			Message: "must not be empty when auth is enabled; set SQI_AUTH_SESSION_COOKIE_NAME or auth.session.cookie_name",
+		})
+	}
+	switch cfg.Session.CookieSecure {
+	case "auto", "true", "false":
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Field: "auth.session.cookie_secure",
+			Message: fmt.Sprintf(
+				`must be "auto", "true", or "false", got %q; set SQI_AUTH_SESSION_COOKIE_SECURE or auth.session.cookie_secure`,
+				cfg.Session.CookieSecure,
+			),
+		})
+	}
+	errs = append(errs, validateAuthBootstrap(cfg.Bootstrap)...)
+	return errs
+}
+
+// validateAuthBootstrap checks that Bootstrap.Username and Bootstrap.Password
+// are either both empty (no bootstrap) or both set. Exactly one set usually
+// means a typo'd env var name (e.g. SQI_AUTH_BOOSTRAP_PASSWORD) and risks a
+// later bootstrap step creating an admin with an empty password.
+func validateAuthBootstrap(cfg BootstrapConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.Username != "" && cfg.Password == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.bootstrap.password",
+			Message: "must be set when auth.bootstrap.username is set; set SQI_AUTH_BOOTSTRAP_PASSWORD or auth.bootstrap.password",
+		})
+	}
+	if cfg.Password != "" && cfg.Username == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.bootstrap.username",
+			Message: "must be set when auth.bootstrap.password is set; set SQI_AUTH_BOOTSTRAP_USERNAME or auth.bootstrap.username",
+		})
+	}
+	return errs
 }
 
 // validateTCPAddr checks that addr is a parseable host:port string.

@@ -67,6 +67,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,18 +97,34 @@ const wsWriteTimeout = 10 * time.Second
 // Must be greater than wsPingInterval to avoid false positives.
 const wsIdleTimeout = 5 * time.Minute
 
+// wsOriginConfig controls WebSocket Origin enforcement (CSWSH hardening).
+//
+// When Enabled is false (auth off), origin checking is disabled entirely
+// (InsecureSkipVerify: true) — byte-for-byte the pre-A1 behavior, since with
+// no session cookie there is no ambient credential for a hostile page to
+// ride.  When true (auth on), AllowedOrigins (converted to coder/websocket's
+// host-pattern form by [originPatterns]) is passed as OriginPatterns; the
+// request's own host is always implicitly authorized by the library, so an
+// empty AllowedOrigins still permits same-origin connections (the embedded
+// UI) while rejecting everything else.
+type wsOriginConfig struct {
+	Enabled        bool
+	AllowedOrigins []string
+}
+
 // wsHandler handles GET /api/v1/ws WebSocket upgrade requests.
 type wsHandler struct {
 	logger *slog.Logger
 	hub    *internalws.Hub // nil when no hub is wired (subscriptions are accepted but produce no pushes)
 	authn  auth.Authenticator
+	origin wsOriginConfig
 }
 
-func newWSHandler(logger *slog.Logger, hub *internalws.Hub, authn auth.Authenticator) *wsHandler {
+func newWSHandler(logger *slog.Logger, hub *internalws.Hub, authn auth.Authenticator, origin wsOriginConfig) *wsHandler {
 	if authn == nil {
 		authn = auth.Anonymous()
 	}
-	return &wsHandler{logger: logger, hub: hub, authn: authn}
+	return &wsHandler{logger: logger, hub: hub, authn: authn, origin: origin}
 }
 
 // ServeHTTP upgrades the connection and runs the per-connection message loop.
@@ -118,20 +135,34 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	principal, err := h.authn.Authenticate(r)
 	if err != nil {
 		log.WarnContext(r.Context(), "ws: authentication failed", slog.String("err", err.Error()))
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		// Same RFC-7807 body the REST 401 returns (middleware.Auth): the
+		// upgrade is rejected before websocket.Accept, so this is a plain HTTP
+		// response and a client should not have to parse two error formats
+		// depending on which surface refused it. The authenticator's reason
+		// stays in the log, not the response.
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication required")
 		return
 	}
 
-	conn, acceptErr := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// InsecureSkipVerify skips the Origin header check (not TLS verification).
-		// Acceptable in Phase 1 — no session or CSRF surface to protect.
-		// TODO(Phase 3): replace with OriginPatterns once auth is introduced.
-		InsecureSkipVerify: true, // origin check deferred to Phase 3 — see TODO above
-
+	acceptOpts := &websocket.AcceptOptions{
 		// Disable per-message compression: the Go implementation allocates a
 		// zlib.Writer per message without pooling; revisit when profiling warrants.
 		CompressionMode: websocket.CompressionDisabled,
-	})
+	}
+	if h.origin.Enabled {
+		// Auth on: a session cookie is in play, so this upgrade is an ambient
+		// credential a hostile page could ride (CSWSH). OriginPatterns
+		// restricts the handshake to the configured origins; the request's
+		// own host is always implicitly allowed by the library, so the
+		// same-origin embedded UI works even with an empty allow-list.
+		acceptOpts.OriginPatterns = originPatterns(h.origin.AllowedOrigins)
+	} else {
+		// Auth off: no cookie, no ambient-credential surface to protect —
+		// byte-for-byte the pre-A1 behavior (InsecureSkipVerify skips the
+		// Origin header check; it does not affect TLS verification).
+		acceptOpts.InsecureSkipVerify = true
+	}
+	conn, acceptErr := websocket.Accept(w, r, acceptOpts)
 	if acceptErr != nil {
 		log.WarnContext(r.Context(), "ws: upgrade failed", slog.String("err", acceptErr.Error()))
 		return
@@ -441,6 +472,28 @@ func (wc *wsConn) handleUnsubscribe(ctx context.Context, env internalws.Envelope
 
 	wc.logger.DebugContext(ctx, "ws: unsubscribed", slog.String("subject", env.Subject))
 	wc.sendAck(ctx, env.Seq, "")
+}
+
+// originPatterns converts configured origins (e.g. "https://farm.example",
+// full URLs as stored in cfg.CORSOrigins) into the host[:port] pattern form
+// coder/websocket's OriginPatterns expects. Entries that fail to parse as a
+// URL with a host, plus the empty string and the literal wildcard "*", are
+// passed through only when non-empty and not "*" — "*" is deliberately never
+// forwarded (see the wildcard-drop discussion on cfg.AuthEnabled in
+// router.go); use InsecureSkipVerify to intentionally allow every origin.
+func originPatterns(origins []string) []string {
+	pats := make([]string, 0, len(origins))
+	for _, o := range origins {
+		if o == "" || o == "*" {
+			continue
+		}
+		if u, err := url.Parse(o); err == nil && u.Host != "" {
+			pats = append(pats, u.Host)
+		} else {
+			pats = append(pats, o)
+		}
+	}
+	return pats
 }
 
 // isConnClosed reports whether err indicates a closed WebSocket connection,

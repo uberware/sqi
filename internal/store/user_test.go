@@ -1,0 +1,243 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package store_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/sqlite"
+)
+
+func newStores(t *testing.T) map[string]store.Store {
+	t.Helper()
+	db := t.TempDir() + "/test.db"
+	sq, err := sqlite.Open(context.Background(), db, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = sq.Close() })
+	return map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+}
+
+func mkUser(role string) store.User {
+	return store.User{
+		ID: uuid.NewString(), Username: "alice-" + uuid.NewString()[:8],
+		DisplayName: "Alice", PasswordHash: "$argon2id$stub", Role: role,
+	}
+}
+
+func TestUserStore_CRUD(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u := mkUser("admin")
+
+			created, err := st.CreateUser(ctx, u)
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			if created.CreatedAt.IsZero() {
+				t.Fatal("CreatedAt not set")
+			}
+
+			got, err := st.GetUser(ctx, u.ID)
+			if err != nil || got.Username != u.Username {
+				t.Fatalf("GetUser: %+v err=%v", got, err)
+			}
+
+			byName, err := st.GetUserByUsername(ctx, u.Username)
+			if err != nil || byName.ID != u.ID {
+				t.Fatalf("GetUserByUsername: %+v err=%v", byName, err)
+			}
+
+			// Case-insensitive username lookup + uniqueness.
+			if _, err := st.GetUserByUsername(ctx, upper(u.Username)); err != nil {
+				t.Fatalf("case-insensitive lookup failed: %v", err)
+			}
+			dup := mkUser("user")
+			dup.Username = upper(u.Username)
+			if _, err := st.CreateUser(ctx, dup); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected ErrConflict on duplicate username, got %v", err)
+			}
+
+			got.DisplayName = "Alice B"
+			got.Role = "operator"
+			got.Disabled = true
+			upd, err := st.UpdateUser(ctx, got)
+			if err != nil || upd.DisplayName != "Alice B" || upd.Role != "operator" || !upd.Disabled {
+				t.Fatalf("UpdateUser: %+v err=%v", upd, err)
+			}
+			// UpdateUser is scoped to display_name/role/disabled — guard
+			// against a future regression touching username or password.
+			if upd.Username != u.Username {
+				t.Fatalf("UpdateUser must not change Username: got %q, want %q", upd.Username, u.Username)
+			}
+			if upd.PasswordHash != u.PasswordHash {
+				t.Fatalf("UpdateUser must not change PasswordHash: got %q, want %q", upd.PasswordHash, u.PasswordHash)
+			}
+
+			if err := st.SetUserPassword(ctx, u.ID, "$argon2id$new"); err != nil {
+				t.Fatalf("SetUserPassword: %v", err)
+			}
+			after, err := st.GetUser(ctx, u.ID)
+			if err != nil {
+				t.Fatalf("GetUser: %v", err)
+			}
+			if after.PasswordHash != "$argon2id$new" {
+				t.Fatalf("password not updated: %q", after.PasswordHash)
+			}
+
+			n, err := st.CountUsers(ctx)
+			if err != nil || n != 1 {
+				t.Fatalf("CountUsers: %d err=%v", n, err)
+			}
+
+			if err := st.DeleteUser(ctx, u.ID); err != nil {
+				t.Fatalf("DeleteUser: %v", err)
+			}
+			if _, err := st.GetUser(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound after delete, got %v", err)
+			}
+		})
+	}
+}
+
+// TestUserStore_ListUsers verifies ListUsers returns users ordered
+// case-insensitively by username — matching SQLite's `ORDER BY username`
+// over the `username` column, which is declared COLLATE NOCASE (see
+// sqlListUsers in internal/store/sqlite/user.go). The fake store must sort
+// the same way; a case-sensitive ASCII sort would put "Zeta" before "bob"
+// (since 'Z' < 'b' in ASCII), diverging from SQLite.
+func TestUserStore_ListUsers(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			for _, username := range []string{"Zeta", "bob", "Alice"} {
+				u := mkUser("user")
+				u.Username = username
+				if _, err := st.CreateUser(ctx, u); err != nil {
+					t.Fatalf("CreateUser(%q): %v", username, err)
+				}
+			}
+
+			users, err := st.ListUsers(ctx)
+			if err != nil {
+				t.Fatalf("ListUsers: %v", err)
+			}
+			if len(users) != 3 {
+				t.Fatalf("ListUsers: got %d users, want 3", len(users))
+			}
+			got := []string{users[0].Username, users[1].Username, users[2].Username}
+			want := []string{"Alice", "bob", "Zeta"}
+			if got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+				t.Fatalf("ListUsers order = %v, want %v (case-insensitive sort)", got, want)
+			}
+		})
+	}
+}
+
+// TestUserStore_DeleteCascadesSessions verifies that deleting a user removes
+// their sessions too — SQLite via the `ON DELETE CASCADE` foreign key
+// (requires PRAGMA foreign_keys=ON, set in sqlite.Open), the fake via its
+// manual mirror in DeleteUser.
+func TestUserStore_DeleteCascadesSessions(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("user"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			now := time.Now().UTC()
+			sess := store.Session{
+				ID: uuid.NewString(), TokenHash: "cascade-" + uuid.NewString(),
+				UserID: u.ID, ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+			}
+			if _, err := st.CreateSession(ctx, sess); err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+
+			if err := st.DeleteUser(ctx, u.ID); err != nil {
+				t.Fatalf("DeleteUser: %v", err)
+			}
+
+			if _, err := st.GetSessionByTokenHash(ctx, sess.TokenHash, now); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("expected session to be cascade-deleted with its user, got %v", err)
+			}
+		})
+	}
+}
+
+// TestUserStore_CreateUser_DuplicateID verifies that creating a user whose ID
+// collides with an existing user is rejected — SQLite via `id TEXT PRIMARY
+// KEY`, the fake via an explicit check. Without this check the fake would
+// silently overwrite the existing user's password hash and role instead of
+// returning store.ErrConflict like SQLite does.
+func TestUserStore_CreateUser_DuplicateID(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u := mkUser("admin")
+			if _, err := st.CreateUser(ctx, u); err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+
+			dup := mkUser("user")
+			dup.ID = u.ID // same ID, different username/role/password.
+			if _, err := st.CreateUser(ctx, dup); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected ErrConflict on duplicate ID, got %v", err)
+			}
+
+			// The original user must be unchanged, not overwritten.
+			got, err := st.GetUser(ctx, u.ID)
+			if err != nil {
+				t.Fatalf("GetUser: %v", err)
+			}
+			if got.Username != u.Username || got.PasswordHash != u.PasswordHash || got.Role != u.Role {
+				t.Fatalf("duplicate-ID create must not overwrite existing user: got %+v, want %+v", got, u)
+			}
+		})
+	}
+}
+
+// TestUserStore_CreateUser_AsciiFoldOnly verifies that username uniqueness
+// folds ASCII case only, matching SQLite's `COLLATE NOCASE` (which is
+// ASCII-only, unlike Go's Unicode-aware strings.EqualFold). "Δelta" and
+// "δelta" differ only by a non-ASCII Greek letter case, so both must be
+// accepted as distinct usernames.
+func TestUserStore_CreateUser_AsciiFoldOnly(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u1 := mkUser("user")
+			u1.Username = "Δelta"
+			if _, err := st.CreateUser(ctx, u1); err != nil {
+				t.Fatalf("CreateUser(Δelta): %v", err)
+			}
+
+			u2 := mkUser("user")
+			u2.Username = "δelta"
+			if _, err := st.CreateUser(ctx, u2); err != nil {
+				t.Fatalf("CreateUser(δelta) should succeed since SQLite COLLATE NOCASE is ASCII-only: %v", err)
+			}
+		})
+	}
+}
+
+func upper(s string) string {
+	// simple ASCII upper for the test username
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'a' && b[i] <= 'z' {
+			b[i] -= 32
+		}
+	}
+	return string(b)
+}

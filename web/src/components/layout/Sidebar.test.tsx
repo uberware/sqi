@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WebSocketProvider } from '@/ws/context'
 import { ThemeProvider } from '@/theme/context'
+import { AuthProvider } from '@/auth/context'
 import Sidebar from '@/components/layout/Sidebar'
 import { installLocalStorageMock, setMatchMedia, resetThemeDom } from '@/theme/test-utils'
 
@@ -18,11 +20,49 @@ class MockWebSocket {
   close(): void {}
 }
 
+const fetchMock = vi.fn<typeof fetch>()
+
+const AUTHED_PRINCIPAL = {
+  subject: 'u1',
+  display_name: 'Test User',
+  roles: ['operator'],
+  kind: 'user',
+}
+const ANONYMOUS_PRINCIPAL = {
+  subject: 'anonymous',
+  display_name: 'Anonymous',
+  roles: [],
+  kind: 'anonymous',
+}
+
+function jsonResponse(status: number, body: unknown, contentType: string): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': contentType } })
+}
+
+/** Path suffix matcher against whatever shape (string | URL | Request) apiFetch was called with. */
+function urlOf(input: Parameters<typeof fetch>[0]): string {
+  if (input instanceof URL) return input.toString()
+  if (typeof input === 'string') return input
+  return input.url
+}
+
 beforeEach(() => {
   vi.stubGlobal('WebSocket', MockWebSocket)
   installLocalStorageMock()
   resetThemeDom()
   setMatchMedia(false)
+  fetchMock.mockReset()
+  vi.stubGlobal('fetch', fetchMock)
+  // Default every test to a real authed principal so the pre-existing nav
+  // assertions (which render synchronously, before any auth resolution)
+  // keep working unchanged; tests exercising the logout control itself
+  // override this via renderSidebarAs.
+  fetchMock.mockImplementation((input) => {
+    if (urlOf(input).includes('/auth/me')) {
+      return Promise.resolve(jsonResponse(200, AUTHED_PRINCIPAL, 'application/json'))
+    }
+    return Promise.reject(new TypeError('Failed to fetch'))
+  })
 })
 
 afterEach(() => {
@@ -31,15 +71,31 @@ afterEach(() => {
 })
 
 function renderSidebar(initialEntry = '/') {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <WebSocketProvider url="ws://test">
-        <ThemeProvider>
-          <Sidebar />
-        </ThemeProvider>
-      </WebSocketProvider>
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <AuthProvider>
+          <WebSocketProvider url="ws://test">
+            <ThemeProvider>
+              <Sidebar />
+            </ThemeProvider>
+          </WebSocketProvider>
+        </AuthProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
+}
+
+/** Renders Sidebar with /auth/me stubbed to return the given principal. */
+function renderSidebarAs(principal: unknown, initialEntry = '/') {
+  fetchMock.mockImplementation((input) => {
+    if (urlOf(input).includes('/auth/me')) {
+      return Promise.resolve(jsonResponse(200, principal, 'application/json'))
+    }
+    return Promise.reject(new TypeError('Failed to fetch'))
+  })
+  return renderSidebar(initialEntry)
 }
 
 describe('Sidebar', () => {
@@ -121,5 +177,48 @@ describe('Sidebar', () => {
   it('renders the theme toggle switch in the footer', () => {
     renderSidebar()
     expect(screen.getByRole('switch', { name: /dark mode/i })).toBeInTheDocument()
+  })
+
+  describe('logout control', () => {
+    it('is visible when authed as a real user', async () => {
+      renderSidebarAs(AUTHED_PRINCIPAL)
+      expect(await screen.findByRole('button', { name: /log ?out/i })).toBeInTheDocument()
+    })
+
+    it('is absent when the principal is anonymous (auth disabled)', async () => {
+      renderSidebarAs(ANONYMOUS_PRINCIPAL)
+      // Let /auth/me resolve before asserting absence, otherwise the
+      // assertion would trivially pass during the loading state too.
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: /log ?out/i })).not.toBeInTheDocument(),
+      )
+    })
+
+    it('calls POST /auth/logout and flips auth state to anonymous when clicked', async () => {
+      renderSidebarAs(AUTHED_PRINCIPAL)
+      const logoutBtn = await screen.findByRole('button', { name: /log ?out/i })
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      // After logout, /auth/me is re-queried and must resolve to unauthenticated.
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          401,
+          { status: 401, detail: 'authentication required' },
+          'application/problem+json',
+        ),
+      )
+      fireEvent.click(logoutBtn)
+      await waitFor(() => {
+        const logoutCall = fetchMock.mock.calls.find(
+          (c) =>
+            urlOf(c[0]).includes('/auth/logout') &&
+            (c[1] as RequestInit | undefined)?.method === 'POST',
+        )
+        expect(logoutCall).toBeDefined()
+      })
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: /log ?out/i })).not.toBeInTheDocument(),
+      )
+    })
   })
 })

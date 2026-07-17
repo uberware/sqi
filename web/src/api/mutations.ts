@@ -3,10 +3,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { queryKeys } from './queries'
+import { evictAllExceptAuthMe } from './queryEviction'
 import type {
   ComputeLocation,
   Farm,
   Job,
+  LoginRequest,
   StorageLocation,
   UsagePool,
   Queue,
@@ -15,12 +17,30 @@ import type {
   CancelResponse,
   SubmitJobInput,
   SubmitProductJobInput,
+  User,
   WorkerActionResponse,
   Product,
   TemplateFormat,
 } from './types'
 
 // ── Raw mutation fetch functions ──────────────────────────────────────────────
+
+/**
+ * Log in via `POST /auth/login`. On success the server mints a session and
+ * returns it as an HttpOnly `Set-Cookie` — the response body (the logged-in
+ * User) is informational only; nothing from it is stored client-side.
+ */
+export function fetchLogin(body: LoginRequest): Promise<User> {
+  return apiFetch<User>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** Log out via `POST /auth/logout`. Revokes the session server-side and clears the cookie. */
+export async function fetchLogout(): Promise<void> {
+  await apiFetch('/auth/logout', { method: 'POST' })
+}
 
 /**
  * Submit a raw OpenJD template via `POST /jobs`. The body content type is set
@@ -668,6 +688,127 @@ export function useInstallPreset() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.presets.all })
       void qc.invalidateQueries({ queryKey: queryKeys.products.all })
+    },
+  })
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+/** Log in with a username/password. Invalidates `auth.me` on success so the AuthProvider re-resolves. */
+export function useLogin() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fetchLogin,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.auth.me })
+    },
+  })
+}
+
+/**
+ * Log out the current session. Drops every cached query except `auth.me`, then
+ * invalidates that one so the AuthProvider re-resolves to anon, via the shared
+ * {@link evictAllExceptAuthMe} helper.
+ *
+ * This is one of two paths that perform this eviction — the other is the
+ * `QueryCache.onError` handler in `queryClient.ts`, which runs the same
+ * eviction when a session *expires* (a 401 on any query) rather than being
+ * explicitly logged out of. Both must evict identically: query keys carry no
+ * principal, so anything the outgoing user browsed would otherwise stay
+ * cached and be served — stale but visible — to whoever logs in next on the
+ * same browser, whichever path ended the session.
+ */
+export function useLogout() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fetchLogout,
+    onSuccess: () => {
+      evictAllExceptAuthMe(qc)
+    },
+  })
+}
+
+// ── User admin ─────────────────────────────────────────────────────────────────
+
+export interface UserCreateInput {
+  username: string
+  password: string
+  display_name?: string
+  role?: string
+}
+
+export interface UserUpdateInput {
+  display_name?: string
+  role?: string
+  disabled?: boolean
+}
+
+export function fetchCreateUser(input: UserCreateInput): Promise<User> {
+  return apiFetch<User>('/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchUpdateUser(id: string, input: UserUpdateInput): Promise<User> {
+  return apiFetch<User>(`/users/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchSetUserPassword(id: string, password: string): Promise<void> {
+  await apiFetch(`/users/${encodeURIComponent(id)}/password`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  })
+}
+
+export async function fetchDeleteUser(id: string): Promise<void> {
+  await apiFetch(`/users/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** Create a local user account. Invalidates the user list on success. */
+export function useCreateUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateUser,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all })
+    },
+  })
+}
+
+/** Update a local user account's display name, role, or disabled flag. Invalidates the user list. */
+export function useUpdateUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UserUpdateInput }) =>
+      fetchUpdateUser(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all })
+    },
+  })
+}
+
+/** Set a local user account's password. Does not invalidate any query (password is never returned). */
+export function useSetUserPassword() {
+  return useMutation({
+    mutationFn: ({ id, password }: { id: string; password: string }) =>
+      fetchSetUserPassword(id, password),
+  })
+}
+
+/** Delete a local user account. Invalidates the user list on success. */
+export function useDeleteUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchDeleteUser(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all })
     },
   })
 }

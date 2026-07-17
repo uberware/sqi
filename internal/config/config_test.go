@@ -5,8 +5,11 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/config"
 )
@@ -757,5 +760,374 @@ func TestLoad_AuthEnabled_UnsetFlagDoesNotClobberEnv(t *testing.T) {
 	}
 	if !cfg.Auth.Enabled {
 		t.Error("unset --auth-enabled clobbered SQI_AUTH_ENABLED=true")
+	}
+}
+
+// ── Auth: session + bootstrap (defaults, file, env, validation) ──────────────
+
+func TestAuthConfigDefaults(t *testing.T) {
+	c := config.DefaultConfig()
+	if c.Auth.Enabled {
+		t.Fatal("auth must default disabled")
+	}
+	if c.Auth.Session.TTL != 168*time.Hour {
+		t.Fatalf("session TTL default = %v, want 168h", c.Auth.Session.TTL)
+	}
+	if c.Auth.Session.CookieName != "sqi_session" {
+		t.Fatalf("cookie name default = %q, want sqi_session", c.Auth.Session.CookieName)
+	}
+	if c.Auth.Session.CookieSecure != "auto" {
+		t.Fatalf("cookie secure default = %q, want auto", c.Auth.Session.CookieSecure)
+	}
+	if c.Auth.Bootstrap.Username != "" || c.Auth.Bootstrap.Password != "" {
+		t.Fatalf("bootstrap credentials default = %+v, want empty", c.Auth.Bootstrap)
+	}
+}
+
+func TestAuthEnvOverrides(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true")
+	t.Setenv("SQI_AUTH_SESSION_TTL", "24h")
+	t.Setenv("SQI_AUTH_SESSION_COOKIE_NAME", "custom_session")
+	t.Setenv("SQI_AUTH_SESSION_COOKIE_SECURE", "false")
+	t.Setenv("SQI_AUTH_BOOTSTRAP_USERNAME", "admin")
+	t.Setenv("SQI_AUTH_BOOTSTRAP_PASSWORD", "s3cret")
+
+	c, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Auth.Enabled {
+		t.Error("Auth.Enabled: got false, want true")
+	}
+	if c.Auth.Session.TTL != 24*time.Hour {
+		t.Errorf("Auth.Session.TTL: got %v, want 24h", c.Auth.Session.TTL)
+	}
+	if c.Auth.Session.CookieName != "custom_session" {
+		t.Errorf("Auth.Session.CookieName: got %q, want custom_session", c.Auth.Session.CookieName)
+	}
+	if c.Auth.Session.CookieSecure != "false" {
+		t.Errorf("Auth.Session.CookieSecure: got %q, want false", c.Auth.Session.CookieSecure)
+	}
+	if c.Auth.Bootstrap.Username != "admin" {
+		t.Errorf("Auth.Bootstrap.Username: got %q, want admin", c.Auth.Bootstrap.Username)
+	}
+	if c.Auth.Bootstrap.Password != "s3cret" {
+		t.Errorf("Auth.Bootstrap.Password: got %q, want s3cret", c.Auth.Bootstrap.Password)
+	}
+}
+
+func TestLoad_AuthSessionFileOverride(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yaml := `
+auth:
+  enabled: true
+  session:
+    ttl: "48h"
+    cookie_name: "file_session"
+    cookie_secure: "true"
+`
+	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("auth.enabled: got false, want true")
+	}
+	if cfg.Auth.Session.TTL != 48*time.Hour {
+		t.Errorf("auth.session.ttl: got %v, want 48h", cfg.Auth.Session.TTL)
+	}
+	if cfg.Auth.Session.CookieName != "file_session" {
+		t.Errorf("auth.session.cookie_name: got %q, want file_session", cfg.Auth.Session.CookieName)
+	}
+	if cfg.Auth.Session.CookieSecure != "true" {
+		t.Errorf("auth.session.cookie_secure: got %q, want true", cfg.Auth.Session.CookieSecure)
+	}
+}
+
+func TestLoad_AuthBootstrapFileOverride(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yaml := `
+auth:
+  bootstrap:
+    username: "file-admin"
+    password: "file-pass"
+`
+	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.Bootstrap.Username != "file-admin" {
+		t.Errorf("auth.bootstrap.username: got %q, want file-admin", cfg.Auth.Bootstrap.Username)
+	}
+	if cfg.Auth.Bootstrap.Password != "file-pass" {
+		t.Errorf("auth.bootstrap.password: got %q, want file-pass", cfg.Auth.Bootstrap.Password)
+	}
+	// Unset session fields must keep defaults (pointer-field layering).
+	if cfg.Auth.Session.TTL != 168*time.Hour {
+		t.Errorf("auth.session.ttl: expected default, got %v", cfg.Auth.Session.TTL)
+	}
+	if cfg.Auth.Session.CookieName != "sqi_session" {
+		t.Errorf("auth.session.cookie_name: expected default, got %q", cfg.Auth.Session.CookieName)
+	}
+}
+
+func TestValidate_AuthDisabled_NoErrorsEvenWithBadValues(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = false
+	cfg.Auth.Session.TTL = 0
+	cfg.Auth.Session.CookieSecure = "not-a-valid-value"
+	cfg.Auth.Session.CookieName = ""
+
+	errs := config.Validate(cfg)
+	for _, e := range errs {
+		if strings.HasPrefix(e.Field, "auth.") {
+			t.Fatalf("auth disabled must not produce validation errors, got %v", e)
+		}
+	}
+}
+
+func TestValidate_AuthSessionCookieNameMustNotBeEmpty(t *testing.T) {
+	tests := []struct {
+		name       string
+		cookieName string
+		wantErr    bool
+	}{
+		{"default is valid", "sqi_session", false},
+		{"custom name is valid", "custom_session", false},
+		{"empty is invalid", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = true
+			cfg.Auth.Session.CookieName = tt.cookieName
+
+			errs := config.Validate(cfg)
+			hasErr := false
+			for _, e := range errs {
+				if e.Field == "auth.session.cookie_name" {
+					hasErr = true
+				}
+			}
+			if hasErr != tt.wantErr {
+				t.Fatalf("cookie_name=%q: got error=%v, want %v (errs=%+v)", tt.cookieName, hasErr, tt.wantErr, errs)
+			}
+		})
+	}
+}
+
+func TestValidate_AuthSessionTTLMustBePositive(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.Session.TTL = 0
+
+	errs := config.Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if e.Field == "auth.session.ttl" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected auth.session.ttl validation error, got %+v", errs)
+	}
+}
+
+func TestValidate_AuthCookieSecure(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"auto is valid", "auto", false},
+		{"true is valid", "true", false},
+		{"false is valid", "false", false},
+		{"empty is invalid", "", true},
+		{"uppercase TRUE is invalid", "TRUE", true},
+		{"garbage is invalid", "sometimes", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = true
+			cfg.Auth.Session.CookieSecure = tt.value
+
+			errs := config.Validate(cfg)
+			hasErr := false
+			for _, e := range errs {
+				if e.Field == "auth.session.cookie_secure" {
+					hasErr = true
+				}
+			}
+			if hasErr != tt.wantErr {
+				t.Fatalf("cookie_secure=%q: got error=%v, want %v (errs=%+v)", tt.value, hasErr, tt.wantErr, errs)
+			}
+		})
+	}
+}
+
+func TestValidate_AuthBootstrapPasswordNeverInErrorMessages(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.Session.TTL = 0
+	cfg.Auth.Session.CookieSecure = "invalid"
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = "super-secret-value"
+
+	errs := config.Validate(cfg)
+	for _, e := range errs {
+		if strings.Contains(e.Field, "super-secret-value") || strings.Contains(e.Message, "super-secret-value") {
+			t.Fatalf("bootstrap password leaked into validation error: %+v", e)
+		}
+	}
+}
+
+// ── Auth: bootstrap password redaction on marshal ────────────────────────────
+
+func TestMarshalYAML_BootstrapPasswordRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = "hunter2"
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "hunter2") {
+		t.Fatalf("marshaled config contains the plaintext bootstrap password:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not contain the <redacted> placeholder:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_BootstrapPasswordSentinelNeverAppears(t *testing.T) {
+	const sentinel = "S3CRET-SENTINEL"
+
+	cfg := config.DefaultConfig()
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = sentinel
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), sentinel) {
+		t.Fatalf("marshaled config leaks the bootstrap password sentinel:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_BootstrapPasswordEmptyNotRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Bootstrap.Username = ""
+	cfg.Auth.Bootstrap.Password = ""
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config redacts an empty bootstrap password:\n%s", out)
+	}
+}
+
+func TestLoad_AuthBootstrapPasswordSurvivesRedactedMarshal(t *testing.T) {
+	// Redaction on marshal must not affect the loaded (unmarshaled) value —
+	// round-tripping a redacted dump is not a goal, but loading the real
+	// config must still populate the real password.
+	t.Setenv("SQI_AUTH_BOOTSTRAP_USERNAME", "admin")
+	t.Setenv("SQI_AUTH_BOOTSTRAP_PASSWORD", "s3cret")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.Bootstrap.Password != "s3cret" {
+		t.Errorf("Auth.Bootstrap.Password: got %q, want s3cret", cfg.Auth.Bootstrap.Password)
+	}
+
+	// Marshaling the loaded config must still redact.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "s3cret") {
+		t.Fatalf("marshaled loaded config leaks bootstrap password:\n%s", out)
+	}
+}
+
+// ── Auth: bootstrap username/password pairing validation ─────────────────────
+
+func TestValidate_AuthBootstrapPairing(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		password string
+		wantErr  bool
+	}{
+		{"both empty is valid (no bootstrap)", "", "", false},
+		{"both set is valid", "admin", "s3cret", false},
+		{"username only is invalid", "admin", "", true},
+		{"password only is invalid", "", "s3cret", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = true
+			cfg.Auth.Bootstrap.Username = tt.username
+			cfg.Auth.Bootstrap.Password = tt.password
+
+			errs := config.Validate(cfg)
+			hasErr := false
+			for _, e := range errs {
+				if strings.HasPrefix(e.Field, "auth.bootstrap") {
+					hasErr = true
+				}
+			}
+			if hasErr != tt.wantErr {
+				t.Fatalf("username=%q password=%q: got error=%v, want %v (errs=%+v)", tt.username, tt.password, hasErr, tt.wantErr, errs)
+			}
+		})
+	}
+}
+
+func TestValidate_AuthBootstrapPairing_DisabledAuthNoError(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = false
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = ""
+
+	errs := config.Validate(cfg)
+	for _, e := range errs {
+		if strings.HasPrefix(e.Field, "auth.") {
+			t.Fatalf("auth disabled must not produce validation errors, got %v", e)
+		}
+	}
+}
+
+func TestValidate_AuthBootstrapPairingErrorNeverContainsPassword(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.Bootstrap.Username = ""
+	cfg.Auth.Bootstrap.Password = "super-secret-value"
+
+	errs := config.Validate(cfg)
+	for _, e := range errs {
+		if strings.Contains(e.Field, "super-secret-value") || strings.Contains(e.Message, "super-secret-value") {
+			t.Fatalf("bootstrap password leaked into validation error: %+v", e)
+		}
 	}
 }

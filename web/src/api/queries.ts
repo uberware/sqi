@@ -9,6 +9,7 @@ import type {
   JobDetail,
   PresetDetail,
   PresetListItem,
+  Principal,
   Product,
   ProductParameter,
   StorageLocation,
@@ -18,6 +19,7 @@ import type {
   Task,
   TaskAttemptsResponse,
   TaskLogsResponse,
+  User,
   VersionInfo,
   Worker,
   WorkerDetail,
@@ -146,6 +148,13 @@ export const queryKeys = {
   },
   version: {
     all: ['version'] as const,
+  },
+  auth: {
+    me: ['auth', 'me'] as const,
+  },
+  users: {
+    all: ['users'] as const,
+    detail: (id: string) => ['users', 'detail', id] as const,
   },
 } as const
 
@@ -311,6 +320,21 @@ export function fetchPresets(refresh = false): Promise<PresetListItem[]> {
 /** Fetch one preset by name from `GET /presets/{name}`. */
 export function fetchPreset(name: string): Promise<PresetDetail> {
   return apiFetch(`/presets/${encodeURIComponent(name)}`)
+}
+
+/** Fetch the current authenticated principal from `GET /auth/me`. */
+export function fetchAuthMe(): Promise<Principal> {
+  return apiFetch('/auth/me')
+}
+
+/** Fetch all local user accounts from `GET /users` (server returns them username-sorted). */
+export function fetchListUsers(): Promise<User[]> {
+  return apiFetch('/users')
+}
+
+/** Fetch one local user account from `GET /users/{id}`. */
+export function fetchGetUser(id: string): Promise<User> {
+  return apiFetch(`/users/${encodeURIComponent(id)}`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -533,6 +557,33 @@ export function useVersion() {
   return useQuery({
     queryKey: queryKeys.version.all,
     queryFn: fetchVersion,
+  })
+}
+
+/**
+ * Load the current authenticated principal. A 401 here is an expected,
+ * non-transient outcome (no session / expired session) rather than a
+ * failure worth retrying, so retries are disabled regardless of the global
+ * default.
+ */
+export function useAuthMe() {
+  return useQuery({ queryKey: queryKeys.auth.me, queryFn: fetchAuthMe, retry: false })
+}
+
+/** List all local user accounts (username-sorted by the server, no pagination). */
+export function useListUsers() {
+  return useQuery({
+    queryKey: queryKeys.users.all,
+    queryFn: fetchListUsers,
+  })
+}
+
+/** Load a single local user account by id. Disabled when id is empty. */
+export function useGetUser(id: string) {
+  return useQuery({
+    queryKey: queryKeys.users.detail(id),
+    queryFn: () => fetchGetUser(id),
+    enabled: id !== '',
   })
 }
 

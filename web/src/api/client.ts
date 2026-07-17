@@ -79,6 +79,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   const response = await fetch(url, {
+    // The sqi_session cookie is HttpOnly, so this is the only way for it to
+    // ride along on every request; callers may still override via init.
+    credentials: 'include',
     ...init,
     headers: {
       ...defaultHeaders,

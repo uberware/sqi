@@ -19,10 +19,23 @@
 //
 // # Acknowledgment
 //
-// In Phase 1 the server processes worker.register via a JetStream push
-// consumer and does not send a reply. A successful NATS publish (no error) is
-// treated as registration success. Request-reply acknowledgment with explicit
-// accept/reject is a planned protocol enhancement.
+// Registration is published with a JetStream ack, so [Registrar.Register]
+// returns only once the SQI_WORKER stream has durably stored the message. A
+// plain core-NATS publish would be silently discarded when no stream is behind
+// the subject — which strands the worker permanently, since the server only
+// learns of it via worker.register and NAKs the heartbeats of workers it has no
+// record of.
+//
+// That "no stream yet" window is real and routinely hit: a worker started
+// alongside its server (as in a compose stack) connects as soon as the NATS
+// listener opens, which is a few milliseconds before the server finishes
+// provisioning its streams. Register therefore retries while the stream is
+// absent, up to [RetryBudget] or the caller's context deadline, whichever is
+// sooner.
+//
+// The server processes worker.register via a JetStream push consumer and does
+// not send a reply of its own; the stream ack is the acknowledgment. Explicit
+// application-level accept/reject is a planned protocol enhancement.
 //
 // # In-memory capability map
 //
@@ -35,6 +48,7 @@ package registration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -43,6 +57,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/version"
@@ -51,10 +66,31 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
+// Retry pacing for the registration publish. The wait between attempts starts
+// at retryInitial and doubles up to retryMax; RetryBudget caps the total time
+// Register spends waiting for the SQI_WORKER stream to appear.
+//
+// RetryBudget is generous relative to the window it covers (a server provisions
+// its streams milliseconds after opening its NATS listener). It exists to
+// outlast a slow or restarting server, not to be reached: a worker that cannot
+// register is useless, so waiting beats exiting.
+const (
+	RetryBudget  = 30 * time.Second
+	retryInitial = 100 * time.Millisecond
+	retryMax     = 2 * time.Second
+)
+
 // Registrar publishes worker registration and deregistration messages and
 // stores the worker's capability map in memory for the process lifetime.
 type Registrar struct {
-	nc       *nats.Conn
+	nc *nats.Conn
+
+	// js publishes registration with a stream ack. Deregister deliberately
+	// stays on the core-NATS path: it is best-effort by design and runs during
+	// shutdown, where blocking on an ack would delay exit for a message the
+	// heartbeat-timeout sweep makes redundant anyway.
+	js jetstream.JetStream
+
 	workerID string
 	cfg      workerconfig.WorkerSettings
 	caps     capabilities.Capabilities
@@ -66,29 +102,38 @@ type Registrar struct {
 	lastRegisteredAt atomic.Int64
 }
 
-// New creates a Registrar. caps should already have manual tags merged in
-// (via [capabilities.Capabilities.MergeManualTags]) before being passed here.
+// New creates a Registrar over an established NATS connection. caps should
+// already have manual tags merged in (via
+// [capabilities.Capabilities.MergeManualTags]) before being passed here.
+//
+// It returns an error only if a JetStream context cannot be derived from nc.
 func New(
 	nc *nats.Conn,
 	workerID string,
 	cfg workerconfig.WorkerSettings,
 	caps capabilities.Capabilities,
 	logger *slog.Logger,
-) *Registrar {
+) (*Registrar, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("registration: jetstream context: %w", err)
+	}
 	return &Registrar{
 		nc:       nc,
+		js:       js,
 		workerID: workerID,
 		cfg:      cfg,
 		caps:     caps,
 		logger:   logger,
-	}
+	}, nil
 }
 
-// Register publishes a RegisterMsg to worker.register. It is safe to call
-// multiple times (at boot and on NATS reconnect).
+// Register publishes a RegisterMsg to worker.register and returns once the
+// stream has acked it. It is safe to call multiple times (at boot and on NATS
+// reconnect).
 //
-// In Phase 1 there is no server reply; a successful publish is taken as
-// registration success (see package-level documentation for rationale).
+// It blocks while the SQI_WORKER stream does not exist yet, returning an error
+// once [RetryBudget] or ctx expires (see package-level documentation).
 func (r *Registrar) Register(ctx context.Context) error {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -133,8 +178,8 @@ func (r *Registrar) Register(ctx context.Context) error {
 		return fmt.Errorf("registration: marshal RegisterMsg: %w", err)
 	}
 
-	if err := r.nc.Publish(bus.SubjectWorkerRegister, data); err != nil {
-		return fmt.Errorf("registration: publish to %s: %w", bus.SubjectWorkerRegister, err)
+	if err := r.publishRegister(ctx, data); err != nil {
+		return err
 	}
 
 	// Record successful registration time so the heartbeat watchdog can
@@ -156,6 +201,44 @@ func (r *Registrar) Register(ctx context.Context) error {
 		slog.Int("tag_count", len(r.caps.Tags)),
 	)
 	return nil
+}
+
+// publishRegister publishes data to worker.register and waits for the stream to
+// ack it, retrying while the SQI_WORKER stream does not exist yet.
+//
+// Only a missing stream is retried. Every other failure (a closed connection,
+// say) is returned immediately: it will not resolve by waiting.
+func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, RetryBudget)
+	defer cancel()
+
+	backoff := retryInitial
+	for attempt := 1; ; attempt++ {
+		_, err := r.js.Publish(ctx, bus.SubjectWorkerRegister, data)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, jetstream.ErrNoStreamResponse) {
+			return fmt.Errorf("registration: publish to %s: %w", bus.SubjectWorkerRegister, err)
+		}
+
+		r.logger.DebugContext(
+			ctx, "registration: no stream for worker.register yet — retrying",
+			slog.String("worker_id", r.workerID),
+			slog.Int("attempt", attempt),
+			slog.Duration("retry_in", backoff),
+		)
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf(
+				"registration: publish to %s: no stream after %d attempts (is the server provisioning JetStream?): %w",
+				bus.SubjectWorkerRegister, attempt, ctx.Err(),
+			)
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, retryMax)
+	}
 }
 
 // Deregister publishes a DeregisterMsg to worker.deregister on graceful

@@ -177,6 +177,23 @@ type Store struct {
 
 	// ── audit_log ────────────────────────────────────────────────────────
 	stmtInsertAudit *sql.Stmt
+
+	// ── users ────────────────────────────────────────────────────────────
+	stmtInsertUser        *sql.Stmt
+	stmtGetUser           *sql.Stmt
+	stmtGetUserByUsername *sql.Stmt
+	stmtListUsers         *sql.Stmt
+	stmtUpdateUser        *sql.Stmt
+	stmtSetUserPassword   *sql.Stmt
+	stmtDeleteUser        *sql.Stmt
+	stmtCountUsers        *sql.Stmt
+
+	// ── sessions ─────────────────────────────────────────────────────────
+	stmtInsertSession         *sql.Stmt
+	stmtGetSessionByTokenHash *sql.Stmt
+	stmtDeleteSession         *sql.Stmt
+	stmtDeleteSessionsForUser *sql.Stmt
+	stmtDeleteExpiredSessions *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -536,6 +553,49 @@ func (s *Store) prepareAll(ctx context.Context) error {
 
 	// ── audit_log ─────────────────────────────────────────────────────────
 	if s.stmtInsertAudit, err = s.prepare(ctx, sqlInsertAudit); err != nil {
+		return err
+	}
+
+	// ── users ─────────────────────────────────────────────────────────────
+	if s.stmtInsertUser, err = s.prepare(ctx, sqlInsertUser); err != nil {
+		return err
+	}
+	if s.stmtGetUser, err = s.prepare(ctx, sqlGetUser); err != nil {
+		return err
+	}
+	if s.stmtGetUserByUsername, err = s.prepare(ctx, sqlGetUserByUsername); err != nil {
+		return err
+	}
+	if s.stmtListUsers, err = s.prepare(ctx, sqlListUsers); err != nil {
+		return err
+	}
+	if s.stmtUpdateUser, err = s.prepare(ctx, sqlUpdateUser); err != nil {
+		return err
+	}
+	if s.stmtSetUserPassword, err = s.prepare(ctx, sqlSetUserPassword); err != nil {
+		return err
+	}
+	if s.stmtDeleteUser, err = s.prepare(ctx, sqlDeleteUser); err != nil {
+		return err
+	}
+	if s.stmtCountUsers, err = s.prepare(ctx, sqlCountUsers); err != nil {
+		return err
+	}
+
+	// ── sessions ──────────────────────────────────────────────────────────
+	if s.stmtInsertSession, err = s.prepare(ctx, sqlInsertSession); err != nil {
+		return err
+	}
+	if s.stmtGetSessionByTokenHash, err = s.prepare(ctx, sqlGetSessionByTokenHash); err != nil {
+		return err
+	}
+	if s.stmtDeleteSession, err = s.prepare(ctx, sqlDeleteSession); err != nil {
+		return err
+	}
+	if s.stmtDeleteSessionsForUser, err = s.prepare(ctx, sqlDeleteSessionsForUser); err != nil {
+		return err
+	}
+	if s.stmtDeleteExpiredSessions, err = s.prepare(ctx, sqlDeleteExpiredSessions); err != nil {
 		return err
 	}
 

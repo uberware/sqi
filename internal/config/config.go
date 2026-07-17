@@ -176,11 +176,67 @@ type DiscoveryConfig struct {
 // AuthConfig controls the opt-in authentication gate (Phase 3).
 type AuthConfig struct {
 	// Enabled turns on the authentication gate. Default false — the server is
-	// open on a trusted local network. In A0 this is a reserved seam: it is
-	// plumbed and validated but does not yet change runtime behavior (a real
-	// authenticator is selected in A1).
+	// open on a trusted local network.
 	// Env: SQI_AUTH_ENABLED
 	Enabled bool `yaml:"enabled"`
+
+	// Session controls server-side session cookie behavior.
+	Session SessionConfig `yaml:"session"`
+
+	// Bootstrap seeds the first admin account when auth is enabled and the
+	// users table is empty.
+	Bootstrap BootstrapConfig `yaml:"bootstrap"`
+}
+
+// SessionConfig controls server-side session cookies.
+type SessionConfig struct {
+	// TTL is the absolute session lifetime; there is no sliding/idle renewal.
+	// Env: SQI_AUTH_SESSION_TTL
+	TTL time.Duration `yaml:"ttl"`
+
+	// CookieName is the session cookie name. Must match
+	// session.DefaultCookieName in internal/auth/session.
+	// Env: SQI_AUTH_SESSION_COOKIE_NAME
+	CookieName string `yaml:"cookie_name"`
+
+	// CookieSecure controls the cookie's Secure attribute. One of:
+	//   - "auto" (default): Secure when the request arrived over TLS or with
+	//     X-Forwarded-Proto: https.
+	//   - "true": always Secure.
+	//   - "false": never Secure — for plain-HTTP LAN deployments.
+	// Env: SQI_AUTH_SESSION_COOKIE_SECURE
+	CookieSecure string `yaml:"cookie_secure"`
+}
+
+// BootstrapConfig seeds the first admin account when auth is enabled and no
+// users exist yet. Empty is valid: the server warns and boots without
+// creating an admin rather than failing closed.
+type BootstrapConfig struct {
+	// Username for the seeded first admin. Env: SQI_AUTH_BOOTSTRAP_USERNAME
+	Username string `yaml:"username"`
+	// Password for the seeded first admin. Redacted by [BootstrapConfig.MarshalYAML]
+	// whenever the config is re-marshaled (e.g. `sqi-server config print`), so it
+	// never appears in that output. Env: SQI_AUTH_BOOTSTRAP_PASSWORD
+	Password string `yaml:"password"`
+}
+
+// redactedPassword is the fixed placeholder emitted by [BootstrapConfig.MarshalYAML]
+// in place of a non-empty Password. It is a marker, not a valid credential —
+// unmarshaling it back would not reproduce the original password.
+const redactedPassword = "<redacted>"
+
+// MarshalYAML redacts Password so it never appears in YAML output (e.g.
+// `sqi-server config print`, logs of a marshaled config). It does not affect
+// unmarshaling: loading a config file with a real `password:` value is
+// unaffected. Round-tripping a redacted dump is intentionally not supported —
+// redaction wins over round-tripping.
+func (b BootstrapConfig) MarshalYAML() (any, error) {
+	type plain BootstrapConfig
+	out := plain(b)
+	if out.Password != "" {
+		out.Password = redactedPassword
+	}
+	return out, nil
 }
 
 // DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
@@ -261,6 +317,11 @@ func DefaultConfig() Config {
 		},
 		Auth: AuthConfig{
 			Enabled: false,
+			Session: SessionConfig{
+				TTL:          168 * time.Hour,
+				CookieName:   "sqi_session",
+				CookieSecure: "auto",
+			},
 		},
 	}
 }

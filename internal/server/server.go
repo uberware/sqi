@@ -23,6 +23,7 @@ import (
 
 	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/session"
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/discovery"
@@ -113,10 +114,33 @@ type Config struct {
 	// Mirror of config.PresetLibraryConfig.URL.
 	PresetLibraryURL string
 
-	// AuthEnabled mirrors config.AuthConfig.Enabled. In A0 it is threaded but
-	// not yet consumed to select a real authenticator (A1); the anonymous
-	// authenticator is always wired. Default false.
+	// AuthEnabled mirrors config.AuthConfig.Enabled. When true, start()
+	// bootstraps the first admin (if needed) and selects the session
+	// authenticator instead of the anonymous one. Default false.
 	AuthEnabled bool
+
+	// AuthSessionTTL mirrors config.AuthConfig.Session.TTL: the absolute
+	// lifetime of sessions minted by POST /auth/login. Only consulted when
+	// AuthEnabled is true.
+	AuthSessionTTL time.Duration
+
+	// AuthCookieName mirrors config.AuthConfig.Session.CookieName: the
+	// session cookie name read by the session authenticator and set/cleared
+	// by the login/logout handlers. Only consulted when AuthEnabled is true.
+	AuthCookieName string
+
+	// AuthCookieSecure mirrors config.AuthConfig.Session.CookieSecure: one of
+	// "auto", "true", or "false". Only consulted when AuthEnabled is true.
+	AuthCookieSecure string
+
+	// AuthBootstrapUsername mirrors config.AuthConfig.Bootstrap.Username: the
+	// username for the first admin, seeded once on an empty users table.
+	AuthBootstrapUsername string
+
+	// AuthBootstrapPassword mirrors config.AuthConfig.Bootstrap.Password: the
+	// plaintext password for the first admin. Never logged; hashed with
+	// password.Hash before it reaches the store.
+	AuthBootstrapPassword string
 
 	// SeedDefaults, when true, creates a "default" farm and queue on first
 	// startup if the store has no farms yet. No-op once any farm exists.
@@ -341,15 +365,20 @@ func (s *Server) start(ctx context.Context) error {
 	if s.cfg.PresetLibraryURL != "" {
 		deps.PresetLib = presetlib.New(s.cfg.PresetLibraryURL, presetlib.DefaultCacheTTL)
 	}
-	// A0: always the anonymous authenticator. A1 selects a real authenticator
-	// here when s.cfg.AuthEnabled is true.
-	deps.Auth = auth.Anonymous()
+	deps.Auth, err = s.selectAuth(ctx)
+	if err != nil {
+		return fmt.Errorf("select auth: %w", err)
+	}
+	deps.SessionTTL = s.cfg.AuthSessionTTL
+	deps.CookieName = s.cfg.AuthCookieName
+	deps.CookieSecure = s.cfg.AuthCookieSecure
 	router := api.NewRouter(
 		api.Config{
 			CORSOrigins:            s.cfg.CORSOrigins,
 			EnablePprof:            s.cfg.EnablePprof,
 			DisableRateLimit:       s.cfg.DisableRateLimit,
 			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
+			AuthEnabled:            s.cfg.AuthEnabled,
 		},
 		deps,
 		s.logger,
@@ -392,6 +421,25 @@ func (s *Server) start(ctx context.Context) error {
 	s.discovery = resp
 
 	return nil
+}
+
+// selectAuth chooses the authenticator wired into the HTTP router. When auth
+// is disabled it returns the anonymous superuser authenticator unchanged
+// (auth-off must remain byte-for-byte pre-A1 behavior — no bootstrap runs, no
+// store write happens). When auth is enabled it first bootstraps the initial
+// admin (a no-op once any user exists) and then returns a session-cookie
+// authenticator backed by the store.
+func (s *Server) selectAuth(ctx context.Context) (auth.Authenticator, error) {
+	if !s.cfg.AuthEnabled {
+		return auth.Anonymous(), nil
+	}
+	if err := bootstrapAdmin(ctx, s.store, BootstrapParams{
+		Username: s.cfg.AuthBootstrapUsername,
+		Password: s.cfg.AuthBootstrapPassword,
+	}, s.logger); err != nil {
+		return nil, fmt.Errorf("auth bootstrap: %w", err)
+	}
+	return session.New(s.store, s.cfg.AuthCookieName, nil), nil
 }
 
 // browseURL turns a TCP bind address into a URL a human can paste into a

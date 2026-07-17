@@ -64,6 +64,17 @@ describe('apiFetch', () => {
     })
   })
 
+  describe('credentials', () => {
+    it('sends credentials: include on every request, so the HttpOnly session cookie rides along', async () => {
+      fetchMock.mockResolvedValueOnce(makeJsonResponse(200, {}))
+      await apiFetch('/auth/me')
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ credentials: 'include' }),
+      )
+    })
+  })
+
   describe('header attachment', () => {
     it('sends Accept: application/json on every request', async () => {
       fetchMock.mockResolvedValueOnce(makeJsonResponse(200, {}))

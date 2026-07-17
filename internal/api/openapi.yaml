@@ -52,6 +52,13 @@ tags:
     description: Product catalog (built-ins + custom, CRUD)
   - name: usage-pools
     description: Usage-pool configuration (CRUD)
+  - name: auth
+    description: Local account login, logout, and current-principal lookup
+  - name: users
+    description: |
+      Local account admin CRUD (create, list, get, update, set password,
+      delete). Interim: gated only to any authenticated principal until B1
+      adds role enforcement.
   - name: meta
     description: Server metadata (version/build info)
 
@@ -1410,6 +1417,90 @@ components:
           type: integer
           minimum: 1
 
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    User:
+      type: object
+      required: [id, username, role, disabled, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, user, read-only]
+        disabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserCreate:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, user, read-only]
+          description: Defaults to `user` when omitted.
+
+    UserUpdate:
+      type: object
+      description: |
+        All fields are optional; only the fields present in the request body
+        are changed. Password is not updatable here — see
+        `PUT /users/{id}/password`.
+      properties:
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, user, read-only]
+        disabled:
+          type: boolean
+
+    SetPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+
+    Principal:
+      type: object
+      required: [subject, display_name, roles, kind]
+      properties:
+        subject:
+          type: string
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        kind:
+          type: string
+
   responses:
     BadRequest:
       description: Bad request — missing or invalid parameters.
@@ -1420,6 +1511,13 @@ components:
 
     NotFound:
       description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
+    Unauthorized:
+      description: Unauthorized — missing, invalid, or expired credentials.
       content:
         application/problem+json:
           schema:
@@ -3118,5 +3216,212 @@ paths:
           description: Bad request — missing or invalid upgrade headers.
         "401":
           description: Unauthorized — invalid or missing credentials (Phase 3+).
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Auth ───────────────────────────────────────────────────────────────────
+
+  /auth/login:
+    post:
+      operationId: login
+      summary: Log in with username and password
+      description: |
+        Verifies the given username/password against a local account and, on
+        success, mints a new server-side session and returns it as an
+        HttpOnly `Set-Cookie`. Unknown username, wrong password, and disabled
+        accounts all produce an identical 401 response so the endpoint cannot
+        be used to enumerate valid usernames. Mounted outside the
+        authenticated route group — no existing session is required to call it.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated; the session cookie is set via Set-Cookie.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the current session
+      description: |
+        Deletes the caller's session server-side and clears the session
+        cookie. Requires an authenticated request.
+      tags: [auth]
+      responses:
+        "204":
+          description: Logged out; the session was revoked and the cookie cleared.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/me:
+    get:
+      operationId: getCurrentPrincipal
+      summary: Return the current authenticated principal
+      tags: [auth]
+      responses:
+        "200":
+          description: The current principal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Principal"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Users ───────────────────────────────────────────────────────────────────
+
+  /users:
+    post:
+      operationId: createUser
+      summary: Create a local account
+      description: |
+        Requires an authenticated request; interim: any authenticated
+        principal may call this until B1 adds role enforcement. `role`
+        defaults to `user` when omitted. The response never includes the
+        password hash.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+      responses:
+        "201":
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listUsers
+      summary: List all local accounts
+      tags: [users]
+      responses:
+        "200":
+          description: Array of users, ordered by username. Never includes password hashes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getUser
+      summary: Get a local account
+      tags: [users]
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    patch:
+      operationId: updateUser
+      summary: Update a local account's display name, role, or disabled flag
+      description: |
+        Password is not updatable here — see
+        `PUT /users/{id}/password`.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteUser
+      summary: Delete a local account
+      description: Cascades to (revokes) all of the user's sessions.
+      tags: [users]
+      responses:
+        "204":
+          description: User deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /users/{id}/password:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    put:
+      operationId: setUserPassword
+      summary: Set a local account's password
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPasswordRequest"
+      responses:
+        "204":
+          description: Password updated.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"

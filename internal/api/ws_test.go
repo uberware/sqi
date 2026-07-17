@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,11 +46,23 @@ import (
 
 // ── test server helpers ───────────────────────────────────────────────────────
 
-// newWSTestServer starts an httptest.Server serving wsHandler.
+// newWSTestServer starts an httptest.Server serving wsHandler with origin
+// checking disabled (wsOriginConfig{}, the pre-A1 / auth-off default: the
+// zero value has Enabled == false).
 // hub may be nil when the test does not need fan-out.
 func newWSTestServer(t *testing.T, hub *internalws.Hub) *httptest.Server {
 	t.Helper()
-	h := newWSHandler(newTestLogger(), hub, auth.Anonymous())
+	h := newWSHandler(newTestLogger(), hub, auth.Anonymous(), wsOriginConfig{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newWSTestServerWithOrigin starts an httptest.Server serving wsHandler with
+// the given origin config, for tests exercising OriginPatterns enforcement.
+func newWSTestServerWithOrigin(t *testing.T, hub *internalws.Hub, origin wsOriginConfig) *httptest.Server {
+	t.Helper()
+	h := newWSHandler(newTestLogger(), hub, auth.Anonymous(), origin)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -136,7 +149,7 @@ func mustAck(t *testing.T, ctx context.Context, conn *websocket.Conn, clientSeq 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestWS_FailingAuthenticator_Returns401BeforeUpgrade(t *testing.T) {
-	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")})
+	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
@@ -148,6 +161,44 @@ func TestWS_FailingAuthenticator_Returns401BeforeUpgrade(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestWS_FailingAuthenticator_WritesProblemDetails pins the WS 401 to the same
+// RFC-7807 shape the REST 401 uses, so a client hitting an expired session sees
+// one error contract across both surfaces rather than plain text here and JSON
+// there.
+func TestWS_FailingAuthenticator_WritesProblemDetails(t *testing.T) {
+	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL) //nolint:noctx // simple synchronous test request
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var body struct {
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode problem body: %v", err)
+	}
+	if body.Status != http.StatusUnauthorized || body.Title != "Unauthorized" {
+		t.Errorf("problem = %+v, want status 401 / title Unauthorized", body)
+	}
+	if body.Detail != "authentication required" {
+		t.Errorf("detail = %q, want %q (same wording as the REST 401)", body.Detail, "authentication required")
+	}
+	// The authenticator's internal reason must not reach the client.
+	if strings.Contains(body.Detail, "bad token") {
+		t.Errorf("detail leaks the authenticator's internal error: %q", body.Detail)
 	}
 }
 
@@ -568,6 +619,86 @@ func TestWSHandler_Subscribe_MalformedPayload_ReturnsError(t *testing.T) {
 	if ack.Error == "" {
 		t.Fatal("expected non-empty Error for subscribe with malformed payload JSON")
 	}
+}
+
+// ── Origin hardening (CSWSH) ──────────────────────────────────────────────────
+//
+// These three tests exercise wsOriginConfig end to end through the real
+// websocket.Accept/Dial handshake (not just the originPatterns helper in
+// isolation), because the security property that matters is what the library
+// actually does with OriginPatterns vs InsecureSkipVerify.
+
+func TestWSHandler_OriginHardening_AuthOn_ForeignOriginRejected(t *testing.T) {
+	srv := newWSTestServerWithOrigin(t, nil, wsOriginConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"http://localhost"},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsTestURL(srv), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"http://evil.example"}},
+	})
+	if err == nil {
+		conn.CloseNow() //nolint:errcheck // test cleanup on unexpected success
+		t.Fatal("expected the handshake to fail for a foreign, non-allow-listed Origin")
+	}
+	if resp != nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			t.Fatalf("expected a non-101 status for a rejected origin, got %d", resp.StatusCode)
+		}
+	}
+}
+
+func TestWSHandler_OriginHardening_AuthOn_SameOriginAllowed(t *testing.T) {
+	srv := newWSTestServerWithOrigin(t, nil, wsOriginConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"http://localhost"}, // irrelevant here: same-origin is always allowed
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The Origin equals srv.URL itself, i.e. same-origin with the request Host —
+	// coder/websocket authorizes this unconditionally, even with an
+	// OriginPatterns list that doesn't mention it.
+	conn, resp, err := websocket.Dial(ctx, wsTestURL(srv), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{srv.URL}},
+	})
+	if err != nil {
+		t.Fatalf("expected same-origin handshake to succeed, got: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	t.Cleanup(func() {
+		if err := conn.CloseNow(); err != nil {
+			t.Logf("ws cleanup: CloseNow: %v", err)
+		}
+	})
+}
+
+func TestWSHandler_OriginHardening_AuthOff_AnyOriginAllowed(t *testing.T) {
+	// Auth off: InsecureSkipVerify stays true regardless of Origin — the
+	// byte-for-byte pre-A1 regression guarantee.
+	srv := newWSTestServerWithOrigin(t, nil, wsOriginConfig{Enabled: false})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsTestURL(srv), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"http://evil.example"}},
+	})
+	if err != nil {
+		t.Fatalf("auth-off must allow any Origin (unchanged pre-A1 behavior), got: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	t.Cleanup(func() {
+		if err := conn.CloseNow(); err != nil {
+			t.Logf("ws cleanup: CloseNow: %v", err)
+		}
+	})
 }
 
 func TestWSHandler_Subscribe_TaskLogs_PushDelivered(t *testing.T) {

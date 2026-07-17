@@ -478,6 +478,33 @@ export interface SubmitProductJobInput {
   dependsOn?: string[]
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+/** The current authenticated principal, from GET /auth/me. */
+export interface Principal {
+  subject: string
+  display_name: string
+  roles: string[]
+  kind: string
+}
+
+/** A local user account (secrets are never included in the wire format). */
+export interface User {
+  id: string
+  username: string
+  display_name?: string
+  role: string
+  disabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** Input for POST /auth/login. */
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
 // ── Job submission ────────────────────────────────────────────────────────────
 
 /** Input for the submitJob mutation. */
