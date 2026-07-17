@@ -54,6 +54,11 @@ tags:
     description: Usage-pool configuration (CRUD)
   - name: auth
     description: Local account login, logout, and current-principal lookup
+  - name: users
+    description: |
+      Local account admin CRUD (create, list, get, update, set password,
+      delete). Interim: gated only to any authenticated principal until B1
+      adds role enforcement.
   - name: meta
     description: Server metadata (version/build info)
 
@@ -1443,6 +1448,43 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    UserCreate:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, user, read-only]
+          description: Defaults to `user` when omitted.
+
+    UserUpdate:
+      type: object
+      description: |
+        All fields are optional; only the fields present in the request body
+        are changed. Password is not updatable here — see
+        `PUT /users/{id}/password`.
+      properties:
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, user, read-only]
+        disabled:
+          type: boolean
+
+    SetPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
 
     Principal:
       type: object
@@ -3239,3 +3281,147 @@ paths:
                 $ref: "#/components/schemas/Principal"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  # ── Users ───────────────────────────────────────────────────────────────────
+
+  /users:
+    post:
+      operationId: createUser
+      summary: Create a local account
+      description: |
+        Requires an authenticated request; interim: any authenticated
+        principal may call this until B1 adds role enforcement. `role`
+        defaults to `user` when omitted. The response never includes the
+        password hash.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+      responses:
+        "201":
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listUsers
+      summary: List all local accounts
+      tags: [users]
+      responses:
+        "200":
+          description: Array of users, ordered by username. Never includes password hashes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: getUser
+      summary: Get a local account
+      tags: [users]
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    patch:
+      operationId: updateUser
+      summary: Update a local account's display name, role, or disabled flag
+      description: |
+        Password is not updatable here — see
+        `PUT /users/{id}/password`.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      operationId: deleteUser
+      summary: Delete a local account
+      description: Cascades to (revokes) all of the user's sessions.
+      tags: [users]
+      responses:
+        "204":
+          description: User deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /users/{id}/password:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    put:
+      operationId: setUserPassword
+      summary: Set a local account's password
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPasswordRequest"
+      responses:
+        "204":
+          description: Password updated.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"

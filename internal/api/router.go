@@ -264,6 +264,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
+	usersH := newUsersHandler(deps.Store, logger)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Auth)
 
@@ -300,6 +301,15 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// ── Auth endpoints (require a principal) ────────────
 			rest.Post("/auth/logout", authH.logout)
 			rest.Get("/auth/me", authH.me)
+
+			// ── User admin endpoints (interim: gated only to any
+			// authenticated principal until B1 adds role enforcement) ──
+			rest.Post("/users", usersH.create)
+			rest.Get("/users", usersH.list)
+			rest.Get("/users/{id}", usersH.get)
+			rest.Patch("/users/{id}", usersH.update)
+			rest.Put("/users/{id}/password", usersH.setPassword)
+			rest.Delete("/users/{id}", usersH.delete)
 
 			// ── Job endpoints ───────────────────────────────────
 			rest.Post("/jobs", jobs.submitJob)
