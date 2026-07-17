@@ -76,7 +76,51 @@ describe('queryClient', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { queryClient } = await import('./queryClient')
     const err = new Error('boom')
-    queryClient.getQueryCache().config.onError?.(err, {} as never)
+    queryClient.getQueryCache().config.onError?.(err, { queryKey: ['jobs'] } as never)
     expect(spy).toHaveBeenCalledWith('[sqi] query error', err)
+  })
+
+  describe('401 handling', () => {
+    it('invalidates the auth.me query when any other query fails with a 401 ApiError', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { queryClient } = await import('./queryClient')
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const err = new ApiError({
+        type: 'about:blank',
+        title: 'Unauthorized',
+        status: 401,
+        detail: 'authentication required',
+      })
+      queryClient.getQueryCache().config.onError?.(err, { queryKey: ['workers', 'list'] } as never)
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auth', 'me'] })
+    })
+
+    it('does not invalidate auth.me for non-401 errors', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { queryClient } = await import('./queryClient')
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const err = new ApiError({
+        type: 'about:blank',
+        title: 'Not Found',
+        status: 404,
+        detail: 'not found',
+      })
+      queryClient.getQueryCache().config.onError?.(err, { queryKey: ['workers', 'list'] } as never)
+      expect(invalidateSpy).not.toHaveBeenCalled()
+    })
+
+    it('does not re-invalidate auth.me when the auth.me query itself is the one failing (avoids a redundant refetch loop)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { queryClient } = await import('./queryClient')
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const err = new ApiError({
+        type: 'about:blank',
+        title: 'Unauthorized',
+        status: 401,
+        detail: 'authentication required',
+      })
+      queryClient.getQueryCache().config.onError?.(err, { queryKey: ['auth', 'me'] } as never)
+      expect(invalidateSpy).not.toHaveBeenCalled()
+    })
   })
 })
