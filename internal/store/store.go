@@ -58,6 +58,8 @@ type Store interface {
 	TaskAttemptStore
 	TaskLogStore
 	AuditStore
+	UserStore
+	SessionStore
 	io.Closer
 }
 

@@ -29,6 +29,8 @@ type Store struct {
 	taskAttempts     map[string]store.TaskAttempt
 	taskLogs         []store.TaskLog
 	auditEntries     []store.AuditEntry
+	users            map[string]store.User
+	sessions         map[string]store.Session
 }
 
 var _ store.Store = (*Store)(nil)
@@ -51,6 +53,8 @@ func New() *Store {
 		taskAttempts:     make(map[string]store.TaskAttempt),
 		taskLogs:         make([]store.TaskLog, 0),
 		auditEntries:     make([]store.AuditEntry, 0),
+		users:            make(map[string]store.User),
+		sessions:         make(map[string]store.Session),
 	}
 }
 
@@ -80,4 +84,6 @@ func (s *Store) Reset() {
 	s.taskAttempts = make(map[string]store.TaskAttempt)
 	s.taskLogs = make([]store.TaskLog, 0)
 	s.auditEntries = make([]store.AuditEntry, 0)
+	s.users = make(map[string]store.User)
+	s.sessions = make(map[string]store.Session)
 }
