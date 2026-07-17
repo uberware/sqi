@@ -35,7 +35,10 @@ var ErrInvalidHash = errors.New("password: invalid encoded hash")
 // guard against a tampered or corrupted hash string driving a huge
 // allocation (e.g. a negative memory value wrapping to ~4 billion KiB when
 // cast to uint32) or an absurdly long computation.
-const maxArgonMemory = 1 << 20 // 1 GiB, far above any sane operational value
+const (
+	maxArgonMemory     = 1 << 20 // 1 GiB, far above any sane operational value
+	maxArgonIterations = 1 << 10 // 1024, far above the real t=2, guards against tampered/corrupt hash
+)
 
 // parsedHashParams holds the fields decoded from an encoded argon2id hash
 // string, after range validation.
@@ -45,6 +48,20 @@ type parsedHashParams struct {
 	threads uint8
 	salt    []byte
 	key     []byte
+}
+
+// validateHashParams checks the parsed argon2 parameters against sanity bounds.
+func validateHashParams(memory, iterations, threads int) error {
+	if memory <= 0 || memory > maxArgonMemory {
+		return ErrInvalidHash
+	}
+	if iterations <= 0 || iterations > maxArgonIterations {
+		return ErrInvalidHash
+	}
+	if threads <= 0 || threads > 255 {
+		return ErrInvalidHash
+	}
+	return nil
 }
 
 // parseEncodedHash parses and validates an argon2id encoded hash of the form
@@ -65,8 +82,8 @@ func parseEncodedHash(encoded string) (parsedHashParams, error) {
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &threads); err != nil {
 		return parsedHashParams{}, ErrInvalidHash
 	}
-	if iterations <= 0 || memory <= 0 || memory > maxArgonMemory || threads <= 0 || threads > 255 {
-		return parsedHashParams{}, ErrInvalidHash
+	if err := validateHashParams(memory, iterations, threads); err != nil {
+		return parsedHashParams{}, err
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil || len(salt) == 0 {
@@ -77,9 +94,9 @@ func parseEncodedHash(encoded string) (parsedHashParams, error) {
 		return parsedHashParams{}, ErrInvalidHash
 	}
 	return parsedHashParams{
-		memory:  uint32(memory),
-		time:    uint32(iterations),
-		threads: uint8(threads),
+		memory:  uint32(memory),     //nolint:gosec // bounds checked by validateHashParams
+		time:    uint32(iterations), //nolint:gosec // bounds checked by validateHashParams
+		threads: uint8(threads),     //nolint:gosec // bounds checked by validateHashParams (max 255)
 		salt:    salt,
 		key:     key,
 	}, nil

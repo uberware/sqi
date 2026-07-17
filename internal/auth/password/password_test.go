@@ -139,6 +139,10 @@ func TestVerifyRejectsMalformedHashes(t *testing.T) {
 			encoded: fmt.Sprintf("$argon2id$v=19$m=99999999999,t=2,p=1$%s$%s", salt, key),
 		},
 		{
+			name:    "oversized iterations",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2000000000,p=1$%s$%s", salt, key),
+		},
+		{
 			name:    "truncated/invalid base64 salt",
 			encoded: "$argon2id$v=19$m=19456,t=2,p=1$not-valid-b64!!!$" + key,
 		},
