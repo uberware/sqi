@@ -31,6 +31,7 @@ type Store struct {
 	auditEntries     []store.AuditEntry
 	users            map[string]store.User
 	sessions         map[string]store.Session
+	apiKeys          map[string]store.APIKey
 }
 
 var _ store.Store = (*Store)(nil)
@@ -55,6 +56,7 @@ func New() *Store {
 		auditEntries:     make([]store.AuditEntry, 0),
 		users:            make(map[string]store.User),
 		sessions:         make(map[string]store.Session),
+		apiKeys:          make(map[string]store.APIKey),
 	}
 }
 
@@ -86,4 +88,5 @@ func (s *Store) Reset() {
 	s.auditEntries = make([]store.AuditEntry, 0)
 	s.users = make(map[string]store.User)
 	s.sessions = make(map[string]store.Session)
+	s.apiKeys = make(map[string]store.APIKey)
 }

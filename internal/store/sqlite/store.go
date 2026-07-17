@@ -194,6 +194,13 @@ type Store struct {
 	stmtDeleteSession         *sql.Stmt
 	stmtDeleteSessionsForUser *sql.Stmt
 	stmtDeleteExpiredSessions *sql.Stmt
+
+	// ── api keys ─────────────────────────────────────────────────────────
+	stmtInsertAPIKey         *sql.Stmt
+	stmtGetAPIKeyByTokenHash *sql.Stmt
+	stmtListAPIKeysForUser   *sql.Stmt
+	stmtRevokeAPIKey         *sql.Stmt
+	stmtTouchAPIKeyLastUsed  *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -596,6 +603,23 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtDeleteExpiredSessions, err = s.prepare(ctx, sqlDeleteExpiredSessions); err != nil {
+		return err
+	}
+
+	// ── api keys ──────────────────────────────────────────────────────────
+	if s.stmtInsertAPIKey, err = s.prepare(ctx, sqlInsertAPIKey); err != nil {
+		return err
+	}
+	if s.stmtGetAPIKeyByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyByTokenHash); err != nil {
+		return err
+	}
+	if s.stmtListAPIKeysForUser, err = s.prepare(ctx, sqlListAPIKeysForUser); err != nil {
+		return err
+	}
+	if s.stmtRevokeAPIKey, err = s.prepare(ctx, sqlRevokeAPIKey); err != nil {
+		return err
+	}
+	if s.stmtTouchAPIKeyLastUsed, err = s.prepare(ctx, sqlTouchAPIKeyLastUsed); err != nil {
 		return err
 	}
 
