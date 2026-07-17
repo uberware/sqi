@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/uberware/sqi/internal/config"
 )
 
@@ -949,6 +951,146 @@ func TestValidate_AuthBootstrapPasswordNeverInErrorMessages(t *testing.T) {
 	cfg.Auth.Session.TTL = 0
 	cfg.Auth.Session.CookieSecure = "invalid"
 	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = "super-secret-value"
+
+	errs := config.Validate(cfg)
+	for _, e := range errs {
+		if strings.Contains(e.Field, "super-secret-value") || strings.Contains(e.Message, "super-secret-value") {
+			t.Fatalf("bootstrap password leaked into validation error: %+v", e)
+		}
+	}
+}
+
+// ── Auth: bootstrap password redaction on marshal ────────────────────────────
+
+func TestMarshalYAML_BootstrapPasswordRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = "hunter2"
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "hunter2") {
+		t.Fatalf("marshaled config contains the plaintext bootstrap password:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not contain the <redacted> placeholder:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_BootstrapPasswordSentinelNeverAppears(t *testing.T) {
+	const sentinel = "S3CRET-SENTINEL"
+
+	cfg := config.DefaultConfig()
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = sentinel
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), sentinel) {
+		t.Fatalf("marshaled config leaks the bootstrap password sentinel:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_BootstrapPasswordEmptyNotRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Bootstrap.Username = ""
+	cfg.Auth.Bootstrap.Password = ""
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config redacts an empty bootstrap password:\n%s", out)
+	}
+}
+
+func TestLoad_AuthBootstrapPasswordSurvivesRedactedMarshal(t *testing.T) {
+	// Redaction on marshal must not affect the loaded (unmarshaled) value —
+	// round-tripping a redacted dump is not a goal, but loading the real
+	// config must still populate the real password.
+	t.Setenv("SQI_AUTH_BOOTSTRAP_USERNAME", "admin")
+	t.Setenv("SQI_AUTH_BOOTSTRAP_PASSWORD", "s3cret")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.Bootstrap.Password != "s3cret" {
+		t.Errorf("Auth.Bootstrap.Password: got %q, want s3cret", cfg.Auth.Bootstrap.Password)
+	}
+
+	// Marshaling the loaded config must still redact.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "s3cret") {
+		t.Fatalf("marshaled loaded config leaks bootstrap password:\n%s", out)
+	}
+}
+
+// ── Auth: bootstrap username/password pairing validation ─────────────────────
+
+func TestValidate_AuthBootstrapPairing(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		password string
+		wantErr  bool
+	}{
+		{"both empty is valid (no bootstrap)", "", "", false},
+		{"both set is valid", "admin", "s3cret", false},
+		{"username only is invalid", "admin", "", true},
+		{"password only is invalid", "", "s3cret", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = true
+			cfg.Auth.Bootstrap.Username = tt.username
+			cfg.Auth.Bootstrap.Password = tt.password
+
+			errs := config.Validate(cfg)
+			hasErr := false
+			for _, e := range errs {
+				if strings.HasPrefix(e.Field, "auth.bootstrap") {
+					hasErr = true
+				}
+			}
+			if hasErr != tt.wantErr {
+				t.Fatalf("username=%q password=%q: got error=%v, want %v (errs=%+v)", tt.username, tt.password, hasErr, tt.wantErr, errs)
+			}
+		})
+	}
+}
+
+func TestValidate_AuthBootstrapPairing_DisabledAuthNoError(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = false
+	cfg.Auth.Bootstrap.Username = "admin"
+	cfg.Auth.Bootstrap.Password = ""
+
+	errs := config.Validate(cfg)
+	for _, e := range errs {
+		if strings.HasPrefix(e.Field, "auth.") {
+			t.Fatalf("auth disabled must not produce validation errors, got %v", e)
+		}
+	}
+}
+
+func TestValidate_AuthBootstrapPairingErrorNeverContainsPassword(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.Bootstrap.Username = ""
 	cfg.Auth.Bootstrap.Password = "super-secret-value"
 
 	errs := config.Validate(cfg)

@@ -235,8 +235,7 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 // its sub-fields carry no operational meaning until the gate is turned on.
 //
 // Bootstrap.Password is intentionally never echoed here: validation errors
-// name the field, never the value, so secrets can't leak into logs or CLI
-// output.
+// name the field, never the value.
 func validateAuth(cfg AuthConfig) []ValidationError {
 	var errs []ValidationError
 	if !cfg.Enabled {
@@ -258,6 +257,28 @@ func validateAuth(cfg AuthConfig) []ValidationError {
 				`must be "auto", "true", or "false", got %q; set SQI_AUTH_SESSION_COOKIE_SECURE or auth.session.cookie_secure`,
 				cfg.Session.CookieSecure,
 			),
+		})
+	}
+	errs = append(errs, validateAuthBootstrap(cfg.Bootstrap)...)
+	return errs
+}
+
+// validateAuthBootstrap checks that Bootstrap.Username and Bootstrap.Password
+// are either both empty (no bootstrap) or both set. Exactly one set usually
+// means a typo'd env var name (e.g. SQI_AUTH_BOOSTRAP_PASSWORD) and risks a
+// later bootstrap step creating an admin with an empty password.
+func validateAuthBootstrap(cfg BootstrapConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.Username != "" && cfg.Password == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.bootstrap.password",
+			Message: "must be set when auth.bootstrap.username is set; set SQI_AUTH_BOOTSTRAP_PASSWORD or auth.bootstrap.password",
+		})
+	}
+	if cfg.Password != "" && cfg.Username == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.bootstrap.username",
+			Message: "must be set when auth.bootstrap.password is set; set SQI_AUTH_BOOTSTRAP_USERNAME or auth.bootstrap.username",
 		})
 	}
 	return errs

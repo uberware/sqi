@@ -214,9 +214,29 @@ type SessionConfig struct {
 type BootstrapConfig struct {
 	// Username for the seeded first admin. Env: SQI_AUTH_BOOTSTRAP_USERNAME
 	Username string `yaml:"username"`
-	// Password for the seeded first admin. Never logged.
-	// Env: SQI_AUTH_BOOTSTRAP_PASSWORD
+	// Password for the seeded first admin. Redacted by [BootstrapConfig.MarshalYAML]
+	// whenever the config is re-marshaled (e.g. `sqi-server config print`), so it
+	// never appears in that output. Env: SQI_AUTH_BOOTSTRAP_PASSWORD
 	Password string `yaml:"password"`
+}
+
+// redactedPassword is the fixed placeholder emitted by [BootstrapConfig.MarshalYAML]
+// in place of a non-empty Password. It is a marker, not a valid credential —
+// unmarshaling it back would not reproduce the original password.
+const redactedPassword = "<redacted>"
+
+// MarshalYAML redacts Password so it never appears in YAML output (e.g.
+// `sqi-server config print`, logs of a marshaled config). It does not affect
+// unmarshaling: loading a config file with a real `password:` value is
+// unaffected. Round-tripping a redacted dump is intentionally not supported —
+// redaction wins over round-tripping.
+func (b BootstrapConfig) MarshalYAML() (any, error) {
+	type plain BootstrapConfig
+	out := plain(b)
+	if out.Password != "" {
+		out.Password = redactedPassword
+	}
+	return out, nil
 }
 
 // DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
