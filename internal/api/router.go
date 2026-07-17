@@ -295,6 +295,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
 	usersH := newUsersHandler(deps.Store, logger)
+	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Auth, wsOriginConfig{
 		Enabled:        cfg.AuthEnabled,
@@ -356,6 +357,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			rest.Patch("/users/{id}", usersH.update)
 			rest.Put("/users/{id}/password", usersH.setPassword)
 			rest.Delete("/users/{id}", usersH.delete)
+
+			// ── API-key management (self-scoped until B1) ──────
+			rest.Post("/api-keys", apiKeysH.create)
+			rest.Get("/api-keys", apiKeysH.list)
+			rest.Delete("/api-keys/{id}", apiKeysH.revoke)
 
 			// ── Job endpoints ───────────────────────────────────
 			rest.Post("/jobs", jobs.submitJob)

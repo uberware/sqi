@@ -59,6 +59,11 @@ tags:
       Local account admin CRUD (create, list, get, update, set password,
       delete). Interim: gated only to any authenticated principal until B1
       adds role enforcement.
+  - name: api-keys
+    description: |
+      Long-lived machine credentials (Bearer tokens), self-scoped to the
+      authenticated caller. The raw secret is returned exactly once, at
+      creation.
   - name: meta
     description: Server metadata (version/build info)
 
@@ -1485,6 +1490,50 @@ components:
       properties:
         password:
           type: string
+
+    # ── API keys ──────────────────────────────────────────────────────────────
+    ApiKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiry. Must be in the future. Omit for a key that never expires.
+
+    ApiKey:
+      type: object
+      required: [id, name, prefix, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        prefix:
+          type: string
+          description: Leading characters of the raw key, for identification in a list. Never enough to reconstruct the key.
+        expires_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ApiKeyCreated:
+      description: The API key as returned only from the create call — includes the raw secret.
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: The raw API key. Shown once, at creation, and never returned again — store it now.
 
     Principal:
       type: object
@@ -3419,6 +3468,73 @@ paths:
           description: Password updated.
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api-keys:
+    post:
+      operationId: createApiKey
+      summary: Issue an API key for the caller
+      description: |
+        Self-scoped to the authenticated caller's account. The response
+        includes the raw `secret` exactly once — it is never stored in
+        clear and is never returned again, including from list.
+      tags: [api-keys]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyCreate"
+      responses:
+        "201":
+          description: API key created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      operationId: listApiKeys
+      summary: List the caller's API keys
+      description: Never includes the raw secret, only present in the create response.
+      tags: [api-keys]
+      responses:
+        "200":
+          description: Array of the caller's non-revoked API keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api-keys/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke one of the caller's API keys
+      description: Scoped to the caller — revoking a key owned by another user returns 404.
+      tags: [api-keys]
+      responses:
+        "204":
+          description: API key revoked.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
