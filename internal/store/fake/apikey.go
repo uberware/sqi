@@ -69,7 +69,7 @@ func (s *Store) RevokeAPIKey(_ context.Context, id, userID string, now time.Time
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k, ok := s.apiKeys[id]
-	if !ok || k.UserID != userID {
+	if !ok || k.UserID != userID || k.RevokedAt != nil {
 		return store.ErrNotFound
 	}
 	k.RevokedAt = &now

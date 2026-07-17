@@ -76,6 +76,14 @@ func TestAPIKeyStore_ExpiryAndScope(t *testing.T) {
 				t.Fatalf("expired key should be ErrNotFound, got %v", err)
 			}
 
+			// Exact-boundary: a lookup at precisely ExpiresAt must be
+			// treated as expired. Both backends use a strict comparison
+			// (sqlite `expires_at > ?`, fake `ExpiresAt.After(now)`), so
+			// equality means expired, not still-valid.
+			if _, err := st.GetAPIKeyByTokenHash(ctx, ka.TokenHash, exp); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("key at exact ExpiresAt boundary should be ErrNotFound, got %v", err)
+			}
+
 			// Bob cannot revoke Alice's key.
 			if err := st.RevokeAPIKey(ctx, ka.ID, ub.ID, now); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("cross-user revoke should be ErrNotFound, got %v", err)
@@ -92,6 +100,32 @@ func TestAPIKeyStore_ExpiryAndScope(t *testing.T) {
 			}
 			if len(bob) != 0 {
 				t.Fatalf("bob should have no keys, got %d", len(bob))
+			}
+		})
+	}
+}
+
+// TestAPIKeyStore_CreateAPIKey_DuplicateTokenHash verifies that creating a
+// second API key with an already-used token_hash is rejected — SQLite via
+// `token_hash TEXT NOT NULL UNIQUE`, the fake via an explicit check.
+func TestAPIKeyStore_CreateAPIKey_DuplicateTokenHash(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("dupkeyer"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			tokenHash := "dup-" + uuid.NewString()
+
+			k1 := mkAPIKey(u.ID, tokenHash)
+			if _, err := st.CreateAPIKey(ctx, k1); err != nil {
+				t.Fatalf("CreateAPIKey(1): %v", err)
+			}
+
+			k2 := mkAPIKey(u.ID, tokenHash)
+			if _, err := st.CreateAPIKey(ctx, k2); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected ErrConflict on duplicate token_hash, got %v", err)
 			}
 		})
 	}
