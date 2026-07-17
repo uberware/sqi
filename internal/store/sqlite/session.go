@@ -34,6 +34,10 @@ func scanSession(row scanner) (store.Session, error) {
 }
 
 // CreateSession implements [store.SessionStore].
+//
+// Unlike CreateUser, this does not stamp CreatedAt (or ExpiresAt) server-side:
+// both are caller-supplied by design, since ExpiresAt is derived from the
+// issuance instant and the two timestamps must agree with each other.
 func (s *Store) CreateSession(ctx context.Context, sess store.Session) (store.Session, error) {
 	row := s.stmtInsertSession.QueryRowContext(ctx, sess.ID, sess.TokenHash, sess.UserID,
 		timeToText(sess.ExpiresAt), timeToText(sess.CreatedAt))

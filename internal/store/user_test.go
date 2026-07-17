@@ -74,6 +74,14 @@ func TestUserStore_CRUD(t *testing.T) {
 			if err != nil || upd.DisplayName != "Alice B" || upd.Role != "operator" || !upd.Disabled {
 				t.Fatalf("UpdateUser: %+v err=%v", upd, err)
 			}
+			// UpdateUser is scoped to display_name/role/disabled — guard
+			// against a future regression touching username or password.
+			if upd.Username != u.Username {
+				t.Fatalf("UpdateUser must not change Username: got %q, want %q", upd.Username, u.Username)
+			}
+			if upd.PasswordHash != u.PasswordHash {
+				t.Fatalf("UpdateUser must not change PasswordHash: got %q, want %q", upd.PasswordHash, u.PasswordHash)
+			}
 
 			if err := st.SetUserPassword(ctx, u.ID, "$argon2id$new"); err != nil {
 				t.Fatalf("SetUserPassword: %v", err)
@@ -96,6 +104,40 @@ func TestUserStore_CRUD(t *testing.T) {
 			}
 			if _, err := st.GetUser(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("expected ErrNotFound after delete, got %v", err)
+			}
+		})
+	}
+}
+
+// TestUserStore_ListUsers verifies ListUsers returns users ordered
+// case-insensitively by username — matching SQLite's `ORDER BY username`
+// over the `username` column, which is declared COLLATE NOCASE (see
+// sqlListUsers in internal/store/sqlite/user.go). The fake store must sort
+// the same way; a case-sensitive ASCII sort would put "Zeta" before "bob"
+// (since 'Z' < 'b' in ASCII), diverging from SQLite.
+func TestUserStore_ListUsers(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			for _, username := range []string{"Zeta", "bob", "Alice"} {
+				u := mkUser("user")
+				u.Username = username
+				if _, err := st.CreateUser(ctx, u); err != nil {
+					t.Fatalf("CreateUser(%q): %v", username, err)
+				}
+			}
+
+			users, err := st.ListUsers(ctx)
+			if err != nil {
+				t.Fatalf("ListUsers: %v", err)
+			}
+			if len(users) != 3 {
+				t.Fatalf("ListUsers: got %d users, want 3", len(users))
+			}
+			got := []string{users[0].Username, users[1].Username, users[2].Username}
+			want := []string{"Alice", "bob", "Zeta"}
+			if got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+				t.Fatalf("ListUsers order = %v, want %v (case-insensitive sort)", got, want)
 			}
 		})
 	}

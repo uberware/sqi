@@ -41,6 +41,14 @@ func TestSessionStore_IssueVerifyRevoke(t *testing.T) {
 				t.Fatalf("expired session should be ErrNotFound, got %v", err)
 			}
 
+			// Exact-boundary: a lookup at precisely ExpiresAt must be
+			// treated as expired. Both backends use a strict comparison
+			// (sqlite `expires_at > ?`, fake `ExpiresAt.After(now)`), so
+			// equality means expired, not still-valid.
+			if _, err := st.GetSessionByTokenHash(ctx, sess.TokenHash, sess.ExpiresAt); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("session at exact ExpiresAt boundary should be ErrNotFound, got %v", err)
+			}
+
 			if err := st.DeleteSession(ctx, sess.ID); err != nil {
 				t.Fatalf("DeleteSession: %v", err)
 			}
