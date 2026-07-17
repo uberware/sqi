@@ -3,6 +3,7 @@
 package password_test
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -158,6 +159,24 @@ func TestVerifyRejectsMalformedHashes(t *testing.T) {
 			name:    "empty key",
 			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$", salt),
 		},
+		{
+			// One salt byte short of the required 16. Must be rejected
+			// outright rather than accepted with a weaker salt.
+			name:    "wrong-length salt (too short)",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$%s", salt[:len(salt)-2], key),
+		},
+		{
+			// A 1-byte (base64 "AA") key field. Before the fix, Verify
+			// derived a comparison key of length len(want), so this would
+			// make ConstantTimeCompare guard only ~8 bits instead of 256.
+			name:    "wrong-length key (1 byte)",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$AA", salt),
+		},
+		{
+			// One key byte short of the required 32.
+			name:    "wrong-length key (too short)",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$%s", salt, key[:len(key)-2]),
+		},
 	}
 
 	for _, tt := range tests {
@@ -170,5 +189,38 @@ func TestVerifyRejectsMalformedHashes(t *testing.T) {
 				t.Fatalf("Verify(%q): ok = true, want false", tt.encoded)
 			}
 		})
+	}
+}
+
+// TestVerifyBitFlippedHashIsWrongPasswordNotError covers a well-formed
+// encoded hash (correct part count, valid version, sane parameters, correct
+// salt/key lengths) whose key bytes have been corrupted by a single bit
+// flip. This must be reported as a plain verification failure — (false,
+// nil) — not as ErrInvalidHash: the encoding is structurally valid, so a
+// caller can't distinguish "wrong password" from "corrupted database row"
+// and must not leak that distinction either.
+func TestVerifyBitFlippedHashIsWrongPasswordNotError(t *testing.T) {
+	valid, err := password.Hash("reference")
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	parts := strings.Split(valid, "$")
+	if len(parts) != 6 {
+		t.Fatalf("unexpected valid hash shape: %q", valid)
+	}
+	keyBytes, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		t.Fatalf("decode key: %v", err)
+	}
+	keyBytes[0] ^= 0x01 // flip one bit, keep the length identical
+	parts[5] = base64.RawStdEncoding.EncodeToString(keyBytes)
+	tampered := strings.Join(parts, "$")
+
+	ok, err := password.Verify(tampered, "reference")
+	if err != nil {
+		t.Fatalf("Verify(bit-flipped): err = %v, want nil", err)
+	}
+	if ok {
+		t.Fatal("Verify(bit-flipped): ok = true, want false")
 	}
 }

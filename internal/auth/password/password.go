@@ -38,6 +38,7 @@ var ErrInvalidHash = errors.New("password: invalid encoded hash")
 const (
 	maxArgonMemory     = 1 << 20 // 1 GiB, far above any sane operational value
 	maxArgonIterations = 1 << 10 // 1024, far above the real t=2, guards against tampered/corrupt hash
+	maxArgonThreads    = 64      // far above the real p=1 and above any realistic host's core count; well under the uint8 (255) ceiling so a tampered value can't fan out into hundreds of lanes
 )
 
 // parsedHashParams holds the fields decoded from an encoded argon2id hash
@@ -58,7 +59,7 @@ func validateHashParams(memory, iterations, threads int) error {
 	if iterations <= 0 || iterations > maxArgonIterations {
 		return ErrInvalidHash
 	}
-	if threads <= 0 || threads > 255 {
+	if threads <= 0 || threads > maxArgonThreads {
 		return ErrInvalidHash
 	}
 	return nil
@@ -86,17 +87,17 @@ func parseEncodedHash(encoded string) (parsedHashParams, error) {
 		return parsedHashParams{}, err
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil || len(salt) == 0 {
+	if err != nil || len(salt) != argonSaltLen {
 		return parsedHashParams{}, ErrInvalidHash
 	}
 	key, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil || len(key) == 0 {
+	if err != nil || len(key) != argonKeyLen {
 		return parsedHashParams{}, ErrInvalidHash
 	}
 	return parsedHashParams{
 		memory:  uint32(memory),     //nolint:gosec // bounds checked by validateHashParams
 		time:    uint32(iterations), //nolint:gosec // bounds checked by validateHashParams
-		threads: uint8(threads),     //nolint:gosec // bounds checked by validateHashParams (max 255)
+		threads: uint8(threads),     //nolint:gosec // bounds checked by validateHashParams (max maxArgonThreads)
 		salt:    salt,
 		key:     key,
 	}, nil
@@ -124,10 +125,12 @@ func Verify(encoded, plaintext string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	got := argon2.IDKey(
-		[]byte(plaintext), p.salt, p.time, p.memory, p.threads,
-		uint32(len(p.key)), //nolint:gosec // key length is bounded by the base64 decode of our own hash format
-	)
+	// Always derive argonKeyLen bytes, never len(p.key): the comparison
+	// strength must be fixed by this package, not driven by whatever a
+	// (possibly tampered or corrupted) stored hash happens to contain.
+	// parseEncodedHash already rejects any key whose decoded length isn't
+	// exactly argonKeyLen, so this is belt-and-suspenders.
+	got := argon2.IDKey([]byte(plaintext), p.salt, p.time, p.memory, p.threads, argonKeyLen)
 	return subtle.ConstantTimeCompare(got, p.key) == 1, nil
 }
 
