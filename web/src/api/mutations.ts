@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { queryKeys } from './queries'
+import { evictAllExceptAuthMe } from './queryEviction'
 import type {
   ComputeLocation,
   Farm,
@@ -706,25 +707,23 @@ export function useLogin() {
 
 /**
  * Log out the current session. Drops every cached query except `auth.me`, then
- * invalidates that one so the AuthProvider re-resolves to anon.
+ * invalidates that one so the AuthProvider re-resolves to anon, via the shared
+ * {@link evictAllExceptAuthMe} helper.
  *
- * Evicting the rest is a security requirement, not tidiness: query keys carry
- * no principal, so anything the outgoing user browsed would otherwise stay
+ * This is one of two paths that perform this eviction — the other is the
+ * `QueryCache.onError` handler in `queryClient.ts`, which runs the same
+ * eviction when a session *expires* (a 401 on any query) rather than being
+ * explicitly logged out of. Both must evict identically: query keys carry no
+ * principal, so anything the outgoing user browsed would otherwise stay
  * cached and be served — stale but visible — to whoever logs in next on the
- * same browser. `auth.me` is spared rather than swept up in a blanket
- * `clear()` because removing it would tear down the AuthProvider's observer
- * and leave it pending instead of refetching into the 401 that flips the app
- * back to the login page.
+ * same browser, whichever path ended the session.
  */
 export function useLogout() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: fetchLogout,
     onSuccess: () => {
-      qc.removeQueries({
-        predicate: (q) => !(q.queryKey[0] === 'auth' && q.queryKey[1] === 'me'),
-      })
-      void qc.invalidateQueries({ queryKey: queryKeys.auth.me })
+      evictAllExceptAuthMe(qc)
     },
   })
 }

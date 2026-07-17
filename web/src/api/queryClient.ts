@@ -2,6 +2,7 @@
 
 import { QueryCache, QueryClient } from '@tanstack/react-query'
 import { ApiError } from './client'
+import { evictAllExceptAuthMe } from './queryEviction'
 
 /** Singleton QueryClient shared across the application. */
 export const queryClient = new QueryClient({
@@ -19,13 +20,17 @@ export const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error, query) => {
       // A 401 from *any* query means the session is gone (expired, revoked,
-      // never existed). Invalidating auth.me here — rather than requiring
-      // every call site to notice — makes the AuthProvider re-resolve to
-      // 'anon' and the app fall back to the login page, no matter which
-      // query surfaced the 401. Skip when the failing query IS auth.me
-      // itself: its own query state already carries the fresh error, and
-      // re-invalidating it here would just queue an immediate, redundant
-      // refetch of a request that's already known to fail.
+      // never existed). This is one of two paths that evict the cache and
+      // transition the app to anon — the other is explicit logout
+      // (`useLogout` in `mutations.ts`). Both call the shared
+      // `evictAllExceptAuthMe` helper so a session that merely *expires*
+      // (rather than being logged out of) gets the same cross-user cache
+      // eviction, not just the auth.me invalidation that flips the app to
+      // the login page. Skip when the failing query IS auth.me itself: its
+      // own query state already carries the fresh error, and evicting here
+      // would just queue an immediate, redundant refetch of a request
+      // that's already known to fail (and would self-invalidate via its own
+      // onError in a loop).
       //
       // `queryClient` isn't assigned yet at the point this closure is
       // *defined* (it's still inside its own initializer), but it is always
@@ -34,7 +39,7 @@ export const queryClient = new QueryClient({
       // self-reference is safe.
       const isAuthMeQuery = query.queryKey[0] === 'auth' && query.queryKey[1] === 'me'
       if (error instanceof ApiError && error.status === 401 && !isAuthMeQuery) {
-        void queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
+        evictAllExceptAuthMe(queryClient)
       }
       console.error('[sqi] query error', error)
     },
