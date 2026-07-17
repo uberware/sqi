@@ -230,10 +230,37 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 	return nil
 }
 
-// validateAuth validates the auth config. Reserved: AuthConfig currently holds
-// only a bool (nothing to reject). A1 adds credential sub-fields to validate.
-func validateAuth(_ AuthConfig) []ValidationError {
-	return nil
+// validateAuth validates the auth config. Rules only apply when auth is
+// enabled — a disabled auth block must never produce validation errors, since
+// its sub-fields carry no operational meaning until the gate is turned on.
+//
+// Bootstrap.Password is intentionally never echoed here: validation errors
+// name the field, never the value, so secrets can't leak into logs or CLI
+// output.
+func validateAuth(cfg AuthConfig) []ValidationError {
+	var errs []ValidationError
+	if !cfg.Enabled {
+		return errs
+	}
+	if cfg.Session.TTL <= 0 {
+		errs = append(errs, ValidationError{
+			Field:   "auth.session.ttl",
+			Message: "must be > 0 when auth is enabled; set SQI_AUTH_SESSION_TTL or auth.session.ttl",
+		})
+	}
+	switch cfg.Session.CookieSecure {
+	case "auto", "true", "false":
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Field: "auth.session.cookie_secure",
+			Message: fmt.Sprintf(
+				`must be "auto", "true", or "false", got %q; set SQI_AUTH_SESSION_COOKIE_SECURE or auth.session.cookie_secure`,
+				cfg.Session.CookieSecure,
+			),
+		})
+	}
+	return errs
 }
 
 // validateTCPAddr checks that addr is a parseable host:port string.

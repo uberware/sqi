@@ -148,6 +148,15 @@ type fileConfig struct {
 
 	Auth *struct {
 		Enabled *bool `yaml:"enabled"`
+		Session *struct {
+			TTL          *string `yaml:"ttl"`
+			CookieName   *string `yaml:"cookie_name"`
+			CookieSecure *string `yaml:"cookie_secure"`
+		} `yaml:"session"`
+		Bootstrap *struct {
+			Username *string `yaml:"username"`
+			Password *string `yaml:"password"`
+		} `yaml:"bootstrap"`
 	} `yaml:"auth"`
 }
 
@@ -362,6 +371,52 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 	if fc.Auth.Enabled != nil {
 		cfg.Auth.Enabled = *fc.Auth.Enabled
 	}
+	mergeAuthSessionFile(cfg, fc.Auth.Session)
+	mergeAuthBootstrapFile(cfg, fc.Auth.Bootstrap)
+}
+
+// mergeAuthSessionFile overlays the auth.session sub-fields from fc onto cfg.
+// Split out of [mergeAuthFile] to keep its cyclomatic complexity under the
+// lint threshold.
+func mergeAuthSessionFile(cfg *Config, s *struct {
+	TTL          *string `yaml:"ttl"`
+	CookieName   *string `yaml:"cookie_name"`
+	CookieSecure *string `yaml:"cookie_secure"`
+},
+) {
+	if s == nil {
+		return
+	}
+	if s.TTL != nil {
+		if d, err := time.ParseDuration(*s.TTL); err == nil {
+			cfg.Auth.Session.TTL = d
+		}
+	}
+	if s.CookieName != nil {
+		cfg.Auth.Session.CookieName = *s.CookieName
+	}
+	if s.CookieSecure != nil {
+		cfg.Auth.Session.CookieSecure = *s.CookieSecure
+	}
+}
+
+// mergeAuthBootstrapFile overlays the auth.bootstrap sub-fields from fc onto
+// cfg. Split out of [mergeAuthFile] to keep its cyclomatic complexity under
+// the lint threshold.
+func mergeAuthBootstrapFile(cfg *Config, b *struct {
+	Username *string `yaml:"username"`
+	Password *string `yaml:"password"`
+},
+) {
+	if b == nil {
+		return
+	}
+	if b.Username != nil {
+		cfg.Auth.Bootstrap.Username = *b.Username
+	}
+	if b.Password != nil {
+		cfg.Auth.Bootstrap.Password = *b.Password
+	}
 }
 
 // ── Environment variable layer ────────────────────────────────────────────────
@@ -401,6 +456,11 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
 
 	setBool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED")
+	setDuration(&cfg.Auth.Session.TTL, "SQI_AUTH_SESSION_TTL")
+	setString(&cfg.Auth.Session.CookieName, "SQI_AUTH_SESSION_COOKIE_NAME")
+	setString(&cfg.Auth.Session.CookieSecure, "SQI_AUTH_SESSION_COOKIE_SECURE")
+	setString(&cfg.Auth.Bootstrap.Username, "SQI_AUTH_BOOTSTRAP_USERNAME")
+	setString(&cfg.Auth.Bootstrap.Password, "SQI_AUTH_BOOTSTRAP_PASSWORD")
 }
 
 func setString(dst *string, key string) {
