@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,6 +219,39 @@ func TestLogin_InvalidCredentialsIndistinguishable(t *testing.T) {
 	}
 }
 
+// TestDummyHash_MatchesPasswordPackageParams guards the fix for the
+// unknown-user timing side channel: login's unknown-user branch calls
+// password.Verify(dummyHash, ...) so that path costs the same as the
+// known-user branch, which always calls password.Verify for real. Timing
+// itself is not asserted here (that would be flaky); instead this pins the
+// structural guarantee that makes the fix work — dummyHash is a genuine,
+// verifiable argon2id hash whose cost parameters match whatever
+// password.Hash currently produces (not a stale hardcoded literal that
+// could silently drift out of sync if the parameters are ever raised).
+func TestDummyHash_MatchesPasswordPackageParams(t *testing.T) {
+	probe, err := password.Hash("unrelated-probe-value")
+	if err != nil {
+		t.Fatalf("password.Hash: %v", err)
+	}
+	paramsOf := func(encoded string) string {
+		parts := strings.Split(encoded, "$")
+		if len(parts) != 6 {
+			t.Fatalf("unexpected encoded hash format: %q", encoded)
+		}
+		return parts[3] // "m=<mem>,t=<time>,p=<threads>"
+	}
+	if got, want := paramsOf(dummyHash), paramsOf(probe); got != want {
+		t.Errorf("dummyHash params = %q, want %q (must match password.Hash's current defaults)", got, want)
+	}
+	ok, verr := password.Verify(dummyHash, dummyVerifyPlaintext)
+	if verr != nil {
+		t.Fatalf("password.Verify(dummyHash, dummyVerifyPlaintext): %v", verr)
+	}
+	if !ok {
+		t.Fatal("dummyHash does not verify against the plaintext it was derived from")
+	}
+}
+
 func TestLogin_InvalidJSONBody(t *testing.T) {
 	st := fake.New()
 	srv := newAuthTestServer(t, st)
@@ -281,7 +315,7 @@ func TestLogout_RevokesSessionAndClearsCookie(t *testing.T) {
 	}
 }
 
-func TestLogout_NoCookieStillSucceeds(t *testing.T) {
+func TestLogout_UnauthenticatedRejected(t *testing.T) {
 	// logout is mounted inside the auth group, so an unauthenticated request
 	// never reaches the handler at all — it is gated 401 by middleware.Auth.
 	st := fake.New()
