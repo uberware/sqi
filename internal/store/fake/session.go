@@ -13,6 +13,17 @@ import (
 func (s *Store) CreateSession(_ context.Context, sess store.Session) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Mirror SQLite's `REFERENCES users(id)` foreign key (PRAGMA
+	// foreign_keys=ON): a session for a nonexistent user is rejected.
+	if _, ok := s.users[sess.UserID]; !ok {
+		return store.Session{}, store.ErrConflict
+	}
+	// Mirror SQLite's `token_hash TEXT NOT NULL UNIQUE`.
+	for _, ex := range s.sessions {
+		if ex.TokenHash == sess.TokenHash {
+			return store.Session{}, store.ErrConflict
+		}
+	}
 	s.sessions[sess.ID] = sess
 	return sess, nil
 }

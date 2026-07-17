@@ -36,6 +36,8 @@ type Authenticator struct {
 	now        func() time.Time
 }
 
+var _ auth.Authenticator = (*Authenticator)(nil)
+
 // New returns a session Authenticator. A nil clock defaults to time.Now.
 func New(src SessionSource, cookieName string, clock func() time.Time) *Authenticator {
 	if cookieName == "" {

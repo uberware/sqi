@@ -59,6 +59,55 @@ func TestSessionStore_IssueVerifyRevoke(t *testing.T) {
 	}
 }
 
+// TestSessionStore_CreateSession_OrphanUser verifies that creating a session
+// whose user_id references no user is rejected — SQLite via the `REFERENCES
+// users(id)` foreign key (PRAGMA foreign_keys=ON), the fake via an explicit
+// existence check. Both must surface store.ErrConflict (the FOREIGN KEY
+// violation is mapped to that sentinel in sqlite/scan.go).
+func TestSessionStore_CreateSession_OrphanUser(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().UTC()
+			sess := store.Session{
+				ID: uuid.NewString(), TokenHash: "orphan-" + uuid.NewString(),
+				UserID:    uuid.NewString(), // no such user exists
+				ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+			}
+			if _, err := st.CreateSession(ctx, sess); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected ErrConflict creating session for nonexistent user, got %v", err)
+			}
+		})
+	}
+}
+
+// TestSessionStore_CreateSession_DuplicateTokenHash verifies that creating a
+// second session with an already-used token_hash is rejected — SQLite via
+// `token_hash TEXT NOT NULL UNIQUE`, the fake via an explicit check.
+func TestSessionStore_CreateSession_DuplicateTokenHash(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("user"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			now := time.Now().UTC()
+			tokenHash := "dup-" + uuid.NewString()
+
+			sess1 := store.Session{ID: uuid.NewString(), TokenHash: tokenHash, UserID: u.ID, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
+			if _, err := st.CreateSession(ctx, sess1); err != nil {
+				t.Fatalf("CreateSession(1): %v", err)
+			}
+
+			sess2 := store.Session{ID: uuid.NewString(), TokenHash: tokenHash, UserID: u.ID, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
+			if _, err := st.CreateSession(ctx, sess2); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected ErrConflict on duplicate token_hash, got %v", err)
+			}
+		})
+	}
+}
+
 func TestSessionStore_DeleteForUserAndExpired(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

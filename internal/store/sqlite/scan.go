@@ -146,8 +146,9 @@ func nullString(s string) sql.NullString {
 // [store]. It covers:
 //   - [sql.ErrNoRows] → [store.ErrNotFound]
 //   - UNIQUE constraint violations → [store.ErrConflict]
+//   - FOREIGN KEY constraint violations → [store.ErrConflict]
 //
-// UNIQUE constraint detection uses the error message string because
+// Constraint detection uses the error message string because
 // modernc.org/sqlite surfaces this reliably and consistently. If the driver
 // changes, revisit this check.
 func mapErr(err error) error {
@@ -158,6 +159,9 @@ func mapErr(err error) error {
 		return store.ErrNotFound
 	}
 	if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return fmt.Errorf("%w: %s", store.ErrConflict, err.Error())
+	}
+	if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 		return fmt.Errorf("%w: %s", store.ErrConflict, err.Error())
 	}
 	return err

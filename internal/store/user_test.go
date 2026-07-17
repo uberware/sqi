@@ -175,6 +175,62 @@ func TestUserStore_DeleteCascadesSessions(t *testing.T) {
 	}
 }
 
+// TestUserStore_CreateUser_DuplicateID verifies that creating a user whose ID
+// collides with an existing user is rejected — SQLite via `id TEXT PRIMARY
+// KEY`, the fake via an explicit check. Without this check the fake would
+// silently overwrite the existing user's password hash and role instead of
+// returning store.ErrConflict like SQLite does.
+func TestUserStore_CreateUser_DuplicateID(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u := mkUser("admin")
+			if _, err := st.CreateUser(ctx, u); err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+
+			dup := mkUser("user")
+			dup.ID = u.ID // same ID, different username/role/password.
+			if _, err := st.CreateUser(ctx, dup); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected ErrConflict on duplicate ID, got %v", err)
+			}
+
+			// The original user must be unchanged, not overwritten.
+			got, err := st.GetUser(ctx, u.ID)
+			if err != nil {
+				t.Fatalf("GetUser: %v", err)
+			}
+			if got.Username != u.Username || got.PasswordHash != u.PasswordHash || got.Role != u.Role {
+				t.Fatalf("duplicate-ID create must not overwrite existing user: got %+v, want %+v", got, u)
+			}
+		})
+	}
+}
+
+// TestUserStore_CreateUser_AsciiFoldOnly verifies that username uniqueness
+// folds ASCII case only, matching SQLite's `COLLATE NOCASE` (which is
+// ASCII-only, unlike Go's Unicode-aware strings.EqualFold). "Δelta" and
+// "δelta" differ only by a non-ASCII Greek letter case, so both must be
+// accepted as distinct usernames.
+func TestUserStore_CreateUser_AsciiFoldOnly(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u1 := mkUser("user")
+			u1.Username = "Δelta"
+			if _, err := st.CreateUser(ctx, u1); err != nil {
+				t.Fatalf("CreateUser(Δelta): %v", err)
+			}
+
+			u2 := mkUser("user")
+			u2.Username = "δelta"
+			if _, err := st.CreateUser(ctx, u2); err != nil {
+				t.Fatalf("CreateUser(δelta) should succeed since SQLite COLLATE NOCASE is ASCII-only: %v", err)
+			}
+		})
+	}
+}
+
 func upper(s string) string {
 	// simple ASCII upper for the test username
 	b := []byte(s)

@@ -11,14 +11,37 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-func eqFold(a, b string) bool { return strings.EqualFold(a, b) }
+// asciiEqFold reports whether a and b are equal under ASCII-only
+// case-folding. This deliberately mirrors SQLite's `COLLATE NOCASE`, which
+// folds only ASCII letters ('A'-'Z') and leaves non-ASCII code points
+// (e.g. Greek "Δ"/"δ") untouched — unlike strings.EqualFold, which is
+// Unicode-aware and would incorrectly treat "Δelta" and "δelta" as the same
+// username.
+func asciiEqFold(a, b string) bool {
+	return asciiToLower(a) == asciiToLower(b)
+}
+
+// asciiToLower lowercases only ASCII letters, leaving all other bytes/runes
+// untouched — matching SQLite's ASCII-only NOCASE collation.
+func asciiToLower(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
 
 // CreateUser implements [store.UserStore].
 func (s *Store) CreateUser(_ context.Context, u store.User) (store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.users[u.ID]; ok {
+		return store.User{}, store.ErrConflict
+	}
 	for _, ex := range s.users {
-		if eqFold(ex.Username, u.Username) {
+		if asciiEqFold(ex.Username, u.Username) {
 			return store.User{}, store.ErrConflict
 		}
 	}
@@ -44,7 +67,7 @@ func (s *Store) GetUserByUsername(_ context.Context, username string) (store.Use
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, u := range s.users {
-		if eqFold(u.Username, username) {
+		if asciiEqFold(u.Username, username) {
 			return u, nil
 		}
 	}
@@ -61,8 +84,9 @@ func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 	}
 	// Case-insensitive to match SQLite's `ORDER BY username` over the
 	// COLLATE NOCASE column (see sqlListUsers in internal/store/sqlite/user.go).
+	// ASCII-only fold, mirroring SQLite's NOCASE collation.
 	slices.SortStableFunc(users, func(a, b store.User) int {
-		return strings.Compare(strings.ToLower(a.Username), strings.ToLower(b.Username))
+		return strings.Compare(asciiToLower(a.Username), asciiToLower(b.Username))
 	})
 	return users, nil
 }
