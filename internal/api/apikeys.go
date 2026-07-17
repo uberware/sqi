@@ -27,7 +27,9 @@ import (
 )
 
 // apiKeyPrefixLen is how many leading chars of the raw key are stored for
-// list identification. A prefix of 32 random bytes cannot be brute-forced.
+// list identification only. The prefix is display-only — it is never used to
+// look up or authenticate a key (that goes through the full-token hash), so
+// storing a short, non-secret slice of the raw key leaks nothing usable.
 const apiKeyPrefixLen = 12
 
 type apiKeysHandler struct {
