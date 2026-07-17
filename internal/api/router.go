@@ -79,6 +79,12 @@ type Config struct {
 	// scheduler's WorkerTimeout. Zero is treated as "no grace" (a disabled
 	// worker with any past heartbeat is considered dead).
 	WorkerOfflineThreshold time.Duration
+
+	// AuthEnabled reflects config.AuthConfig.Enabled. Task 6 only threads it
+	// through so callers can construct a Config; it does not yet change any
+	// routing or CORS/CSRF/WebSocket-origin behavior here — that lands in
+	// Task 8.
+	AuthEnabled bool
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -125,6 +131,20 @@ type Deps struct {
 	// treated as auth.Anonymous() (auth disabled): every request is the
 	// anonymous superuser principal and behavior is unchanged.
 	Auth auth.Authenticator
+
+	// SessionTTL is the absolute lifetime of sessions minted by
+	// POST /api/v1/auth/login. Mirrors config.AuthConfig.Session.TTL.
+	SessionTTL time.Duration
+
+	// CookieName is the session cookie name set by login and cleared by
+	// logout. Mirrors config.AuthConfig.Session.CookieName; must match the
+	// name the Auth authenticator (e.g. session.Authenticator) reads.
+	CookieName string
+
+	// CookieSecure controls the session cookie's Secure attribute: "auto"
+	// (Secure when the request is TLS or carries X-Forwarded-Proto: https),
+	// "true", or "false". Mirrors config.AuthConfig.Session.CookieSecure.
+	CookieSecure string
 }
 
 // NewRouter builds and returns the chi router that serves the full sqi-server
@@ -243,6 +263,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
+	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Auth)
 
@@ -268,9 +289,17 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// OpenAPI spec — left public in A0.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
+		// Public: login mints the session cookie (no principal required yet,
+		// so it cannot be gated by middleware.Auth).
+		api.Post("/auth/login", authH.login)
+
 		// REST resource routes — gated by the auth middleware.
 		api.Group(func(rest chi.Router) {
 			rest.Use(middleware.Auth(deps.Auth, logger))
+
+			// ── Auth endpoints (require a principal) ────────────
+			rest.Post("/auth/logout", authH.logout)
+			rest.Get("/auth/me", authH.me)
 
 			// ── Job endpoints ───────────────────────────────────
 			rest.Post("/jobs", jobs.submitJob)
