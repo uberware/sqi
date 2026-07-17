@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,12 @@ func seedAuthUser(t *testing.T, st store.Store, username, pw, role string) store
 
 // doRequest issues an HTTP request carrying the test context (satisfying the
 // noctx linter) with an optional JSON body and optional cookie.
+//
+// When a cookie is present, a real browser sends an Origin header on unsafe
+// methods (POST/PUT/PATCH/DELETE) even for same-origin requests — that's
+// exactly what middleware.CSRF (mounted when AuthEnabled is true) requires to
+// distinguish a same-origin browser call from a cross-site one riding the
+// ambient cookie. Set Origin from url's own scheme+host to model that.
 func doRequest(t *testing.T, method, url string, body any, cookie *http.Cookie) *http.Response {
 	t.Helper()
 	var reader *bytes.Reader
@@ -92,6 +99,9 @@ func doRequest(t *testing.T, method, url string, body any, cookie *http.Cookie) 
 	}
 	if cookie != nil {
 		req.AddCookie(cookie)
+		if u, parseErr := neturl.Parse(url); parseErr == nil && u.Host != "" {
+			req.Header.Set("Origin", u.Scheme+"://"+u.Host)
+		}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

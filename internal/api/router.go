@@ -38,7 +38,9 @@ package api
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	httppprof "net/http/pprof"
+	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -80,10 +82,12 @@ type Config struct {
 	// worker with any past heartbeat is considered dead).
 	WorkerOfflineThreshold time.Duration
 
-	// AuthEnabled reflects config.AuthConfig.Enabled. Task 6 only threads it
-	// through so callers can construct a Config; it does not yet change any
-	// routing or CORS/CSRF/WebSocket-origin behavior here — that lands in
-	// Task 8.
+	// AuthEnabled reflects config.AuthConfig.Enabled. When true, the session
+	// cookie is in play and this router activates the browser-security
+	// surface it requires: CORS AllowCredentials, the Origin-based CSRF guard
+	// on the authenticated route group, and WebSocket Origin enforcement
+	// (OriginPatterns instead of InsecureSkipVerify). When false, all three
+	// are byte-for-byte unchanged from pre-A1 behavior.
 	AuthEnabled bool
 }
 
@@ -158,6 +162,18 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if len(origins) == 0 {
 		origins = []string{"*"}
 	}
+	if cfg.AuthEnabled && slices.Contains(origins, "*") {
+		// AllowCredentials + a wildcard origin is an invalid CORS
+		// configuration (browsers reject it) and, if honored, would let any
+		// origin ride the session cookie. Drop the wildcard rather than
+		// silently disabling credentials.
+		logger.ErrorContext(
+			context.Background(),
+			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard; "+
+				"set cors_origins to an explicit allow-list",
+		)
+		origins = slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
+	}
 
 	r := chi.NewRouter()
 
@@ -167,9 +183,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	//    headers are always present even on 500 responses.
 	r.Use(chimiddleware.Recoverer)
 
-	// 2. CORS — must run before any handler writes a response so preflight
-	//    OPTIONS requests are handled and headers are injected correctly.
-	r.Use(cors.Handler(cors.Options{
+	corsOpts := cors.Options{
 		AllowedOrigins: origins,
 		AllowedMethods: []string{
 			"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD",
@@ -184,11 +198,26 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			"X-Request-ID",
 			"X-API-Version",
 		},
-		// Credentials (cookies / Authorization header) are only relevant once
-		// auth is introduced in Phase 3. Set to false until then.
-		AllowCredentials: false,
+		// Credentials (the session cookie) are only meaningful once auth is
+		// enabled — the browser must be told to send/accept the cookie
+		// cross-origin. AllowedOrigins can never contain "*" here: see the
+		// wildcard guard above.
+		AllowCredentials: cfg.AuthEnabled,
 		MaxAge:           300, // seconds to cache preflight response
-	}))
+	}
+	if cfg.AuthEnabled && len(origins) == 0 {
+		// go-chi/cors treats a nil/empty AllowedOrigins as "allow every
+		// origin" by default (see its New()) — the opposite of what an empty
+		// explicit allow-list means here (no cross-origin browser access
+		// configured). AllowOriginFunc overrides that library default so the
+		// wildcard-drop above actually denies cross-origin access instead of
+		// silently re-enabling it.
+		corsOpts.AllowOriginFunc = func(*http.Request, string) bool { return false }
+	}
+
+	// 2. CORS — must run before any handler writes a response so preflight
+	//    OPTIONS requests are handled and headers are injected correctly.
+	r.Use(cors.Handler(corsOpts))
 
 	// 3. Request ID — chi generates a UUID v4 and writes it into the request
 	//    header when X-Request-ID is absent. Our RequestLogger (step 5) then
@@ -266,7 +295,10 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
 	usersH := newUsersHandler(deps.Store, logger)
 
-	wsH := newWSHandler(logger, deps.Hub, deps.Auth)
+	wsH := newWSHandler(logger, deps.Hub, deps.Auth, wsOriginConfig{
+		Enabled:        cfg.AuthEnabled,
+		AllowedOrigins: origins,
+	})
 
 	r.Route("/api/v1", func(api chi.Router) {
 		// 7. Versioning header — X-API-Version: 1 on every response.
@@ -296,6 +328,19 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 
 		// REST resource routes — gated by the auth middleware.
 		api.Group(func(rest chi.Router) {
+			// CSRF must run before Auth: it only cares about the presence of
+			// the session cookie (ambient credential), not about whether
+			// authentication itself succeeds. Mounted only when auth is
+			// enabled — with no session cookie in play there is nothing to
+			// guard, and mounting it with an empty CookieName would compare
+			// against a cookie that never exists (a no-op in practice, but
+			// pointless overhead on every request).
+			if cfg.AuthEnabled {
+				rest.Use(middleware.CSRF(middleware.CSRFConfig{
+					CookieName:     deps.CookieName,
+					AllowedOrigins: origins,
+				}, logger))
+			}
 			rest.Use(middleware.Auth(deps.Auth, logger))
 
 			// ── Auth endpoints (require a principal) ────────────
