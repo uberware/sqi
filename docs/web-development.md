@@ -165,6 +165,47 @@ Use the `@/` path alias (configured in both `vite.config.ts` and
 
 ---
 
+## Authentication (login route, `AuthProvider`, `useAuth`)
+
+`GET /api/v1/auth/me` is the **single signal** that drives the whole app's
+auth gating — there is no separate "is auth enabled?" flag on the client.
+`AuthProvider` (`src/auth/context.tsx`) wraps the app and calls it via the
+`useAuthMe` query hook, resolving to one of three `status` values:
+
+- `'loading'` — the initial request hasn't resolved yet.
+- `'authed'` — `/auth/me` returned `200`. This covers both a real logged-in
+  user **and** the anonymous superuser principal `/auth/me` returns when the
+  server has `auth.enabled=false` (`kind: "anonymous"`) — which is what lets
+  the same client code serve both modes without a separate feature flag.
+- `'anon'` — `/auth/me` returned `401` (no/invalid/expired session), or any
+  other request error; a network failure or 5xx is treated as `'anon'` too,
+  so the app never gets stuck rendering the shell against an unconfirmed
+  identity.
+
+`App.tsx` reads `useAuth().status` and renders `<Login />` in place of the
+whole shell (sidebar, routes, WebSocket provider) whenever status is `'anon'`,
+and a loading placeholder for `'loading'`. There is no `/login` entry in
+`routes.tsx` — logging in is a full replacement of the app root, not a routed
+page, so it renders regardless of whatever URL the user was on.
+
+`src/pages/Login.tsx` submits `POST /auth/login` via the `useLogin` mutation
+and, on success, calls `refresh()` from `useAuth()` (which invalidates the
+`auth.me` query) to let `AuthProvider` re-resolve and flip the app back to the
+shell. A global handler in `src/api/queryClient.ts` also invalidates `auth.me`
+whenever *any* query gets a `401`, so an expired or revoked session anywhere
+in the app bounces the user back to the login screen on its own.
+
+**The web stores no token, anywhere.** There is no localStorage, sessionStorage,
+or in-memory token cache — the session is an `HttpOnly` cookie the browser
+attaches automatically, which JavaScript cannot read even if it wanted to.
+This is deliberate: it's what makes the session resistant to exfiltration via
+XSS (a malicious script running in the page still cannot read or copy the
+credential). Every request goes through `apiFetch` (`src/api/client.ts`),
+which sets `credentials: 'include'` so the cookie rides along on same-origin
+requests without any client-side bookkeeping.
+
+---
+
 ## Adding a new API query hook
 
 The REST layer lives in `web/src/api/`. A read endpoint is added in three steps:

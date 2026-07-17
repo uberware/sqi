@@ -619,19 +619,116 @@ The single switch for sqi's authentication gate. Default `false` — the server
 is open on a trusted local network and every request is served as an anonymous
 superuser.
 
-> **A0 status:** this is a reserved seam, not a working gate. It is fully
-> plumbed and validated (config file, env, flag all flip it), but flipping it
-> to `true` has **no runtime effect yet** — there is no credential backend, so
-> the server still authenticates every request as the anonymous superuser.
-> Local accounts and login land in A1, at which point `auth.enabled=true`
-> starts requiring real credentials.
+As of component A1, this is a live gate: setting it to `true` requires every
+REST request and the WebSocket upgrade to carry a valid session, backed by
+local accounts (see below and [`docs/auth.md`](auth.md)). Role-based
+authorization is not enforced yet (component B1) — see the interim gap
+documented in [`docs/auth.md`](auth.md#local-accounts).
 
 ```yaml
 auth:
   enabled: false
 ```
 
-See [`docs/auth.md`](auth.md) for the full authentication model.
+---
+
+### `auth.session.ttl`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `168h` (7 days) |
+| **Env var** | `SQI_AUTH_SESSION_TTL` |
+
+Absolute lifetime of a session created by `POST /api/v1/auth/login`, from
+creation. There is no sliding/idle renewal — using a session does not extend
+it. Must be `> 0` when `auth.enabled` is `true`; ignored (no validation) when
+auth is disabled.
+
+```yaml
+auth:
+  session:
+    ttl: "168h"
+```
+
+---
+
+### `auth.session.cookie_name`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"sqi_session"` |
+| **Env var** | `SQI_AUTH_SESSION_COOKIE_NAME` |
+
+Name of the session cookie set by login and cleared by logout. Change this
+only if `sqi_session` collides with another cookie on the same domain (e.g.
+sqi served under a shared reverse-proxy host alongside another app).
+
+```yaml
+auth:
+  session:
+    cookie_name: "sqi_session"
+```
+
+---
+
+### `auth.session.cookie_secure`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"auto"` |
+| **Accepted values** | `auto`, `true`, `false` |
+| **Env var** | `SQI_AUTH_SESSION_COOKIE_SECURE` |
+
+Controls the session cookie's `Secure` attribute. `"auto"` sets `Secure` when
+the request arrived over TLS or carries `X-Forwarded-Proto: https` — correct
+behind a TLS-terminating proxy. sqi's default deployment posture is a
+trusted, plain-HTTP LAN, so `"false"` lets an operator force `Secure` off
+explicitly on such a deployment rather than rely on `"auto"` guessing right;
+`"true"` forces it on. Any other value fails config validation when
+`auth.enabled` is `true`.
+
+```yaml
+auth:
+  session:
+    cookie_secure: "auto"
+```
+
+---
+
+### `auth.bootstrap.username` / `auth.bootstrap.password`
+
+| | |
+|---|---|
+| **Type** | `string` / `string` |
+| **Default** | `""` / `""` |
+| **Env var** | `SQI_AUTH_BOOTSTRAP_USERNAME` / `SQI_AUTH_BOOTSTRAP_PASSWORD` |
+
+Seed credentials for the first admin account, applied once at startup only
+when `auth.enabled` is `true` **and** the `users` table is empty; the account
+is created with `role: "admin"`. Idempotent — once any user exists, these
+values have no further effect and never overwrite an existing password.
+Leaving both empty is valid: an auth-enabled server with no users just logs a
+`WARN` and boots without an admin, until an operator sets both and restarts.
+Setting only one of the two is a startup validation error (guards against a
+typo'd env var name).
+
+`auth.bootstrap.password` is **redacted** (`<redacted>`) in
+`sqi-server config print` and any other re-marshaled dump of the config — it
+never appears in that output, even though the loaded value is used normally.
+
+```yaml
+auth:
+  bootstrap:
+    username: "admin"
+    password: "change-me-after-first-login"
+```
+
+See [`docs/auth.md`](auth.md) for the full authentication model, the local
+account model, and the interim authorization gap before role enforcement
+(component B1).
 
 ---
 
@@ -759,6 +856,11 @@ for the detector schema reference.
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 | `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
 | `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |
+| `auth.session.ttl` | duration | `168h` | `SQI_AUTH_SESSION_TTL` | — |
+| `auth.session.cookie_name` | string | `sqi_session` | `SQI_AUTH_SESSION_COOKIE_NAME` | — |
+| `auth.session.cookie_secure` | string | `auto` | `SQI_AUTH_SESSION_COOKIE_SECURE` | — |
+| `auth.bootstrap.username` | string | `""` | `SQI_AUTH_BOOTSTRAP_USERNAME` | — |
+| `auth.bootstrap.password` | string | `""` | `SQI_AUTH_BOOTSTRAP_PASSWORD` | — |
 
 ---
 

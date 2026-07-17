@@ -73,8 +73,42 @@ with SqiClient("http://localhost:8080") as sqi:
 
 Errors map to a typed hierarchy rooted at `SqiError` (e.g. `NotFoundError`,
 `ValidationError`, `ConflictError`, `SqiTimeoutError`). The transport retries
-idempotent GETs with backoff and exposes a per-request header hook for future
-authentication.
+idempotent GETs with backoff.
+
+## Authentication
+
+`sqi-server` can optionally require authentication (`auth.enabled`, off by
+default — see [`docs/auth.md`](https://github.com/uberware/sqi/blob/main/docs/auth.md)).
+`SqiClient` already has bearer-token support wired in for when a server
+requires it:
+
+```python
+from sqi_client import SqiAuthError, SqiClient
+
+# Pass a token explicitly...
+sqi = SqiClient("http://localhost:8080", token="<token>")
+
+# ...or let it fall back to $SQI_TOKEN, then $SQI_API_KEY, from the environment.
+sqi = SqiClient("http://localhost:8080")  # reads SQI_TOKEN / SQI_API_KEY if set
+
+try:
+    sqi.list_products()
+except SqiAuthError:
+    print("authentication required or credential rejected")
+```
+
+When a token is available (explicit `token=` or either environment variable),
+it is sent as `Authorization: Bearer <token>` on every request; an explicit
+`headers={"Authorization": ...}` argument still overrides it. A `401` or `403`
+response raises `SqiAuthError`.
+
+**Caveat:** as of this writing, `sqi-server`'s only working authentication
+method is the browser session cookie used by its web UI — there is no
+issuable API key or bearer-token credential yet, so `token=`/`$SQI_TOKEN` has
+nothing to authenticate against on a server with `auth.enabled=true`. This
+plumbing is ready ahead of time for **component A2** (API keys for headless
+use), which is what will make it actually usable end-to-end. Until A2 ships,
+run the SDK against servers with auth disabled.
 
 ## Products
 
