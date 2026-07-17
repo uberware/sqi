@@ -88,7 +88,7 @@ func isSafeMethod(m string) bool {
 }
 
 // originAllowed reports whether r's Origin (falling back to Referer's origin)
-// is same-origin with r.Host or present in allowed.
+// is same-origin with r (scheme + host + port) or present in allowed.
 func originAllowed(r *http.Request, allowed []string) bool {
 	origin := requestOrigin(r)
 	if origin == "" {
@@ -98,8 +98,37 @@ func originAllowed(r *http.Request, allowed []string) bool {
 	if slices.Contains(allowed, origin) {
 		return true
 	}
+	return sameOrigin(origin, r)
+}
+
+// sameOrigin reports whether origin (a "scheme://host[:port]" string) is
+// truly same-origin with r: scheme, host, and port must all match. Comparing
+// host alone would accept http://farm.example against an https://farm.example
+// deployment — same host, different scheme, not the same origin.
+//
+// r.Host is required to be non-empty: an empty Host would let a parsed
+// "null" Origin (u.Host == "") compare equal to it. Unreachable from a real
+// browser (net/http rejects HTTP/1.1 requests without a Host), but the
+// precondition removes the reasoning burden.
+func sameOrigin(origin string, r *http.Request) bool {
+	if r.Host == "" {
+		return false
+	}
 	u, err := url.Parse(origin)
-	return err == nil && u.Host == r.Host
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == requestScheme(r) && u.Host == r.Host
+}
+
+// requestScheme reports the request's effective scheme, honoring the
+// X-Forwarded-Proto header set by a reverse proxy (sqi commonly runs behind
+// one) in addition to r.TLS. Mirrors authHandler.secure in internal/api/auth.go.
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		return "https"
+	}
+	return "http"
 }
 
 // requestOrigin returns the effective Origin header value, falling back to

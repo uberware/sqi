@@ -34,6 +34,17 @@ func bootstrapAdmin(ctx context.Context, st store.Store, p BootstrapParams, logg
 		return fmt.Errorf("bootstrap: count users: %w", err)
 	}
 	if n > 0 {
+		if p.Username != "" && p.Password != "" {
+			// Bootstrap credentials were configured but there is already at
+			// least one user (e.g. one created while auth was off, when
+			// /users was unauthenticated) — bootstrap is a no-op and the
+			// configured credentials are silently ignored. Without this log
+			// an operator who restarts expecting a new admin gets nothing
+			// and no explanation. Never log the credentials themselves.
+			logger.InfoContext(ctx, "auth bootstrap credentials are configured but users already "+
+				"exist — skipping bootstrap; use the /users API or an existing account to log in",
+				slog.String("username", p.Username))
+		}
 		return nil
 	}
 	if p.Username == "" || p.Password == "" {

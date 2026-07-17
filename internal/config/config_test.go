@@ -886,12 +886,43 @@ func TestValidate_AuthDisabled_NoErrorsEvenWithBadValues(t *testing.T) {
 	cfg.Auth.Enabled = false
 	cfg.Auth.Session.TTL = 0
 	cfg.Auth.Session.CookieSecure = "not-a-valid-value"
+	cfg.Auth.Session.CookieName = ""
 
 	errs := config.Validate(cfg)
 	for _, e := range errs {
 		if strings.HasPrefix(e.Field, "auth.") {
 			t.Fatalf("auth disabled must not produce validation errors, got %v", e)
 		}
+	}
+}
+
+func TestValidate_AuthSessionCookieNameMustNotBeEmpty(t *testing.T) {
+	tests := []struct {
+		name       string
+		cookieName string
+		wantErr    bool
+	}{
+		{"default is valid", "sqi_session", false},
+		{"custom name is valid", "custom_session", false},
+		{"empty is invalid", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = true
+			cfg.Auth.Session.CookieName = tt.cookieName
+
+			errs := config.Validate(cfg)
+			hasErr := false
+			for _, e := range errs {
+				if e.Field == "auth.session.cookie_name" {
+					hasErr = true
+				}
+			}
+			if hasErr != tt.wantErr {
+				t.Fatalf("cookie_name=%q: got error=%v, want %v (errs=%+v)", tt.cookieName, hasErr, tt.wantErr, errs)
+			}
+		})
 	}
 }
 

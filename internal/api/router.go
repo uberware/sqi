@@ -170,7 +170,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		logger.ErrorContext(
 			context.Background(),
 			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard; "+
-				"set cors_origins to an explicit allow-list",
+				"cross-origin browser access is not configurable yet, so only same-origin "+
+				"requests will work (known gap)",
 		)
 		origins = slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
 	}

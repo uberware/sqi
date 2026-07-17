@@ -95,6 +95,57 @@ func TestBootstrapAdmin_WarnsWhenNoCredentials(t *testing.T) {
 	}
 }
 
+// TestBootstrapAdmin_LogsWhenSkippedWithCredsConfigured asserts that when
+// bootstrap credentials are configured but the users table is already
+// non-empty (e.g. a user created while auth was off), bootstrap logs an
+// explanation instead of silently doing nothing.
+func TestBootstrapAdmin_LogsWhenSkippedWithCredsConfigured(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	st := fake.New()
+	// Seed a user directly (simulating one created while auth was off), then
+	// run bootstrap with credentials configured.
+	if err := bootstrapAdmin(ctx, st, BootstrapParams{Username: "first", Password: "pw1"}, logger); err != nil {
+		t.Fatalf("seed bootstrap: %v", err)
+	}
+	buf.Reset()
+
+	if err := bootstrapAdmin(ctx, st, BootstrapParams{Username: "second", Password: "pw2"}, logger); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "bootstrap") {
+		t.Fatalf("expected a log line explaining the skipped bootstrap, got: %s", out)
+	}
+	if strings.Contains(out, "pw2") {
+		t.Fatalf("bootstrap logged the plaintext password: %s", out)
+	}
+}
+
+// TestBootstrapAdmin_NoLogWhenSkippedWithoutCreds asserts the ordinary
+// every-restart no-op (existing users, no bootstrap credentials configured)
+// produces no log line — logging here would be noise on every boot.
+func TestBootstrapAdmin_NoLogWhenSkippedWithoutCreds(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	st := fake.New()
+	if err := bootstrapAdmin(ctx, st, BootstrapParams{Username: "first", Password: "pw1"}, logger); err != nil {
+		t.Fatalf("seed bootstrap: %v", err)
+	}
+	buf.Reset()
+
+	if err := bootstrapAdmin(ctx, st, BootstrapParams{}, logger); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if out := buf.String(); out != "" {
+		t.Fatalf("expected no log output for the ordinary no-creds no-op, got: %s", out)
+	}
+}
+
 // TestBootstrapAdmin_PasswordNeverLogged captures all log output emitted by a
 // successful bootstrap and asserts the plaintext password appears nowhere in
 // it. This branch has already shipped one password-leak bug (a config field

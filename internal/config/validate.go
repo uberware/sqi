@@ -247,6 +247,18 @@ func validateAuth(cfg AuthConfig) []ValidationError {
 			Message: "must be > 0 when auth is enabled; set SQI_AUTH_SESSION_TTL or auth.session.ttl",
 		})
 	}
+	if cfg.Session.CookieName == "" {
+		// An empty name defaults quietly in session.New and newAuthHandler, but
+		// middleware.CSRF reads it raw via r.Cookie(""), which always errors —
+		// every mutating request would then take the "no session cookie" exempt
+		// path and CSRF would be silently disabled. Require it explicitly so
+		// all three consumers agree on the name instead of relying on
+		// convention.
+		errs = append(errs, ValidationError{
+			Field:   "auth.session.cookie_name",
+			Message: "must not be empty when auth is enabled; set SQI_AUTH_SESSION_COOKIE_NAME or auth.session.cookie_name",
+		})
+	}
 	switch cfg.Session.CookieSecure {
 	case "auto", "true", "false":
 		// valid
