@@ -30,6 +30,61 @@ const (
 // ErrInvalidHash is returned when an encoded hash cannot be parsed.
 var ErrInvalidHash = errors.New("password: invalid encoded hash")
 
+// Bounds used to sanity-check argon2 parameters parsed out of an encoded
+// hash before they reach argon2.IDKey. These are not policy limits — they
+// guard against a tampered or corrupted hash string driving a huge
+// allocation (e.g. a negative memory value wrapping to ~4 billion KiB when
+// cast to uint32) or an absurdly long computation.
+const maxArgonMemory = 1 << 20 // 1 GiB, far above any sane operational value
+
+// parsedHashParams holds the fields decoded from an encoded argon2id hash
+// string, after range validation.
+type parsedHashParams struct {
+	memory  uint32
+	time    uint32
+	threads uint8
+	salt    []byte
+	key     []byte
+}
+
+// parseEncodedHash parses and validates an argon2id encoded hash of the form
+// $argon2id$v=<version>$m=<memory>,t=<time>,p=<threads>$<b64salt>$<b64key>.
+func parseEncodedHash(encoded string) (parsedHashParams, error) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	var version int
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	if version != argon2.Version {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	var memory, iterations, threads int
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &threads); err != nil {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	if iterations <= 0 || memory <= 0 || memory > maxArgonMemory || threads <= 0 || threads > 255 {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil || len(salt) == 0 {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	key, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil || len(key) == 0 {
+		return parsedHashParams{}, ErrInvalidHash
+	}
+	return parsedHashParams{
+		memory:  uint32(memory),
+		time:    uint32(iterations),
+		threads: uint8(threads),
+		salt:    salt,
+		key:     key,
+	}, nil
+}
+
 // Hash returns an argon2id encoded hash of plaintext:
 // $argon2id$v=19$m=19456,t=2,p=1$<b64salt>$<b64hash>.
 func Hash(plaintext string) (string, error) {
@@ -48,31 +103,15 @@ func Hash(plaintext string) (string, error) {
 
 // Verify reports whether plaintext matches the argon2id encoded hash.
 func Verify(encoded, plaintext string) (bool, error) {
-	parts := strings.Split(encoded, "$")
-	if len(parts) != 6 || parts[1] != "argon2id" {
-		return false, ErrInvalidHash
-	}
-	var version int
-	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {
-		return false, ErrInvalidHash
-	}
-	var memory, time, threads int
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &time, &threads); err != nil {
-		return false, ErrInvalidHash
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	p, err := parseEncodedHash(encoded)
 	if err != nil {
-		return false, ErrInvalidHash
-	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil {
-		return false, ErrInvalidHash
+		return false, err
 	}
 	got := argon2.IDKey(
-		[]byte(plaintext), salt,
-		uint32(time), uint32(memory), uint8(threads), uint32(len(want)), //nolint:gosec // hash format controlled by us
+		[]byte(plaintext), p.salt, p.time, p.memory, p.threads,
+		uint32(len(p.key)), //nolint:gosec // key length is bounded by the base64 decode of our own hash format
 	)
-	return subtle.ConstantTimeCompare(got, want) == 1, nil
+	return subtle.ConstantTimeCompare(got, p.key) == 1, nil
 }
 
 // GenerateToken returns a 256-bit URL-safe random token (the raw session
