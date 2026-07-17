@@ -224,14 +224,21 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() ensures the registration is re-sent
 	// on any subsequent NATS reconnect so the server always has a live record.
-	reg := registration.New(nc, workerID, cfg.Worker, caps, logger)
+	reg, err := registration.New(nc, workerID, cfg.Worker, caps, logger)
+	if err != nil {
+		return fmt.Errorf("build registrar: %w", err)
+	}
 
 	// Wire re-registration into the NATS reconnect callback.
 	// This replaces the reconnect logging that was previously in natsclient;
 	// the new handler logs the reconnect and re-registers in one step.
 	reg.SetupReconnectHook(ctx)
 
-	// Publish the initial registration.
+	// Publish the initial registration. This blocks until the server's
+	// SQI_WORKER stream acks the message, so a worker booting alongside its
+	// server waits out the stream provisioning rather than losing its
+	// registration to it.
+	//
 	// A boot-time registration failure is fatal: the server cannot assign
 	// tasks to a worker it has no record of.
 	if err := reg.Register(ctx); err != nil {

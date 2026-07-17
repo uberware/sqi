@@ -19,15 +19,18 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/capabilities"
-	"github.com/uberware/sqi/internal/worker/registration"
 )
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-// startNATSOnPort starts a plain (no JetStream) embedded NATS server bound to
-// the given loopback port. Unlike startTestNATS it does not register cleanup —
-// the caller controls the server's lifecycle so it can be bounced to simulate a
-// dropped/restored connection.
+// startNATSOnPort starts an embedded JetStream-enabled NATS server bound to the
+// given loopback port, with no streams provisioned. Unlike startTestNATS it does
+// not register cleanup — the caller controls the server's lifecycle so it can be
+// bounced to simulate a dropped/restored connection.
+//
+// Each call gets its own JetStream store directory, so a server started on the
+// port of a shut-down predecessor comes up with no streams (as a fresh server
+// would) rather than recovering the old one's.
 func startNATSOnPort(tb testing.TB, port int) *natsserver.Server {
 	tb.Helper()
 	opts := &natsserver.Options{
@@ -36,6 +39,8 @@ func startNATSOnPort(tb testing.TB, port int) *natsserver.Server {
 		NoLog:          true,
 		NoSigs:         true,
 		MaxControlLine: 4096,
+		JetStream:      true,
+		StoreDir:       tb.TempDir(),
 	}
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
@@ -82,7 +87,7 @@ func TestDeregister_PublishesMessage(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	reg := registration.New(nc, "worker-bye", minimalCfg(), capabilities.Capabilities{}, discardLogger())
+	reg := newRegistrar(t, nc, "worker-bye", minimalCfg(), capabilities.Capabilities{})
 	reg.Deregister("graceful shutdown")
 
 	msg, err := sub.NextMsg(2 * time.Second)
@@ -116,7 +121,7 @@ func TestDeregister_AfterClose_NoPanic(t *testing.T) {
 	url := startTestNATS(t)
 	nc := connectNATS(t, url)
 
-	reg := registration.New(nc, "worker-bye", minimalCfg(), capabilities.Capabilities{}, discardLogger())
+	reg := newRegistrar(t, nc, "worker-bye", minimalCfg(), capabilities.Capabilities{})
 	nc.Close()
 
 	// Must not panic even though the publish will fail.
@@ -154,7 +159,7 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	reg := registration.New(nc, "worker-q", cfg, caps, discardLogger())
+	reg := newRegistrar(t, nc, "worker-q", cfg, caps)
 	if err := reg.Register(context.Background()); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -228,7 +233,7 @@ func TestRegister_MultiQueue_LeavesQueueIDEmpty(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	reg := registration.New(nc, "worker-multi", cfg, capabilities.Capabilities{OS: "linux"}, discardLogger())
+	reg := newRegistrar(t, nc, "worker-multi", cfg, capabilities.Capabilities{OS: "linux"})
 	if err := reg.Register(context.Background()); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -254,7 +259,7 @@ func TestRegister_AfterClose_ReturnsError(t *testing.T) {
 	url := startTestNATS(t)
 	nc := connectNATS(t, url)
 
-	reg := registration.New(nc, "worker-x", minimalCfg(), capabilities.Capabilities{OS: "linux"}, discardLogger())
+	reg := newRegistrar(t, nc, "worker-x", minimalCfg(), capabilities.Capabilities{OS: "linux"})
 	nc.Close()
 
 	if err := reg.Register(context.Background()); err == nil {
@@ -271,7 +276,7 @@ func TestCapabilities_ReturnsStored(t *testing.T) {
 	nc := connectNATS(t, url)
 
 	caps := capabilities.Capabilities{OS: "darwin", CPUCount: 10, RAMMb: 16000}
-	reg := registration.New(nc, "worker-caps", minimalCfg(), caps, discardLogger())
+	reg := newRegistrar(t, nc, "worker-caps", minimalCfg(), caps)
 
 	got := reg.Capabilities()
 	if got.OS != "darwin" || got.CPUCount != 10 || got.RAMMb != 16000 {
@@ -293,11 +298,12 @@ func TestSetupReconnectHook_ReregistersOnReconnect(t *testing.T) {
 	url := fmt.Sprintf("nats://127.0.0.1:%d", port)
 
 	ns := startNATSOnPort(t, port)
+	provisionWorkerStream(t, url)
 
 	wnc := connectReconnect(t, url)
 
-	reg := registration.New(wnc, "worker-recon", minimalCfg(),
-		capabilities.Capabilities{OS: "linux", CPUCount: 8}, discardLogger())
+	reg := newRegistrar(t, wnc, "worker-recon", minimalCfg(),
+		capabilities.Capabilities{OS: "linux", CPUCount: 8})
 
 	sub, err := wnc.SubscribeSync(bus.SubjectWorkerRegister)
 	if err != nil {
@@ -315,6 +321,7 @@ func TestSetupReconnectHook_ReregistersOnReconnect(t *testing.T) {
 	ns.WaitForShutdown()
 	ns2 := startNATSOnPort(t, port)
 	t.Cleanup(ns2.Shutdown)
+	provisionWorkerStream(t, url)
 
 	msg, err := sub.NextMsg(5 * time.Second)
 	if err != nil {
@@ -334,8 +341,14 @@ func TestSetupReconnectHook_ReregistersOnReconnect(t *testing.T) {
 		t.Errorf("re-registered Type = %q, want %q", rm.Type, "register")
 	}
 
-	// LastRegisteredAt must reflect the re-registration.
-	if reg.LastRegisteredAt().IsZero() {
-		t.Error("LastRegisteredAt is zero after reconnect re-registration")
+	// LastRegisteredAt must reflect the re-registration. The publish is observed
+	// on the subscription before the stream acks it, so poll rather than read
+	// once: the hook's Register call is still in flight at this point.
+	deadline := time.Now().Add(5 * time.Second)
+	for reg.LastRegisteredAt().IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("LastRegisteredAt still zero 5s after reconnect re-registration")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
