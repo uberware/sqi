@@ -64,6 +64,7 @@ const ADMIN_LINKS: AdminLink[] = [
     to: '/presets',
   },
   { id: 'log', label: 'Server Log', description: 'Live server diagnostic log', to: '/server-log' },
+  { id: 'users', label: 'Users', description: 'User accounts and roles', to: '/users' },
 ]
 
 export default function Admin() {

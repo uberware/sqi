@@ -1,0 +1,65 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * Mostly the shared entity-form scaffold. The password-set section (a
+ * separate sibling <form> from the main create/edit one — set-password is a
+ * distinct action against a distinct endpoint) adds a small heading and a
+ * divider to visually separate it from the account fields above.
+ */
+
+.page {
+  composes: page from './entityForm.module.css';
+}
+
+.form {
+  composes: form from './entityForm.module.css';
+}
+
+.field {
+  composes: field from './entityForm.module.css';
+}
+
+.label {
+  composes: label from './entityForm.module.css';
+}
+
+.input {
+  composes: input from './entityForm.module.css';
+}
+
+.select {
+  composes: select from './entityForm.module.css';
+}
+
+.footer {
+  composes: footer from './entityForm.module.css';
+}
+
+.submitBtn {
+  composes: submitBtn from './entityForm.module.css';
+}
+
+.cancelBtn {
+  composes: cancelBtn from './entityForm.module.css';
+}
+
+.checkboxLabel {
+  composes: label from './entityForm.module.css';
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.passwordSection {
+  composes: form from './entityForm.module.css';
+  margin-top: var(--space-6);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--color-border);
+}
+
+.sectionHeading {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}

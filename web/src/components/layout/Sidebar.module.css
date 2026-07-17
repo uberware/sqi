@@ -76,3 +76,43 @@
 .spacer {
   flex: 1;
 }
+
+.accountSection {
+  padding: 0 var(--space-4);
+  margin-bottom: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.accountName {
+  font-size: var(--font-size-xs);
+  color: var(--color-sidebar-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logoutBtn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-sidebar-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background-color var(--transition-fast) ease;
+}
+
+.logoutBtn:hover:not(:disabled) {
+  background-color: var(--color-sidebar-hover);
+  color: var(--color-text-inverse);
+}
+
+.logoutBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
