@@ -36,7 +36,11 @@ export default function ApiKeyList() {
 
   const dismissSecret = useCallback(() => {
     setCreated(null)
-  }, [])
+    // Also clear the mutation's own result — react-query's MutationCache
+    // otherwise keeps `createApiKey.data` (and its `secret`) around after
+    // dismissal, so the raw secret would linger in memory unnecessarily.
+    createApiKey.reset()
+  }, [createApiKey])
 
   const canSubmit = name.trim() !== '' && !createApiKey.isPending
 

@@ -127,6 +127,12 @@ describe('ApiKeyList', () => {
     await screen.findByRole('button', { name: /revoke api key ci-runner/i })
     fireEvent.click(screen.getByRole('button', { name: /revoke api key ci-runner/i }))
     expect(confirmSpy).toHaveBeenCalled()
+
+    // Declining the confirm must short-circuit before any DELETE is fired.
+    const del = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
+    )
+    expect(del).toBeUndefined()
   })
 
   it('calls DELETE and removes the row after refetch when revoke is confirmed', async () => {
