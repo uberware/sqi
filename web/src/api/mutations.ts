@@ -704,12 +704,26 @@ export function useLogin() {
   })
 }
 
-/** Log out the current session. Invalidates `auth.me` on success so the AuthProvider re-resolves to anon. */
+/**
+ * Log out the current session. Drops every cached query except `auth.me`, then
+ * invalidates that one so the AuthProvider re-resolves to anon.
+ *
+ * Evicting the rest is a security requirement, not tidiness: query keys carry
+ * no principal, so anything the outgoing user browsed would otherwise stay
+ * cached and be served — stale but visible — to whoever logs in next on the
+ * same browser. `auth.me` is spared rather than swept up in a blanket
+ * `clear()` because removing it would tear down the AuthProvider's observer
+ * and leave it pending instead of refetching into the 401 that flips the app
+ * back to the login page.
+ */
 export function useLogout() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: fetchLogout,
     onSuccess: () => {
+      qc.removeQueries({
+        predicate: (q) => !(q.queryKey[0] === 'auth' && q.queryKey[1] === 'me'),
+      })
       void qc.invalidateQueries({ queryKey: queryKeys.auth.me })
     },
   })

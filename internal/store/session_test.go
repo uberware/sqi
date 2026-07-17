@@ -139,3 +139,38 @@ func TestSessionStore_DeleteForUserAndExpired(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionStore_CreateSession_DuplicateID pins the fake to SQLite's
+// `id TEXT PRIMARY KEY`: re-using a session ID is a conflict, not a silent
+// overwrite of the existing session.
+func TestSessionStore_CreateSession_DuplicateID(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("user"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			now := time.Now().UTC()
+			id := uuid.NewString()
+			first := store.Session{
+				ID: id, TokenHash: "hash-" + uuid.NewString(),
+				UserID: u.ID, ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+			}
+			if _, err := st.CreateSession(ctx, first); err != nil {
+				t.Fatalf("CreateSession (first): %v", err)
+			}
+
+			dup := first
+			dup.TokenHash = "hash-" + uuid.NewString() // unique token, same ID
+			if _, err := st.CreateSession(ctx, dup); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate session ID should be ErrConflict, got %v", err)
+			}
+
+			// The original session must survive the rejected insert.
+			if _, err := st.GetSessionByTokenHash(ctx, first.TokenHash, now); err != nil {
+				t.Fatalf("original session should still resolve: %v", err)
+			}
+		})
+	}
+}

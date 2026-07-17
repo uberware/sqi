@@ -13,6 +13,11 @@ import (
 func (s *Store) CreateSession(_ context.Context, sess store.Session) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Mirror SQLite's `id TEXT PRIMARY KEY`: re-using an ID is a conflict, not
+	// a silent overwrite of the live session it collides with.
+	if _, ok := s.sessions[sess.ID]; ok {
+		return store.Session{}, store.ErrConflict
+	}
 	// Mirror SQLite's `REFERENCES users(id)` foreign key (PRAGMA
 	// foreign_keys=ON): a session for a nonexistent user is rejected.
 	if _, ok := s.users[sess.UserID]; !ok {

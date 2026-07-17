@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,44 @@ func TestWS_FailingAuthenticator_Returns401BeforeUpgrade(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestWS_FailingAuthenticator_WritesProblemDetails pins the WS 401 to the same
+// RFC-7807 shape the REST 401 uses, so a client hitting an expired session sees
+// one error contract across both surfaces rather than plain text here and JSON
+// there.
+func TestWS_FailingAuthenticator_WritesProblemDetails(t *testing.T) {
+	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL) //nolint:noctx // simple synchronous test request
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var body struct {
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode problem body: %v", err)
+	}
+	if body.Status != http.StatusUnauthorized || body.Title != "Unauthorized" {
+		t.Errorf("problem = %+v, want status 401 / title Unauthorized", body)
+	}
+	if body.Detail != "authentication required" {
+		t.Errorf("detail = %q, want %q (same wording as the REST 401)", body.Detail, "authentication required")
+	}
+	// The authenticator's internal reason must not reach the client.
+	if strings.Contains(body.Detail, "bad token") {
+		t.Errorf("detail leaks the authenticator's internal error: %q", body.Detail)
 	}
 }
 

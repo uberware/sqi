@@ -135,7 +135,12 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	principal, err := h.authn.Authenticate(r)
 	if err != nil {
 		log.WarnContext(r.Context(), "ws: authentication failed", slog.String("err", err.Error()))
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		// Same RFC-7807 body the REST 401 returns (middleware.Auth): the
+		// upgrade is rejected before websocket.Accept, so this is a plain HTTP
+		// response and a client should not have to parse two error formats
+		// depending on which surface refused it. The authenticator's reason
+		// stays in the log, not the response.
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication required")
 		return
 	}
 

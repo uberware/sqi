@@ -26,6 +26,7 @@ import {
   fetchUpdateStorageLocation,
   fetchDeleteStorageLocation,
   useInstallPreset,
+  useLogout,
 } from './mutations'
 import { queryKeys } from './queries'
 
@@ -808,5 +809,25 @@ describe('useInstallPreset', () => {
     })
 
     expect(calledUrl()).toContain('/presets/my%20preset/install')
+  })
+})
+
+// ── useLogout ─────────────────────────────────────────────────────────────────
+
+describe('useLogout', () => {
+  it('drops every other cached query so the next user never sees the previous one’s data', async () => {
+    const client = makeClient()
+    // Data the signed-in user browsed before logging out.
+    client.setQueryData(queryKeys.jobs.all, [{ id: 'job-from-user-a' }])
+    client.setQueryData(queryKeys.users.all, [{ id: 'user-a' }])
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { result } = renderHook(() => useLogout(), { wrapper: wrapper(client) })
+    await act(async () => {
+      await result.current.mutateAsync()
+    })
+
+    expect(client.getQueryData(queryKeys.jobs.all)).toBeUndefined()
+    expect(client.getQueryData(queryKeys.users.all)).toBeUndefined()
   })
 })
