@@ -99,23 +99,25 @@ function renderSidebarAs(principal: unknown, initialEntry = '/') {
 }
 
 describe('Sidebar', () => {
-  it('renders all Phase 1 nav links', () => {
+  it('renders all Phase 1 nav links', async () => {
     renderSidebar()
+    // Nav items are now permission-gated on the resolved principal (async via
+    // /auth/me), so wait for one gated item before asserting the rest.
+    expect(await screen.findByRole('link', { name: 'Submit' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Submit' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Jobs' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workers' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Admin' })).toBeInTheDocument()
   })
 
-  it('Phase 1 links point to correct paths', () => {
+  it('Phase 1 links point to correct paths', async () => {
     renderSidebar()
+    expect(
+      (await screen.findByRole('link', { name: 'Submit' })).getAttribute('href'),
+    ).toBe('/submit')
     expect(
       (screen.getByRole('link', { name: 'Dashboard' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/')
-    expect(
-      (screen.getByRole('link', { name: 'Submit' }) as HTMLAnchorElement).getAttribute('href'),
-    ).toBe('/submit')
     expect(
       (screen.getByRole('link', { name: 'Jobs' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/jobs')
@@ -127,8 +129,9 @@ describe('Sidebar', () => {
     ).toBe('/admin')
   })
 
-  it('does not show the management links moved under Admin', () => {
+  it('does not show the management links moved under Admin', async () => {
     renderSidebar()
+    await screen.findByRole('link', { name: 'Submit' })
     for (const label of [
       'Farms',
       'Queues',
@@ -142,30 +145,33 @@ describe('Sidebar', () => {
     }
   })
 
-  it('Dashboard link is active at / and inactive at /jobs', () => {
+  it('Dashboard link is active at / and inactive at /jobs', async () => {
     renderSidebar('/')
+    await screen.findByRole('link', { name: 'Jobs' })
     expect(screen.getByRole('link', { name: 'Dashboard' }).getAttribute('aria-current')).toBe(
       'page',
     )
     expect(screen.getByRole('link', { name: 'Jobs' }).getAttribute('aria-current')).toBeNull()
   })
 
-  it('Dashboard link is not active at /jobs (end semantics)', () => {
+  it('Dashboard link is not active at /jobs (end semantics)', async () => {
     renderSidebar('/jobs')
+    await screen.findByRole('link', { name: 'Jobs' })
     expect(screen.getByRole('link', { name: 'Dashboard' }).getAttribute('aria-current')).toBeNull()
     expect(screen.getByRole('link', { name: 'Jobs' }).getAttribute('aria-current')).toBe('page')
   })
 
-  it('renders no deferred "coming soon" items', () => {
+  it('renders no deferred "coming soon" items', async () => {
     const { container } = renderSidebar()
+    await screen.findByRole('link', { name: 'Submit' })
     expect(container.querySelectorAll('[data-disabled="true"]').length).toBe(0)
     expect(screen.queryByText('coming soon')).not.toBeInTheDocument()
     expect(screen.queryByText('Presets')).not.toBeInTheDocument()
   })
 
-  it('Admin is an active nav link to /admin', () => {
+  it('Admin is an active nav link to /admin', async () => {
     renderSidebar()
-    const adminLink = screen.getByRole('link', { name: 'Admin' })
+    const adminLink = await screen.findByRole('link', { name: 'Admin' })
     expect(adminLink.getAttribute('href')).toBe('/admin')
   })
 
