@@ -1020,6 +1020,56 @@ func TestWSSubscribeJobSubjects_UnresolvableJobFailsClosed(t *testing.T) {
 	}
 }
 
+// TestWSSubscribeJobSubjects_StoreErrorFailsClosed pins the fail-closed
+// requirement that a genuine (non-ErrNotFound) store error on the ownership
+// gate denies the subscription rather than granting it. Uses storeErr
+// (jobs_error_test.go), the same package's existing error-injection wrapper
+// built for exactly this — contrary to an earlier version of this task's
+// report, no new error-injection hook was needed. Covers both routes into
+// subjectAllowed: GetJob (via "jobs/{id}/tasks") and GetTask (via
+// "tasks/{id}/logs").
+func TestWSSubscribeJobSubjects_StoreErrorFailsClosed(t *testing.T) {
+	boom := errors.New("boom")
+	tests := []struct {
+		name    string
+		subject string
+		st      store.Store
+	}{
+		{
+			name:    "GetJob error on jobs/{id}/tasks",
+			subject: "jobs/job-1/tasks",
+			st:      &storeErr{Store: fake.New(), getJobErr: boom},
+		},
+		{
+			name:    "GetTask error on tasks/{id}/logs",
+			subject: "tasks/task-1/logs",
+			st:      &storeErr{Store: fake.New(), getTaskErr: boom},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hub := internalws.NewHub(newTestLogger(), nil)
+			srv := newWSTestServerScoped(t, hub, tt.st, auth.Principal{Username: "alice", Roles: []string{"user"}})
+			conn := dialTestWS(t, srv)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			wsWrite(t, ctx, conn, internalws.Envelope{
+				Type:    internalws.TypeSubscribe,
+				Subject: tt.subject,
+				Seq:     1,
+			})
+
+			ack := wsRead(t, ctx, conn)
+			gotErr := ackError(t, ack)
+			if gotErr != "failed to resolve job" {
+				t.Errorf("ack error = %q, want %q (a store error must deny, not grant)", gotErr, "failed to resolve job")
+			}
+		})
+	}
+}
+
 // TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents pins the two things the
 // Task-8 review found had zero coverage:
 //
