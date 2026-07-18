@@ -15,21 +15,23 @@ import (
 // grants map in policy.go and the table in docs/auth.md.
 var want = map[string]map[policy.Permission]bool{
 	"read-only": {
-		policy.JobsRead: true, policy.WorkersRead: true, policy.InfraRead: true,
-		policy.ProductsRead: true, policy.APIKeysSelf: true,
+		policy.JobsRead: true, policy.JobsReadAll: true, policy.WorkersRead: true,
+		policy.InfraRead: true, policy.ProductsRead: true, policy.APIKeysSelf: true,
 	},
 	"user": {
 		policy.JobsRead: true, policy.JobsWrite: true, policy.WorkersRead: true,
 		policy.InfraRead: true, policy.ProductsRead: true, policy.APIKeysSelf: true,
 	},
 	"operator": {
-		policy.JobsRead: true, policy.JobsWrite: true, policy.WorkersRead: true,
+		policy.JobsRead: true, policy.JobsReadAll: true, policy.JobsWrite: true,
+		policy.JobsSubmitAs: true, policy.WorkersRead: true,
 		policy.WorkersManage: true, policy.InfraRead: true, policy.InfraManage: true,
 		policy.ProductsRead: true, policy.ProductsManage: true,
 		policy.DiagnosticsRead: true, policy.APIKeysSelf: true,
 	},
 	"admin": {
-		policy.JobsRead: true, policy.JobsWrite: true, policy.WorkersRead: true,
+		policy.JobsRead: true, policy.JobsReadAll: true, policy.JobsWrite: true,
+		policy.JobsSubmitAs: true, policy.WorkersRead: true,
 		policy.WorkersManage: true, policy.InfraRead: true, policy.InfraManage: true,
 		policy.ProductsRead: true, policy.ProductsManage: true,
 		policy.DiagnosticsRead: true, policy.UsersRead: true, policy.UsersManage: true,
@@ -38,7 +40,8 @@ var want = map[string]map[policy.Permission]bool{
 }
 
 var allPerms = []policy.Permission{
-	policy.JobsRead, policy.JobsWrite, policy.WorkersRead, policy.WorkersManage,
+	policy.JobsRead, policy.JobsReadAll, policy.JobsWrite, policy.JobsSubmitAs,
+	policy.WorkersRead, policy.WorkersManage,
 	policy.InfraRead, policy.InfraManage, policy.ProductsRead, policy.ProductsManage,
 	policy.DiagnosticsRead, policy.UsersRead, policy.UsersManage,
 	policy.APIKeysSelf, policy.APIKeysAdmin,
@@ -91,7 +94,7 @@ func TestPermissionsFor(t *testing.T) {
 		{
 			name: "read-only",
 			p:    auth.Principal{Roles: []string{"read-only"}},
-			want: []string{"apikeys.self", "infra.read", "jobs.read", "products.read", "workers.read"},
+			want: []string{"apikeys.self", "infra.read", "jobs.read", "jobs.read.all", "products.read", "workers.read"},
 		},
 		{
 			name: "superuser gets every permission",
@@ -137,6 +140,41 @@ func TestAllCoversEveryGrantedPermission(t *testing.T) {
 			if ok && !inAll[perm] {
 				t.Errorf("permission %q granted to role %q but missing from All", perm, role)
 			}
+		}
+	}
+}
+
+func TestB2Permissions(t *testing.T) {
+	tests := []struct {
+		role string
+		perm policy.Permission
+		want bool
+	}{
+		{"read-only", policy.JobsReadAll, true},
+		{"user", policy.JobsReadAll, false},
+		{"operator", policy.JobsReadAll, true},
+		{"admin", policy.JobsReadAll, true},
+
+		{"read-only", policy.JobsSubmitAs, false},
+		{"user", policy.JobsSubmitAs, false},
+		{"operator", policy.JobsSubmitAs, true},
+		{"admin", policy.JobsSubmitAs, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.role+"/"+string(tt.perm), func(t *testing.T) {
+			got := policy.Can(auth.Principal{Roles: []string{tt.role}}, tt.perm)
+			if got != tt.want {
+				t.Errorf("Can(%q, %q) = %v, want %v", tt.role, tt.perm, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestB2PermissionsSuperuserBypass(t *testing.T) {
+	su := auth.Principal{Superuser: true}
+	for _, perm := range []policy.Permission{policy.JobsReadAll, policy.JobsSubmitAs} {
+		if !policy.Can(su, perm) {
+			t.Errorf("superuser denied %q — auth-off regression", perm)
 		}
 	}
 }

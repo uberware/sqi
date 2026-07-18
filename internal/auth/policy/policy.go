@@ -23,6 +23,16 @@ const (
 	JobsRead Permission = "jobs.read"
 	// JobsWrite grants create/update/delete access to jobs.
 	JobsWrite Permission = "jobs.write"
+	// JobsReadAll grants visibility of jobs owned by anyone. Without it a
+	// principal is owner-scoped: it sees, and may mutate, only jobs it owns.
+	// This single predicate governs both reads and writes — a principal that
+	// may not see another user's job must not be able to mutate it either.
+	JobsReadAll Permission = "jobs.read.all"
+	// JobsSubmitAs grants setting Job.Owner to a user other than yourself.
+	// Modeled as a permission rather than an operator/admin role check so a
+	// proxy service (a pipeline gateway submitting for artists) can later hold
+	// it via a narrow role without also inheriting workers.manage.
+	JobsSubmitAs Permission = "jobs.submit_as"
 	// WorkersRead grants read access to workers.
 	WorkersRead Permission = "workers.read"
 	// WorkersManage grants management access to workers (drain, restart, etc).
@@ -51,7 +61,7 @@ const (
 // absent from a permission's set is denied that permission.
 var grants = map[string]map[Permission]bool{
 	"read-only": {
-		JobsRead: true, WorkersRead: true, InfraRead: true,
+		JobsRead: true, JobsReadAll: true, WorkersRead: true, InfraRead: true,
 		ProductsRead: true, APIKeysSelf: true,
 	},
 	"user": {
@@ -59,12 +69,14 @@ var grants = map[string]map[Permission]bool{
 		ProductsRead: true, APIKeysSelf: true,
 	},
 	"operator": {
-		JobsRead: true, JobsWrite: true, WorkersRead: true, WorkersManage: true,
+		JobsRead: true, JobsReadAll: true, JobsWrite: true, JobsSubmitAs: true,
+		WorkersRead: true, WorkersManage: true,
 		InfraRead: true, InfraManage: true, ProductsRead: true, ProductsManage: true,
 		DiagnosticsRead: true, APIKeysSelf: true,
 	},
 	"admin": {
-		JobsRead: true, JobsWrite: true, WorkersRead: true, WorkersManage: true,
+		JobsRead: true, JobsReadAll: true, JobsWrite: true, JobsSubmitAs: true,
+		WorkersRead: true, WorkersManage: true,
 		InfraRead: true, InfraManage: true, ProductsRead: true, ProductsManage: true,
 		DiagnosticsRead: true, UsersRead: true, UsersManage: true,
 		APIKeysSelf: true, APIKeysAdmin: true,
@@ -75,7 +87,7 @@ var grants = map[string]map[Permission]bool{
 // superuser answer and for the exhaustiveness test that keeps this list in
 // step with the constants above.
 var All = []Permission{
-	JobsRead, JobsWrite, WorkersRead, WorkersManage,
+	JobsRead, JobsReadAll, JobsWrite, JobsSubmitAs, WorkersRead, WorkersManage,
 	InfraRead, InfraManage, ProductsRead, ProductsManage,
 	DiagnosticsRead, UsersRead, UsersManage,
 	APIKeysSelf, APIKeysAdmin,

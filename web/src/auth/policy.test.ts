@@ -36,3 +36,19 @@ describe('can', () => {
     expect(can(null, 'jobs.read')).toBe(false)
   })
 })
+
+describe('B2 permissions', () => {
+  it('grants jobs.read.all to all roles except user', () => {
+    expect(can({ roles: ['read-only'] } as Principal, 'jobs.read.all')).toBe(true)
+    expect(can({ roles: ['operator'] } as Principal, 'jobs.read.all')).toBe(true)
+    expect(can({ roles: ['admin'] } as Principal, 'jobs.read.all')).toBe(true)
+    expect(can({ roles: ['user'] } as Principal, 'jobs.read.all')).toBe(false)
+  })
+
+  it('grants jobs.submit_as to operator and admin only', () => {
+    expect(can({ roles: ['operator'] } as Principal, 'jobs.submit_as')).toBe(true)
+    expect(can({ roles: ['admin'] } as Principal, 'jobs.submit_as')).toBe(true)
+    expect(can({ roles: ['user'] } as Principal, 'jobs.submit_as')).toBe(false)
+    expect(can({ roles: ['read-only'] } as Principal, 'jobs.submit_as')).toBe(false)
+  })
+})

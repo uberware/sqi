@@ -91,7 +91,9 @@ built-in roles (no custom-role builder — YAGNI):
 | Permission | read-only | user | operator | admin |
 |---|:-:|:-:|:-:|:-:|
 | jobs.read | ✅ | ✅ | ✅ | ✅ |
+| `jobs.read.all` — see jobs owned by anyone | ✅ | ❌ | ✅ | ✅ |
 | jobs.write | ❌ | ✅ | ✅ | ✅ |
+| `jobs.submit_as` — set `Owner` to another user | ❌ | ❌ | ✅ | ✅ |
 | workers.read | ✅ | ✅ | ✅ | ✅ |
 | workers.manage | ❌ | ❌ | ✅ | ✅ |
 | infra.read (farms/queues/storage/compute/usage-pools) | ✅ | ✅ | ✅ | ✅ |

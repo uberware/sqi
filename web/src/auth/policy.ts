@@ -8,7 +8,9 @@ import type { Principal } from '@/api/types'
 
 export type Permission =
   | 'jobs.read'
+  | 'jobs.read.all'
   | 'jobs.write'
+  | 'jobs.submit_as'
   | 'workers.read'
   | 'workers.manage'
   | 'infra.read'
@@ -24,6 +26,7 @@ export type Permission =
 const GRANTS: Record<string, ReadonlySet<Permission>> = {
   'read-only': new Set([
     'jobs.read',
+    'jobs.read.all',
     'workers.read',
     'infra.read',
     'products.read',
@@ -39,7 +42,9 @@ const GRANTS: Record<string, ReadonlySet<Permission>> = {
   ]),
   operator: new Set([
     'jobs.read',
+    'jobs.read.all',
     'jobs.write',
+    'jobs.submit_as',
     'workers.read',
     'workers.manage',
     'infra.read',
@@ -51,7 +56,9 @@ const GRANTS: Record<string, ReadonlySet<Permission>> = {
   ]),
   admin: new Set([
     'jobs.read',
+    'jobs.read.all',
     'jobs.write',
+    'jobs.submit_as',
     'workers.read',
     'workers.manage',
     'infra.read',
