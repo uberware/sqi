@@ -22,6 +22,8 @@ import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan } from '@/lib/time'
 import { useWebSocket } from '@/ws/context'
 import { isJobEvent, isTaskEvent, JOB_REMOVED_STATUS } from '@/ws/events'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import type { Job, JobStatus, TaskCounts, TaskStatus, ListResponse } from '@/api/types'
 import styles from './JobList.module.css'
 
@@ -148,6 +150,9 @@ function applyTaskStatusDelta(
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function JobList() {
+  const { principal } = useAuth()
+  const canWrite = can(principal, 'jobs.write')
+
   const filters = useListFilters<JobStatus, JobSortField>({
     statuses: JOB_STATUSES,
     sortFields: JOB_SORT_FIELDS,
@@ -577,7 +582,7 @@ export default function JobList() {
                   <td>{formatTime(job.created_at)}</td>
                   <td>{formatTimespan(job.started_at, job.completed_at, now)}</td>
                   <td className={styles.actionsCell}>
-                    {canCancel && (
+                    {canWrite && canCancel && (
                       <IconButton
                         icon={<X />}
                         className={styles.cancelBtn}
@@ -587,7 +592,7 @@ export default function JobList() {
                         label={`Cancel job ${job.name}`}
                       />
                     )}
-                    {retryableCount(job) > 0 && (
+                    {canWrite && retryableCount(job) > 0 && (
                       <IconButton
                         icon={<Rotate />}
                         className={styles.retryBtn}
@@ -597,14 +602,16 @@ export default function JobList() {
                         label={`Retry job ${job.name}`}
                       />
                     )}
-                    <IconButton
-                      icon={<Trash />}
-                      className={styles.deleteBtn}
-                      onClick={() => setConfirm({ ids: [job.id], bulk: false })}
-                      busy={deletingIds.has(job.id)}
-                      title="Delete"
-                      label={`Delete job ${job.name}`}
-                    />
+                    {canWrite && (
+                      <IconButton
+                        icon={<Trash />}
+                        className={styles.deleteBtn}
+                        onClick={() => setConfirm({ ids: [job.id], bulk: false })}
+                        busy={deletingIds.has(job.id)}
+                        title="Delete"
+                        label={`Delete job ${job.name}`}
+                      />
+                    )}
                   </td>
                 </tr>
               )
@@ -629,7 +636,7 @@ export default function JobList() {
       )}
 
       {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
-      {selectedIds.size > 0 && (
+      {canWrite && selectedIds.size > 0 && (
         <BulkBar count={selectedIds.size} onClear={() => setSelectedIds(new Set())}>
           <button
             className={styles.bulkCancelBtn}

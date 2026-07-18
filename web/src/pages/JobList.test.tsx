@@ -9,7 +9,40 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobList from './JobList'
 import { WebSocketProvider } from '@/ws/context'
-import type { Job, ListResponse, TaskCounts } from '@/api/types'
+import type { Job, ListResponse, Principal, TaskCounts } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// JobList reads useAuth() to gate mutating controls behind 'jobs.write'. Mock
+// the auth context directly (as RequireRole.test.tsx does) rather than driving
+// a real AuthProvider through /auth/me, since fetchMock in this file is
+// dedicated to the jobs list/mutation endpoints under test.
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(),
+}))
+import { useAuth } from '@/auth/context'
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+}
+const READONLY_PRINCIPAL: Principal = {
+  subject: 'u-readonly',
+  display_name: 'Read Only',
+  roles: ['read-only'],
+  kind: 'user',
+}
+
+/** Sets the principal returned by the mocked useAuth() for the next render. */
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 // ── Mock WebSocket ────────────────────────────────────────────────────────────
 
@@ -68,6 +101,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
   vi.stubGlobal('WebSocket', MockWebSocket)
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  // Default every test to an operator principal so pre-existing control
+  // assertions keep working unchanged; the read-only gating tests override
+  // this via setPrincipal(READONLY_PRINCIPAL).
+  setPrincipal(OPERATOR_PRINCIPAL)
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -350,6 +387,59 @@ describe('JobList', () => {
         const calls = fetchMock.mock.calls.flat() as string[]
         expect(calls.some((u) => typeof u === 'string' && u.includes(`/jobs/${job.id}`))).toBe(true)
       })
+    })
+  })
+
+  describe('role gating (jobs.write)', () => {
+    it('hides Cancel/Retry/Delete controls for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      const job = makeJob({
+        status: 'failed',
+        name: 'Gated Job',
+        task_counts: {
+          total: 3,
+          pending: 0,
+          ready: 0,
+          assigned: 0,
+          running: 0,
+          succeeded: 1,
+          failed: 2,
+          canceled: 0,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Gated Job'))
+      expect(screen.queryByLabelText('Cancel job Gated Job')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Retry job Gated Job')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Delete job Gated Job')).not.toBeInTheDocument()
+    })
+
+    it('shows Cancel/Retry/Delete controls for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      const job = makeJob({
+        status: 'failed',
+        name: 'Writable Job',
+        task_counts: {
+          total: 3,
+          pending: 0,
+          ready: 0,
+          assigned: 0,
+          running: 0,
+          succeeded: 1,
+          failed: 2,
+          canceled: 0,
+        },
+      })
+      fetchMock.mockResolvedValueOnce(okJson(makeListResponse([job])))
+
+      render(<JobList />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('Writable Job'))
+      expect(screen.getByLabelText('Retry job Writable Job')).toBeInTheDocument()
+      expect(screen.getByLabelText('Delete job Writable Job')).toBeInTheDocument()
     })
   })
 

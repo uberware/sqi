@@ -35,6 +35,7 @@ RETURNING id, username, display_name, password_hash, role, disabled, created_at,
 	sqlSetUserPassword = `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?` //nolint:gosec // G101: SQL text, not a credential
 	sqlDeleteUser      = `DELETE FROM users WHERE id = ?`
 	sqlCountUsers      = `SELECT COUNT(*) FROM users`
+	sqlCountAdmins     = `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`
 )
 
 func scanUser(row scanner) (store.User, error) {
@@ -121,5 +122,12 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := s.stmtCountUsers.QueryRowContext(ctx).Scan(&n)
+	return n, mapErr(err)
+}
+
+// CountAdmins implements [store.UserStore].
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.stmtCountAdmins.QueryRowContext(ctx).Scan(&n)
 	return n, mapErr(err)
 }

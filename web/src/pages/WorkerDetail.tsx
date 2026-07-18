@@ -11,6 +11,8 @@ import ErrorBanner from '@/components/ErrorBanner'
 import RefreshControls from '@/components/RefreshControls'
 import { useGetWorker, queryKeys } from '@/api/queries'
 import { useDisableWorker, useEnableWorker } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
 import type { WorkerDetail as WorkerDetailType } from '@/api/types'
@@ -254,12 +256,15 @@ function ToggleButton({
   isToggling,
   onDisable,
   onEnable,
+  canManage,
 }: {
   worker: WorkerDetailType
   isToggling: boolean
   onDisable: () => void
   onEnable: () => void
+  canManage: boolean
 }) {
+  if (!canManage) return null
   if (worker.status === 'online') {
     return (
       <button
@@ -294,6 +299,9 @@ function ToggleButton({
 export default function WorkerDetail() {
   const { id } = useParams<{ id: string }>()
   const workerId = id ?? ''
+
+  const { principal } = useAuth()
+  const canManage = can(principal, 'workers.manage')
 
   const { data: worker, isLoading, isError, error } = useGetWorker(workerId)
 
@@ -396,6 +404,7 @@ export default function WorkerDetail() {
               isToggling={isToggling}
               onDisable={() => void handleDisable()}
               onEnable={() => void handleEnable()}
+              canManage={canManage}
             />
           </RefreshControls>
         }

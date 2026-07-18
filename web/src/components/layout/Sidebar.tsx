@@ -4,21 +4,33 @@ import { NavLink } from 'react-router-dom'
 import ConnectionStatusBadge from '@/components/ConnectionStatusBadge'
 import ThemeToggle from '@/components/layout/ThemeToggle'
 import { useAuth } from '@/auth/context'
+import { can, type Permission } from '@/auth/policy'
+import { hasAnyAdminAccess } from '@/pages/Admin'
 import { useLogout } from '@/api/mutations'
+import type { Principal } from '@/api/types'
 import styles from './Sidebar.module.css'
 
 interface NavItem {
   label: string
   to: string
+  permission?: Permission
 }
 
 const PHASE1_NAV: NavItem[] = [
   { label: 'Dashboard', to: '/' },
-  { label: 'Submit', to: '/submit' },
-  { label: 'Jobs', to: '/jobs' },
-  { label: 'Workers', to: '/workers' },
+  { label: 'Submit', to: '/submit', permission: 'jobs.write' },
+  { label: 'Jobs', to: '/jobs', permission: 'jobs.read' },
+  { label: 'Workers', to: '/workers', permission: 'workers.read' },
   { label: 'Admin', to: '/admin' },
 ]
+
+/** Nav items visible to `principal` — permission-gated, plus Admin iff any admin card is visible. */
+function visibleNavItems(principal: Principal | null): NavItem[] {
+  return PHASE1_NAV.filter((item) => {
+    if (item.to === '/admin') return hasAnyAdminAccess(principal)
+    return !item.permission || can(principal, item.permission)
+  })
+}
 
 /**
  * Signed-in identity + logout action. Hidden entirely when the resolved
@@ -63,6 +75,8 @@ function AccountSection() {
 }
 
 export default function Sidebar() {
+  const { principal } = useAuth()
+  const navItems = visibleNavItems(principal)
   return (
     <nav className={styles.sidebar} aria-label="Primary navigation">
       <div className={styles.logoArea}>
@@ -73,7 +87,7 @@ export default function Sidebar() {
       </div>
 
       <ul className={styles.navSection} role="list">
-        {PHASE1_NAV.map((item) => (
+        {navItems.map((item) => (
           <li key={item.to}>
             <NavLink
               to={item.to}

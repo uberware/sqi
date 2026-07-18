@@ -9,9 +9,14 @@ import { useToast } from '@/components/Toast'
 import ErrorBanner from '@/components/ErrorBanner'
 import { useListFarms } from '@/api/queries'
 import { useDeleteFarm } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './entityList.module.css'
 
 export default function FarmList() {
+  const { principal } = useAuth()
+  const canManage = can(principal, 'infra.manage')
+
   const { data: farms, isLoading, isError, error } = useListFarms()
   const deleteFarm = useDeleteFarm()
   const { showToast } = useToast()
@@ -46,9 +51,11 @@ export default function FarmList() {
         backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} farms`}
         action={
-          <Link to="/farms/new" className={styles.newBtn}>
-            + New Farm
-          </Link>
+          canManage ? (
+            <Link to="/farms/new" className={styles.newBtn}>
+              + New Farm
+            </Link>
+          ) : undefined
         }
       />
 
@@ -89,14 +96,16 @@ export default function FarmList() {
                 <td>{farm.description ?? '—'}</td>
                 <td>{farm.max_concurrent_tasks === 0 ? 'Unlimited' : farm.max_concurrent_tasks}</td>
                 <td>
-                  <IconButton
-                    icon={<Trash />}
-                    className={styles.deleteBtn}
-                    busy={deletingIds.has(farm.id)}
-                    onClick={() => void handleDelete(farm.id, farm.name)}
-                    title="Delete"
-                    label={`Delete farm ${farm.name}`}
-                  />
+                  {canManage && (
+                    <IconButton
+                      icon={<Trash />}
+                      className={styles.deleteBtn}
+                      busy={deletingIds.has(farm.id)}
+                      onClick={() => void handleDelete(farm.id, farm.name)}
+                      title="Delete"
+                      label={`Delete farm ${farm.name}`}
+                    />
+                  )}
                 </td>
               </tr>
             ))}

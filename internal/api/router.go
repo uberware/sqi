@@ -48,6 +48,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
@@ -296,6 +297,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
 	usersH := newUsersHandler(deps.Store, logger)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
+	az := newAuthz(deps.Store, logger)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Auth, wsOriginConfig{
 		Enabled:        cfg.AuthEnabled,
@@ -345,102 +347,124 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			}
 			rest.Use(middleware.Auth(deps.Auth, logger))
 
-			// ── Auth endpoints (require a principal) ────────────
+			// Permission-free (any authenticated principal).
 			rest.Post("/auth/logout", authH.logout)
 			rest.Get("/auth/me", authH.me)
-
-			// ── User admin endpoints (interim: gated only to any
-			// authenticated principal until B1 adds role enforcement) ──
-			rest.Post("/users", usersH.create)
-			rest.Get("/users", usersH.list)
-			rest.Get("/users/{id}", usersH.get)
-			rest.Patch("/users/{id}", usersH.update)
-			rest.Put("/users/{id}/password", usersH.setPassword)
-			rest.Delete("/users/{id}", usersH.delete)
-
-			// ── API-key management (self-scoped until B1) ──────
-			rest.Post("/api-keys", apiKeysH.create)
-			rest.Get("/api-keys", apiKeysH.list)
-			rest.Delete("/api-keys/{id}", apiKeysH.revoke)
-
-			// ── Job endpoints ───────────────────────────────────
-			rest.Post("/jobs", jobs.submitJob)
-			rest.Get("/jobs", jobs.listJobs)
-			rest.Get("/jobs/{id}", jobs.getJob)
-			rest.Patch("/jobs/{id}", jobs.patchJob)
-			rest.Post("/jobs/{id}/cancel", jobs.cancelJob)
-			rest.Post("/jobs/{id}/retry", jobs.retryJob)
-			rest.Delete("/jobs/{id}", jobs.deleteJob)
-
-			// ── Task endpoints ──────────────────────────────────
-			rest.Get("/jobs/{id}/tasks", tasks.listJobTasks)
-			rest.Get("/tasks/{id}", tasks.getTask)
-			rest.Get("/tasks/{id}/logs", tasks.getTaskLogs)
-			rest.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
-			rest.Post("/tasks/{id}/retry", tasks.retryTask)
-			rest.Post("/tasks/{id}/cancel", tasks.cancelTask)
-
-			// ── Worker endpoints ───────────────────────────────
-			rest.Get("/workers", workers.listWorkers)
-			rest.Get("/workers/{id}", workers.getWorker)
-			rest.Post("/workers/{id}/disable", workers.disableWorker)
-			rest.Post("/workers/{id}/enable", workers.enableWorker)
-			rest.Delete("/workers/{id}", workers.removeWorker)
-
-			// ── Farm endpoints ──────────────────────────────────────
-			rest.Post("/farms", farms.createFarm)
-			rest.Get("/farms", farms.listFarms)
-			rest.Get("/farms/{id}", farms.getFarm)
-			rest.Put("/farms/{id}", farms.updateFarm)
-			rest.Delete("/farms/{id}", farms.deleteFarm)
-
-			// ── Queue endpoints ─────────────────────────────────────
-			rest.Post("/queues", queues.createQueue)
-			rest.Get("/queues", queues.listQueues)
-			rest.Get("/queues/{id}", queues.getQueue)
-			rest.Put("/queues/{id}", queues.updateQueue)
-			rest.Delete("/queues/{id}", queues.deleteQueue)
-
-			// ── Storage-location endpoints ──────────────────────────
-			rest.Post("/storage-locations", storageLocs.createStorageLocation)
-			rest.Get("/storage-locations", storageLocs.listStorageLocations)
-			rest.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
-			rest.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
-			rest.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
-
-			// ── Compute-location endpoints ──────────────────────────
-			rest.Post("/compute-locations", computeLocs.createComputeLocation)
-			rest.Get("/compute-locations", computeLocs.listComputeLocations)
-			rest.Get("/compute-locations/{id}", computeLocs.getComputeLocation)
-			rest.Put("/compute-locations/{id}", computeLocs.updateComputeLocation)
-			rest.Delete("/compute-locations/{id}", computeLocs.deleteComputeLocation)
-
-			// ── Product endpoints ───────────────────────────────────
-			rest.Get("/products", products.listProducts)
-			rest.Post("/products", products.createProduct)
-			rest.Get("/products/{name}", products.getProduct)
-			rest.Put("/products/{name}", products.updateProduct)
-			rest.Delete("/products/{name}", products.deleteProduct)
-			rest.Post("/products/{name}/jobs", products.submitProductJob)
-			rest.Get("/products/{name}/parameters", products.getProductParameters)
-
-			// ── Preset endpoints ────────────────────────────────────
-			rest.Get("/presets", presets.listPresets)
-			rest.Get("/presets/{name}", presets.getPreset)
-			rest.Post("/presets/{name}/install", presets.installPreset)
-
-			// ── Usage-pool endpoints ────────────────────────────────
-			rest.Post("/usage-pools", usagePools.createUsagePool)
-			rest.Get("/usage-pools", usagePools.listUsagePools)
-			rest.Get("/usage-pools/{id}", usagePools.getUsagePool)
-			rest.Put("/usage-pools/{id}", usagePools.updateUsagePool)
-			rest.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
-
-			// ── Diagnostics endpoints ───────────────────────────────
-			rest.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
-
-			// ── Version endpoint ────────────────────────────────────
 			rest.Get("/version", versionH.getVersion)
+
+			// users.read / users.manage (admin only)
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.UsersRead))
+				g.Get("/users", usersH.list)
+				g.Get("/users/{id}", usersH.get)
+			})
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.UsersManage))
+				g.Post("/users", usersH.create)
+				g.Patch("/users/{id}", usersH.update)
+				g.Put("/users/{id}/password", usersH.setPassword)
+				g.Delete("/users/{id}", usersH.delete)
+			})
+
+			// apikeys.self (all authenticated roles)
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.APIKeysSelf))
+				g.Post("/api-keys", apiKeysH.create)
+				g.Get("/api-keys", apiKeysH.list)
+				g.Delete("/api-keys/{id}", apiKeysH.revoke)
+			})
+
+			// jobs.read
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.JobsRead))
+				g.Get("/jobs", jobs.listJobs)
+				g.Get("/jobs/{id}", jobs.getJob)
+				g.Get("/jobs/{id}/tasks", tasks.listJobTasks)
+				g.Get("/tasks/{id}", tasks.getTask)
+				g.Get("/tasks/{id}/logs", tasks.getTaskLogs)
+				g.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
+			})
+			// jobs.write
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.JobsWrite))
+				g.Post("/jobs", jobs.submitJob)
+				g.Patch("/jobs/{id}", jobs.patchJob)
+				g.Post("/jobs/{id}/cancel", jobs.cancelJob)
+				g.Post("/jobs/{id}/retry", jobs.retryJob)
+				g.Delete("/jobs/{id}", jobs.deleteJob)
+				g.Post("/tasks/{id}/retry", tasks.retryTask)
+				g.Post("/tasks/{id}/cancel", tasks.cancelTask)
+				g.Post("/products/{name}/jobs", products.submitProductJob)
+			})
+
+			// workers.read / workers.manage
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.WorkersRead))
+				g.Get("/workers", workers.listWorkers)
+				g.Get("/workers/{id}", workers.getWorker)
+			})
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.WorkersManage))
+				g.Post("/workers/{id}/disable", workers.disableWorker)
+				g.Post("/workers/{id}/enable", workers.enableWorker)
+				g.Delete("/workers/{id}", workers.removeWorker)
+			})
+
+			// infra.read / infra.manage (farms, queues, storage, compute, usage-pools)
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.InfraRead))
+				g.Get("/farms", farms.listFarms)
+				g.Get("/farms/{id}", farms.getFarm)
+				g.Get("/queues", queues.listQueues)
+				g.Get("/queues/{id}", queues.getQueue)
+				g.Get("/storage-locations", storageLocs.listStorageLocations)
+				g.Get("/storage-locations/{id}", storageLocs.getStorageLocation)
+				g.Get("/compute-locations", computeLocs.listComputeLocations)
+				g.Get("/compute-locations/{id}", computeLocs.getComputeLocation)
+				g.Get("/usage-pools", usagePools.listUsagePools)
+				g.Get("/usage-pools/{id}", usagePools.getUsagePool)
+			})
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.InfraManage))
+				g.Post("/farms", farms.createFarm)
+				g.Put("/farms/{id}", farms.updateFarm)
+				g.Delete("/farms/{id}", farms.deleteFarm)
+				g.Post("/queues", queues.createQueue)
+				g.Put("/queues/{id}", queues.updateQueue)
+				g.Delete("/queues/{id}", queues.deleteQueue)
+				g.Post("/storage-locations", storageLocs.createStorageLocation)
+				g.Put("/storage-locations/{id}", storageLocs.updateStorageLocation)
+				g.Delete("/storage-locations/{id}", storageLocs.deleteStorageLocation)
+				g.Post("/compute-locations", computeLocs.createComputeLocation)
+				g.Put("/compute-locations/{id}", computeLocs.updateComputeLocation)
+				g.Delete("/compute-locations/{id}", computeLocs.deleteComputeLocation)
+				g.Post("/usage-pools", usagePools.createUsagePool)
+				g.Put("/usage-pools/{id}", usagePools.updateUsagePool)
+				g.Delete("/usage-pools/{id}", usagePools.deleteUsagePool)
+			})
+
+			// products.read / products.manage
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.ProductsRead))
+				g.Get("/products", products.listProducts)
+				g.Get("/products/{name}", products.getProduct)
+				g.Get("/products/{name}/parameters", products.getProductParameters)
+				g.Get("/presets", presets.listPresets)
+				g.Get("/presets/{name}", presets.getPreset)
+			})
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.ProductsManage))
+				g.Post("/products", products.createProduct)
+				g.Put("/products/{name}", products.updateProduct)
+				g.Delete("/products/{name}", products.deleteProduct)
+				g.Post("/presets/{name}/install", presets.installPreset)
+			})
+
+			// diagnostics.read
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.DiagnosticsRead))
+				g.Get("/diagnostics/logs", diagnostics.getDiagnosticsLogs)
+			})
 		})
 	})
 

@@ -29,9 +29,9 @@ Today, the only non-anonymous `Authenticator` is the session-cookie one
 described below.
 
 A `Principal`'s `roles` field is populated (a user's single stored role, e.g.
-`["admin"]`) but **nothing reads it to make an authorization decision yet** —
-see the interim gap called out in [Local accounts](#local-accounts). Role
-enforcement is component B1.
+`["admin"]`) and, as of component B1, **is enforced**: every mutating route
+and several read routes are gated by a role→permission policy. See
+[Roles & permissions](#roles--permissions) for the matrix.
 
 The REST resource routes are gated by the auth middleware; the WebSocket
 upgrade is gated by its own hook; the health/readiness/metrics probes and the
@@ -55,25 +55,66 @@ Accounts are created two ways:
   `PATCH /api/v1/users/{id}` (display name / role / disabled),
   `PUT /api/v1/users/{id}/password`, `DELETE /api/v1/users/{id}`.
 
-> **Interim authorization gap — read this before relying on roles.**
-> `role` is stored on every account and returned by the API, but **no
-> endpoint enforces it yet**. The `/users` routes (and every other
-> authenticated route) are gated only on "is this an authenticated
-> principal", not on "does this principal have the right role". Concretely:
-> with `auth.enabled=true`, **any successfully logged-in user — including one
-> created with `role: "user"` or `role: "read-only"` — can create new admin
-> accounts, disable or delete any account (including its own), and change
-> anyone's password.** This is a known, deliberate interim state on the way
-> to full RBAC, not a bug: role-based enforcement is component B1. Until B1
-> ships, treat every local account as equivalent to admin, and grant accounts
-> only to people you'd trust with full user-management access.
-
 Disabling a user (`disabled: true`) takes effect immediately: the session
 authenticator re-checks the user record on every request and rejects a
 disabled account's session outright (`internal/auth/session/session.go`), and
 `POST /auth/login` refuses a disabled account with the same generic 401 as a
 bad password. Deleting a user cascades to its sessions — see
 [Login & sessions](#login--sessions).
+
+## Roles & permissions
+
+As of component B1, roles are enforced on every route. There are four
+built-in roles (no custom-role builder — YAGNI):
+
+- **admin** — full access, including user management, API-key management for
+  any account, and configuration-adjacent surfaces.
+- **operator** — runs the farm: all jobs, workers, farm infrastructure
+  (farms/queues/storage/compute/usage-pools), products/presets, and
+  diagnostics (server log).
+- **user** — submit and control jobs; manage their own API keys; read-only on
+  infrastructure.
+- **read-only** — reads the operational surface; no mutations anywhere;
+  cannot see diagnostics or the user list — but *can* manage its own API
+  keys.
+
+| Permission | read-only | user | operator | admin |
+|---|:-:|:-:|:-:|:-:|
+| jobs.read | ✅ | ✅ | ✅ | ✅ |
+| jobs.write | ❌ | ✅ | ✅ | ✅ |
+| workers.read | ✅ | ✅ | ✅ | ✅ |
+| workers.manage | ❌ | ❌ | ✅ | ✅ |
+| infra.read (farms/queues/storage/compute/usage-pools) | ✅ | ✅ | ✅ | ✅ |
+| infra.manage | ❌ | ❌ | ✅ | ✅ |
+| products.read (products/presets) | ✅ | ✅ | ✅ | ✅ |
+| products.manage | ❌ | ❌ | ✅ | ✅ |
+| diagnostics.read (server log) | ❌ | ❌ | ✅ | ✅ |
+| users.read | ❌ | ❌ | ❌ | ✅ |
+| users.manage | ❌ | ❌ | ❌ | ✅ |
+| apikeys.self (own keys) | ✅ | ✅ | ✅ | ✅ |
+| apikeys.admin (anyone's keys) | ❌ | ❌ | ❌ | ✅ |
+
+A denied request returns **403** with an RFC-7807 problem-details body, and
+is recorded to the audit log (`AuditEntry.Actor`) as well as the server's own
+diagnostic log. With `auth.enabled=false` (the default), the anonymous
+superuser principal bypasses every check — unchanged behavior from before
+B1.
+
+**Last-admin guard.** The last *enabled* admin account can't be deleted,
+disabled, or demoted to a non-admin role — any of those requests fail with
+**409 Conflict** — so an operator can never lock themselves (or everyone)
+out of user management.
+
+**Known interim gaps** (deliberate, deferred to later components, not bugs):
+
+- `user`'s `jobs.write` permission gates the **route**, not ownership — a
+  `user` account can currently act on any job, not just its own. Scoping
+  visibility/control to owned jobs is component **B2**.
+- There is no self-service password or profile change for non-admin roles
+  yet; account changes go through an admin via the `/users` API or page.
+- `apikeys.admin` (an admin managing another user's API keys) is defined in
+  the policy above, but the `/api-keys` handlers remain self-scoped for
+  now — see [API keys](#api-keys).
 
 ## Login & sessions
 
@@ -281,12 +322,13 @@ with no separate sweep required.
 the same "unrevoked" filter that enforces expiry means the very next request
 bearing that key is rejected.
 
-**Scope — self-managed until B1.** Like the interim authorization gap noted
-in [Local accounts](#local-accounts), API-key management is currently
+**Scope — self-managed for now.** API-key management is currently
 self-scoped only: `POST`/`GET`/`DELETE /api/v1/api-keys` all resolve the
-caller's own user id and only ever see or touch that user's keys — there is
-no admin-broad "view or revoke anyone's keys" capability yet. That arrives
-with role-based access control in **B1**.
+caller's own user id and only ever see or touch that user's keys. B1's
+policy defines an `apikeys.admin` permission (admin-only) for a future
+admin-broad "view or revoke anyone's keys" capability, but the handlers
+themselves haven't been extended to use it yet — see the interim gap in
+[Roles & permissions](#roles--permissions).
 
 **Auth-off behaviour.** With `auth.enabled=false`, every request is the
 anonymous superuser principal, which has no real user id to own a key
@@ -302,6 +344,9 @@ Bearer-authenticated request has nothing for it to check.
 
 ## Coming next
 
-- B1 — role-based access control (admin / operator / user / read-only),
-  enforcing the `role` field that A1 already stores but does not check, and
-  extending API-key and user management from self-scoped to admin-broad.
+- B2 — authenticated owner/submitter binding on jobs, including scoping the
+  `user` role's job visibility/control to jobs it owns (see the interim gap
+  noted in [Roles & permissions](#roles--permissions)).
+- C1 — LDAP/AD integration.
+- C2 — OAuth2/OIDC (SSO).
+- D1 — per-user concurrent task caps.

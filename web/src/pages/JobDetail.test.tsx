@@ -8,7 +8,40 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import JobDetail from './JobDetail'
 import { WebSocketProvider } from '@/ws/context'
-import type { JobDetail as JobDetailType, ListResponse, Task, Worker } from '@/api/types'
+import type { JobDetail as JobDetailType, ListResponse, Principal, Task, Worker } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// JobDetail reads useAuth() to gate mutating controls behind 'jobs.write'. Mock
+// the auth context directly (as RequireRole.test.tsx does) rather than driving
+// a real AuthProvider through /auth/me, since fetchMock in this file is
+// dedicated to the job/task list/mutation endpoints under test.
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(),
+}))
+import { useAuth } from '@/auth/context'
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+}
+const READONLY_PRINCIPAL: Principal = {
+  subject: 'u-readonly',
+  display_name: 'Read Only',
+  roles: ['read-only'],
+  kind: 'user',
+}
+
+/** Sets the principal returned by the mocked useAuth() for the next render. */
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 // ── Mock WebSocket ────────────────────────────────────────────────────────────
 
@@ -66,6 +99,10 @@ beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
   vi.stubGlobal('WebSocket', MockWebSocket)
+  // Default every test to an operator principal so pre-existing control
+  // assertions keep working unchanged; the read-only gating tests override
+  // this via setPrincipal(READONLY_PRINCIPAL).
+  setPrincipal(OPERATOR_PRINCIPAL)
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -883,6 +920,88 @@ describe('JobDetail', () => {
       // After failure, the original failed status should be restored
       await waitFor(() => screen.getByLabelText('Status: Failed'))
       expect(screen.getByLabelText('Status: Failed')).toBeInTheDocument()
+    })
+  })
+
+  describe('role gating (jobs.write)', () => {
+    it('hides Retry/Cancel task controls for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      const task = makeTask({ status: 'failed', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('View logs for task task.0'))
+      expect(screen.queryByLabelText('Retry task task.0')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Cancel task task.0')).not.toBeInTheDocument()
+    })
+
+    it('shows Retry/Cancel task controls for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      const task = makeTask({ status: 'failed', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('Retry task task.0'))
+      expect(screen.getByLabelText('Retry task task.0')).toBeInTheDocument()
+    })
+
+    it('hides per-task and select-all checkboxes for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('View logs for task task.0'))
+      expect(screen.queryByRole('checkbox', { name: 'Select task task.0' })).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('checkbox', { name: /select all tasks in step/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows per-task and select-all checkboxes for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(
+        await screen.findByRole('checkbox', { name: 'Select task task.0' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('checkbox', { name: /select all tasks in step/i }),
+      ).toBeInTheDocument()
+    })
+
+    it('hides the Resume control for a read-only principal on a parked job', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      const job = makeJob({ park_reason: 'failure limit reached' })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText(/Auto-parked/))
+      expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+    })
+
+    it('shows the Resume control for an operator principal on a parked job', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      const job = makeJob({ park_reason: 'failure limit reached' })
+      fetchMock.mockResolvedValueOnce(okJson(job))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByRole('button', { name: 'Resume' }))
+      expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
     })
   })
 

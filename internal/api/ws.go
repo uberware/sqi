@@ -76,6 +76,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/middleware"
 	internalws "github.com/uberware/sqi/internal/ws"
 )
@@ -417,6 +418,13 @@ func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) 
 	if env.Subject == "" {
 		wc.sendAck(ctx, env.Seq, "subject is required")
 		return
+	}
+
+	if env.Subject == internalws.SubjectDiagnostics {
+		if p, ok := auth.FromContext(ctx); !ok || !policy.Can(p, policy.DiagnosticsRead) {
+			wc.sendAck(ctx, env.Seq, "forbidden: diagnostics requires diagnostics.read")
+			return
+		}
 	}
 
 	var payload internalws.SubscribePayload

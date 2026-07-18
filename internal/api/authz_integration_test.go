@@ -1,0 +1,364 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package api
+
+// End-to-end authorization tests over the real router. Each case logs in as a
+// role and asserts the HTTP status the matrix predicts, or (for the auth-off
+// case) exercises the router with auth disabled to confirm the gate is inert.
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/policy"
+	"github.com/uberware/sqi/internal/auth/session"
+	"github.com/uberware/sqi/internal/health"
+	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/product"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
+)
+
+func TestAuthz_MatrixOverRealRouter(t *testing.T) {
+	cases := []struct {
+		name, role, method, path string
+		body                     any
+		want                     int
+	}{
+		{"readonly cannot submit job", "read-only", http.MethodPost, "/api/v1/jobs", map[string]any{}, http.StatusForbidden},
+		{"user can reach jobs read", "user", http.MethodGet, "/api/v1/jobs", nil, http.StatusOK},
+		{"user cannot manage workers", "user", http.MethodPost, "/api/v1/workers/w1/disable", nil, http.StatusForbidden},
+		{"operator can manage workers", "operator", http.MethodPost, "/api/v1/workers/w1/disable", nil, http.StatusNotFound}, // allowed → handler runs → 404 (no such worker)
+		{"operator cannot list users", "operator", http.MethodGet, "/api/v1/users", nil, http.StatusForbidden},
+		{"admin can list users", "admin", http.MethodGet, "/api/v1/users", nil, http.StatusOK},
+		{"readonly cannot read diagnostics", "read-only", http.MethodGet, "/api/v1/diagnostics/logs", nil, http.StatusForbidden},
+		{"readonly can read workers", "read-only", http.MethodGet, "/api/v1/workers", nil, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			seedAuthUser(t, st, "u", "pw-secret-1", tc.role)
+			srv := newAuthTestServer(t, st)
+			cookie := loginCookie(t, srv, "u", "pw-secret-1")
+			resp := doRequest(t, tc.method, srv.URL+tc.path, tc.body, cookie)
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("%s %s as %s: status = %d, want %d", tc.method, tc.path, tc.role, resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthz_DisabledIsUnchanged(t *testing.T) {
+	// Auth off: anonymous superuser passes every gate. A raw router with a nil
+	// Auth (auth.Anonymous) must let a POST /jobs reach the handler (400/201,
+	// never 403).
+	deps := Deps{Store: fake.New(), Auth: auth.Anonymous(), CookieName: "sqi_session"}
+	r := NewRouter(Config{DisableRateLimit: true}, deps, newTestLogger(), metrics.New(), health.NewRegistry())
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp := doRequest(t, http.MethodPost, srv.URL+"/api/v1/jobs", map[string]any{}, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		t.Fatal("auth-off POST /jobs returned 403; authorization must be inert when disabled")
+	}
+}
+
+// ── route sweep ──────────────────────────────────────────────────────────────
+//
+// The tests above pin a handful of hand-picked cases. Nothing short of
+// walking the actual router closes the fail-open gap: a route registered
+// directly on the `rest` group (instead of inside one of the permission-gated
+// sub-groups in router.go) is reachable by every authenticated role and the
+// hand-picked cases above would never notice. TestAuthz_RouteSweep_* below
+// enumerates every route chi actually serves under /api/v1 and diffs it
+// against expectedRoutes, a hardcoded classification table — in both
+// directions, so both a newly added ungated route and a stale/renamed table
+// entry fail the build.
+
+// routeExpectation classifies one registered (method, pattern) route as
+// either requiring a specific policy.Permission or being permission-free
+// (reachable by any authenticated principal — or, for login/openapi.yaml/ws,
+// with no principal at all).
+type routeExpectation struct {
+	method  string
+	pattern string
+	perm    policy.Permission // zero value when public is true
+	public  bool
+}
+
+// expectedRoutes is the hardcoded ground truth for every route sqi registers
+// under /api/v1, hand-derived from router.go's route groups. Keep it in sync
+// with router.go: adding a route there means classifying it here too, or
+// TestAuthz_RouteSweep_TableMatchesRouter fails.
+var expectedRoutes = []routeExpectation{
+	// Unauthenticated (no session required at all).
+	{method: http.MethodPost, pattern: "/api/v1/auth/login", public: true},
+	{method: http.MethodGet, pattern: "/api/v1/openapi.yaml", public: true},
+	// WebSocket upgrade: gated by its own hook (wsH.ServeHTTP), not
+	// az.require — deliberately excluded from the request-driving loop
+	// (it's an upgrade, not a plain HTTP round trip) but still classified
+	// here so it can't silently change class unnoticed.
+	{method: http.MethodGet, pattern: "/api/v1/ws", public: true},
+
+	// Permission-free once authenticated (any principal, no role check).
+	{method: http.MethodPost, pattern: "/api/v1/auth/logout", public: true},
+	{method: http.MethodGet, pattern: "/api/v1/auth/me", public: true},
+	{method: http.MethodGet, pattern: "/api/v1/version", public: true},
+
+	// users.read / users.manage
+	{method: http.MethodGet, pattern: "/api/v1/users", perm: policy.UsersRead},
+	{method: http.MethodGet, pattern: "/api/v1/users/{id}", perm: policy.UsersRead},
+	{method: http.MethodPost, pattern: "/api/v1/users", perm: policy.UsersManage},
+	{method: http.MethodPatch, pattern: "/api/v1/users/{id}", perm: policy.UsersManage},
+	{method: http.MethodPut, pattern: "/api/v1/users/{id}/password", perm: policy.UsersManage},
+	{method: http.MethodDelete, pattern: "/api/v1/users/{id}", perm: policy.UsersManage},
+
+	// apikeys.self
+	{method: http.MethodPost, pattern: "/api/v1/api-keys", perm: policy.APIKeysSelf},
+	{method: http.MethodGet, pattern: "/api/v1/api-keys", perm: policy.APIKeysSelf},
+	{method: http.MethodDelete, pattern: "/api/v1/api-keys/{id}", perm: policy.APIKeysSelf},
+
+	// jobs.read
+	{method: http.MethodGet, pattern: "/api/v1/jobs", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/jobs/{id}", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/jobs/{id}/tasks", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/tasks/{id}", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/tasks/{id}/logs", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/tasks/{id}/attempts", perm: policy.JobsRead},
+	// jobs.write
+	{method: http.MethodPost, pattern: "/api/v1/jobs", perm: policy.JobsWrite},
+	{method: http.MethodPatch, pattern: "/api/v1/jobs/{id}", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/jobs/{id}/cancel", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/jobs/{id}/retry", perm: policy.JobsWrite},
+	{method: http.MethodDelete, pattern: "/api/v1/jobs/{id}", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/tasks/{id}/retry", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/tasks/{id}/cancel", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/products/{name}/jobs", perm: policy.JobsWrite},
+
+	// workers.read / workers.manage
+	{method: http.MethodGet, pattern: "/api/v1/workers", perm: policy.WorkersRead},
+	{method: http.MethodGet, pattern: "/api/v1/workers/{id}", perm: policy.WorkersRead},
+	{method: http.MethodPost, pattern: "/api/v1/workers/{id}/disable", perm: policy.WorkersManage},
+	{method: http.MethodPost, pattern: "/api/v1/workers/{id}/enable", perm: policy.WorkersManage},
+	{method: http.MethodDelete, pattern: "/api/v1/workers/{id}", perm: policy.WorkersManage},
+
+	// infra.read / infra.manage (farms, queues, storage-locations,
+	// compute-locations, usage-pools)
+	{method: http.MethodGet, pattern: "/api/v1/farms", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/farms/{id}", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/queues", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/queues/{id}", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/storage-locations", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/storage-locations/{id}", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/compute-locations", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/compute-locations/{id}", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/usage-pools", perm: policy.InfraRead},
+	{method: http.MethodGet, pattern: "/api/v1/usage-pools/{id}", perm: policy.InfraRead},
+	{method: http.MethodPost, pattern: "/api/v1/farms", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/farms/{id}", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/queues", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/queues/{id}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/queues/{id}", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/storage-locations", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/storage-locations/{id}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/storage-locations/{id}", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/compute-locations", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/compute-locations/{id}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/compute-locations/{id}", perm: policy.InfraManage},
+	{method: http.MethodPost, pattern: "/api/v1/usage-pools", perm: policy.InfraManage},
+	{method: http.MethodPut, pattern: "/api/v1/usage-pools/{id}", perm: policy.InfraManage},
+	{method: http.MethodDelete, pattern: "/api/v1/usage-pools/{id}", perm: policy.InfraManage},
+
+	// products.read / products.manage (products, presets)
+	{method: http.MethodGet, pattern: "/api/v1/products", perm: policy.ProductsRead},
+	{method: http.MethodGet, pattern: "/api/v1/products/{name}", perm: policy.ProductsRead},
+	{method: http.MethodGet, pattern: "/api/v1/products/{name}/parameters", perm: policy.ProductsRead},
+	{method: http.MethodGet, pattern: "/api/v1/presets", perm: policy.ProductsRead},
+	{method: http.MethodGet, pattern: "/api/v1/presets/{name}", perm: policy.ProductsRead},
+	{method: http.MethodPost, pattern: "/api/v1/products", perm: policy.ProductsManage},
+	{method: http.MethodPut, pattern: "/api/v1/products/{name}", perm: policy.ProductsManage},
+	{method: http.MethodDelete, pattern: "/api/v1/products/{name}", perm: policy.ProductsManage},
+	{method: http.MethodPost, pattern: "/api/v1/presets/{name}/install", perm: policy.ProductsManage},
+
+	// diagnostics.read
+	{method: http.MethodGet, pattern: "/api/v1/diagnostics/logs", perm: policy.DiagnosticsRead},
+}
+
+// routeKey identifies a route by method and chi pattern, matching what
+// chi.Walk reports (e.g. {"GET", "/api/v1/users/{id}"}).
+type routeKey struct{ method, pattern string }
+
+// authRouter builds the same auth-enabled router newAuthTestServer wraps in
+// an httptest.Server (auth_test.go: same store, 1-hour session TTL, cookie
+// name), but returns the chi.Router directly so callers can both walk its
+// route table with chi.Walk and serve it themselves.
+//
+// Products is wired to a real catalog (not left nil) so the products/presets
+// routes the sweep drives — GetByName/Delete/etc. all deref the catalog's
+// store field unconditionally — return an ordinary 404/503 for the "zzz"
+// placeholder instead of panicking on a nil receiver.
+func authRouter(st store.Store) chi.Router {
+	return NewRouter(
+		Config{DisableRateLimit: true, AuthEnabled: true},
+		Deps{
+			Store:        st,
+			Products:     product.NewCatalog(st),
+			Auth:         session.New(st, "sqi_session", nil),
+			SessionTTL:   time.Hour,
+			CookieName:   "sqi_session",
+			CookieSecure: "false",
+		},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	)
+}
+
+// liveRoutes walks r and returns every (method, pattern) chi actually
+// registered under /api/v1. Routes outside that prefix (health, metrics, the
+// embedded UI catch-all) are out of scope for this authorization sweep.
+func liveRoutes(t *testing.T, r chi.Router) map[routeKey]bool {
+	t.Helper()
+	live := map[routeKey]bool{}
+	err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if strings.HasPrefix(route, "/api/v1") {
+			live[routeKey{method, route}] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+	return live
+}
+
+// placeholderPath substitutes a concrete dummy value for every chi path
+// parameter in pattern, e.g. "/api/v1/jobs/{id}" -> "/api/v1/jobs/zzz". The
+// gate under test only cares about the permission group a route belongs to,
+// never the resolved resource, so any placeholder is representative.
+func placeholderPath(pattern string) string {
+	return strings.NewReplacer("{id}", "zzz", "{name}", "zzz").Replace(pattern)
+}
+
+// requestBodyFor returns a plausible JSON body for method, matching the
+// style of the hand-picked cases in TestAuthz_MatrixOverRealRouter above.
+// Handlers may still reject it (missing fields, unknown resource, ...) — the
+// sweep asserts only on 403-vs-not-403, so any resulting 400/404/422/500 is
+// fine; it proves the gate let the request through to the handler.
+func requestBodyFor(method string) any {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return map[string]any{}
+	default:
+		return nil
+	}
+}
+
+// TestAuthz_RouteSweep_TableMatchesRouter is finding (1)(a)+(b): it fails if
+// the live router and expectedRoutes disagree in either direction — a route
+// chi serves with no entry in the table (an unclassified, possibly ungated,
+// new route) or a table entry with no matching live route (stale/renamed).
+func TestAuthz_RouteSweep_TableMatchesRouter(t *testing.T) {
+	live := liveRoutes(t, authRouter(fake.New()))
+
+	expected := make(map[routeKey]bool, len(expectedRoutes))
+	for _, e := range expectedRoutes {
+		expected[routeKey{e.method, e.pattern}] = true
+	}
+
+	for key := range live {
+		if !expected[key] {
+			t.Errorf("router registers %s %s with no entry in expectedRoutes — classify it as permission-gated or public", key.method, key.pattern)
+		}
+	}
+	for key := range expected {
+		if !live[key] {
+			t.Errorf("expectedRoutes has %s %s but the router no longer registers it — update the table", key.method, key.pattern)
+		}
+	}
+}
+
+// assertRouteGate drives one (method, pattern) request as role through srv,
+// logging in fresh for this one request, and asserts the response is 403
+// exactly when policy.Can denies the route's required permission — never
+// asserting on the handler's own status. A fresh login per request (rather
+// than one cookie shared across a role's whole route list) matters because
+// expectedRoutes includes POST /auth/logout itself: driving it with a shared
+// cookie would revoke the session server-side and turn every subsequent
+// route in the list into a spurious 401 instead of the 403 (or non-403) the
+// gate should actually produce.
+func assertRouteGate(t *testing.T, srv *httptest.Server, username, password, role string, e routeExpectation) {
+	t.Helper()
+	cookie := loginCookie(t, srv, username, password)
+	path := placeholderPath(e.pattern)
+	resp := doRequest(t, e.method, srv.URL+path, requestBodyFor(e.method), cookie)
+	defer resp.Body.Close()
+
+	wantForbidden := !e.public && !policy.Can(auth.Principal{Roles: []string{role}}, e.perm)
+	gotForbidden := resp.StatusCode == http.StatusForbidden
+	if gotForbidden != wantForbidden {
+		t.Errorf("%s %s as %s: forbidden = %v, want %v (status %d)",
+			e.method, path, role, gotForbidden, wantForbidden, resp.StatusCode)
+	}
+}
+
+// TestAuthz_RouteSweep_EnforcesPermissionsPerRole is finding (1)(c): for
+// every non-public route in expectedRoutes, drive a real request per
+// built-in role and confirm the gate matches policy.Can exactly. GET /ws is
+// skipped (WebSocket upgrade, gated by its own hook — finding (1)(d)).
+func TestAuthz_RouteSweep_EnforcesPermissionsPerRole(t *testing.T) {
+	st := fake.New()
+	srv := httptest.NewServer(authRouter(st))
+	t.Cleanup(srv.Close)
+
+	const password = "pw-secret-1"
+	for _, role := range []string{"read-only", "user", "operator", "admin"} {
+		username := "sweep-" + role
+		seedAuthUser(t, st, username, password, role)
+
+		for _, e := range expectedRoutes {
+			if e.pattern == "/api/v1/ws" {
+				continue // WebSocket upgrade — not a plain HTTP round trip.
+			}
+			t.Run(role+" "+e.method+" "+e.pattern, func(t *testing.T) {
+				assertRouteGate(t, srv, username, password, role, e)
+			})
+		}
+	}
+}
+
+// TestAuthz_RouteSweep_DisabledAuthAllowsAll is finding (1)'s auth-off case:
+// with a router built with Auth: auth.Anonymous(), every route in
+// expectedRoutes (bar the WebSocket upgrade) must be reachable with zero
+// 403s — the anonymous superuser principal bypasses every gate.
+func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
+	st := fake.New()
+	r := NewRouter(
+		Config{DisableRateLimit: true},
+		Deps{Store: st, Products: product.NewCatalog(st), Auth: auth.Anonymous(), CookieName: "sqi_session"},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	for _, e := range expectedRoutes {
+		if e.pattern == "/api/v1/ws" {
+			continue
+		}
+		t.Run(e.method+" "+e.pattern, func(t *testing.T) {
+			path := placeholderPath(e.pattern)
+			resp := doRequest(t, e.method, srv.URL+path, requestBodyFor(e.method), nil)
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusForbidden {
+				t.Errorf("%s %s: got 403 with auth disabled; anonymous superuser must bypass every gate", e.method, path)
+			}
+		})
+	}
+}

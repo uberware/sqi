@@ -6,6 +6,8 @@ import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import { usePreset } from '@/api/queries'
 import { useInstallPreset } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './PresetDetail.module.css'
 
 export default function PresetDetail() {
@@ -13,6 +15,8 @@ export default function PresetDetail() {
   const name = params.name ?? ''
   const navigate = useNavigate()
   const { showToast } = useToast()
+  const { principal } = useAuth()
+  const canManage = can(principal, 'products.manage')
   const { data: preset, isLoading, isError } = usePreset(name)
   const install = useInstallPreset()
 
@@ -46,14 +50,16 @@ export default function PresetDetail() {
         backTo="/presets"
         backLabel="Presets"
         action={
-          <button
-            type="button"
-            className={styles.actionBtn}
-            onClick={() => void handleInstall()}
-            disabled={install.isPending}
-          >
-            {label}
-          </button>
+          canManage ? (
+            <button
+              type="button"
+              className={styles.actionBtn}
+              onClick={() => void handleInstall()}
+              disabled={install.isPending}
+            >
+              {label}
+            </button>
+          ) : undefined
         }
       />
 

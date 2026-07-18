@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Routes, Route } from 'react-router-dom'
+import RequireRole from '@/components/RequireRole'
 import Dashboard from '@/pages/Dashboard'
 import JobList from '@/pages/JobList'
 import JobDetail from '@/pages/JobDetail'
@@ -42,35 +43,168 @@ export default function AppRoutes() {
       <Route path="/workers" element={<WorkerList />} />
       <Route path="/workers/:id" element={<WorkerDetail />} />
       <Route path="/farms" element={<FarmList />} />
-      <Route path="/farms/new" element={<FarmForm mode="create" />} />
-      <Route path="/farms/:id/edit" element={<FarmForm mode="edit" />} />
+      <Route
+        path="/farms/new"
+        element={
+          <RequireRole permission="infra.manage">
+            <FarmForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/farms/:id/edit"
+        element={
+          <RequireRole permission="infra.manage">
+            <FarmForm mode="edit" />
+          </RequireRole>
+        }
+      />
       <Route path="/queues" element={<QueueList />} />
-      <Route path="/queues/new" element={<QueueForm mode="create" />} />
-      <Route path="/queues/:id/edit" element={<QueueForm mode="edit" />} />
+      <Route
+        path="/queues/new"
+        element={
+          <RequireRole permission="infra.manage">
+            <QueueForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/queues/:id/edit"
+        element={
+          <RequireRole permission="infra.manage">
+            <QueueForm mode="edit" />
+          </RequireRole>
+        }
+      />
       <Route path="/usage-pools" element={<UsagePoolList />} />
-      <Route path="/usage-pools/new" element={<UsagePoolForm mode="create" />} />
-      <Route path="/usage-pools/:id/edit" element={<UsagePoolForm mode="edit" />} />
+      <Route
+        path="/usage-pools/new"
+        element={
+          <RequireRole permission="infra.manage">
+            <UsagePoolForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/usage-pools/:id/edit"
+        element={
+          <RequireRole permission="infra.manage">
+            <UsagePoolForm mode="edit" />
+          </RequireRole>
+        }
+      />
       <Route path="/storage-locations" element={<StorageLocationList />} />
-      <Route path="/storage-locations/new" element={<StorageLocationForm mode="create" />} />
-      <Route path="/storage-locations/:id/edit" element={<StorageLocationForm mode="edit" />} />
+      <Route
+        path="/storage-locations/new"
+        element={
+          <RequireRole permission="infra.manage">
+            <StorageLocationForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/storage-locations/:id/edit"
+        element={
+          <RequireRole permission="infra.manage">
+            <StorageLocationForm mode="edit" />
+          </RequireRole>
+        }
+      />
       <Route path="/compute-locations" element={<ComputeLocationList />} />
-      <Route path="/compute-locations/new" element={<ComputeLocationForm mode="create" />} />
-      <Route path="/compute-locations/:id/edit" element={<ComputeLocationForm mode="edit" />} />
-      <Route path="/users" element={<UserList />} />
-      <Route path="/users/new" element={<UserForm mode="create" />} />
-      <Route path="/users/:id/edit" element={<UserForm mode="edit" />} />
+      <Route
+        path="/compute-locations/new"
+        element={
+          <RequireRole permission="infra.manage">
+            <ComputeLocationForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/compute-locations/:id/edit"
+        element={
+          <RequireRole permission="infra.manage">
+            <ComputeLocationForm mode="edit" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/users"
+        element={
+          <RequireRole permission="users.read">
+            <UserList />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/users/new"
+        element={
+          <RequireRole permission="users.manage">
+            <UserForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/users/:id/edit"
+        element={
+          <RequireRole permission="users.manage">
+            <UserForm mode="edit" />
+          </RequireRole>
+        }
+      />
       <Route path="/api-keys" element={<ApiKeyList />} />
-      <Route path="/submit" element={<ProductPicker />} />
-      <Route path="/submit/raw" element={<Submit />} />
-      <Route path="/submit/product/:name" element={<ProductSubmit />} />
+      <Route
+        path="/submit"
+        element={
+          <RequireRole permission="jobs.write">
+            <ProductPicker />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/submit/raw"
+        element={
+          <RequireRole permission="jobs.write">
+            <Submit />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/submit/product/:name"
+        element={
+          <RequireRole permission="jobs.write">
+            <ProductSubmit />
+          </RequireRole>
+        }
+      />
       <Route path="/admin" element={<Admin />} />
       <Route path="/presets" element={<PresetLibrary />} />
       <Route path="/presets/:name" element={<PresetDetail />} />
       <Route path="/products" element={<ProductList />} />
-      <Route path="/products/new" element={<ProductForm mode="create" />} />
-      <Route path="/products/:name/edit" element={<ProductForm mode="edit" />} />
+      <Route
+        path="/products/new"
+        element={
+          <RequireRole permission="products.manage">
+            <ProductForm mode="create" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/products/:name/edit"
+        element={
+          <RequireRole permission="products.manage">
+            <ProductForm mode="edit" />
+          </RequireRole>
+        }
+      />
       <Route path="/products/:name" element={<ProductDetail />} />
-      <Route path="/server-log" element={<ServerLog />} />
+      <Route
+        path="/server-log"
+        element={
+          <RequireRole permission="diagnostics.read">
+            <ServerLog />
+          </RequireRole>
+        }
+      />
       <Route path="*" element={<NotFound />} />
     </Routes>
   )

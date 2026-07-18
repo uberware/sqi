@@ -16,6 +16,8 @@ import CopyableId from '@/components/CopyableId'
 import RefreshControls from '@/components/RefreshControls'
 import { useGetJob, useListTasks, useListWorkers, useTaskAttempts, queryKeys } from '@/api/queries'
 import { useRetryTask, useCancelTask, useResumeJob } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import { useWebSocket } from '@/ws/context'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { formatTimespan, formatDuration } from '@/lib/time'
@@ -339,6 +341,8 @@ interface TaskRowProps {
   onToggleSelect: (id: string) => void
   /** True when this task's enclosing step has all its dependencies completed. */
   depsSatisfied: boolean
+  /** True when the current principal may cancel/retry tasks (`jobs.write`). */
+  canWrite: boolean
 }
 
 function TaskRow({
@@ -355,6 +359,7 @@ function TaskRow({
   isSelected,
   onToggleSelect,
   depsSatisfied,
+  canWrite,
 }: TaskRowProps) {
   // While a retry is in-flight, show pending to signal the task is queued.
   const displayStatus: TaskStatus = isRetrying ? 'pending' : task.status
@@ -391,14 +396,15 @@ function TaskRow({
           </button>
         </td>
         <td className={styles.checkCell}>
-          {(CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
-            <input
-              type="checkbox"
-              aria-label={`Select task ${task.name}`}
-              checked={isSelected}
-              onChange={() => onToggleSelect(task.id)}
-            />
-          )}
+          {canWrite &&
+            (CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
+              <input
+                type="checkbox"
+                aria-label={`Select task ${task.name}`}
+                checked={isSelected}
+                onChange={() => onToggleSelect(task.id)}
+              />
+            )}
         </td>
         <td>
           <CopyableId id={task.id} />
@@ -451,7 +457,7 @@ function TaskRow({
             >
               <Document />
             </Link>
-            {(canRetry || isRetrying) && (
+            {canWrite && (canRetry || isRetrying) && (
               <IconButton
                 icon={<Rotate />}
                 className={styles.retryBtn}
@@ -461,7 +467,7 @@ function TaskRow({
                 label={`Retry task ${task.name}`}
               />
             )}
-            {(canCancel || isCanceling) && (
+            {canWrite && (canCancel || isCanceling) && (
               <IconButton
                 icon={<X />}
                 className={styles.cancelBtn}
@@ -525,6 +531,8 @@ interface StepSectionProps {
   onToggleStep: () => void
   /** True when all of this step's declared dependencies have status "completed". */
   depsSatisfied: boolean
+  /** True when the current principal may cancel/retry tasks (`jobs.write`). */
+  canWrite: boolean
 }
 
 function StepSection({
@@ -543,6 +551,7 @@ function StepSection({
   onToggleSelect,
   onToggleStep,
   depsSatisfied,
+  canWrite,
 }: StepSectionProps) {
   const counts = stepCountsFromTasks(tasks)
   const deps = step.depends_on ?? []
@@ -583,16 +592,18 @@ function StepSection({
               <tr>
                 <th aria-label="Expand attempts" className={styles.expandCell} />
                 <th className={styles.checkCell}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Select all tasks in step ${step.name}`}
-                    checked={
-                      selectableInStep.length > 0 &&
-                      selectableInStep.every((t) => selectedTaskIds.has(t.id))
-                    }
-                    disabled={selectableInStep.length === 0}
-                    onChange={onToggleStep}
-                  />
+                  {canWrite && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Select all tasks in step ${step.name}`}
+                      checked={
+                        selectableInStep.length > 0 &&
+                        selectableInStep.every((t) => selectedTaskIds.has(t.id))
+                      }
+                      disabled={selectableInStep.length === 0}
+                      onChange={onToggleStep}
+                    />
+                  )}
                 </th>
                 <th>Task ID</th>
                 <th>Parameters</th>
@@ -620,6 +631,7 @@ function StepSection({
                   isSelected={selectedTaskIds.has(task.id)}
                   onToggleSelect={onToggleSelect}
                   depsSatisfied={depsSatisfied}
+                  canWrite={canWrite}
                 />
               ))}
             </tbody>
@@ -637,6 +649,9 @@ function StepSection({
 export default function JobDetail() {
   const { id } = useParams<{ id: string }>()
   const jobId = id ?? ''
+
+  const { principal } = useAuth()
+  const canWrite = can(principal, 'jobs.write')
 
   const { data: job, isLoading, isError, error, dataUpdatedAt: jobUpdatedAt } = useGetJob(jobId)
   const {
@@ -990,14 +1005,16 @@ export default function JobDetail() {
       {job.park_reason !== undefined && job.park_reason !== '' && (
         <ErrorBanner variant="warning">
           <span>Auto-parked — {job.park_reason}</span>
-          <button
-            type="button"
-            className={styles.resumeBtn ?? ''}
-            onClick={() => void handleResume()}
-            disabled={resumeJob.isPending}
-          >
-            {resumeJob.isPending ? 'Resuming…' : 'Resume'}
-          </button>
+          {canWrite && (
+            <button
+              type="button"
+              className={styles.resumeBtn ?? ''}
+              onClick={() => void handleResume()}
+              disabled={resumeJob.isPending}
+            >
+              {resumeJob.isPending ? 'Resuming…' : 'Resume'}
+            </button>
+          )}
           {resumeError !== undefined && (
             <span className={styles.resumeError ?? ''}>{resumeError}</span>
           )}
@@ -1080,6 +1097,7 @@ export default function JobDetail() {
                 })
               }}
               depsSatisfied={depsSatisfied}
+              canWrite={canWrite}
             />
           )
         })}
@@ -1088,7 +1106,7 @@ export default function JobDetail() {
         )}
       </div>
 
-      {activeSelectedCount > 0 && (
+      {canWrite && activeSelectedCount > 0 && (
         <BulkBar count={activeSelectedCount} onClear={() => setSelectedTaskIds(new Set())}>
           <button
             className={styles.bulkCancelBtn}

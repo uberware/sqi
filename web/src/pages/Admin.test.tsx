@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Admin from '@/pages/Admin'
+import type { Principal } from '@/api/types'
 
 vi.mock('@/api/queries', () => ({
   useVersion: () => ({
@@ -15,6 +16,29 @@ vi.mock('@/api/queries', () => ({
     },
   }),
 }))
+
+// Admin filters its cards by permission — default the mocked principal to
+// admin (holds every permission the cards check) so pre-existing assertions
+// keep working unchanged. Role-gating itself is covered by focused tests below.
+const ADMIN_PRINCIPAL: Principal = {
+  subject: 'u-admin',
+  display_name: 'Admin',
+  roles: ['admin'],
+  kind: 'user',
+}
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(() => ({ principal: ADMIN_PRINCIPAL, status: 'authed', refresh: () => {} })),
+}))
+import { useAuth } from '@/auth/context'
+
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 describe('Admin hub', () => {
   const cases: Array<[string, string]> = [
@@ -46,5 +70,35 @@ describe('Admin hub', () => {
       </MemoryRouter>,
     )
     expect(screen.getByLabelText('Server version')).toHaveTextContent('sqi-server v0.1.0 (abc1234)')
+  })
+
+  describe('role gating', () => {
+    it('hides every card for a read-only principal', () => {
+      setPrincipal({ subject: 's', display_name: 'n', roles: ['read-only'], kind: 'user' })
+      render(
+        <MemoryRouter>
+          <Admin />
+        </MemoryRouter>,
+      )
+      for (const [label] of cases) {
+        expect(
+          screen.queryByRole('link', { name: new RegExp('^' + label, 'i') }),
+        ).not.toBeInTheDocument()
+      }
+      // read-only does hold apikeys.self, so the API Keys card still shows.
+      expect(screen.getByRole('link', { name: /^API Keys/i })).toBeInTheDocument()
+    })
+
+    it('hides the Users card for an operator (users.read is admin-only)', () => {
+      setPrincipal({ subject: 's', display_name: 'n', roles: ['operator'], kind: 'user' })
+      render(
+        <MemoryRouter>
+          <Admin />
+        </MemoryRouter>,
+      )
+      expect(screen.queryByRole('link', { name: /^Users/i })).not.toBeInTheDocument()
+      // ...but operator does hold infra.manage, so e.g. Farms still shows.
+      expect(screen.getByRole('link', { name: /^Farms/i })).toBeInTheDocument()
+    })
   })
 })
