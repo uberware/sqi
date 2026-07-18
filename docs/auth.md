@@ -19,14 +19,24 @@ credential.
 
 ## Model
 
-Every request carries a `Principal` (subject, display name, roles, kind,
-superuser flag) in its context. When auth is off, the middleware injects an
-anonymous principal with the superuser flag set, so authorization checks
-(added in a later component) are bypassed. Authentication is pluggable: an
+Every request carries a `Principal` in its context. When auth is off, the
+middleware injects an anonymous principal with the superuser flag set, so
+authorization checks are bypassed. Authentication is pluggable: an
 `Authenticator` resolves a request's credentials to a `Principal`, and future
 credential types (API keys, LDAP, OIDC) each implement that one interface.
-Today, the only non-anonymous `Authenticator` is the session-cookie one
-described below.
+Today, the only non-anonymous `Authenticator`s are the session-cookie and
+API-key ones described below.
+
+`Principal` carries `Subject` (opaque user id), `Username` (login name — the
+value bound to `Job.Owner`/`Job.Submitter`), `DisplayName`, `Roles`, `Kind`,
+and `Superuser`.
+
+`GET /auth/me` returns both `roles` and `permissions`. Clients should gate on
+`permissions`: it is computed server-side from the policy matrix, so an
+externally-mapped role from an LDAP or OIDC provider (C1/C2) needs no
+client-side change. A superuser principal — the anonymous identity used when
+auth is disabled — reports the full permission set, which is what keeps every
+control enabled in an auth-off deployment.
 
 A `Principal`'s `roles` field is populated (a user's single stored role, e.g.
 `["admin"]`) and, as of component B1, **is enforced**: every mutating route

@@ -12,13 +12,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/password"
+	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/auth/session"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
@@ -385,5 +388,56 @@ func TestMe_UnauthenticatedReturns401(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestAuthMeReturnsUsernameAndPermissions(t *testing.T) {
+	h := &authHandler{}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/auth/me", nil)
+	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{
+		Subject:     "u-1",
+		Username:    "alice",
+		DisplayName: "Alice",
+		Roles:       []string{"user"},
+		Kind:        auth.KindUser,
+	}))
+	rec := httptest.NewRecorder()
+
+	h.me(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got principalResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Username != "alice" {
+		t.Errorf("username = %q, want %q", got.Username, "alice")
+	}
+	want := []string{"apikeys.self", "infra.read", "jobs.read", "jobs.write", "products.read", "workers.read"}
+	if !reflect.DeepEqual(got.Permissions, want) {
+		t.Errorf("permissions = %v, want %v", got.Permissions, want)
+	}
+}
+
+func TestAuthMeSuperuserReportsAllPermissions(t *testing.T) {
+	h := &authHandler{}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/auth/me", nil)
+	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{
+		DisplayName: "anonymous",
+		Kind:        auth.KindAnonymous,
+		Superuser:   true,
+	}))
+	rec := httptest.NewRecorder()
+
+	h.me(rec, req)
+
+	var got principalResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Permissions) != len(policy.All) {
+		t.Errorf("permissions len = %d, want %d (full set)", len(got.Permissions), len(policy.All))
 	}
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/password"
+	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/auth/session"
 	"github.com/uberware/sqi/internal/store"
 )
@@ -198,8 +199,10 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 
 type principalResponse struct {
 	Subject     string   `json:"subject"`
+	Username    string   `json:"username,omitempty"`
 	DisplayName string   `json:"display_name"`
 	Roles       []string `json:"roles"`
+	Permissions []string `json:"permissions"`
 	Kind        string   `json:"kind"`
 }
 
@@ -218,8 +221,10 @@ func (*authHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, principalResponse{
 		Subject:     p.Subject,
+		Username:    p.Username,
 		DisplayName: p.DisplayName,
 		Roles:       roles,
+		Permissions: policy.PermissionsFor(p),
 		Kind:        string(p.Kind),
 	})
 }

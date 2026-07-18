@@ -80,6 +80,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (auth.Principal, error) {
 	a.maybeTouch(r.Context(), key, now)
 	return auth.Principal{
 		Subject:     u.ID,
+		Username:    u.Username,
 		DisplayName: u.DisplayName,
 		Roles:       []string{u.Role},
 		Kind:        auth.KindAPIKey,

@@ -9,7 +9,11 @@
 // mirrors it and docs/auth.md documents it — keep all three in lockstep.
 package policy
 
-import "github.com/uberware/sqi/internal/auth"
+import (
+	"sort"
+
+	"github.com/uberware/sqi/internal/auth"
+)
 
 // Permission is a per-resource-verb capability gating one or more routes.
 type Permission string
@@ -65,6 +69,48 @@ var grants = map[string]map[Permission]bool{
 		DiagnosticsRead: true, UsersRead: true, UsersManage: true,
 		APIKeysSelf: true, APIKeysAdmin: true,
 	},
+}
+
+// All is every declared permission. It is the source for PermissionsFor's
+// superuser answer and for the exhaustiveness test that keeps this list in
+// step with the constants above.
+var All = []Permission{
+	JobsRead, JobsWrite, WorkersRead, WorkersManage,
+	InfraRead, InfraManage, ProductsRead, ProductsManage,
+	DiagnosticsRead, UsersRead, UsersManage,
+	APIKeysSelf, APIKeysAdmin,
+}
+
+// PermissionsFor returns p's effective permissions as sorted strings, for
+// transmission to clients over GET /auth/me. Clients gate on these strings
+// directly rather than re-deriving them from roles, so the policy matrix lives
+// in exactly one place. A Superuser principal (auth disabled) reports the full
+// set, which is what keeps auth-off clients showing every control enabled.
+//
+// Always returns a non-nil slice so it marshals as [] rather than null.
+func PermissionsFor(p auth.Principal) []string {
+	if p.Superuser {
+		out := make([]string, 0, len(All))
+		for _, perm := range All {
+			out = append(out, string(perm))
+		}
+		sort.Strings(out)
+		return out
+	}
+	seen := make(map[Permission]bool)
+	for _, role := range p.Roles {
+		for perm, ok := range grants[role] {
+			if ok {
+				seen[perm] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for perm := range seen {
+		out = append(out, string(perm))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Can reports whether p may perform perm. A Superuser principal (the anonymous

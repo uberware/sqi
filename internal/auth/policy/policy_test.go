@@ -3,6 +3,8 @@
 package policy_test
 
 import (
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/uberware/sqi/internal/auth"
@@ -77,5 +79,64 @@ func TestCan_UnionAcrossRoles(t *testing.T) {
 	p := auth.Principal{Roles: []string{"read-only", "operator"}}
 	if !policy.Can(p, policy.InfraManage) {
 		t.Error("union of roles should grant infra.manage")
+	}
+}
+
+func TestPermissionsFor(t *testing.T) {
+	tests := []struct {
+		name string
+		p    auth.Principal
+		want []string
+	}{
+		{
+			name: "read-only",
+			p:    auth.Principal{Roles: []string{"read-only"}},
+			want: []string{"apikeys.self", "infra.read", "jobs.read", "products.read", "workers.read"},
+		},
+		{
+			name: "superuser gets every permission",
+			p:    auth.Principal{Superuser: true},
+			want: allPermissionStrings(),
+		},
+		{
+			name: "no roles",
+			p:    auth.Principal{},
+			want: []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := policy.PermissionsFor(tt.p)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("PermissionsFor() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// allPermissionStrings returns every declared permission as a sorted []string.
+func allPermissionStrings() []string {
+	out := make([]string, 0, len(policy.All))
+	for _, p := range policy.All {
+		out = append(out, string(p))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestAllCoversEveryGrantedPermission fails when a new Permission constant is
+// granted to a role but never added to All — which would silently omit it from
+// every client's PermissionsFor response.
+func TestAllCoversEveryGrantedPermission(t *testing.T) {
+	inAll := make(map[policy.Permission]bool, len(policy.All))
+	for _, p := range policy.All {
+		inAll[p] = true
+	}
+	for _, role := range []string{"read-only", "user", "operator", "admin"} {
+		for perm, ok := range want[role] {
+			if ok && !inAll[perm] {
+				t.Errorf("permission %q granted to role %q but missing from All", perm, role)
+			}
+		}
 	}
 }

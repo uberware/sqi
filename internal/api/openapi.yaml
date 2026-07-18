@@ -1556,16 +1556,29 @@ components:
 
     Principal:
       type: object
-      required: [subject, display_name, roles, kind]
+      required: [subject, display_name, roles, kind, permissions]
       properties:
         subject:
           type: string
+        username:
+          type: string
+          description: >-
+            Human-readable login name. Bound to Job.Owner and Job.Submitter.
+            Absent for the anonymous principal.
         display_name:
           type: string
         roles:
           type: array
           items:
             type: string
+        permissions:
+          type: array
+          items:
+            type: string
+          description: >-
+            Effective permission strings for this principal. Clients gate UI on
+            these rather than deriving them from roles. A superuser principal
+            (auth disabled) reports the full set.
         kind:
           type: string
 

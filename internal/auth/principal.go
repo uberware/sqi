@@ -30,6 +30,12 @@ const (
 type Principal struct {
 	// Subject is the stable identity id; empty for the anonymous principal.
 	Subject string
+	// Username is the human-readable login name. It is the value bound to
+	// Job.Owner and Job.Submitter, which are matched as strings by
+	// ListJobsOptions.Owner and Search — binding those to the opaque Subject
+	// would make every existing owner value unmatchable. Empty for the
+	// anonymous principal.
+	Username string
 	// DisplayName is a human-facing label.
 	DisplayName string
 	// Roles are the identity's assigned roles. Empty in A0; populated from A1/B1.
