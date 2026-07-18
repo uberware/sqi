@@ -10,9 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 func TestBindSubmitIdentity(t *testing.T) {
@@ -171,11 +175,11 @@ func TestSubmitJobOperatorSubmitsOnBehalfOf(t *testing.T) {
 }
 
 func TestBindSubmitIdentityValidatesOwner(t *testing.T) {
-	known := func(_ context.Context, username string) error {
+	known := func(_ context.Context, username string) (string, error) {
 		if strings.EqualFold(username, "bob") {
-			return nil
+			return "bob", nil
 		}
-		return store.ErrNotFound
+		return "", store.ErrNotFound
 	}
 
 	tests := []struct {
@@ -205,9 +209,9 @@ func TestBindSubmitIdentityValidatesOwner(t *testing.T) {
 // never needs looking up.
 func TestBindSubmitIdentitySelfOwnerSkipsLookup(t *testing.T) {
 	called := false
-	lookup := func(context.Context, string) error {
+	lookup := func(context.Context, string) (string, error) {
 		called = true
-		return store.ErrNotFound
+		return "", store.ErrNotFound
 	}
 	ctx := auth.NewContext(context.Background(), auth.Principal{
 		Username: "alice", Roles: []string{"user"},
@@ -218,6 +222,84 @@ func TestBindSubmitIdentitySelfOwnerSkipsLookup(t *testing.T) {
 	}
 	if called {
 		t.Error("lookup called for the caller's own username")
+	}
+}
+
+// TestBindSubmitIdentityCanonicalizesOwnerCasing is the regression test for
+// M-1: a submit-as override must persist the stored user's canonical casing,
+// not whatever casing the client supplied, exactly like the self path already
+// does. ownerLookup discarding the looked-up User and returning only nil/err
+// let a case variant (e.g. "ALICE" for a user stored as "alice") through
+// verbatim, which internal/config/config.go's ValidateJobOwner doc says must
+// not happen: Job.Owner is meant to be a trustworthy per-user concurrency-cap
+// key, and a case variant is exactly the "own silently uncapped bucket" a
+// typo would create.
+func TestBindSubmitIdentityCanonicalizesOwnerCasing(t *testing.T) {
+	lookup := func(_ context.Context, username string) (string, error) {
+		if strings.EqualFold(username, "alice") {
+			return "alice", nil // the stored, canonical casing
+		}
+		return "", store.ErrNotFound
+	}
+	ctx := auth.NewContext(context.Background(), auth.Principal{
+		Username: "proxy", Roles: []string{"operator"},
+	})
+
+	owner, _, problem, status := bindSubmitIdentity(ctx, lookup, "ALICE", "")
+	if status != 0 {
+		t.Fatalf("status = %d (%q), want 0", status, problem)
+	}
+	if owner != "alice" {
+		t.Errorf("owner = %q, want %q (canonical casing from the store, not the client's)", owner, "alice")
+	}
+}
+
+// TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing drives the same
+// regression end-to-end through the real job-submission handler with owner
+// validation enabled, proving the persisted Job.Owner is canonicalized rather
+// than the client-supplied casing.
+func TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-one"}); err != nil {
+		t.Fatalf("create farm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "render"}); err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+	if _, err := st.CreateUser(ctx, store.User{ID: "u-alice", Username: "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	sub := openjd.NewSubmitter(st)
+	h := newJobHandler(st, sub, &fakeScheduler{}, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults, true)
+	r := chi.NewRouter()
+	r.Post("/api/v1/jobs", h.submitJob)
+
+	body := strings.NewReader(minimalOpenJDJSON("CanonicalCasingTest"))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1&owner=ALICE", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{
+		Username: "proxy", Roles: []string{"operator"},
+	}))
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — body: %s", rec.Code, rec.Body)
+	}
+	var resp jobResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	created, err := st.GetJob(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("GetJob(%q): %v", resp.ID, err)
+	}
+	if created.Owner != "alice" {
+		t.Errorf("persisted job Owner = %q, want %q (canonical casing)", created.Owner, "alice")
 	}
 }
 

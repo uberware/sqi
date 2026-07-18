@@ -17,10 +17,11 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// ownerLookup reports whether username names a known user. It returns
-// store.ErrNotFound for an unknown user and nil to accept. A nil ownerLookup
-// disables validation (auth.validate_job_owner = false).
-type ownerLookup func(ctx context.Context, username string) error
+// ownerLookup reports whether username names a known user, returning that
+// user's canonically-cased username. It returns store.ErrNotFound for an
+// unknown user. A nil ownerLookup disables validation (auth.validate_job_owner
+// = false).
+type ownerLookup func(ctx context.Context, username string) (canonical string, err error)
 
 // newOwnerLookup returns an ownerLookup backed by st, or nil when owner
 // validation is disabled (a nil lookup makes bindSubmitIdentity skip the check).
@@ -28,9 +29,12 @@ func newOwnerLookup(st store.Store, validate bool) ownerLookup {
 	if !validate {
 		return nil
 	}
-	return func(ctx context.Context, username string) error {
-		_, err := st.GetUserByUsername(ctx, username)
-		return err
+	return func(ctx context.Context, username string) (string, error) {
+		u, err := st.GetUserByUsername(ctx, username)
+		if err != nil {
+			return "", err
+		}
+		return u.Username, nil
 	}
 }
 
@@ -47,7 +51,11 @@ func newOwnerLookup(st store.Store, validate bool) ownerLookup {
 //     canonical casing is stored, not the client's.
 //  4. Owner other than self requires policy.JobsSubmitAs, else 403. When
 //     granted, lookup (if non-nil) must also confirm the named owner is a
-//     known user, else 400 — this keeps Job.Owner a trustworthy key.
+//     known user, else 400 — this keeps Job.Owner a trustworthy key — and the
+//     canonical casing lookup returns is what gets stored, not the client's,
+//     matching the self path: a case variant of a known username must not get
+//     its own silently uncapped concurrency-cap bucket (see
+//     internal/config/config.go's ValidateJobOwner doc).
 //
 // When auth is disabled the principal is the anonymous superuser: it holds
 // every permission and carries no username, so both client values pass through
@@ -82,12 +90,14 @@ func bindSubmitIdentity(
 	}
 
 	if lookup != nil {
-		if err := lookup(ctx, owner); err != nil {
+		canonical, err := lookup(ctx, owner)
+		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return "", "", "owner names no known user", http.StatusBadRequest
 			}
 			return "", "", "failed to validate owner", http.StatusInternalServerError
 		}
+		owner = canonical
 	}
 	return owner, submitter, "", 0
 }
