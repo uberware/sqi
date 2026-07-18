@@ -83,7 +83,7 @@ func TestListJobsScopedOverridesClientOwnerParam(t *testing.T) {
 	seedOwnedJob(t, st, "job-bob", "bob")
 
 	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
-		newTestLogger(), testRetryDefaults)
+		newTestLogger(), testRetryDefaults, false)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs?owner=bob", nil)
 	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{
@@ -116,7 +116,7 @@ func TestListJobsNoPrincipalReturnsEmpty(t *testing.T) {
 	seedOwnedJob(t, st, "job-bob", "bob")
 
 	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
-		newTestLogger(), testRetryDefaults)
+		newTestLogger(), testRetryDefaults, false)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs", nil)
 	rec := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestListJobsUnscopedSeesAll(t *testing.T) {
 	seedOwnedJob(t, st, "job-bob", "bob")
 
 	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
-		newTestLogger(), testRetryDefaults)
+		newTestLogger(), testRetryDefaults, false)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs", nil)
 	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{
@@ -242,7 +242,8 @@ func TestRequireJobAccess(t *testing.T) {
 				func(w http.ResponseWriter, _ *http.Request) {
 					reached = true
 					w.WriteHeader(http.StatusOK)
-				}))
+				},
+			))
 
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, jobRequest(t, "/api/v1/jobs/{id}", "job-1", tt.principal))
@@ -269,7 +270,8 @@ func TestRequireJobAccessViaTask(t *testing.T) {
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 	h := az.requireJobAccess()(http.HandlerFunc(
-		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+	))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, jobRequest(t, "/api/v1/tasks/{id}", "task-1",
@@ -299,7 +301,8 @@ func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 	h := az.requireJobAccess()(http.HandlerFunc(
-		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+	))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, jobRequest(t, "/api/v1/tasks/{id}/logs", "task-1",
@@ -324,7 +327,8 @@ func TestRequireJobAccessJobTasksRouteNotConfusedWithTaskRoute(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) {
 			reached = true
 			w.WriteHeader(http.StatusOK)
-		}))
+		},
+	))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, jobRequest(t, "/api/v1/jobs/{id}/tasks", "job-1",
@@ -344,7 +348,8 @@ func TestRequireJobAccessUnknownJob(t *testing.T) {
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 	h := az.requireJobAccess()(http.HandlerFunc(
-		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+	))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, jobRequest(t, "/api/v1/jobs/{id}", "nope",

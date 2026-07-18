@@ -77,7 +77,7 @@ func TestBindSubmitIdentity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := auth.NewContext(context.Background(), tt.principal)
-			owner, submitter, problem, status := bindSubmitIdentity(ctx, tt.clientOwner, tt.clientSub)
+			owner, submitter, problem, status := bindSubmitIdentity(ctx, nil, tt.clientOwner, tt.clientSub)
 
 			if status != tt.wantStatus {
 				t.Fatalf("status = %d (%q), want %d", status, problem, tt.wantStatus)
@@ -167,5 +167,73 @@ func TestSubmitJobOperatorSubmitsOnBehalfOf(t *testing.T) {
 	}
 	if created.Submitter != "proxy" {
 		t.Errorf("persisted job Submitter = %q, want %q", created.Submitter, "proxy")
+	}
+}
+
+func TestBindSubmitIdentityValidatesOwner(t *testing.T) {
+	known := func(_ context.Context, username string) error {
+		if strings.EqualFold(username, "bob") {
+			return nil
+		}
+		return store.ErrNotFound
+	}
+
+	tests := []struct {
+		name       string
+		lookup     ownerLookup
+		owner      string
+		wantStatus int
+	}{
+		{name: "known owner accepted", lookup: known, owner: "bob", wantStatus: 0},
+		{name: "unknown owner rejected", lookup: known, owner: "nobody", wantStatus: http.StatusBadRequest},
+		{name: "validation disabled accepts anything", lookup: nil, owner: "nobody", wantStatus: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := auth.NewContext(context.Background(), auth.Principal{
+				Username: "proxy", Roles: []string{"operator"},
+			})
+			_, _, problem, status := bindSubmitIdentity(ctx, tt.lookup, tt.owner, "")
+			if status != tt.wantStatus {
+				t.Errorf("status = %d (%q), want %d", status, problem, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// Validation only applies to a submit-as override; the caller's own username
+// never needs looking up.
+func TestBindSubmitIdentitySelfOwnerSkipsLookup(t *testing.T) {
+	called := false
+	lookup := func(context.Context, string) error {
+		called = true
+		return store.ErrNotFound
+	}
+	ctx := auth.NewContext(context.Background(), auth.Principal{
+		Username: "alice", Roles: []string{"user"},
+	})
+	_, _, _, status := bindSubmitIdentity(ctx, lookup, "alice", "")
+	if status != 0 {
+		t.Errorf("status = %d, want 0", status)
+	}
+	if called {
+		t.Error("lookup called for the caller's own username")
+	}
+}
+
+// Hardening (raised against Task 5): the auth-off passthrough must be keyed
+// on the principal actually being the anonymous/auth-off identity, never on
+// an empty Username. An authenticated (non-anonymous) principal with no
+// Username is a latent possibility (a future LDAP/OIDC authenticator, or
+// auth.KindService) and must still be run through the jobs.submit_as check
+// rather than silently bypassing it via the old `p.Username == ""` proxy.
+func TestBindSubmitIdentityAuthenticatedEmptyUsernameStillEnforcesSubmitAs(t *testing.T) {
+	ctx := auth.NewContext(context.Background(), auth.Principal{
+		Kind: auth.KindUser, Roles: []string{"user"}, // no jobs.submit_as
+	})
+	_, _, problem, status := bindSubmitIdentity(ctx, nil, "bob", "")
+	if status != http.StatusForbidden {
+		t.Errorf("status = %d (%q), want 403 (authenticated empty-username principal must not bypass submit_as)",
+			status, problem)
 	}
 }

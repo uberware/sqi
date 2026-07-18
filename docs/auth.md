@@ -128,6 +128,24 @@ out of user management.
   the policy above, but the `/api-keys` handlers remain self-scoped for
   now — see [API keys](#api-keys).
 
+## Job identity
+
+`POST /api/v1/jobs` and `POST /api/v1/products/{name}/jobs` resolve the
+`Owner` and `Submitter` persisted on a job from the authenticated principal
+and whatever the client supplied, following this precedence:
+
+1. Submitter is always the principal's username. A client value is discarded
+   silently, never an error — a client asserting its own identity is
+   meaningless rather than hostile, and erroring would break every existing
+   submitter the moment auth is switched on.
+2. Owner defaults to Submitter when the client supplies none.
+3. Owner equal to self (case-insensitive) is accepted; the principal's own
+   canonical casing is stored, not the client's.
+4. Owner other than self requires policy.JobsSubmitAs, else 403.
+
+An owner naming no known user is rejected with 400 when
+`auth.validate_job_owner` is on (the default).
+
 ## Login & sessions
 
 `POST /api/v1/auth/login` takes `{"username", "password"}` and, on success,

@@ -128,10 +128,13 @@ func newUnscopedJobsReq(t *testing.T, target string) *http.Request {
 }
 
 // newJobRouter wires a jobHandler onto a chi router with the same paths as
-// router.go, using the provided store and fakeScheduler.
+// router.go, using the provided store and fakeScheduler. Owner validation is
+// disabled: it is unit-tested directly in submitidentity_test.go, and the many
+// unrelated tests sharing this helper never provision the "bob"/"proxy" style
+// owners they use as real store users.
 func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	sub := openjd.NewSubmitter(st)
-	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults)
+	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults, false)
 	r := chi.NewRouter()
 	r.Post("/api/v1/jobs", h.submitJob)
 	r.Get("/api/v1/jobs", h.listJobs)

@@ -32,6 +32,10 @@ type FlagOverrides struct {
 	// AuthEnabled overrides Auth.Enabled when non-nil. Bound to --auth-enabled.
 	// A pointer so an unset flag leaves the lower layers intact.
 	AuthEnabled *bool
+	// ValidateJobOwner overrides Auth.ValidateJobOwner when non-nil. Bound to
+	// --auth-validate-job-owner. A pointer so an unset flag leaves the lower
+	// layers intact.
+	ValidateJobOwner *bool
 }
 
 // defaultSearchPaths returns the ordered list of config file locations
@@ -147,8 +151,9 @@ type fileConfig struct {
 	} `yaml:"preset_library"`
 
 	Auth *struct {
-		Enabled *bool `yaml:"enabled"`
-		Session *struct {
+		Enabled          *bool `yaml:"enabled"`
+		ValidateJobOwner *bool `yaml:"validate_job_owner"`
+		Session          *struct {
 			TTL          *string `yaml:"ttl"`
 			CookieName   *string `yaml:"cookie_name"`
 			CookieSecure *string `yaml:"cookie_secure"`
@@ -371,6 +376,9 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 	if fc.Auth.Enabled != nil {
 		cfg.Auth.Enabled = *fc.Auth.Enabled
 	}
+	if fc.Auth.ValidateJobOwner != nil {
+		cfg.Auth.ValidateJobOwner = *fc.Auth.ValidateJobOwner
+	}
 	mergeAuthSessionFile(cfg, fc.Auth.Session)
 	mergeAuthBootstrapFile(cfg, fc.Auth.Bootstrap)
 }
@@ -456,6 +464,7 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
 
 	setBool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED")
+	setBool(&cfg.Auth.ValidateJobOwner, "SQI_AUTH_VALIDATE_JOB_OWNER")
 	setDuration(&cfg.Auth.Session.TTL, "SQI_AUTH_SESSION_TTL")
 	setString(&cfg.Auth.Session.CookieName, "SQI_AUTH_SESSION_COOKIE_NAME")
 	setString(&cfg.Auth.Session.CookieSecure, "SQI_AUTH_SESSION_COOKIE_SECURE")
@@ -513,5 +522,8 @@ func applyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.AuthEnabled != nil {
 		cfg.Auth.Enabled = *f.AuthEnabled
+	}
+	if f.ValidateJobOwner != nil {
+		cfg.Auth.ValidateJobOwner = *f.ValidateJobOwner
 	}
 }

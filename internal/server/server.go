@@ -120,6 +120,11 @@ type Config struct {
 	// authenticator instead of the anonymous one. Default false.
 	AuthEnabled bool
 
+	// AuthValidateJobOwner mirrors config.AuthConfig.ValidateJobOwner: when
+	// true, a submit-as owner override must name a known user, else 400.
+	// Default true.
+	AuthValidateJobOwner bool
+
 	// AuthSessionTTL mirrors config.AuthConfig.Session.TTL: the absolute
 	// lifetime of sessions minted by POST /auth/login. Only consulted when
 	// AuthEnabled is true.
@@ -380,6 +385,7 @@ func (s *Server) start(ctx context.Context) error {
 			DisableRateLimit:       s.cfg.DisableRateLimit,
 			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
 			AuthEnabled:            s.cfg.AuthEnabled,
+			ValidateJobOwner:       s.cfg.AuthValidateJobOwner,
 		},
 		deps,
 		s.logger,

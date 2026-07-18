@@ -90,6 +90,11 @@ type Config struct {
 	// (OriginPatterns instead of InsecureSkipVerify). When false, all three
 	// are byte-for-byte unchanged from pre-A1 behavior.
 	AuthEnabled bool
+
+	// ValidateJobOwner mirrors config.AuthConfig.ValidateJobOwner: when true,
+	// a submit-as owner override on POST /jobs and POST /products/{name}/jobs
+	// must name a known user, else 400. Default true.
+	ValidateJobOwner bool
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -276,7 +281,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults)
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults, cfg.ValidateJobOwner)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	// Pass the hub as a notifier only when non-nil so the worker handler's
 	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
@@ -290,7 +295,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger)
+	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger, cfg.ValidateJobOwner)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)

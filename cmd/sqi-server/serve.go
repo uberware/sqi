@@ -22,9 +22,10 @@ import (
 
 // serveFlags holds values for flags specific to the serve subcommand.
 var serveFlags struct {
-	HTTPAddr            string
-	OpenJDEnforceLimits bool
-	AuthEnabled         bool
+	HTTPAddr             string
+	OpenJDEnforceLimits  bool
+	AuthEnabled          bool
+	AuthValidateJobOwner bool
 }
 
 var serveCmd = &cobra.Command{
@@ -55,6 +56,12 @@ func init() {
 		"auth-enabled", false,
 		"enable the authentication gate (overrides config file and SQI_AUTH_ENABLED)",
 	)
+	serveCmd.Flags().BoolVar(
+		&serveFlags.AuthValidateJobOwner,
+		"auth-validate-job-owner", true,
+		"reject a job submission whose owner names no known user "+
+			"(overrides config file and SQI_AUTH_VALIDATE_JOB_OWNER)",
+	)
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -68,6 +75,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if cmd.Flags().Changed("auth-enabled") {
 		overrides.AuthEnabled = &serveFlags.AuthEnabled
+	}
+	if cmd.Flags().Changed("auth-validate-job-owner") {
+		overrides.ValidateJobOwner = &serveFlags.AuthValidateJobOwner
 	}
 	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
 	if err != nil {
@@ -140,6 +150,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		EnforceOpenJDLimits:   cfg.OpenJD.EnforceLimits,
 		PresetLibraryURL:      cfg.PresetLibrary.URL,
 		AuthEnabled:           cfg.Auth.Enabled,
+		AuthValidateJobOwner:  cfg.Auth.ValidateJobOwner,
 		AuthSessionTTL:        cfg.Auth.Session.TTL,
 		AuthCookieName:        cfg.Auth.Session.CookieName,
 		AuthCookieSecure:      cfg.Auth.Session.CookieSecure,

@@ -60,6 +60,9 @@ type jobHandler struct {
 	// the resolved effective_retry in job detail responses. The zero value is
 	// tolerated (resolution clamps max attempts up to 1).
 	retryDefaults scheduler.RetryPolicy
+	// ownerLookup validates a submit-as owner override against known users.
+	// Nil disables validation (auth.validate_job_owner = false).
+	ownerLookup ownerLookup
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -189,7 +192,8 @@ type patchJobRequest struct {
 // ── Handler constructors ──────────────────────────────────────────────────────
 
 // newJobHandler returns a jobHandler wired to the given store, submitter,
-// scheduler, and optional notifier.
+// scheduler, and optional notifier. validateOwner controls whether a submit-as
+// owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
 func newJobHandler(
 	st store.Store,
 	sub *openjd.Submitter,
@@ -197,6 +201,7 @@ func newJobHandler(
 	notifier ws.Notifier,
 	logger *slog.Logger,
 	retryDefaults scheduler.RetryPolicy,
+	validateOwner bool,
 ) *jobHandler {
 	return &jobHandler{
 		store:         st,
@@ -205,6 +210,7 @@ func newJobHandler(
 		notifier:      notifier,
 		logger:        logger,
 		retryDefaults: retryDefaults,
+		ownerLookup:   newOwnerLookup(st, validateOwner),
 	}
 }
 
@@ -255,7 +261,7 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(
-		ctx, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
+		ctx, h.ownerLookup, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
 	)
 	if identityStatus != 0 {
 		writeProblem(w, r, identityStatus, identityProblem)
