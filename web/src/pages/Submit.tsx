@@ -12,6 +12,8 @@ import { useSubmitJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { detectFormat } from '@/lib/format'
 import { parseOptionalInt } from '@/lib/parse'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import type { TemplateFormat } from '@/api/types'
 import styles from './Submit.module.css'
 
@@ -80,6 +82,9 @@ function persistQueueId(id: string): void {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Submit() {
+  const { principal } = useAuth()
+  const maySubmitAs = can(principal, 'jobs.submit_as')
+
   const {
     data: farmsWithQueues,
     isLoading: queuesLoading,
@@ -154,13 +159,8 @@ export default function Submit() {
           queueId: selectedQueue.id,
           template,
           format,
-          // TODO(web): this raw-template page is not yet permission-gated on
-          // jobs.submit_as (see docs/web-development.md Role gating) — it
-          // still unconditionally offers owner/submitter, same as before this
-          // change. maySubmitAs is passed as true here only to preserve that
-          // pre-existing behavior against the now-gated mutation contract.
-          maySubmitAs: true,
-          ...(trimmedOwner ? { owner: trimmedOwner } : {}),
+          maySubmitAs,
+          ...(maySubmitAs && trimmedOwner ? { owner: trimmedOwner } : {}),
           ...(parsedPriority !== undefined ? { priority: parsedPriority } : {}),
           ...(trimmedProject ? { project: trimmedProject } : {}),
           ...(parsedMaxAttempts !== undefined ? { maxAttempts: parsedMaxAttempts } : {}),
@@ -180,6 +180,7 @@ export default function Submit() {
       selectedQueue,
       template,
       owner,
+      maySubmitAs,
       priority,
       project,
       maxAttempts,
@@ -246,20 +247,22 @@ export default function Submit() {
               <h2 className={styles.sectionTitle}>Job Metadata</h2>
               <p className={styles.sectionNote}>All fields are optional.</p>
 
-              <div className={styles.field}>
-                <label htmlFor="owner" className={styles.label}>
-                  Owner
-                </label>
-                <input
-                  id="owner"
-                  type="text"
-                  className={styles.input}
-                  value={owner}
-                  onChange={(e) => setOwner(e.target.value)}
-                  placeholder="username"
-                  autoComplete="username"
-                />
-              </div>
+              {maySubmitAs && (
+                <div className={styles.field}>
+                  <label htmlFor="owner" className={styles.label}>
+                    Owner
+                  </label>
+                  <input
+                    id="owner"
+                    type="text"
+                    className={styles.input}
+                    value={owner}
+                    onChange={(e) => setOwner(e.target.value)}
+                    placeholder="username"
+                    autoComplete="username"
+                  />
+                </div>
+              )}
 
               <div className={styles.field}>
                 <label htmlFor="priority" className={styles.label}>
