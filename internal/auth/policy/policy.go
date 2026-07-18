@@ -10,6 +10,7 @@
 package policy
 
 import (
+	"maps"
 	"sort"
 
 	"github.com/uberware/sqi/internal/auth"
@@ -104,9 +105,7 @@ func Roles() map[string]map[Permission]bool {
 	out := make(map[string]map[Permission]bool, len(grants))
 	for role, perms := range grants {
 		permsCopy := make(map[Permission]bool, len(perms))
-		for perm, ok := range perms {
-			permsCopy[perm] = ok
-		}
+		maps.Copy(permsCopy, perms)
 		out[role] = permsCopy
 	}
 	return out
