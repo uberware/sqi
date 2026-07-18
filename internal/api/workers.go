@@ -12,9 +12,11 @@ package api
 //	POST /api/v1/workers/{id}/enable — re-enable a disabled worker
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -230,19 +232,52 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 			slog.String("worker_id", id), slog.Any("error", err))
 		// Non-fatal: return the worker without active tasks rather than 500.
 	} else {
-		resp.CurrentTasks = make([]currentTaskResponse, len(taskPage.Items))
-		for i, t := range taskPage.Items {
-			resp.CurrentTasks[i] = currentTaskResponse{
-				ID:         t.ID,
-				JobID:      t.JobID,
-				Name:       t.Name,
-				Status:     string(t.Status),
-				AssignedAt: t.AssignedAt,
-			}
-		}
+		resp.CurrentTasks = h.visibleCurrentTasks(ctx, taskPage.Items)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// visibleCurrentTasks converts tasks to currentTaskResponse, dropping any
+// task whose parent job the caller does not own when the caller is
+// owner-scoped (lacks jobs.read.all). A worker runs few concurrent tasks at
+// once, so the per-job owner lookups here (deduped by job id) are cheap; an
+// unscoped caller (including the auth-off anonymous superuser) pays no extra
+// lookups at all and sees every task exactly as before B2.
+func (h *workerHandler) visibleCurrentTasks(ctx context.Context, tasks []store.Task) []currentTaskResponse {
+	owner, scoped := scopeFilter(ctx)
+
+	out := make([]currentTaskResponse, 0, len(tasks))
+	jobOwners := make(map[string]string, len(tasks))
+	for _, t := range tasks {
+		if scoped {
+			jobOwner, ok := jobOwners[t.JobID]
+			if !ok {
+				job, err := h.store.GetJob(ctx, t.JobID)
+				if err != nil {
+					// Job vanished or failed to load: fail closed and omit
+					// the task rather than risk leaking another owner's data.
+					h.logger.WarnContext(ctx, "workers: current-task owner lookup failed",
+						slog.String("job_id", t.JobID), slog.Any("error", err))
+					jobOwners[t.JobID] = ""
+					continue
+				}
+				jobOwner = job.Owner
+				jobOwners[t.JobID] = jobOwner
+			}
+			if jobOwner == "" || !strings.EqualFold(jobOwner, owner) {
+				continue
+			}
+		}
+		out = append(out, currentTaskResponse{
+			ID:         t.ID,
+			JobID:      t.JobID,
+			Name:       t.Name,
+			Status:     string(t.Status),
+			AssignedAt: t.AssignedAt,
+		})
+	}
+	return out
 }
 
 // ── POST /api/v1/workers/{id}/disable ────────────────────────────────────────
