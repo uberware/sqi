@@ -79,7 +79,8 @@ func (a *authz) requireJobAccess() func(http.Handler) http.Handler {
 				return
 			}
 
-			a.logger.WarnContext(r.Context(), "authz: job ownership denied",
+			a.logger.WarnContext(
+				r.Context(), "authz: job ownership denied",
 				slog.String("job_id", job.ID),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),

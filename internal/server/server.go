@@ -314,7 +314,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── WebSocket hub ────────────────────────────────────────
 	// The hub bridges scheduler events to subscribed WebSocket clients.
 	// It is created before the scheduler so it can be passed as the notifier.
-	s.wsHub = ws.NewHub(s.logger)
+	s.wsHub = ws.NewHub(s.logger, wsJobOwnerResolver(st))
 	s.logger.InfoContext(ctx, "ws: hub created")
 
 	// Wire the diagnostic buffer's notifier to the hub now that the hub exists,
@@ -428,6 +428,19 @@ func (s *Server) start(ctx context.Context) error {
 	s.discovery = resp
 
 	return nil
+}
+
+// wsJobOwnerResolver returns a jobID → owner lookup for [ws.NewHub], backed by
+// st. Job ownership is immutable, so the hub caches results; a failed lookup
+// returns "" and fails closed for scoped clients.
+func wsJobOwnerResolver(st store.Store) func(jobID string) string {
+	return func(jobID string) string {
+		job, err := st.GetJob(context.Background(), jobID)
+		if err != nil {
+			return ""
+		}
+		return job.Owner
+	}
 }
 
 // selectAuth chooses the authenticator wired into the HTTP router. When auth

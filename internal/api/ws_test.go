@@ -41,6 +41,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
 	internalws "github.com/uberware/sqi/internal/ws"
 )
 
@@ -52,7 +54,7 @@ import (
 // hub may be nil when the test does not need fan-out.
 func newWSTestServer(t *testing.T, hub *internalws.Hub) *httptest.Server {
 	t.Helper()
-	h := newWSHandler(newTestLogger(), hub, auth.Anonymous(), wsOriginConfig{})
+	h := newWSHandler(newTestLogger(), hub, fake.New(), auth.Anonymous(), wsOriginConfig{})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -62,7 +64,7 @@ func newWSTestServer(t *testing.T, hub *internalws.Hub) *httptest.Server {
 // the given origin config, for tests exercising OriginPatterns enforcement.
 func newWSTestServerWithOrigin(t *testing.T, hub *internalws.Hub, origin wsOriginConfig) *httptest.Server {
 	t.Helper()
-	h := newWSHandler(newTestLogger(), hub, auth.Anonymous(), origin)
+	h := newWSHandler(newTestLogger(), hub, fake.New(), auth.Anonymous(), origin)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -89,7 +91,20 @@ func (s stubPrincipalAuthenticator) Authenticate(*http.Request) (auth.Principal,
 // gates.
 func newWSTestServerWithPrincipal(t *testing.T, hub *internalws.Hub, principal auth.Principal) *httptest.Server {
 	t.Helper()
-	h := newWSHandler(newTestLogger(), hub, stubPrincipalAuthenticator{principal: principal}, wsOriginConfig{})
+	h := newWSHandler(newTestLogger(), hub, fake.New(), stubPrincipalAuthenticator{principal: principal}, wsOriginConfig{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newWSTestServerScoped starts a ws server authenticated as principal and
+// backed by st, for tests exercising job-ownership scoping.
+func newWSTestServerScoped(
+	t *testing.T, hub *internalws.Hub, st store.Store, principal auth.Principal,
+) *httptest.Server {
+	t.Helper()
+	h := newWSHandler(newTestLogger(), hub, st,
+		stubPrincipalAuthenticator{principal: principal}, wsOriginConfig{})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -166,10 +181,22 @@ func mustAck(t *testing.T, ctx context.Context, conn *websocket.Conn, clientSeq 
 	return ack
 }
 
+// ackError decodes env's AckPayload and returns its Error field.  Callers that
+// already know env is a TypeAck (via wsRead) use this instead of mustAck when
+// the expected ClientSeq is not the point of the assertion.
+func ackError(t *testing.T, env internalws.Envelope) string {
+	t.Helper()
+	var ack internalws.AckPayload
+	if err := json.Unmarshal(env.Payload, &ack); err != nil {
+		t.Fatalf("unmarshal AckPayload: %v", err)
+	}
+	return ack.Error
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestWS_FailingAuthenticator_Returns401BeforeUpgrade(t *testing.T) {
-	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
+	h := newWSHandler(newTestLogger(), nil, fake.New(), stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
@@ -189,7 +216,7 @@ func TestWS_FailingAuthenticator_Returns401BeforeUpgrade(t *testing.T) {
 // one error contract across both surfaces rather than plain text here and JSON
 // there.
 func TestWS_FailingAuthenticator_WritesProblemDetails(t *testing.T) {
-	h := newWSHandler(newTestLogger(), nil, stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
+	h := newWSHandler(newTestLogger(), nil, fake.New(), stubWSAuthenticator{err: errors.New("bad token")}, wsOriginConfig{})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
@@ -261,7 +288,7 @@ func TestWSHandler_Subscribe_NoHub_ReturnsAck(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_WithHub_ValidSubject(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -296,7 +323,7 @@ func TestWSHandler_Subscribe_MissingSubject_ReturnsError(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_InvalidSubject_ReturnsError(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -323,7 +350,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	readOnly := auth.Principal{Subject: "ro1", Roles: []string{"read-only"}, Kind: auth.KindUser}
 
 	t.Run("operator subscribes ok", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger())
+		hub := internalws.NewHub(newTestLogger(), nil)
 		srv := newWSTestServerWithPrincipal(t, hub, operator)
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -340,7 +367,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	})
 
 	t.Run("read-only forbidden and not registered", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger())
+		hub := internalws.NewHub(newTestLogger(), nil)
 		srv := newWSTestServerWithPrincipal(t, hub, readOnly)
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -369,7 +396,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	})
 
 	t.Run("read-only still allowed on a non-diagnostics subject", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger())
+		hub := internalws.NewHub(newTestLogger(), nil)
 		srv := newWSTestServerWithPrincipal(t, hub, readOnly)
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -386,7 +413,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	})
 
 	t.Run("anonymous superuser subscribes ok", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger())
+		hub := internalws.NewHub(newTestLogger(), nil)
 		srv := newWSTestServer(t, hub) // uses auth.Anonymous(), which is Superuser
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -404,7 +431,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 }
 
 func TestWSHandler_Unsubscribe_ReturnsAck(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -488,7 +515,7 @@ func TestWSHandler_InvalidJSON_ReturnsTypeError(t *testing.T) {
 }
 
 func TestWSHandler_Broadcast_DeliversPush(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -521,7 +548,7 @@ func TestWSHandler_Broadcast_DeliversPush(t *testing.T) {
 }
 
 func TestWSHandler_Broadcast_TaskPushDelivered(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -552,7 +579,7 @@ func TestWSHandler_Broadcast_TaskPushDelivered(t *testing.T) {
 }
 
 func TestWSHandler_NoPushAfterUnsubscribe(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 	ctx := context.Background()
 	conn := dialTestWS(t, srv)
@@ -574,7 +601,7 @@ func TestWSHandler_NoPushAfterUnsubscribe(t *testing.T) {
 }
 
 func TestWSHandler_Disconnect_HubNotifyDoesNotBlock(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 	ctx := context.Background()
 	conn := dialTestWS(t, srv)
@@ -606,7 +633,7 @@ func TestWSHandler_Disconnect_HubNotifyDoesNotBlock(t *testing.T) {
 }
 
 func TestWSHandler_MultipleClients_IndependentSubscriptions(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -639,7 +666,7 @@ func TestWSHandler_MultipleClients_IndependentSubscriptions(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_SinceSeq_ReplayDelivered(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -707,7 +734,7 @@ func TestWSHandler_BinaryFrame_ClosesConnection(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_MalformedPayload_ReturnsError(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -814,7 +841,7 @@ func TestWSHandler_OriginHardening_AuthOff_AnyOriginAllowed(t *testing.T) {
 func TestWSHandler_Subscribe_TaskLogs_PushDelivered(t *testing.T) {
 	// Subscribing to "tasks/{id}/logs" (SubjectTaskLogsFmt) and receiving a
 	// NotifyLog event covers the log-channel fan-out path in ws.go.
-	hub := internalws.NewHub(newTestLogger())
+	hub := internalws.NewHub(newTestLogger(), nil)
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -848,5 +875,147 @@ func TestWSHandler_Subscribe_TaskLogs_PushDelivered(t *testing.T) {
 	}
 	if env.Seq == 0 {
 		t.Error("push envelope must have a non-zero Seq")
+	}
+}
+
+// A scoped client must not be able to subscribe to another owner's per-job
+// task stream or task log stream.
+func TestWSSubscribeJobSubjectsEnforceOwnership(t *testing.T) {
+	tests := []struct {
+		name      string
+		subject   string
+		principal auth.Principal
+		wantErr   string
+	}{
+		{
+			name:      "per-job task subject for another owner is refused",
+			subject:   "jobs/job-bob/tasks",
+			principal: auth.Principal{Username: "alice", Roles: []string{"user"}},
+			wantErr:   "forbidden: not your job",
+		},
+		{
+			name:      "task log subject for another owner is refused",
+			subject:   "tasks/task-bob/logs",
+			principal: auth.Principal{Username: "alice", Roles: []string{"user"}},
+			wantErr:   "forbidden: not your job",
+		},
+		{
+			name:      "own job is allowed",
+			subject:   "jobs/job-alice/tasks",
+			principal: auth.Principal{Username: "alice", Roles: []string{"user"}},
+			wantErr:   "",
+		},
+		{
+			name:      "operator reaches any job",
+			subject:   "jobs/job-bob/tasks",
+			principal: auth.Principal{Username: "carol", Roles: []string{"operator"}},
+			wantErr:   "",
+		},
+		{
+			name:      "anonymous superuser is unrestricted (auth-off regression)",
+			subject:   "jobs/job-bob/tasks",
+			principal: auth.Principal{Superuser: true, Kind: auth.KindAnonymous},
+			wantErr:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			seedOwnedJob(t, st, "job-bob", "bob")
+			seedOwnedJob(t, st, "job-alice", "alice")
+			if _, err := st.CreateTask(t.Context(), store.Task{
+				ID: "task-bob", JobID: "job-bob", Status: store.TaskStatusReady,
+			}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			hub := internalws.NewHub(newTestLogger(), nil)
+			srv := newWSTestServerScoped(t, hub, st, tt.principal)
+			conn := dialTestWS(t, srv)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			wsWrite(t, ctx, conn, internalws.Envelope{
+				Type:    internalws.TypeSubscribe,
+				Subject: tt.subject,
+				Seq:     1,
+			})
+
+			ack := wsRead(t, ctx, conn)
+			if ack.Type != internalws.TypeAck {
+				t.Fatalf("type = %q, want %q", ack.Type, internalws.TypeAck)
+			}
+			gotErr := ackError(t, ack)
+			if gotErr != tt.wantErr {
+				t.Errorf("ack error = %q, want %q", gotErr, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestWSSubscribeJobSubjects_NoStoreFailsClosed pins the fail-closed
+// requirement that a scoped client whose connection has no store wired
+// (wc.store == nil) must be refused a per-job subscription rather than
+// granted it — the ownership check has nothing to consult, so it must not
+// default to allow.
+func TestWSSubscribeJobSubjects_NoStoreFailsClosed(t *testing.T) {
+	hub := internalws.NewHub(newTestLogger(), nil)
+	h := newWSHandler(newTestLogger(), hub, nil,
+		stubPrincipalAuthenticator{principal: auth.Principal{Username: "alice", Roles: []string{"user"}}},
+		wsOriginConfig{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	conn := dialTestWS(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsWrite(t, ctx, conn, internalws.Envelope{
+		Type:    internalws.TypeSubscribe,
+		Subject: "jobs/job-alice/tasks",
+		Seq:     1,
+	})
+
+	ack := wsRead(t, ctx, conn)
+	gotErr := ackError(t, ack)
+	if gotErr != "forbidden: not your job" {
+		t.Errorf("ack error = %q, want %q (nil store must fail closed)", gotErr, "forbidden: not your job")
+	}
+}
+
+// TestWSSubscribeJobSubjects_UnresolvableJobFailsClosed pins the fail-closed
+// requirement that a scoped client subscribing to a subject whose job/task
+// does not exist (owner cannot be resolved) is refused, not granted access.
+func TestWSSubscribeJobSubjects_UnresolvableJobFailsClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+	}{
+		{name: "missing job", subject: "jobs/does-not-exist/tasks"},
+		{name: "missing task", subject: "tasks/does-not-exist/logs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			hub := internalws.NewHub(newTestLogger(), nil)
+			srv := newWSTestServerScoped(t, hub, st, auth.Principal{Username: "alice", Roles: []string{"user"}})
+			conn := dialTestWS(t, srv)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			wsWrite(t, ctx, conn, internalws.Envelope{
+				Type:    internalws.TypeSubscribe,
+				Subject: tt.subject,
+				Seq:     1,
+			})
+
+			ack := wsRead(t, ctx, conn)
+			gotErr := ackError(t, ack)
+			if gotErr != "forbidden: not your job" {
+				t.Errorf("ack error = %q, want %q (unresolvable job/task must fail closed)", gotErr, "forbidden: not your job")
+			}
+		})
 	}
 }

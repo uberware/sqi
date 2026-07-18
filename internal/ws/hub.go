@@ -358,21 +358,23 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 		now = time.Now().UTC()
 	}
 
-	// Job-summary push (SubjectJobs) — skip marshal when no subscribers.
-	if h.hasSubscribers(SubjectJobs) {
-		env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
-			JobID:     e.JobID,
-			TaskID:    e.TaskID,
-			Status:    e.Status,
-			UpdatedAt: now,
-		})
-		if err == nil {
-			env.ownerScoped = true
-			env.owner = h.owners.get(e.JobID)
-			h.fanout(SubjectJobs, env)
-		} else {
-			h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
-		}
+	// Job-summary push (SubjectJobs) — always ring it (like NotifyJob), even
+	// when no clients are currently subscribed: a scoped client that
+	// subscribes moments later must be able to replay it via since_seq: 0 and
+	// have it filtered by Scope.allows, rather than have it silently never
+	// buffered.
+	env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
+		JobID:     e.JobID,
+		TaskID:    e.TaskID,
+		Status:    e.Status,
+		UpdatedAt: now,
+	})
+	if err == nil {
+		env.ownerScoped = true
+		env.owner = h.owners.get(e.JobID)
+		h.fanout(SubjectJobs, env)
+	} else {
+		h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
 	}
 
 	// Per-job task-update push — skip marshal when no subscribers.

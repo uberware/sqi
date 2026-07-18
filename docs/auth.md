@@ -146,6 +146,11 @@ and whatever the client supplied, following this precedence:
 An owner naming no known user is rejected with 400 when
 `auth.validate_job_owner` is on (the default).
 
+WebSocket delivery is scoped the same way as REST. Per-job subjects
+(`jobs/{id}/tasks`, `tasks/{id}/logs`) are authorized once at subscribe time;
+the global `jobs` subject is filtered per event. A client that cannot resolve a
+job's owner receives nothing for it rather than everything.
+
 ## Login & sessions
 
 `POST /api/v1/auth/login` takes `{"username", "password"}` and, on success,

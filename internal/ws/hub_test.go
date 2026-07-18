@@ -272,6 +272,32 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 	}
 }
 
+// NotifyTask's SubjectJobs push must be buffered in the ring even when nobody
+// is subscribed at emit time, matching NotifyJob's behavior — otherwise
+// SubjectJobs replay history is complete for job-status events but silently
+// incomplete for task-summary events emitted while nobody was subscribed.
+func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
+	h := newTestHub()
+
+	// Fire with NO active SubjectJobs subscribers — previously this was a
+	// no-op for the SubjectJobs push because of a hasSubscribers guard.
+	h.NotifyTask(TaskEvent{JobID: "job-no-sub", TaskID: "t1", Status: "running"})
+
+	// Late subscriber with since_seq=0 must receive the buffered push as replay.
+	ch := h.Register("c1", Scope{All: true})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("did not receive replayed SubjectJobs push after late subscribe with since_seq=0")
+	}
+	if env.Subject != SubjectJobs {
+		t.Fatalf("expected subject %q, got %q", SubjectJobs, env.Subject)
+	}
+}
+
 // NotifyJob (a genuine job-status change) must NOT carry a task_id, so list
 // subscribers classify it as a job-status event rather than a task event.
 func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {

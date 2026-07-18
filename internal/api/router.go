@@ -304,7 +304,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)
 
-	wsH := newWSHandler(logger, deps.Hub, deps.Auth, wsOriginConfig{
+	wsH := newWSHandler(logger, deps.Hub, deps.Store, deps.Auth, wsOriginConfig{
 		Enabled:        cfg.AuthEnabled,
 		AllowedOrigins: origins,
 	})
