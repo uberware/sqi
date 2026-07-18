@@ -7,6 +7,7 @@ package api
 // case) exercises the router with auth disabled to confirm the gate is inert.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -359,6 +360,200 @@ func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
 			if resp.StatusCode == http.StatusForbidden {
 				t.Errorf("%s %s: got 403 with auth disabled; anonymous superuser must bypass every gate", e.method, path)
 			}
+		})
+	}
+}
+
+// ── ownership sweep ──────────────────────────────────────────────────────────
+//
+// TestAuthz_RouteSweep_EnforcesPermissionsPerRole above proves permission
+// membership only: it drives placeholder ids ("/api/v1/jobs/zzz") with no
+// seeded job and no owner, so it cannot observe per-object ownership — a
+// role that HOLDS the route's permission but is owner-scoped (e.g. `user`)
+// hits a 404 either way, before or after requireJobAccess runs, and the
+// assertion (403-vs-not) is blind to the difference. A reviewer proved this
+// by sabotage: deleting az.requireJobAccess() from DELETE /jobs/{id} — the
+// exact vulnerability Task 4 closes — left the entire internal/api suite
+// green. TestAuthz_OwnershipSweep_EnforcesOwnerScoping below closes that gap
+// by seeding a REAL job (and task) per owner and asserting a scoped `user`
+// principal gets a non-403 on its own object and a 403 on someone else's,
+// for every one of the 11 job/task object routes requireJobAccess is wired
+// onto in router.go.
+
+// ownershipGatedRoutes is the hardcoded ground truth for every job/task
+// object route that must enforce per-owner access via
+// az.requireJobAccess(), per router.go's jobs.read/jobs.write groups.
+// TestAuthz_OwnershipSweep_TableMatchesRouter diffs it, in both directions,
+// against the object-shaped subset of expectedRoutes — itself already
+// diffed against the live router by TestAuthz_RouteSweep_TableMatchesRouter
+// — so a route rename or a forgotten table update goes loud, not silent.
+var ownershipGatedRoutes = []routeExpectation{
+	// jobs.read
+	{method: http.MethodGet, pattern: "/api/v1/jobs/{id}", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/jobs/{id}/tasks", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/tasks/{id}", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/tasks/{id}/logs", perm: policy.JobsRead},
+	{method: http.MethodGet, pattern: "/api/v1/tasks/{id}/attempts", perm: policy.JobsRead},
+	// jobs.write
+	{method: http.MethodPatch, pattern: "/api/v1/jobs/{id}", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/jobs/{id}/cancel", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/jobs/{id}/retry", perm: policy.JobsWrite},
+	{method: http.MethodDelete, pattern: "/api/v1/jobs/{id}", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/tasks/{id}/retry", perm: policy.JobsWrite},
+	{method: http.MethodPost, pattern: "/api/v1/tasks/{id}/cancel", perm: policy.JobsWrite},
+}
+
+// isJobObjectPattern reports whether pattern addresses a specific job or
+// task object — as opposed to a collection route (GET /jobs) or a creation
+// route with no prior object (POST /jobs, POST /products/{name}/jobs) — by
+// checking for an "{id}" segment directly after "/jobs/" or "/tasks/".
+func isJobObjectPattern(pattern string) bool {
+	return strings.Contains(pattern, "/jobs/{id}") || strings.Contains(pattern, "/tasks/{id}")
+}
+
+// TestAuthz_OwnershipSweep_TableMatchesRouter fails if ownershipGatedRoutes
+// and the jobs.read/jobs.write object-shaped subset of expectedRoutes
+// disagree in either direction, and independently confirms every table
+// entry is still live on the real router — the same two-directional-plus-live
+// pattern TestAuthz_RouteSweep_TableMatchesRouter uses for expectedRoutes
+// itself, so this table cannot silently drift from router.go.
+func TestAuthz_OwnershipSweep_TableMatchesRouter(t *testing.T) {
+	derived := map[routeKey]bool{}
+	for _, e := range expectedRoutes {
+		if (e.perm == policy.JobsRead || e.perm == policy.JobsWrite) && isJobObjectPattern(e.pattern) {
+			derived[routeKey{e.method, e.pattern}] = true
+		}
+	}
+
+	table := map[routeKey]bool{}
+	for _, e := range ownershipGatedRoutes {
+		table[routeKey{e.method, e.pattern}] = true
+	}
+
+	for k := range derived {
+		if !table[k] {
+			t.Errorf("expectedRoutes has job/task object route %s %s with no entry in ownershipGatedRoutes", k.method, k.pattern)
+		}
+	}
+	for k := range table {
+		if !derived[k] {
+			t.Errorf("ownershipGatedRoutes has %s %s but it is not a jobs.read/jobs.write object route in expectedRoutes", k.method, k.pattern)
+		}
+	}
+
+	live := liveRoutes(t, authRouter(fake.New()))
+	for k := range table {
+		if !live[k] {
+			t.Errorf("ownershipGatedRoutes has %s %s but the router no longer registers it", k.method, k.pattern)
+		}
+	}
+}
+
+// ownershipFixture is the job/task status pair seeded for one ownership
+// sweep case.
+type ownershipFixture struct {
+	jobStatus  store.JobStatus
+	taskStatus store.TaskStatus
+}
+
+// ownershipFixtureFor picks a job/task status that lets the route's own
+// eligibility guard answer (404/409/204) before the handler ever reaches
+// h.sched where possible — this test's router (authRouter) leaves
+// Deps.Scheduler nil, same as every other sweep in this file, so a call that
+// actually reaches the scheduler nil-pointer-panics (recovered by chi's
+// Recoverer into a 500). Two routes reach it regardless of status and hit
+// that recovered 500 on their "own" case: POST /api/v1/jobs/{id}/retry
+// (jobs.go retryJob calls h.sched.RetryJob unconditionally once the job is
+// found — no status guard exists) and DELETE /api/v1/jobs/{id} (deleteJob
+// calls h.sched.ReconcileDependents unconditionally after the delete,
+// though the terminal status chosen here does still skip its conditional
+// CancelJob call). Both are tolerated below: a non-403 there still proves
+// the ownership gate let the request through, which is what this sweep
+// checks — it is not asserting the downstream action fully succeeds.
+func ownershipFixtureFor(method, pattern string) ownershipFixture {
+	f := ownershipFixture{jobStatus: store.JobStatusPending, taskStatus: store.TaskStatusReady}
+	switch {
+	case method == http.MethodPost && pattern == "/api/v1/jobs/{id}/cancel":
+		f.jobStatus = store.JobStatusCanceled // idempotent fast-path: no scheduler call
+	case method == http.MethodDelete && pattern == "/api/v1/jobs/{id}":
+		f.jobStatus = store.JobStatusCanceled // terminal: skips the conditional CancelJob call
+	case method == http.MethodPost && pattern == "/api/v1/tasks/{id}/cancel":
+		f.taskStatus = store.TaskStatusSucceeded // terminal: 409 before CancelTask
+	}
+	return f
+}
+
+// seedOwnershipObject creates a job (and a task under it) owned by owner,
+// with IDs unique to idSuffix so each sweep case mutates only its own
+// scratch objects.
+func seedOwnershipObject(t *testing.T, st *fake.Store, idSuffix, owner string, f ownershipFixture) (jobID, taskID string) {
+	t.Helper()
+	jobID = "ownsweep-job-" + idSuffix
+	taskID = "ownsweep-task-" + idSuffix
+	if _, err := st.CreateJob(t.Context(), store.Job{
+		ID: jobID, Name: jobID, Owner: owner, Status: f.jobStatus, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateJob(%s): %v", jobID, err)
+	}
+	if _, err := st.CreateTask(t.Context(), store.Task{
+		ID: taskID, JobID: jobID, Status: f.taskStatus,
+	}); err != nil {
+		t.Fatalf("CreateTask(%s): %v", taskID, err)
+	}
+	return jobID, taskID
+}
+
+// ownershipPath substitutes pattern's "{id}" with the task id when pattern
+// addresses a task object and the job id otherwise, mirroring resolveJob's
+// own classification in jobscope.go.
+func ownershipPath(pattern, jobID, taskID string) string {
+	id := jobID
+	if strings.Contains(pattern, "/tasks/{id}") {
+		id = taskID
+	}
+	return strings.Replace(pattern, "{id}", id, 1)
+}
+
+// assertOwnershipGate drives e twice as alice — a scoped `user` principal —
+// once against a fresh object alice owns (must NOT be 403) and once against
+// a fresh object bob owns (MUST be 403). idx makes the seeded IDs unique per
+// table row so cases sharing a pattern (GET/PATCH/DELETE all use
+// "/api/v1/jobs/{id}") don't collide or mutate each other's fixtures.
+func assertOwnershipGate(t *testing.T, st *fake.Store, srv *httptest.Server, cookie *http.Cookie, idx int, e routeExpectation) {
+	t.Helper()
+	f := ownershipFixtureFor(e.method, e.pattern)
+
+	ownJobID, ownTaskID := seedOwnershipObject(t, st, fmt.Sprintf("own-%d", idx), "ownsweep-alice", f)
+	ownResp := doRequest(t, e.method, srv.URL+ownershipPath(e.pattern, ownJobID, ownTaskID), requestBodyFor(e.method), cookie)
+	defer ownResp.Body.Close()
+	if ownResp.StatusCode == http.StatusForbidden {
+		t.Errorf("alice on her own object (%s %s): got 403, want non-403", e.method, e.pattern)
+	}
+
+	otherJobID, otherTaskID := seedOwnershipObject(t, st, fmt.Sprintf("other-%d", idx), "ownsweep-bob", f)
+	otherResp := doRequest(t, e.method, srv.URL+ownershipPath(e.pattern, otherJobID, otherTaskID), requestBodyFor(e.method), cookie)
+	defer otherResp.Body.Close()
+	if otherResp.StatusCode != http.StatusForbidden {
+		t.Errorf("alice on bob's object (%s %s): got %d, want 403", e.method, e.pattern, otherResp.StatusCode)
+	}
+}
+
+// TestAuthz_OwnershipSweep_EnforcesOwnerScoping is the sabotage-proof sweep:
+// for every route in ownershipGatedRoutes, alice (scoped `user`) must reach
+// her own job/task (non-403) and be refused bob's (403). Removing
+// az.requireJobAccess() from any one route in router.go must fail exactly
+// that route's subtest.
+func TestAuthz_OwnershipSweep_EnforcesOwnerScoping(t *testing.T) {
+	const password = "pw-secret-1"
+	st := fake.New()
+	seedAuthUser(t, st, "ownsweep-alice", password, "user")
+	srv := httptest.NewServer(authRouter(st))
+	t.Cleanup(srv.Close)
+	cookie := loginCookie(t, srv, "ownsweep-alice", password)
+
+	for i, e := range ownershipGatedRoutes {
+		t.Run(e.method+" "+e.pattern, func(t *testing.T) {
+			assertOwnershipGate(t, st, srv, cookie, i, e)
 		})
 	}
 }
