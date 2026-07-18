@@ -355,6 +355,14 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Pagination: pg,
 	}
 
+	// Owner scoping: a principal without jobs.read.all may only see its own
+	// jobs. The forced value OVERRIDES any client-supplied ?owner= rather than
+	// merging with it — a scoped caller aiming the filter at another user gets
+	// its own jobs, not an error and not the other user's.
+	if owner, scoped := scopeFilter(ctx); scoped {
+		opts.Owner = owner
+	}
+
 	page, err := h.store.ListJobs(ctx, opts)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "jobs: list failed", slog.Any("error", err))
