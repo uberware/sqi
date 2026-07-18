@@ -42,4 +42,7 @@ type UserStore interface {
 	DeleteUser(ctx context.Context, id string) error
 	// CountUsers returns the number of users (for the bootstrap gate).
 	CountUsers(ctx context.Context) (int, error)
+	// CountAdmins returns the number of enabled accounts with role "admin"
+	// (used by the last-admin lockout guard).
+	CountAdmins(ctx context.Context) (int, error)
 }

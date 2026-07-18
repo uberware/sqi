@@ -187,6 +187,7 @@ type Store struct {
 	stmtSetUserPassword   *sql.Stmt
 	stmtDeleteUser        *sql.Stmt
 	stmtCountUsers        *sql.Stmt
+	stmtCountAdmins       *sql.Stmt
 
 	// ── sessions ─────────────────────────────────────────────────────────
 	stmtInsertSession         *sql.Stmt
@@ -586,6 +587,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtCountUsers, err = s.prepare(ctx, sqlCountUsers); err != nil {
+		return err
+	}
+	if s.stmtCountAdmins, err = s.prepare(ctx, sqlCountAdmins); err != nil {
 		return err
 	}
 

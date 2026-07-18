@@ -144,3 +144,16 @@ func (s *Store) CountUsers(_ context.Context) (int, error) {
 	defer s.mu.Unlock()
 	return len(s.users), nil
 }
+
+// CountAdmins implements [store.UserStore].
+func (s *Store) CountAdmins(_ context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, u := range s.users {
+		if u.Role == "admin" && !u.Disabled {
+			n++
+		}
+	}
+	return n, nil
+}

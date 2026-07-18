@@ -109,6 +109,42 @@ func TestUserStore_CRUD(t *testing.T) {
 	}
 }
 
+// TestCountAdmins verifies CountAdmins counts only enabled accounts with
+// role "admin" — disabled admins and non-admins are excluded.
+func TestCountAdmins(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+
+			if n, err := st.CountAdmins(ctx); err != nil || n != 0 {
+				t.Fatalf("empty store: CountAdmins = %d, %v; want 0, nil", n, err)
+			}
+
+			active := mkUser("admin")
+			if _, err := st.CreateUser(ctx, active); err != nil {
+				t.Fatalf("CreateUser(active admin): %v", err)
+			}
+
+			disabledAdmin := mkUser("admin")
+			disabledAdmin.Username = "bob-" + uuid.NewString()[:8]
+			disabledAdmin.Disabled = true
+			if _, err := st.CreateUser(ctx, disabledAdmin); err != nil {
+				t.Fatalf("CreateUser(disabled admin): %v", err)
+			}
+
+			operator := mkUser("operator")
+			operator.Username = "carol-" + uuid.NewString()[:8]
+			if _, err := st.CreateUser(ctx, operator); err != nil {
+				t.Fatalf("CreateUser(operator): %v", err)
+			}
+
+			if n, err := st.CountAdmins(ctx); err != nil || n != 1 {
+				t.Fatalf("CountAdmins = %d, %v; want 1, nil", n, err)
+			}
+		})
+	}
+}
+
 // TestUserStore_ListUsers verifies ListUsers returns users ordered
 // case-insensitively by username — matching SQLite's `ORDER BY username`
 // over the `username` column, which is declared COLLATE NOCASE (see
