@@ -245,7 +245,7 @@ func TestRequireJobAccess(t *testing.T) {
 				}))
 
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, jobRequest(t, "/jobs/{id}", "job-1", tt.principal))
+			h.ServeHTTP(rec, jobRequest(t, "/api/v1/jobs/{id}", "job-1", tt.principal))
 
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
@@ -272,11 +272,67 @@ func TestRequireJobAccessViaTask(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, jobRequest(t, "/tasks/{id}", "task-1",
+	h.ServeHTTP(rec, jobRequest(t, "/api/v1/tasks/{id}", "task-1",
 		auth.Principal{Username: "alice", Roles: []string{"user"}}))
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (task belongs to bob's job)", rec.Code)
+	}
+}
+
+// A task route's /logs, /attempts, /retry, /cancel children must also
+// resolve via the task's parent job — not just the bare /tasks/{id} route —
+// since resolveJob matches on the "/tasks/{id}" segment appearing anywhere in
+// the accumulated pattern. Regression test for the bug where the check was a
+// HasPrefix("/tasks/") against RoutePattern(), which is always
+// "/api/v1/tasks/{id}/..." under the real router and therefore never
+// matched, silently routing every task-child request into the job branch
+// instead (GetJob(taskID) -> 404).
+func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
+	st := fake.New()
+	seedOwnedJob(t, st, "job-1", "bob")
+	if _, err := st.CreateTask(context.Background(), store.Task{
+		ID: "task-1", JobID: "job-1", Status: store.TaskStatusReady,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	az := newAuthz(st, slog.New(slog.DiscardHandler))
+
+	h := az.requireJobAccess()(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jobRequest(t, "/api/v1/tasks/{id}/logs", "task-1",
+		auth.Principal{Username: "alice", Roles: []string{"user"}}))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (task belongs to bob's job, resolved via /tasks/{id}/logs)", rec.Code)
+	}
+}
+
+// The only near-collision in the router: /api/v1/jobs/{id}/tasks has no
+// "{id}" segment after "tasks", so it must be resolved as a JOB route (the
+// URL param is a job id), never mistaken for a /tasks/{id} task route (which
+// would wrongly call GetTask on a job id and 404/misclassify ownership).
+func TestRequireJobAccessJobTasksRouteNotConfusedWithTaskRoute(t *testing.T) {
+	st := fake.New()
+	seedOwnedJob(t, st, "job-1", "alice")
+	az := newAuthz(st, slog.New(slog.DiscardHandler))
+
+	reached := false
+	h := az.requireJobAccess()(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			reached = true
+			w.WriteHeader(http.StatusOK)
+		}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jobRequest(t, "/api/v1/jobs/{id}/tasks", "job-1",
+		auth.Principal{Username: "alice", Roles: []string{"user"}}))
+
+	if rec.Code != http.StatusOK || !reached {
+		t.Errorf("status = %d, reached = %v; want 200/reached (job-1 is alice's own job, "+
+			"resolveJob must treat the {id} as a job id here, not attempt GetTask(job-1))", rec.Code, reached)
 	}
 }
 
@@ -291,7 +347,7 @@ func TestRequireJobAccessUnknownJob(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, jobRequest(t, "/jobs/{id}", "nope",
+	h.ServeHTTP(rec, jobRequest(t, "/api/v1/jobs/{id}", "nope",
 		auth.Principal{Username: "alice", Roles: []string{"user"}}))
 
 	if rec.Code != http.StatusNotFound {
@@ -300,7 +356,14 @@ func TestRequireJobAccessUnknownJob(t *testing.T) {
 }
 
 // jobRequest builds a request carrying principal, with chi route context set
-// so RoutePattern() and URLParam("id") resolve the way the router supplies them.
+// so RoutePattern() and URLParam("id") resolve the way the router supplies
+// them. pattern MUST be the full accumulated pattern chi.Walk/RoutePattern()
+// would report for the route (e.g. "/api/v1/tasks/{id}"), not a bare
+// "/tasks/{id}" — every route in this repo is mounted under
+// r.Route("/api/v1", …) (router.go), so RoutePattern() always carries that
+// prefix in production. A bare pattern here would let a HasPrefix-style bug
+// in resolveJob pass silently, exactly as it did before this test helper was
+// fixed to match reality (see TestRequireJobAccessViaTaskChildRoute).
 func jobRequest(t *testing.T, pattern, id string, principal auth.Principal) *http.Request {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)

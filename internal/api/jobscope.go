@@ -91,9 +91,19 @@ func (a *authz) requireJobAccess() func(http.Handler) http.Handler {
 
 // resolveJob loads the job addressed by the request: directly for /jobs/{id}
 // routes, via the task's JobID for /tasks/{id} routes.
+//
+// Routes are mounted under r.Route("/api/v1", …) (router.go), so chi's
+// RoutePattern() returns the accumulated pattern, e.g. "/api/v1/tasks/{id}"
+// — never the bare "/tasks/{id}" a naive prefix check would expect. Matching
+// on "/tasks/{id}" (the object segment, not a path prefix) correctly
+// classifies /api/v1/tasks/{id} and its /logs, /attempts, /retry, /cancel
+// children as task routes, while /api/v1/jobs/{id}/tasks — the only
+// near-collision in the router — does NOT match: it has no "{id}" segment
+// after "tasks", so it falls through to the job branch as intended.
 func (a *authz) resolveJob(r *http.Request) (store.Job, error) {
 	id := chi.URLParam(r, "id")
-	if strings.HasPrefix(chi.RouteContext(r.Context()).RoutePattern(), "/tasks/") {
+	pattern := chi.RouteContext(r.Context()).RoutePattern()
+	if strings.Contains(pattern, "/tasks/{id}") {
 		task, err := a.store.GetTask(r.Context(), id)
 		if err != nil {
 			return store.Job{}, err
