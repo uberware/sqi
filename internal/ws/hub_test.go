@@ -31,7 +31,7 @@ import (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestHub() *Hub {
-	return NewHub(slog.New(slog.DiscardHandler))
+	return NewHub(slog.New(slog.DiscardHandler), nil)
 }
 
 // drainOrTimeout reads one Envelope from ch within d. Returns (env, true) on
@@ -67,13 +67,13 @@ func TestHub_RegisterDeregister(t *testing.T) {
 	h := newTestHub()
 	const id = "client-1"
 
-	ch := h.Register(id)
+	ch := h.Register(id, Scope{All: true})
 	if ch == nil {
 		t.Fatal("Register returned nil channel")
 	}
 
 	// Second call is idempotent: same channel is returned.
-	if got := h.Register(id); got != ch {
+	if got := h.Register(id, Scope{All: true}); got != ch {
 		t.Fatal("second Register returned a different channel")
 	}
 
@@ -96,7 +96,7 @@ func TestHub_RegisterDeregister(t *testing.T) {
 
 func TestHub_Subscribe_InvalidSubject(t *testing.T) {
 	h := newTestHub()
-	h.Register("c1")
+	h.Register("c1", Scope{All: true})
 
 	if err := h.Subscribe("c1", "bad/subject", 0); err == nil {
 		t.Fatal("expected error for unrecognized subject, got nil")
@@ -121,7 +121,7 @@ func TestHub_Subscribe_ValidSubjects(t *testing.T) {
 	for _, subj := range cases {
 		t.Run(subj, func(t *testing.T) {
 			h := newTestHub()
-			h.Register("c1")
+			h.Register("c1", Scope{All: true})
 			if err := h.Subscribe("c1", subj, 0); err != nil {
 				t.Fatalf("unexpected error for subject %q: %v", subj, err)
 			}
@@ -133,8 +133,8 @@ func TestHub_Subscribe_ValidSubjects(t *testing.T) {
 
 func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 	h := newTestHub()
-	jobsCh := h.Register("jobs-client")
-	workersCh := h.Register("workers-client")
+	jobsCh := h.Register("jobs-client", Scope{All: true})
+	workersCh := h.Register("workers-client", Scope{All: true})
 
 	if err := h.Subscribe("jobs-client", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs-client: %v", err)
@@ -173,8 +173,8 @@ func TestHub_NotifyTask_FansToJobsAndTaskSubject(t *testing.T) {
 	const jobID = "job-abc"
 	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, jobID)
 
-	jobsCh := h.Register("c-jobs")
-	taskCh := h.Register("c-tasks")
+	jobsCh := h.Register("c-jobs", Scope{All: true})
+	taskCh := h.Register("c-tasks", Scope{All: true})
 
 	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs: %v", err)
@@ -211,7 +211,7 @@ func TestHub_NotifyTask_JobsPushCarriesTaskID(t *testing.T) {
 	h := newTestHub()
 	const jobID, taskID = "job-abc", "t1"
 
-	jobsCh := h.Register("c-jobs")
+	jobsCh := h.Register("c-jobs", Scope{All: true})
 	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 	const jobID, taskID = "job-abc", "t1"
 	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, jobID)
 
-	taskCh := h.Register("c-tasks")
+	taskCh := h.Register("c-tasks", Scope{All: true})
 	if err := h.Subscribe("c-tasks", taskSubject, 0); err != nil {
 		t.Fatalf("subscribe tasks: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 // subscribers classify it as a job-status event rather than a task event.
 func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {
 	h := newTestHub()
-	jobsCh := h.Register("c-jobs")
+	jobsCh := h.Register("c-jobs", Scope{All: true})
 	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {
 
 func TestHub_NotifyWorker_FansToWorkerSubscribers(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectWorkers, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestHub_NotifyLog_BuffersInRingWithoutSubscribers(t *testing.T) {
 	h.NotifyLog(LogEvent{TaskID: taskID, SeqNum: 1, Stream: "stdout", Data: "buffered\n"})
 
 	// Late subscriber with since_seq=0 must receive the buffered log as replay.
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", logSubject, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestHub_NotifyLog_FansToLogSubscriber(t *testing.T) {
 	const taskID = "task-xyz"
 	logSubject := fmt.Sprintf(SubjectTaskLogsFmt, taskID)
 
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", logSubject, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestHub_NotifyLog_FansToLogSubscriber(t *testing.T) {
 
 func TestHub_Fanout_DropsWhenClientFull(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -401,7 +401,7 @@ done:
 
 func TestHub_Unsubscribe_StopsDelivery(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestHub_Unsubscribe_StopsDelivery(t *testing.T) {
 func TestHub_Unsubscribe_Noop_WhenNotSubscribed(t *testing.T) {
 	t.Parallel() // no shared state; safe to run concurrently
 	h := newTestHub()
-	h.Register("c1")
+	h.Register("c1", Scope{All: true})
 	// Must not panic when client is not subscribed.
 	h.Unsubscribe("c1", SubjectJobs)
 	// Must not panic when client does not exist.
@@ -431,7 +431,7 @@ func TestHub_Unsubscribe_Noop_WhenNotSubscribed(t *testing.T) {
 
 func TestHub_Deregister_RemovesAllSubscriptions(t *testing.T) {
 	h := newTestHub()
-	h.Register("c1")
+	h.Register("c1", Scope{All: true})
 	for _, s := range []string{SubjectJobs, SubjectWorkers} {
 		if err := h.Subscribe("c1", s, 0); err != nil {
 			t.Fatalf("subscribe %q: %v", s, err)
@@ -451,7 +451,7 @@ func TestHub_RingBuffer_ReplaySinceSeq(t *testing.T) {
 	h := newTestHub()
 
 	// Register a throw-away subscriber to drive ring population.
-	trashCh := h.Register("trash")
+	trashCh := h.Register("trash", Scope{All: true})
 	if err := h.Subscribe("trash", SubjectJobs, 0); err != nil {
 		t.Fatalf("trash subscribe: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestHub_RingBuffer_ReplaySinceSeq(t *testing.T) {
 	drainAll(trashCh)
 
 	// New client connects and requests replay since Seq 1 (should receive 2 and 3).
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 1); err != nil {
 		t.Fatalf("subscribe c1: %v", err)
 	}
@@ -490,7 +490,7 @@ done:
 
 func TestHub_RingBuffer_ReplayAllWhenSinceSeqZero(t *testing.T) {
 	h := newTestHub()
-	trashCh := h.Register("trash")
+	trashCh := h.Register("trash", Scope{All: true})
 	if err := h.Subscribe("trash", SubjectJobs, 0); err != nil {
 		t.Fatalf("trash subscribe: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestHub_RingBuffer_ReplayAllWhenSinceSeqZero(t *testing.T) {
 
 	// SinceSeq 0 replays ALL buffered messages (hub seqs start at 1, so every
 	// buffered entry satisfies seq > 0).
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe c1: %v", err)
 	}
@@ -525,7 +525,7 @@ done:
 
 func TestHub_PushSeqIsMonotonicallyIncreasing(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestHub_ConcurrentFanout_NoRace(t *testing.T) {
 	channels := make([]chan Envelope, nClients)
 	for i := range nClients {
 		id := fmt.Sprintf("c%d", i)
-		channels[i] = h.Register(id)
+		channels[i] = h.Register(id, Scope{All: true})
 		if err := h.Subscribe(id, SubjectJobs, 0); err != nil {
 			t.Fatalf("subscribe %s: %v", id, err)
 		}
@@ -643,8 +643,8 @@ func TestSubjectRing_Add_AssignsIncreasingSeq(t *testing.T) {
 }
 
 func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler))
-	ch := h.Register("c1")
+	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -668,8 +668,8 @@ func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
 }
 
 func TestHub_DiagnosticsIsValidSubject(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler))
-	h.Register("c1")
+	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
 		t.Fatalf("diagnostics should be a valid subject: %v", err)
 	}

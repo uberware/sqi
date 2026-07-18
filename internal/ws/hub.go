@@ -133,6 +133,7 @@ type DiagnosticsPush struct {
 // hubClient holds per-connection state owned by the Hub.
 type hubClient struct {
 	id     string
+	scope  Scope
 	sendCh chan Envelope
 }
 
@@ -210,15 +211,22 @@ type Hub struct {
 	clients map[string]*hubClient            // clientID → client
 	subs    map[string]map[string]*hubClient // subject → clientID → client
 	rings   map[string]*subjectRing          // subject → ring buffer
+
+	// owners resolves jobID → owner for envelopes that carry a job id but not
+	// its owner (task events). Never nil after NewHub; its lookup may be.
+	owners *ownerCache
 }
 
-// NewHub creates a Hub ready for use.
-func NewHub(logger *slog.Logger) *Hub {
+// NewHub creates a Hub ready for use. jobOwner resolves a job id to its owner
+// username, used to scope task events; pass nil when ownership cannot be
+// resolved, in which case scoped clients receive no task events (fail closed).
+func NewHub(logger *slog.Logger, jobOwner func(jobID string) string) *Hub {
 	return &Hub{
 		logger:  logger,
 		clients: make(map[string]*hubClient),
 		subs:    make(map[string]map[string]*hubClient),
 		rings:   make(map[string]*subjectRing),
+		owners:  newOwnerCache(jobOwner),
 	}
 }
 
@@ -229,7 +237,7 @@ func NewHub(logger *slog.Logger) *Hub {
 //
 // Calling Register for an already-registered clientID returns the existing
 // send channel without creating a duplicate (idempotent).
-func (h *Hub) Register(clientID string) chan Envelope {
+func (h *Hub) Register(clientID string, scope Scope) chan Envelope {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -238,6 +246,7 @@ func (h *Hub) Register(clientID string) chan Envelope {
 	}
 	c := &hubClient{
 		id:     clientID,
+		scope:  scope,
 		sendCh: make(chan Envelope, clientSendBuf),
 	}
 	h.clients[clientID] = c
@@ -291,9 +300,14 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 	ring := h.ensureRingLocked(subject)
 	h.mu.Unlock()
 
-	// Replay outside the hub lock; ring has its own mutex.
+	// Replay outside the hub lock; ring has its own mutex. The scope check
+	// mirrors fanout's: replay writes directly to the client channel, so
+	// without it every buffered event would bypass filtering.
 	// sinceSeq==0 replays all buffered messages; sinceSeq>0 replays from that cursor.
 	for _, env := range ring.since(sinceSeq) {
+		if !c.scope.allows(env) {
+			continue
+		}
 		select {
 		case c.sendCh <- env:
 		default:
@@ -346,12 +360,15 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 
 	// Job-summary push (SubjectJobs) — skip marshal when no subscribers.
 	if h.hasSubscribers(SubjectJobs) {
-		if env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
+		env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
 			JobID:     e.JobID,
 			TaskID:    e.TaskID,
 			Status:    e.Status,
 			UpdatedAt: now,
-		}); err == nil {
+		})
+		if err == nil {
+			env.ownerScoped = true
+			env.owner = h.owners.get(e.JobID)
 			h.fanout(SubjectJobs, env)
 		} else {
 			h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
@@ -415,10 +432,12 @@ func (h *Hub) NotifyLog(e LogEvent) {
 }
 
 // NotifyJob fans a job-status change to all SubjectJobs subscribers.
+//
+// The envelope is always stored in the ring buffer (like NotifyLog), even
+// when no clients are currently subscribed: a scoped client that subscribes
+// moments later must be able to replay it via since_seq: 0 and have it
+// filtered by Scope.allows, rather than have it silently never buffered.
 func (h *Hub) NotifyJob(e JobEvent) {
-	if !h.hasSubscribers(SubjectJobs) {
-		return
-	}
 	now := e.UpdatedAt
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -435,6 +454,8 @@ func (h *Hub) NotifyJob(e JobEvent) {
 		h.logger.WarnContext(context.Background(), "ws: hub: NotifyJob envelope", slog.Any("error", err))
 		return
 	}
+	env.ownerScoped = true
+	env.owner = e.Owner
 	h.fanout(SubjectJobs, env)
 }
 
@@ -493,6 +514,9 @@ func (h *Hub) fanout(subject string, env Envelope) {
 	h.mu.RUnlock()
 
 	for _, c := range clients {
+		if !c.scope.allows(env) {
+			continue
+		}
 		select {
 		case c.sendCh <- env:
 		default:
