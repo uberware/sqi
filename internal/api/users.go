@@ -13,6 +13,7 @@ package api
 //	DELETE /api/v1/users/{id}         — delete
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -134,11 +135,12 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	u, err := h.store.GetUser(ctx, id)
+	orig, err := h.store.GetUser(ctx, id)
 	if err != nil {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
+	u := orig
 	if req.DisplayName != nil {
 		u.DisplayName = *req.DisplayName
 	}
@@ -151,6 +153,13 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Disabled != nil {
 		u.Disabled = *req.Disabled
+	}
+	if last, err := h.wouldRemoveLastAdmin(ctx, orig, u.Role == "admin" && !u.Disabled); err != nil {
+		h.notFoundOr500(w, r, err, "update")
+		return
+	} else if last {
+		writeProblem(w, r, http.StatusConflict, "cannot remove the last admin")
+		return
 	}
 	updated, err := h.store.UpdateUser(ctx, u)
 	if err != nil {
@@ -182,11 +191,42 @@ func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *usersHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.store.DeleteUser(r.Context(), chi.URLParam(r, "id")); err != nil {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+	target, err := h.store.GetUser(ctx, id)
+	if err != nil {
+		h.notFoundOr500(w, r, err, "delete")
+		return
+	}
+	if last, err := h.wouldRemoveLastAdmin(ctx, target, false); err != nil {
+		h.notFoundOr500(w, r, err, "delete")
+		return
+	} else if last {
+		writeProblem(w, r, http.StatusConflict, "cannot remove the last admin")
+		return
+	}
+	if err := h.store.DeleteUser(ctx, id); err != nil {
 		h.notFoundOr500(w, r, err, "delete")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// wouldRemoveLastAdmin reports whether changing/removing target would drop the
+// enabled-admin count to zero. isStillAdmin is the target's admin status AFTER
+// the pending change (false for delete, disable, or demotion away from admin).
+func (h *usersHandler) wouldRemoveLastAdmin(ctx context.Context, target store.User, isStillAdmin bool) (bool, error) {
+	if target.Role != "admin" || target.Disabled {
+		return false, nil // target isn't a live admin; removing it changes nothing
+	}
+	if isStillAdmin {
+		return false, nil // still a live admin after the change
+	}
+	n, err := h.store.CountAdmins(ctx)
+	if err != nil {
+		return false, err
+	}
+	return n <= 1, nil
 }
 
 func (h *usersHandler) notFoundOr500(w http.ResponseWriter, r *http.Request, err error, verb string) {

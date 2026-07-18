@@ -386,6 +386,63 @@ func TestDeleteUser_NotFound(t *testing.T) {
 	}
 }
 
+// ── last-admin lockout guard ─────────────────────────────────────────────────
+
+func TestDeleteUser_LastAdminRejected(t *testing.T) {
+	st := fake.New()
+	admin := seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newAuthTestServer(t, st)
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodDelete, srv.URL+"/api/v1/users/"+admin.ID, nil, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete last admin: status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestDeleteUser_NonLastAdminSucceeds(t *testing.T) {
+	st := fake.New()
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	second := seedAuthUser(t, st, "root2", "hunter2!", "admin")
+	srv := newAuthTestServer(t, st)
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodDelete, srv.URL+"/api/v1/users/"+second.ID, nil, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete non-last admin: status = %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestUpdateUser_DemoteLastAdminRejected(t *testing.T) {
+	st := fake.New()
+	admin := seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newAuthTestServer(t, st)
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	body := map[string]any{"role": "operator"}
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+admin.ID, body, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("demote last admin: status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestUpdateUser_DisableLastAdminRejected(t *testing.T) {
+	st := fake.New()
+	admin := seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newAuthTestServer(t, st)
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	body := map[string]any{"disabled": true}
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+admin.ID, body, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("disable last admin: status = %d, want 409", resp.StatusCode)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // loginCookie logs username/pw in against srv and returns the resulting
