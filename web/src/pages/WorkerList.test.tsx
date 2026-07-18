@@ -28,12 +28,14 @@ const OPERATOR_PRINCIPAL: Principal = {
   display_name: 'Operator',
   roles: ['operator'],
   kind: 'user',
+  permissions: [],
 }
 const READONLY_PRINCIPAL: Principal = {
   subject: 'u-readonly',
   display_name: 'Read Only',
   roles: ['read-only'],
   kind: 'user',
+  permissions: [],
 }
 
 /** Sets the principal returned by the mocked useAuth() for the next render. */

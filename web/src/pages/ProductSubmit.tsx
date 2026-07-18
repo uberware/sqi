@@ -12,6 +12,8 @@ import { ApiError } from '@/api/client'
 import { initialValue, defaultJobName, paramGroup, selectWidget } from '@/lib/productForm'
 import { parseOptionalInt } from '@/lib/parse'
 import { validateAll } from '@/lib/productValidation'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import type { ProductParameter } from '@/api/types'
 import styles from './ProductSubmit.module.css'
 
@@ -21,6 +23,8 @@ export default function ProductSubmit() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
   const { showToast } = useToast()
+  const { principal } = useAuth()
+  const maySubmitAs = can(principal, 'jobs.submit_as')
   const product = useProduct(name)
   const params = useProductParameters(name)
   const farms = useFarmsWithQueues()
@@ -130,7 +134,8 @@ export default function ProductSubmit() {
             .filter((p) => selectWidget(p) !== 'hidden')
             .map((p) => [p.name, values[p.name] ?? '']),
         ),
-        ...(owner.trim() !== '' ? { owner: owner.trim() } : {}),
+        maySubmitAs,
+        ...(maySubmitAs && owner.trim() !== '' ? { owner: owner.trim() } : {}),
         ...(priorityNum !== undefined ? { priority: priorityNum } : {}),
         ...(project.trim() !== '' ? { project: project.trim() } : {}),
         ...(maxAttemptsNum !== undefined ? { maxAttempts: maxAttemptsNum } : {}),
@@ -207,10 +212,12 @@ export default function ProductSubmit() {
             Optional; leave blank to inherit the queue → farm → server default.
           </p>
           <div className={styles.advancedGroup}>
-            <div className={styles.row}>
-              <label htmlFor="owner">Owner</label>
-              <input id="owner" value={owner} onChange={(e) => setOwner(e.target.value)} />
-            </div>
+            {maySubmitAs && (
+              <div className={styles.row}>
+                <label htmlFor="owner">Owner</label>
+                <input id="owner" value={owner} onChange={(e) => setOwner(e.target.value)} />
+              </div>
+            )}
             <div className={styles.row}>
               <label htmlFor="priority">Priority</label>
               <input

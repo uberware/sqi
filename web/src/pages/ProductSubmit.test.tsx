@@ -4,8 +4,30 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement } from 'react'
 import { ToastProvider } from '@/components/Toast'
+import type { Principal } from '@/api/types'
 import ProductSubmit from './ProductSubmit'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// ProductSubmit reads useAuth() to gate the Owner field behind 'jobs.submit_as'.
+// Mock the auth context directly (as JobList.test.tsx/Admin.test.tsx do) and
+// default every test to an operator principal so pre-existing tests, which
+// predate permission gating and don't care about the Owner field, keep seeing
+// it exactly as before.
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+  permissions: [],
+}
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(() => ({ principal: OPERATOR_PRINCIPAL, status: 'authed', refresh: () => {} })),
+}))
+import { useAuth } from '@/auth/context'
 
 const submitMock = vi.fn().mockResolvedValue({ id: 'job-1' })
 const navigateMock = vi.fn()
@@ -141,6 +163,14 @@ vi.mock('@/api/mutations', async (orig) => ({
 beforeEach(() => {
   submitMock.mockClear()
   navigateMock.mockClear()
+  // Default every test to an operator principal (holds jobs.submit_as) so
+  // pre-existing assertions, which predate permission gating, keep seeing the
+  // Owner field unchanged; the gating tests below override via renderWithAuth.
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal: OPERATOR_PRINCIPAL,
+    status: 'authed',
+    refresh: () => {},
+  })
   h.state.params = h.defaultParams()
   h.state.jobs = [h.makeJob()]
   // jsdom uses a null origin by default which blocks localStorage access.
@@ -151,13 +181,13 @@ beforeEach(() => {
   })
 })
 
-function tree(qc: QueryClient) {
+function tree(qc: QueryClient, ui: ReactElement = <ProductSubmit />) {
   return (
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <MemoryRouter initialEntries={['/submit/product/blender']}>
           <Routes>
-            <Route path="/submit/product/:name" element={<ProductSubmit />} />
+            <Route path="/submit/product/:name" element={ui} />
           </Routes>
         </MemoryRouter>
       </ToastProvider>
@@ -167,6 +197,23 @@ function tree(qc: QueryClient) {
 
 function renderPage() {
   return render(tree(new QueryClient()))
+}
+
+/** Renders `ui` with the mocked useAuth() principal set to the given roles. */
+function renderWithAuth(ui: ReactElement, { roles }: { roles: string[] }) {
+  const principal: Principal = {
+    subject: 'u-test',
+    display_name: 'Test User',
+    roles,
+    kind: 'user',
+    permissions: [],
+  }
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+  return render(tree(new QueryClient(), ui))
 }
 
 describe('ProductSubmit', () => {
@@ -272,5 +319,28 @@ describe('ProductSubmit', () => {
       const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
       expect(arg).not.toHaveProperty('dependsOn')
     })
+  })
+})
+
+describe('owner field permission gating', () => {
+  it('hides the Owner input without jobs.submit_as', () => {
+    renderWithAuth(<ProductSubmit />, { roles: ['user'] })
+    expect(screen.queryByLabelText('Owner')).not.toBeInTheDocument()
+  })
+
+  it('shows the Owner input with jobs.submit_as', () => {
+    renderWithAuth(<ProductSubmit />, { roles: ['operator'] })
+    expect(screen.getByLabelText('Owner')).toBeInTheDocument()
+  })
+
+  it('omits owner from the submitted payload without jobs.submit_as', async () => {
+    renderWithAuth(<ProductSubmit />, { roles: ['user'] })
+    fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    await waitFor(() => expect(submitMock).toHaveBeenCalled())
+    const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(arg).not.toHaveProperty('owner')
+    expect(arg).toMatchObject({ maySubmitAs: false })
   })
 })

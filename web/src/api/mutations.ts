@@ -46,16 +46,19 @@ export async function fetchLogout(): Promise<void> {
 /**
  * Submit a raw OpenJD template via `POST /jobs`. The body content type is set
  * from `input.format` (`application/yaml` or `application/json`); `farm_id`,
- * `queue_id`, `owner`, `submitter`, `priority`, `project`, and the retry-policy
- * overrides travel as query parameters. `depends_on` (upstream job IDs) is
- * sent as a repeated query parameter, one per dependency.
+ * `queue_id`, `priority`, `project`, and the retry-policy overrides travel as
+ * query parameters. `owner` and `submitter` are server-derived from the
+ * authenticated principal and only travel as query parameters when the
+ * caller holds `jobs.submit_as` (`input.maySubmitAs`) — otherwise the server
+ * would 403. `depends_on` (upstream job IDs) is sent as a repeated query
+ * parameter, one per dependency.
  */
 export function fetchSubmitJob(input: SubmitJobInput): Promise<Job> {
   const contentType = input.format === 'yaml' ? 'application/yaml' : 'application/json'
 
   const qs = new URLSearchParams({ farm_id: input.farmId, queue_id: input.queueId })
-  if (input.owner !== undefined) qs.set('owner', input.owner)
-  if (input.submitter !== undefined) qs.set('submitter', input.submitter)
+  if (input.maySubmitAs && input.owner !== undefined) qs.set('owner', input.owner)
+  if (input.maySubmitAs && input.submitter !== undefined) qs.set('submitter', input.submitter)
   if (input.priority !== undefined) qs.set('priority', String(input.priority))
   if (input.project !== undefined) qs.set('project', input.project)
   if (input.maxAttempts !== undefined) qs.set('max_attempts', String(input.maxAttempts))
@@ -649,7 +652,7 @@ export function fetchSubmitProductJob(input: SubmitProductJobInput): Promise<Job
     queue_id: input.queueId,
     parameters: input.parameters,
   }
-  if (input.owner !== undefined) body.owner = input.owner
+  if (input.maySubmitAs && input.owner !== undefined) body.owner = input.owner
   if (input.priority !== undefined) body.priority = input.priority
   if (input.project !== undefined) body.project = input.project
   if (input.maxAttempts !== undefined) body.max_attempts = input.maxAttempts

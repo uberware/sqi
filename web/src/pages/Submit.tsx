@@ -154,6 +154,12 @@ export default function Submit() {
           queueId: selectedQueue.id,
           template,
           format,
+          // TODO(web): this raw-template page is not yet permission-gated on
+          // jobs.submit_as (see docs/web-development.md Role gating) — it
+          // still unconditionally offers owner/submitter, same as before this
+          // change. maySubmitAs is passed as true here only to preserve that
+          // pre-existing behavior against the now-gated mutation contract.
+          maySubmitAs: true,
           ...(trimmedOwner ? { owner: trimmedOwner } : {}),
           ...(parsedPriority !== undefined ? { priority: parsedPriority } : {}),
           ...(trimmedProject ? { project: trimmedProject } : {}),

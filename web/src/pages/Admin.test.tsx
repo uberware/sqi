@@ -25,6 +25,7 @@ const ADMIN_PRINCIPAL: Principal = {
   display_name: 'Admin',
   roles: ['admin'],
   kind: 'user',
+  permissions: [],
 }
 
 vi.mock('@/auth/context', () => ({
@@ -74,7 +75,13 @@ describe('Admin hub', () => {
 
   describe('role gating', () => {
     it('hides every card for a read-only principal', () => {
-      setPrincipal({ subject: 's', display_name: 'n', roles: ['read-only'], kind: 'user' })
+      setPrincipal({
+        subject: 's',
+        display_name: 'n',
+        roles: ['read-only'],
+        kind: 'user',
+        permissions: [],
+      })
       render(
         <MemoryRouter>
           <Admin />
@@ -90,7 +97,13 @@ describe('Admin hub', () => {
     })
 
     it('hides the Users card for an operator (users.read is admin-only)', () => {
-      setPrincipal({ subject: 's', display_name: 'n', roles: ['operator'], kind: 'user' })
+      setPrincipal({
+        subject: 's',
+        display_name: 'n',
+        roles: ['operator'],
+        kind: 'user',
+        permissions: [],
+      })
       render(
         <MemoryRouter>
           <Admin />
