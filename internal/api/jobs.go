@@ -836,8 +836,16 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 
 	if h.notifier != nil {
 		h.notifier.NotifyJob(ws.JobEvent{
-			JobID:     job.ID,
-			Name:      job.Name,
+			JobID: job.ID,
+			Name:  job.Name,
+			// Owner must be set explicitly here: the row is already gone by
+			// this point, so the hub's ownerCache fallback (GetJob on a
+			// deleted row) cannot resolve it and would drop this envelope for
+			// every owner-scoped subscriber, including the owner whose own
+			// job this was. This is the only NotifyJob call site where that's
+			// true — every other caller (internal/scheduler) fires while the
+			// row still exists.
+			Owner:     job.Owner,
 			QueueID:   job.QueueID,
 			Status:    ws.JobStatusRemoved,
 			UpdatedAt: time.Now().UTC(),

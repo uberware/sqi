@@ -1260,6 +1260,76 @@ func TestJobHandler_DeleteJob_RemovesJob(t *testing.T) {
 	}
 }
 
+// recordingJobNotifier captures NotifyJob events for assertions.
+type recordingJobNotifier struct {
+	ws.NoopNotifier
+
+	events []ws.JobEvent
+}
+
+func (n *recordingJobNotifier) NotifyJob(e ws.JobEvent) { n.events = append(n.events, e) }
+
+// TestJobHandler_DeleteJob_NotifiesWithOwner is the regression test for I-2:
+// the delete handler deletes the row before emitting the removal event, so
+// the event must carry Owner explicitly (from the job it already loaded)
+// rather than relying on the hub's ownerCache fallback, which would try (and
+// fail) to GetJob a row that no longer exists — dropping the envelope for
+// every owner-scoped subscriber, including the job's own owner.
+func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
+	t.Parallel()
+	st := fake.New()
+	ctx := context.Background()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	now := time.Now()
+	if _, err := st.CreateJob(ctx, store.Job{
+		ID:             "job-1",
+		FarmID:         "farm-1",
+		QueueID:        "queue-1",
+		Name:           "test-job",
+		Owner:          "alice",
+		Priority:       50,
+		Status:         store.JobStatusCompleted,
+		TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	notifier := &recordingJobNotifier{}
+	sub := openjd.NewSubmitter(st)
+	h := newJobHandler(st, sub, &fakeScheduler{}, notifier, newTestLogger(), testRetryDefaults, false)
+	r := chi.NewRouter()
+	r.Delete("/api/v1/jobs/{id}", h.deleteJob)
+
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-1", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
+	}
+
+	if len(notifier.events) != 1 {
+		t.Fatalf("NotifyJob called %d times, want 1", len(notifier.events))
+	}
+	got := notifier.events[0]
+	if got.Owner != "alice" {
+		t.Errorf("JobEvent.Owner = %q, want %q", got.Owner, "alice")
+	}
+	if got.Status != ws.JobStatusRemoved {
+		t.Errorf("JobEvent.Status = %q, want %q", got.Status, ws.JobStatusRemoved)
+	}
+	if got.JobID != "job-1" {
+		t.Errorf("JobEvent.JobID = %q, want job-1", got.JobID)
+	}
+}
+
 func TestJobHandler_DeleteJob_NotFound(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
