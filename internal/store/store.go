@@ -60,6 +60,7 @@ type Store interface {
 	AuditStore
 	UserStore
 	SessionStore
+	APIKeyStore
 	io.Closer
 }
 

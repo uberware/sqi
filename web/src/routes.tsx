@@ -19,6 +19,7 @@ import ComputeLocationList from '@/pages/ComputeLocationList'
 import ComputeLocationForm from '@/pages/ComputeLocationForm'
 import UserList from '@/pages/UserList'
 import UserForm from '@/pages/UserForm'
+import ApiKeyList from '@/pages/ApiKeyList'
 import PresetLibrary from '@/pages/PresetLibrary'
 import PresetDetail from '@/pages/PresetDetail'
 import ProductList from '@/pages/ProductList'
@@ -58,6 +59,7 @@ export default function AppRoutes() {
       <Route path="/users" element={<UserList />} />
       <Route path="/users/new" element={<UserForm mode="create" />} />
       <Route path="/users/:id/edit" element={<UserForm mode="edit" />} />
+      <Route path="/api-keys" element={<ApiKeyList />} />
       <Route path="/submit" element={<ProductPicker />} />
       <Route path="/submit/raw" element={<Submit />} />
       <Route path="/submit/product/:name" element={<ProductSubmit />} />

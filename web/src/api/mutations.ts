@@ -5,6 +5,7 @@ import { apiFetch } from './client'
 import { queryKeys } from './queries'
 import { evictAllExceptAuthMe } from './queryEviction'
 import type {
+  ApiKeyCreated,
   ComputeLocation,
   Farm,
   Job,
@@ -809,6 +810,46 @@ export function useDeleteUser() {
     mutationFn: (id: string) => fetchDeleteUser(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.users.all })
+    },
+  })
+}
+
+// ── API key admin ──────────────────────────────────────────────────────────────
+
+export interface ApiKeyCreateInput {
+  name: string
+  expires_at?: string
+}
+
+export function fetchCreateApiKey(input: ApiKeyCreateInput): Promise<ApiKeyCreated> {
+  return apiFetch<ApiKeyCreated>('/api-keys', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchRevokeApiKey(id: string): Promise<void> {
+  await apiFetch(`/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** Create a personal API key. Invalidates the key list on success. */
+export function useCreateApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchCreateApiKey,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all })
+    },
+  })
+}
+
+/** Revoke (delete) a personal API key. Invalidates the key list on success. */
+export function useRevokeApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => fetchRevokeApiKey(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all })
     },
   })
 }

@@ -57,6 +57,19 @@ def resolve_server_url(explicit: str | None, settings: Settings) -> str:
     return DEFAULT_SERVER_URL
 
 
+def resolve_api_key(explicit: str | None, settings: Settings) -> str | None:
+    """explicit arg → $SQI_API_KEY → settings → None."""
+    if explicit:
+        return explicit
+    env = os.environ.get("SQI_API_KEY")
+    if env:
+        return env
+    stored = settings.get("api_key")
+    if stored:
+        return str(stored)
+    return None
+
+
 class SubmitterSession:
     """Everything a submitter UI needs from the server, error-translated."""
 
@@ -65,10 +78,13 @@ class SubmitterSession:
         server_url: str | None = None,
         client: SqiClient | None = None,
         settings: Settings | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self.server_url = resolve_server_url(server_url, self.settings)
-        self.client = client or SqiClient(self.server_url)
+        self.client = client or SqiClient(
+            self.server_url, token=resolve_api_key(api_key, self.settings)
+        )
 
     def products(self) -> list[Product]:
         with translate_errors(self.server_url):

@@ -22,6 +22,18 @@ pip install -e '.[dev]'                # with test & lint tools
 pip install -e ../python               # resolve sqi-sdk from local checkout
 ```
 
+## Authentication
+
+When the target `sqi-server` has `auth.enabled=true` (see
+[`docs/auth.md`](../../docs/auth.md)), a `SubmitterSession` needs an API key
+to authenticate headlessly. It resolves one in this order: the `api_key`
+argument passed to `SubmitterSession`, then the `$SQI_API_KEY` environment
+variable, then the `api_key` value in `~/.sqi/submitter.json`
+(`sqi_submitter.core.session.resolve_api_key`). Whatever is found is
+forwarded to `SqiClient` as the Bearer token. Issue a key for yourself via
+`POST /api/v1/api-keys` or the web Admin → API Keys page — see
+[`docs/auth.md`](../../docs/auth.md#api-keys) for how keys work.
+
 ## Quick start
 
 Use the `fake_host_module` fixture in tests to inject mock DCC modules:

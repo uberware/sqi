@@ -1,0 +1,86 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * ApiKeyList's own inline create-form and secret-callout styles. The form
+ * fields compose the shared entity-form scaffold (see UserForm.module.css);
+ * the table itself uses entityList.module.css directly, like UserList.
+ */
+
+.form {
+  composes: form from './entityForm.module.css';
+  max-width: var(--form-width);
+  padding: var(--space-4) var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.field {
+  composes: field from './entityForm.module.css';
+}
+
+.label {
+  composes: label from './entityForm.module.css';
+}
+
+.input {
+  composes: input from './entityForm.module.css';
+}
+
+.footer {
+  composes: footer from './entityForm.module.css';
+}
+
+.submitBtn {
+  composes: submitBtn from './entityForm.module.css';
+}
+
+.cancelBtn {
+  composes: cancelBtn from './entityForm.module.css';
+}
+
+/* ── Secret callout ──────────────────────────────────────────────────────────── */
+
+.secretCallout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin: var(--space-4) var(--space-8);
+  padding: var(--space-4);
+  background: var(--color-warning-muted);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+}
+
+.secretWarning {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-warning);
+}
+
+.secretValue {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  word-break: break-all;
+}
+
+.dismissBtn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+/* ── Table cells ─────────────────────────────────────────────────────────────── */
+
+.prefix {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}

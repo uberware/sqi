@@ -23,6 +23,7 @@ import (
 
 	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/apikey"
 	"github.com/uberware/sqi/internal/auth/session"
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/diag"
@@ -439,7 +440,11 @@ func (s *Server) selectAuth(ctx context.Context) (auth.Authenticator, error) {
 	}, s.logger); err != nil {
 		return nil, fmt.Errorf("auth bootstrap: %w", err)
 	}
-	return session.New(s.store, s.cfg.AuthCookieName, nil), nil
+	// Compose credential types: a machine's Bearer API key leads, the
+	// browser session cookie is the fallback. Both back onto the store.
+	keyAuthn := apikey.New(s.store, nil)
+	sessAuthn := session.New(s.store, s.cfg.AuthCookieName, nil)
+	return auth.Chain(keyAuthn, sessAuthn), nil
 }
 
 // browseURL turns a TCP bind address into a URL a human can paste into a

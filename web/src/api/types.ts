@@ -505,6 +505,21 @@ export interface LoginRequest {
   password: string
 }
 
+/** An API key (metadata only; the secret is returned once, at creation). */
+export interface ApiKey {
+  id: string
+  name: string
+  prefix: string
+  expires_at?: string
+  last_used_at?: string
+  created_at: string
+}
+
+/** Response of POST /api-keys — the only place the raw secret appears. */
+export interface ApiKeyCreated extends ApiKey {
+  secret: string
+}
+
 // ── Job submission ────────────────────────────────────────────────────────────
 
 /** Input for the submitJob mutation. */

@@ -215,30 +215,93 @@ separately-hosted UI (a different scheme/host/port) that wants to call a
 
 ## Headless / SDK auth
 
-A1 ships **no issuable headless credential**. The only working authentication
-path is the browser session cookie described above — there is no bearer
-token, API key, or service-account mechanism a script or DCC submitter can
-obtain today, and the only `Authenticator` wired into the server is the
-session-cookie one (`internal/server/server.go`'s `selectAuth`).
+As of component A2, sqi has an issuable headless credential: **API keys**,
+covered in full below. `internal/server/server.go`'s `selectAuth` now wires
+`auth.Chain(keyAuthn, sessAuthn)` — a Bearer API key is tried first, and the
+session cookie is the fallback for browser requests.
 
-The Python SDK (`clients/python`) is nonetheless already wired for it ahead
-of time: `SqiClient(base_url, token=...)` sends
-`Authorization: Bearer <token>`, falling back to the `$SQI_TOKEN` then
-`$SQI_API_KEY` environment variables when `token` isn't passed explicitly,
-and a 401/403 response raises the typed `SqiAuthError`
-(`clients/python/src/sqi_client/errors.py`). Be clear-eyed about what this
-means today, though: **with `auth.enabled=true`, passing `token=` accomplishes
-nothing** — the server has no code path that reads or validates an
-`Authorization` header, so a bearer-token request is simply treated as
-unauthenticated and gets a `401` from `GET /auth/me` and everything else.
-Issuable API keys — the piece that makes this plumbing actually work
-end-to-end — are component **A2**. Until then, enabling auth effectively
-locks out any headless/SDK/submitter usage of a given `sqi-server` instance;
-keep auth off for farms driven primarily by scripts or DCC submitters until
-A2 ships.
+The Python SDK (`clients/python`) was already wired ahead of time for this:
+`SqiClient(base_url, token=...)` sends `Authorization: Bearer <token>`,
+falling back to the `$SQI_TOKEN` then `$SQI_API_KEY` environment variables
+when `token` isn't passed explicitly, and a 401/403 response raises the typed
+`SqiAuthError` (`clients/python/src/sqi_client/errors.py`). The submitter
+framework (`clients/submitter`) resolves a key the same way, one tier
+simpler: an `api_key` argument, then `$SQI_API_KEY`, then the `api_key` key
+in `~/.sqi/submitter.json` — see `clients/submitter/README.md`. With
+`auth.enabled=true`, issue yourself a key (`POST /api/v1/api-keys` or the web
+Admin → API Keys page) and pass it via `token=`/`$SQI_TOKEN`/`$SQI_API_KEY`
+(SDK) or `api_key=`/`$SQI_API_KEY`/`submitter.json` (submitter) to unblock
+headless usage.
+
+## API keys
+
+An API key is a per-user, `sqi_`-prefixed Bearer credential for scripts, the
+SDK, and DCC submitters — the machine/headless counterpart to the browser
+session cookie above.
+
+**Issuance.** `POST /api/v1/api-keys` with `{"name", "expires_at"?}` creates
+a key owned by the calling principal and returns it once
+(`internal/api/apikeys.go`):
+
+```json
+{
+  "id": "…", "name": "render farm", "prefix": "sqi_AbCdEfGh",
+  "expires_at": null, "last_used_at": null, "created_at": "…",
+  "secret": "sqi_AbCdEfGh1234…"
+}
+```
+
+The `secret` field — the full raw key — is present **only** in this create
+response. Every other response (`GET /api/v1/api-keys`, the list on the web
+Admin → API Keys page) omits it and shows the `prefix` instead, so copy the
+secret down before navigating away; it cannot be recovered later, only
+revoked and reissued.
+
+**Presentation.** Clients send `Authorization: Bearer <key>`. Keys are the
+credential for headless/machine access; browser sessions stay cookie-based as
+described above — see [Headless / SDK auth](#headless--sdk-auth) for how the
+SDK and submitter pick a key up from an argument, environment variable, or
+settings file.
+
+**Storage & security.** The raw key is generated as 256 bits of random data,
+base64url-encoded, and prefixed `sqi_`. Only its hex SHA-256 digest
+(`internal/auth/password.HashToken`) is stored in the `api_keys` table —
+never the raw key — alongside a 12-character display `prefix` taken from the
+start of the raw key, used to tell keys apart in the list view without
+revealing the secret. `last_used_at` is updated on successful authentication,
+throttled to at most once per minute per key so a busy key doesn't write on
+every request (`internal/auth/apikey.Authenticator`'s `touchThreshold`).
+Optional `expires_at` is enforced at authentication time, not just at
+creation: `GetAPIKeyByTokenHash` only matches rows that are unexpired (and
+unrevoked), so an expired key stops authenticating the instant it lapses,
+with no separate sweep required.
+
+**Revocation.** `DELETE /api/v1/api-keys/{id}` is a soft revoke — it sets
+`revoked_at` rather than deleting the row — and takes effect immediately:
+the same "unrevoked" filter that enforces expiry means the very next request
+bearing that key is rejected.
+
+**Scope — self-managed until B1.** Like the interim authorization gap noted
+in [Local accounts](#local-accounts), API-key management is currently
+self-scoped only: `POST`/`GET`/`DELETE /api/v1/api-keys` all resolve the
+caller's own user id and only ever see or touch that user's keys — there is
+no admin-broad "view or revoke anyone's keys" capability yet. That arrives
+with role-based access control in **B1**.
+
+**Auth-off behaviour.** With `auth.enabled=false`, every request is the
+anonymous superuser principal, which has no real user id to own a key
+against, so all three `/api-keys` endpoints reject with `409 Conflict`
+("API keys require authentication to be enabled") rather than silently
+operating on a fake account — consistent with the rest of the auth-off
+posture elsewhere in this doc.
+
+**CSRF.** A Bearer request carries no cookie, so the CSRF guard in
+[CSRF & CORS](#csrf--cors) never engages for it: that guard only inspects
+requests that carry the session cookie in the first place, and a
+Bearer-authenticated request has nothing for it to check.
 
 ## Coming next
 
-- A2 — API keys for headless SDK/submitter use.
 - B1 — role-based access control (admin / operator / user / read-only),
-  enforcing the `role` field that A1 already stores but does not check.
+  enforcing the `role` field that A1 already stores but does not check, and
+  extending API-key and user management from self-scoped to admin-broad.

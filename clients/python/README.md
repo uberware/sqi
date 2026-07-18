@@ -102,13 +102,11 @@ it is sent as `Authorization: Bearer <token>` on every request; an explicit
 `headers={"Authorization": ...}` argument still overrides it. A `401` or `403`
 response raises `SqiAuthError`.
 
-**Caveat:** as of this writing, `sqi-server`'s only working authentication
-method is the browser session cookie used by its web UI — there is no
-issuable API key or bearer-token credential yet, so `token=`/`$SQI_TOKEN` has
-nothing to authenticate against on a server with `auth.enabled=true`. This
-plumbing is ready ahead of time for **component A2** (API keys for headless
-use), which is what will make it actually usable end-to-end. Until A2 ships,
-run the SDK against servers with auth disabled.
+Issue a key from the web UI (Admin → API Keys) or `POST /api/v1/api-keys`; the
+raw key is shown once at creation. Provide it to the SDK as `token=` (or via
+`$SQI_TOKEN` / `$SQI_API_KEY`) and it authenticates headlessly against a server
+with `auth.enabled=true`. Browser sessions stay cookie-based; API keys are the
+machine credential. See `docs/auth.md` for the full model.
 
 ## Products
 

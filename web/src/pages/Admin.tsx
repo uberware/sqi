@@ -65,6 +65,12 @@ const ADMIN_LINKS: AdminLink[] = [
   },
   { id: 'log', label: 'Server Log', description: 'Live server diagnostic log', to: '/server-log' },
   { id: 'users', label: 'Users', description: 'User accounts and roles', to: '/users' },
+  {
+    id: 'api-keys',
+    label: 'API Keys',
+    description: 'Personal API keys for headless SDK/submitter access',
+    to: '/api-keys',
+  },
 ]
 
 export default function Admin() {

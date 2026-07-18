@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import type {
+  ApiKey,
   ComputeLocation,
   Farm,
   Job,
@@ -155,6 +156,9 @@ export const queryKeys = {
   users: {
     all: ['users'] as const,
     detail: (id: string) => ['users', 'detail', id] as const,
+  },
+  apiKeys: {
+    all: ['api-keys'] as const,
   },
 } as const
 
@@ -335,6 +339,11 @@ export function fetchListUsers(): Promise<User[]> {
 /** Fetch one local user account from `GET /users/{id}`. */
 export function fetchGetUser(id: string): Promise<User> {
   return apiFetch(`/users/${encodeURIComponent(id)}`)
+}
+
+/** Fetch all API keys (metadata only, no secret) from `GET /api-keys`. */
+export function fetchListApiKeys(): Promise<ApiKey[]> {
+  return apiFetch('/api-keys')
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -584,6 +593,14 @@ export function useGetUser(id: string) {
     queryKey: queryKeys.users.detail(id),
     queryFn: () => fetchGetUser(id),
     enabled: id !== '',
+  })
+}
+
+/** List all API keys for the current account (metadata only, no secret). */
+export function useApiKeys() {
+  return useQuery({
+    queryKey: queryKeys.apiKeys.all,
+    queryFn: fetchListApiKeys,
   })
 }
 
