@@ -12,9 +12,14 @@ import DebouncedSearchInput from '@/components/DebouncedSearchInput'
 import ErrorBanner from '@/components/ErrorBanner'
 import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './ProductList.module.css'
 
 export default function ProductList() {
+  const { principal } = useAuth()
+  const canManage = can(principal, 'products.manage')
+
   const { data: products, isLoading, isError, error } = useProducts()
   const deleteProduct = useDeleteProduct()
   const { showToast } = useToast()
@@ -58,9 +63,11 @@ export default function ProductList() {
               : `${all.length} products`
         }
         action={
-          <Link to="/products/new" className={styles.newBtn}>
-            + New Product
-          </Link>
+          canManage ? (
+            <Link to="/products/new" className={styles.newBtn}>
+              + New Product
+            </Link>
+          ) : undefined
         }
       />
 
@@ -139,7 +146,7 @@ export default function ProductList() {
                   </span>
                 </td>
                 <td>
-                  {product.source !== 'builtin' && (
+                  {canManage && product.source !== 'builtin' && (
                     <IconButton
                       icon={<Trash />}
                       className={styles.deleteBtn}

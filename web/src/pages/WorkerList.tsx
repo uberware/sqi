@@ -19,6 +19,8 @@ import { useListFilters } from '@/hooks/useListFilters'
 import { useLiveNow } from '@/hooks/useLiveNow'
 import { useWebSocket } from '@/ws/context'
 import { isWorkerEvent, WORKER_REMOVED_STATUS } from '@/ws/events'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import type { Worker, WorkerStatus, ListResponse } from '@/api/types'
 import styles from './WorkerList.module.css'
 
@@ -134,6 +136,9 @@ function CapabilityTags({ worker }: { worker: Worker }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkerList() {
+  const { principal } = useAuth()
+  const canManage = can(principal, 'workers.manage')
+
   // ── URL-driven filters ──────────────────────────────────────────────────────
   const filters = useListFilters<
     WorkerStatus,
@@ -471,7 +476,7 @@ export default function WorkerList() {
                   </td>
                   {/* Per-row enable/disable */}
                   <td>
-                    {worker.status === 'online' && (
+                    {canManage && worker.status === 'online' && (
                       <IconButton
                         icon={<Pause />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--disable']}`}
@@ -481,7 +486,7 @@ export default function WorkerList() {
                         label={`Disable worker ${worker.name || worker.hostname}`}
                       />
                     )}
-                    {worker.status === 'disabled' && (
+                    {canManage && worker.status === 'disabled' && (
                       <IconButton
                         icon={<Play />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--enable']}`}
@@ -491,7 +496,7 @@ export default function WorkerList() {
                         label={`Enable worker ${worker.name || worker.hostname}`}
                       />
                     )}
-                    {worker.removable && (
+                    {canManage && worker.removable && (
                       <IconButton
                         icon={<Trash />}
                         className={`${styles.toggleBtn} ${styles['toggleBtn--remove']}`}
@@ -525,7 +530,7 @@ export default function WorkerList() {
       )}
 
       {/* Bulk action bar — pinned below the list so selecting rows doesn't shift it */}
-      {selectedIds.size > 0 && (
+      {canManage && selectedIds.size > 0 && (
         <BulkBar count={selectedIds.size} onClear={() => setSelectedIds(new Set())}>
           <button
             className={`${styles.bulkBtn} ${styles['bulkBtn--disable']}`}

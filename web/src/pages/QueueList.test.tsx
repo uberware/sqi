@@ -6,11 +6,49 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { ToastProvider } from '@/components/Toast'
 import QueueList from './QueueList'
+import type { Principal } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// QueueList reads useAuth() to gate mutating controls behind 'infra.manage'.
+// Mock the auth context directly (as JobList.test.tsx does) rather than
+// driving a real AuthProvider through /auth/me, since fetchMock in this file
+// is dedicated to the farm/queue list/mutation endpoints under test.
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(),
+}))
+import { useAuth } from '@/auth/context'
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+}
+const READONLY_PRINCIPAL: Principal = {
+  subject: 'u-readonly',
+  display_name: 'Read Only',
+  roles: ['read-only'],
+  kind: 'user',
+}
+
+/** Sets the principal returned by the mocked useAuth() for the next render. */
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  // Default every test to an operator principal so pre-existing control
+  // assertions keep working unchanged; the read-only gating test overrides
+  // this via setPrincipal(READONLY_PRINCIPAL).
+  setPrincipal(OPERATOR_PRINCIPAL)
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -161,5 +199,30 @@ describe('QueueList', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete queue lighting/i }))
 
     expect(await screen.findByText(/server unavailable/i)).toBeInTheDocument()
+  })
+
+  describe('role gating (infra.manage)', () => {
+    it('hides New Queue and Delete controls for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      mockFarmsAndQueues()
+      renderPage()
+
+      await screen.findByRole('link', { name: 'lighting' })
+      expect(screen.queryByRole('link', { name: /new queue/i })).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: /delete queue lighting/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows New Queue and Delete controls for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      mockFarmsAndQueues()
+      renderPage()
+
+      expect(await screen.findByRole('link', { name: /new queue/i })).toBeInTheDocument()
+      expect(
+        await screen.findByRole('button', { name: /delete queue lighting/i }),
+      ).toBeInTheDocument()
+    })
   })
 })

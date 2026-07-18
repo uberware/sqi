@@ -9,9 +9,14 @@ import { useToast } from '@/components/Toast'
 import ErrorBanner from '@/components/ErrorBanner'
 import { useListStorageLocations } from '@/api/queries'
 import { useDeleteStorageLocation } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './entityList.module.css'
 
 export default function StorageLocationList() {
+  const { principal } = useAuth()
+  const canManage = can(principal, 'infra.manage')
+
   const { data: locations, isLoading, isError, error } = useListStorageLocations()
   const deleteLocation = useDeleteStorageLocation()
   const { showToast } = useToast()
@@ -46,9 +51,11 @@ export default function StorageLocationList() {
         backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} locations`}
         action={
-          <Link to="/storage-locations/new" className={styles.newBtn}>
-            + New Storage Location
-          </Link>
+          canManage ? (
+            <Link to="/storage-locations/new" className={styles.newBtn}>
+              + New Storage Location
+            </Link>
+          ) : undefined
         }
       />
 
@@ -107,14 +114,16 @@ export default function StorageLocationList() {
                   <td>{defaultRoot ? defaultRoot : '—'}</td>
                   <td>{rootCount}</td>
                   <td>
-                    <IconButton
-                      icon={<Trash />}
-                      className={styles.deleteBtn}
-                      busy={deletingIds.has(location.id)}
-                      onClick={() => void handleDelete(location.id, location.name)}
-                      title="Delete"
-                      label={`Delete storage location ${location.name}`}
-                    />
+                    {canManage && (
+                      <IconButton
+                        icon={<Trash />}
+                        className={styles.deleteBtn}
+                        busy={deletingIds.has(location.id)}
+                        onClick={() => void handleDelete(location.id, location.name)}
+                        title="Delete"
+                        label={`Delete storage location ${location.name}`}
+                      />
+                    )}
                   </td>
                 </tr>
               )

@@ -8,7 +8,41 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import WorkerDetail from './WorkerDetail'
 import { WebSocketProvider } from '@/ws/context'
-import type { WorkerDetail as WorkerDetailType } from '@/api/types'
+import type { WorkerDetail as WorkerDetailType, Principal } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// WorkerDetail reads useAuth() to gate the Disable/Enable toggle behind
+// 'workers.manage'. Mock the auth context directly (as JobList.test.tsx
+// does) rather than driving a real AuthProvider through /auth/me, since
+// fetchMock in this file is dedicated to the worker detail/mutation
+// endpoints under test.
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(),
+}))
+import { useAuth } from '@/auth/context'
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+}
+const READONLY_PRINCIPAL: Principal = {
+  subject: 'u-readonly',
+  display_name: 'Read Only',
+  roles: ['read-only'],
+  kind: 'user',
+}
+
+/** Sets the principal returned by the mocked useAuth() for the next render. */
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 // ── Mock WebSocket ────────────────────────────────────────────────────────────
 
@@ -87,6 +121,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
   vi.stubGlobal('WebSocket', MockWebSocket)
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  // Default every test to an operator principal so pre-existing control
+  // assertions keep working unchanged; the read-only gating tests override
+  // this via setPrincipal(READONLY_PRINCIPAL).
+  setPrincipal(OPERATOR_PRINCIPAL)
 })
 
 afterEach(() => {
@@ -707,5 +745,44 @@ describe('WorkerDetail', () => {
     expect(
       screen.getByRole('heading', { level: 2, name: 'Worker diagnostics' }),
     ).toBeInTheDocument()
+  })
+
+  // ── Role gating (workers.manage) ──────────────────────────────────────
+
+  describe('role gating (workers.manage)', () => {
+    it('hides the Disable control for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      fetchMock.mockResolvedValue(okJson(makeWorker({ status: 'online' })))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('render-node-01'))
+      expect(
+        screen.queryByRole('button', { name: /disable worker render-node-01/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('hides the Enable control for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      fetchMock.mockResolvedValue(okJson(makeWorker({ status: 'disabled' })))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByText('render-node-01'))
+      expect(
+        screen.queryByRole('button', { name: /enable worker render-node-01/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows the Disable control for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      fetchMock.mockResolvedValue(okJson(makeWorker({ status: 'online' })))
+
+      render(<WorkerDetail />, { wrapper: Wrapper })
+
+      expect(
+        await screen.findByRole('button', { name: /disable worker render-node-01/i }),
+      ).toBeInTheDocument()
+    })
   })
 })

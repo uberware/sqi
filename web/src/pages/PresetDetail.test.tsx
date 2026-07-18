@@ -7,12 +7,50 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { ToastProvider } from '@/components/Toast'
 import PresetDetail from './PresetDetail'
-import type { PresetDetail as PresetDetailType, Product } from '@/api/types'
+import type { PresetDetail as PresetDetailType, Principal, Product } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// PresetDetail reads useAuth() to gate the Install control behind
+// 'products.manage'. Mock the auth context directly (as JobList.test.tsx
+// does) rather than driving a real AuthProvider through /auth/me, since
+// fetchMock in this file is dedicated to the preset detail/install endpoints
+// under test.
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(),
+}))
+import { useAuth } from '@/auth/context'
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+}
+const READONLY_PRINCIPAL: Principal = {
+  subject: 'u-readonly',
+  display_name: 'Read Only',
+  roles: ['read-only'],
+  kind: 'user',
+}
+
+/** Sets the principal returned by the mocked useAuth() for the next render. */
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  // Default every test to an operator principal so pre-existing control
+  // assertions keep working unchanged; the read-only gating test overrides
+  // this via setPrincipal(READONLY_PRINCIPAL).
+  setPrincipal(OPERATOR_PRINCIPAL)
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -127,5 +165,24 @@ describe('PresetDetail', () => {
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/products/nuke-comp'),
     )
+  })
+
+  describe('role gating (products.manage)', () => {
+    it('hides the Install control for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      fetchMock.mockResolvedValueOnce(ok(makePreset({ status: 'not_installed' })))
+      renderDetail('/presets/nuke-comp')
+
+      await screen.findByRole('heading', { level: 2, name: 'Nuke Composite' })
+      expect(screen.queryByRole('button', { name: 'Install' })).not.toBeInTheDocument()
+    })
+
+    it('shows the Install control for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      fetchMock.mockResolvedValueOnce(ok(makePreset({ status: 'not_installed' })))
+      renderDetail('/presets/nuke-comp')
+
+      expect(await screen.findByRole('button', { name: 'Install' })).toBeInTheDocument()
+    })
   })
 })

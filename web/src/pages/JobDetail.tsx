@@ -396,14 +396,15 @@ function TaskRow({
           </button>
         </td>
         <td className={styles.checkCell}>
-          {(CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
-            <input
-              type="checkbox"
-              aria-label={`Select task ${task.name}`}
-              checked={isSelected}
-              onChange={() => onToggleSelect(task.id)}
-            />
-          )}
+          {canWrite &&
+            (CANCELABLE.has(task.status) || (RETRYABLE.has(task.status) && depsSatisfied)) && (
+              <input
+                type="checkbox"
+                aria-label={`Select task ${task.name}`}
+                checked={isSelected}
+                onChange={() => onToggleSelect(task.id)}
+              />
+            )}
         </td>
         <td>
           <CopyableId id={task.id} />
@@ -591,16 +592,18 @@ function StepSection({
               <tr>
                 <th aria-label="Expand attempts" className={styles.expandCell} />
                 <th className={styles.checkCell}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Select all tasks in step ${step.name}`}
-                    checked={
-                      selectableInStep.length > 0 &&
-                      selectableInStep.every((t) => selectedTaskIds.has(t.id))
-                    }
-                    disabled={selectableInStep.length === 0}
-                    onChange={onToggleStep}
-                  />
+                  {canWrite && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Select all tasks in step ${step.name}`}
+                      checked={
+                        selectableInStep.length > 0 &&
+                        selectableInStep.every((t) => selectedTaskIds.has(t.id))
+                      }
+                      disabled={selectableInStep.length === 0}
+                      onChange={onToggleStep}
+                    />
+                  )}
                 </th>
                 <th>Task ID</th>
                 <th>Parameters</th>

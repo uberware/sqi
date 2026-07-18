@@ -949,6 +949,37 @@ describe('JobDetail', () => {
       expect(screen.getByLabelText('Retry task task.0')).toBeInTheDocument()
     })
 
+    it('hides per-task and select-all checkboxes for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      await waitFor(() => screen.getByLabelText('View logs for task task.0'))
+      expect(screen.queryByRole('checkbox', { name: 'Select task task.0' })).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('checkbox', { name: /select all tasks in step/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows per-task and select-all checkboxes for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      const task = makeTask({ status: 'running', name: 'task.0' })
+      fetchMock.mockResolvedValueOnce(okJson(makeJob()))
+      fetchMock.mockResolvedValueOnce(okJson(makeTaskListResponse([task])))
+
+      render(<JobDetail />, { wrapper: Wrapper })
+
+      expect(
+        await screen.findByRole('checkbox', { name: 'Select task task.0' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('checkbox', { name: /select all tasks in step/i }),
+      ).toBeInTheDocument()
+    })
+
     it('hides the Resume control for a read-only principal on a parked job', async () => {
       setPrincipal(READONLY_PRINCIPAL)
       const job = makeJob({ park_reason: 'failure limit reached' })

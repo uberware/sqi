@@ -7,12 +7,50 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { ToastProvider } from '@/components/Toast'
 import ProductDetail from './ProductDetail'
-import type { Product } from '@/api/types'
+import type { Principal, Product } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// ProductDetail reads useAuth() to gate mutating controls behind
+// 'products.manage'. Mock the auth context directly (as JobList.test.tsx
+// does) rather than driving a real AuthProvider through /auth/me, since
+// fetchMock in this file is dedicated to the product detail/mutation
+// endpoints under test.
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(),
+}))
+import { useAuth } from '@/auth/context'
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+}
+const READONLY_PRINCIPAL: Principal = {
+  subject: 'u-readonly',
+  display_name: 'Read Only',
+  roles: ['read-only'],
+  kind: 'user',
+}
+
+/** Sets the principal returned by the mocked useAuth() for the next render. */
+function setPrincipal(principal: Principal) {
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+}
 
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  // Default every test to an operator principal so pre-existing control
+  // assertions keep working unchanged; the read-only gating tests override
+  // this via setPrincipal(READONLY_PRINCIPAL).
+  setPrincipal(OPERATOR_PRINCIPAL)
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -157,5 +195,31 @@ describe('ProductDetail', () => {
     renderDetail('/products/studio%2Fmaya')
     await screen.findByText('name: my-template') // wait for product to load
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/products/studio%2Fmaya')
+  })
+
+  describe('role gating (products.manage)', () => {
+    it('hides Duplicate, Edit, and Delete controls for a read-only principal', async () => {
+      setPrincipal(READONLY_PRINCIPAL)
+      fetchMock.mockResolvedValueOnce(ok(makeProduct()))
+      renderDetail('/products/my-render')
+
+      await screen.findByText('name: my-template')
+      expect(screen.queryByRole('button', { name: /duplicate to custom/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: /edit/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument()
+    })
+
+    it('shows Duplicate, Edit, and Delete controls for an operator principal', async () => {
+      setPrincipal(OPERATOR_PRINCIPAL)
+      fetchMock.mockResolvedValueOnce(ok(makeProduct()))
+      renderDetail('/products/my-render')
+
+      await screen.findByText('name: my-template')
+      expect(
+        await screen.findByRole('button', { name: /duplicate to custom/i }),
+      ).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /edit/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument()
+    })
   })
 })

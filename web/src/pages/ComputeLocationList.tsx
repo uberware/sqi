@@ -9,9 +9,14 @@ import { useToast } from '@/components/Toast'
 import ErrorBanner from '@/components/ErrorBanner'
 import { useListComputeLocations } from '@/api/queries'
 import { useDeleteComputeLocation } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './entityList.module.css'
 
 export default function ComputeLocationList() {
+  const { principal } = useAuth()
+  const canManage = can(principal, 'infra.manage')
+
   const { data: locations, isLoading, isError, error } = useListComputeLocations()
   const deleteLocation = useDeleteComputeLocation()
   const { showToast } = useToast()
@@ -50,9 +55,11 @@ export default function ComputeLocationList() {
         backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} locations`}
         action={
-          <Link to="/compute-locations/new" className={styles.newBtn}>
-            + New Compute Location
-          </Link>
+          canManage ? (
+            <Link to="/compute-locations/new" className={styles.newBtn}>
+              + New Compute Location
+            </Link>
+          ) : undefined
         }
       />
 
@@ -97,16 +104,18 @@ export default function ComputeLocationList() {
                 <td>{location.description ?? '—'}</td>
                 <td>{location.worker_count}</td>
                 <td>
-                  <IconButton
-                    icon={<Trash />}
-                    className={styles.deleteBtn}
-                    busy={deletingIds.has(location.id)}
-                    onClick={() =>
-                      void handleDelete(location.id, location.name, location.worker_count)
-                    }
-                    title="Delete"
-                    label={`Delete compute location ${location.name}`}
-                  />
+                  {canManage && (
+                    <IconButton
+                      icon={<Trash />}
+                      className={styles.deleteBtn}
+                      busy={deletingIds.has(location.id)}
+                      onClick={() =>
+                        void handleDelete(location.id, location.name, location.worker_count)
+                      }
+                      title="Delete"
+                      label={`Delete compute location ${location.name}`}
+                    />
+                  )}
                 </td>
               </tr>
             ))}

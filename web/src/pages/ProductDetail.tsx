@@ -6,6 +6,8 @@ import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import { useProduct } from '@/api/queries'
 import { useDeleteProduct } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import type { ProductDuplicateState } from './ProductForm'
 import styles from './ProductDetail.module.css'
 
@@ -14,6 +16,8 @@ export default function ProductDetail() {
   const name = params.name ?? ''
   const navigate = useNavigate()
   const { showToast } = useToast()
+  const { principal } = useAuth()
+  const canManage = can(principal, 'products.manage')
   const { data: product, isLoading, isError } = useProduct(name)
   const deleteProduct = useDeleteProduct()
 
@@ -53,8 +57,8 @@ export default function ProductDetail() {
   }
 
   const isInstalled = product.source === 'installed'
-  const canEdit = product.source === 'custom'
-  const canDelete = product.source === 'custom' || isInstalled
+  const canEdit = canManage && product.source === 'custom'
+  const canDelete = canManage && (product.source === 'custom' || isInstalled)
 
   return (
     <div className={styles.page}>
@@ -64,9 +68,11 @@ export default function ProductDetail() {
         backLabel="Products"
         action={
           <div className={styles.actions}>
-            <button type="button" className={styles.actionBtn} onClick={handleDuplicate}>
-              Duplicate to custom
-            </button>
+            {canManage && (
+              <button type="button" className={styles.actionBtn} onClick={handleDuplicate}>
+                Duplicate to custom
+              </button>
+            )}
             {canEdit && (
               <Link
                 to={`/products/${encodeURIComponent(product.name)}/edit`}

@@ -10,9 +10,14 @@ import { useToast } from '@/components/Toast'
 import ErrorBanner from '@/components/ErrorBanner'
 import { useListUsagePools } from '@/api/queries'
 import { useDeleteUsagePool } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './UsagePoolList.module.css'
 
 export default function UsagePoolList() {
+  const { principal } = useAuth()
+  const canManage = can(principal, 'infra.manage')
+
   const { data: pools, isLoading, isError, error } = useListUsagePools()
   const deletePool = useDeleteUsagePool()
   const { showToast } = useToast()
@@ -47,9 +52,11 @@ export default function UsagePoolList() {
         backTo="/admin"
         subtitle={isLoading ? 'Loading…' : `${rows.length} pools`}
         action={
-          <Link to="/usage-pools/new" className={styles.newBtn}>
-            + New Usage Pool
-          </Link>
+          canManage ? (
+            <Link to="/usage-pools/new" className={styles.newBtn}>
+              + New Usage Pool
+            </Link>
+          ) : undefined
         }
       />
 
@@ -104,14 +111,16 @@ export default function UsagePoolList() {
                   </div>
                 </td>
                 <td>
-                  <IconButton
-                    icon={<Trash />}
-                    className={styles.deleteBtn}
-                    busy={deletingIds.has(pool.id)}
-                    onClick={() => void handleDelete(pool.id, pool.name)}
-                    title="Delete"
-                    label={`Delete usage pool ${pool.name}`}
-                  />
+                  {canManage && (
+                    <IconButton
+                      icon={<Trash />}
+                      className={styles.deleteBtn}
+                      busy={deletingIds.has(pool.id)}
+                      onClick={() => void handleDelete(pool.id, pool.name)}
+                      title="Delete"
+                      label={`Delete usage pool ${pool.name}`}
+                    />
+                  )}
                 </td>
               </tr>
             ))}
