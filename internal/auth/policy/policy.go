@@ -93,6 +93,25 @@ var All = []Permission{
 	APIKeysSelf, APIKeysAdmin,
 }
 
+// Roles returns a read-only snapshot of the role → permission grants matrix,
+// keyed by role name. It exists so tests (policy_test is an external test
+// package and cannot see the unexported grants var directly) can assert
+// against the real matrix instead of maintaining their own hand-copied
+// mirror of it — a mirror that, by construction, cannot notice when the real
+// matrix and the mirror drift apart. Each call returns a fresh deep copy, so
+// callers cannot mutate package state through it.
+func Roles() map[string]map[Permission]bool {
+	out := make(map[string]map[Permission]bool, len(grants))
+	for role, perms := range grants {
+		permsCopy := make(map[Permission]bool, len(perms))
+		for perm, ok := range perms {
+			permsCopy[perm] = ok
+		}
+		out[role] = permsCopy
+	}
+	return out
+}
+
 // PermissionsFor returns p's effective permissions as sorted strings, for
 // transmission to clients over GET /auth/me. Clients gate on these strings
 // directly rather than re-deriving them from roles, so the policy matrix lives
