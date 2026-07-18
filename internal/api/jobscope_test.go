@@ -5,10 +5,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/openjd"
@@ -182,4 +185,128 @@ func seedOwnedJob(t *testing.T, st *fake.Store, id, owner string) {
 	}); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
 	}
+}
+
+func TestRequireJobAccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		principal  auth.Principal
+		jobOwner   string
+		wantStatus int
+	}{
+		{
+			name:       "scoped principal reaches its own job",
+			principal:  auth.Principal{Username: "alice", Roles: []string{"user"}},
+			jobOwner:   "alice",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "scoped principal is refused another owner's job",
+			principal:  auth.Principal{Username: "alice", Roles: []string{"user"}},
+			jobOwner:   "bob",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "owner match is case-insensitive",
+			principal:  auth.Principal{Username: "Alice", Roles: []string{"user"}},
+			jobOwner:   "alice",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "scoped principal cannot see a job with no owner",
+			principal:  auth.Principal{Username: "alice", Roles: []string{"user"}},
+			jobOwner:   "",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "operator reaches any job",
+			principal:  auth.Principal{Username: "bob", Roles: []string{"operator"}},
+			jobOwner:   "alice",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "anonymous superuser reaches any job (auth-off regression)",
+			principal:  auth.Principal{Superuser: true, Kind: auth.KindAnonymous},
+			jobOwner:   "alice",
+			wantStatus: http.StatusOK,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			seedOwnedJob(t, st, "job-1", tt.jobOwner)
+			az := newAuthz(st, slog.New(slog.DiscardHandler))
+
+			reached := false
+			h := az.requireJobAccess()(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusOK)
+				}))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, jobRequest(t, "/jobs/{id}", "job-1", tt.principal))
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if reached != (tt.wantStatus == http.StatusOK) {
+				t.Errorf("handler reached = %v, want %v", reached, tt.wantStatus == http.StatusOK)
+			}
+		})
+	}
+}
+
+// A task route resolves ownership through the task's parent job.
+func TestRequireJobAccessViaTask(t *testing.T) {
+	st := fake.New()
+	seedOwnedJob(t, st, "job-1", "bob")
+	if _, err := st.CreateTask(context.Background(), store.Task{
+		ID: "task-1", JobID: "job-1", Status: store.TaskStatusReady,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	az := newAuthz(st, slog.New(slog.DiscardHandler))
+
+	h := az.requireJobAccess()(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jobRequest(t, "/tasks/{id}", "task-1",
+		auth.Principal{Username: "alice", Roles: []string{"user"}}))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (task belongs to bob's job)", rec.Code)
+	}
+}
+
+// A missing job must 404, not 403 — leaking "this id exists but isn't yours"
+// vs "this id doesn't exist" is a distinction the caller is entitled to when
+// the id doesn't exist at all.
+func TestRequireJobAccessUnknownJob(t *testing.T) {
+	st := fake.New()
+	az := newAuthz(st, slog.New(slog.DiscardHandler))
+
+	h := az.requireJobAccess()(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jobRequest(t, "/jobs/{id}", "nope",
+		auth.Principal{Username: "alice", Roles: []string{"user"}}))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// jobRequest builds a request carrying principal, with chi route context set
+// so RoutePattern() and URLParam("id") resolve the way the router supplies them.
+func jobRequest(t *testing.T, pattern, id string, principal auth.Principal) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+	rctx := chi.NewRouteContext()
+	rctx.RoutePatterns = []string{pattern}
+	rctx.URLParams.Add("id", id)
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	return req.WithContext(auth.NewContext(ctx, principal))
 }

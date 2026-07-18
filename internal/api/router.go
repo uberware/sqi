@@ -377,24 +377,30 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// jobs.read
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsRead))
+				// Collection route: scoped inside the handler via scopeFilter.
 				g.Get("/jobs", jobs.listJobs)
-				g.Get("/jobs/{id}", jobs.getJob)
-				g.Get("/jobs/{id}/tasks", tasks.listJobTasks)
-				g.Get("/tasks/{id}", tasks.getTask)
-				g.Get("/tasks/{id}/logs", tasks.getTaskLogs)
-				g.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
+				// Object routes: owner-enforced by requireJobAccess.
+				g.With(az.requireJobAccess()).Get("/jobs/{id}", jobs.getJob)
+				g.With(az.requireJobAccess()).Get("/jobs/{id}/tasks", tasks.listJobTasks)
+				g.With(az.requireJobAccess()).Get("/tasks/{id}", tasks.getTask)
+				g.With(az.requireJobAccess()).Get("/tasks/{id}/logs", tasks.getTaskLogs)
+				g.With(az.requireJobAccess()).Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
 			})
 			// jobs.write
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsWrite))
+				// Creation routes: no prior object; identity is bound in the
+				// handler (see submitidentity.go).
 				g.Post("/jobs", jobs.submitJob)
-				g.Patch("/jobs/{id}", jobs.patchJob)
-				g.Post("/jobs/{id}/cancel", jobs.cancelJob)
-				g.Post("/jobs/{id}/retry", jobs.retryJob)
-				g.Delete("/jobs/{id}", jobs.deleteJob)
-				g.Post("/tasks/{id}/retry", tasks.retryTask)
-				g.Post("/tasks/{id}/cancel", tasks.cancelTask)
 				g.Post("/products/{name}/jobs", products.submitProductJob)
+				// Object routes: owner-enforced. This is what closes B1's
+				// carried-forward gap, where a `user` could cancel any job.
+				g.With(az.requireJobAccess()).Patch("/jobs/{id}", jobs.patchJob)
+				g.With(az.requireJobAccess()).Post("/jobs/{id}/cancel", jobs.cancelJob)
+				g.With(az.requireJobAccess()).Post("/jobs/{id}/retry", jobs.retryJob)
+				g.With(az.requireJobAccess()).Delete("/jobs/{id}", jobs.deleteJob)
+				g.With(az.requireJobAccess()).Post("/tasks/{id}/retry", tasks.retryTask)
+				g.With(az.requireJobAccess()).Post("/tasks/{id}/cancel", tasks.cancelTask)
 			})
 
 			// workers.read / workers.manage
