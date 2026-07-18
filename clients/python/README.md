@@ -108,6 +108,12 @@ raw key is shown once at creation. Provide it to the SDK as `token=` (or via
 with `auth.enabled=true`. Browser sessions stay cookie-based; API keys are the
 machine credential. See `docs/auth.md` for the full model.
 
+### Discovering your permissions
+
+`client.me()` returns the authenticated `Principal`, including `permissions`.
+Check for `"jobs.submit_as"` before setting a job `owner` other than your own
+user — without it the server responds 403.
+
 ## Products
 
 Products are named, versioned wrappers around OpenJD templates that live in the
