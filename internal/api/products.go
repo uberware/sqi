@@ -270,11 +270,17 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(ctx, req.Owner, req.Submitter)
+	if identityStatus != 0 {
+		writeProblem(w, r, identityStatus, identityProblem)
+		return
+	}
+
 	result, err := h.submitter.Submit(ctx, p.Template, p.Format, openjd.SubmitOptions{
 		FarmID:            req.FarmID,
 		QueueID:           req.QueueID,
-		Owner:             req.Owner,
-		Submitter:         req.Submitter,
+		Owner:             owner,
+		Submitter:         submitter,
 		Priority:          req.Priority,
 		Project:           req.Project,
 		Name:              req.Name,

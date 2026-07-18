@@ -254,11 +254,19 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(
+		ctx, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
+	)
+	if identityStatus != 0 {
+		writeProblem(w, r, identityStatus, identityProblem)
+		return
+	}
+
 	opts := openjd.SubmitOptions{
 		FarmID:            farmID,
 		QueueID:           queueID,
-		Owner:             r.URL.Query().Get("owner"),
-		Submitter:         r.URL.Query().Get("submitter"),
+		Owner:             owner,
+		Submitter:         submitter,
 		Priority:          priority,
 		Project:           r.URL.Query().Get("project"),
 		Parameters:        parseParamQueryParams(r.URL.Query()),
