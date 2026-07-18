@@ -112,9 +112,9 @@ describe('Sidebar', () => {
 
   it('Phase 1 links point to correct paths', async () => {
     renderSidebar()
-    expect(
-      (await screen.findByRole('link', { name: 'Submit' })).getAttribute('href'),
-    ).toBe('/submit')
+    expect((await screen.findByRole('link', { name: 'Submit' })).getAttribute('href')).toBe(
+      '/submit',
+    )
     expect(
       (screen.getByRole('link', { name: 'Dashboard' }) as HTMLAnchorElement).getAttribute('href'),
     ).toBe('/')
@@ -183,6 +183,51 @@ describe('Sidebar', () => {
   it('renders the theme toggle switch in the footer', () => {
     renderSidebar()
     expect(screen.getByRole('switch', { name: /dark mode/i })).toBeInTheDocument()
+  })
+
+  describe('nav filtering by permission', () => {
+    it('read-only principal: Submit absent, Jobs/Workers/Dashboard/Admin present', async () => {
+      renderSidebarAs({
+        subject: 'u2',
+        display_name: 'Read Only User',
+        roles: ['read-only'],
+        kind: 'user',
+      })
+      // read-only lacks jobs.write, but holds apikeys.self, which is enough
+      // for the Admin hub's api-keys card — so Admin should still show.
+      expect(await screen.findByRole('link', { name: 'Admin' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Jobs' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Workers' })).toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'Submit' })).not.toBeInTheDocument()
+    })
+
+    it('admin principal: Submit, Jobs, Workers, Admin all present', async () => {
+      renderSidebarAs({
+        subject: 'u3',
+        display_name: 'Admin User',
+        roles: ['admin'],
+        kind: 'user',
+      })
+      expect(await screen.findByRole('link', { name: 'Submit' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Jobs' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Workers' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Admin' })).toBeInTheDocument()
+    })
+
+    it('principal with no known role: Submit and Admin absent', async () => {
+      renderSidebarAs({
+        subject: 'u4',
+        display_name: 'Unknown Role User',
+        roles: ['nonexistent-role'],
+        kind: 'user',
+      })
+      // Dashboard is ungated, so wait on it to let /auth/me resolve before
+      // asserting the absent items.
+      await screen.findByRole('link', { name: 'Dashboard' })
+      expect(screen.queryByRole('link', { name: 'Submit' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument()
+    })
   })
 
   describe('logout control', () => {
