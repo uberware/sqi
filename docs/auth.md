@@ -55,6 +55,13 @@ Accounts are created two ways:
   `PATCH /api/v1/users/{id}` (display name / role / disabled),
   `PUT /api/v1/users/{id}/password`, `DELETE /api/v1/users/{id}`.
 
+Disabling a user (`disabled: true`) takes effect immediately: the session
+authenticator re-checks the user record on every request and rejects a
+disabled account's session outright (`internal/auth/session/session.go`), and
+`POST /auth/login` refuses a disabled account with the same generic 401 as a
+bad password. Deleting a user cascades to its sessions — see
+[Login & sessions](#login--sessions).
+
 ## Roles & permissions
 
 As of component B1, roles are enforced on every route. There are four
@@ -108,13 +115,6 @@ out of user management.
 - `apikeys.admin` (an admin managing another user's API keys) is defined in
   the policy above, but the `/api-keys` handlers remain self-scoped for
   now — see [API keys](#api-keys).
-
-Disabling a user (`disabled: true`) takes effect immediately: the session
-authenticator re-checks the user record on every request and rejects a
-disabled account's session outright (`internal/auth/session/session.go`), and
-`POST /auth/login` refuses a disabled account with the same generic 401 as a
-bad password. Deleting a user cascades to its sessions — see
-[Login & sessions](#login--sessions).
 
 ## Login & sessions
 

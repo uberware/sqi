@@ -15,9 +15,9 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
-// mount builds a tiny router that injects principal p, gates GET /x on perm,
-// and records whether the wrapped handler ran.
-func mountAuthz(t *testing.T, st store.Store, p auth.Principal, perm policy.Permission) (*httptest.Server, *bool) {
+// mount builds a tiny router that injects principal p, gates GET pattern on
+// perm, and records whether the wrapped handler ran.
+func mountAuthz(t *testing.T, st store.Store, p auth.Principal, perm policy.Permission, pattern string) (*httptest.Server, *bool) {
 	t.Helper()
 	ran := new(bool)
 	az := newAuthz(st, newTestLogger())
@@ -28,7 +28,7 @@ func mountAuthz(t *testing.T, st store.Store, p auth.Principal, perm policy.Perm
 				next.ServeHTTP(w, req.WithContext(auth.NewContext(req.Context(), p)))
 			})
 		})
-		g.With(az.require(perm)).Get("/x", func(w http.ResponseWriter, _ *http.Request) {
+		g.With(az.require(perm)).Get(pattern, func(w http.ResponseWriter, _ *http.Request) {
 			*ran = true
 			w.WriteHeader(http.StatusOK)
 		})
@@ -41,9 +41,12 @@ func mountAuthz(t *testing.T, st store.Store, p auth.Principal, perm policy.Perm
 func TestRequirePermission_DeniesAndAudits(t *testing.T) {
 	st := fake.New()
 	p := auth.Principal{Subject: "u1", Roles: []string{"read-only"}, Kind: auth.KindUser}
-	srv, ran := mountAuthz(t, st, p, policy.JobsWrite)
+	// A parameterized pattern ("/x/{id}") requested with a concrete,
+	// attacker-choosable value ("/x/zzz") lets this test tell the audited
+	// EntityID (the route pattern) apart from the raw request path.
+	srv, ran := mountAuthz(t, st, p, policy.JobsWrite, "/x/{id}")
 
-	resp, err := getURL(t, srv.URL+"/x")
+	resp, err := getURL(t, srv.URL+"/x/zzz")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -61,12 +64,19 @@ func TestRequirePermission_DeniesAndAudits(t *testing.T) {
 	if len(entries) != 1 || entries[0].Action != "denied" || entries[0].Actor != "u1" {
 		t.Fatalf("audit = %+v, want one authz/denied entry for u1", entries)
 	}
+	entry := entries[0]
+	if entry.EntityID != "/x/{id}" {
+		t.Errorf("EntityID = %q, want the route pattern %q (not the raw path, which is attacker-controlled and unbounded)", entry.EntityID, "/x/{id}")
+	}
+	if got := entry.Details["path"]; got != "/x/zzz" {
+		t.Errorf("Details[\"path\"] = %v, want %q (raw path must still be recoverable)", got, "/x/zzz")
+	}
 }
 
 func TestRequirePermission_AllowsGranted(t *testing.T) {
 	st := fake.New()
 	p := auth.Principal{Subject: "u2", Roles: []string{"operator"}, Kind: auth.KindUser}
-	srv, ran := mountAuthz(t, st, p, policy.JobsWrite)
+	srv, ran := mountAuthz(t, st, p, policy.JobsWrite, "/x")
 
 	resp, err := getURL(t, srv.URL+"/x")
 	if err != nil {
@@ -81,7 +91,7 @@ func TestRequirePermission_AllowsGranted(t *testing.T) {
 func TestRequirePermission_SuperuserBypasses(t *testing.T) {
 	st := fake.New()
 	p := auth.Principal{Superuser: true, Kind: auth.KindAnonymous}
-	srv, ran := mountAuthz(t, st, p, policy.UsersManage)
+	srv, ran := mountAuthz(t, st, p, policy.UsersManage, "/x")
 
 	resp, err := getURL(t, srv.URL+"/x")
 	if err != nil {

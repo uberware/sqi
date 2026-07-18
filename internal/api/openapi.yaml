@@ -28,17 +28,21 @@ info:
     ## Authorization
 
     Every route under `/api/v1` except `POST /auth/login`, `POST
-    /auth/logout`, `GET /auth/me`, and `GET /version` is gated on the
-    caller's role holding a specific permission (`jobs.read`, `jobs.write`,
-    `workers.read`, `workers.manage`, `infra.read`, `infra.manage`,
-    `products.read`, `products.manage`, `diagnostics.read`, `users.read`,
-    `users.manage`, `apikeys.self`, `apikeys.admin`) — see the
+    /auth/logout`, `GET /auth/me`, `GET /version`, and `GET /openapi.yaml` is
+    gated on the caller's role holding a specific permission (`jobs.read`,
+    `jobs.write`, `workers.read`, `workers.manage`, `infra.read`,
+    `infra.manage`, `products.read`, `products.manage`, `diagnostics.read`,
+    `users.read`, `users.manage`, `apikeys.self`, `apikeys.admin`) — see the
     `read-only`/`user`/`operator`/`admin` role matrix. A request from an
     authenticated principal lacking the required permission receives
     `403 Forbidden` (`#/components/responses/Forbidden`); this is distinct
     from `401 Unauthorized`, which means no valid principal was established
     at all. When auth is disabled server-side, every request is treated as
-    an anonymous superuser and no route returns 403.
+    an anonymous superuser and no route returns 403. `GET /ws` (the
+    WebSocket upgrade) is likewise not gated by the permission matrix, but is
+    not unauthenticated either: it runs its own upgrade hook (a valid
+    principal is still required) plus a subject-level `diagnostics.read`
+    check before allowing a subscription to the diagnostics feed.
   version: "0.2.0"
   license:
     name: AGPL-3.0-or-later
@@ -3072,11 +3076,10 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/ProductParameter' }
-        '404': { description: Product not found }
-        '422': { description: The product's stored template could not be parsed }
-
         "403":
           $ref: "#/components/responses/Forbidden"
+        '404': { description: Product not found }
+        '422': { description: The product's stored template could not be parsed }
   # ── Presets ────────────────────────────────────────────────────────────────
 
   /presets:

@@ -2,8 +2,11 @@
 
 package api
 
-// User-admin REST handlers (Phase 3, component A1). Authorization is gated only
-// to authenticated callers until B1 adds role enforcement.
+// User-admin REST handlers (Phase 3, component A1). Routes require
+// users.read (GET) or users.manage (create/update/set-password/delete), both
+// admin-only in the built-in role matrix (internal/auth/policy). Mutations
+// that would disable, demote, or delete the last enabled admin are rejected
+// (409) so the user store can never lock itself out of admin access.
 //
 //	POST   /api/v1/users              — create
 //	GET    /api/v1/users              — list
