@@ -168,6 +168,44 @@ func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 	}
 }
 
+// TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty pins a Task-8
+// review finding: 7 of the 9 production NotifyJob call sites never populate
+// JobEvent.Owner (only internal/scheduler/retry.go does). Without a fallback
+// to the owner cache — the same fallback NotifyTask already had — a scoped
+// client's own job-status events would be silently dropped by Scope.allows
+// because env.owner == "" matches no real username. The hub must resolve
+// ownership via the injected jobOwner lookup exactly as NotifyTask does.
+func TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler), func(jobID string) string {
+		if jobID == "job-1" {
+			return "alice"
+		}
+		return ""
+	})
+
+	ch := h.Register("c1", Scope{Owner: "alice"})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// JobEvent.Owner intentionally left empty: only the injected resolver
+	// knows job-1 belongs to alice, matching the real call sites.
+	h.NotifyJob(JobEvent{JobID: "job-1", Status: "running"})
+
+	env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("scoped client did not receive NotifyJob push for its own job " +
+			"when JobEvent.Owner was empty and only the resolver knew the owner")
+	}
+	var push JobSummaryPush
+	if err := json.Unmarshal(env.Payload, &push); err != nil {
+		t.Fatalf("unmarshal push: %v", err)
+	}
+	if push.JobID != "job-1" {
+		t.Fatalf("job_id = %q, want %q", push.JobID, "job-1")
+	}
+}
+
 func TestHub_NotifyTask_FansToJobsAndTaskSubject(t *testing.T) {
 	h := newTestHub()
 	const jobID = "job-abc"

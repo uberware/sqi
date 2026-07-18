@@ -371,7 +371,7 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	})
 	if err == nil {
 		env.ownerScoped = true
-		env.owner = h.owners.get(e.JobID)
+		env.owner = h.resolveOwner("", e.JobID)
 		h.fanout(SubjectJobs, env)
 	} else {
 		h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
@@ -457,7 +457,7 @@ func (h *Hub) NotifyJob(e JobEvent) {
 		return
 	}
 	env.ownerScoped = true
-	env.owner = e.Owner
+	env.owner = h.resolveOwner(e.Owner, e.JobID)
 	h.fanout(SubjectJobs, env)
 }
 
@@ -485,6 +485,21 @@ func (h *Hub) NotifyDiag(e DiagEvent) {
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────
+
+// resolveOwner returns owner when it is already known (non-empty), otherwise
+// falls back to the owner-cache lookup keyed by jobID.
+//
+// Shared by NotifyJob and NotifyTask so this fallback can't drift between two
+// copies again: most production NotifyJob call sites never populate
+// JobEvent.Owner (only the retry path does), and TaskEvent carries no owner
+// field at all, so both always need the cache — NotifyJob just also gets a
+// cheap shortcut when its caller happens to already have the owner in hand.
+func (h *Hub) resolveOwner(owner, jobID string) string {
+	if owner != "" {
+		return owner
+	}
+	return h.owners.get(jobID)
+}
 
 // hasSubscribers reports whether subject currently has at least one subscribed
 // client.  Used by Notify* methods to skip JSON marshaling when there is nobody

@@ -314,7 +314,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── WebSocket hub ────────────────────────────────────────
 	// The hub bridges scheduler events to subscribed WebSocket clients.
 	// It is created before the scheduler so it can be passed as the notifier.
-	s.wsHub = ws.NewHub(s.logger, wsJobOwnerResolver(st))
+	s.wsHub = newWSHub(s.logger, st)
 	s.logger.InfoContext(ctx, "ws: hub created")
 
 	// Wire the diagnostic buffer's notifier to the hub now that the hub exists,
@@ -430,17 +430,37 @@ func (s *Server) start(ctx context.Context) error {
 	return nil
 }
 
+// wsJobOwnerResolverTimeout bounds each wsJobOwnerResolver lookup. The query
+// is a single indexed primary-key read (jobs.id), so this is generous
+// headroom rather than a tuned budget — its purpose is only to guarantee the
+// call returns, since it runs on the calling scheduler goroutine inside
+// NotifyTask/NotifyJob and an unbounded context.Background() call would block
+// that goroutine indefinitely if the store ever hung.
+const wsJobOwnerResolverTimeout = 2 * time.Second
+
 // wsJobOwnerResolver returns a jobID → owner lookup for [ws.NewHub], backed by
 // st. Job ownership is immutable, so the hub caches results; a failed lookup
-// returns "" and fails closed for scoped clients.
+// (including a timeout) returns "" and fails closed for scoped clients.
 func wsJobOwnerResolver(st store.Store) func(jobID string) string {
 	return func(jobID string) string {
-		job, err := st.GetJob(context.Background(), jobID)
+		ctx, cancel := context.WithTimeout(context.Background(), wsJobOwnerResolverTimeout)
+		defer cancel()
+		job, err := st.GetJob(ctx, jobID)
 		if err != nil {
 			return ""
 		}
 		return job.Owner
 	}
+}
+
+// newWSHub constructs the WebSocket hub used by (*Server).start, wired to a
+// real job-owner resolver backed by st. Extracted to a named function (rather
+// than inlined at the ws.NewHub call site) so this wiring is directly
+// testable without booting the full server: a regression that silently drops
+// the resolver back to nil (ws.NewHub(logger, nil), the pre-Task-8
+// placeholder) would otherwise be invisible to every test in this package.
+func newWSHub(logger *slog.Logger, st store.Store) *ws.Hub {
+	return ws.NewHub(logger, wsJobOwnerResolver(st))
 }
 
 // selectAuth chooses the authenticator wired into the HTTP router. When auth

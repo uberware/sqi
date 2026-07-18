@@ -1019,3 +1019,66 @@ func TestWSSubscribeJobSubjects_UnresolvableJobFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents pins the two things the
+// Task-8 review found had zero coverage:
+//
+//  1. readLoop's Register call (ws.go) must actually pass the connection's
+//     real scope (internalws.Scope{Owner: owner, All: !scoped}) derived from
+//     scopeFilter, not the pre-Task-8 Scope{All: true} placeholder — this is
+//     exercised end to end via a real WebSocket connection over
+//     newWSTestServerScoped, not by calling hub.Register directly.
+//  2. NotifyJob's owner resolution: JobEvent.Owner is left empty here on
+//     purpose, matching the real production call sites (Finding 1) — the hub
+//     must resolve ownership via the injected owner-cache resolver.
+//
+// A scoped client subscribed to the global "jobs" subject must receive the
+// push for its own job and must never receive the push for another owner's
+// job.
+func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
+	st := fake.New()
+	seedOwnedJob(t, st, "job-alice", "alice")
+	seedOwnedJob(t, st, "job-bob", "bob")
+
+	hub := internalws.NewHub(newTestLogger(), func(jobID string) string {
+		job, err := st.GetJob(context.Background(), jobID)
+		if err != nil {
+			return ""
+		}
+		return job.Owner
+	})
+
+	srv := newWSTestServerScoped(t, hub, st, auth.Principal{Username: "alice", Roles: []string{"user"}})
+	conn := dialTestWS(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypeSubscribe, Subject: internalws.SubjectJobs, Seq: 1})
+	mustAck(t, ctx, conn, 1)
+
+	// Own job's status transition — JobEvent.Owner deliberately left empty.
+	hub.NotifyJob(internalws.JobEvent{JobID: "job-alice", Status: "running"})
+	// Another owner's job transition — must never reach alice's connection.
+	hub.NotifyJob(internalws.JobEvent{JobID: "job-bob", Status: "running"})
+
+	env := wsRead(t, ctx, conn)
+	if env.Type != internalws.TypePush || env.Subject != internalws.SubjectJobs {
+		t.Fatalf("expected jobs push, got type=%q subject=%q", env.Type, env.Subject)
+	}
+	var push internalws.JobSummaryPush
+	if err := json.Unmarshal(env.Payload, &push); err != nil {
+		t.Fatalf("unmarshal push: %v", err)
+	}
+	if push.JobID != "job-alice" {
+		t.Fatalf("job_id = %q, want %q (own job)", push.JobID, "job-alice")
+	}
+
+	// Confirm job-bob's event never arrives: a ping/pong round-trip must be
+	// the very next frame, not a second push.
+	wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypePing})
+	pong := wsRead(t, ctx, conn)
+	if pong.Type != internalws.TypePong {
+		t.Fatalf("expected TypePong (no cross-owner push queued), got type=%q subject=%q", pong.Type, pong.Subject)
+	}
+}

@@ -486,6 +486,10 @@ func (wc *wsConn) authorizeSubscribe(ctx context.Context, subject string) string
 	if jobID, taskID, ok := parseJobScopedSubject(subject); ok {
 		allowed, err := wc.subjectAllowed(ctx, jobID, taskID)
 		if err != nil {
+			// Matches the REST equivalent's Error-level log (jobscope.go's
+			// requireJobAccess): a store outage on this gate must be visible to
+			// operators, not just surfaced as an opaque ack error to the client.
+			wc.logger.ErrorContext(ctx, "authz: job access lookup failed", slog.Any("error", err))
 			return "failed to resolve job"
 		}
 		if !allowed {
