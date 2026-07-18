@@ -151,3 +151,62 @@ def test_job_options_from_props_empty_is_none() -> None:
         failure_limit = 0
 
     assert _job_options_from_props(P()) is None
+
+
+class _StubSession:
+    """Minimal SubmitterSession stand-in exposing only may_submit_as."""
+
+    def __init__(self, may_submit_as: bool) -> None:
+        self.may_submit_as = may_submit_as
+
+
+def test_job_options_from_props_strips_owner_without_permission() -> None:
+    from sqi_submitter.hosts.blender.addon import _job_options_from_props
+
+    class P:
+        owner = "alice"
+        project = ""
+        priority = 80
+        max_attempts = 0
+        retry_delay_seconds = 0
+        failure_limit = 0
+
+    session = _StubSession(may_submit_as=False)
+    opts = _job_options_from_props(P(), session)  # type: ignore[arg-type]
+    assert opts is not None
+    assert opts.owner is None
+    assert opts.priority == 80
+
+
+def test_job_options_from_props_keeps_owner_with_permission() -> None:
+    from sqi_submitter.hosts.blender.addon import _job_options_from_props
+
+    class P:
+        owner = "alice"
+        project = ""
+        priority = 0
+        max_attempts = 0
+        retry_delay_seconds = 0
+        failure_limit = 0
+
+    session = _StubSession(may_submit_as=True)
+    opts = _job_options_from_props(P(), session)  # type: ignore[arg-type]
+    assert opts is not None
+    assert opts.owner == "alice"
+
+
+def test_job_options_from_props_defaults_open_without_session() -> None:
+    """No session yet (e.g. before the first Refresh) must not strip owner."""
+    from sqi_submitter.hosts.blender.addon import _job_options_from_props
+
+    class P:
+        owner = "alice"
+        project = ""
+        priority = 0
+        max_attempts = 0
+        retry_delay_seconds = 0
+        failure_limit = 0
+
+    opts = _job_options_from_props(P())
+    assert opts is not None
+    assert opts.owner == "alice"

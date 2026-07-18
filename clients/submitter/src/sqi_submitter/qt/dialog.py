@@ -194,6 +194,7 @@ class SubmitDialog(QtWidgets.QDialog):
         group.setCheckable(True)
         group.setChecked(False)
 
+        self._owner_label = QtWidgets.QLabel("Owner", group)
         self._owner_edit = QtWidgets.QLineEdit(group)
         self._owner_edit.setObjectName("ownerEdit")
 
@@ -221,12 +222,21 @@ class SubmitDialog(QtWidgets.QDialog):
         self._failure_limit_spin.setSpecialValueText("Inherit")
 
         form = QtWidgets.QFormLayout(group)
-        form.addRow("Owner", self._owner_edit)
+        form.addRow(self._owner_label, self._owner_edit)
         form.addRow("Priority", self._priority_spin)
         form.addRow("Project", self._project_edit)
         form.addRow("Max attempts", self._max_attempts_spin)
         form.addRow("Retry delay (s)", self._retry_delay_spin)
         form.addRow("Failure limit", self._failure_limit_spin)
+
+        # The Owner override is only meaningful (and only accepted by the
+        # server) for a credential holding jobs.submit_as; hide it otherwise
+        # so an artist never fills it in only to be 403'd at submit time.
+        # session.may_submit_as fails OPEN when unknown (see its docstring) —
+        # this is a UI affordance, the server is the real enforcement point.
+        owner_visible = self.session.may_submit_as
+        self._owner_label.setVisible(owner_visible)
+        self._owner_edit.setVisible(owner_visible)
         return group
 
     def _wire_signals(self) -> None:
@@ -415,7 +425,7 @@ class SubmitDialog(QtWidgets.QDialog):
         if not self._advanced_group.isChecked():
             return None
         opts = JobOptions(
-            owner=self._owner_edit.text() or None,
+            owner=(self._owner_edit.text() or None) if self.session.may_submit_as else None,
             priority=self._priority_spin.value() or None,
             project=self._project_edit.text() or None,
             max_attempts=self._max_attempts_spin.value() or None,

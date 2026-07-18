@@ -99,14 +99,24 @@ def _prop_name(field_name: str) -> str:
     return f"sqi_field_{field_name}"
 
 
-def _job_options_from_props(props: Any) -> JobOptions | None:
-    """Build JobOptions from panel props; 0 / '' means unset (inherit)."""
+def _job_options_from_props(
+    props: Any, session: SubmitterSession | None = None
+) -> JobOptions | None:
+    """Build JobOptions from panel props; 0 / '' means unset (inherit).
+
+    ``owner`` is only forwarded when ``session`` says this credential may set
+    it (``session.may_submit_as``, which fails OPEN when unknown/unavailable
+    — a UI affordance, not the enforcement point; see its docstring). No
+    session yet (e.g. before the first Refresh) is treated the same way:
+    unknown, so the field is not stripped.
+    """
 
     def _opt(v: int) -> int | None:
         return v if v > 0 else None
 
+    may_submit_as = session is None or session.may_submit_as
     opts = JobOptions(
-        owner=(props.owner or None),
+        owner=(props.owner or None) if may_submit_as else None,
         project=(props.project or None),
         priority=_opt(props.priority),
         max_attempts=_opt(props.max_attempts),
@@ -469,7 +479,7 @@ def _make_classes() -> list[Any]:
                     job_name=props.job_name or None,
                     adapter=_state["adapter"],
                     save_scene=props.save_before_submit,
-                    job_options=_job_options_from_props(props),
+                    job_options=_job_options_from_props(props, session),
                 )
             except FormInvalidError as exc:
                 _state["field_errors"] = dict(exc.errors)
@@ -519,7 +529,11 @@ def _make_classes() -> list[Any]:
 
             adv = layout.box()
             adv.label(text="Advanced (job overrides)")
-            adv.prop(props, "owner")
+            # Hide Owner unless this session may set it (fails open when
+            # unknown/no session yet — see _job_options_from_props).
+            session = _state["session"]
+            if session is None or session.may_submit_as:
+                adv.prop(props, "owner")
             adv.prop(props, "priority")
             adv.prop(props, "project")
             adv.prop(props, "max_attempts")
