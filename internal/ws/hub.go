@@ -358,23 +358,29 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 		now = time.Now().UTC()
 	}
 
-	// Job-summary push (SubjectJobs) — always ring it (like NotifyJob), even
-	// when no clients are currently subscribed: a scoped client that
-	// subscribes moments later must be able to replay it via since_seq: 0 and
-	// have it filtered by Scope.allows, rather than have it silently never
-	// buffered.
-	env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
-		JobID:     e.JobID,
-		TaskID:    e.TaskID,
-		Status:    e.Status,
-		UpdatedAt: now,
-	})
-	if err == nil {
-		env.ownerScoped = true
-		env.owner = h.resolveOwner("", e.JobID)
-		h.fanout(SubjectJobs, env)
-	} else {
-		h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
+	// Job-summary push (SubjectJobs) — ring it even when no clients are
+	// currently subscribed, so a scoped client that subscribes moments later
+	// can replay it via since_seq: 0 and have it filtered by Scope.allows,
+	// rather than have it silently never buffered. That only matters when the
+	// hub has an owner resolver at all (auth on): with auth off (h.owners.
+	// lookup == nil) there is no such thing as a scoped client, so this must
+	// fall back to the pre-B2 hasSubscribers guard — otherwise the highest-
+	// frequency event in the system unconditionally marshals JSON and takes
+	// the ring mutex on every task transition even with nobody connected.
+	if h.owners.lookup != nil || h.hasSubscribers(SubjectJobs) {
+		env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
+			JobID:     e.JobID,
+			TaskID:    e.TaskID,
+			Status:    e.Status,
+			UpdatedAt: now,
+		})
+		if err == nil {
+			env.ownerScoped = true
+			env.owner = h.resolveOwner("", e.JobID)
+			h.fanout(SubjectJobs, env)
+		} else {
+			h.logger.WarnContext(context.Background(), "ws: hub: NotifyTask jobs envelope", slog.Any("error", err))
+		}
 	}
 
 	// Per-job task-update push — skip marshal when no subscribers.
@@ -435,11 +441,20 @@ func (h *Hub) NotifyLog(e LogEvent) {
 
 // NotifyJob fans a job-status change to all SubjectJobs subscribers.
 //
-// The envelope is always stored in the ring buffer (like NotifyLog), even
-// when no clients are currently subscribed: a scoped client that subscribes
-// moments later must be able to replay it via since_seq: 0 and have it
-// filtered by Scope.allows, rather than have it silently never buffered.
+// When the hub has an owner resolver (auth on), the envelope is always
+// stored in the ring buffer (like NotifyLog), even when no clients are
+// currently subscribed: a scoped client that subscribes moments later must
+// be able to replay it via since_seq: 0 and have it filtered by
+// Scope.allows, rather than have it silently never buffered. With auth off
+// (h.owners.lookup == nil) there are no scoped clients to replay for, so this
+// falls back to the pre-B2 hasSubscribers guard to keep the auth-off hot path
+// unchanged: zero marshal, zero ring-mutex acquisition, with nobody
+// connected.
 func (h *Hub) NotifyJob(e JobEvent) {
+	if h.owners.lookup == nil && !h.hasSubscribers(SubjectJobs) {
+		return
+	}
+
 	now := e.UpdatedAt
 	if now.IsZero() {
 		now = time.Now().UTC()

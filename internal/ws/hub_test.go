@@ -314,8 +314,16 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 // is subscribed at emit time, matching NotifyJob's behavior — otherwise
 // SubjectJobs replay history is complete for job-status events but silently
 // incomplete for task-summary events emitted while nobody was subscribed.
+//
+// This guarantee is specifically the auth-on one: it exists so a scoped
+// client that subscribes moments after the event can still replay it. With
+// auth off (no owner resolver) there is no such thing as a scoped client, and
+// the hub instead falls back to the pre-B2 hasSubscribers guard to keep the
+// zero-subscriber hot path cheap (see TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing).
+// So this test needs a hub WITH an owner resolver to exercise the guarantee
+// it names, unlike the plain newTestHub() used elsewhere in this file.
 func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
-	h := newTestHub()
+	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "owner" })
 
 	// Fire with NO active SubjectJobs subscribers — previously this was a
 	// no-op for the SubjectJobs push because of a hasSubscribers guard.
@@ -333,6 +341,70 @@ func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
 	}
 	if env.Subject != SubjectJobs {
 		t.Fatalf("expected subject %q, got %q", SubjectJobs, env.Subject)
+	}
+}
+
+// TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing is the regression test
+// for I-4: with auth disabled (no owner resolver — NewHub(logger, nil), same
+// as newTestHub()) and zero connected clients, NotifyJob and NotifyTask must
+// not populate the SubjectJobs ring at all — mirroring the pre-B2 hasSubscribers
+// guard. A late subscriber with since_seq: 0 (what web/src/ws/client.ts always
+// sends) must therefore replay nothing, not the events that fired before it
+// connected. Before this fix 5 NotifyJob + 5 NotifyTask calls with nobody
+// connected produced 10 replayed envelopes for the first-ever subscriber;
+// pre-B2 (and after this fix) it produces 0.
+func TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing(t *testing.T) {
+	h := newTestHub() // NewHub(logger, nil) — no owner resolver, i.e. auth off
+
+	for i := range 5 {
+		h.NotifyJob(JobEvent{JobID: fmt.Sprintf("j%d", i), Status: "pending"})
+		h.NotifyTask(TaskEvent{JobID: fmt.Sprintf("j%d", i), TaskID: fmt.Sprintf("t%d", i), Status: "running"})
+	}
+
+	ch := h.Register("c1", Scope{All: true})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	if env, ok := drainOrTimeout(ch, 100*time.Millisecond); ok {
+		t.Fatalf("expected no replayed envelopes on an auth-off hub with no prior subscribers, got %+v", env)
+	}
+}
+
+// TestHub_NotifyJob_AuthOn_NoSubscribers_StillRingsForReplay is the auth-on
+// counterpart to TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing: when
+// the hub has an owner resolver (auth on), NotifyJob and NotifyTask must keep
+// ringing the SubjectJobs buffer even with zero clients connected, so a
+// scoped client that subscribes moments later can still replay the events —
+// the behavior B2 introduced and that this fix must not regress.
+func TestHub_NotifyJob_AuthOn_NoSubscribers_StillRingsForReplay(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "owner" })
+
+	for i := range 5 {
+		h.NotifyJob(JobEvent{JobID: fmt.Sprintf("j%d", i), Status: "pending"})
+		h.NotifyTask(TaskEvent{JobID: fmt.Sprintf("j%d", i), TaskID: fmt.Sprintf("t%d", i), Status: "running"})
+	}
+
+	ch := h.Register("c1", Scope{All: true})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// Subscribe replays synchronously (directly into the client's buffered
+	// send channel) before it returns, so the buffered count is stable here
+	// without needing a timeout-based drain.
+	n := 0
+	for {
+		select {
+		case <-ch:
+			n++
+		default:
+			goto done
+		}
+	}
+done:
+	if n != 10 {
+		t.Fatalf("expected 10 replayed envelopes (5 NotifyJob + 5 NotifyTask) on an auth-on hub, got %d", n)
 	}
 }
 
