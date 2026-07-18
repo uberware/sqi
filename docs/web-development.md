@@ -206,6 +206,39 @@ requests without any client-side bookkeeping.
 
 ---
 
+## Role gating (`can`, `<RequireRole>`, nav/card filtering)
+
+As of component B1, the web UI mirrors the server's role→permission matrix
+(`docs/auth.md#roles--permissions`) so nav items, Admin-hub cards, and route
+access all agree with what the server would actually allow.
+
+`can(principal, perm)` (`src/auth/policy.ts`) is the single source of truth
+on the client: a `GRANTS` map from role → the set of `Permission` strings it
+holds, kept in lockstep with the Go grants map
+(`internal/auth/policy/policy.go`) and the matrix in `docs/auth.md`. It
+returns `true` whenever `principal.kind === 'anonymous'` — the principal
+`/auth/me` returns when the server has `auth.enabled=false` — so an auth-off
+deployment never hides anything, and `false` for a `null` principal (identity
+not yet resolved).
+
+`<RequireRole permission="…">` (`src/components/RequireRole.tsx`) is a route
+guard: it renders `children` if `can(principal, permission)`, otherwise a
+friendly "Not authorized" page instead of a broken fetch. Wrap any
+admin/operator-only route in `routes.tsx` with it (see the `infra.manage`-,
+`users.manage`-, and `jobs.write`-gated routes there) so deep-linking to a
+page a role can't use degrades cleanly.
+
+Nav and card registries filter the same way: `Sidebar.tsx`'s `PHASE1_NAV`
+entries carry an optional `permission`, and `visibleNavItems` drops any item
+`can()` denies; `Admin.tsx`'s `ADMIN_LINKS` entries each carry a required
+`permission`, and the card grid is `ADMIN_LINKS.filter((link) =>
+can(principal, link.permission))`. A control that mutates state (a Delete
+button, a create form) should be hidden or disabled with the same `can()`
+check rather than relying on the route guard alone — the guard stops
+navigation, `can()` stops rendering the affordance in the first place.
+
+---
+
 ## Adding a new API query hook
 
 The REST layer lives in `web/src/api/`. A read endpoint is added in three steps:
