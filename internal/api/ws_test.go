@@ -75,6 +75,26 @@ func (s stubWSAuthenticator) Authenticate(*http.Request) (auth.Principal, error)
 	return auth.Principal{}, s.err
 }
 
+// stubPrincipalAuthenticator is a test [auth.Authenticator] that always
+// succeeds, returning principal unmodified. Used to exercise subject-level
+// permission gates (e.g. SubjectDiagnostics) with a specific role set.
+type stubPrincipalAuthenticator struct{ principal auth.Principal }
+
+func (s stubPrincipalAuthenticator) Authenticate(*http.Request) (auth.Principal, error) {
+	return s.principal, nil
+}
+
+// newWSTestServerWithPrincipal starts an httptest.Server serving wsHandler
+// authenticated as principal, for tests exercising subject-level permission
+// gates.
+func newWSTestServerWithPrincipal(t *testing.T, hub *internalws.Hub, principal auth.Principal) *httptest.Server {
+	t.Helper()
+	h := newWSHandler(newTestLogger(), hub, stubPrincipalAuthenticator{principal: principal}, wsOriginConfig{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // wsTestURL converts the http://… address of srv to ws://….
 func wsTestURL(srv *httptest.Server) string {
 	return "ws" + srv.URL[len("http"):]
@@ -291,6 +311,96 @@ func TestWSHandler_Subscribe_InvalidSubject_ReturnsError(t *testing.T) {
 	if ack.Error == "" {
 		t.Fatal("expected non-empty Error for unrecognized subject")
 	}
+}
+
+// TestWSSubscribe_DiagnosticsRequiresPermission pins the diagnostics.read gate
+// on the SubjectDiagnostics WebSocket subject: operator (and superuser/
+// anonymous) principals may subscribe, read-only principals are nacked and
+// never registered with the hub, and the gate is diagnostics-specific (a
+// read-only principal still subscribes fine to an unrelated subject).
+func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
+	operator := auth.Principal{Subject: "op1", Roles: []string{"operator"}, Kind: auth.KindUser}
+	readOnly := auth.Principal{Subject: "ro1", Roles: []string{"read-only"}, Kind: auth.KindUser}
+
+	t.Run("operator subscribes ok", func(t *testing.T) {
+		hub := internalws.NewHub(newTestLogger())
+		srv := newWSTestServerWithPrincipal(t, hub, operator)
+		conn := dialTestWS(t, srv)
+		ctx := context.Background()
+
+		wsWrite(t, ctx, conn, internalws.Envelope{
+			Type:    internalws.TypeSubscribe,
+			Subject: internalws.SubjectDiagnostics,
+			Seq:     1,
+		})
+		ack := mustAck(t, ctx, conn, 1)
+		if ack.Error != "" {
+			t.Fatalf("operator: unexpected ack error: %q", ack.Error)
+		}
+	})
+
+	t.Run("read-only forbidden and not registered", func(t *testing.T) {
+		hub := internalws.NewHub(newTestLogger())
+		srv := newWSTestServerWithPrincipal(t, hub, readOnly)
+		conn := dialTestWS(t, srv)
+		ctx := context.Background()
+
+		wsWrite(t, ctx, conn, internalws.Envelope{
+			Type:    internalws.TypeSubscribe,
+			Subject: internalws.SubjectDiagnostics,
+			Seq:     1,
+		})
+		ack := mustAck(t, ctx, conn, 1)
+		if ack.Error == "" {
+			t.Fatal("read-only: expected non-empty ack error for diagnostics subscribe")
+		}
+		if !strings.Contains(ack.Error, "forbidden") {
+			t.Fatalf("read-only: ack error = %q, want it to mention forbidden", ack.Error)
+		}
+
+		// Not registered: a diagnostics event must not be delivered. Confirm the
+		// connection is otherwise alive via ping/pong rather than a push.
+		hub.NotifyDiag(internalws.DiagEvent{Component: "server", Level: "INFO", Msg: "should not be delivered"})
+		wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypePing})
+		env := wsRead(t, ctx, conn)
+		if env.Type != internalws.TypePong {
+			t.Fatalf("expected TypePong (connection alive, no diagnostics push), got %q", env.Type)
+		}
+	})
+
+	t.Run("read-only still allowed on a non-diagnostics subject", func(t *testing.T) {
+		hub := internalws.NewHub(newTestLogger())
+		srv := newWSTestServerWithPrincipal(t, hub, readOnly)
+		conn := dialTestWS(t, srv)
+		ctx := context.Background()
+
+		wsWrite(t, ctx, conn, internalws.Envelope{
+			Type:    internalws.TypeSubscribe,
+			Subject: internalws.SubjectJobs,
+			Seq:     1,
+		})
+		ack := mustAck(t, ctx, conn, 1)
+		if ack.Error != "" {
+			t.Fatalf("read-only: unexpected ack error for non-diagnostics subject: %q", ack.Error)
+		}
+	})
+
+	t.Run("anonymous superuser subscribes ok", func(t *testing.T) {
+		hub := internalws.NewHub(newTestLogger())
+		srv := newWSTestServer(t, hub) // uses auth.Anonymous(), which is Superuser
+		conn := dialTestWS(t, srv)
+		ctx := context.Background()
+
+		wsWrite(t, ctx, conn, internalws.Envelope{
+			Type:    internalws.TypeSubscribe,
+			Subject: internalws.SubjectDiagnostics,
+			Seq:     1,
+		})
+		ack := mustAck(t, ctx, conn, 1)
+		if ack.Error != "" {
+			t.Fatalf("anonymous/superuser: unexpected ack error: %q", ack.Error)
+		}
+	})
 }
 
 func TestWSHandler_Unsubscribe_ReturnsAck(t *testing.T) {
