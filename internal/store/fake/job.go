@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -446,7 +447,7 @@ func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 	if opts.Status != "" && j.Status != opts.Status {
 		return false
 	}
-	if opts.Owner != "" && j.Owner != opts.Owner {
+	if opts.Owner != "" && !strings.EqualFold(j.Owner, opts.Owner) {
 		return false
 	}
 	if opts.Project != "" && j.Project != opts.Project {

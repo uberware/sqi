@@ -341,7 +341,7 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 		args = append(args, string(opts.Status))
 	}
 	if opts.Owner != "" {
-		where += ` AND owner = ?`
+		where += ` AND owner = ? COLLATE NOCASE`
 		args = append(args, opts.Owner)
 	}
 	if opts.Project != "" {

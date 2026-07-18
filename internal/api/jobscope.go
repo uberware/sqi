@@ -22,9 +22,12 @@ import (
 // anonymous superuser injected when auth is disabled, which is what keeps
 // auth-off behavior unchanged.
 //
-// A context carrying no principal fails closed: ("", true). No job has an
-// owner equal to "", so a misordered middleware chain hides everything rather
-// than exposing everything.
+// A context carrying no principal fails closed: ("", true). Note that ""
+// is also store.ListJobsOptions.Owner's zero value for "unfiltered" —
+// callers MUST NOT assign this owner straight into ListJobsOptions.Owner;
+// doing so would silently turn the fail-closed signal into "return
+// everything". Callers must special-case owner == "" with scoped == true
+// and short-circuit to an empty result instead of querying the store.
 func scopeFilter(ctx context.Context) (owner string, scoped bool) {
 	p, ok := auth.FromContext(ctx)
 	if !ok {

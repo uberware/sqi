@@ -102,6 +102,45 @@ func TestListJobsScopedOverridesClientOwnerParam(t *testing.T) {
 	}
 }
 
+// TestListJobsNoPrincipalReturnsEmpty drives a real listJobs request with no
+// principal in the context end-to-end — the misordered-middleware threat
+// model scopeFilter's fail-closed return is meant to cover. Jobs with real,
+// non-empty owners are seeded first so that an unfiltered query would
+// obviously return them; the assertion is that it returns none.
+func TestListJobsNoPrincipalReturnsEmpty(t *testing.T) {
+	st := fake.New()
+	seedOwnedJob(t, st, "job-alice", "alice")
+	seedOwnedJob(t, st, "job-bob", "bob")
+
+	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
+		newTestLogger(), testRetryDefaults)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs", nil)
+	rec := httptest.NewRecorder()
+
+	h.listJobs(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp jobListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Items) != 0 {
+		t.Errorf("got %d items %v, want 0 (no principal must fail closed, not open)", len(resp.Items), resp.Items)
+	}
+	if resp.Total != 0 {
+		t.Errorf("Total = %d, want 0", resp.Total)
+	}
+	if resp.Offset != 0 {
+		t.Errorf("Offset = %d, want 0", resp.Offset)
+	}
+	if resp.Limit != store.DefaultLimit {
+		t.Errorf("Limit = %d, want %d (default)", resp.Limit, store.DefaultLimit)
+	}
+}
+
 func TestListJobsUnscopedSeesAll(t *testing.T) {
 	st := fake.New()
 	seedOwnedJob(t, st, "job-alice", "alice")

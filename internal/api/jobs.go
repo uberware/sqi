@@ -359,15 +359,32 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 	// jobs. The forced value OVERRIDES any client-supplied ?owner= rather than
 	// merging with it — a scoped caller aiming the filter at another user gets
 	// its own jobs, not an error and not the other user's.
-	if owner, scoped := scopeFilter(ctx); scoped {
+	owner, scoped := scopeFilter(ctx)
+	if scoped {
 		opts.Owner = owner
 	}
 
-	page, err := h.store.ListJobs(ctx, opts)
-	if err != nil {
-		h.logger.ErrorContext(ctx, "jobs: list failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to list jobs")
-		return
+	// A scoped request with an empty owner means scopeFilter failed closed
+	// (no principal in the context at all — see jobscope.go). opts.Owner == ""
+	// is store.ListJobsOptions' zero value for "unfiltered", so passing it
+	// through to ListJobs would return every job in the system instead of
+	// none. Short-circuit to an empty page rather than querying.
+	var page store.Page[store.Job]
+	if scoped && owner == "" {
+		page = store.Page[store.Job]{
+			Items:  []store.Job{},
+			Total:  0,
+			Limit:  opts.Pagination.Limit,
+			Offset: opts.Pagination.Offset,
+		}
+	} else {
+		var err error
+		page, err = h.store.ListJobs(ctx, opts)
+		if err != nil {
+			h.logger.ErrorContext(ctx, "jobs: list failed", slog.Any("error", err))
+			writeProblem(w, r, http.StatusInternalServerError, "failed to list jobs")
+			return
+		}
 	}
 
 	queueNames := resolveQueueNames(ctx, h.store, page.Items)

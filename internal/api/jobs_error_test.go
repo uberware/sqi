@@ -114,7 +114,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		j := seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?owner="+j.Owner, nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?owner="+j.Owner)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -127,7 +127,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		_ = seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?farm_id=farm-1", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?farm_id=farm-1")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -140,7 +140,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		_ = seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?sort_by=priority", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?sort_by=priority")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -153,7 +153,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		_ = seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?sort_by=status", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?sort_by=status")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -166,7 +166,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		_ = seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?sort_by=updated_at", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?sort_by=updated_at")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -179,7 +179,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		_ = seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?sort_by=name", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?sort_by=name")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -192,7 +192,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		r := newJobRouter(st, &fakeScheduler{})
 		_ = seedJob(t, st, store.JobStatusPending)
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs?sort_dir=desc", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs?sort_dir=desc")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -205,7 +205,7 @@ func TestListJobs_AdditionalFiltersAndErrors(t *testing.T) {
 		est := &storeErr{Store: inner, listJobsErr: errInjected}
 		r := newJobRouter(est, &fakeScheduler{})
 
-		req := newReq(t, http.MethodGet, "/api/v1/jobs", nil)
+		req := newUnscopedJobsReq(t, "/api/v1/jobs")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusInternalServerError {
