@@ -17,6 +17,12 @@ RETURNING id, token_hash, user_id, expires_at, created_at`
 
 	sqlGetSessionByTokenHash = `SELECT id, token_hash, user_id, expires_at, created_at FROM sessions WHERE token_hash = ? AND expires_at > ?` //nolint:gosec // G101: SQL text, not a credential
 
+	// Joined lookup used on every cookie-authenticated request. The column
+	// list must stay in the order scanUser expects. Kept on one line so the
+	// gosec nolint lands on the declaration line, where the finding is
+	// attributed — see the note above the api_keys statements.
+	sqlGetSessionUserByTokenHash = `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.disabled, u.created_at, u.updated_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?` //nolint:gosec // G101: SQL text, not a credential
+
 	sqlDeleteSession         = `DELETE FROM sessions WHERE id = ?`
 	sqlDeleteSessionsForUser = `DELETE FROM sessions WHERE user_id = ?`
 	sqlDeleteExpiredSessions = `DELETE FROM sessions WHERE expires_at <= ?`
@@ -49,6 +55,13 @@ func (s *Store) CreateSession(ctx context.Context, sess store.Session) (store.Se
 func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.Session, error) {
 	row := s.stmtGetSessionByTokenHash.QueryRowContext(ctx, tokenHash, timeToText(now))
 	out, err := scanSession(row)
+	return out, mapErr(err)
+}
+
+// GetSessionUserByTokenHash implements [store.SessionStore].
+func (s *Store) GetSessionUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.User, error) {
+	row := s.stmtGetSessionUserByTokenHash.QueryRowContext(ctx, tokenHash, timeToText(now))
+	out, err := scanUser(row)
 	return out, mapErr(err)
 }
 

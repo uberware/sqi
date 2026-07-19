@@ -51,7 +51,10 @@ func TestScopeAllows(t *testing.T) {
 }
 
 func TestNotifyJobFiltersByOwner(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "" })
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
+		OwnerScoping: true,
+		JobOwner:     func(string) (string, error) { return "", nil },
+	})
 
 	aliceCh := h.Register("alice-client", Scope{Owner: "alice"})
 	allCh := h.Register("op-client", Scope{All: true})
@@ -74,7 +77,10 @@ func TestNotifyJobFiltersByOwner(t *testing.T) {
 
 // Replay must apply the same filter as live fan-out.
 func TestSubscribeReplayFiltersByOwner(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "" })
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
+		OwnerScoping: true,
+		JobOwner:     func(string) (string, error) { return "", nil },
+	})
 
 	// Emit first, with nobody subscribed, so the events land only in the ring.
 	h.NotifyJob(JobEvent{JobID: "j1", Owner: "bob", Status: "running"})
@@ -92,11 +98,14 @@ func TestSubscribeReplayFiltersByOwner(t *testing.T) {
 }
 
 func TestNotifyTaskResolvesOwnerThroughLookup(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), func(jobID string) string {
-		if jobID == "j1" {
-			return "bob"
-		}
-		return ""
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
+		OwnerScoping: true,
+		JobOwner: func(jobID string) (string, error) {
+			if jobID == "j1" {
+				return "bob", nil
+			}
+			return "", nil
+		},
 	})
 
 	ch := h.Register("alice-client", Scope{Owner: "alice"})
@@ -114,7 +123,7 @@ func TestNotifyTaskResolvesOwnerThroughLookup(t *testing.T) {
 // With no resolver the hub cannot know ownership, so scoped clients get
 // nothing rather than everything.
 func TestNotifyTaskWithoutResolverFailsClosed(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{})
 
 	scopedCh := h.Register("alice-client", Scope{Owner: "alice"})
 	allCh := h.Register("op-client", Scope{All: true})

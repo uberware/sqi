@@ -41,19 +41,28 @@ func (s Scope) allows(env Envelope) bool {
 // wholesale when it exceeds maxOwnerCache rather than evicting per-entry: the
 // cost of a rare full reload is far below the bookkeeping of a true LRU, and
 // the backing lookup is a single indexed read.
+//
+// The lookup distinguishes "this job definitively has no owner" (nil error,
+// empty string — a job submitted before auth was enabled) from "the store
+// could not answer" (non-nil error). Only the former is cached. That
+// distinction is load-bearing: task events are the highest-frequency event in
+// the system, so caching only non-empty owners would re-query the store on
+// *every* task transition of *every* pre-auth job, forever, on the scheduler's
+// goroutine. Caching the error case instead would be worse — a transient
+// failure would pin the job as invisible for the process's lifetime.
 type ownerCache struct {
 	mu     sync.Mutex
 	m      map[string]string
-	lookup func(jobID string) string
+	lookup func(jobID string) (string, error)
 }
 
 const maxOwnerCache = 4096
 
-func newOwnerCache(lookup func(jobID string) string) *ownerCache {
+func newOwnerCache(lookup func(jobID string) (string, error)) *ownerCache {
 	return &ownerCache{m: make(map[string]string), lookup: lookup}
 }
 
-// get returns the owner of jobID, or "" when it cannot be resolved.
+// get returns the owner of jobID, or "" when it has none or cannot be resolved.
 func (c *ownerCache) get(jobID string) string {
 	if c == nil || c.lookup == nil || jobID == "" {
 		return ""
@@ -65,8 +74,8 @@ func (c *ownerCache) get(jobID string) string {
 		return owner
 	}
 
-	owner = c.lookup(jobID)
-	if owner == "" {
+	owner, err := c.lookup(jobID)
+	if err != nil {
 		// Don't cache a failed resolution — a transient store error would
 		// otherwise pin this job as invisible for the process's lifetime.
 		return ""

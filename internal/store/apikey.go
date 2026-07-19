@@ -30,6 +30,15 @@ type APIKeyStore interface {
 	// GetAPIKeyByTokenHash returns the active key for tokenHash, or
 	// [ErrNotFound] if it is missing, revoked, or expired at now.
 	GetAPIKeyByTokenHash(ctx context.Context, tokenHash string, now time.Time) (APIKey, error)
+	// GetAPIKeyUserByTokenHash returns the active key for tokenHash together
+	// with its owning user, or [ErrNotFound] if the key is missing, revoked,
+	// or expired at now.
+	//
+	// It exists so authenticating a Bearer request costs one query rather than
+	// a key lookup followed by a user lookup. The key is returned alongside
+	// the user because the caller needs its id and last_used_at to decide
+	// whether to record a touch.
+	GetAPIKeyUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (APIKey, User, error)
 	// ListAPIKeysForUser returns the user's non-revoked keys, newest first.
 	ListAPIKeysForUser(ctx context.Context, userID string) ([]APIKey, error)
 	// RevokeAPIKey soft-revokes the key, scoped to its owner. Returns

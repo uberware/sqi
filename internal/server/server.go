@@ -441,50 +441,52 @@ func (s *Server) start(ctx context.Context) error {
 // sustained store outage every single event pays up to this timeout, not
 // just one — this constant caps the per-call cost, not the total stall an
 // outage can accumulate across many events. newWSHub avoids that cost
-// entirely when auth is disabled (nil resolver, no store calls at all); it
-// does not help while auth is enabled.
+// entirely when auth is disabled (no resolver, no store calls at all), and
+// bounds the one-time-per-job lookup when auth is enabled.
 const wsJobOwnerResolverTimeout = 2 * time.Second
 
 // wsJobOwnerResolver returns a jobID → owner lookup for [ws.NewHub], backed by
-// st. Job ownership is immutable, so the hub caches results; a failed lookup
-// (including a timeout) returns "" and fails closed for scoped clients.
-func wsJobOwnerResolver(st store.Store) func(jobID string) string {
-	return func(jobID string) string {
+// st. Job ownership is immutable, so the hub caches successful results —
+// including an empty owner, which is what every job submitted before auth was
+// enabled carries.
+//
+// The error is propagated rather than collapsed into an empty owner precisely
+// so the hub can tell those apart: "this job has no owner" is a permanent fact
+// worth caching, while "the store did not answer" must not be, or one timeout
+// would hide a job from scoped clients for the process's lifetime. A lookup
+// failure (including a not-found job and a timeout) fails closed.
+func wsJobOwnerResolver(st store.Store) func(jobID string) (string, error) {
+	return func(jobID string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), wsJobOwnerResolverTimeout)
 		defer cancel()
 		job, err := st.GetJob(ctx, jobID)
 		if err != nil {
-			return ""
+			return "", err
 		}
-		return job.Owner
+		return job.Owner, nil
 	}
 }
 
 // newWSHub constructs the WebSocket hub used by (*Server).start. Extracted to
 // a named function (rather than inlined at the ws.NewHub call site) so this
 // wiring is directly testable without booting the full server: a regression
-// that silently drops the resolver back to nil (ws.NewHub(logger, nil), the
-// pre-Task-8 placeholder) would otherwise be invisible to every test in this
-// package.
+// that silently drops owner scoping would otherwise be invisible to every
+// test in this package.
 //
-// authEnabled gates whether a real store-backed resolver is wired at all.
-// When auth is disabled every WebSocket client registers Scope{All: true}
-// (readLoop's scopeFilter returns scoped=false for the anonymous superuser),
-// so a live resolver buys nothing — but the hub would still run resolveOwner
-// on every single NotifyTask/NotifyJob call, and ownerCache.get deliberately
-// never memoizes a "" result (so a transient error can't permanently hide a
-// job), which is exactly the owner an auth-off job normally has. That turns
-// every task-status event — the highest-frequency event in this system,
-// dispatched synchronously on the scheduler goroutine — into an unconditional
-// store read, forever, even with zero clients connected. Passing nil restores
-// auth-off behavior exactly: [ws.NewHub] documents nil as "scoped clients
-// receive nothing", which is safe here because auth-off has no scoped clients
-// to begin with.
+// authEnabled drives both hub options together. With auth off, every client
+// registers Scope{All: true} (readLoop's scopeFilter returns scoped=false for
+// the anonymous superuser), so there is nothing to scope and no reason to
+// resolve owners — and the job-summary paths fall back to their pre-B2
+// hasSubscribers guard, keeping the auth-off hot path free of marshaling and
+// ring-mutex traffic when nobody is connected.
 func newWSHub(logger *slog.Logger, st store.Store, authEnabled bool) *ws.Hub {
 	if !authEnabled {
-		return ws.NewHub(logger, nil)
+		return ws.NewHub(logger, ws.HubOptions{})
 	}
-	return ws.NewHub(logger, wsJobOwnerResolver(st))
+	return ws.NewHub(logger, ws.HubOptions{
+		OwnerScoping: true,
+		JobOwner:     wsJobOwnerResolver(st),
+	})
 }
 
 // selectAuth chooses the authenticator wired into the HTTP router. When auth

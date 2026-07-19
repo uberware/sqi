@@ -50,6 +50,22 @@ func (s *Store) GetAPIKeyByTokenHash(_ context.Context, tokenHash string, now ti
 	return store.APIKey{}, store.ErrNotFound
 }
 
+// GetAPIKeyUserByTokenHash implements [store.APIKeyStore]. It mirrors the
+// SQLite JOIN: a key whose user row is missing resolves to ErrNotFound.
+func (s *Store) GetAPIKeyUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.APIKey, store.User, error) {
+	k, err := s.GetAPIKeyByTokenHash(ctx, tokenHash, now)
+	if err != nil {
+		return store.APIKey{}, store.User{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[k.UserID]
+	if !ok {
+		return store.APIKey{}, store.User{}, store.ErrNotFound
+	}
+	return k, u, nil
+}
+
 // ListAPIKeysForUser implements [store.APIKeyStore].
 func (s *Store) ListAPIKeysForUser(_ context.Context, userID string) ([]store.APIKey, error) {
 	s.mu.Lock()

@@ -25,8 +25,7 @@ var ErrNoCredential = errors.New("session: no credential")
 
 // SessionSource is the store surface the authenticator needs.
 type SessionSource interface {
-	GetSessionByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.Session, error)
-	GetUser(ctx context.Context, id string) (store.User, error)
+	GetSessionUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.User, error)
 }
 
 // Authenticator resolves a session cookie to a Principal.
@@ -56,13 +55,14 @@ func (a *Authenticator) Authenticate(r *http.Request) (auth.Principal, error) {
 		return auth.Principal{}, ErrNoCredential
 	}
 	now := a.now()
-	sess, err := a.src.GetSessionByTokenHash(r.Context(), password.HashToken(c.Value), now)
+	// One joined query rather than session-then-user: this runs on every
+	// cookie-authenticated request, so the second round trip would be pure
+	// overhead on the hottest path in the server. A session whose user row is
+	// gone is indistinguishable from a missing session here, which is the
+	// correct outcome either way — both mean "this cookie names nobody".
+	u, err := a.src.GetSessionUserByTokenHash(r.Context(), password.HashToken(c.Value), now)
 	if err != nil {
 		return auth.Principal{}, errors.New("session: invalid or expired session")
-	}
-	u, err := a.src.GetUser(r.Context(), sess.UserID)
-	if err != nil {
-		return auth.Principal{}, errors.New("session: user not found")
 	}
 	if u.Disabled {
 		return auth.Principal{}, errors.New("session: account disabled")

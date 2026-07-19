@@ -190,18 +190,20 @@ type Store struct {
 	stmtCountAdmins       *sql.Stmt
 
 	// ── sessions ─────────────────────────────────────────────────────────
-	stmtInsertSession         *sql.Stmt
-	stmtGetSessionByTokenHash *sql.Stmt
-	stmtDeleteSession         *sql.Stmt
-	stmtDeleteSessionsForUser *sql.Stmt
-	stmtDeleteExpiredSessions *sql.Stmt
+	stmtInsertSession             *sql.Stmt
+	stmtGetSessionByTokenHash     *sql.Stmt
+	stmtGetSessionUserByTokenHash *sql.Stmt
+	stmtDeleteSession             *sql.Stmt
+	stmtDeleteSessionsForUser     *sql.Stmt
+	stmtDeleteExpiredSessions     *sql.Stmt
 
 	// ── api keys ─────────────────────────────────────────────────────────
-	stmtInsertAPIKey         *sql.Stmt
-	stmtGetAPIKeyByTokenHash *sql.Stmt
-	stmtListAPIKeysForUser   *sql.Stmt
-	stmtRevokeAPIKey         *sql.Stmt
-	stmtTouchAPIKeyLastUsed  *sql.Stmt
+	stmtInsertAPIKey             *sql.Stmt
+	stmtGetAPIKeyByTokenHash     *sql.Stmt
+	stmtGetAPIKeyUserByTokenHash *sql.Stmt
+	stmtListAPIKeysForUser       *sql.Stmt
+	stmtRevokeAPIKey             *sql.Stmt
+	stmtTouchAPIKeyLastUsed      *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -600,6 +602,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtGetSessionByTokenHash, err = s.prepare(ctx, sqlGetSessionByTokenHash); err != nil {
 		return err
 	}
+	if s.stmtGetSessionUserByTokenHash, err = s.prepare(ctx, sqlGetSessionUserByTokenHash); err != nil {
+		return err
+	}
 	if s.stmtDeleteSession, err = s.prepare(ctx, sqlDeleteSession); err != nil {
 		return err
 	}
@@ -615,6 +620,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtGetAPIKeyByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyByTokenHash); err != nil {
+		return err
+	}
+	if s.stmtGetAPIKeyUserByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyUserByTokenHash); err != nil {
 		return err
 	}
 	if s.stmtListAPIKeysForUser, err = s.prepare(ctx, sqlListAPIKeysForUser); err != nil {
