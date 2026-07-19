@@ -497,6 +497,20 @@ export interface Principal {
   permissions: string[]
 }
 
+/** Body of PUT /auth/password. */
+export interface ChangePasswordInput {
+  current_password: string
+  new_password: string
+}
+
+/**
+ * Body of PATCH /auth/me. Only display_name is accepted by the server —
+ * role, disabled, and username are ignored, so this cannot escalate.
+ */
+export interface UpdateMeInput {
+  display_name: string
+}
+
 /** A local user account (secrets are never included in the wire format). */
 export interface User {
   id: string

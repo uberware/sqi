@@ -27,6 +27,11 @@ import {
   fetchDeleteStorageLocation,
   useInstallPreset,
   useLogout,
+  fetchChangePassword,
+  fetchUpdateMe,
+  fetchRevokeUserApiKey,
+  useUpdateMe,
+  useRevokeUserApiKey,
 } from './mutations'
 import { queryKeys } from './queries'
 
@@ -846,5 +851,94 @@ describe('useLogout', () => {
 
     expect(client.getQueryData(queryKeys.jobs.all)).toBeUndefined()
     expect(client.getQueryData(queryKeys.users.all)).toBeUndefined()
+  })
+})
+
+// ── B3 self-service and admin key mutations ───────────────────────────────────
+
+describe('B3 self-service and admin key mutations', () => {
+  it('fetchChangePassword PUTs /auth/password with the body', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await fetchChangePassword({ current_password: 'old', new_password: 'new' })
+
+    expect(calledUrl()).toContain('/auth/password')
+    const init = calledInit()
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toEqual({
+      current_password: 'old',
+      new_password: 'new',
+    })
+  })
+
+  it('fetchUpdateMe PATCHes /auth/me with only display_name', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({
+        subject: 'u1',
+        display_name: 'Alice A.',
+        roles: [],
+        kind: 'user',
+        permissions: [],
+      }),
+    )
+
+    const principal = await fetchUpdateMe({ display_name: 'Alice A.' })
+
+    expect(calledUrl()).toContain('/auth/me')
+    const init = calledInit()
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(String(init.body))).toEqual({ display_name: 'Alice A.' })
+    expect(principal.display_name).toBe('Alice A.')
+  })
+
+  it('fetchRevokeUserApiKey DELETEs the nested path', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await fetchRevokeUserApiKey('u1', 'k1')
+
+    expect(calledUrl()).toContain('/users/u1/api-keys/k1')
+    expect(calledInit().method).toBe('DELETE')
+  })
+
+  it('fetchRevokeUserApiKey encodes ids that need escaping', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await fetchRevokeUserApiKey('u/1', 'k 1')
+
+    expect(calledUrl()).toContain('/users/u%2F1/api-keys/k%201')
+  })
+
+  it('useUpdateMe invalidates the cached principal', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({
+        subject: 'u1',
+        display_name: 'A',
+        roles: [],
+        kind: 'user',
+        permissions: [],
+      }),
+    )
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useUpdateMe(), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync({ display_name: 'A' })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.auth.me })
+  })
+
+  it('useRevokeUserApiKey invalidates that user’s key list', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const client = makeClient()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useRevokeUserApiKey('u1'), { wrapper: wrapper(client) })
+
+    await act(async () => {
+      await result.current.mutateAsync('k1')
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.apiKeys.forUser('u1') })
   })
 })

@@ -159,6 +159,7 @@ export const queryKeys = {
   },
   apiKeys: {
     all: ['api-keys'] as const,
+    forUser: (userId: string) => ['api-keys', 'for-user', userId] as const,
   },
 } as const
 
@@ -344,6 +345,10 @@ export function fetchGetUser(id: string): Promise<User> {
 /** Fetch all API keys (metadata only, no secret) from `GET /api-keys`. */
 export function fetchListApiKeys(): Promise<ApiKey[]> {
   return apiFetch('/api-keys')
+}
+
+export function fetchListUserApiKeys(userId: string): Promise<ApiKey[]> {
+  return apiFetch(`/users/${encodeURIComponent(userId)}/api-keys`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -601,6 +606,15 @@ export function useApiKeys() {
   return useQuery({
     queryKey: queryKeys.apiKeys.all,
     queryFn: fetchListApiKeys,
+  })
+}
+
+/** List another user's API keys (metadata only). Requires apikeys.admin. */
+export function useUserApiKeys(userId: string) {
+  return useQuery({
+    queryKey: queryKeys.apiKeys.forUser(userId),
+    queryFn: () => fetchListUserApiKeys(userId),
+    enabled: userId !== '',
   })
 }
 

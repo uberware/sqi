@@ -6,10 +6,13 @@ import { queryKeys } from './queries'
 import { evictAllExceptAuthMe } from './queryEviction'
 import type {
   ApiKeyCreated,
+  ChangePasswordInput,
   ComputeLocation,
   Farm,
   Job,
   LoginRequest,
+  Principal,
+  UpdateMeInput,
   StorageLocation,
   UsagePool,
   Queue,
@@ -853,6 +856,58 @@ export function useRevokeApiKey() {
     mutationFn: (id: string) => fetchRevokeApiKey(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all })
+    },
+  })
+}
+
+// ── Self-service account changes (B3) ─────────────────────────────────────────
+
+export async function fetchChangePassword(input: ChangePasswordInput): Promise<void> {
+  await apiFetch('/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchUpdateMe(input: UpdateMeInput): Promise<Principal> {
+  return apiFetch<Principal>('/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function fetchRevokeUserApiKey(userId: string, keyId: string): Promise<void> {
+  await apiFetch(`/users/${encodeURIComponent(userId)}/api-keys/${encodeURIComponent(keyId)}`, {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * Change the caller's own password. The server destroys every other session
+ * and re-issues this one's cookie, so no re-login is needed here.
+ */
+export function useChangePassword() {
+  return useMutation({ mutationFn: fetchChangePassword })
+}
+
+/** Update the caller's own display name. Refreshes the cached principal. */
+export function useUpdateMe() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fetchUpdateMe,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
+    },
+  })
+}
+
+/** Revoke another user's API key. Requires apikeys.admin. */
+export function useRevokeUserApiKey(userId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (keyId: string) => fetchRevokeUserApiKey(userId, keyId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.forUser(userId) })
     },
   })
 }
