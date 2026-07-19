@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 )
 
@@ -55,7 +56,40 @@ func validateHTTP(cfg HTTPConfig) []ValidationError {
 			Message: fmt.Sprintf("invalid address %q: %s", cfg.Addr, err),
 		}}
 	}
-	return nil
+	return validateCORSOrigins(cfg.CORSOrigins)
+}
+
+// validateCORSOrigins rejects origins go-chi/cors can never match, so a typo
+// fails loudly at boot instead of silently at request time.
+func validateCORSOrigins(origins []string) []ValidationError {
+	var errs []ValidationError
+	for _, o := range origins {
+		if o == "*" {
+			continue
+		}
+		if strings.ContainsAny(o, " \t") {
+			errs = append(errs, ValidationError{
+				Field:   "http.cors_origins",
+				Message: fmt.Sprintf("origin %q must not contain whitespace", o),
+			})
+			continue
+		}
+		u, err := url.Parse(o)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, ValidationError{
+				Field:   "http.cors_origins",
+				Message: fmt.Sprintf("origin %q must be scheme://host[:port] or %q", o, "*"),
+			})
+			continue
+		}
+		if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, ValidationError{
+				Field:   "http.cors_origins",
+				Message: fmt.Sprintf("origin %q must not include a path, query, or fragment (drop the trailing slash)", o),
+			})
+		}
+	}
+	return errs
 }
 
 func validateNATS(cfg NATSConfig) []ValidationError {

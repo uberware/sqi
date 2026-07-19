@@ -91,8 +91,9 @@ func preflight(t *testing.T, target, origin string) *http.Response {
 
 func TestRouter_AuthOn_DefaultOrigins_WildcardDroppedNotCredentialed(t *testing.T) {
 	// The crux of the wildcard problem: cfg.AuthEnabled=true with no
-	// CORSOrigins configured (the real-world default — nothing in cmd/
-	// populates it) must never combine AllowCredentials with "*". We drop
+	// CORSOrigins configured (the real-world default — http.cors_origins is
+	// empty unless an operator sets it) must never combine AllowCredentials
+	// with "*". We drop
 	// the wildcard rather than the reverse, so a foreign origin must receive
 	// NO Access-Control-Allow-Origin at all — not "*", and not echoed back.
 	deps := Deps{Store: fake.New(), Auth: auth.Anonymous(), CookieName: "sqi_session"}

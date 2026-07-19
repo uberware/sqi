@@ -24,6 +24,9 @@ type FlagOverrides struct {
 	LogFormat string
 	// HTTPAddr overrides HTTP.Addr when non-empty. Bound to --http-addr.
 	HTTPAddr string
+	// HTTPCORSOrigins overrides HTTP.CORSOrigins when non-empty. Bound to
+	// --http-cors-origins.
+	HTTPCORSOrigins []string
 	// EnforceLimits overrides OpenJD.EnforceLimits when non-nil. Bound to
 	// --openjd-enforce-limits. A pointer (not a bool) so an unset flag leaves the
 	// lower layers intact while an explicit --openjd-enforce-limits=false can turn
@@ -100,8 +103,9 @@ func Load(filePath string, flags FlagOverrides) (Config, error) {
 // zero value, applying only the fields that are present in the file.
 type fileConfig struct {
 	HTTP *struct {
-		Addr        *string `yaml:"addr"`
-		EnablePprof *bool   `yaml:"enable_pprof"`
+		Addr        *string   `yaml:"addr"`
+		EnablePprof *bool     `yaml:"enable_pprof"`
+		CORSOrigins *[]string `yaml:"cors_origins"`
 	} `yaml:"http"`
 
 	NATS *struct {
@@ -230,6 +234,9 @@ func mergeHTTPFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.HTTP.EnablePprof != nil {
 		cfg.HTTP.EnablePprof = *fc.HTTP.EnablePprof
+	}
+	if fc.HTTP.CORSOrigins != nil {
+		cfg.HTTP.CORSOrigins = *fc.HTTP.CORSOrigins
 	}
 }
 
@@ -432,6 +439,7 @@ func mergeAuthBootstrapFile(cfg *Config, b *struct {
 func applyEnv(cfg *Config) {
 	setString(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
 	setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF")
+	setStringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
 
 	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
 	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
@@ -478,6 +486,25 @@ func setString(dst *string, key string) {
 	}
 }
 
+// setStringSlice sets dst from a comma-separated env var, trimming spaces and
+// dropping empty entries. An unset or empty var leaves dst untouched so a
+// lower config layer survives.
+func setStringSlice(dst *[]string, key string) {
+	v := os.Getenv(key)
+	if v == "" {
+		return
+	}
+	var out []string
+	for part := range strings.SplitSeq(v, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) > 0 {
+		*dst = out
+	}
+}
+
 func setInt(dst *int, key string) {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -516,6 +543,9 @@ func applyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.HTTPAddr != "" {
 		cfg.HTTP.Addr = f.HTTPAddr
+	}
+	if len(f.HTTPCORSOrigins) > 0 {
+		cfg.HTTP.CORSOrigins = f.HTTPCORSOrigins
 	}
 	if f.EnforceLimits != nil {
 		cfg.OpenJD.EnforceLimits = *f.EnforceLimits

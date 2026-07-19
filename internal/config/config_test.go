@@ -5,6 +5,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1172,5 +1173,115 @@ func TestValidate_AuthBootstrapPairingErrorNeverContainsPassword(t *testing.T) {
 		if strings.Contains(e.Field, "super-secret-value") || strings.Contains(e.Message, "super-secret-value") {
 			t.Fatalf("bootstrap password leaked into validation error: %+v", e)
 		}
+	}
+}
+
+// ── http.cors_origins layering and validation ────────────────────────────────
+
+func TestLoad_CORSOrigins_Layering(t *testing.T) {
+	t.Run("default is empty", func(t *testing.T) {
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.HTTP.CORSOrigins) != 0 {
+			t.Fatalf("http.cors_origins: got %v, want empty", cfg.HTTP.CORSOrigins)
+		}
+	})
+
+	t.Run("file sets a list", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "cfg.yaml")
+		y := "http:\n  cors_origins:\n    - \"https://file.test\"\n"
+		if err := os.WriteFile(f, []byte(y), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(f, config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, []string{"https://file.test"}) {
+			t.Fatalf("http.cors_origins: got %v", cfg.HTTP.CORSOrigins)
+		}
+	})
+
+	t.Run("env parses a comma-separated list and trims spaces", func(t *testing.T) {
+		t.Setenv("SQI_HTTP_CORS_ORIGINS", "https://a.test, https://b.test:8443")
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"https://a.test", "https://b.test:8443"}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, want) {
+			t.Fatalf("http.cors_origins: got %v, want %v", cfg.HTTP.CORSOrigins, want)
+		}
+	})
+
+	t.Run("empty env leaves the file layer intact", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "cfg.yaml")
+		y := "http:\n  cors_origins:\n    - \"https://keep.test\"\n"
+		if err := os.WriteFile(f, []byte(y), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SQI_HTTP_CORS_ORIGINS", "")
+		cfg, err := config.Load(f, config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, []string{"https://keep.test"}) {
+			t.Fatalf("http.cors_origins: got %v, want the file value retained", cfg.HTTP.CORSOrigins)
+		}
+	})
+
+	t.Run("flag beats env and file", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "cfg.yaml")
+		y := "http:\n  cors_origins:\n    - \"https://file.test\"\n"
+		if err := os.WriteFile(f, []byte(y), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SQI_HTTP_CORS_ORIGINS", "https://env.test")
+		cfg, err := config.Load(f, config.FlagOverrides{
+			HTTPCORSOrigins: []string{"https://flag.test"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, []string{"https://flag.test"}) {
+			t.Fatalf("http.cors_origins: got %v, want the flag value", cfg.HTTP.CORSOrigins)
+		}
+	})
+}
+
+func TestValidate_CORSOrigins(t *testing.T) {
+	tests := []struct {
+		name    string
+		origins []string
+		wantErr bool
+	}{
+		{"empty is valid", nil, false},
+		{"wildcard is valid", []string{"*"}, false},
+		{"scheme and host", []string{"https://ui.test"}, false},
+		{"scheme host and port", []string{"http://localhost:5173"}, false},
+		{"trailing slash rejected", []string{"https://ui.test/"}, true},
+		{"path rejected", []string{"https://ui.test/app"}, true},
+		{"whitespace rejected", []string{"https://ui .test"}, true},
+		{"missing scheme rejected", []string{"ui.test"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.HTTP.CORSOrigins = tt.origins
+			var got []config.ValidationError
+			for _, e := range config.Validate(cfg) {
+				if e.Field == "http.cors_origins" {
+					got = append(got, e)
+				}
+			}
+			if tt.wantErr && len(got) == 0 {
+				t.Fatalf("Validate(%v): got no http.cors_origins error, want one", tt.origins)
+			}
+			if !tt.wantErr && len(got) != 0 {
+				t.Fatalf("Validate(%v): got %v, want no errors", tt.origins, got)
+			}
+		})
 	}
 }
