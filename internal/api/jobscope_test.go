@@ -238,7 +238,7 @@ func TestRequireJobAccess(t *testing.T) {
 			az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 			reached := false
-			h := az.requireJobAccess()(http.HandlerFunc(
+			h := az.requireJobAccessByJobID()(http.HandlerFunc(
 				func(w http.ResponseWriter, _ *http.Request) {
 					reached = true
 					w.WriteHeader(http.StatusOK)
@@ -269,7 +269,7 @@ func TestRequireJobAccessViaTask(t *testing.T) {
 	}
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
-	h := az.requireJobAccess()(http.HandlerFunc(
+	h := az.requireJobAccessByTaskID()(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
 	))
 
@@ -300,7 +300,7 @@ func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 	}
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
-	h := az.requireJobAccess()(http.HandlerFunc(
+	h := az.requireJobAccessByTaskID()(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
 	))
 
@@ -313,7 +313,13 @@ func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 	}
 }
 
-// The only near-collision in the router: /api/v1/jobs/{id}/tasks has no
+// /api/v1/jobs/{id}/tasks carries a JOB id in {id} despite the "tasks" in its
+// path. It used to be the one near-collision for the old pattern-matching
+// classifier; the middleware is now chosen explicitly at mount time, so this
+// pins that the router mounts the job-id variant for it. Kept because the
+// path shape is still the one most likely to be mis-wired by hand.
+//
+// Historical note: /api/v1/jobs/{id}/tasks has no
 // "{id}" segment after "tasks", so it must be resolved as a JOB route (the
 // URL param is a job id), never mistaken for a /tasks/{id} task route (which
 // would wrongly call GetTask on a job id and 404/misclassify ownership).
@@ -323,7 +329,7 @@ func TestRequireJobAccessJobTasksRouteNotConfusedWithTaskRoute(t *testing.T) {
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 	reached := false
-	h := az.requireJobAccess()(http.HandlerFunc(
+	h := az.requireJobAccessByJobID()(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
 			reached = true
 			w.WriteHeader(http.StatusOK)
@@ -347,7 +353,7 @@ func TestRequireJobAccessUnknownJob(t *testing.T) {
 	st := fake.New()
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
-	h := az.requireJobAccess()(http.HandlerFunc(
+	h := az.requireJobAccessByJobID()(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
 	))
 

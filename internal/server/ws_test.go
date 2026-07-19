@@ -116,12 +116,18 @@ func seedTestJob(t *testing.T, st store.Store, id, owner string) {
 type countingStore struct {
 	store.Store
 
-	getJobCalls atomic.Int64
+	getJobCalls        atomic.Int64
+	deleteExpiredCalls atomic.Int64
 }
 
 func (c *countingStore) GetJob(ctx context.Context, id string) (store.Job, error) {
 	c.getJobCalls.Add(1)
 	return c.Store.GetJob(ctx, id)
+}
+
+func (c *countingStore) DeleteExpiredSessions(ctx context.Context, now time.Time) (int, error) {
+	c.deleteExpiredCalls.Add(1)
+	return c.Store.DeleteExpiredSessions(ctx, now)
 }
 
 // TestNewWSHub_AuthDisabled_ResolverNeverReadsStore pins the auth-off path:
@@ -168,21 +174,26 @@ func TestNewWSHub_AuthEnabled_OwnerlessJobResolvesOnce(t *testing.T) {
 	}
 }
 
-// TestNewWSHub_AuthEnabled_FailedLookupIsNotCached is the other half of that
-// trade-off: a lookup that fails must NOT be memoized, or one transient store
-// error would hide a job from scoped clients for the process's lifetime.
-func TestNewWSHub_AuthEnabled_FailedLookupIsNotCached(t *testing.T) {
+// TestNewWSHub_AuthEnabled_FailedLookupIsRateLimited is the other half of
+// that trade-off. A failed lookup must not be memoized permanently (one
+// transient error would hide the job forever), but it must not be retried on
+// every event either: resolution runs synchronously on the dispatch
+// goroutine, so a degraded store would otherwise cost one blocking call per
+// task event. The cooldown bounds it to one attempt per job per window;
+// recovery after the window is covered by the ws package's own tests, which
+// can control the clock.
+func TestNewWSHub_AuthEnabled_FailedLookupIsRateLimited(t *testing.T) {
 	st := &countingStore{Store: fake.New()}
 	// No job seeded, so every GetJob fails with ErrNotFound.
 
 	hub := newWSHub(testLogger(), st, true)
 
-	for range 5 {
+	for range 25 {
 		hub.NotifyTask(ws.TaskEvent{JobID: "missing", TaskID: "t1", Status: "running"})
 	}
 
-	if got := st.getJobCalls.Load(); got != 5 {
-		t.Fatalf("GetJob calls = %d, want 5 (a failed resolution must stay "+
-			"un-memoized so it can recover)", got)
+	if got := st.getJobCalls.Load(); got != 1 {
+		t.Fatalf("GetJob calls = %d, want 1 (a failing lookup must be suppressed "+
+			"for the cooldown, not retried on every event)", got)
 	}
 }

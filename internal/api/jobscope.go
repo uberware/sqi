@@ -56,14 +56,33 @@ func ownerMatches(jobOwner, scopedOwner string) bool {
 	return jobOwner != "" && strings.EqualFold(jobOwner, scopedOwner)
 }
 
-// requireJobAccess returns middleware enforcing owner scoping on a single job
-// or task. Attach it per-route with chi.With — never as a group-level Use,
-// because the existing jobs.read/jobs.write groups also contain collection
-// routes (GET /jobs, POST /jobs) that have no object to check.
+// requireJobAccessByJobID enforces owner scoping on a route whose {id} param
+// is a job id. Attach it per-route with chi.With — never as a group-level Use,
+// because the jobs.read/jobs.write groups also contain collection routes
+// (GET /jobs, POST /jobs) that have no object to check.
+func (a *authz) requireJobAccessByJobID() func(http.Handler) http.Handler {
+	return a.requireJobAccess(a.jobFromJobID)
+}
+
+// requireJobAccessByTaskID enforces owner scoping on a route whose {id} param
+// is a task id; the owning job is resolved through the task.
+func (a *authz) requireJobAccessByTaskID() func(http.Handler) http.Handler {
+	return a.requireJobAccess(a.jobFromTaskID)
+}
+
+// requireJobAccess builds the owner-scoping middleware around a resolver that
+// maps the request to the job whose ownership governs it.
 //
-// The chi URL param "id" is a job id on /jobs/{id}... routes and a task id on
-// /tasks/{id}... routes; the route pattern distinguishes them.
-func (a *authz) requireJobAccess() func(http.Handler) http.Handler {
+// The resolver is chosen per-route at mount time rather than inferred inside
+// the middleware. An earlier version string-matched chi's accumulated route
+// pattern for "/tasks/{id}" to decide whether {id} was a job or a task, which
+// made the classification depend on a param name and path shape that nothing
+// enforced: a route added with a differently-spelled task id would silently
+// take the job branch and 404. Worse, that failure was invisible in testing —
+// the middleware short-circuits for principals holding jobs.read.all, so an
+// admin-run test suite never reaches the branch at all and only owner-scoped
+// non-admins would hit it in production.
+func (a *authz) requireJobAccess(resolve func(*http.Request) (store.Job, error)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			owner, scoped := scopeFilter(r.Context())
@@ -72,7 +91,7 @@ func (a *authz) requireJobAccess() func(http.Handler) http.Handler {
 				return
 			}
 
-			job, err := a.resolveJob(r)
+			job, err := resolve(r)
 			if errors.Is(err, store.ErrNotFound) {
 				writeProblem(w, r, http.StatusNotFound, "not found")
 				return
@@ -100,26 +119,16 @@ func (a *authz) requireJobAccess() func(http.Handler) http.Handler {
 	}
 }
 
-// resolveJob loads the job addressed by the request: directly for /jobs/{id}
-// routes, via the task's JobID for /tasks/{id} routes.
-//
-// Routes are mounted under r.Route("/api/v1", …) (router.go), so chi's
-// RoutePattern() returns the accumulated pattern, e.g. "/api/v1/tasks/{id}"
-// — never the bare "/tasks/{id}" a naive prefix check would expect. Matching
-// on "/tasks/{id}" (the object segment, not a path prefix) correctly
-// classifies /api/v1/tasks/{id} and its /logs, /attempts, /retry, /cancel
-// children as task routes, while /api/v1/jobs/{id}/tasks — the only
-// near-collision in the router — does NOT match: it has no "{id}" segment
-// after "tasks", so it falls through to the job branch as intended.
-func (a *authz) resolveJob(r *http.Request) (store.Job, error) {
-	id := chi.URLParam(r, "id")
-	pattern := chi.RouteContext(r.Context()).RoutePattern()
-	if strings.Contains(pattern, "/tasks/{id}") {
-		task, err := a.store.GetTask(r.Context(), id)
-		if err != nil {
-			return store.Job{}, err
-		}
-		id = task.JobID
+// jobFromJobID loads the job named directly by the {id} URL param.
+func (a *authz) jobFromJobID(r *http.Request) (store.Job, error) {
+	return a.store.GetJob(r.Context(), chi.URLParam(r, "id"))
+}
+
+// jobFromTaskID loads the job owning the task named by the {id} URL param.
+func (a *authz) jobFromTaskID(r *http.Request) (store.Job, error) {
+	task, err := a.store.GetTask(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		return store.Job{}, err
 	}
-	return a.store.GetJob(r.Context(), id)
+	return a.store.GetJob(r.Context(), task.JobID)
 }

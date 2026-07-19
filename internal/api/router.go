@@ -394,12 +394,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Use(az.require(policy.JobsRead))
 				// Collection route: scoped inside the handler via scopeFilter.
 				g.Get("/jobs", jobs.listJobs)
-				// Object routes: owner-enforced by requireJobAccess.
-				g.With(az.requireJobAccess()).Get("/jobs/{id}", jobs.getJob)
-				g.With(az.requireJobAccess()).Get("/jobs/{id}/tasks", tasks.listJobTasks)
-				g.With(az.requireJobAccess()).Get("/tasks/{id}", tasks.getTask)
-				g.With(az.requireJobAccess()).Get("/tasks/{id}/logs", tasks.getTaskLogs)
-				g.With(az.requireJobAccess()).Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
+				// Object routes: owner-enforced. The middleware is chosen by what
+				// {id} names on each route — a job id or a task id.
+				g.With(az.requireJobAccessByJobID()).Get("/jobs/{id}", jobs.getJob)
+				g.With(az.requireJobAccessByJobID()).Get("/jobs/{id}/tasks", tasks.listJobTasks)
+				g.With(az.requireJobAccessByTaskID()).Get("/tasks/{id}", tasks.getTask)
+				g.With(az.requireJobAccessByTaskID()).Get("/tasks/{id}/logs", tasks.getTaskLogs)
+				g.With(az.requireJobAccessByTaskID()).Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
 			})
 			// jobs.write
 			rest.Group(func(g chi.Router) {
@@ -410,12 +411,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Post("/products/{name}/jobs", products.submitProductJob)
 				// Object routes: owner-enforced. This is what closes B1's
 				// carried-forward gap, where a `user` could cancel any job.
-				g.With(az.requireJobAccess()).Patch("/jobs/{id}", jobs.patchJob)
-				g.With(az.requireJobAccess()).Post("/jobs/{id}/cancel", jobs.cancelJob)
-				g.With(az.requireJobAccess()).Post("/jobs/{id}/retry", jobs.retryJob)
-				g.With(az.requireJobAccess()).Delete("/jobs/{id}", jobs.deleteJob)
-				g.With(az.requireJobAccess()).Post("/tasks/{id}/retry", tasks.retryTask)
-				g.With(az.requireJobAccess()).Post("/tasks/{id}/cancel", tasks.cancelTask)
+				g.With(az.requireJobAccessByJobID()).Patch("/jobs/{id}", jobs.patchJob)
+				g.With(az.requireJobAccessByJobID()).Post("/jobs/{id}/cancel", jobs.cancelJob)
+				g.With(az.requireJobAccessByJobID()).Post("/jobs/{id}/retry", jobs.retryJob)
+				g.With(az.requireJobAccessByJobID()).Delete("/jobs/{id}", jobs.deleteJob)
+				g.With(az.requireJobAccessByTaskID()).Post("/tasks/{id}/retry", tasks.retryTask)
+				g.With(az.requireJobAccessByTaskID()).Post("/tasks/{id}/cancel", tasks.cancelTask)
 			})
 
 			// workers.read / workers.manage

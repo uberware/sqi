@@ -4,7 +4,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -276,6 +278,38 @@ func TestUpdateMe(t *testing.T) {
 		}
 	})
 
+	// The reviewer's race is a read-modify-write window that cannot be opened
+	// deterministically from outside the handler, so this pins the property
+	// that closes it instead: updateMe must reach the store ONLY through the
+	// single-column SetUserDisplayName. UpdateUser writes display_name, role,
+	// and disabled together, so any call to it here is a route by which a
+	// concurrent admin demotion could be reverted.
+	t.Run("writes only the display-name column, never a whole-row update", func(t *testing.T) {
+		spy := &userWriteSpy{Store: fake.New()}
+		u := seedAuthUser(t, spy, "alice", "pw", "admin")
+		h := newTestAuthHandler(t, spy)
+
+		if rr := doUpdateMe(t, h, u, `{"display_name":"Alice A."}`); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body)
+		}
+
+		if spy.updateUserCalls != 0 {
+			t.Errorf("UpdateUser called %d time(s); updateMe must not write role/disabled",
+				spy.updateUserCalls)
+		}
+		if spy.setDisplayNameCalls != 1 {
+			t.Errorf("SetUserDisplayName called %d time(s), want 1", spy.setDisplayNameCalls)
+		}
+
+		after, err := spy.GetUser(t.Context(), u.ID)
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if after.DisplayName != "Alice A." || after.Role != "admin" || after.Disabled {
+			t.Errorf("user = %+v, want only display_name changed", after)
+		}
+	})
+
 	t.Run("auth disabled is 409", func(t *testing.T) {
 		st := fake.New()
 		h := newTestAuthHandler(t, st)
@@ -302,4 +336,63 @@ func doUpdateMe(t *testing.T, h *authHandler, u store.User, body string) *httpte
 	rr := httptest.NewRecorder()
 	h.updateMe(rr, req)
 	return rr
+}
+
+// userWriteSpy counts which user-write path a handler takes. It exists to pin
+// updateMe to the single-column update: the distinction matters for
+// correctness (UpdateUser also writes role and disabled) but is invisible in
+// the resulting row, so it cannot be asserted on state alone.
+type userWriteSpy struct {
+	store.Store
+
+	updateUserCalls     int
+	setDisplayNameCalls int
+}
+
+func (s *userWriteSpy) UpdateUser(ctx context.Context, u store.User) (store.User, error) {
+	s.updateUserCalls++
+	return s.Store.UpdateUser(ctx, u)
+}
+
+func (s *userWriteSpy) SetUserDisplayName(ctx context.Context, id, displayName string) (store.User, error) {
+	s.setDisplayNameCalls++
+	return s.Store.SetUserDisplayName(ctx, id, displayName)
+}
+
+// failingPasswordStore makes the atomic password+eviction write fail.
+type failingPasswordStore struct {
+	store.Store
+}
+
+func (failingPasswordStore) SetUserPasswordAndEvictSessions(context.Context, string, string) error {
+	return errors.New("store unavailable")
+}
+
+// TestChangePassword_EvictionFailureIsReported pins the contract the UI
+// depends on: the success response claims other devices were signed out, so a
+// store failure must surface as an error rather than a 204. Because the write
+// is atomic, a 500 also means the password itself is unchanged and the caller
+// can safely retry.
+func TestChangePassword_EvictionFailureIsReported(t *testing.T) {
+	base := fake.New()
+	u := seedAuthUser(t, base, "alice", "old-password", "user")
+	h := newTestAuthHandler(t, failingPasswordStore{Store: base})
+
+	rr := doChangePassword(t, h, u, `{"current_password":"old-password","new_password":"new-password"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when the password/eviction write fails", rr.Code)
+	}
+	if len(rr.Result().Cookies()) != 0 {
+		t.Error("a failed change must not re-issue a session cookie")
+	}
+
+	// Atomicity: the old password must still work.
+	unchanged, err := base.GetUser(t.Context(), u.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	stillOld, verr := password.Verify(unchanged.PasswordHash, "old-password")
+	if verr != nil || !stillOld {
+		t.Fatalf("password changed despite the reported failure (ok=%v err=%v)", stillOld, verr)
+	}
 }

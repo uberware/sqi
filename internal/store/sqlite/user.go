@@ -33,9 +33,14 @@ WHERE id = ?
 RETURNING id, username, display_name, password_hash, role, disabled, created_at, updated_at`
 
 	sqlSetUserPassword = `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?` //nolint:gosec // G101: SQL text, not a credential
-	sqlDeleteUser      = `DELETE FROM users WHERE id = ?`
-	sqlCountUsers      = `SELECT COUNT(*) FROM users`
-	sqlCountAdmins     = `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`
+
+	sqlSetUserDisplayName = `
+UPDATE users SET display_name = ?, updated_at = ?
+WHERE id = ?
+RETURNING id, username, display_name, password_hash, role, disabled, created_at, updated_at`
+	sqlDeleteUser  = `DELETE FROM users WHERE id = ?`
+	sqlCountUsers  = `SELECT COUNT(*) FROM users`
+	sqlCountAdmins = `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`
 )
 
 func scanUser(row scanner) (store.User, error) {
@@ -107,6 +112,38 @@ func (s *Store) SetUserPassword(ctx context.Context, id, passwordHash string) er
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// SetUserPasswordAndEvictSessions implements [store.UserStore]. Both writes
+// share one transaction so a caller can report failure honestly.
+func (s *Store) SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error {
+	now := timeToText(time.Now().UTC())
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	res, err := tx.ExecContext(ctx, sqlSetUserPassword, passwordHash, now, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	if err := checkRowsAffected(res); err != nil {
+		return err
+	}
+	// No rows is fine here: a user with no live sessions is normal.
+	if _, err := tx.ExecContext(ctx, sqlDeleteSessionsForUser, id); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit())
+}
+
+// SetUserDisplayName implements [store.UserStore].
+func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) (store.User, error) {
+	row := s.stmtSetUserDisplayName.QueryRowContext(ctx, displayName, timeToText(time.Now().UTC()), id)
+	out, err := scanUser(row)
+	return out, mapErr(err)
 }
 
 // DeleteUser implements [store.UserStore].

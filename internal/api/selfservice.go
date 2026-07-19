@@ -75,22 +75,26 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "failed to change password")
 		return
 	}
-	if err := h.store.SetUserPassword(ctx, u.ID, hash); err != nil {
+	// The new password and the session eviction land together or not at all.
+	// The client reports "other devices have been signed out" on success, so
+	// a partial result here would make that message a lie with nothing to
+	// detect it — exactly the wrong outcome for someone rotating a password
+	// after a suspected compromise. On failure nothing changed and the caller
+	// can safely retry.
+	//
+	// API keys are deliberately NOT revoked: they are an independent
+	// credential, and silently killing a user's automation because they
+	// rotated a password would be a nasty surprise.
+	if err := h.store.SetUserPasswordAndEvictSessions(ctx, u.ID, hash); err != nil {
 		h.logger.ErrorContext(ctx, "selfservice: set password failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to change password")
 		return
 	}
 
-	// Evict every session for this account, then re-issue one for the caller.
-	// API keys are deliberately NOT revoked: they are an independent
-	// credential, and silently killing a user's automation because they
-	// rotated a password would be a nasty surprise.
-	if err := h.store.DeleteSessionsForUser(ctx, u.ID); err != nil {
-		h.logger.WarnContext(ctx, "selfservice: delete sessions failed", slog.Any("error", err))
-	}
-	// A failure here is logged, not surfaced: the password change already
-	// succeeded and must not be reported as failed. The caller simply has to
-	// log in again with the new password.
+	// The password is changed and every session is gone, including the
+	// caller's. Re-issuing one keeps this device signed in; if it fails the
+	// change still stands, so this is logged rather than surfaced — the
+	// caller simply logs in again with the new password.
 	if err := h.issueSession(w, r, u); err != nil {
 		h.logger.ErrorContext(ctx, "selfservice: re-issue session failed", slog.Any("error", err))
 	}
@@ -125,22 +129,23 @@ func (h *authHandler) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.store.GetUser(ctx, userID)
+	if req.DisplayName == nil {
+		// Nothing to change; report the caller's current identity unchanged.
+		p, _ := auth.FromContext(ctx)
+		writeJSON(w, http.StatusOK, toPrincipalResponse(p))
+		return
+	}
+
+	// A targeted single-column update, NOT a read-modify-write through
+	// UpdateUser: that writes display_name, role, and disabled together, so a
+	// save racing a concurrent admin demotion or disable would write the
+	// stale values back and silently revert it.
+	updated, err := h.store.SetUserDisplayName(ctx, userID, *req.DisplayName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "account not found")
 			return
 		}
-		h.logger.ErrorContext(ctx, "selfservice: user lookup failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to update account")
-		return
-	}
-
-	if req.DisplayName != nil {
-		u.DisplayName = *req.DisplayName
-	}
-	updated, err := h.store.UpdateUser(ctx, u)
-	if err != nil {
 		h.logger.ErrorContext(ctx, "selfservice: update user failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update account")
 		return

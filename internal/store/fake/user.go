@@ -121,6 +121,40 @@ func (s *Store) SetUserPassword(_ context.Context, id, passwordHash string) erro
 	return nil
 }
 
+// SetUserPasswordAndEvictSessions implements [store.UserStore]. The whole
+// operation runs under one lock, mirroring SQLite's transaction.
+func (s *Store) SetUserPasswordAndEvictSessions(_ context.Context, id, passwordHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	u.PasswordHash = passwordHash
+	u.UpdatedAt = time.Now().UTC()
+	s.users[id] = u
+	for sid, sess := range s.sessions {
+		if sess.UserID == id {
+			delete(s.sessions, sid)
+		}
+	}
+	return nil
+}
+
+// SetUserDisplayName implements [store.UserStore].
+func (s *Store) SetUserDisplayName(_ context.Context, id, displayName string) (store.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return store.User{}, store.ErrNotFound
+	}
+	u.DisplayName = displayName
+	u.UpdatedAt = time.Now().UTC()
+	s.users[id] = u
+	return u, nil
+}
+
 // DeleteUser implements [store.UserStore].
 func (s *Store) DeleteUser(_ context.Context, id string) error {
 	s.mu.Lock()

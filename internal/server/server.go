@@ -279,6 +279,9 @@ func (s *Server) start(ctx context.Context) error {
 		slog.Duration("interval", s.cfg.CheckpointInterval),
 	)
 
+	// Reap expired sessions (no-op when auth is disabled).
+	s.startSessionSweeper(ctx)
+
 	// Seed a default farm and queue on first startup so a fresh deployment can
 	// accept job submissions without manual setup (no-op once any farm exists).
 	if err := seedDefaults(ctx, s.store, s.cfg, s.logger); err != nil {
@@ -595,4 +598,60 @@ func (s *Server) shutdown() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// sessionSweepInterval is how often expired sessions are reaped. Sessions
+// expire on the order of days (config default: 168h), so the exact cadence
+// does not matter much — this only has to be short enough that the table
+// tracks the live session count rather than the all-time login count.
+const sessionSweepInterval = time.Hour
+
+// startSessionSweeper runs a periodic DeleteExpiredSessions until ctx is
+// canceled. It sweeps once immediately so a server that is restarted more
+// often than the interval still makes progress, rather than never reaching
+// its first tick.
+//
+// Nothing else deletes a session on expiry — logout deletes by id, a password
+// change deletes by user — so without this the sessions table grows by one row
+// per login forever, enlarging the token_hash index that every authenticated
+// request probes.
+//
+// It is a no-op when auth is disabled: no sessions are minted, so there is
+// nothing to reap, and an auth-off server keeps exactly its pre-A1 behavior.
+//
+// Failures are logged and retried on the next tick: a sweep is pure
+// housekeeping and must never take the server down.
+func (s *Server) startSessionSweeper(ctx context.Context) {
+	if !s.cfg.AuthEnabled {
+		return
+	}
+	sweep := func() {
+		n, err := s.store.DeleteExpiredSessions(ctx, time.Now().UTC())
+		if err != nil {
+			s.logger.ErrorContext(ctx, "auth: expired-session sweep failed", slog.Any("error", err))
+			return
+		}
+		if n > 0 {
+			s.logger.InfoContext(ctx, "auth: reaped expired sessions", slog.Int("count", n))
+		}
+	}
+
+	go func() {
+		ticker := time.NewTicker(sessionSweepInterval)
+		defer ticker.Stop()
+		sweep()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sweep()
+			}
+		}
+	}()
+
+	s.logger.InfoContext(
+		ctx, "auth: expired-session sweeper started",
+		slog.Duration("interval", sessionSweepInterval),
+	)
 }

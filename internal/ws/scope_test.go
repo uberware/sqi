@@ -3,8 +3,10 @@
 package ws
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func TestScopeAllows(t *testing.T) {
@@ -153,5 +155,63 @@ func drain(ch chan Envelope) []Envelope {
 		default:
 			return out
 		}
+	}
+}
+
+// TestOwnerCache_FailureCooldown pins both halves of the failure policy: a
+// failed lookup is suppressed for the cooldown (so a degraded store cannot be
+// re-queried per event on the dispatch goroutine), and it IS retried once the
+// window passes (so a transient error never hides a job permanently).
+func TestOwnerCache_FailureCooldown(t *testing.T) {
+	var calls int
+	failing := true
+	c := newOwnerCache(func(string) (string, error) {
+		calls++
+		if failing {
+			return "", errors.New("store down")
+		}
+		return "alice", nil
+	})
+
+	now := time.Now()
+	c.now = func() time.Time { return now }
+
+	if got := c.get("job-1"); got != "" {
+		t.Fatalf("get = %q, want empty on failure", got)
+	}
+	for range 20 {
+		c.get("job-1")
+	}
+	if calls != 1 {
+		t.Fatalf("lookup calls = %d, want 1 (failure must be suppressed during cooldown)", calls)
+	}
+
+	// Just inside the window: still suppressed.
+	now = now.Add(failureCooldown - time.Millisecond)
+	c.get("job-1")
+	if calls != 1 {
+		t.Fatalf("lookup calls = %d, want 1 just inside the cooldown", calls)
+	}
+
+	// Past the window: retried, and now the store answers.
+	now = now.Add(2 * time.Millisecond)
+	failing = false
+	if got := c.get("job-1"); got != "alice" {
+		t.Fatalf("get = %q, want %q after the cooldown expires", got, "alice")
+	}
+	if calls != 2 {
+		t.Fatalf("lookup calls = %d, want 2 (one retry after the cooldown)", calls)
+	}
+
+	// Once resolved it is memoized permanently — no further lookups, and the
+	// failure record must not resurrect the cooldown.
+	now = now.Add(time.Hour)
+	for range 10 {
+		if got := c.get("job-1"); got != "alice" {
+			t.Fatalf("get = %q, want the memoized owner", got)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("lookup calls = %d, want 2 (a resolved owner is cached for good)", calls)
 	}
 }
