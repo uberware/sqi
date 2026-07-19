@@ -117,16 +117,18 @@ disabled, or demoted to a non-admin role — any of those requests fail with
 **409 Conflict** — so an operator can never lock themselves (or everyone)
 out of user management.
 
-**Known interim gaps** (deliberate, deferred to later components, not bugs):
+**Known interim gaps** (deliberate, tracked for component **B3**, not bugs):
 
-- `user`'s `jobs.write` permission gates the **route**, not ownership — a
-  `user` account can currently act on any job, not just its own. Scoping
-  visibility/control to owned jobs is component **B2**.
 - There is no self-service password or profile change for non-admin roles
   yet; account changes go through an admin via the `/users` API or page.
 - `apikeys.admin` (an admin managing another user's API keys) is defined in
   the policy above, but the `/api-keys` handlers remain self-scoped for
   now — see [API keys](#api-keys).
+- Cross-origin browser access does not work while auth is on: a `*` CORS
+  origin is incompatible with `AllowCredentials` and is dropped at startup
+  (with an error log), and there is no config surface yet for naming real
+  origins — so only same-origin requests succeed. See
+  [CSRF & CORS](#csrf--cors).
 
 ## Job identity
 
@@ -287,7 +289,7 @@ separately-hosted UI (a different scheme/host/port) that wants to call a
 > "unless configured", but unconditionally, since there is presently no
 > supported way to configure it. This only affects a separately-hosted UI
 > (same-origin deployments are unaffected); adding a config surface for it is
-> tracked as follow-up work, not part of A1.
+> tracked as component **B3**, not part of A1.
 
 ## Headless / SDK auth
 
@@ -379,9 +381,9 @@ Bearer-authenticated request has nothing for it to check.
 
 ## Coming next
 
-- B2 — authenticated owner/submitter binding on jobs, including scoping the
-  `user` role's job visibility/control to jobs it owns (see the interim gap
-  noted in [Roles & permissions](#roles--permissions)).
+- B3 — auth surface completion: self-service credential change, `apikeys.admin`,
+  and a CORS origins config (see the interim gaps in
+  [Roles & permissions](#roles--permissions)).
 - C1 — LDAP/AD integration.
 - C2 — OAuth2/OIDC (SSO).
 - D1 — per-user concurrent task caps.
