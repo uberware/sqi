@@ -129,6 +129,10 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodGet, pattern: "/api/v1/api-keys", perm: policy.APIKeysSelf},
 	{method: http.MethodDelete, pattern: "/api/v1/api-keys/{id}", perm: policy.APIKeysSelf},
 
+	// apikeys.admin
+	{method: http.MethodGet, pattern: "/api/v1/users/{id}/api-keys", perm: policy.APIKeysAdmin},
+	{method: http.MethodDelete, pattern: "/api/v1/users/{id}/api-keys/{keyId}", perm: policy.APIKeysAdmin},
+
 	// jobs.read
 	{method: http.MethodGet, pattern: "/api/v1/jobs", perm: policy.JobsRead},
 	{method: http.MethodGet, pattern: "/api/v1/jobs/{id}", perm: policy.JobsRead},

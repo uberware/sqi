@@ -381,6 +381,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Delete("/api-keys/{id}", apiKeysH.revoke)
 			})
 
+			// apikeys.admin (admin only) — anyone's keys, list and revoke only.
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.APIKeysAdmin))
+				g.Get("/users/{id}/api-keys", apiKeysH.listForUser)
+				g.Delete("/users/{id}/api-keys/{keyId}", apiKeysH.revokeForUser)
+			})
+
 			// jobs.read
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsRead))
