@@ -241,6 +241,26 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('account link', () => {
+    it('is visible when authed as a real user', async () => {
+      renderSidebarAs(AUTHED_PRINCIPAL)
+      const link = await screen.findByRole('link', { name: 'Account' })
+      expect(link).toHaveAttribute('href', '/account')
+    })
+
+    // With auth off the anonymous superuser has no account record, and both
+    // self-service routes answer 409 — so the link must not be offered.
+    it('is absent when the principal is anonymous (auth disabled)', async () => {
+      renderSidebarAs(ANONYMOUS_PRINCIPAL)
+      // Let /auth/me resolve before asserting absence, otherwise the
+      // assertion would trivially pass during the loading state too.
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      await waitFor(() =>
+        expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument(),
+      )
+    })
+  })
+
   describe('logout control', () => {
     it('is visible when authed as a real user', async () => {
       renderSidebarAs(AUTHED_PRINCIPAL)

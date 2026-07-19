@@ -62,14 +62,25 @@ function AccountSection() {
   return (
     <div className={styles.accountSection}>
       <span className={styles.accountName}>{principal.display_name}</span>
-      <button
-        type="button"
-        className={styles.logoutBtn}
-        onClick={handleLogout}
-        disabled={logout.isPending}
-      >
-        Log out
-      </button>
+      <div className={styles.accountActions}>
+        {/*
+         * Every authenticated role may manage its own account, so this link
+         * is ungated. It inherits the anonymous check above: with auth off
+         * the whole section is absent, matching the self-service routes,
+         * which return 409 when there is no real account to change.
+         */}
+        <NavLink to="/account" className={styles.accountLink ?? ''}>
+          Account
+        </NavLink>
+        <button
+          type="button"
+          className={styles.logoutBtn}
+          onClick={handleLogout}
+          disabled={logout.isPending}
+        >
+          Log out
+        </button>
+      </div>
     </div>
   )
 }
