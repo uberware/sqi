@@ -1554,6 +1554,26 @@ components:
               type: string
               description: The raw API key. Shown once, at creation, and never returned again — store it now.
 
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+          description: The caller's existing password.
+        new_password:
+          type: string
+          description: The replacement password. Must be non-empty.
+
+    UpdateMeRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+          description: |
+            New display name. This is the only field the route accepts;
+            role, disabled, and username are ignored.
+
     Principal:
       type: object
       required: [subject, display_name, roles, kind, permissions]
@@ -3466,6 +3486,73 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+    patch:
+      operationId: updateMe
+      summary: Update the caller's own profile
+      description: |
+        Self-scoped: the target is the authenticated principal, never a path
+        id. Only `display_name` is accepted — `role`, `disabled`, and
+        `username` are ignored, so this route cannot escalate privileges.
+        Returns `409` when auth is disabled (no real account to change).
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: Updated principal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Principal"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /auth/password:
+    put:
+      operationId: changeOwnPassword
+      summary: Change the caller's own password
+      description: |
+        Requires the current password. A wrong current password returns `403`,
+        not `401` — the caller is authenticated and only failed a re-auth
+        check. On success every session for the account is destroyed and a
+        fresh one is issued for this caller, so other devices are logged out
+        while this one stays signed in. API keys are not revoked.
+        Returns `409` when auth is disabled.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: Password changed; a new session cookie is set.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ── Users ───────────────────────────────────────────────────────────────────
 
   /users:
@@ -3697,5 +3784,64 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /users/{id}/api-keys:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    get:
+      operationId: listUserApiKeys
+      summary: List another user's API keys
+      description: |
+        Requires `apikeys.admin` (the `admin` role). Never includes raw
+        secrets — those are returned only once, at creation.
+      tags: [api-keys]
+      responses:
+        "200":
+          description: Array of API keys, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /users/{id}/api-keys/{keyId}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+      - name: keyId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The API key to revoke.
+
+    delete:
+      operationId: revokeUserApiKey
+      summary: Revoke another user's API key
+      description: |
+        Requires `apikeys.admin`. A key id that does not belong to the named
+        user returns `404` — revocation is owner-scoped. Admins may revoke
+        another user's key but never create one.
+      tags: [api-keys]
+      responses:
+        "204":
+          description: Key revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
