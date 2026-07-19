@@ -547,6 +547,52 @@ jobs:
         if: always()
         run: docker compose -f deploy/docker-compose.smoke.yml down -v
 
+  # ── Auth surface demo ────────────────────────────────────────────────────────
+  # Runs scripts/auth-demo.sh (the same script developers run via `make
+  # auth-demo`) against real binaries on a live local farm: auth enabled, a
+  # bootstrap admin, a second non-admin account, and a worker executing a job.
+  #
+  # This is the end-to-end regression test for the auth surface — session
+  # cookies, API keys, the CSRF guard, the RBAC permission matrix, and job owner
+  # scoping — all of which are cross-cutting enough that the Go unit tests can
+  # confirm each piece in isolation without catching a router that mounts the
+  # wrong middleware on a real route.
+  #
+  # Linux-only and unconditional: it takes well under a minute, so unlike
+  # cross-platform-runtime there is no reason to restrict it to pushes.
+  #
+  # The script needs curl + jq (preinstalled on GitHub-hosted runners) and
+  # python3 (likewise; used only to allocate free loopback ports). Passing the
+  # prebuilt binaries via SQI_*_BIN skips the script's internal `make build`.
+  #
+  # No Node build: the tracked placeholder web/dist/index.html is enough to keep
+  # the server's //go:embed valid on a clean checkout, and this job exercises
+  # only the REST API, never the UI bundle.
+  auth-demo:
+    name: Auth surface demo (live farm)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          go build -o bin/sqi-server ./cmd/sqi-server
+          go build -o bin/sqi-worker ./cmd/sqi-worker
+
+      - name: Auth surface demo (sessions, API keys, CSRF, RBAC, owner scoping)
+        env:
+          SQI_SERVER_BIN: bin/sqi-server
+          SQI_WORKER_BIN: bin/sqi-worker
+        run: bash scripts/auth-demo.sh
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run
