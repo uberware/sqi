@@ -31,7 +31,7 @@ import (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestHub() *Hub {
-	return NewHub(slog.New(slog.DiscardHandler))
+	return NewHub(slog.New(slog.DiscardHandler), nil)
 }
 
 // drainOrTimeout reads one Envelope from ch within d. Returns (env, true) on
@@ -67,13 +67,13 @@ func TestHub_RegisterDeregister(t *testing.T) {
 	h := newTestHub()
 	const id = "client-1"
 
-	ch := h.Register(id)
+	ch := h.Register(id, Scope{All: true})
 	if ch == nil {
 		t.Fatal("Register returned nil channel")
 	}
 
 	// Second call is idempotent: same channel is returned.
-	if got := h.Register(id); got != ch {
+	if got := h.Register(id, Scope{All: true}); got != ch {
 		t.Fatal("second Register returned a different channel")
 	}
 
@@ -96,7 +96,7 @@ func TestHub_RegisterDeregister(t *testing.T) {
 
 func TestHub_Subscribe_InvalidSubject(t *testing.T) {
 	h := newTestHub()
-	h.Register("c1")
+	h.Register("c1", Scope{All: true})
 
 	if err := h.Subscribe("c1", "bad/subject", 0); err == nil {
 		t.Fatal("expected error for unrecognized subject, got nil")
@@ -121,7 +121,7 @@ func TestHub_Subscribe_ValidSubjects(t *testing.T) {
 	for _, subj := range cases {
 		t.Run(subj, func(t *testing.T) {
 			h := newTestHub()
-			h.Register("c1")
+			h.Register("c1", Scope{All: true})
 			if err := h.Subscribe("c1", subj, 0); err != nil {
 				t.Fatalf("unexpected error for subject %q: %v", subj, err)
 			}
@@ -133,8 +133,8 @@ func TestHub_Subscribe_ValidSubjects(t *testing.T) {
 
 func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 	h := newTestHub()
-	jobsCh := h.Register("jobs-client")
-	workersCh := h.Register("workers-client")
+	jobsCh := h.Register("jobs-client", Scope{All: true})
+	workersCh := h.Register("workers-client", Scope{All: true})
 
 	if err := h.Subscribe("jobs-client", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs-client: %v", err)
@@ -168,13 +168,51 @@ func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 	}
 }
 
+// TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty pins a Task-8
+// review finding: 7 of the 9 production NotifyJob call sites never populate
+// JobEvent.Owner (only internal/scheduler/retry.go does). Without a fallback
+// to the owner cache — the same fallback NotifyTask already had — a scoped
+// client's own job-status events would be silently dropped by Scope.allows
+// because env.owner == "" matches no real username. The hub must resolve
+// ownership via the injected jobOwner lookup exactly as NotifyTask does.
+func TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler), func(jobID string) string {
+		if jobID == "job-1" {
+			return "alice"
+		}
+		return ""
+	})
+
+	ch := h.Register("c1", Scope{Owner: "alice"})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// JobEvent.Owner intentionally left empty: only the injected resolver
+	// knows job-1 belongs to alice, matching the real call sites.
+	h.NotifyJob(JobEvent{JobID: "job-1", Status: "running"})
+
+	env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("scoped client did not receive NotifyJob push for its own job " +
+			"when JobEvent.Owner was empty and only the resolver knew the owner")
+	}
+	var push JobSummaryPush
+	if err := json.Unmarshal(env.Payload, &push); err != nil {
+		t.Fatalf("unmarshal push: %v", err)
+	}
+	if push.JobID != "job-1" {
+		t.Fatalf("job_id = %q, want %q", push.JobID, "job-1")
+	}
+}
+
 func TestHub_NotifyTask_FansToJobsAndTaskSubject(t *testing.T) {
 	h := newTestHub()
 	const jobID = "job-abc"
 	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, jobID)
 
-	jobsCh := h.Register("c-jobs")
-	taskCh := h.Register("c-tasks")
+	jobsCh := h.Register("c-jobs", Scope{All: true})
+	taskCh := h.Register("c-tasks", Scope{All: true})
 
 	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs: %v", err)
@@ -211,7 +249,7 @@ func TestHub_NotifyTask_JobsPushCarriesTaskID(t *testing.T) {
 	h := newTestHub()
 	const jobID, taskID = "job-abc", "t1"
 
-	jobsCh := h.Register("c-jobs")
+	jobsCh := h.Register("c-jobs", Scope{All: true})
 	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs: %v", err)
 	}
@@ -246,7 +284,7 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 	const jobID, taskID = "job-abc", "t1"
 	taskSubject := fmt.Sprintf(SubjectJobTasksFmt, jobID)
 
-	taskCh := h.Register("c-tasks")
+	taskCh := h.Register("c-tasks", Scope{All: true})
 	if err := h.Subscribe("c-tasks", taskSubject, 0); err != nil {
 		t.Fatalf("subscribe tasks: %v", err)
 	}
@@ -272,11 +310,109 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 	}
 }
 
+// NotifyTask's SubjectJobs push must be buffered in the ring even when nobody
+// is subscribed at emit time, matching NotifyJob's behavior — otherwise
+// SubjectJobs replay history is complete for job-status events but silently
+// incomplete for task-summary events emitted while nobody was subscribed.
+//
+// This guarantee is specifically the auth-on one: it exists so a scoped
+// client that subscribes moments after the event can still replay it. With
+// auth off (no owner resolver) there is no such thing as a scoped client, and
+// the hub instead falls back to the pre-B2 hasSubscribers guard to keep the
+// zero-subscriber hot path cheap (see TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing).
+// So this test needs a hub WITH an owner resolver to exercise the guarantee
+// it names, unlike the plain newTestHub() used elsewhere in this file.
+func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "owner" })
+
+	// Fire with NO active SubjectJobs subscribers — previously this was a
+	// no-op for the SubjectJobs push because of a hasSubscribers guard.
+	h.NotifyTask(TaskEvent{JobID: "job-no-sub", TaskID: "t1", Status: "running"})
+
+	// Late subscriber with since_seq=0 must receive the buffered push as replay.
+	ch := h.Register("c1", Scope{All: true})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	env, ok := drainOrTimeout(ch, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("did not receive replayed SubjectJobs push after late subscribe with since_seq=0")
+	}
+	if env.Subject != SubjectJobs {
+		t.Fatalf("expected subject %q, got %q", SubjectJobs, env.Subject)
+	}
+}
+
+// TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing is the regression test
+// for I-4: with auth disabled (no owner resolver — NewHub(logger, nil), same
+// as newTestHub()) and zero connected clients, NotifyJob and NotifyTask must
+// not populate the SubjectJobs ring at all — mirroring the pre-B2 hasSubscribers
+// guard. A late subscriber with since_seq: 0 (what web/src/ws/client.ts always
+// sends) must therefore replay nothing, not the events that fired before it
+// connected. Before this fix 5 NotifyJob + 5 NotifyTask calls with nobody
+// connected produced 10 replayed envelopes for the first-ever subscriber;
+// pre-B2 (and after this fix) it produces 0.
+func TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing(t *testing.T) {
+	h := newTestHub() // NewHub(logger, nil) — no owner resolver, i.e. auth off
+
+	for i := range 5 {
+		h.NotifyJob(JobEvent{JobID: fmt.Sprintf("j%d", i), Status: "pending"})
+		h.NotifyTask(TaskEvent{JobID: fmt.Sprintf("j%d", i), TaskID: fmt.Sprintf("t%d", i), Status: "running"})
+	}
+
+	ch := h.Register("c1", Scope{All: true})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	if env, ok := drainOrTimeout(ch, 100*time.Millisecond); ok {
+		t.Fatalf("expected no replayed envelopes on an auth-off hub with no prior subscribers, got %+v", env)
+	}
+}
+
+// TestHub_NotifyJob_AuthOn_NoSubscribers_StillRingsForReplay is the auth-on
+// counterpart to TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing: when
+// the hub has an owner resolver (auth on), NotifyJob and NotifyTask must keep
+// ringing the SubjectJobs buffer even with zero clients connected, so a
+// scoped client that subscribes moments later can still replay the events —
+// the behavior B2 introduced and that this fix must not regress.
+func TestHub_NotifyJob_AuthOn_NoSubscribers_StillRingsForReplay(t *testing.T) {
+	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "owner" })
+
+	for i := range 5 {
+		h.NotifyJob(JobEvent{JobID: fmt.Sprintf("j%d", i), Status: "pending"})
+		h.NotifyTask(TaskEvent{JobID: fmt.Sprintf("j%d", i), TaskID: fmt.Sprintf("t%d", i), Status: "running"})
+	}
+
+	ch := h.Register("c1", Scope{All: true})
+	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// Subscribe replays synchronously (directly into the client's buffered
+	// send channel) before it returns, so the buffered count is stable here
+	// without needing a timeout-based drain.
+	n := 0
+	for {
+		select {
+		case <-ch:
+			n++
+		default:
+			goto done
+		}
+	}
+done:
+	if n != 10 {
+		t.Fatalf("expected 10 replayed envelopes (5 NotifyJob + 5 NotifyTask) on an auth-on hub, got %d", n)
+	}
+}
+
 // NotifyJob (a genuine job-status change) must NOT carry a task_id, so list
 // subscribers classify it as a job-status event rather than a task event.
 func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {
 	h := newTestHub()
-	jobsCh := h.Register("c-jobs")
+	jobsCh := h.Register("c-jobs", Scope{All: true})
 	if err := h.Subscribe("c-jobs", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe jobs: %v", err)
 	}
@@ -299,7 +435,7 @@ func TestHub_NotifyJob_JobsPushHasNoTaskID(t *testing.T) {
 
 func TestHub_NotifyWorker_FansToWorkerSubscribers(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectWorkers, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -324,7 +460,7 @@ func TestHub_NotifyLog_BuffersInRingWithoutSubscribers(t *testing.T) {
 	h.NotifyLog(LogEvent{TaskID: taskID, SeqNum: 1, Stream: "stdout", Data: "buffered\n"})
 
 	// Late subscriber with since_seq=0 must receive the buffered log as replay.
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", logSubject, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -343,7 +479,7 @@ func TestHub_NotifyLog_FansToLogSubscriber(t *testing.T) {
 	const taskID = "task-xyz"
 	logSubject := fmt.Sprintf(SubjectTaskLogsFmt, taskID)
 
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", logSubject, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -363,7 +499,7 @@ func TestHub_NotifyLog_FansToLogSubscriber(t *testing.T) {
 
 func TestHub_Fanout_DropsWhenClientFull(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -401,7 +537,7 @@ done:
 
 func TestHub_Unsubscribe_StopsDelivery(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -420,7 +556,7 @@ func TestHub_Unsubscribe_StopsDelivery(t *testing.T) {
 func TestHub_Unsubscribe_Noop_WhenNotSubscribed(t *testing.T) {
 	t.Parallel() // no shared state; safe to run concurrently
 	h := newTestHub()
-	h.Register("c1")
+	h.Register("c1", Scope{All: true})
 	// Must not panic when client is not subscribed.
 	h.Unsubscribe("c1", SubjectJobs)
 	// Must not panic when client does not exist.
@@ -431,7 +567,7 @@ func TestHub_Unsubscribe_Noop_WhenNotSubscribed(t *testing.T) {
 
 func TestHub_Deregister_RemovesAllSubscriptions(t *testing.T) {
 	h := newTestHub()
-	h.Register("c1")
+	h.Register("c1", Scope{All: true})
 	for _, s := range []string{SubjectJobs, SubjectWorkers} {
 		if err := h.Subscribe("c1", s, 0); err != nil {
 			t.Fatalf("subscribe %q: %v", s, err)
@@ -451,7 +587,7 @@ func TestHub_RingBuffer_ReplaySinceSeq(t *testing.T) {
 	h := newTestHub()
 
 	// Register a throw-away subscriber to drive ring population.
-	trashCh := h.Register("trash")
+	trashCh := h.Register("trash", Scope{All: true})
 	if err := h.Subscribe("trash", SubjectJobs, 0); err != nil {
 		t.Fatalf("trash subscribe: %v", err)
 	}
@@ -463,7 +599,7 @@ func TestHub_RingBuffer_ReplaySinceSeq(t *testing.T) {
 	drainAll(trashCh)
 
 	// New client connects and requests replay since Seq 1 (should receive 2 and 3).
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 1); err != nil {
 		t.Fatalf("subscribe c1: %v", err)
 	}
@@ -490,7 +626,7 @@ done:
 
 func TestHub_RingBuffer_ReplayAllWhenSinceSeqZero(t *testing.T) {
 	h := newTestHub()
-	trashCh := h.Register("trash")
+	trashCh := h.Register("trash", Scope{All: true})
 	if err := h.Subscribe("trash", SubjectJobs, 0); err != nil {
 		t.Fatalf("trash subscribe: %v", err)
 	}
@@ -501,7 +637,7 @@ func TestHub_RingBuffer_ReplayAllWhenSinceSeqZero(t *testing.T) {
 
 	// SinceSeq 0 replays ALL buffered messages (hub seqs start at 1, so every
 	// buffered entry satisfies seq > 0).
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe c1: %v", err)
 	}
@@ -525,7 +661,7 @@ done:
 
 func TestHub_PushSeqIsMonotonicallyIncreasing(t *testing.T) {
 	h := newTestHub()
-	ch := h.Register("c1")
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectJobs, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -559,7 +695,7 @@ func TestHub_ConcurrentFanout_NoRace(t *testing.T) {
 	channels := make([]chan Envelope, nClients)
 	for i := range nClients {
 		id := fmt.Sprintf("c%d", i)
-		channels[i] = h.Register(id)
+		channels[i] = h.Register(id, Scope{All: true})
 		if err := h.Subscribe(id, SubjectJobs, 0); err != nil {
 			t.Fatalf("subscribe %s: %v", id, err)
 		}
@@ -643,8 +779,8 @@ func TestSubjectRing_Add_AssignsIncreasingSeq(t *testing.T) {
 }
 
 func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler))
-	ch := h.Register("c1")
+	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -668,8 +804,8 @@ func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
 }
 
 func TestHub_DiagnosticsIsValidSubject(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler))
-	h.Register("c1")
+	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
 		t.Fatalf("diagnostics should be a valid subject: %v", err)
 	}

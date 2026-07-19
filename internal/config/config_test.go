@@ -763,6 +763,49 @@ func TestLoad_AuthEnabled_UnsetFlagDoesNotClobberEnv(t *testing.T) {
 	}
 }
 
+// ── Auth: validate_job_owner (default, env, flag) ────────────────────────────
+
+func TestAuthValidateJobOwnerDefaultsTrue(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if !cfg.Auth.ValidateJobOwner {
+		t.Error("Auth.ValidateJobOwner = false, want true by default")
+	}
+}
+
+func TestAuthValidateJobOwnerFromEnv(t *testing.T) {
+	t.Setenv("SQI_AUTH_VALIDATE_JOB_OWNER", "false")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.ValidateJobOwner {
+		t.Error("env did not disable ValidateJobOwner")
+	}
+}
+
+// An unset *bool flag must not clobber a file/env value.
+func TestAuthValidateJobOwnerFlagUnsetDoesNotClobber(t *testing.T) {
+	t.Setenv("SQI_AUTH_VALIDATE_JOB_OWNER", "false")
+	cfg, err := config.Load("", config.FlagOverrides{ValidateJobOwner: nil})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.ValidateJobOwner {
+		t.Error("unset flag clobbered the env value")
+	}
+}
+
+func TestAuthValidateJobOwnerFlagFlips(t *testing.T) {
+	disabled := false
+	cfg, err := config.Load("", config.FlagOverrides{ValidateJobOwner: &disabled})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.ValidateJobOwner {
+		t.Error("Auth.ValidateJobOwner = true after --auth-validate-job-owner=false, want false")
+	}
+}
+
 // ── Auth: session + bootstrap (defaults, file, env, validation) ──────────────
 
 func TestAuthConfigDefaults(t *testing.T) {

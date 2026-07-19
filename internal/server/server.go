@@ -120,6 +120,11 @@ type Config struct {
 	// authenticator instead of the anonymous one. Default false.
 	AuthEnabled bool
 
+	// AuthValidateJobOwner mirrors config.AuthConfig.ValidateJobOwner: when
+	// true, a submit-as owner override must name a known user, else 400.
+	// Default true.
+	AuthValidateJobOwner bool
+
 	// AuthSessionTTL mirrors config.AuthConfig.Session.TTL: the absolute
 	// lifetime of sessions minted by POST /auth/login. Only consulted when
 	// AuthEnabled is true.
@@ -309,7 +314,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── WebSocket hub ────────────────────────────────────────
 	// The hub bridges scheduler events to subscribed WebSocket clients.
 	// It is created before the scheduler so it can be passed as the notifier.
-	s.wsHub = ws.NewHub(s.logger)
+	s.wsHub = newWSHub(s.logger, st, s.cfg.AuthEnabled)
 	s.logger.InfoContext(ctx, "ws: hub created")
 
 	// Wire the diagnostic buffer's notifier to the hub now that the hub exists,
@@ -380,6 +385,7 @@ func (s *Server) start(ctx context.Context) error {
 			DisableRateLimit:       s.cfg.DisableRateLimit,
 			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
 			AuthEnabled:            s.cfg.AuthEnabled,
+			ValidateJobOwner:       s.cfg.AuthValidateJobOwner,
 		},
 		deps,
 		s.logger,
@@ -422,6 +428,63 @@ func (s *Server) start(ctx context.Context) error {
 	s.discovery = resp
 
 	return nil
+}
+
+// wsJobOwnerResolverTimeout bounds each individual wsJobOwnerResolver lookup;
+// it does not bound the aggregate time spent across many lookups. The query
+// is a single indexed primary-key read (jobs.id), so this is generous
+// headroom rather than a tuned budget — its purpose is only to guarantee each
+// call returns, since it runs synchronously on the calling scheduler
+// goroutine inside NotifyTask/NotifyJob and an unbounded context.Background()
+// call would block that goroutine indefinitely if the store ever hung.
+// Failed resolutions are never cached (see ownerCache.get), so during a
+// sustained store outage every single event pays up to this timeout, not
+// just one — this constant caps the per-call cost, not the total stall an
+// outage can accumulate across many events. newWSHub avoids that cost
+// entirely when auth is disabled (nil resolver, no store calls at all); it
+// does not help while auth is enabled.
+const wsJobOwnerResolverTimeout = 2 * time.Second
+
+// wsJobOwnerResolver returns a jobID → owner lookup for [ws.NewHub], backed by
+// st. Job ownership is immutable, so the hub caches results; a failed lookup
+// (including a timeout) returns "" and fails closed for scoped clients.
+func wsJobOwnerResolver(st store.Store) func(jobID string) string {
+	return func(jobID string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), wsJobOwnerResolverTimeout)
+		defer cancel()
+		job, err := st.GetJob(ctx, jobID)
+		if err != nil {
+			return ""
+		}
+		return job.Owner
+	}
+}
+
+// newWSHub constructs the WebSocket hub used by (*Server).start. Extracted to
+// a named function (rather than inlined at the ws.NewHub call site) so this
+// wiring is directly testable without booting the full server: a regression
+// that silently drops the resolver back to nil (ws.NewHub(logger, nil), the
+// pre-Task-8 placeholder) would otherwise be invisible to every test in this
+// package.
+//
+// authEnabled gates whether a real store-backed resolver is wired at all.
+// When auth is disabled every WebSocket client registers Scope{All: true}
+// (readLoop's scopeFilter returns scoped=false for the anonymous superuser),
+// so a live resolver buys nothing — but the hub would still run resolveOwner
+// on every single NotifyTask/NotifyJob call, and ownerCache.get deliberately
+// never memoizes a "" result (so a transient error can't permanently hide a
+// job), which is exactly the owner an auth-off job normally has. That turns
+// every task-status event — the highest-frequency event in this system,
+// dispatched synchronously on the scheduler goroutine — into an unconditional
+// store read, forever, even with zero clients connected. Passing nil restores
+// auth-off behavior exactly: [ws.NewHub] documents nil as "scoped clients
+// receive nothing", which is safe here because auth-off has no scoped clients
+// to begin with.
+func newWSHub(logger *slog.Logger, st store.Store, authEnabled bool) *ws.Hub {
+	if !authEnabled {
+		return ws.NewHub(logger, nil)
+	}
+	return ws.NewHub(logger, wsJobOwnerResolver(st))
 }
 
 // selectAuth chooses the authenticator wired into the HTTP router. When auth

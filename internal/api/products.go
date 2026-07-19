@@ -20,16 +20,26 @@ type productHandler struct {
 	sched     *scheduler.Scheduler
 	store     store.Store
 	logger    *slog.Logger
+	// ownerLookup validates a submit-as owner override against known users.
+	// Nil disables validation (auth.validate_job_owner = false).
+	ownerLookup ownerLookup
 }
 
+// newProductHandler returns a productHandler wired to the given catalog,
+// submitter, scheduler, and store. validateOwner controls whether a submit-as
+// owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
 func newProductHandler(
 	catalog *product.Catalog,
 	submitter *openjd.Submitter,
 	sched *scheduler.Scheduler,
 	st store.Store,
 	logger *slog.Logger,
+	validateOwner bool,
 ) *productHandler {
-	return &productHandler{catalog: catalog, submitter: submitter, sched: sched, store: st, logger: logger}
+	return &productHandler{
+		catalog: catalog, submitter: submitter, sched: sched, store: st, logger: logger,
+		ownerLookup: newOwnerLookup(st, validateOwner),
+	}
 }
 
 type productResponse struct {
@@ -270,11 +280,17 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(ctx, h.ownerLookup, req.Owner, req.Submitter)
+	if identityStatus != 0 {
+		writeProblem(w, r, identityStatus, identityProblem)
+		return
+	}
+
 	result, err := h.submitter.Submit(ctx, p.Template, p.Format, openjd.SubmitOptions{
 		FarmID:            req.FarmID,
 		QueueID:           req.QueueID,
-		Owner:             req.Owner,
-		Submitter:         req.Submitter,
+		Owner:             owner,
+		Submitter:         submitter,
 		Priority:          req.Priority,
 		Project:           req.Project,
 		Name:              req.Name,

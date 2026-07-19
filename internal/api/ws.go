@@ -68,6 +68,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,7 @@ import (
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/middleware"
+	"github.com/uberware/sqi/internal/store"
 	internalws "github.com/uberware/sqi/internal/ws"
 )
 
@@ -117,15 +119,16 @@ type wsOriginConfig struct {
 type wsHandler struct {
 	logger *slog.Logger
 	hub    *internalws.Hub // nil when no hub is wired (subscriptions are accepted but produce no pushes)
+	store  store.Store     // used to resolve job ownership for the per-job subscribe gate
 	authn  auth.Authenticator
 	origin wsOriginConfig
 }
 
-func newWSHandler(logger *slog.Logger, hub *internalws.Hub, authn auth.Authenticator, origin wsOriginConfig) *wsHandler {
+func newWSHandler(logger *slog.Logger, hub *internalws.Hub, st store.Store, authn auth.Authenticator, origin wsOriginConfig) *wsHandler {
 	if authn == nil {
 		authn = auth.Anonymous()
 	}
-	return &wsHandler{logger: logger, hub: hub, authn: authn, origin: origin}
+	return &wsHandler{logger: logger, hub: hub, store: st, authn: authn, origin: origin}
 }
 
 // ServeHTTP upgrades the connection and runs the per-connection message loop.
@@ -176,6 +179,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		conn:   conn,
 		logger: log,
 		hub:    h.hub,
+		store:  h.store,
 	}
 
 	ctx := auth.NewContext(r.Context(), principal)
@@ -195,6 +199,7 @@ type wsConn struct {
 	conn   *websocket.Conn
 	logger *slog.Logger
 	hub    *internalws.Hub // may be nil when no hub is wired
+	store  store.Store     // may be nil; used to resolve job ownership for the subscribe gate
 
 	mu sync.Mutex // serializes all conn.Write and conn.Ping calls
 }
@@ -329,7 +334,8 @@ func (wc *wsConn) readLoop(ctx context.Context) {
 	// Started before cleanup defers so the send goroutine is running before
 	// hub.Deregister is registered as a cleanup step.
 	if wc.hub != nil {
-		sendCh := wc.hub.Register(wc.id)
+		owner, scoped := scopeFilter(ctx)
+		sendCh := wc.hub.Register(wc.id, internalws.Scope{Owner: owner, All: !scoped})
 		sendWg.Go(func() { wc.sendLoop(ctx, sendCh) })
 	}
 
@@ -420,11 +426,9 @@ func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) 
 		return
 	}
 
-	if env.Subject == internalws.SubjectDiagnostics {
-		if p, ok := auth.FromContext(ctx); !ok || !policy.Can(p, policy.DiagnosticsRead) {
-			wc.sendAck(ctx, env.Seq, "forbidden: diagnostics requires diagnostics.read")
-			return
-		}
+	if errMsg := wc.authorizeSubscribe(ctx, env.Subject); errMsg != "" {
+		wc.sendAck(ctx, env.Seq, errMsg)
+		return
 	}
 
 	var payload internalws.SubscribePayload
@@ -465,6 +469,83 @@ func (wc *wsConn) handleSubscribe(ctx context.Context, env internalws.Envelope) 
 		slog.String("subject", env.Subject),
 		slog.Uint64("since_seq", payload.SinceSeq),
 	)
+}
+
+// authorizeSubscribe checks whether the connection may subscribe to subject,
+// returning a non-empty ack error message when it may not (empty means
+// allowed). It covers the SubjectDiagnostics permission gate and the
+// per-job/per-task ownership gate; handleSubscribe sends whatever it returns
+// straight back as the ack error.
+func (wc *wsConn) authorizeSubscribe(ctx context.Context, subject string) string {
+	if subject == internalws.SubjectDiagnostics {
+		if p, ok := auth.FromContext(ctx); !ok || !policy.Can(p, policy.DiagnosticsRead) {
+			return "forbidden: diagnostics requires diagnostics.read"
+		}
+	}
+
+	if jobID, taskID, ok := parseJobScopedSubject(subject); ok {
+		allowed, err := wc.subjectAllowed(ctx, jobID, taskID)
+		if err != nil {
+			// Matches the REST equivalent's Error-level log (jobscope.go's
+			// requireJobAccess): a store outage on this gate must be visible to
+			// operators, not just surfaced as an opaque ack error to the client.
+			wc.logger.ErrorContext(ctx, "authz: job access lookup failed", slog.Any("error", err))
+			return "failed to resolve job"
+		}
+		if !allowed {
+			return "forbidden: not your job"
+		}
+	}
+
+	return ""
+}
+
+// parseJobScopedSubject reports whether subject addresses a single job's data,
+// returning the job id or task id it is keyed on. Per-object subjects are
+// authorized once here at subscribe time rather than per envelope, which keeps
+// the fan-out path free of store lookups.
+func parseJobScopedSubject(subject string) (jobID, taskID string, ok bool) {
+	if rest, found := strings.CutPrefix(subject, "jobs/"); found {
+		if id, found := strings.CutSuffix(rest, "/tasks"); found && id != "" {
+			return id, "", true
+		}
+	}
+	if rest, found := strings.CutPrefix(subject, "tasks/"); found {
+		if id, found := strings.CutSuffix(rest, "/logs"); found && id != "" {
+			return "", id, true
+		}
+	}
+	return "", "", false
+}
+
+// subjectAllowed reports whether the connection's principal may subscribe to
+// data for the given job (or the job owning the given task).
+func (wc *wsConn) subjectAllowed(ctx context.Context, jobID, taskID string) (bool, error) {
+	owner, scoped := scopeFilter(ctx)
+	if !scoped {
+		return true, nil
+	}
+	if wc.store == nil {
+		return false, nil // fail closed
+	}
+	if taskID != "" {
+		task, err := wc.store.GetTask(ctx, taskID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		jobID = task.JobID
+	}
+	job, err := wc.store.GetJob(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return job.Owner != "" && strings.EqualFold(job.Owner, owner), nil
 }
 
 // handleUnsubscribe processes a TypeUnsubscribe client message.

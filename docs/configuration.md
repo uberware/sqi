@@ -632,6 +632,28 @@ auth:
 
 ---
 
+### `auth.validate_job_owner`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_AUTH_VALIDATE_JOB_OWNER` |
+| **CLI flag** | `--auth-validate-job-owner` |
+
+Rejects a job submission whose `owner` (set via a `jobs.submit_as` override)
+names no known user, with `400`. Default `true` — it keeps `Job.Owner` a
+trustworthy key, which per-user concurrency caps depend on; a typo'd owner
+would otherwise get its own silently uncapped bucket. Disable it when owners
+come from a directory that has not yet provisioned local records.
+
+```yaml
+auth:
+  validate_job_owner: true
+```
+
+---
+
 ### `auth.session.ttl`
 
 | | |
@@ -856,6 +878,7 @@ for the detector schema reference.
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 | `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
 | `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |
+| `auth.validate_job_owner` | bool | `true` | `SQI_AUTH_VALIDATE_JOB_OWNER` | `--auth-validate-job-owner` |
 | `auth.session.ttl` | duration | `168h` | `SQI_AUTH_SESSION_TTL` | — |
 | `auth.session.cookie_name` | string | `sqi_session` | `SQI_AUTH_SESSION_COOKIE_NAME` | — |
 | `auth.session.cookie_secure` | string | `auto` | `SQI_AUTH_SESSION_COOKIE_SECURE` | — |

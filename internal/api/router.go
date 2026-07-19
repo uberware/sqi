@@ -90,6 +90,11 @@ type Config struct {
 	// (OriginPatterns instead of InsecureSkipVerify). When false, all three
 	// are byte-for-byte unchanged from pre-A1 behavior.
 	AuthEnabled bool
+
+	// ValidateJobOwner mirrors config.AuthConfig.ValidateJobOwner: when true,
+	// a submit-as owner override on POST /jobs and POST /products/{name}/jobs
+	// must name a known user, else 400. Default true.
+	ValidateJobOwner bool
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -276,7 +281,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults)
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults, cfg.ValidateJobOwner)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	// Pass the hub as a notifier only when non-nil so the worker handler's
 	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
@@ -290,7 +295,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger)
+	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger, cfg.ValidateJobOwner)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
@@ -299,7 +304,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)
 
-	wsH := newWSHandler(logger, deps.Hub, deps.Auth, wsOriginConfig{
+	wsH := newWSHandler(logger, deps.Hub, deps.Store, deps.Auth, wsOriginConfig{
 		Enabled:        cfg.AuthEnabled,
 		AllowedOrigins: origins,
 	})
@@ -377,24 +382,30 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// jobs.read
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsRead))
+				// Collection route: scoped inside the handler via scopeFilter.
 				g.Get("/jobs", jobs.listJobs)
-				g.Get("/jobs/{id}", jobs.getJob)
-				g.Get("/jobs/{id}/tasks", tasks.listJobTasks)
-				g.Get("/tasks/{id}", tasks.getTask)
-				g.Get("/tasks/{id}/logs", tasks.getTaskLogs)
-				g.Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
+				// Object routes: owner-enforced by requireJobAccess.
+				g.With(az.requireJobAccess()).Get("/jobs/{id}", jobs.getJob)
+				g.With(az.requireJobAccess()).Get("/jobs/{id}/tasks", tasks.listJobTasks)
+				g.With(az.requireJobAccess()).Get("/tasks/{id}", tasks.getTask)
+				g.With(az.requireJobAccess()).Get("/tasks/{id}/logs", tasks.getTaskLogs)
+				g.With(az.requireJobAccess()).Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
 			})
 			// jobs.write
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsWrite))
+				// Creation routes: no prior object; identity is bound in the
+				// handler (see submitidentity.go).
 				g.Post("/jobs", jobs.submitJob)
-				g.Patch("/jobs/{id}", jobs.patchJob)
-				g.Post("/jobs/{id}/cancel", jobs.cancelJob)
-				g.Post("/jobs/{id}/retry", jobs.retryJob)
-				g.Delete("/jobs/{id}", jobs.deleteJob)
-				g.Post("/tasks/{id}/retry", tasks.retryTask)
-				g.Post("/tasks/{id}/cancel", tasks.cancelTask)
 				g.Post("/products/{name}/jobs", products.submitProductJob)
+				// Object routes: owner-enforced. This is what closes B1's
+				// carried-forward gap, where a `user` could cancel any job.
+				g.With(az.requireJobAccess()).Patch("/jobs/{id}", jobs.patchJob)
+				g.With(az.requireJobAccess()).Post("/jobs/{id}/cancel", jobs.cancelJob)
+				g.With(az.requireJobAccess()).Post("/jobs/{id}/retry", jobs.retryJob)
+				g.With(az.requireJobAccess()).Delete("/jobs/{id}", jobs.deleteJob)
+				g.With(az.requireJobAccess()).Post("/tasks/{id}/retry", tasks.retryTask)
+				g.With(az.requireJobAccess()).Post("/tasks/{id}/cancel", tasks.cancelTask)
 			})
 
 			// workers.read / workers.manage

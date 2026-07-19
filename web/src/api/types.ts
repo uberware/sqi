@@ -465,6 +465,13 @@ export interface SubmitProductJobInput {
   farmId: string
   queueId: string
   owner?: string
+  /**
+   * UX affordance only, not enforcement: when false/omitted, `owner` is
+   * dropped from the request so the client never provokes a server 403 for a
+   * caller lacking `jobs.submit_as`. The server independently derives and
+   * authorizes the submitter regardless of what the client sends.
+   */
+  maySubmitAs?: boolean
   priority?: number
   project?: string
   parameters: Record<string, string>
@@ -486,6 +493,8 @@ export interface Principal {
   display_name: string
   roles: string[]
   kind: string
+  username?: string
+  permissions: string[]
 }
 
 /** A local user account (secrets are never included in the wire format). */
@@ -530,6 +539,14 @@ export interface SubmitJobInput {
   format: TemplateFormat
   owner?: string
   submitter?: string
+  /**
+   * UX affordance only, not enforcement: when false/omitted, `owner` and
+   * `submitter` are dropped from the request so the client never provokes a
+   * server 403 for a caller lacking `jobs.submit_as`. The server
+   * independently derives and authorizes the submitter regardless of what
+   * the client sends.
+   */
+  maySubmitAs?: boolean
   priority?: number
   project?: string
   /** Per-job override for the maximum attempts per task; omitted means inherit. */

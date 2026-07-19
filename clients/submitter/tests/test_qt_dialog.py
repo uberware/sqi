@@ -143,6 +143,59 @@ def test_empty_catalog_shows_guidance_banner_and_disables_submit(app: object) ->
     assert not post_route.called
 
 
+@respx.mock
+def test_owner_field_hidden_without_submit_as_permission(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = _mock_server()
+    respx.get(f"{BASE}/api/v1/auth/me").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "subject": "u1",
+                "display_name": "User",
+                "roles": ["operator"],
+                "permissions": ["jobs.read"],
+                "kind": "user",
+            },
+        )
+    )
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    assert dialog.session.may_submit_as is False
+
+    owner_edit = dialog.findChild(QtWidgets.QLineEdit, "ownerEdit")
+    assert owner_edit is not None
+    assert owner_edit.isHidden()
+
+    # Even if something set stale text into the hidden field, it must not
+    # leak into the submit payload.
+    owner_edit.setText("mallory")
+    group = dialog.findChild(QtWidgets.QGroupBox, "advancedGroup")
+    assert group is not None
+    group.setChecked(True)
+    priority_spin = dialog.findChild(QtWidgets.QSpinBox, "prioritySpin")
+    assert priority_spin is not None
+    priority_spin.setValue(80)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+    dialog.submit_and_wait()
+    body = json.loads(route.calls.last.request.content)
+    assert "owner" not in body
+    assert body["priority"] == 80
+
+
+@respx.mock
+def test_owner_field_visible_when_me_endpoint_missing(app: object) -> None:
+    """A server predating /auth/me must not lose the Owner field (fail open)."""
+    _mock_server()
+    respx.get(f"{BASE}/api/v1/auth/me").mock(return_value=httpx.Response(404))
+    dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
+    assert dialog.session.may_submit_as is True
+
+    owner_edit = dialog.findChild(QtWidgets.QLineEdit, "ownerEdit")
+    assert owner_edit is not None
+    assert not owner_edit.isHidden()
+
+
 def test_main_is_importable_entry_point() -> None:
     assert callable(main)
 
@@ -163,9 +216,15 @@ def test_advanced_overrides_forwarded(app: object, monkeypatch: pytest.MonkeyPat
     group = dialog.findChild(QtWidgets.QGroupBox, "advancedGroup")
     assert group is not None
     group.setChecked(True)
-    dialog.findChild(QtWidgets.QSpinBox, "prioritySpin").setValue(80)
-    dialog.findChild(QtWidgets.QSpinBox, "maxAttemptsSpin").setValue(5)
-    dialog.findChild(QtWidgets.QLineEdit, "ownerEdit").setText("alice")
+    priority_spin = dialog.findChild(QtWidgets.QSpinBox, "prioritySpin")
+    assert priority_spin is not None
+    priority_spin.setValue(80)
+    max_attempts_spin = dialog.findChild(QtWidgets.QSpinBox, "maxAttemptsSpin")
+    assert max_attempts_spin is not None
+    max_attempts_spin.setValue(5)
+    owner_edit = dialog.findChild(QtWidgets.QLineEdit, "ownerEdit")
+    assert owner_edit is not None
+    owner_edit.setText("alice")
     dialog.submit_and_wait()
     body = json.loads(route.calls.last.request.content)
     assert body["owner"] == "alice"
@@ -182,7 +241,9 @@ def test_advanced_unchecked_sends_no_overrides(
     dialog = SubmitDialog(SubmitterSession(server_url=BASE), adapter=MiniAdapter())
     monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
     # advancedGroup starts unchecked; set a value that must be ignored while collapsed.
-    dialog.findChild(QtWidgets.QSpinBox, "prioritySpin").setValue(80)
+    priority_spin = dialog.findChild(QtWidgets.QSpinBox, "prioritySpin")
+    assert priority_spin is not None
+    priority_spin.setValue(80)
     dialog.submit_and_wait()
     body = json.loads(route.calls.last.request.content)
     assert "owner" not in body

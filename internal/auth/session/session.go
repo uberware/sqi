@@ -69,6 +69,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (auth.Principal, error) {
 	}
 	return auth.Principal{
 		Subject:     u.ID,
+		Username:    u.Username,
 		DisplayName: u.DisplayName,
 		Roles:       []string{u.Role},
 		Kind:        auth.KindUser,

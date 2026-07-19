@@ -180,6 +180,14 @@ type AuthConfig struct {
 	// Env: SQI_AUTH_ENABLED
 	Enabled bool `yaml:"enabled"`
 
+	// ValidateJobOwner rejects a submission whose Owner names no known user.
+	// Default true — it keeps Job.Owner a trustworthy key, which per-user
+	// concurrency caps depend on; a typo'd owner would otherwise get its own
+	// silently uncapped bucket. Disable it when owners come from a directory
+	// that has not yet provisioned local records.
+	// Env: SQI_AUTH_VALIDATE_JOB_OWNER
+	ValidateJobOwner bool `yaml:"validate_job_owner"`
+
 	// Session controls server-side session cookie behavior.
 	Session SessionConfig `yaml:"session"`
 
@@ -316,7 +324,8 @@ func DefaultConfig() Config {
 			URL: "https://uberware.github.io/sqi-presets/index.json",
 		},
 		Auth: AuthConfig{
-			Enabled: false,
+			Enabled:          false,
+			ValidateJobOwner: true,
 			Session: SessionConfig{
 				TTL:          168 * time.Hour,
 				CookieName:   "sqi_session",

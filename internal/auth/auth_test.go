@@ -42,3 +42,31 @@ func TestPrincipalContext_Missing(t *testing.T) {
 		t.Error("FromContext on empty context: ok = true, want false")
 	}
 }
+
+func TestPrincipalUsernameRoundTrip(t *testing.T) {
+	ctx := auth.NewContext(context.Background(), auth.Principal{
+		Subject:  "u-1",
+		Username: "Alice",
+		Kind:     auth.KindUser,
+	})
+	got, ok := auth.FromContext(ctx)
+	if !ok {
+		t.Fatal("FromContext returned ok=false")
+	}
+	if got.Username != "Alice" {
+		t.Errorf("Username = %q, want %q", got.Username, "Alice")
+	}
+}
+
+func TestAnonymousHasNoUsername(t *testing.T) {
+	p, err := auth.Anonymous().Authenticate(nil)
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if p.Username != "" {
+		t.Errorf("anonymous Username = %q, want empty", p.Username)
+	}
+	if !p.Superuser {
+		t.Error("anonymous principal must remain Superuser (auth-off regression)")
+	}
+}

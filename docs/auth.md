@@ -19,14 +19,24 @@ credential.
 
 ## Model
 
-Every request carries a `Principal` (subject, display name, roles, kind,
-superuser flag) in its context. When auth is off, the middleware injects an
-anonymous principal with the superuser flag set, so authorization checks
-(added in a later component) are bypassed. Authentication is pluggable: an
+Every request carries a `Principal` in its context. When auth is off, the
+middleware injects an anonymous principal with the superuser flag set, so
+authorization checks are bypassed. Authentication is pluggable: an
 `Authenticator` resolves a request's credentials to a `Principal`, and future
 credential types (API keys, LDAP, OIDC) each implement that one interface.
-Today, the only non-anonymous `Authenticator` is the session-cookie one
-described below.
+Today, the only non-anonymous `Authenticator`s are the session-cookie and
+API-key ones described below.
+
+`Principal` carries `Subject` (opaque user id), `Username` (login name — the
+value bound to `Job.Owner`/`Job.Submitter`), `DisplayName`, `Roles`, `Kind`,
+and `Superuser`.
+
+`GET /auth/me` returns both `roles` and `permissions`. Clients should gate on
+`permissions`: it is computed server-side from the policy matrix, so an
+externally-mapped role from an LDAP or OIDC provider (C1/C2) needs no
+client-side change. A superuser principal — the anonymous identity used when
+auth is disabled — reports the full permission set, which is what keeps every
+control enabled in an auth-off deployment.
 
 A `Principal`'s `roles` field is populated (a user's single stored role, e.g.
 `["admin"]`) and, as of component B1, **is enforced**: every mutating route
@@ -81,7 +91,9 @@ built-in roles (no custom-role builder — YAGNI):
 | Permission | read-only | user | operator | admin |
 |---|:-:|:-:|:-:|:-:|
 | jobs.read | ✅ | ✅ | ✅ | ✅ |
+| `jobs.read.all` — see jobs owned by anyone | ✅ | ❌ | ✅ | ✅ |
 | jobs.write | ❌ | ✅ | ✅ | ✅ |
+| `jobs.submit_as` — set `Owner` to another user | ❌ | ❌ | ✅ | ✅ |
 | workers.read | ✅ | ✅ | ✅ | ✅ |
 | workers.manage | ❌ | ❌ | ✅ | ✅ |
 | infra.read (farms/queues/storage/compute/usage-pools) | ✅ | ✅ | ✅ | ✅ |
@@ -105,16 +117,41 @@ disabled, or demoted to a non-admin role — any of those requests fail with
 **409 Conflict** — so an operator can never lock themselves (or everyone)
 out of user management.
 
-**Known interim gaps** (deliberate, deferred to later components, not bugs):
+**Known interim gaps** (deliberate, tracked for component **B3**, not bugs):
 
-- `user`'s `jobs.write` permission gates the **route**, not ownership — a
-  `user` account can currently act on any job, not just its own. Scoping
-  visibility/control to owned jobs is component **B2**.
 - There is no self-service password or profile change for non-admin roles
   yet; account changes go through an admin via the `/users` API or page.
 - `apikeys.admin` (an admin managing another user's API keys) is defined in
   the policy above, but the `/api-keys` handlers remain self-scoped for
   now — see [API keys](#api-keys).
+- Cross-origin browser access does not work while auth is on: a `*` CORS
+  origin is incompatible with `AllowCredentials` and is dropped at startup
+  (with an error log), and there is no config surface yet for naming real
+  origins — so only same-origin requests succeed. See
+  [CSRF & CORS](#csrf--cors).
+
+## Job identity
+
+`POST /api/v1/jobs` and `POST /api/v1/products/{name}/jobs` resolve the
+`Owner` and `Submitter` persisted on a job from the authenticated principal
+and whatever the client supplied, following this precedence:
+
+1. Submitter is always the principal's username. A client value is discarded
+   silently, never an error — a client asserting its own identity is
+   meaningless rather than hostile, and erroring would break every existing
+   submitter the moment auth is switched on.
+2. Owner defaults to Submitter when the client supplies none.
+3. Owner equal to self (case-insensitive) is accepted; the principal's own
+   canonical casing is stored, not the client's.
+4. Owner other than self requires policy.JobsSubmitAs, else 403.
+
+An owner naming no known user is rejected with 400 when
+`auth.validate_job_owner` is on (the default).
+
+WebSocket delivery is scoped the same way as REST. Per-job subjects
+(`jobs/{id}/tasks`, `tasks/{id}/logs`) are authorized once at subscribe time;
+the global `jobs` subject is filtered per event. A client that cannot resolve a
+job's owner receives nothing for it rather than everything.
 
 ## Login & sessions
 
@@ -252,7 +289,7 @@ separately-hosted UI (a different scheme/host/port) that wants to call a
 > "unless configured", but unconditionally, since there is presently no
 > supported way to configure it. This only affects a separately-hosted UI
 > (same-origin deployments are unaffected); adding a config surface for it is
-> tracked as follow-up work, not part of A1.
+> tracked as component **B3**, not part of A1.
 
 ## Headless / SDK auth
 
@@ -344,9 +381,9 @@ Bearer-authenticated request has nothing for it to check.
 
 ## Coming next
 
-- B2 — authenticated owner/submitter binding on jobs, including scoping the
-  `user` role's job visibility/control to jobs it owns (see the interim gap
-  noted in [Roles & permissions](#roles--permissions)).
+- B3 — auth surface completion: self-service credential change, `apikeys.admin`,
+  and a CORS origins config (see the interim gaps in
+  [Roles & permissions](#roles--permissions)).
 - C1 — LDAP/AD integration.
 - C2 — OAuth2/OIDC (SSO).
 - D1 — per-user concurrent task caps.

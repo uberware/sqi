@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/ws"
@@ -105,6 +106,36 @@ func seedWorkerTask(
 	created, err := st.CreateTask(t.Context(), task)
 	if err != nil {
 		t.Fatalf("seedWorkerTask: %v", err)
+	}
+	return created
+}
+
+// seedWorkerTaskForJob is like seedWorkerTask but pins the task to a specific
+// (already-seeded) job id, so owner-scoping tests can look up the job's real
+// owner via store.GetJob.
+func seedWorkerTaskForJob(
+	t *testing.T,
+	st *fake.Store,
+	workerID, jobID string,
+	status store.TaskStatus,
+	name string,
+) store.Task {
+	t.Helper()
+	now := time.Now()
+	task := store.Task{
+		ID:               uuid.NewString(),
+		JobID:            jobID,
+		StepID:           "step-" + uuid.NewString()[:8],
+		Name:             name,
+		Status:           status,
+		AssignedWorkerID: workerID,
+		AssignedAt:       &now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	created, err := st.CreateTask(t.Context(), task)
+	if err != nil {
+		t.Fatalf("seedWorkerTaskForJob: %v", err)
 	}
 	return created
 }
@@ -319,6 +350,12 @@ func TestGetWorker(t *testing.T) {
 		seedWorkerTask(t, st, "other-worker", store.TaskStatusRunning, "elsewhere")
 
 		req := newReq(t, http.MethodGet, "/api/v1/workers/"+w.ID, nil)
+		// In production the auth middleware always attaches a principal —
+		// the anonymous superuser when auth is disabled — before a request
+		// reaches this handler; scopeFilter's "no principal" branch is a
+		// fail-closed guard against misordered middleware, not the normal
+		// path this test exercises.
+		req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{Superuser: true, Kind: auth.KindAnonymous}))
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
@@ -351,6 +388,81 @@ func TestGetWorker(t *testing.T) {
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+}
+
+// TestGetWorker_OwnerScoping is the regression test for I-1: an owner-scoped
+// caller (no jobs.read.all) must not see another owner's task — including its
+// name, which for an expanded OpenJD task can carry parameter values such as
+// scene paths — in current_tasks. Unscoped principals (operator, and the
+// auth-off anonymous superuser) must keep seeing every current task exactly
+// as before this fix.
+func TestGetWorker_OwnerScoping(t *testing.T) {
+	newSeededRouter := func(t *testing.T) (chi.Router, store.Worker) {
+		t.Helper()
+		st := fake.New()
+		seedOwnedJob(t, st, "job-alice", "alice")
+		seedOwnedJob(t, st, "job-bob", "bob")
+		w := seedWorker(t, st, store.WorkerStatusOnline)
+		seedWorkerTaskForJob(t, st, w.ID, "job-alice", store.TaskStatusRunning, "alice-task")
+		seedWorkerTaskForJob(t, st, w.ID, "job-bob", store.TaskStatusRunning, "bob-task")
+		return newWorkerRouter(st), w
+	}
+
+	get := func(t *testing.T, r chi.Router, w store.Worker, principal *auth.Principal) workerDetailResponse {
+		t.Helper()
+		req := newReq(t, http.MethodGet, "/api/v1/workers/"+w.ID, nil)
+		if principal != nil {
+			req = req.WithContext(auth.NewContext(req.Context(), *principal))
+		}
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp workerDetailResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp
+	}
+
+	t.Run("scoped user does not see another owner's task", func(t *testing.T) {
+		r, w := newSeededRouter(t)
+		alice := auth.Principal{Username: "alice", Roles: []string{"user"}}
+		resp := get(t, r, w, &alice)
+
+		if len(resp.CurrentTasks) != 1 {
+			t.Fatalf("current_tasks len = %d, want 1 — got %+v", len(resp.CurrentTasks), resp.CurrentTasks)
+		}
+		if resp.CurrentTasks[0].Name != "alice-task" {
+			t.Errorf("current_tasks[0].Name = %q, want alice-task", resp.CurrentTasks[0].Name)
+		}
+		for _, ct := range resp.CurrentTasks {
+			if ct.JobID == "job-bob" || ct.Name == "bob-task" {
+				t.Fatalf("scoped alice leaked bob's task: %+v", resp.CurrentTasks)
+			}
+		}
+	})
+
+	t.Run("operator (unscoped) still sees everything", func(t *testing.T) {
+		r, w := newSeededRouter(t)
+		bob := auth.Principal{Username: "someone", Roles: []string{"operator"}}
+		resp := get(t, r, w, &bob)
+
+		if len(resp.CurrentTasks) != 2 {
+			t.Fatalf("current_tasks len = %d, want 2 — got %+v", len(resp.CurrentTasks), resp.CurrentTasks)
+		}
+	})
+
+	t.Run("auth-off anonymous superuser still sees everything", func(t *testing.T) {
+		r, w := newSeededRouter(t)
+		anon := auth.Principal{Superuser: true, Kind: auth.KindAnonymous}
+		resp := get(t, r, w, &anon)
+
+		if len(resp.CurrentTasks) != 2 {
+			t.Fatalf("current_tasks len = %d, want 2 — got %+v", len(resp.CurrentTasks), resp.CurrentTasks)
 		}
 	})
 }

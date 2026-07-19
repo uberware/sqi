@@ -237,6 +237,10 @@ button, a create form) should be hidden or disabled with the same `can()`
 check rather than relying on the route guard alone — the guard stops
 navigation, `can()` stops rendering the affordance in the first place.
 
+Prefer gating on a permission from `principal.permissions` (via `can()`) rather
+than on a role name. The server computes permissions from the policy matrix, so
+an externally-mapped role from LDAP/OIDC needs no client change.
+
 ---
 
 ## Adding a new API query hook

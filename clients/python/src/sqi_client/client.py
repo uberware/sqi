@@ -47,6 +47,7 @@ from .models import (
     LogChunk,
     LogPage,
     Page,
+    Principal,
     Product,
     ProductParameter,
     Queue,
@@ -463,7 +464,11 @@ class SqiClient:
                 the optional ``yaml`` extra is not required to submit.
             farm_id: Target farm (required query parameter).
             queue_id: Target queue (required query parameter).
-            owner: Optional human-readable owner label.
+            owner: Job owner. Defaults server-side to the authenticated user.
+                Setting it to anyone other than yourself requires the
+                ``jobs.submit_as`` permission and raises
+                :class:`SqiAuthError` (403) without it. When the server has auth
+                disabled this is a free-form label, as before.
             priority: Optional scheduling priority (higher runs sooner); the
                 server defaults to 50 when omitted.
             project: Optional project label for later filtering.
@@ -538,7 +543,9 @@ class SqiClient:
                 plain wire string (e.g. ``"running"``).
             farm_id: Filter by farm.
             queue_id: Filter by queue.
-            owner: Filter by owner label.
+            owner: Filter by owner. A caller without the ``jobs.read.all``
+                permission has this overridden to its own username by the
+                server rather than receiving an error.
             project: Filter by project label.
             sort_by: Sort field — one of ``created_at``, ``priority``,
                 ``status``, ``updated_at``, ``name`` (server default
@@ -1553,7 +1560,12 @@ class SqiClient:
             job_name: Optional job name; overrides the template's name when set.
                 The wire field is ``name``; this parameter is named ``job_name``
                 to avoid shadowing the positional product ``name`` argument.
-            owner, submitter, priority, project: Optional job metadata.
+            owner: Job owner; see :meth:`submit_job` for the permission rules.
+            submitter: **Ignored — deprecated.** The server derives the
+                submitter from the authenticated credential and discards any
+                client value. Retained so existing callers keep working; it will
+                be removed in a future major release.
+            priority, project: Optional job metadata.
             parameters: Job-parameter values (name → string).
             max_attempts, retry_delay_seconds, failure_limit: Per-job retry
                 overrides; ``None`` means inherit.
@@ -1738,6 +1750,20 @@ class SqiClient:
             depends_on=depends_on,
         )
         return self.wait_for_job(job.id, poll_interval=poll_interval, timeout=timeout)
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+
+    def me(self) -> Principal:
+        """Return the authenticated :class:`Principal` for this client's credential.
+
+        Use this to discover what the current credential may do before building
+        a submission — for example, whether ``"jobs.submit_as"`` is present and
+        an ``owner`` other than yourself may therefore be set.
+
+        Raises:
+            SqiAuthError: The credential is missing, invalid, or rejected (401/403).
+        """
+        return Principal.from_dict(self._request_json("GET", "/auth/me"))
 
     # ── Health probes ─────────────────────────────────────────────────────────
 

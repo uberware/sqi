@@ -134,6 +134,12 @@ type Envelope struct {
 	//
 	//   TypePing / TypePong / TypeError: always 0.
 	Seq uint64 `json:"seq"`
+
+	// ownerScoped marks an envelope whose delivery depends on job ownership.
+	// owner is the owning username, or "" when it could not be resolved (which
+	// fails closed — see Scope.allows).
+	ownerScoped bool
+	owner       string
 }
 
 // SubscribePayload is the payload of a [TypeSubscribe] client message.

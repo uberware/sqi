@@ -239,6 +239,8 @@ type ListJobsOptions struct {
 	FarmID  string
 	QueueID string
 	Status  JobStatus // empty = all statuses
+	// Owner filters by job owner, compared case-insensitively. Empty = no
+	// filter.
 	Owner   string
 	Project string
 	// Search is a case-insensitive substring matched against name, id, owner,

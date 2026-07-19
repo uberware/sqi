@@ -117,6 +117,7 @@ describe('fetchSubmitJob', () => {
       format: 'json',
       owner: 'alice',
       submitter: 'bob',
+      maySubmitAs: true,
       priority: 10,
       project: 'vfx',
     })
@@ -133,6 +134,22 @@ describe('fetchSubmitJob', () => {
     const url = calledUrl()
     expect(url).not.toContain('owner=')
     expect(url).not.toContain('priority=')
+  })
+
+  it('omits owner and submitter without jobs.submit_as', async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: 'job-1' }))
+    await fetchSubmitJob({
+      farmId: 'f1',
+      queueId: 'q1',
+      template: '{}',
+      format: 'json',
+      owner: 'alice',
+      submitter: 'bob',
+      maySubmitAs: false,
+    })
+    const url = calledUrl()
+    expect(url).not.toContain('owner=')
+    expect(url).not.toContain('submitter=')
   })
 
   it('includes retry-policy overrides in the query string when provided', async () => {

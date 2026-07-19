@@ -9,6 +9,7 @@ vi.mock('@/auth/context', () => ({
   useAuth: vi.fn(),
 }))
 import { useAuth } from '@/auth/context'
+import { ADMIN_PERMISSIONS, USER_PERMISSIONS } from '@/test/principals'
 
 function setPrincipal(p: Principal | null) {
   ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
@@ -20,7 +21,13 @@ function setPrincipal(p: Principal | null) {
 
 describe('RequireRole', () => {
   it('renders children when permitted', () => {
-    setPrincipal({ subject: 's', display_name: 'n', roles: ['admin'], kind: 'user' } as Principal)
+    setPrincipal({
+      subject: 's',
+      display_name: 'n',
+      roles: ['admin'],
+      kind: 'user',
+      permissions: ADMIN_PERMISSIONS,
+    } as Principal)
     render(
       <RequireRole permission="users.manage">
         <div>secret</div>
@@ -30,7 +37,13 @@ describe('RequireRole', () => {
   })
 
   it('renders a 403 when denied', () => {
-    setPrincipal({ subject: 's', display_name: 'n', roles: ['user'], kind: 'user' } as Principal)
+    setPrincipal({
+      subject: 's',
+      display_name: 'n',
+      roles: ['user'],
+      kind: 'user',
+      permissions: USER_PERMISSIONS,
+    } as Principal)
     render(
       <RequireRole permission="users.manage">
         <div>secret</div>

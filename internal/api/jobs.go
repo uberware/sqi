@@ -60,6 +60,9 @@ type jobHandler struct {
 	// the resolved effective_retry in job detail responses. The zero value is
 	// tolerated (resolution clamps max attempts up to 1).
 	retryDefaults scheduler.RetryPolicy
+	// ownerLookup validates a submit-as owner override against known users.
+	// Nil disables validation (auth.validate_job_owner = false).
+	ownerLookup ownerLookup
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -189,7 +192,8 @@ type patchJobRequest struct {
 // ── Handler constructors ──────────────────────────────────────────────────────
 
 // newJobHandler returns a jobHandler wired to the given store, submitter,
-// scheduler, and optional notifier.
+// scheduler, and optional notifier. validateOwner controls whether a submit-as
+// owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
 func newJobHandler(
 	st store.Store,
 	sub *openjd.Submitter,
@@ -197,6 +201,7 @@ func newJobHandler(
 	notifier ws.Notifier,
 	logger *slog.Logger,
 	retryDefaults scheduler.RetryPolicy,
+	validateOwner bool,
 ) *jobHandler {
 	return &jobHandler{
 		store:         st,
@@ -205,6 +210,7 @@ func newJobHandler(
 		notifier:      notifier,
 		logger:        logger,
 		retryDefaults: retryDefaults,
+		ownerLookup:   newOwnerLookup(st, validateOwner),
 	}
 }
 
@@ -254,11 +260,19 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	owner, submitter, identityProblem, identityStatus := bindSubmitIdentity(
+		ctx, h.ownerLookup, r.URL.Query().Get("owner"), r.URL.Query().Get("submitter"),
+	)
+	if identityStatus != 0 {
+		writeProblem(w, r, identityStatus, identityProblem)
+		return
+	}
+
 	opts := openjd.SubmitOptions{
 		FarmID:            farmID,
 		QueueID:           queueID,
-		Owner:             r.URL.Query().Get("owner"),
-		Submitter:         r.URL.Query().Get("submitter"),
+		Owner:             owner,
+		Submitter:         submitter,
 		Priority:          priority,
 		Project:           r.URL.Query().Get("project"),
 		Parameters:        parseParamQueryParams(r.URL.Query()),
@@ -355,11 +369,36 @@ func (h *jobHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 		Pagination: pg,
 	}
 
-	page, err := h.store.ListJobs(ctx, opts)
-	if err != nil {
-		h.logger.ErrorContext(ctx, "jobs: list failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to list jobs")
-		return
+	// Owner scoping: a principal without jobs.read.all may only see its own
+	// jobs. The forced value OVERRIDES any client-supplied ?owner= rather than
+	// merging with it — a scoped caller aiming the filter at another user gets
+	// its own jobs, not an error and not the other user's.
+	owner, scoped := scopeFilter(ctx)
+	if scoped {
+		opts.Owner = owner
+	}
+
+	// A scoped request with an empty owner means scopeFilter failed closed
+	// (no principal in the context at all — see jobscope.go). opts.Owner == ""
+	// is store.ListJobsOptions' zero value for "unfiltered", so passing it
+	// through to ListJobs would return every job in the system instead of
+	// none. Short-circuit to an empty page rather than querying.
+	var page store.Page[store.Job]
+	if scoped && owner == "" {
+		page = store.Page[store.Job]{
+			Items:  []store.Job{},
+			Total:  0,
+			Limit:  opts.Pagination.Limit,
+			Offset: opts.Pagination.Offset,
+		}
+	} else {
+		var err error
+		page, err = h.store.ListJobs(ctx, opts)
+		if err != nil {
+			h.logger.ErrorContext(ctx, "jobs: list failed", slog.Any("error", err))
+			writeProblem(w, r, http.StatusInternalServerError, "failed to list jobs")
+			return
+		}
 	}
 
 	queueNames := resolveQueueNames(ctx, h.store, page.Items)
@@ -797,8 +836,16 @@ func (h *jobHandler) deleteJob(w http.ResponseWriter, r *http.Request) {
 
 	if h.notifier != nil {
 		h.notifier.NotifyJob(ws.JobEvent{
-			JobID:     job.ID,
-			Name:      job.Name,
+			JobID: job.ID,
+			Name:  job.Name,
+			// Owner must be set explicitly here: the row is already gone by
+			// this point, so the hub's ownerCache fallback (GetJob on a
+			// deleted row) cannot resolve it and would drop this envelope for
+			// every owner-scoped subscriber, including the owner whose own
+			// job this was. This is the only NotifyJob call site where that's
+			// true — every other caller (internal/scheduler) fires while the
+			// row still exists.
+			Owner:     job.Owner,
 			QueueID:   job.QueueID,
 			Status:    ws.JobStatusRemoved,
 			UpdatedAt: time.Now().UTC(),

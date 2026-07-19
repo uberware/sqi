@@ -41,6 +41,7 @@ __all__ = [
     "LogPage",
     "Page",
     "ParameterUserInterface",
+    "Principal",
     "Product",
     "ProductParameter",
     "Queue",
@@ -1168,6 +1169,45 @@ class ServerVersion:
             commit=_as_str(data.get("commit")),
             build_date=_as_str(data.get("build_date")),
             go_version=_as_str(data.get("go_version")),
+        )
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Principal:
+    """The authenticated identity behind the current credential.
+
+    Returned by :meth:`~sqi_client.client.SqiClient.me`. Gate behaviour on
+    ``permissions`` rather than ``roles``: the server derives permissions from
+    its policy matrix, so an externally-mapped role from LDAP or OIDC needs no
+    client-side change.
+    """
+
+    subject: str
+    display_name: str
+    roles: list[str]
+    permissions: list[str]
+    kind: str
+    username: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Principal:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        username = data.get("username")
+        return cls(
+            subject=_as_str(data.get("subject")),
+            display_name=_as_str(data.get("display_name")),
+            roles=_str_list(data.get("roles")),
+            permissions=_str_list(data.get("permissions")),
+            kind=_as_str(data.get("kind")),
+            username=str(username) if username else None,
         )
 
 

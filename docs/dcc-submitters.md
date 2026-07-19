@@ -217,6 +217,15 @@ Every submitter resolves the server URL the same way, in order:
    checkbox state.
 4. `http://localhost:8080`.
 
+### Owner field and `jobs.submit_as`
+
+The Owner field appears only when the session's credential holds the
+`jobs.submit_as` permission — resolved once per session via `client.me()`.
+Without it the server derives the owner from the authenticated user, and a
+client-supplied owner is rejected with 403. Against a server that predates the
+`permissions` field in `/auth/me`, the field stays visible: the server is the
+enforcement point, and the submitter must not break against an older server.
+
 ---
 
 ## Reference presets

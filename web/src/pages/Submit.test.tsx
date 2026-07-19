@@ -8,7 +8,29 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import Submit from './Submit'
 import { ToastProvider } from '@/components/Toast'
-import type { Farm, Queue, Job, ListResponse } from '@/api/types'
+import type { Farm, Queue, Job, ListResponse, Principal } from '@/api/types'
+
+// ── Auth mock ─────────────────────────────────────────────────────────────────
+// Submit reads useAuth() to gate the Owner field behind 'jobs.submit_as', the
+// same pattern ProductSubmit.test.tsx already uses. Default every test to an
+// operator principal (holds jobs.submit_as) so every pre-existing assertion,
+// which predates permission gating, keeps seeing the Owner field unchanged;
+// the gating tests below override via renderWithAuth.
+
+const OPERATOR_PRINCIPAL: Principal = {
+  subject: 'u-operator',
+  display_name: 'Operator',
+  roles: ['operator'],
+  kind: 'user',
+  permissions: OPERATOR_PERMISSIONS,
+}
+
+vi.mock('@/auth/context', () => ({
+  useAuth: vi.fn(() => ({ principal: OPERATOR_PRINCIPAL, status: 'authed', refresh: () => {} })),
+}))
+import { useAuth } from '@/auth/context'
+import { ALL_PERMISSIONS, OPERATOR_PERMISSIONS, USER_PERMISSIONS } from '@/test/principals'
+import type { Permission } from '@/auth/policy'
 
 // ── Mock CodeEditor ───────────────────────────────────────────────────────────
 // CodeMirror requires DOM APIs (ResizeObserver, getComputedStyle internals)
@@ -181,6 +203,14 @@ beforeEach(() => {
   // Reset call tracking without clearing the store (already cleared above).
   localStorageMock.getItem.mockClear()
   localStorageMock.setItem.mockClear()
+  // Default every test to an operator principal (holds jobs.submit_as) so
+  // pre-existing assertions, which predate permission gating, keep seeing the
+  // Owner field unchanged; the gating tests below override via renderWithAuth.
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal: OPERATOR_PRINCIPAL,
+    status: 'authed',
+    refresh: () => {},
+  })
 })
 
 afterEach(() => {
@@ -223,6 +253,23 @@ function Wrapper({ children }: { children: ReactNode }) {
  */
 function mockFarmsAndQueues(farm = makeFarm(), queues = [makeQueue()], jobs: Job[] = []) {
   fetchMock.mockImplementation(routeFetch(farm, queues, jobs))
+}
+
+/** Renders <Submit /> with the mocked useAuth() principal holding `permissions`. */
+function renderWithAuth({ permissions }: { permissions: Permission[] }) {
+  const principal: Principal = {
+    subject: 'u-test',
+    display_name: 'Test User',
+    roles: [],
+    kind: 'user',
+    permissions,
+  }
+  ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    principal,
+    status: 'authed',
+    refresh: () => {},
+  })
+  return render(<Submit />, { wrapper: Wrapper })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -688,5 +735,118 @@ describe('Submit page', () => {
       await user.type(screen.getByTestId('template-editor'), 'some template content')
       expect(screen.getByRole('button', { name: /submit job/i })).toBeEnabled()
     })
+  })
+})
+
+describe('owner field permission gating', () => {
+  it('hides the Owner input without jobs.submit_as', async () => {
+    mockFarmsAndQueues()
+    renderWithAuth({ permissions: USER_PERMISSIONS })
+
+    await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+    expect(screen.queryByLabelText('Owner')).not.toBeInTheDocument()
+  })
+
+  it('shows the Owner input with jobs.submit_as', async () => {
+    mockFarmsAndQueues()
+    renderWithAuth({ permissions: OPERATOR_PERMISSIONS })
+
+    await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+    expect(screen.getByLabelText('Owner')).toBeInTheDocument()
+  })
+
+  it('omits owner from the submitted request without jobs.submit_as', async () => {
+    mockFarmsAndQueues()
+    mockJobSubmit(
+      new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const user = userEvent.setup()
+    renderWithAuth({ permissions: USER_PERMISSIONS })
+
+    await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+    await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+    await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+    })
+    const postCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    if (!postCall) throw new Error('expected a POST call')
+    expect(String(postCall[0])).not.toContain('owner=')
+  })
+
+  it('sends the entered owner in the request with jobs.submit_as', async () => {
+    mockFarmsAndQueues()
+    mockJobSubmit(
+      new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const user = userEvent.setup()
+    renderWithAuth({ permissions: OPERATOR_PERMISSIONS })
+
+    await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+    await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+    await user.type(screen.getByLabelText('Owner'), 'alice')
+    await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+    })
+    const postCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    if (!postCall) throw new Error('expected a POST call')
+    expect(String(postCall[0])).toContain('owner=alice')
+  })
+
+  it('keeps the Owner field visible and functional with auth off (anonymous principal)', async () => {
+    mockFarmsAndQueues()
+    mockJobSubmit(
+      new Response(JSON.stringify(makeJob({ id: 'abc-def-123' })), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const anonymousPrincipal: Principal = {
+      subject: 'anonymous',
+      display_name: 'Anonymous',
+      roles: [],
+      kind: 'anonymous',
+      permissions: ALL_PERMISSIONS,
+    }
+    ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      principal: anonymousPrincipal,
+      status: 'authed',
+      refresh: () => {},
+    })
+
+    const user = userEvent.setup()
+    render(<Submit />, { wrapper: Wrapper })
+
+    await waitFor(() => screen.getByRole('option', { name: 'Default' }))
+    expect(screen.getByLabelText('Owner')).toBeInTheDocument()
+
+    await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
+    await user.type(screen.getByLabelText('Owner'), 'bob')
+    await user.click(screen.getByRole('button', { name: /submit job/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/jobs/abc-def-123')
+    })
+    const postCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    if (!postCall) throw new Error('expected a POST call')
+    expect(String(postCall[0])).toContain('owner=bob')
   })
 })

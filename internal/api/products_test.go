@@ -44,7 +44,7 @@ type productTestSrv struct {
 func newProductTestServer(t *testing.T) *productTestSrv {
 	t.Helper()
 	st := fake.New()
-	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st, newTestLogger())
+	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st, newTestLogger(), false)
 	r := chi.NewRouter()
 	r.Get("/api/v1/products", h.listProducts)
 	r.Post("/api/v1/products", h.createProduct)
@@ -59,7 +59,7 @@ func newProductTestServer(t *testing.T) *productTestSrv {
 // newProductRouter builds a product router for CRUD-only tests (no Submitter
 // needed). Also registers the submit route so route resolution is consistent.
 func newProductRouter(st store.Store) chi.Router {
-	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st, newTestLogger())
+	h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st, newTestLogger(), false)
 	r := chi.NewRouter()
 	r.Get("/api/v1/products", h.listProducts)
 	r.Post("/api/v1/products", h.createProduct)
