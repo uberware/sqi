@@ -65,6 +65,47 @@ http:
 
 ---
 
+### `http.cors_origins`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` (empty — treated as `["*"]`) |
+| **Env var** | `SQI_HTTP_CORS_ORIGINS` (comma-separated) |
+| **CLI flag** | `--http-cors-origins` |
+
+Browser origins the CORS middleware allows. Only relevant to a
+**separately-hosted web UI** calling this server cross-origin; the normal
+same-origin deployment (where `sqi-server` serves the embedded UI itself)
+needs none of this.
+
+Each entry must be `scheme://host[:port]`, or the wildcard `"*"`. A trailing
+slash, a path, a query, a fragment, or embedded whitespace is rejected at
+startup with an `http.cors_origins` validation error — go-chi/cors could
+never match such a value, so a typo fails loudly at boot rather than
+silently at request time.
+
+**With `auth.enabled=true` a wildcard is dropped at startup** (and an error
+is logged): browsers reject `Access-Control-Allow-Credentials` combined with
+`*`. An empty list defaults to `["*"]` and so is dropped too — meaning a
+separately-hosted UI must name its origin explicitly here for credentialed
+cross-origin requests to work at all. See
+[auth.md § CSRF & CORS](auth.md#csrf--cors).
+
+```yaml
+http:
+  cors_origins:
+    - "https://ui.example.com"
+    - "http://localhost:5173"
+```
+
+```sh
+SQI_HTTP_CORS_ORIGINS="https://ui.example.com,http://localhost:5173"
+sqi-server serve --http-cors-origins=https://ui.example.com
+```
+
+---
+
 ## `nats` — Embedded NATS JetStream broker
 
 ### `nats.addr`
@@ -855,6 +896,7 @@ for the detector schema reference.
 |---|---|---|---|---|
 | `http.addr` | string | `0.0.0.0:8080` | `SQI_HTTP_ADDR` | `--http-addr` |
 | `http.enable_pprof` | bool | `false` | `SQI_HTTP_ENABLE_PPROF` | — |
+| `http.cors_origins` | []string | `[]` (= `*`) | `SQI_HTTP_CORS_ORIGINS` | `--http-cors-origins` |
 | `nats.addr` | string | `0.0.0.0:4222` | `SQI_NATS_ADDR` | — |
 | `nats.data_dir` | string | `data/nats` | `SQI_NATS_DATA_DIR` | — |
 | `nats.max_store_mb` | int | `1024` | `SQI_NATS_MAX_STORE_MB` | — |
