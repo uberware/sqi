@@ -19,27 +19,6 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
-// seedUserWithPassword creates a user with a known password and returns it.
-func seedUserWithPassword(t *testing.T, st store.Store, username, plaintext, role string) store.User {
-	t.Helper()
-	hash, err := password.Hash(plaintext)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	u, err := st.CreateUser(t.Context(), store.User{
-		ID:           uuid.NewString(),
-		Username:     username,
-		PasswordHash: hash,
-		Role:         role,
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	return u
-}
-
 // seedAPIKey creates an API key owned by userID and returns it.
 func seedAPIKey(t *testing.T, st store.Store, userID, name string) store.APIKey {
 	t.Helper()
@@ -79,7 +58,7 @@ func principalFor(u store.User) auth.Principal {
 func TestChangePassword(t *testing.T) {
 	t.Run("succeeds with the correct current password", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "old-password", "user")
+		u := seedAuthUser(t, st, "alice", "old-password", "user")
 		h := newTestAuthHandler(t, st)
 
 		rr := doChangePassword(t, h, u, `{"current_password":"old-password","new_password":"new-password"}`)
@@ -102,7 +81,7 @@ func TestChangePassword(t *testing.T) {
 
 	t.Run("wrong current password is 403, not 401", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "old-password", "user")
+		u := seedAuthUser(t, st, "alice", "old-password", "user")
 		h := newTestAuthHandler(t, st)
 
 		rr := doChangePassword(t, h, u, `{"current_password":"wrong","new_password":"new-password"}`)
@@ -125,7 +104,7 @@ func TestChangePassword(t *testing.T) {
 
 	t.Run("empty new password is 400", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "old-password", "user")
+		u := seedAuthUser(t, st, "alice", "old-password", "user")
 		h := newTestAuthHandler(t, st)
 
 		rr := doChangePassword(t, h, u, `{"current_password":"old-password","new_password":""}`)
@@ -136,7 +115,7 @@ func TestChangePassword(t *testing.T) {
 
 	t.Run("other sessions are destroyed but the caller stays signed in", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "old-password", "user")
+		u := seedAuthUser(t, st, "alice", "old-password", "user")
 		now := time.Now().UTC()
 		if _, err := st.CreateSession(t.Context(), store.Session{
 			ID:        "other-session",
@@ -171,7 +150,7 @@ func TestChangePassword(t *testing.T) {
 
 	t.Run("API keys are deliberately not revoked", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "old-password", "user")
+		u := seedAuthUser(t, st, "alice", "old-password", "user")
 		seedAPIKey(t, st, u.ID, "ci-key")
 		h := newTestAuthHandler(t, st)
 
@@ -222,7 +201,7 @@ func doChangePassword(t *testing.T, h *authHandler, u store.User, body string) *
 func TestUpdateMe(t *testing.T) {
 	t.Run("updates the display name", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "pw", "user")
+		u := seedAuthUser(t, st, "alice", "pw", "user")
 		h := newTestAuthHandler(t, st)
 
 		rr := doUpdateMe(t, h, u, `{"display_name":"Alice A."}`)
@@ -252,7 +231,7 @@ func TestUpdateMe(t *testing.T) {
 	// absent from the request struct, so a body carrying them must be inert.
 	t.Run("cannot escalate role, rename, or re-enable the account", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "pw", "user")
+		u := seedAuthUser(t, st, "alice", "pw", "user")
 		h := newTestAuthHandler(t, st)
 
 		rr := doUpdateMe(t, h, u,
@@ -277,7 +256,7 @@ func TestUpdateMe(t *testing.T) {
 	// field is not enough if the round-trip through UpdateUser resets it.
 	t.Run("a disabled account stays disabled", func(t *testing.T) {
 		st := fake.New()
-		u := seedUserWithPassword(t, st, "alice", "pw", "user")
+		u := seedAuthUser(t, st, "alice", "pw", "user")
 		u.Disabled = true
 		if _, err := st.UpdateUser(t.Context(), u); err != nil {
 			t.Fatalf("UpdateUser: %v", err)

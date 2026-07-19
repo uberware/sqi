@@ -46,6 +46,16 @@ func scopeFilter(ctx context.Context) (owner string, scoped bool) {
 	return p.Username, true
 }
 
+// ownerMatches reports whether a job owned by jobOwner is visible to the
+// principal scoped to scopedOwner. It is the single owner-comparison rule for
+// the REST surface: comparison is case-insensitive (matching the store's
+// `COLLATE NOCASE`), and an empty jobOwner never matches — jobs submitted
+// before auth was enabled carry no owner and must not become visible to
+// whoever happens to have an empty username.
+func ownerMatches(jobOwner, scopedOwner string) bool {
+	return jobOwner != "" && strings.EqualFold(jobOwner, scopedOwner)
+}
+
 // requireJobAccess returns middleware enforcing owner scoping on a single job
 // or task. Attach it per-route with chi.With — never as a group-level Use,
 // because the existing jobs.read/jobs.write groups also contain collection
@@ -74,7 +84,7 @@ func (a *authz) requireJobAccess() func(http.Handler) http.Handler {
 				return
 			}
 
-			if strings.EqualFold(job.Owner, owner) && job.Owner != "" {
+			if ownerMatches(job.Owner, owner) {
 				next.ServeHTTP(w, r)
 				return
 			}

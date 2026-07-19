@@ -6,11 +6,10 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { ToastProvider } from '@/components/Toast'
-import { adminPrincipal } from '@/test/principals'
+import { adminPrincipal, mockAuth } from '@/test/principals'
 import UserApiKeys from './UserApiKeys'
 
 vi.mock('@/auth/context', () => ({ useAuth: vi.fn() }))
-import { useAuth } from '@/auth/context'
 
 const KEY = {
   id: 'k1',
@@ -24,11 +23,7 @@ const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  vi.mocked(useAuth).mockReturnValue({
-    principal: adminPrincipal(),
-    status: 'authed',
-    refresh: vi.fn(),
-  } as unknown as ReturnType<typeof useAuth>)
+  mockAuth(adminPrincipal())
 })
 
 afterEach(() => {

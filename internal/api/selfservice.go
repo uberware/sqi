@@ -14,13 +14,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/password"
-	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -41,9 +37,8 @@ type changePasswordRequest struct {
 // the web installs a 401 -> login interceptor that would eject them mid-form.
 func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID, ok := callerSubject(r)
+	userID, ok := requireCallerSubject(w, r, selfServiceUnavailable)
 	if !ok {
-		writeProblem(w, r, http.StatusConflict, selfServiceUnavailable)
 		return
 	}
 
@@ -93,7 +88,12 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.DeleteSessionsForUser(ctx, u.ID); err != nil {
 		h.logger.WarnContext(ctx, "selfservice: delete sessions failed", slog.Any("error", err))
 	}
-	h.issueSession(w, r, u)
+	// A failure here is logged, not surfaced: the password change already
+	// succeeded and must not be reported as failed. The caller simply has to
+	// log in again with the new password.
+	if err := h.issueSession(w, r, u); err != nil {
+		h.logger.ErrorContext(ctx, "selfservice: re-issue session failed", slog.Any("error", err))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -114,9 +114,8 @@ type updateMeRequest struct {
 // construction.
 func (h *authHandler) updateMe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID, ok := callerSubject(r)
+	userID, ok := requireCallerSubject(w, r, selfServiceUnavailable)
 	if !ok {
-		writeProblem(w, r, http.StatusConflict, selfServiceUnavailable)
 		return
 	}
 
@@ -147,50 +146,11 @@ func (h *authHandler) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sourced from the freshly-updated row rather than the request principal,
+	// which still carries the pre-update values.
 	p, _ := auth.FromContext(ctx)
-	roles := p.Roles
-	if roles == nil {
-		roles = []string{}
-	}
-	writeJSON(w, http.StatusOK, principalResponse{
-		Subject:     p.Subject,
-		Username:    updated.Username,
-		DisplayName: updated.DisplayName,
-		Roles:       roles,
-		Permissions: policy.PermissionsFor(p),
-		Kind:        string(p.Kind),
-	})
-}
-
-// issueSession mints a session for u and sets the cookie, matching login's
-// cookie attributes. A failure here is logged rather than surfaced: the
-// password change already succeeded and must not be reported as failed — the
-// caller simply falls back to logging in again.
-func (h *authHandler) issueSession(w http.ResponseWriter, r *http.Request, u store.User) {
-	ctx := r.Context()
-	tok, err := password.GenerateToken()
-	if err != nil {
-		h.logger.ErrorContext(ctx, "selfservice: token generation failed", slog.Any("error", err))
-		return
-	}
-	now := time.Now().UTC()
-	if _, err := h.store.CreateSession(ctx, store.Session{
-		ID:        uuid.NewString(),
-		TokenHash: password.HashToken(tok),
-		UserID:    u.ID,
-		ExpiresAt: now.Add(h.ttl),
-		CreatedAt: now,
-	}); err != nil {
-		h.logger.ErrorContext(ctx, "selfservice: create session failed", slog.Any("error", err))
-		return
-	}
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is resolved dynamically by h.secure(r) from the 3-valued CookieSecure config; HttpOnly and SameSite are set explicitly
-		Name:     h.cookieName,
-		Value:    tok,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   h.secure(r),
-		MaxAge:   int(h.ttl.Seconds()),
-	})
+	resp := toPrincipalResponse(p)
+	resp.Username = updated.Username
+	resp.DisplayName = updated.DisplayName
+	writeJSON(w, http.StatusOK, resp)
 }

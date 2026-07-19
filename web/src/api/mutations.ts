@@ -844,7 +844,7 @@ export function useCreateApiKey() {
   return useMutation({
     mutationFn: fetchCreateApiKey,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.self })
     },
   })
 }
@@ -855,7 +855,7 @@ export function useRevokeApiKey() {
   return useMutation({
     mutationFn: (id: string) => fetchRevokeApiKey(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.self })
     },
   })
 }

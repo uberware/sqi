@@ -36,9 +36,9 @@ func (h *apiKeysHandler) listForUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out := make([]apiKeyResponse, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, toAPIKeyResponse(k))
+	out := make([]apiKeyResponse, len(keys))
+	for i, k := range keys {
+		out[i] = toAPIKeyResponse(k)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

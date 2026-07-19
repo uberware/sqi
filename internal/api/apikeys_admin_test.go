@@ -27,8 +27,8 @@ type adminKeysFixture struct {
 func newAdminKeysFixture(t *testing.T, callerRole string) adminKeysFixture {
 	t.Helper()
 	st := fake.New()
-	seedUserWithPassword(t, st, "b3-caller", "caller-pw", callerRole)
-	target := seedUserWithPassword(t, st, "alice", "alice-pw", "user")
+	seedAuthUser(t, st, "b3-caller", "caller-pw", callerRole)
+	target := seedAuthUser(t, st, "alice", "alice-pw", "user")
 
 	srv := httptest.NewServer(authRouter(st))
 	t.Cleanup(srv.Close)
@@ -124,7 +124,7 @@ func TestAdminAPIKeys(t *testing.T) {
 	// authorization check — there is no separate ownership branch to forget.
 	t.Run("a key belonging to a different user is 404", func(t *testing.T) {
 		f := newAdminKeysFixture(t, "admin")
-		bob := seedUserWithPassword(t, f.st, "bob", "bob-pw", "user")
+		bob := seedAuthUser(t, f.st, "bob", "bob-pw", "user")
 		bobKey := seedAPIKey(t, f.st, bob.ID, "bob-key")
 
 		resp := doRequest(t, http.MethodDelete, f.keysURL()+"/"+bobKey.ID, nil, f.cookie)

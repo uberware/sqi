@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth/password"
+	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -56,13 +57,11 @@ type passwordRequest struct {
 	Password string `json:"password"`
 }
 
+// validRole delegates to the policy matrix rather than restating the role
+// list: a role accepted here but absent from the matrix would create a user
+// with no permissions and no error to explain why.
 func validRole(role string) bool {
-	switch role {
-	case "admin", "operator", "user", "read-only":
-		return true
-	default:
-		return false
-	}
+	return policy.IsRole(role)
 }
 
 func (h *usersHandler) create(w http.ResponseWriter, r *http.Request) {

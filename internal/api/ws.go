@@ -545,7 +545,7 @@ func (wc *wsConn) subjectAllowed(ctx context.Context, jobID, taskID string) (boo
 		}
 		return false, err
 	}
-	return job.Owner != "" && strings.EqualFold(job.Owner, owner), nil
+	return ownerMatches(job.Owner, owner), nil
 }
 
 // handleUnsubscribe processes a TypeUnsubscribe client message.

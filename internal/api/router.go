@@ -160,9 +160,8 @@ type Deps struct {
 // NewRouter builds and returns the chi router that serves the full sqi-server
 // HTTP surface. The returned router is ready to be handed to http.Server.
 //
-// Route groups for the REST API (/api/v1/*) and WebSocket (/api/v1/ws) are
-// populated incrementally as each task is completed. Pass a [Deps] value with
-// all application-layer dependencies for the currently implemented handlers.
+// Pass a [Deps] value carrying every application-layer dependency the
+// handlers need; optional ones (Hub, Scheduler, Products) may be nil.
 func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) chi.Router {
 	origins := cfg.CORSOrigins
 	if len(origins) == 0 {
@@ -176,8 +175,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		logger.ErrorContext(
 			context.Background(),
 			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard; "+
-				"cross-origin browser access is not configurable yet, so only same-origin "+
-				"requests will work (known gap)",
+				"only same-origin requests will work. Name the real origins explicitly "+
+				"via http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
 		)
 		origins = slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
 	}
@@ -271,9 +270,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	}
 
 	// ── REST API ────────────────────────────────────────────────
-	var jobNotifier ws.Notifier
+	// Assigned only when non-nil so the handlers' nil checks stay meaningful:
+	// a typed-nil *ws.Hub stored in an interface is not itself nil.
+	var notifier ws.Notifier
 	if deps.Hub != nil {
-		jobNotifier = deps.Hub
+		notifier = deps.Hub
 	}
 	// Server-level retry defaults for effective-policy reporting; zero value
 	// when no live scheduler is wired (resolution clamps sanely).
@@ -281,15 +282,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults, cfg.ValidateJobOwner)
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults, cfg.ValidateJobOwner)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	// Pass the hub as a notifier only when non-nil so the worker handler's
-	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
-	var workerNotifier ws.Notifier
-	if deps.Hub != nil {
-		workerNotifier = deps.Hub
-	}
-	workers := newWorkerHandler(deps.Store, workerNotifier, cfg.WorkerOfflineThreshold, logger)
+	workers := newWorkerHandler(deps.Store, notifier, cfg.WorkerOfflineThreshold, logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
@@ -314,8 +309,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Use(middleware.APIVersion("1"))
 
 		// 8. Per-IP token-bucket rate limiting (applies to REST + /ws).
-		//    20 req/s sustained, burst of 40.  Replace with auth-aware
-		//    per-client limits when Phase 3 auth lands.
+		//    20 req/s sustained, burst of 40. Still per-IP rather than
+		//    per-principal; auth-aware limits remain a possible refinement.
 		//    Disabled via cfg.DisableRateLimit (tests/benchmarks).
 		if !cfg.DisableRateLimit {
 			api.Use(middleware.RateLimit(middleware.RateLimitConfig{
@@ -328,7 +323,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// so it stays outside the middleware.Auth group.
 		api.Get("/ws", wsH.ServeHTTP)
 
-		// OpenAPI spec — left public in A0.
+		// OpenAPI spec — deliberately public: it documents the auth scheme
+		// itself, so requiring auth to read it would be circular.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
 		// Public: login mints the session cookie (no principal required yet,

@@ -17,7 +17,7 @@ type Authenticator interface {
 }
 
 // anonymousAuthenticator always yields the fixed anonymous superuser principal
-// and never errors. It is used whenever auth is disabled (A0: always).
+// and never errors. It is used whenever auth is disabled.
 type anonymousAuthenticator struct{}
 
 // Anonymous returns an Authenticator that authenticates every request as the

@@ -22,9 +22,6 @@ import (
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/policy"
-	"github.com/uberware/sqi/internal/auth/session"
-	"github.com/uberware/sqi/internal/health"
-	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -37,24 +34,13 @@ import (
 // attempts in a single test don't 429.
 func newAuthTestServer(t *testing.T, st store.Store) *httptest.Server {
 	t.Helper()
-	r := NewRouter(
-		Config{DisableRateLimit: true, AuthEnabled: true},
-		Deps{
-			Store:        st,
-			Auth:         session.New(st, "sqi_session", nil),
-			SessionTTL:   time.Hour,
-			CookieName:   "sqi_session",
-			CookieSecure: "false",
-		},
-		newTestLogger(), metrics.New(), health.NewRegistry(),
-	)
-	srv := httptest.NewServer(r)
+	srv := httptest.NewServer(authRouter(st))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
 // seedAuthUser inserts a user with an argon2id-hashed password directly via
-// the store, bypassing the (not-yet-implemented) user admin endpoints.
+// the store, bypassing the user-admin endpoints and their permission checks.
 func seedAuthUser(t *testing.T, st store.Store, username, pw, role string) store.User {
 	t.Helper()
 	h, err := password.Hash(pw)
@@ -253,12 +239,12 @@ func TestDummyHash_MatchesPasswordPackageParams(t *testing.T) {
 		}
 		return parts[3] // "m=<mem>,t=<time>,p=<threads>"
 	}
-	if got, want := paramsOf(dummyHash), paramsOf(probe); got != want {
+	if got, want := paramsOf(dummyHash()), paramsOf(probe); got != want {
 		t.Errorf("dummyHash params = %q, want %q (must match password.Hash's current defaults)", got, want)
 	}
-	ok, verr := password.Verify(dummyHash, dummyVerifyPlaintext)
+	ok, verr := password.Verify(dummyHash(), dummyVerifyPlaintext)
 	if verr != nil {
-		t.Fatalf("password.Verify(dummyHash, dummyVerifyPlaintext): %v", verr)
+		t.Fatalf("password.Verify(dummyHash(), dummyVerifyPlaintext): %v", verr)
 	}
 	if !ok {
 		t.Fatal("dummyHash does not verify against the plaintext it was derived from")

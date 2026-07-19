@@ -6,25 +6,20 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { ToastProvider } from '@/components/Toast'
-import { adminPrincipal, operatorPrincipal } from '@/test/principals'
+import { adminPrincipal, operatorPrincipal, mockAuth } from '@/test/principals'
 import UserList from './UserList'
 
 // UserList gates its per-row "API keys" link on apikeys.admin, so it reads
 // the principal. Mocked rather than wrapped in a real AuthProvider to keep
 // these tests independent of the /auth/me round trip.
 vi.mock('@/auth/context', () => ({ useAuth: vi.fn() }))
-import { useAuth } from '@/auth/context'
 
 const fetchMock = vi.fn<typeof fetch>()
 
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  vi.mocked(useAuth).mockReturnValue({
-    principal: adminPrincipal(),
-    status: 'authed',
-    refresh: vi.fn(),
-  } as unknown as ReturnType<typeof useAuth>)
+  mockAuth(adminPrincipal())
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -152,11 +147,7 @@ describe('per-user API keys link', () => {
   })
 
   it('is hidden from a caller without apikeys.admin', async () => {
-    vi.mocked(useAuth).mockReturnValue({
-      principal: operatorPrincipal(),
-      status: 'authed',
-      refresh: vi.fn(),
-    } as unknown as ReturnType<typeof useAuth>)
+    mockAuth(operatorPrincipal())
     fetchMock.mockResolvedValue(ok([user()]))
     renderPage()
 
