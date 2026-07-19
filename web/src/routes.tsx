@@ -22,6 +22,7 @@ import UserList from '@/pages/UserList'
 import UserForm from '@/pages/UserForm'
 import ApiKeyList from '@/pages/ApiKeyList'
 import Account from '@/pages/Account'
+import UserApiKeys from '@/pages/UserApiKeys'
 import PresetLibrary from '@/pages/PresetLibrary'
 import PresetDetail from '@/pages/PresetDetail'
 import ProductList from '@/pages/ProductList'
@@ -151,6 +152,14 @@ export default function AppRoutes() {
         element={
           <RequireRole permission="users.manage">
             <UserForm mode="edit" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/users/:id/api-keys"
+        element={
+          <RequireRole permission="apikeys.admin">
+            <UserApiKeys />
           </RequireRole>
         }
       />

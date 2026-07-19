@@ -9,10 +9,17 @@ import { useToast } from '@/components/Toast'
 import ErrorBanner from '@/components/ErrorBanner'
 import { useListUsers } from '@/api/queries'
 import { useDeleteUser } from '@/api/mutations'
+import { useAuth } from '@/auth/context'
+import { can } from '@/auth/policy'
 import styles from './entityList.module.css'
 
 export default function UserList() {
   const { data: users, isLoading, isError, error } = useListUsers()
+  const { principal } = useAuth()
+  // Checked explicitly rather than inferred from reaching this page: today
+  // users.read and apikeys.admin are both admin-only, but the link should
+  // follow the permission it actually needs if those ever diverge.
+  const mayManageKeys = can(principal, 'apikeys.admin')
   const deleteUser = useDeleteUser()
   const { showToast } = useToast()
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
@@ -93,6 +100,11 @@ export default function UserList() {
                 <td>{user.role}</td>
                 <td>{user.disabled ? 'Disabled' : 'Active'}</td>
                 <td>
+                  {mayManageKeys && (
+                    <Link to={`/users/${user.id}/api-keys`} className={styles.linkBtn}>
+                      API keys
+                    </Link>
+                  )}
                   <IconButton
                     icon={<Trash />}
                     className={styles.deleteBtn}
