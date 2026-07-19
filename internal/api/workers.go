@@ -16,7 +16,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -265,7 +264,7 @@ func (h *workerHandler) visibleCurrentTasks(ctx context.Context, tasks []store.T
 				jobOwner = job.Owner
 				jobOwners[t.JobID] = jobOwner
 			}
-			if jobOwner == "" || !strings.EqualFold(jobOwner, owner) {
+			if !ownerMatches(jobOwner, owner) {
 				continue
 			}
 		}

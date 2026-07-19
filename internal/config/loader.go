@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,9 @@ type FlagOverrides struct {
 	LogFormat string
 	// HTTPAddr overrides HTTP.Addr when non-empty. Bound to --http-addr.
 	HTTPAddr string
+	// HTTPCORSOrigins overrides HTTP.CORSOrigins when non-empty. Bound to
+	// --http-cors-origins.
+	HTTPCORSOrigins []string
 	// EnforceLimits overrides OpenJD.EnforceLimits when non-nil. Bound to
 	// --openjd-enforce-limits. A pointer (not a bool) so an unset flag leaves the
 	// lower layers intact while an explicit --openjd-enforce-limits=false can turn
@@ -85,7 +89,9 @@ func Load(filePath string, flags FlagOverrides) (Config, error) {
 	}
 
 	// ── Layer 3: environment variables ───────────────────────────────────
-	applyEnv(&cfg)
+	if err := applyEnv(&cfg); err != nil {
+		return Config{}, err
+	}
 
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
 	applyFlags(&cfg, flags)
@@ -100,8 +106,9 @@ func Load(filePath string, flags FlagOverrides) (Config, error) {
 // zero value, applying only the fields that are present in the file.
 type fileConfig struct {
 	HTTP *struct {
-		Addr        *string `yaml:"addr"`
-		EnablePprof *bool   `yaml:"enable_pprof"`
+		Addr        *string   `yaml:"addr"`
+		EnablePprof *bool     `yaml:"enable_pprof"`
+		CORSOrigins *[]string `yaml:"cors_origins"`
 	} `yaml:"http"`
 
 	NATS *struct {
@@ -230,6 +237,9 @@ func mergeHTTPFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.HTTP.EnablePprof != nil {
 		cfg.HTTP.EnablePprof = *fc.HTTP.EnablePprof
+	}
+	if fc.HTTP.CORSOrigins != nil {
+		cfg.HTTP.CORSOrigins = *fc.HTTP.CORSOrigins
 	}
 }
 
@@ -429,47 +439,63 @@ func mergeAuthBootstrapFile(cfg *Config, b *struct {
 
 // ── Environment variable layer ────────────────────────────────────────────────
 
-func applyEnv(cfg *Config) {
+// applyEnv overlays SQI_* environment variables onto cfg. Typed helpers
+// (setBool/setInt/setDuration) return an error when a non-empty value cannot be
+// parsed so a malformed security-relevant value — e.g. SQI_AUTH_ENABLED=enabled
+// — fails loud at load time instead of silently reverting to the default (a
+// fail-open). Every violation is collected and returned together via
+// [errors.Join]; an unset or empty var stays a no-op.
+func applyEnv(cfg *Config) error {
+	var errs []error
+	collect := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
 	setString(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
-	setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF")
+	collect(setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF"))
+	setStringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
 
 	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
 	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
-	setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB")
+	collect(setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB"))
 
 	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
-	setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL")
+	collect(setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL"))
 
 	setString(&cfg.Log.Level, "SQI_LOG_LEVEL")
 	setString(&cfg.Log.Format, "SQI_LOG_FORMAT")
 
-	setDuration(&cfg.Scheduler.HeartbeatTimeout, "SQI_SCHEDULER_HEARTBEAT_TIMEOUT")
-	setDuration(&cfg.Scheduler.TickInterval, "SQI_SCHEDULER_TICK_INTERVAL")
-	setInt(&cfg.Scheduler.MaxTasksPerWorker, "SQI_SCHEDULER_MAX_TASKS_PER_WORKER")
-	setDuration(&cfg.Scheduler.OfflineWorkerRetention, "SQI_SCHEDULER_OFFLINE_WORKER_RETENTION")
-	setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION")
-	setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED")
-	setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE")
-	setInt(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS")
-	setDuration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY")
-	setInt(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT")
+	collect(setDuration(&cfg.Scheduler.HeartbeatTimeout, "SQI_SCHEDULER_HEARTBEAT_TIMEOUT"))
+	collect(setDuration(&cfg.Scheduler.TickInterval, "SQI_SCHEDULER_TICK_INTERVAL"))
+	collect(setInt(&cfg.Scheduler.MaxTasksPerWorker, "SQI_SCHEDULER_MAX_TASKS_PER_WORKER"))
+	collect(setDuration(&cfg.Scheduler.OfflineWorkerRetention, "SQI_SCHEDULER_OFFLINE_WORKER_RETENTION"))
+	collect(setDuration(&cfg.Scheduler.JobRetention, "SQI_SCHEDULER_JOB_RETENTION"))
+	collect(setBool(&cfg.Scheduler.JobRetentionIncludeFailed, "SQI_SCHEDULER_JOB_RETENTION_INCLUDE_FAILED"))
+	collect(setDuration(&cfg.Scheduler.UnschedulableGrace, "SQI_SCHEDULER_UNSCHEDULABLE_GRACE"))
+	collect(setInt(&cfg.Scheduler.DefaultMaxAttempts, "SQI_SCHEDULER_DEFAULT_MAX_ATTEMPTS"))
+	collect(setDuration(&cfg.Scheduler.RetryDelay, "SQI_SCHEDULER_RETRY_DELAY"))
+	collect(setInt(&cfg.Scheduler.DefaultFailureLimit, "SQI_SCHEDULER_DEFAULT_FAILURE_LIMIT"))
 
-	setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED")
+	collect(setBool(&cfg.Discovery.Enabled, "SQI_DISCOVERY_ENABLED"))
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
 
-	setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS")
+	collect(setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS"))
 
-	setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE")
+	collect(setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE"))
 
 	setString(&cfg.PresetLibrary.URL, "SQI_PRESET_LIBRARY_URL")
 
-	setBool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED")
-	setBool(&cfg.Auth.ValidateJobOwner, "SQI_AUTH_VALIDATE_JOB_OWNER")
-	setDuration(&cfg.Auth.Session.TTL, "SQI_AUTH_SESSION_TTL")
+	collect(setBool(&cfg.Auth.Enabled, "SQI_AUTH_ENABLED"))
+	collect(setBool(&cfg.Auth.ValidateJobOwner, "SQI_AUTH_VALIDATE_JOB_OWNER"))
+	collect(setDuration(&cfg.Auth.Session.TTL, "SQI_AUTH_SESSION_TTL"))
 	setString(&cfg.Auth.Session.CookieName, "SQI_AUTH_SESSION_COOKIE_NAME")
 	setString(&cfg.Auth.Session.CookieSecure, "SQI_AUTH_SESSION_COOKIE_SECURE")
 	setString(&cfg.Auth.Bootstrap.Username, "SQI_AUTH_BOOTSTRAP_USERNAME")
 	setString(&cfg.Auth.Bootstrap.Password, "SQI_AUTH_BOOTSTRAP_PASSWORD")
+
+	return errors.Join(errs...)
 }
 
 func setString(dst *string, key string) {
@@ -478,31 +504,75 @@ func setString(dst *string, key string) {
 	}
 }
 
-func setInt(dst *int, key string) {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			*dst = n
+// setStringSlice sets dst from a comma-separated env var, trimming spaces and
+// dropping empty entries. An unset or empty var leaves dst untouched so a
+// lower config layer survives.
+func setStringSlice(dst *[]string, key string) {
+	v := os.Getenv(key)
+	if v == "" {
+		return
+	}
+	var out []string
+	for part := range strings.SplitSeq(v, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
 		}
+	}
+	if len(out) > 0 {
+		*dst = out
 	}
 }
 
-func setDuration(dst *time.Duration, key string) {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			*dst = d
-		}
+// setInt sets dst from an integer-valued env var. Surrounding whitespace is
+// trimmed; an unset or (post-trim) empty var is a no-op that leaves the lower
+// config layer intact. A non-empty value that does not parse is a hard error
+// naming the key and the offending value.
+func setInt(dst *int, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
 	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%s: invalid integer %q", key, v)
+	}
+	*dst = n
+	return nil
 }
 
-func setBool(dst *bool, key string) {
-	if v := os.Getenv(key); v != "" {
-		switch strings.ToLower(v) {
-		case "1", "true", "yes", "on":
-			*dst = true
-		case "0", "false", "no", "off":
-			*dst = false
-		}
+// setDuration sets dst from a Go duration env var (e.g. "30s", "5m", "1h").
+// Trimming and error semantics match [setInt].
+func setDuration(dst *time.Duration, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
 	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("%s: invalid duration %q (want e.g. 30s, 5m, 1h)", key, v)
+	}
+	*dst = d
+	return nil
+}
+
+// setBool sets dst from a boolean env var. Accepted tokens (case-insensitive)
+// are 1/true/yes/on and 0/false/no/off. Trimming and error semantics match
+// [setInt] — critically, a malformed security-relevant flag such as
+// SQI_AUTH_ENABLED=enabled errors here rather than silently leaving auth off.
+func setBool(dst *bool, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		*dst = true
+	case "0", "false", "no", "off":
+		*dst = false
+	default:
+		return fmt.Errorf("%s: invalid boolean %q (want 1/true/yes/on or 0/false/no/off)", key, v)
+	}
+	return nil
 }
 
 // ── CLI flag layer ────────────────────────────────────────────────────────────
@@ -516,6 +586,9 @@ func applyFlags(cfg *Config, f FlagOverrides) {
 	}
 	if f.HTTPAddr != "" {
 		cfg.HTTP.Addr = f.HTTPAddr
+	}
+	if len(f.HTTPCORSOrigins) > 0 {
+		cfg.HTTP.CORSOrigins = f.HTTPCORSOrigins
 	}
 	if f.EnforceLimits != nil {
 		cfg.OpenJD.EnforceLimits = *f.EnforceLimits

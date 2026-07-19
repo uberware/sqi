@@ -215,18 +215,42 @@ type Hub struct {
 	// owners resolves jobID → owner for envelopes that carry a job id but not
 	// its owner (task events). Never nil after NewHub; its lookup may be.
 	owners *ownerCache
+
+	// ownerScoping reports whether any connected client can be owner-scoped,
+	// i.e. whether auth is enabled. It gates the always-buffer behavior on the
+	// job-summary paths — see NotifyJob. Kept as its own field rather than
+	// inferred from owners.lookup != nil so the two can be reasoned about
+	// separately: "clients may be scoped" and "ownership is resolvable" are
+	// different questions that happen to share an answer today.
+	ownerScoping bool
 }
 
-// NewHub creates a Hub ready for use. jobOwner resolves a job id to its owner
-// username, used to scope task events; pass nil when ownership cannot be
-// resolved, in which case scoped clients receive no task events (fail closed).
-func NewHub(logger *slog.Logger, jobOwner func(jobID string) string) *Hub {
+// HubOptions configures optional Hub behavior. The zero value is the auth-off
+// hub: no owner scoping, no ownership resolution.
+type HubOptions struct {
+	// OwnerScoping enables per-client owner filtering of job-bearing
+	// envelopes. Set it when auth is enabled. It also makes the job-summary
+	// paths buffer unconditionally, so a client that subscribes moments after
+	// an event can still replay it — see NotifyJob for why that matters.
+	OwnerScoping bool
+
+	// JobOwner resolves a job id to its owner username. It returns a nil error
+	// with an empty owner for a job that genuinely has none (submitted before
+	// auth was enabled), and a non-nil error when the store could not answer;
+	// only the former is memoized. Required when OwnerScoping is set —
+	// without it, scoped clients receive no task events (fail closed).
+	JobOwner func(jobID string) (string, error)
+}
+
+// NewHub creates a Hub ready for use.
+func NewHub(logger *slog.Logger, opts HubOptions) *Hub {
 	return &Hub{
-		logger:  logger,
-		clients: make(map[string]*hubClient),
-		subs:    make(map[string]map[string]*hubClient),
-		rings:   make(map[string]*subjectRing),
-		owners:  newOwnerCache(jobOwner),
+		logger:       logger,
+		clients:      make(map[string]*hubClient),
+		subs:         make(map[string]map[string]*hubClient),
+		rings:        make(map[string]*subjectRing),
+		owners:       newOwnerCache(opts.JobOwner),
+		ownerScoping: opts.OwnerScoping,
 	}
 }
 
@@ -362,12 +386,12 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	// currently subscribed, so a scoped client that subscribes moments later
 	// can replay it via since_seq: 0 and have it filtered by Scope.allows,
 	// rather than have it silently never buffered. That only matters when the
-	// hub has an owner resolver at all (auth on): with auth off (h.owners.
-	// lookup == nil) there is no such thing as a scoped client, so this must
-	// fall back to the pre-B2 hasSubscribers guard — otherwise the highest-
-	// frequency event in the system unconditionally marshals JSON and takes
-	// the ring mutex on every task transition even with nobody connected.
-	if h.owners.lookup != nil || h.hasSubscribers(SubjectJobs) {
+	// hub can have scoped clients at all (auth on): with auth off there is no
+	// such thing as a scoped client, so this must fall back to the pre-B2
+	// hasSubscribers guard — otherwise the highest-frequency event in the
+	// system unconditionally marshals JSON and takes the ring mutex on every
+	// task transition even with nobody connected.
+	if h.ownerScoping || h.hasSubscribers(SubjectJobs) {
 		env, err := buildEnvelope(SubjectJobs, JobSummaryPush{
 			JobID:     e.JobID,
 			TaskID:    e.TaskID,
@@ -441,17 +465,16 @@ func (h *Hub) NotifyLog(e LogEvent) {
 
 // NotifyJob fans a job-status change to all SubjectJobs subscribers.
 //
-// When the hub has an owner resolver (auth on), the envelope is always
+// When the hub does owner scoping (auth on), the envelope is always
 // stored in the ring buffer (like NotifyLog), even when no clients are
 // currently subscribed: a scoped client that subscribes moments later must
 // be able to replay it via since_seq: 0 and have it filtered by
 // Scope.allows, rather than have it silently never buffered. With auth off
-// (h.owners.lookup == nil) there are no scoped clients to replay for, so this
-// falls back to the pre-B2 hasSubscribers guard to keep the auth-off hot path
-// unchanged: zero marshal, zero ring-mutex acquisition, with nobody
-// connected.
+// there are no scoped clients to replay for, so this falls back to the pre-B2
+// hasSubscribers guard to keep the auth-off hot path unchanged: zero marshal,
+// zero ring-mutex acquisition, with nobody connected.
 func (h *Hub) NotifyJob(e JobEvent) {
-	if h.owners.lookup == nil && !h.hasSubscribers(SubjectJobs) {
+	if !h.ownerScoping && !h.hasSubscribers(SubjectJobs) {
 		return
 	}
 

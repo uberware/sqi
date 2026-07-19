@@ -4,9 +4,9 @@
 // server surface: the request Principal, the pluggable Authenticator
 // interface, and a no-op anonymous authenticator used when auth is disabled.
 //
-// A0 ships only the anonymous authenticator; real credential backends
-// (sessions, API keys, LDAP, OIDC) are later Phase 3 components that implement
-// this same interface.
+// Credential backends (sessions, API keys) live in the session and apikey
+// subpackages and implement this same interface; Chain composes them. LDAP and
+// OIDC are planned and will slot in the same way.
 package auth
 
 import "context"
@@ -38,7 +38,8 @@ type Principal struct {
 	Username string
 	// DisplayName is a human-facing label.
 	DisplayName string
-	// Roles are the identity's assigned roles. Empty in A0; populated from A1/B1.
+	// Roles are the identity's assigned roles, resolved from the user record.
+	// Empty for the anonymous principal, which relies on Superuser instead.
 	Roles []string
 	// Kind classifies the credential type.
 	Kind Kind

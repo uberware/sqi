@@ -34,8 +34,7 @@ var ErrNoCredential = errors.New("apikey: no credential")
 
 // APIKeySource is the store surface the authenticator needs.
 type APIKeySource interface {
-	GetAPIKeyByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.APIKey, error)
-	GetUser(ctx context.Context, id string) (store.User, error)
+	GetAPIKeyUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.APIKey, store.User, error)
 	TouchAPIKeyLastUsed(ctx context.Context, id string, now time.Time) error
 }
 
@@ -66,13 +65,11 @@ func (a *Authenticator) Authenticate(r *http.Request) (auth.Principal, error) {
 		return auth.Principal{}, ErrNoCredential
 	}
 	now := a.now()
-	key, err := a.src.GetAPIKeyByTokenHash(r.Context(), password.HashToken(raw), now)
+	// One joined query rather than key-then-user; see the equivalent comment
+	// in the session authenticator.
+	key, u, err := a.src.GetAPIKeyUserByTokenHash(r.Context(), password.HashToken(raw), now)
 	if err != nil {
 		return auth.Principal{}, errors.New("apikey: invalid, revoked, or expired key")
-	}
-	u, err := a.src.GetUser(r.Context(), key.UserID)
-	if err != nil {
-		return auth.Principal{}, errors.New("apikey: user not found")
 	}
 	if u.Disabled {
 		return auth.Principal{}, errors.New("apikey: account disabled")

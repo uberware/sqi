@@ -106,6 +106,9 @@ built-in roles (no custom-role builder — YAGNI):
 | apikeys.self (own keys) | ✅ | ✅ | ✅ | ✅ |
 | apikeys.admin (anyone's keys) | ❌ | ❌ | ❌ | ✅ |
 
+`apikeys.admin` is enforced by `GET /users/{id}/api-keys` and
+`DELETE /users/{id}/api-keys/{keyId}` — see [API keys](#api-keys).
+
 A denied request returns **403** with an RFC-7807 problem-details body, and
 is recorded to the audit log (`AuditEntry.Actor`) as well as the server's own
 diagnostic log. With `auth.enabled=false` (the default), the anonymous
@@ -117,18 +120,38 @@ disabled, or demoted to a non-admin role — any of those requests fail with
 **409 Conflict** — so an operator can never lock themselves (or everyone)
 out of user management.
 
-**Known interim gaps** (deliberate, tracked for component **B3**, not bugs):
+## Self-service account changes
 
-- There is no self-service password or profile change for non-admin roles
-  yet; account changes go through an admin via the `/users` API or page.
-- `apikeys.admin` (an admin managing another user's API keys) is defined in
-  the policy above, but the `/api-keys` handlers remain self-scoped for
-  now — see [API keys](#api-keys).
-- Cross-origin browser access does not work while auth is on: a `*` CORS
-  origin is incompatible with `AllowCredentials` and is dropped at startup
-  (with an error log), and there is no config surface yet for naming real
-  origins — so only same-origin requests succeed. See
-  [CSRF & CORS](#csrf--cors).
+Any authenticated principal may change its own display name and password.
+Both routes resolve their target from the session — there is no id in the
+path — so reaching another account is structurally impossible rather than
+guarded against. The web surfaces them at `/account`, linked from the
+sidebar identity control.
+
+| Route | Effect |
+|---|---|
+| `PATCH /api/v1/auth/me` | Sets `display_name`. Returns the same principal shape as `GET /auth/me`. |
+| `PUT /api/v1/auth/password` | Verifies the current password, then sets the new one. |
+
+Three choices worth knowing:
+
+- **Only `display_name` is accepted.** `role`, `disabled`, and `username`
+  are absent from the request type, so a body carrying them is inert — a
+  self-service route that could reach `role` would be a privilege-escalation
+  hole, and this makes that unrepresentable rather than merely checked for.
+- **A wrong current password is 403, not 401.** The caller *is*
+  authenticated and only failed a re-auth check; a 401 would trip the web's
+  login interceptor and eject them mid-form.
+- **Changing a password evicts every session for the account, then
+  re-issues one for the caller** — other devices are signed out while the
+  device that made the change stays signed in. **API keys are deliberately
+  not revoked**: they are an independent credential, and silently killing a
+  user's automation because they rotated a password would be a nasty
+  surprise. Revoke them explicitly if that is what you want.
+
+With `auth.enabled=false` both routes return **409 Conflict** — the
+anonymous superuser has no account record to change — and the web hides the
+Account link entirely.
 
 ## Job identity
 
@@ -278,18 +301,52 @@ the shipped UI in its default configuration. It only matters for a
 separately-hosted UI (a different scheme/host/port) that wants to call a
 `sqi-server` instance's cookie-authenticated API cross-origin.
 
-> **Known gap: no operator-facing knob to allow-list origins yet.** The
-> underlying mechanism (`CORSOrigins` on `internal/api.Config`) supports an
-> explicit allow-list, and is exercised by tests — but `cmd/sqi-server`
-> does not currently expose it through the config file, `SQI_*` environment
-> variables, or a CLI flag; `serve.go` never sets it, so it is always the
-> Go zero value (empty), which the router treats as `["*"]`. Combined with
-> the wildcard-drop above, this means that **with auth enabled, cross-origin
-> browser access is always rejected** in the shipped binary today — not just
-> "unless configured", but unconditionally, since there is presently no
-> supported way to configure it. This only affects a separately-hosted UI
-> (same-origin deployments are unaffected); adding a config surface for it is
-> tracked as component **B3**, not part of A1.
+> **Note — a WebSocket is authenticated once, at upgrade.** Authentication and
+> owner-scope resolution happen a single time, when `/api/v1/ws` is upgraded;
+> they are **not** re-evaluated for the life of the connection. Disabling the
+> account, revoking its session, or changing its role does **not** drop a live
+> WebSocket — the connection keeps delivering until the client closes it or it
+> hits the idle timeout (`wsIdleTimeout`, 5 minutes, in `internal/api/ws.go`).
+> The exposure is bounded to that one connection's own already-authorized scope:
+> it can only keep receiving what it was authorized to receive at upgrade, with
+> no cross-user leakage or privilege escalation. REST is different — every
+> request re-authenticates and re-authorizes, so a revoked credential stops
+> working on the next call.
+
+### Configuring allowed origins
+
+Name the origins a separately-hosted UI will call from, through any of the
+three config layers (later beats earlier):
+
+```yaml
+http:
+  cors_origins:
+    - "https://ui.example.com"
+    - "http://localhost:5173"
+```
+
+```sh
+SQI_HTTP_CORS_ORIGINS="https://ui.example.com,http://localhost:5173"
+sqi-server serve --http-cors-origins=https://ui.example.com
+```
+
+Each entry must be `scheme://host[:port]` or `"*"`. A trailing slash, a
+path, a query, a fragment, or embedded whitespace is rejected at startup
+with a `http.cors_origins` validation error — go-chi/cors could never match
+such a value, so a typo fails loudly at boot instead of silently at request
+time. **Wildcard patterns other than the bare `"*"` are rejected too**: an
+entry containing an embedded `*` (e.g. `https://*.example.com` or
+`https://app.example.com*`) is refused at startup, because go-chi/cors would
+otherwise honor it as a prefix/suffix match — with credentials, once auth is
+enabled — letting an attacker-registrable origin (like
+`https://app.example.com.evil.io`) ride a victim's session cookie. Name every
+allowed origin explicitly.
+
+Leaving the list empty keeps the previous default of `["*"]`. **The
+wildcard-drop above still applies**: with auth enabled, `"*"` — whether
+explicit or defaulted — is dropped and credentialed cross-origin requests
+are refused. A separately-hosted UI must therefore name its origin
+explicitly here. Same-origin deployments need none of this.
 
 ## Headless / SDK auth
 
@@ -359,13 +416,27 @@ with no separate sweep required.
 the same "unrevoked" filter that enforces expiry means the very next request
 bearing that key is rejected.
 
-**Scope — self-managed for now.** API-key management is currently
-self-scoped only: `POST`/`GET`/`DELETE /api/v1/api-keys` all resolve the
-caller's own user id and only ever see or touch that user's keys. B1's
-policy defines an `apikeys.admin` permission (admin-only) for a future
-admin-broad "view or revoke anyone's keys" capability, but the handlers
-themselves haven't been extended to use it yet — see the interim gap in
-[Roles & permissions](#roles--permissions).
+**Scope.** `POST`/`GET`/`DELETE /api/v1/api-keys` are self-scoped: they
+resolve the caller's own user id and only ever see or touch that user's
+keys (`apikeys.self`, held by every role).
+
+Admins additionally hold `apikeys.admin`, which unlocks two cross-user
+routes:
+
+| Route | Effect |
+|---|---|
+| `GET /api/v1/users/{id}/api-keys` | List that user's keys (metadata only — never a secret). |
+| `DELETE /api/v1/users/{id}/api-keys/{keyId}` | Revoke one of that user's keys. |
+
+**There is deliberately no admin create.** An admin may see and revoke
+another person's keys, but minting a credential someone else is accountable
+for is a materially different act, so no route offers it.
+
+Revocation stays owner-scoped underneath: a `keyId` that does not belong to
+the named user returns **404**, so that existing scoping *is* the
+authorization check rather than a separate ownership branch that could be
+forgotten. The web surfaces this at `/users/{id}/api-keys`, reachable from
+the per-row "API keys" action on Admin → Users.
 
 **Auth-off behaviour.** With `auth.enabled=false`, every request is the
 anonymous superuser principal, which has no real user id to own a key
@@ -381,9 +452,6 @@ Bearer-authenticated request has nothing for it to check.
 
 ## Coming next
 
-- B3 — auth surface completion: self-service credential change, `apikeys.admin`,
-  and a CORS origins config (see the interim gaps in
-  [Roles & permissions](#roles--permissions)).
 - C1 — LDAP/AD integration.
 - C2 — OAuth2/OIDC (SSO).
 - D1 — per-user concurrent task caps.

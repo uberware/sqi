@@ -191,6 +191,12 @@ smoke: build-server build-worker ## Run the end-to-end smoke test against the bu
 	SQI_SERVER_BIN=$(BUILD_DIR)/$(BINARY) SQI_WORKER_BIN=$(BUILD_DIR)/$(WORKER_BINARY) \
 	  bash scripts/smoke.sh
 
+.PHONY: auth-demo
+auth-demo: build-server build-worker ## Run the auth surface demo on a live local farm (KEEP=1 to leave it running)
+	SQI_SERVER_BIN=$(BUILD_DIR)/$(BINARY) SQI_WORKER_BIN=$(BUILD_DIR)/$(WORKER_BINARY) \
+	SQI_AUTH_DEMO_KEEP=$(if $(KEEP),$(KEEP),0) \
+	  bash scripts/auth-demo.sh
+
 # ── Lint and Vet ─────────────────────────────────────────────────────────────
 
 .PHONY: vet

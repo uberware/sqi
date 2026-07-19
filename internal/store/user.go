@@ -37,6 +37,23 @@ type UserStore interface {
 	UpdateUser(ctx context.Context, u User) (User, error)
 	// SetUserPassword replaces the stored password hash. Returns [ErrNotFound].
 	SetUserPassword(ctx context.Context, id, passwordHash string) error
+	// SetUserPasswordAndEvictSessions sets the password and deletes every
+	// session for the user atomically. Returns [ErrNotFound] if id is unknown.
+	//
+	// The two must not be separate calls: a self-service password change tells
+	// the user their other devices have been signed out, so a failure after
+	// the password landed would make that claim a lie with no way to detect
+	// it. Atomicity means the caller can report failure honestly — nothing
+	// changed, retry.
+	SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error
+	// SetUserDisplayName updates only the display name, returning the updated
+	// record. Returns [ErrNotFound] if id is unknown.
+	//
+	// Distinct from UpdateUser, which writes display_name, role, and disabled
+	// together: a self-service caller may only touch the display name, and a
+	// read-modify-write through UpdateUser would race with a concurrent admin
+	// role or disabled change and silently revert it.
+	SetUserDisplayName(ctx context.Context, id, displayName string) (User, error)
 	// DeleteUser removes a user by ID (cascading their sessions). Returns
 	// [ErrNotFound].
 	DeleteUser(ctx context.Context, id string) error

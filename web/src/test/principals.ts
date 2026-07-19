@@ -8,6 +8,8 @@
 // If the server matrix changes, update these lists so tests keep describing a
 // real deployment; the app itself needs no change.
 
+import { vi } from 'vitest'
+import { useAuth } from '@/auth/context'
 import type { Principal } from '@/api/types'
 import type { Permission } from '@/auth/policy'
 
@@ -83,3 +85,18 @@ export const adminPrincipal = (): Principal => make('u-admin', 'Admin', 'admin',
 /** Auth disabled: a superuser principal carrying the full permission set. */
 export const anonymousPrincipal = (): Principal =>
   make('anonymous', 'Anonymous', '', ALL_PERMISSIONS, 'anonymous')
+
+/**
+ * Points the mocked `useAuth` at `principal`. Test files must still declare
+ * `vi.mock('@/auth/context', () => ({ useAuth: vi.fn() }))` at module scope —
+ * only that hoisted call can replace the module — but the cast-heavy return
+ * shape lives here so adding a field to the auth context is a one-file change
+ * rather than a sweep across every page test.
+ */
+export function mockAuth(principal: Principal | null): void {
+  vi.mocked(useAuth).mockReturnValue({
+    principal,
+    status: principal === null ? 'anon' : 'authed',
+    refresh: vi.fn(),
+  } as unknown as ReturnType<typeof useAuth>)
+}

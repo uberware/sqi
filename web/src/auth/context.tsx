@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /* eslint-disable react-refresh/only-export-components -- context files export both provider and hooks */
 
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAuthMe, queryKeys } from '@/api/queries'
 import { ApiError } from '@/api/client'
@@ -52,15 +52,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     status = 'loading'
   }
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: queryKeys.auth.me })
-  }
+  }, [qc])
 
-  return (
-    <AuthContext.Provider value={{ principal: data ?? null, status, refresh }}>
-      {children}
-    </AuthContext.Provider>
+  // Memoized so a background refetch of /auth/me that resolves to the same
+  // principal does not re-render every permission-gated control in the app.
+  const value = useMemo<AuthContextValue>(
+    () => ({ principal: data ?? null, status, refresh }),
+    [data, status, refresh],
   )
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
 export function useAuth(): AuthContextValue {

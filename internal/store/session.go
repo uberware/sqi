@@ -23,6 +23,14 @@ type SessionStore interface {
 	// GetSessionByTokenHash returns the session with the given token hash, or
 	// [ErrNotFound] if missing or expired.
 	GetSessionByTokenHash(ctx context.Context, tokenHash string, now time.Time) (Session, error)
+	// GetSessionUserByTokenHash returns the user owning the unexpired session
+	// with the given token hash, or [ErrNotFound] if no such session exists.
+	//
+	// It exists so authenticating a request costs one query rather than a
+	// session lookup followed by a user lookup — this runs on every
+	// cookie-authenticated request, so the second round trip is pure overhead
+	// on the hottest path in the server.
+	GetSessionUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (User, error)
 	// DeleteSession removes a session by ID. Returns [ErrNotFound].
 	DeleteSession(ctx context.Context, id string) error
 	// DeleteSessionsForUser removes all sessions for a user.

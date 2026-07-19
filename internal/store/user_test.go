@@ -277,3 +277,118 @@ func upper(s string) string {
 	}
 	return string(b)
 }
+
+// TestUserStore_SetUserPasswordAndEvictSessions covers the atomic pairing the
+// self-service password change depends on: the client is told other devices
+// were signed out, so the two writes must not be separable.
+func TestUserStore_SetUserPasswordAndEvictSessions(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("user"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			other, err := st.CreateUser(ctx, mkUser("user"))
+			if err != nil {
+				t.Fatalf("CreateUser(other): %v", err)
+			}
+			now := time.Now().UTC()
+			mkSession := func(owner store.User, hash string) {
+				t.Helper()
+				if _, err := st.CreateSession(ctx, store.Session{
+					ID: uuid.NewString(), TokenHash: hash, UserID: owner.ID,
+					ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+				}); err != nil {
+					t.Fatalf("CreateSession: %v", err)
+				}
+			}
+			mkSession(u, "h-a")
+			mkSession(u, "h-b")
+			mkSession(other, "h-other")
+
+			if err := st.SetUserPasswordAndEvictSessions(ctx, u.ID, "$argon2id$new"); err != nil {
+				t.Fatalf("SetUserPasswordAndEvictSessions: %v", err)
+			}
+
+			got, err := st.GetUser(ctx, u.ID)
+			if err != nil {
+				t.Fatalf("GetUser: %v", err)
+			}
+			if got.PasswordHash != "$argon2id$new" {
+				t.Errorf("PasswordHash = %q, want the new hash", got.PasswordHash)
+			}
+			for _, h := range []string{"h-a", "h-b"} {
+				if _, err := st.GetSessionByTokenHash(ctx, h, now); !errors.Is(err, store.ErrNotFound) {
+					t.Errorf("session %s: err = %v, want ErrNotFound", h, err)
+				}
+			}
+			// Another account's sessions must be untouched.
+			if _, err := st.GetSessionByTokenHash(ctx, "h-other", now); err != nil {
+				t.Errorf("another user's session was evicted: %v", err)
+			}
+
+			// An unknown id changes nothing and reports it.
+			if err := st.SetUserPasswordAndEvictSessions(ctx, "no-such-user", "$argon2id$x"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("unknown id: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+// TestUserStore_SetUserDisplayName pins that the targeted update touches only
+// the display name — the whole point of it existing beside UpdateUser.
+func TestUserStore_SetUserDisplayName(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("operator"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+
+			updated, err := st.SetUserDisplayName(ctx, u.ID, "New Name")
+			if err != nil {
+				t.Fatalf("SetUserDisplayName: %v", err)
+			}
+			if updated.DisplayName != "New Name" {
+				t.Errorf("DisplayName = %q, want %q", updated.DisplayName, "New Name")
+			}
+			if updated.Role != u.Role {
+				t.Errorf("Role = %q, want it untouched at %q", updated.Role, u.Role)
+			}
+			if updated.Disabled != u.Disabled {
+				t.Errorf("Disabled = %v, want it untouched at %v", updated.Disabled, u.Disabled)
+			}
+			if updated.Username != u.Username || updated.PasswordHash != u.PasswordHash {
+				t.Errorf("username/password_hash changed: %+v", updated)
+			}
+
+			// The load-bearing property: an admin change that lands between a
+			// caller's read and their save must survive the save.
+			u.Role = "read-only"
+			u.Disabled = true
+			if _, err := st.UpdateUser(ctx, u); err != nil {
+				t.Fatalf("UpdateUser (admin demote+disable): %v", err)
+			}
+			if _, err := st.SetUserDisplayName(ctx, u.ID, "Renamed Again"); err != nil {
+				t.Fatalf("SetUserDisplayName: %v", err)
+			}
+			after, err := st.GetUser(ctx, u.ID)
+			if err != nil {
+				t.Fatalf("GetUser: %v", err)
+			}
+			if after.Role != "read-only" || !after.Disabled {
+				t.Fatalf("a display-name save reverted the admin change: role=%q disabled=%v",
+					after.Role, after.Disabled)
+			}
+			if after.DisplayName != "Renamed Again" {
+				t.Errorf("DisplayName = %q, want %q", after.DisplayName, "Renamed Again")
+			}
+
+			if _, err := st.SetUserDisplayName(ctx, "no-such-user", "x"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("unknown id: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}

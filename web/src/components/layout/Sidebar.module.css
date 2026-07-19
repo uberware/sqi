@@ -94,6 +94,27 @@
   white-space: nowrap;
 }
 
+.accountActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.accountLink {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-sidebar-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  transition: background-color var(--transition-fast) ease;
+}
+
+.accountLink:hover {
+  background-color: var(--color-sidebar-hover);
+  color: var(--color-text-inverse);
+}
+
 .logoutBtn {
   align-self: flex-start;
   background: none;

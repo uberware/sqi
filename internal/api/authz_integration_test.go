@@ -112,6 +112,8 @@ var expectedRoutes = []routeExpectation{
 	// Permission-free once authenticated (any principal, no role check).
 	{method: http.MethodPost, pattern: "/api/v1/auth/logout", public: true},
 	{method: http.MethodGet, pattern: "/api/v1/auth/me", public: true},
+	{method: http.MethodPatch, pattern: "/api/v1/auth/me", public: true},
+	{method: http.MethodPut, pattern: "/api/v1/auth/password", public: true},
 	{method: http.MethodGet, pattern: "/api/v1/version", public: true},
 
 	// users.read / users.manage
@@ -126,6 +128,10 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodPost, pattern: "/api/v1/api-keys", perm: policy.APIKeysSelf},
 	{method: http.MethodGet, pattern: "/api/v1/api-keys", perm: policy.APIKeysSelf},
 	{method: http.MethodDelete, pattern: "/api/v1/api-keys/{id}", perm: policy.APIKeysSelf},
+
+	// apikeys.admin
+	{method: http.MethodGet, pattern: "/api/v1/users/{id}/api-keys", perm: policy.APIKeysAdmin},
+	{method: http.MethodDelete, pattern: "/api/v1/users/{id}/api-keys/{keyId}", perm: policy.APIKeysAdmin},
 
 	// jobs.read
 	{method: http.MethodGet, pattern: "/api/v1/jobs", perm: policy.JobsRead},
@@ -504,8 +510,14 @@ func seedOwnershipObject(t *testing.T, st *fake.Store, idSuffix, owner string, f
 }
 
 // ownershipPath substitutes pattern's "{id}" with the task id when pattern
-// addresses a task object and the job id otherwise, mirroring resolveJob's
-// own classification in jobscope.go.
+// addresses a task object and the job id otherwise.
+//
+// This is the TEST's own idea of what each route's {id} means, deliberately
+// derived from the pattern rather than from the router. The router now states
+// that mapping explicitly by mounting requireJobAccessByJobID or
+// requireJobAccessByTaskID per route, so if the two ever disagree — a route
+// wired to the wrong middleware — this sweep fails: the wrong resolver looks
+// up an id of the wrong kind and answers 404 where the table expects 200/403.
 func ownershipPath(pattern, jobID, taskID string) string {
 	id := jobID
 	if strings.Contains(pattern, "/tasks/{id}") {

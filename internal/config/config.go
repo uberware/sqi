@@ -51,6 +51,13 @@ type HTTPConfig struct {
 	// accessible to untrusted networks. Disabled by default.
 	// Env: SQI_HTTP_ENABLE_PPROF
 	EnablePprof bool `yaml:"enable_pprof"`
+
+	// CORSOrigins is the list of browser origins the CORS middleware allows.
+	// Empty means "*" (the router's default). With auth enabled a wildcard is
+	// dropped at startup — credentials cannot be combined with "*" — so a
+	// separately-hosted UI must name its origin explicitly here.
+	// Env: SQI_HTTP_CORS_ORIGINS (comma-separated)
+	CORSOrigins []string `yaml:"cors_origins"`
 }
 
 // NATSConfig controls the embedded NATS JetStream broker.

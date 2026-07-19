@@ -11,8 +11,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,14 +39,27 @@ type authHandler struct {
 const dummyVerifyPlaintext = "sqi-auth-timing-equalization-dummy"
 
 // dummyHash is a real, valid argon2id encoded hash — produced by
-// password.Hash itself, not a hardcoded literal — computed once at package
-// init. It exists solely so login's unknown-user path can run a genuine
+// password.Hash itself, not a hardcoded literal — computed once on first
+// use. It exists solely so login's unknown-user path can run a genuine
 // argon2id derivation of matching cost to a real password check; see the
 // comment in login for why. Deriving it via password.Hash (rather than
 // hardcoding the encoded string) means it automatically tracks the
 // package's argon2 parameters if they are ever raised, instead of silently
 // falling out of sync and reopening the timing side channel.
-var dummyHash = mustDummyHash()
+//
+// Computed lazily (not at package init) so the ~19 MiB / 30-60 ms derivation
+// is not paid by auth-disabled servers or by every test binary that imports
+// this package. An auth-enabled router forces it at construction via
+// warmDummyHash — deferring it to the first request would make the first
+// unknown-username login after each restart measurably slower than a
+// known-username one, which is the very timing signal this exists to erase,
+// and would turn mustDummyHash's fail-fast panic into a 500 on a live
+// request instead of a startup abort.
+var dummyHash = sync.OnceValue(mustDummyHash)
+
+// warmDummyHash forces the dummy-hash derivation before the server accepts
+// traffic. Call it from router construction when auth is enabled.
+func warmDummyHash() { _ = dummyHash() }
 
 func mustDummyHash() string {
 	h, err := password.Hash(dummyVerifyPlaintext)
@@ -125,7 +140,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		// side channel that lets an attacker enumerate valid usernames even
 		// though the response bodies are byte-identical. Do not remove this
 		// as a "wasted" call.
-		if _, verr := password.Verify(dummyHash, req.Password); verr != nil {
+		if _, verr := password.Verify(dummyHash(), req.Password); verr != nil {
 			h.logger.WarnContext(ctx, "auth: dummy verify failed unexpectedly", slog.Any("error", verr))
 		}
 		writeProblem(w, r, http.StatusUnauthorized, invalid)
@@ -137,39 +152,15 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := password.GenerateToken()
-	if err != nil {
-		h.logger.ErrorContext(ctx, "auth: token generation failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
-		return
-	}
-	now := time.Now().UTC()
-	if _, err := h.store.CreateSession(ctx, store.Session{
-		ID:        uuid.NewString(),
-		TokenHash: password.HashToken(tok),
-		UserID:    u.ID,
-		ExpiresAt: now.Add(h.ttl),
-		CreatedAt: now,
-	}); err != nil {
-		// A conflict here is a hashed-token collision or a foreign-key
-		// violation (the just-fetched user vanished mid-request) — either
-		// way it is not a client error, so it is reported as a 500 rather
-		// than reusing the CRUD-style 409 "already exists" message, which
-		// would be misleading here.
+	// A failure here is a token-generation problem, a hashed-token collision,
+	// or a foreign-key violation (the just-fetched user vanished mid-request)
+	// — none are client errors, so this is a 500 rather than the CRUD-style
+	// 409 "already exists", which would be misleading.
+	if err := h.issueSession(w, r, u); err != nil {
 		h.logger.ErrorContext(ctx, "auth: create session failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is resolved dynamically by h.secure(r) from the 3-valued CookieSecure config; HttpOnly and SameSite are set explicitly
-		Name:     h.cookieName,
-		Value:    tok,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   h.secure(r),
-		MaxAge:   int(h.ttl.Seconds()),
-	})
 	writeJSON(w, http.StatusOK, toUserResponse(u))
 }
 
@@ -197,6 +188,37 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// issueSession mints a session for u and sets the session cookie. It is the
+// single place session cookies are minted — login and changePassword both go
+// through it, so the cookie attribute set cannot drift between them.
+func (h *authHandler) issueSession(w http.ResponseWriter, r *http.Request, u store.User) error {
+	ctx := r.Context()
+	tok, err := password.GenerateToken()
+	if err != nil {
+		return fmt.Errorf("generate session token: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := h.store.CreateSession(ctx, store.Session{
+		ID:        uuid.NewString(),
+		TokenHash: password.HashToken(tok),
+		UserID:    u.ID,
+		ExpiresAt: now.Add(h.ttl),
+		CreatedAt: now,
+	}); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is resolved dynamically by h.secure(r) from the 3-valued CookieSecure config; HttpOnly and SameSite are set explicitly
+		Name:     h.cookieName,
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   h.secure(r),
+		MaxAge:   int(h.ttl.Seconds()),
+	})
+	return nil
+}
+
 type principalResponse struct {
 	Subject     string   `json:"subject"`
 	Username    string   `json:"username,omitempty"`
@@ -204,6 +226,23 @@ type principalResponse struct {
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 	Kind        string   `json:"kind"`
+}
+
+// toPrincipalResponse maps a principal to the wire shape /auth/me returns.
+// Both /auth/me and PATCH /auth/me go through it so the two can't drift.
+func toPrincipalResponse(p auth.Principal) principalResponse {
+	roles := p.Roles
+	if roles == nil {
+		roles = []string{}
+	}
+	return principalResponse{
+		Subject:     p.Subject,
+		Username:    p.Username,
+		DisplayName: p.DisplayName,
+		Roles:       roles,
+		Permissions: policy.PermissionsFor(p),
+		Kind:        string(p.Kind),
+	}
 }
 
 // me returns the principal attached to the request context by middleware.Auth.
@@ -215,18 +254,7 @@ func (*authHandler) me(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusUnauthorized, "authentication required")
 		return
 	}
-	roles := p.Roles
-	if roles == nil {
-		roles = []string{}
-	}
-	writeJSON(w, http.StatusOK, principalResponse{
-		Subject:     p.Subject,
-		Username:    p.Username,
-		DisplayName: p.DisplayName,
-		Roles:       roles,
-		Permissions: policy.PermissionsFor(p),
-		Kind:        string(p.Kind),
-	})
+	writeJSON(w, http.StatusOK, toPrincipalResponse(p))
 }
 
 // secure resolves the cookie's Secure attribute from the configured

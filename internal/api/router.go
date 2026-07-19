@@ -157,30 +157,62 @@ type Deps struct {
 	CookieSecure string
 }
 
+// resolveCORSOrigins returns the CORS allow-list to configure, dropping the
+// wildcard when auth is enabled.
+//
+// AllowCredentials + a wildcard origin is an invalid CORS configuration
+// (browsers reject it) and, if honored, would let any origin ride the session
+// cookie. We drop the wildcard rather than silently disabling credentials.
+//
+// Two situations reach that same drop, and they are NOT equally noteworthy —
+// which is why they log at different levels:
+//
+//   - No origins configured at all. This is the default and it is correct: the
+//     embedded web UI is same-origin and unaffected. Only a browser client
+//     served from a different origin needs anything set. Informational.
+//   - "*" configured explicitly. The operator asked for something that cannot
+//     work with credentials, so their intent is not being honored. A warning.
+//
+// Reporting the default case as a failure ("dropping the wildcard") told
+// first-time operators that enabling auth had broken something, when the
+// wildcard was one they never asked for.
+func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
+	origins := cfg.CORSOrigins
+	defaulted := len(origins) == 0
+	if defaulted {
+		origins = []string{"*"}
+	}
+	if !cfg.AuthEnabled || !slices.Contains(origins, "*") {
+		return origins
+	}
+
+	if defaulted {
+		logger.InfoContext(
+			context.Background(),
+			"cors: auth is enabled and no CORS origins are configured — serving "+
+				"same-origin requests only, which is all the built-in web UI needs. "+
+				"A browser client served from another origin must be named via "+
+				"http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
+		)
+	} else {
+		logger.WarnContext(
+			context.Background(),
+			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard, "+
+				"because a wildcard origin cannot carry credentials and would let any "+
+				"site ride the session cookie. Name the real origins explicitly via "+
+				"http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
+		)
+	}
+	return slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
+}
+
 // NewRouter builds and returns the chi router that serves the full sqi-server
 // HTTP surface. The returned router is ready to be handed to http.Server.
 //
-// Route groups for the REST API (/api/v1/*) and WebSocket (/api/v1/ws) are
-// populated incrementally as each task is completed. Pass a [Deps] value with
-// all application-layer dependencies for the currently implemented handlers.
+// Pass a [Deps] value carrying every application-layer dependency the
+// handlers need; optional ones (Hub, Scheduler, Products) may be nil.
 func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) chi.Router {
-	origins := cfg.CORSOrigins
-	if len(origins) == 0 {
-		origins = []string{"*"}
-	}
-	if cfg.AuthEnabled && slices.Contains(origins, "*") {
-		// AllowCredentials + a wildcard origin is an invalid CORS
-		// configuration (browsers reject it) and, if honored, would let any
-		// origin ride the session cookie. Drop the wildcard rather than
-		// silently disabling credentials.
-		logger.ErrorContext(
-			context.Background(),
-			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard; "+
-				"cross-origin browser access is not configurable yet, so only same-origin "+
-				"requests will work (known gap)",
-		)
-		origins = slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
-	}
+	origins := resolveCORSOrigins(cfg, logger)
 
 	r := chi.NewRouter()
 
@@ -271,9 +303,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	}
 
 	// ── REST API ────────────────────────────────────────────────
-	var jobNotifier ws.Notifier
+	// Assigned only when non-nil so the handlers' nil checks stay meaningful:
+	// a typed-nil *ws.Hub stored in an interface is not itself nil.
+	var notifier ws.Notifier
 	if deps.Hub != nil {
-		jobNotifier = deps.Hub
+		notifier = deps.Hub
 	}
 	// Server-level retry defaults for effective-policy reporting; zero value
 	// when no live scheduler is wired (resolution clamps sanely).
@@ -281,15 +315,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, jobNotifier, logger, retryDefaults, cfg.ValidateJobOwner)
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults, cfg.ValidateJobOwner)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	// Pass the hub as a notifier only when non-nil so the worker handler's
-	// nil check is meaningful (a typed-nil *ws.Hub in an interface is not nil).
-	var workerNotifier ws.Notifier
-	if deps.Hub != nil {
-		workerNotifier = deps.Hub
-	}
-	workers := newWorkerHandler(deps.Store, workerNotifier, cfg.WorkerOfflineThreshold, logger)
+	workers := newWorkerHandler(deps.Store, notifier, cfg.WorkerOfflineThreshold, logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
@@ -300,6 +328,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
+	if cfg.AuthEnabled {
+		// Pay the argon2id derivation here, not on the first login that misses
+		// a username — see dummyHash.
+		warmDummyHash()
+	}
 	usersH := newUsersHandler(deps.Store, logger)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)
@@ -314,8 +347,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		api.Use(middleware.APIVersion("1"))
 
 		// 8. Per-IP token-bucket rate limiting (applies to REST + /ws).
-		//    20 req/s sustained, burst of 40.  Replace with auth-aware
-		//    per-client limits when Phase 3 auth lands.
+		//    20 req/s sustained, burst of 40. Still per-IP rather than
+		//    per-principal; auth-aware limits remain a possible refinement.
 		//    Disabled via cfg.DisableRateLimit (tests/benchmarks).
 		if !cfg.DisableRateLimit {
 			api.Use(middleware.RateLimit(middleware.RateLimitConfig{
@@ -328,7 +361,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// so it stays outside the middleware.Auth group.
 		api.Get("/ws", wsH.ServeHTTP)
 
-		// OpenAPI spec — left public in A0.
+		// OpenAPI spec — deliberately public: it documents the auth scheme
+		// itself, so requiring auth to read it would be circular.
 		api.Get("/openapi.yaml", serveOpenAPISpec)
 
 		// Public: login mints the session cookie (no principal required yet,
@@ -355,6 +389,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// Permission-free (any authenticated principal).
 			rest.Post("/auth/logout", authH.logout)
 			rest.Get("/auth/me", authH.me)
+			rest.Patch("/auth/me", authH.updateMe)
+			rest.Put("/auth/password", authH.changePassword)
 			rest.Get("/version", versionH.getVersion)
 
 			// users.read / users.manage (admin only)
@@ -379,17 +415,25 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Delete("/api-keys/{id}", apiKeysH.revoke)
 			})
 
+			// apikeys.admin (admin only) — anyone's keys, list and revoke only.
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.APIKeysAdmin))
+				g.Get("/users/{id}/api-keys", apiKeysH.listForUser)
+				g.Delete("/users/{id}/api-keys/{keyId}", apiKeysH.revokeForUser)
+			})
+
 			// jobs.read
 			rest.Group(func(g chi.Router) {
 				g.Use(az.require(policy.JobsRead))
 				// Collection route: scoped inside the handler via scopeFilter.
 				g.Get("/jobs", jobs.listJobs)
-				// Object routes: owner-enforced by requireJobAccess.
-				g.With(az.requireJobAccess()).Get("/jobs/{id}", jobs.getJob)
-				g.With(az.requireJobAccess()).Get("/jobs/{id}/tasks", tasks.listJobTasks)
-				g.With(az.requireJobAccess()).Get("/tasks/{id}", tasks.getTask)
-				g.With(az.requireJobAccess()).Get("/tasks/{id}/logs", tasks.getTaskLogs)
-				g.With(az.requireJobAccess()).Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
+				// Object routes: owner-enforced. The middleware is chosen by what
+				// {id} names on each route — a job id or a task id.
+				g.With(az.requireJobAccessByJobID()).Get("/jobs/{id}", jobs.getJob)
+				g.With(az.requireJobAccessByJobID()).Get("/jobs/{id}/tasks", tasks.listJobTasks)
+				g.With(az.requireJobAccessByTaskID()).Get("/tasks/{id}", tasks.getTask)
+				g.With(az.requireJobAccessByTaskID()).Get("/tasks/{id}/logs", tasks.getTaskLogs)
+				g.With(az.requireJobAccessByTaskID()).Get("/tasks/{id}/attempts", tasks.getTaskAttempts)
 			})
 			// jobs.write
 			rest.Group(func(g chi.Router) {
@@ -400,12 +444,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Post("/products/{name}/jobs", products.submitProductJob)
 				// Object routes: owner-enforced. This is what closes B1's
 				// carried-forward gap, where a `user` could cancel any job.
-				g.With(az.requireJobAccess()).Patch("/jobs/{id}", jobs.patchJob)
-				g.With(az.requireJobAccess()).Post("/jobs/{id}/cancel", jobs.cancelJob)
-				g.With(az.requireJobAccess()).Post("/jobs/{id}/retry", jobs.retryJob)
-				g.With(az.requireJobAccess()).Delete("/jobs/{id}", jobs.deleteJob)
-				g.With(az.requireJobAccess()).Post("/tasks/{id}/retry", tasks.retryTask)
-				g.With(az.requireJobAccess()).Post("/tasks/{id}/cancel", tasks.cancelTask)
+				g.With(az.requireJobAccessByJobID()).Patch("/jobs/{id}", jobs.patchJob)
+				g.With(az.requireJobAccessByJobID()).Post("/jobs/{id}/cancel", jobs.cancelJob)
+				g.With(az.requireJobAccessByJobID()).Post("/jobs/{id}/retry", jobs.retryJob)
+				g.With(az.requireJobAccessByJobID()).Delete("/jobs/{id}", jobs.deleteJob)
+				g.With(az.requireJobAccessByTaskID()).Post("/tasks/{id}/retry", tasks.retryTask)
+				g.With(az.requireJobAccessByTaskID()).Post("/tasks/{id}/cancel", tasks.cancelTask)
 			})
 
 			// workers.read / workers.manage

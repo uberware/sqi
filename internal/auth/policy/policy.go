@@ -11,6 +11,7 @@ package policy
 
 import (
 	"maps"
+	"slices"
 	"sort"
 
 	"github.com/uberware/sqi/internal/auth"
@@ -111,6 +112,27 @@ func Roles() map[string]map[Permission]bool {
 	return out
 }
 
+// IsRole reports whether name is a role the policy matrix defines. It is the
+// authority for role validity — API-level validation calls it rather than
+// keeping its own list, so a role can never be assignable-but-ungranted (a
+// user with zero permissions and no error) or granted-but-unassignable.
+func IsRole(name string) bool {
+	_, ok := grants[name]
+	return ok
+}
+
+// superuserPermissions is the full permission set as sorted strings, built
+// once. PermissionsFor's superuser branch is a pure function of All, so there
+// is no reason to rebuild and re-sort it per call.
+var superuserPermissions = func() []string {
+	out := make([]string, 0, len(All))
+	for _, perm := range All {
+		out = append(out, string(perm))
+	}
+	sort.Strings(out)
+	return out
+}()
+
 // PermissionsFor returns p's effective permissions as sorted strings, for
 // transmission to clients over GET /auth/me. Clients gate on these strings
 // directly rather than re-deriving them from roles, so the policy matrix lives
@@ -120,12 +142,9 @@ func Roles() map[string]map[Permission]bool {
 // Always returns a non-nil slice so it marshals as [] rather than null.
 func PermissionsFor(p auth.Principal) []string {
 	if p.Superuser {
-		out := make([]string, 0, len(All))
-		for _, perm := range All {
-			out = append(out, string(perm))
-		}
-		sort.Strings(out)
-		return out
+		// Copied so a caller mutating the returned slice cannot corrupt the
+		// shared value.
+		return slices.Clone(superuserPermissions)
 	}
 	seen := make(map[Permission]bool)
 	for _, role := range p.Roles {

@@ -23,6 +23,7 @@ import (
 // serveFlags holds values for flags specific to the serve subcommand.
 var serveFlags struct {
 	HTTPAddr             string
+	HTTPCORSOrigins      []string
 	OpenJDEnforceLimits  bool
 	AuthEnabled          bool
 	AuthValidateJobOwner bool
@@ -45,6 +46,12 @@ func init() {
 		&serveFlags.HTTPAddr,
 		"http-addr", "",
 		"HTTP listen address (overrides config file and SQI_HTTP_ADDR)",
+	)
+	serveCmd.Flags().StringSliceVar(
+		&serveFlags.HTTPCORSOrigins,
+		"http-cors-origins", nil,
+		"comma-separated browser origins allowed by CORS "+
+			"(overrides config file and SQI_HTTP_CORS_ORIGINS)",
 	)
 	serveCmd.Flags().BoolVar(
 		&serveFlags.OpenJDEnforceLimits,
@@ -69,6 +76,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	overrides := persistentFlagOverrides()
 	if cmd.Flags().Changed("http-addr") {
 		overrides.HTTPAddr = serveFlags.HTTPAddr
+	}
+	if cmd.Flags().Changed("http-cors-origins") {
+		overrides.HTTPCORSOrigins = serveFlags.HTTPCORSOrigins
 	}
 	if cmd.Flags().Changed("openjd-enforce-limits") {
 		overrides.EnforceLimits = &serveFlags.OpenJDEnforceLimits
@@ -139,6 +149,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	srv := server.New(server.Config{
 		HTTPAddr:              cfg.HTTP.Addr,
+		CORSOrigins:           cfg.HTTP.CORSOrigins,
 		NATSAddr:              cfg.NATS.Addr,
 		NATSDataDir:           cfg.NATS.DataDir,
 		NATSMaxStoreMB:        cfg.NATS.MaxStoreMB,

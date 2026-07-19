@@ -154,3 +154,88 @@ func TestAPIKeyStore_TouchLastUsed(t *testing.T) {
 		})
 	}
 }
+
+// TestAPIKeyStore_GetAPIKeyUserByTokenHash covers the joined lookup used on
+// every Bearer-authenticated request. The SQLite implementation scans 17
+// columns positionally across two tables, so this asserts every field of both
+// records — a reordered column would otherwise swap values silently instead
+// of failing.
+func TestAPIKeyStore_GetAPIKeyUserByTokenHash(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("operator"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			now := time.Now().UTC()
+			expires := now.Add(24 * time.Hour)
+			k := mkAPIKey(u.ID, "hash-"+uuid.NewString())
+			k.Name = "ci-runner"
+			k.Prefix = "sqi_zzz999"
+			k.ExpiresAt = &expires
+			if _, err := st.CreateAPIKey(ctx, k); err != nil {
+				t.Fatalf("CreateAPIKey: %v", err)
+			}
+
+			gotKey, gotUser, err := st.GetAPIKeyUserByTokenHash(ctx, k.TokenHash, now)
+			if err != nil {
+				t.Fatalf("GetAPIKeyUserByTokenHash: %v", err)
+			}
+
+			if gotKey.ID != k.ID || gotKey.UserID != u.ID {
+				t.Errorf("key ids = (%q, %q), want (%q, %q)", gotKey.ID, gotKey.UserID, k.ID, u.ID)
+			}
+			if gotKey.Name != "ci-runner" || gotKey.Prefix != "sqi_zzz999" {
+				t.Errorf("key name/prefix = (%q, %q), want (ci-runner, sqi_zzz999)", gotKey.Name, gotKey.Prefix)
+			}
+			if gotKey.TokenHash != k.TokenHash {
+				t.Errorf("key token_hash = %q, want %q", gotKey.TokenHash, k.TokenHash)
+			}
+			if gotKey.ExpiresAt == nil || !gotKey.ExpiresAt.Equal(expires.UTC().Truncate(time.Second)) {
+				// Compare loosely: backends differ in stored precision.
+				if gotKey.ExpiresAt == nil || gotKey.ExpiresAt.Sub(expires).Abs() > time.Second {
+					t.Errorf("key expires_at = %v, want ~%v", gotKey.ExpiresAt, expires)
+				}
+			}
+			if gotKey.RevokedAt != nil {
+				t.Errorf("key revoked_at = %v, want nil", gotKey.RevokedAt)
+			}
+			if gotKey.LastUsedAt != nil {
+				t.Errorf("key last_used_at = %v, want nil", gotKey.LastUsedAt)
+			}
+			if gotKey.CreatedAt.IsZero() {
+				t.Error("key created_at did not survive the join")
+			}
+
+			if gotUser.ID != u.ID || gotUser.Username != u.Username {
+				t.Errorf("user = (%q, %q), want (%q, %q)", gotUser.ID, gotUser.Username, u.ID, u.Username)
+			}
+			if gotUser.Role != u.Role || gotUser.DisplayName != u.DisplayName {
+				t.Errorf("user role/display_name = (%q, %q), want (%q, %q)",
+					gotUser.Role, gotUser.DisplayName, u.Role, u.DisplayName)
+			}
+			if gotUser.PasswordHash != u.PasswordHash {
+				t.Errorf("user password_hash = %q, want %q", gotUser.PasswordHash, u.PasswordHash)
+			}
+			if gotUser.Disabled {
+				t.Error("user disabled = true, want false")
+			}
+			if gotUser.CreatedAt.IsZero() || gotUser.UpdatedAt.IsZero() {
+				t.Error("user timestamps did not survive the join")
+			}
+
+			// The join must honor the same revocation and expiry rules as the
+			// un-joined lookup.
+			if _, _, err := st.GetAPIKeyUserByTokenHash(ctx, k.TokenHash, expires.Add(time.Hour)); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("expired key: err = %v, want ErrNotFound", err)
+			}
+			if err := st.RevokeAPIKey(ctx, k.ID, u.ID, now); err != nil {
+				t.Fatalf("RevokeAPIKey: %v", err)
+			}
+			if _, _, err := st.GetAPIKeyUserByTokenHash(ctx, k.TokenHash, now); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("revoked key: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}

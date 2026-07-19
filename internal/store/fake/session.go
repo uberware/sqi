@@ -45,6 +45,25 @@ func (s *Store) GetSessionByTokenHash(_ context.Context, tokenHash string, now t
 	return store.Session{}, store.ErrNotFound
 }
 
+// GetSessionUserByTokenHash implements [store.SessionStore]. It mirrors the
+// SQLite JOIN: a session whose user row is missing resolves to ErrNotFound,
+// exactly as an inner join would drop the row.
+func (s *Store) GetSessionUserByTokenHash(_ context.Context, tokenHash string, now time.Time) (store.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sess := range s.sessions {
+		if sess.TokenHash != tokenHash || !sess.ExpiresAt.After(now) {
+			continue
+		}
+		u, ok := s.users[sess.UserID]
+		if !ok {
+			return store.User{}, store.ErrNotFound
+		}
+		return u, nil
+	}
+	return store.User{}, store.ErrNotFound
+}
+
 // DeleteSession implements [store.SessionStore].
 func (s *Store) DeleteSession(_ context.Context, id string) error {
 	s.mu.Lock()

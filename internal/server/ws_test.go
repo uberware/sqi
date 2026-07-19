@@ -38,11 +38,18 @@ func TestWsJobOwnerResolver(t *testing.T) {
 
 	resolve := wsJobOwnerResolver(st)
 
-	if got := resolve("job-1"); got != "alice" {
-		t.Errorf("resolve(job-1) = %q, want %q", got, "alice")
+	got, err := resolve("job-1")
+	if err != nil || got != "alice" {
+		t.Errorf("resolve(job-1) = (%q, %v), want (%q, nil)", got, err, "alice")
 	}
-	if got := resolve("does-not-exist"); got != "" {
+	// A missing job must fail closed AND report the error, so the hub knows
+	// not to memoize the empty owner.
+	got, err = resolve("does-not-exist")
+	if got != "" {
 		t.Errorf("resolve(does-not-exist) = %q, want %q (must fail closed)", got, "")
+	}
+	if err == nil {
+		t.Error("resolve(does-not-exist) returned a nil error; an unresolvable job must not be cacheable")
 	}
 }
 
@@ -52,9 +59,9 @@ func TestWsJobOwnerResolver(t *testing.T) {
 // resolver. A scoped client must receive NotifyTask pushes for its own job
 // (resolved via the real store, TaskEvent carries no Owner field so the
 // resolver is the only source of truth) and must not receive pushes for
-// another owner's job. If newWSHub silently reverted to ws.NewHub(logger,
-// nil), the owner cache could never resolve anything and this would fail on
-// the first assertion. authEnabled=true here: this test is pinning the
+// another owner's job. If newWSHub silently dropped owner scoping, the owner
+// cache could never resolve anything and this would fail on the first
+// assertion. authEnabled=true here: this test is pinning the
 // auth-enabled path specifically — see
 // TestNewWSHub_AuthDisabled_ResolverNeverReadsStore for the auth-off path.
 func TestNewWSHub_ScopedClientReceivesOwnJobEventsOnly(t *testing.T) {
@@ -109,7 +116,8 @@ func seedTestJob(t *testing.T, st store.Store, id, owner string) {
 type countingStore struct {
 	store.Store
 
-	getJobCalls atomic.Int64
+	getJobCalls        atomic.Int64
+	deleteExpiredCalls atomic.Int64
 }
 
 func (c *countingStore) GetJob(ctx context.Context, id string) (store.Job, error) {
@@ -117,15 +125,15 @@ func (c *countingStore) GetJob(ctx context.Context, id string) (store.Job, error
 	return c.Store.GetJob(ctx, id)
 }
 
-// TestNewWSHub_AuthDisabled_ResolverNeverReadsStore pins Fix wave 2 Finding
-// 1: with auth disabled, newWSHub must wire a nil owner resolver so that
-// resolveOwner's ownerCache.get short-circuits (lookup == nil) before ever
-// touching the store, no matter how many job/task events fire and even with
-// zero registered clients. Before the fix, every one of these events ran a
-// live store.GetJob, because ownerCache.get deliberately never memoizes a ""
-// result — exactly what an owner-less (pre-auth) job resolves to — so an
-// auth-off job re-queried the store on every single event, forever, on the
-// scheduler goroutine.
+func (c *countingStore) DeleteExpiredSessions(ctx context.Context, now time.Time) (int, error) {
+	c.deleteExpiredCalls.Add(1)
+	return c.Store.DeleteExpiredSessions(ctx, now)
+}
+
+// TestNewWSHub_AuthDisabled_ResolverNeverReadsStore pins the auth-off path:
+// newWSHub must wire no owner resolver, so ownerCache.get short-circuits
+// before ever touching the store, no matter how many job/task events fire and
+// even with zero registered clients.
 func TestNewWSHub_AuthDisabled_ResolverNeverReadsStore(t *testing.T) {
 	st := &countingStore{Store: fake.New()}
 	seedTestJob(t, st, "job-1", "") // owner-less: the auth-off norm
@@ -141,5 +149,51 @@ func TestNewWSHub_AuthDisabled_ResolverNeverReadsStore(t *testing.T) {
 	if got := st.getJobCalls.Load(); got != 0 {
 		t.Fatalf("GetJob calls = %d, want 0 (auth disabled must wire a nil resolver, "+
 			"no store reads)", got)
+	}
+}
+
+// TestNewWSHub_AuthEnabled_OwnerlessJobResolvesOnce pins the auth-on
+// counterpart. A job with no owner — every job submitted before auth was
+// enabled — used to re-query the store on *every* task event, because the
+// owner cache refused to memoize an empty owner (it could not distinguish "no
+// owner" from "lookup failed"). The resolver now returns an error for the
+// latter only, so the empty owner is cached after the first read.
+func TestNewWSHub_AuthEnabled_OwnerlessJobResolvesOnce(t *testing.T) {
+	st := &countingStore{Store: fake.New()}
+	seedTestJob(t, st, "job-1", "") // owner-less: a pre-auth job
+
+	hub := newWSHub(testLogger(), st, true)
+
+	for range 25 {
+		hub.NotifyTask(ws.TaskEvent{JobID: "job-1", TaskID: "t1", Status: "running"})
+	}
+
+	if got := st.getJobCalls.Load(); got != 1 {
+		t.Fatalf("GetJob calls = %d, want 1 (an owner-less job must be resolved "+
+			"once and memoized, not re-read on every task event)", got)
+	}
+}
+
+// TestNewWSHub_AuthEnabled_FailedLookupIsRateLimited is the other half of
+// that trade-off. A failed lookup must not be memoized permanently (one
+// transient error would hide the job forever), but it must not be retried on
+// every event either: resolution runs synchronously on the dispatch
+// goroutine, so a degraded store would otherwise cost one blocking call per
+// task event. The cooldown bounds it to one attempt per job per window;
+// recovery after the window is covered by the ws package's own tests, which
+// can control the clock.
+func TestNewWSHub_AuthEnabled_FailedLookupIsRateLimited(t *testing.T) {
+	st := &countingStore{Store: fake.New()}
+	// No job seeded, so every GetJob fails with ErrNotFound.
+
+	hub := newWSHub(testLogger(), st, true)
+
+	for range 25 {
+		hub.NotifyTask(ws.TaskEvent{JobID: "missing", TaskID: "t1", Status: "running"})
+	}
+
+	if got := st.getJobCalls.Load(); got != 1 {
+		t.Fatalf("GetJob calls = %d, want 1 (a failing lookup must be suppressed "+
+			"for the cooldown, not retried on every event)", got)
 	}
 }

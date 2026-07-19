@@ -174,3 +174,100 @@ func TestSessionStore_CreateSession_DuplicateID(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionStore_GetSessionUserByTokenHash covers the joined lookup used on
+// every cookie-authenticated request. It runs against both backends so the
+// fake cannot drift from SQLite's JOIN semantics.
+func TestSessionStore_GetSessionUserByTokenHash(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("operator"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			now := time.Now().UTC()
+			hash := "hash-" + uuid.NewString()
+			if _, err := st.CreateSession(ctx, store.Session{
+				ID: uuid.NewString(), TokenHash: hash, UserID: u.ID,
+				ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+
+			// Every user column must survive the join — the SQLite select
+			// lists them positionally, so a reordering would silently swap
+			// fields rather than fail.
+			got, err := st.GetSessionUserByTokenHash(ctx, hash, now)
+			if err != nil {
+				t.Fatalf("GetSessionUserByTokenHash: %v", err)
+			}
+			if got.ID != u.ID || got.Username != u.Username || got.Role != u.Role {
+				t.Fatalf("user = %+v, want id/username/role of %+v", got, u)
+			}
+			if got.DisplayName != u.DisplayName || got.PasswordHash != u.PasswordHash {
+				t.Fatalf("display_name/password_hash did not survive the join: %+v", got)
+			}
+			if got.Disabled {
+				t.Error("Disabled = true, want false")
+			}
+			if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+				t.Errorf("timestamps did not survive the join: created=%v updated=%v",
+					got.CreatedAt, got.UpdatedAt)
+			}
+
+			// An expired session resolves to nobody, matching
+			// GetSessionByTokenHash's own expiry rule.
+			if _, err := st.GetSessionUserByTokenHash(ctx, hash, now.Add(2*time.Hour)); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("expired session: err = %v, want ErrNotFound", err)
+			}
+			if _, err := st.GetSessionUserByTokenHash(ctx, "no-such-hash", now); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("unknown hash: err = %v, want ErrNotFound", err)
+			}
+
+			// A disabled user is still returned — the authenticator, not the
+			// store, decides what disabled means.
+			u.Disabled = true
+			if _, err := st.UpdateUser(ctx, u); err != nil {
+				t.Fatalf("UpdateUser: %v", err)
+			}
+			got, err = st.GetSessionUserByTokenHash(ctx, hash, now)
+			if err != nil {
+				t.Fatalf("GetSessionUserByTokenHash after disable: %v", err)
+			}
+			if !got.Disabled {
+				t.Error("Disabled = false, want true (the store must report it, not filter it)")
+			}
+		})
+	}
+}
+
+// TestSessionStore_GetSessionUserByTokenHash_DeletedUser pins the join's
+// behavior when the user row is gone: the session must resolve to nobody
+// rather than to a zero-valued user.
+func TestSessionStore_GetSessionUserByTokenHash_DeletedUser(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u, err := st.CreateUser(ctx, mkUser("user"))
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			now := time.Now().UTC()
+			hash := "hash-" + uuid.NewString()
+			if _, err := st.CreateSession(ctx, store.Session{
+				ID: uuid.NewString(), TokenHash: hash, UserID: u.ID,
+				ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			if err := st.DeleteUser(ctx, u.ID); err != nil {
+				t.Fatalf("DeleteUser: %v", err)
+			}
+
+			if _, err := st.GetSessionUserByTokenHash(ctx, hash, now); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("err = %v, want ErrNotFound after the user row is gone", err)
+			}
+		})
+	}
+}

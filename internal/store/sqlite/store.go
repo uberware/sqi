@@ -179,29 +179,32 @@ type Store struct {
 	stmtInsertAudit *sql.Stmt
 
 	// ── users ────────────────────────────────────────────────────────────
-	stmtInsertUser        *sql.Stmt
-	stmtGetUser           *sql.Stmt
-	stmtGetUserByUsername *sql.Stmt
-	stmtListUsers         *sql.Stmt
-	stmtUpdateUser        *sql.Stmt
-	stmtSetUserPassword   *sql.Stmt
-	stmtDeleteUser        *sql.Stmt
-	stmtCountUsers        *sql.Stmt
-	stmtCountAdmins       *sql.Stmt
+	stmtInsertUser         *sql.Stmt
+	stmtGetUser            *sql.Stmt
+	stmtGetUserByUsername  *sql.Stmt
+	stmtListUsers          *sql.Stmt
+	stmtUpdateUser         *sql.Stmt
+	stmtSetUserPassword    *sql.Stmt
+	stmtSetUserDisplayName *sql.Stmt
+	stmtDeleteUser         *sql.Stmt
+	stmtCountUsers         *sql.Stmt
+	stmtCountAdmins        *sql.Stmt
 
 	// ── sessions ─────────────────────────────────────────────────────────
-	stmtInsertSession         *sql.Stmt
-	stmtGetSessionByTokenHash *sql.Stmt
-	stmtDeleteSession         *sql.Stmt
-	stmtDeleteSessionsForUser *sql.Stmt
-	stmtDeleteExpiredSessions *sql.Stmt
+	stmtInsertSession             *sql.Stmt
+	stmtGetSessionByTokenHash     *sql.Stmt
+	stmtGetSessionUserByTokenHash *sql.Stmt
+	stmtDeleteSession             *sql.Stmt
+	stmtDeleteSessionsForUser     *sql.Stmt
+	stmtDeleteExpiredSessions     *sql.Stmt
 
 	// ── api keys ─────────────────────────────────────────────────────────
-	stmtInsertAPIKey         *sql.Stmt
-	stmtGetAPIKeyByTokenHash *sql.Stmt
-	stmtListAPIKeysForUser   *sql.Stmt
-	stmtRevokeAPIKey         *sql.Stmt
-	stmtTouchAPIKeyLastUsed  *sql.Stmt
+	stmtInsertAPIKey             *sql.Stmt
+	stmtGetAPIKeyByTokenHash     *sql.Stmt
+	stmtGetAPIKeyUserByTokenHash *sql.Stmt
+	stmtListAPIKeysForUser       *sql.Stmt
+	stmtRevokeAPIKey             *sql.Stmt
+	stmtTouchAPIKeyLastUsed      *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -583,6 +586,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtSetUserPassword, err = s.prepare(ctx, sqlSetUserPassword); err != nil {
 		return err
 	}
+	if s.stmtSetUserDisplayName, err = s.prepare(ctx, sqlSetUserDisplayName); err != nil {
+		return err
+	}
 	if s.stmtDeleteUser, err = s.prepare(ctx, sqlDeleteUser); err != nil {
 		return err
 	}
@@ -600,6 +606,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtGetSessionByTokenHash, err = s.prepare(ctx, sqlGetSessionByTokenHash); err != nil {
 		return err
 	}
+	if s.stmtGetSessionUserByTokenHash, err = s.prepare(ctx, sqlGetSessionUserByTokenHash); err != nil {
+		return err
+	}
 	if s.stmtDeleteSession, err = s.prepare(ctx, sqlDeleteSession); err != nil {
 		return err
 	}
@@ -615,6 +624,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtGetAPIKeyByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyByTokenHash); err != nil {
+		return err
+	}
+	if s.stmtGetAPIKeyUserByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyUserByTokenHash); err != nil {
 		return err
 	}
 	if s.stmtListAPIKeysForUser, err = s.prepare(ctx, sqlListAPIKeysForUser); err != nil {

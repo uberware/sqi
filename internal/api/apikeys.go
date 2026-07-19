@@ -2,9 +2,10 @@
 
 package api
 
-// API-key REST handlers (Phase 3, component A2). Self-scoped to the caller's
-// user until B1 adds admin-broad visibility. The raw key is returned exactly
-// once, in the create response; it is never stored in clear or logged.
+// API-key REST handlers (Phase 3, component A2). These routes are self-scoped
+// to the caller; the admin-broad list/revoke routes live in apikeys_admin.go
+// behind apikeys.admin. The raw key is returned exactly once, in the create
+// response; it is never stored in clear or logged.
 //
 //	POST   /api/v1/api-keys        — issue a key for the caller (secret shown once)
 //	GET    /api/v1/api-keys        — list the caller's keys (no secret)
@@ -69,6 +70,10 @@ func toAPIKeyResponse(k store.APIKey) apiKeyResponse {
 	}
 }
 
+// apiKeysUnavailable is returned when auth is disabled: the anonymous
+// superuser has no real user id to own a key against.
+const apiKeysUnavailable = "API keys require authentication to be enabled"
+
 // callerSubject returns the authenticated user id, or ("", false) when the
 // principal is anonymous (auth disabled) — in which case API-key management is
 // inert (no real user to own the key).
@@ -80,11 +85,22 @@ func callerSubject(r *http.Request) (string, bool) {
 	return p.Subject, true
 }
 
-func (h *apiKeysHandler) create(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// requireCallerSubject is callerSubject plus the 409 every self-scoped route
+// writes when there is no real account to act on. Callers return immediately
+// when ok is false; the response has already been written.
+func requireCallerSubject(w http.ResponseWriter, r *http.Request, msg string) (string, bool) {
 	userID, ok := callerSubject(r)
 	if !ok {
-		writeProblem(w, r, http.StatusConflict, "API keys require authentication to be enabled")
+		writeProblem(w, r, http.StatusConflict, msg)
+		return "", false
+	}
+	return userID, true
+}
+
+func (h *apiKeysHandler) create(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID, ok := requireCallerSubject(w, r, apiKeysUnavailable)
+	if !ok {
 		return
 	}
 	var req apiKeyCreateRequest
@@ -127,9 +143,8 @@ func (h *apiKeysHandler) create(w http.ResponseWriter, r *http.Request) {
 
 func (h *apiKeysHandler) list(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID, ok := callerSubject(r)
+	userID, ok := requireCallerSubject(w, r, apiKeysUnavailable)
 	if !ok {
-		writeProblem(w, r, http.StatusConflict, "API keys require authentication to be enabled")
 		return
 	}
 	keys, err := h.store.ListAPIKeysForUser(ctx, userID)
@@ -147,9 +162,8 @@ func (h *apiKeysHandler) list(w http.ResponseWriter, r *http.Request) {
 
 func (h *apiKeysHandler) revoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID, ok := callerSubject(r)
+	userID, ok := requireCallerSubject(w, r, apiKeysUnavailable)
 	if !ok {
-		writeProblem(w, r, http.StatusConflict, "API keys require authentication to be enabled")
 		return
 	}
 	err := h.store.RevokeAPIKey(ctx, chi.URLParam(r, "id"), userID, time.Now().UTC())

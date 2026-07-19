@@ -288,7 +288,7 @@ func TestWSHandler_Subscribe_NoHub_ReturnsAck(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_WithHub_ValidSubject(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -323,7 +323,7 @@ func TestWSHandler_Subscribe_MissingSubject_ReturnsError(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_InvalidSubject_ReturnsError(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -350,7 +350,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	readOnly := auth.Principal{Subject: "ro1", Roles: []string{"read-only"}, Kind: auth.KindUser}
 
 	t.Run("operator subscribes ok", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger(), nil)
+		hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 		srv := newWSTestServerWithPrincipal(t, hub, operator)
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -367,7 +367,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	})
 
 	t.Run("read-only forbidden and not registered", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger(), nil)
+		hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 		srv := newWSTestServerWithPrincipal(t, hub, readOnly)
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -396,7 +396,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	})
 
 	t.Run("read-only still allowed on a non-diagnostics subject", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger(), nil)
+		hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 		srv := newWSTestServerWithPrincipal(t, hub, readOnly)
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -413,7 +413,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 	})
 
 	t.Run("anonymous superuser subscribes ok", func(t *testing.T) {
-		hub := internalws.NewHub(newTestLogger(), nil)
+		hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 		srv := newWSTestServer(t, hub) // uses auth.Anonymous(), which is Superuser
 		conn := dialTestWS(t, srv)
 		ctx := context.Background()
@@ -431,7 +431,7 @@ func TestWSSubscribe_DiagnosticsRequiresPermission(t *testing.T) {
 }
 
 func TestWSHandler_Unsubscribe_ReturnsAck(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -515,7 +515,7 @@ func TestWSHandler_InvalidJSON_ReturnsTypeError(t *testing.T) {
 }
 
 func TestWSHandler_Broadcast_DeliversPush(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -548,7 +548,7 @@ func TestWSHandler_Broadcast_DeliversPush(t *testing.T) {
 }
 
 func TestWSHandler_Broadcast_TaskPushDelivered(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -579,7 +579,7 @@ func TestWSHandler_Broadcast_TaskPushDelivered(t *testing.T) {
 }
 
 func TestWSHandler_NoPushAfterUnsubscribe(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 	ctx := context.Background()
 	conn := dialTestWS(t, srv)
@@ -601,7 +601,7 @@ func TestWSHandler_NoPushAfterUnsubscribe(t *testing.T) {
 }
 
 func TestWSHandler_Disconnect_HubNotifyDoesNotBlock(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 	ctx := context.Background()
 	conn := dialTestWS(t, srv)
@@ -633,7 +633,7 @@ func TestWSHandler_Disconnect_HubNotifyDoesNotBlock(t *testing.T) {
 }
 
 func TestWSHandler_MultipleClients_IndependentSubscriptions(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -666,7 +666,7 @@ func TestWSHandler_MultipleClients_IndependentSubscriptions(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_SinceSeq_ReplayDelivered(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -734,7 +734,7 @@ func TestWSHandler_BinaryFrame_ClosesConnection(t *testing.T) {
 }
 
 func TestWSHandler_Subscribe_MalformedPayload_ReturnsError(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 	conn := dialTestWS(t, srv)
 	ctx := context.Background()
@@ -841,7 +841,7 @@ func TestWSHandler_OriginHardening_AuthOff_AnyOriginAllowed(t *testing.T) {
 func TestWSHandler_Subscribe_TaskLogs_PushDelivered(t *testing.T) {
 	// Subscribing to "tasks/{id}/logs" (SubjectTaskLogsFmt) and receiving a
 	// NotifyLog event covers the log-channel fan-out path in ws.go.
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	srv := newWSTestServer(t, hub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -929,7 +929,7 @@ func TestWSSubscribeJobSubjectsEnforceOwnership(t *testing.T) {
 				t.Fatalf("CreateTask: %v", err)
 			}
 
-			hub := internalws.NewHub(newTestLogger(), nil)
+			hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 			srv := newWSTestServerScoped(t, hub, st, tt.principal)
 			conn := dialTestWS(t, srv)
 
@@ -960,7 +960,7 @@ func TestWSSubscribeJobSubjectsEnforceOwnership(t *testing.T) {
 // granted it — the ownership check has nothing to consult, so it must not
 // default to allow.
 func TestWSSubscribeJobSubjects_NoStoreFailsClosed(t *testing.T) {
-	hub := internalws.NewHub(newTestLogger(), nil)
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 	h := newWSHandler(newTestLogger(), hub, nil,
 		stubPrincipalAuthenticator{principal: auth.Principal{Username: "alice", Roles: []string{"user"}}},
 		wsOriginConfig{})
@@ -998,7 +998,7 @@ func TestWSSubscribeJobSubjects_UnresolvableJobFailsClosed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st := fake.New()
-			hub := internalws.NewHub(newTestLogger(), nil)
+			hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 			srv := newWSTestServerScoped(t, hub, st, auth.Principal{Username: "alice", Roles: []string{"user"}})
 			conn := dialTestWS(t, srv)
 
@@ -1048,7 +1048,7 @@ func TestWSSubscribeJobSubjects_StoreErrorFailsClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hub := internalws.NewHub(newTestLogger(), nil)
+			hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})
 			srv := newWSTestServerScoped(t, hub, tt.st, auth.Principal{Username: "alice", Roles: []string{"user"}})
 			conn := dialTestWS(t, srv)
 
@@ -1090,12 +1090,15 @@ func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
 	seedOwnedJob(t, st, "job-alice", "alice")
 	seedOwnedJob(t, st, "job-bob", "bob")
 
-	hub := internalws.NewHub(newTestLogger(), func(jobID string) string {
-		job, err := st.GetJob(context.Background(), jobID)
-		if err != nil {
-			return ""
-		}
-		return job.Owner
+	hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{
+		OwnerScoping: true,
+		JobOwner: func(jobID string) (string, error) {
+			job, err := st.GetJob(context.Background(), jobID)
+			if err != nil {
+				return "", err
+			}
+			return job.Owner, nil
+		},
 	})
 
 	srv := newWSTestServerScoped(t, hub, st, auth.Principal{Username: "alice", Roles: []string{"user"}})

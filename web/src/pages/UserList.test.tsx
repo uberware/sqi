@@ -6,13 +6,20 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { ToastProvider } from '@/components/Toast'
+import { adminPrincipal, operatorPrincipal, mockAuth } from '@/test/principals'
 import UserList from './UserList'
+
+// UserList gates its per-row "API keys" link on apikeys.admin, so it reads
+// the principal. Mocked rather than wrapped in a real AuthProvider to keep
+// these tests independent of the /auth/me round trip.
+vi.mock('@/auth/context', () => ({ useAuth: vi.fn() }))
 
 const fetchMock = vi.fn<typeof fetch>()
 
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  mockAuth(adminPrincipal())
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -127,5 +134,24 @@ describe('UserList', () => {
       expect(del).toBeDefined()
     })
     await screen.findByText(/user "alice" deleted/i)
+  })
+})
+
+describe('per-user API keys link', () => {
+  it('links to the nested key page for an apikeys.admin caller', async () => {
+    fetchMock.mockResolvedValue(ok([user()]))
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: /api keys/i })
+    expect(link).toHaveAttribute('href', '/users/u1/api-keys')
+  })
+
+  it('is hidden from a caller without apikeys.admin', async () => {
+    mockAuth(operatorPrincipal())
+    fetchMock.mockResolvedValue(ok([user()]))
+    renderPage()
+
+    await screen.findByText('alice')
+    expect(screen.queryByRole('link', { name: /api keys/i })).not.toBeInTheDocument()
   })
 })

@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,8 +92,9 @@ func preflight(t *testing.T, target, origin string) *http.Response {
 
 func TestRouter_AuthOn_DefaultOrigins_WildcardDroppedNotCredentialed(t *testing.T) {
 	// The crux of the wildcard problem: cfg.AuthEnabled=true with no
-	// CORSOrigins configured (the real-world default — nothing in cmd/
-	// populates it) must never combine AllowCredentials with "*". We drop
+	// CORSOrigins configured (the real-world default — http.cors_origins is
+	// empty unless an operator sets it) must never combine AllowCredentials
+	// with "*". We drop
 	// the wildcard rather than the reverse, so a foreign origin must receive
 	// NO Access-Control-Allow-Origin at all — not "*", and not echoed back.
 	deps := Deps{Store: fake.New(), Auth: auth.Anonymous(), CookieName: "sqi_session"}
@@ -184,5 +186,87 @@ func TestRouter_AuthOff_CORSAndWSUnchanged(t *testing.T) {
 	}
 	if err := conn.CloseNow(); err != nil {
 		t.Logf("ws cleanup: CloseNow: %v", err)
+	}
+}
+
+// ── CORS wildcard-drop log severity ────────────────────────────────────────
+
+// capturingHandler records the level and message of every slog record.
+type capturingHandler struct {
+	records *[]slog.Record
+}
+
+func (capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h capturingHandler) Handle(_ context.Context, rec slog.Record) error {
+	*h.records = append(*h.records, rec)
+	return nil
+}
+
+func (h capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h capturingHandler) WithGroup(string) slog.Handler { return h }
+
+// corsLogRecord builds a router with the given config and returns the single
+// record logged by the CORS wildcard-drop path, or a zero record if none was.
+func corsLogRecord(t *testing.T, cfg Config) slog.Record {
+	t.Helper()
+	var records []slog.Record
+	logger := slog.New(capturingHandler{records: &records})
+	cfg.DisableRateLimit = true
+	deps := Deps{Store: fake.New(), Auth: auth.Anonymous(), CookieName: "sqi_session"}
+	NewRouter(cfg, deps, logger, metrics.New(), health.NewRegistry())
+
+	var found slog.Record
+	for _, rec := range records {
+		if strings.HasPrefix(rec.Message, "cors:") {
+			if found.Message != "" {
+				t.Fatalf("expected at most one cors: record, got a second: %q", rec.Message)
+			}
+			found = rec
+		}
+	}
+	return found
+}
+
+// The default configuration — auth on, http.cors_origins unset — is a correct,
+// expected setup: the embedded UI is same-origin and works fine. Logging it at
+// ERROR told a first-time operator that something had failed when nothing had.
+// It must be informational, and must not read as a misconfiguration report.
+func TestRouter_AuthOn_DefaultOrigins_LogsInfoNotError(t *testing.T) {
+	rec := corsLogRecord(t, Config{AuthEnabled: true})
+
+	if rec.Message == "" {
+		t.Fatal("expected a cors: record explaining same-origin-only behavior, got none")
+	}
+	if rec.Level != slog.LevelInfo {
+		t.Errorf("level = %v, want %v (nothing is wrong in the default config)", rec.Level, slog.LevelInfo)
+	}
+	if strings.Contains(rec.Message, "dropping the wildcard") {
+		t.Errorf("message reports dropping a wildcard the operator never configured: %q", rec.Message)
+	}
+}
+
+// Explicitly configuring "*" alongside auth IS a misconfiguration: the operator
+// asked for something browsers reject and that would let any origin ride the
+// session cookie. That one keeps a warning.
+func TestRouter_AuthOn_ExplicitWildcard_LogsWarn(t *testing.T) {
+	rec := corsLogRecord(t, Config{AuthEnabled: true, CORSOrigins: []string{"*", "https://farm.example"}})
+
+	if rec.Message == "" {
+		t.Fatal("expected a cors: record about the dropped wildcard, got none")
+	}
+	if rec.Level != slog.LevelWarn {
+		t.Errorf("level = %v, want %v", rec.Level, slog.LevelWarn)
+	}
+	if !strings.Contains(rec.Message, "dropping the wildcard") {
+		t.Errorf("message should say the configured wildcard was dropped: %q", rec.Message)
+	}
+}
+
+// Auth off is the pre-A1 wildcard configuration and is not noteworthy at all.
+func TestRouter_AuthOff_NoCORSLog(t *testing.T) {
+	if rec := corsLogRecord(t, Config{}); rec.Message != "" {
+		t.Errorf("unexpected cors: record with auth disabled: %q", rec.Message)
 	}
 }

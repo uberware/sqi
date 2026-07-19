@@ -158,7 +158,11 @@ export const queryKeys = {
     detail: (id: string) => ['users', 'detail', id] as const,
   },
   apiKeys: {
-    all: ['api-keys'] as const,
+    // `self` is a sibling of `for-user`, not a prefix of it: invalidating the
+    // caller's own key list must not refetch every admin per-user list that
+    // happens to be cached (TanStack Query matches keys by prefix).
+    self: ['api-keys', 'self'] as const,
+    forUser: (userId: string) => ['api-keys', 'for-user', userId] as const,
   },
 } as const
 
@@ -344,6 +348,10 @@ export function fetchGetUser(id: string): Promise<User> {
 /** Fetch all API keys (metadata only, no secret) from `GET /api-keys`. */
 export function fetchListApiKeys(): Promise<ApiKey[]> {
   return apiFetch('/api-keys')
+}
+
+export function fetchListUserApiKeys(userId: string): Promise<ApiKey[]> {
+  return apiFetch(`/users/${encodeURIComponent(userId)}/api-keys`)
 }
 
 // ── Combined farms + queues fetch ─────────────────────────────────────────────
@@ -599,8 +607,17 @@ export function useGetUser(id: string) {
 /** List all API keys for the current account (metadata only, no secret). */
 export function useApiKeys() {
   return useQuery({
-    queryKey: queryKeys.apiKeys.all,
+    queryKey: queryKeys.apiKeys.self,
     queryFn: fetchListApiKeys,
+  })
+}
+
+/** List another user's API keys (metadata only). Requires apikeys.admin. */
+export function useUserApiKeys(userId: string) {
+  return useQuery({
+    queryKey: queryKeys.apiKeys.forUser(userId),
+    queryFn: () => fetchListUserApiKeys(userId),
+    enabled: userId !== '',
   })
 }
 

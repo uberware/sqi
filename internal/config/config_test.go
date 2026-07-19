@@ -5,6 +5,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -763,6 +764,122 @@ func TestLoad_AuthEnabled_UnsetFlagDoesNotClobberEnv(t *testing.T) {
 	}
 }
 
+// ── Env parsing: malformed security-relevant values fail loud ────────────────
+
+// A trailing space must be trimmed, not treated as a parse failure, so a
+// well-meaning "true " still enables auth rather than silently reverting.
+func TestLoad_AuthEnabled_TrailingSpaceEnables(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true ")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("Auth.Enabled = false after SQI_AUTH_ENABLED=\"true \", want true")
+	}
+}
+
+// An unparseable non-empty bool must be a hard load error that names the key,
+// not a silent fail-open to the (disabled) default.
+func TestLoad_AuthEnabled_GarbageValueErrors(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "enabled")
+	_, err := config.Load("", config.FlagOverrides{})
+	if err == nil {
+		t.Fatal("Load: got nil error for SQI_AUTH_ENABLED=enabled, want an error")
+	}
+	if !strings.Contains(err.Error(), "SQI_AUTH_ENABLED") {
+		t.Errorf("error %q does not name the offending env key SQI_AUTH_ENABLED", err)
+	}
+}
+
+// An unparseable non-empty duration must likewise error and name the key.
+func TestLoad_AuthSessionTTL_GarbageValueErrors(t *testing.T) {
+	t.Setenv("SQI_AUTH_SESSION_TTL", "abc")
+	_, err := config.Load("", config.FlagOverrides{})
+	if err == nil {
+		t.Fatal("Load: got nil error for SQI_AUTH_SESSION_TTL=abc, want an error")
+	}
+	if !strings.Contains(err.Error(), "SQI_AUTH_SESSION_TTL") {
+		t.Errorf("error %q does not name the offending env key SQI_AUTH_SESSION_TTL", err)
+	}
+}
+
+// An unparseable non-empty int must error and name the key.
+func TestLoad_IntEnv_GarbageValueErrors(t *testing.T) {
+	t.Setenv("SQI_NATS_MAX_STORE_MB", "lots")
+	_, err := config.Load("", config.FlagOverrides{})
+	if err == nil {
+		t.Fatal("Load: got nil error for SQI_NATS_MAX_STORE_MB=lots, want an error")
+	}
+	if !strings.Contains(err.Error(), "SQI_NATS_MAX_STORE_MB") {
+		t.Errorf("error %q does not name the offending env key SQI_NATS_MAX_STORE_MB", err)
+	}
+}
+
+// An unset var stays a no-op: the default survives and Load succeeds.
+func TestLoad_UnsetEnv_KeepsDefault(t *testing.T) {
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.Enabled {
+		t.Error("Auth.Enabled = true with SQI_AUTH_ENABLED unset, want the false default")
+	}
+}
+
+// Valid bool/int/duration values still parse and apply after the fail-loud
+// change. Table-driven over the accepted bool tokens plus an int and a
+// duration.
+func TestLoad_ValidEnvValuesStillApply(t *testing.T) {
+	boolTokens := []struct {
+		value string
+		want  bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"YES", true},
+		{"On", true},
+		{"0", false},
+		{"false", false},
+		{"NO", false},
+		{"Off", false},
+	}
+	for _, tt := range boolTokens {
+		t.Run("bool_"+tt.value, func(t *testing.T) {
+			t.Setenv("SQI_AUTH_ENABLED", tt.value)
+			cfg, err := config.Load("", config.FlagOverrides{})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Auth.Enabled != tt.want {
+				t.Errorf("Auth.Enabled = %v for %q, want %v", cfg.Auth.Enabled, tt.value, tt.want)
+			}
+		})
+	}
+
+	t.Run("int", func(t *testing.T) {
+		t.Setenv("SQI_NATS_MAX_STORE_MB", "256")
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.NATS.MaxStoreMB != 256 {
+			t.Errorf("NATS.MaxStoreMB = %d, want 256", cfg.NATS.MaxStoreMB)
+		}
+	})
+
+	t.Run("duration", func(t *testing.T) {
+		t.Setenv("SQI_AUTH_SESSION_TTL", "48h")
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.Session.TTL != 48*time.Hour {
+			t.Errorf("Auth.Session.TTL = %s, want 48h", cfg.Auth.Session.TTL)
+		}
+	})
+}
+
 // ── Auth: validate_job_owner (default, env, flag) ────────────────────────────
 
 func TestAuthValidateJobOwnerDefaultsTrue(t *testing.T) {
@@ -1172,5 +1289,118 @@ func TestValidate_AuthBootstrapPairingErrorNeverContainsPassword(t *testing.T) {
 		if strings.Contains(e.Field, "super-secret-value") || strings.Contains(e.Message, "super-secret-value") {
 			t.Fatalf("bootstrap password leaked into validation error: %+v", e)
 		}
+	}
+}
+
+// ── http.cors_origins layering and validation ────────────────────────────────
+
+func TestLoad_CORSOrigins_Layering(t *testing.T) {
+	t.Run("default is empty", func(t *testing.T) {
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.HTTP.CORSOrigins) != 0 {
+			t.Fatalf("http.cors_origins: got %v, want empty", cfg.HTTP.CORSOrigins)
+		}
+	})
+
+	t.Run("file sets a list", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "cfg.yaml")
+		y := "http:\n  cors_origins:\n    - \"https://file.test\"\n"
+		if err := os.WriteFile(f, []byte(y), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(f, config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, []string{"https://file.test"}) {
+			t.Fatalf("http.cors_origins: got %v", cfg.HTTP.CORSOrigins)
+		}
+	})
+
+	t.Run("env parses a comma-separated list and trims spaces", func(t *testing.T) {
+		t.Setenv("SQI_HTTP_CORS_ORIGINS", "https://a.test, https://b.test:8443")
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"https://a.test", "https://b.test:8443"}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, want) {
+			t.Fatalf("http.cors_origins: got %v, want %v", cfg.HTTP.CORSOrigins, want)
+		}
+	})
+
+	t.Run("empty env leaves the file layer intact", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "cfg.yaml")
+		y := "http:\n  cors_origins:\n    - \"https://keep.test\"\n"
+		if err := os.WriteFile(f, []byte(y), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SQI_HTTP_CORS_ORIGINS", "")
+		cfg, err := config.Load(f, config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, []string{"https://keep.test"}) {
+			t.Fatalf("http.cors_origins: got %v, want the file value retained", cfg.HTTP.CORSOrigins)
+		}
+	})
+
+	t.Run("flag beats env and file", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "cfg.yaml")
+		y := "http:\n  cors_origins:\n    - \"https://file.test\"\n"
+		if err := os.WriteFile(f, []byte(y), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SQI_HTTP_CORS_ORIGINS", "https://env.test")
+		cfg, err := config.Load(f, config.FlagOverrides{
+			HTTPCORSOrigins: []string{"https://flag.test"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(cfg.HTTP.CORSOrigins, []string{"https://flag.test"}) {
+			t.Fatalf("http.cors_origins: got %v, want the flag value", cfg.HTTP.CORSOrigins)
+		}
+	})
+}
+
+func TestValidate_CORSOrigins(t *testing.T) {
+	tests := []struct {
+		name    string
+		origins []string
+		wantErr bool
+	}{
+		{"empty is valid", nil, false},
+		{"wildcard is valid", []string{"*"}, false},
+		{"scheme and host", []string{"https://ui.test"}, false},
+		{"scheme host and port", []string{"http://localhost:5173"}, false},
+		{"trailing slash rejected", []string{"https://ui.test/"}, true},
+		{"path rejected", []string{"https://ui.test/app"}, true},
+		{"whitespace rejected", []string{"https://ui .test"}, true},
+		{"missing scheme rejected", []string{"ui.test"}, true},
+		{"wildcard subdomain rejected", []string{"https://*.example.com"}, true},
+		{"suffix wildcard rejected", []string{"https://app.example.com*"}, true},
+		{"normal explicit origin valid", []string{"https://app.example.com"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.HTTP.CORSOrigins = tt.origins
+			var got []config.ValidationError
+			for _, e := range config.Validate(cfg) {
+				if e.Field == "http.cors_origins" {
+					got = append(got, e)
+				}
+			}
+			if tt.wantErr && len(got) == 0 {
+				t.Fatalf("Validate(%v): got no http.cors_origins error, want one", tt.origins)
+			}
+			if !tt.wantErr && len(got) != 0 {
+				t.Fatalf("Validate(%v): got %v, want no errors", tt.origins, got)
+			}
+		})
 	}
 }

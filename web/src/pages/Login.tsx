@@ -18,16 +18,21 @@ export default function Login() {
   const { refresh } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+
+  // Derived from the mutation rather than mirrored into local state:
+  // mutateAsync already clears the previous error when a new attempt starts.
+  let error = ''
+  if (login.isError) {
+    error = login.error instanceof ApiError ? login.error.detail : 'Login failed'
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    setError('')
     try {
       await login.mutateAsync({ username, password })
       refresh()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : 'Login failed')
+    } catch {
+      /* rendered from login.error above */
     }
   }
 

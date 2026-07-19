@@ -31,7 +31,7 @@ import (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestHub() *Hub {
-	return NewHub(slog.New(slog.DiscardHandler), nil)
+	return NewHub(slog.New(slog.DiscardHandler), HubOptions{})
 }
 
 // drainOrTimeout reads one Envelope from ch within d. Returns (env, true) on
@@ -176,11 +176,14 @@ func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 // because env.owner == "" matches no real username. The hub must resolve
 // ownership via the injected jobOwner lookup exactly as NotifyTask does.
 func TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), func(jobID string) string {
-		if jobID == "job-1" {
-			return "alice"
-		}
-		return ""
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
+		OwnerScoping: true,
+		JobOwner: func(jobID string) (string, error) {
+			if jobID == "job-1" {
+				return "alice", nil
+			}
+			return "", nil
+		},
 	})
 
 	ch := h.Register("c1", Scope{Owner: "alice"})
@@ -323,7 +326,10 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 // So this test needs a hub WITH an owner resolver to exercise the guarantee
 // it names, unlike the plain newTestHub() used elsewhere in this file.
 func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "owner" })
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
+		OwnerScoping: true,
+		JobOwner:     func(string) (string, error) { return "owner", nil },
+	})
 
 	// Fire with NO active SubjectJobs subscribers — previously this was a
 	// no-op for the SubjectJobs push because of a hasSubscribers guard.
@@ -345,7 +351,7 @@ func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
 }
 
 // TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing is the regression test
-// for I-4: with auth disabled (no owner resolver — NewHub(logger, nil), same
+// for I-4: with auth disabled (HubOptions{} — no owner scoping, same
 // as newTestHub()) and zero connected clients, NotifyJob and NotifyTask must
 // not populate the SubjectJobs ring at all — mirroring the pre-B2 hasSubscribers
 // guard. A late subscriber with since_seq: 0 (what web/src/ws/client.ts always
@@ -354,7 +360,7 @@ func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
 // connected produced 10 replayed envelopes for the first-ever subscriber;
 // pre-B2 (and after this fix) it produces 0.
 func TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing(t *testing.T) {
-	h := newTestHub() // NewHub(logger, nil) — no owner resolver, i.e. auth off
+	h := newTestHub() // HubOptions{} — no owner scoping, i.e. auth off
 
 	for i := range 5 {
 		h.NotifyJob(JobEvent{JobID: fmt.Sprintf("j%d", i), Status: "pending"})
@@ -378,7 +384,10 @@ func TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing(t *testing.T) {
 // scoped client that subscribes moments later can still replay the events —
 // the behavior B2 introduced and that this fix must not regress.
 func TestHub_NotifyJob_AuthOn_NoSubscribers_StillRingsForReplay(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), func(string) string { return "owner" })
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
+		OwnerScoping: true,
+		JobOwner:     func(string) (string, error) { return "owner", nil },
+	})
 
 	for i := range 5 {
 		h.NotifyJob(JobEvent{JobID: fmt.Sprintf("j%d", i), Status: "pending"})
@@ -779,7 +788,7 @@ func TestSubjectRing_Add_AssignsIncreasingSeq(t *testing.T) {
 }
 
 func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{})
 	ch := h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -804,7 +813,7 @@ func TestHub_NotifyDiag_FansToDiagnosticsSubscribers(t *testing.T) {
 }
 
 func TestHub_DiagnosticsIsValidSubject(t *testing.T) {
-	h := NewHub(slog.New(slog.DiscardHandler), nil)
+	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{})
 	h.Register("c1", Scope{All: true})
 	if err := h.Subscribe("c1", SubjectDiagnostics, 0); err != nil {
 		t.Fatalf("diagnostics should be a valid subject: %v", err)

@@ -21,6 +21,8 @@ import ComputeLocationForm from '@/pages/ComputeLocationForm'
 import UserList from '@/pages/UserList'
 import UserForm from '@/pages/UserForm'
 import ApiKeyList from '@/pages/ApiKeyList'
+import Account from '@/pages/Account'
+import UserApiKeys from '@/pages/UserApiKeys'
 import PresetLibrary from '@/pages/PresetLibrary'
 import PresetDetail from '@/pages/PresetDetail'
 import ProductList from '@/pages/ProductList'
@@ -37,6 +39,8 @@ export default function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Dashboard />} />
+      {/* Ungated: every authenticated role may manage its own account. */}
+      <Route path="/account" element={<Account />} />
       <Route path="/jobs" element={<JobList />} />
       <Route path="/jobs/:id" element={<JobDetail />} />
       <Route path="/jobs/:id/tasks/:taskId/logs" element={<TaskLogPage />} />
@@ -148,6 +152,14 @@ export default function AppRoutes() {
         element={
           <RequireRole permission="users.manage">
             <UserForm mode="edit" />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/users/:id/api-keys"
+        element={
+          <RequireRole permission="apikeys.admin">
+            <UserApiKeys />
           </RequireRole>
         }
       />
