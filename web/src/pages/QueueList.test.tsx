@@ -18,20 +18,21 @@ vi.mock('@/auth/context', () => ({
   useAuth: vi.fn(),
 }))
 import { useAuth } from '@/auth/context'
+import { OPERATOR_PERMISSIONS, READ_ONLY_PERMISSIONS } from '@/test/principals'
 
 const OPERATOR_PRINCIPAL: Principal = {
   subject: 'u-operator',
   display_name: 'Operator',
   roles: ['operator'],
   kind: 'user',
-  permissions: [],
+  permissions: OPERATOR_PERMISSIONS,
 }
 const READONLY_PRINCIPAL: Principal = {
   subject: 'u-readonly',
   display_name: 'Read Only',
   roles: ['read-only'],
   kind: 'user',
-  permissions: [],
+  permissions: READ_ONLY_PERMISSIONS,
 }
 
 /** Sets the principal returned by the mocked useAuth() for the next render. */

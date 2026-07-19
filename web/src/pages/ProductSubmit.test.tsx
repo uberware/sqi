@@ -21,13 +21,15 @@ const OPERATOR_PRINCIPAL: Principal = {
   display_name: 'Operator',
   roles: ['operator'],
   kind: 'user',
-  permissions: [],
+  permissions: OPERATOR_PERMISSIONS,
 }
 
 vi.mock('@/auth/context', () => ({
   useAuth: vi.fn(() => ({ principal: OPERATOR_PRINCIPAL, status: 'authed', refresh: () => {} })),
 }))
 import { useAuth } from '@/auth/context'
+import { OPERATOR_PERMISSIONS, USER_PERMISSIONS } from '@/test/principals'
+import type { Permission } from '@/auth/policy'
 
 const submitMock = vi.fn().mockResolvedValue({ id: 'job-1' })
 const navigateMock = vi.fn()
@@ -199,14 +201,14 @@ function renderPage() {
   return render(tree(new QueryClient()))
 }
 
-/** Renders `ui` with the mocked useAuth() principal set to the given roles. */
-function renderWithAuth(ui: ReactElement, { roles }: { roles: string[] }) {
+/** Renders `ui` with the mocked useAuth() principal holding `permissions`. */
+function renderWithAuth(ui: ReactElement, { permissions }: { permissions: Permission[] }) {
   const principal: Principal = {
     subject: 'u-test',
     display_name: 'Test User',
-    roles,
+    roles: [],
     kind: 'user',
-    permissions: [],
+    permissions,
   }
   ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     principal,
@@ -324,17 +326,17 @@ describe('ProductSubmit', () => {
 
 describe('owner field permission gating', () => {
   it('hides the Owner input without jobs.submit_as', () => {
-    renderWithAuth(<ProductSubmit />, { roles: ['user'] })
+    renderWithAuth(<ProductSubmit />, { permissions: USER_PERMISSIONS })
     expect(screen.queryByLabelText('Owner')).not.toBeInTheDocument()
   })
 
   it('shows the Owner input with jobs.submit_as', () => {
-    renderWithAuth(<ProductSubmit />, { roles: ['operator'] })
+    renderWithAuth(<ProductSubmit />, { permissions: OPERATOR_PERMISSIONS })
     expect(screen.getByLabelText('Owner')).toBeInTheDocument()
   })
 
   it('omits owner from the submitted payload without jobs.submit_as', async () => {
-    renderWithAuth(<ProductSubmit />, { roles: ['user'] })
+    renderWithAuth(<ProductSubmit />, { permissions: USER_PERMISSIONS })
     fireEvent.change(screen.getByLabelText(/Scene/), { target: { value: '/proj/a.blend' } })
     fireEvent.click(screen.getByRole('button', { name: /submit/i }))
 

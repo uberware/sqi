@@ -22,13 +22,15 @@ const OPERATOR_PRINCIPAL: Principal = {
   display_name: 'Operator',
   roles: ['operator'],
   kind: 'user',
-  permissions: [],
+  permissions: OPERATOR_PERMISSIONS,
 }
 
 vi.mock('@/auth/context', () => ({
   useAuth: vi.fn(() => ({ principal: OPERATOR_PRINCIPAL, status: 'authed', refresh: () => {} })),
 }))
 import { useAuth } from '@/auth/context'
+import { ALL_PERMISSIONS, OPERATOR_PERMISSIONS, USER_PERMISSIONS } from '@/test/principals'
+import type { Permission } from '@/auth/policy'
 
 // ── Mock CodeEditor ───────────────────────────────────────────────────────────
 // CodeMirror requires DOM APIs (ResizeObserver, getComputedStyle internals)
@@ -253,14 +255,14 @@ function mockFarmsAndQueues(farm = makeFarm(), queues = [makeQueue()], jobs: Job
   fetchMock.mockImplementation(routeFetch(farm, queues, jobs))
 }
 
-/** Renders <Submit /> with the mocked useAuth() principal set to the given roles. */
-function renderWithAuth({ roles }: { roles: string[] }) {
+/** Renders <Submit /> with the mocked useAuth() principal holding `permissions`. */
+function renderWithAuth({ permissions }: { permissions: Permission[] }) {
   const principal: Principal = {
     subject: 'u-test',
     display_name: 'Test User',
-    roles,
+    roles: [],
     kind: 'user',
-    permissions: [],
+    permissions,
   }
   ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     principal,
@@ -739,7 +741,7 @@ describe('Submit page', () => {
 describe('owner field permission gating', () => {
   it('hides the Owner input without jobs.submit_as', async () => {
     mockFarmsAndQueues()
-    renderWithAuth({ roles: ['user'] })
+    renderWithAuth({ permissions: USER_PERMISSIONS })
 
     await waitFor(() => screen.getByRole('option', { name: 'Default' }))
     expect(screen.queryByLabelText('Owner')).not.toBeInTheDocument()
@@ -747,7 +749,7 @@ describe('owner field permission gating', () => {
 
   it('shows the Owner input with jobs.submit_as', async () => {
     mockFarmsAndQueues()
-    renderWithAuth({ roles: ['operator'] })
+    renderWithAuth({ permissions: OPERATOR_PERMISSIONS })
 
     await waitFor(() => screen.getByRole('option', { name: 'Default' }))
     expect(screen.getByLabelText('Owner')).toBeInTheDocument()
@@ -763,7 +765,7 @@ describe('owner field permission gating', () => {
     )
 
     const user = userEvent.setup()
-    renderWithAuth({ roles: ['user'] })
+    renderWithAuth({ permissions: USER_PERMISSIONS })
 
     await waitFor(() => screen.getByRole('option', { name: 'Default' }))
     await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
@@ -789,7 +791,7 @@ describe('owner field permission gating', () => {
     )
 
     const user = userEvent.setup()
-    renderWithAuth({ roles: ['operator'] })
+    renderWithAuth({ permissions: OPERATOR_PERMISSIONS })
 
     await waitFor(() => screen.getByRole('option', { name: 'Default' }))
     await user.type(screen.getByTestId('template-editor'), 'specificationVersion: test')
@@ -820,7 +822,7 @@ describe('owner field permission gating', () => {
       display_name: 'Anonymous',
       roles: [],
       kind: 'anonymous',
-      permissions: [],
+      permissions: ALL_PERMISSIONS,
     }
     ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       principal: anonymousPrincipal,

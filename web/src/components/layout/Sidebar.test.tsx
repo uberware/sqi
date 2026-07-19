@@ -9,6 +9,12 @@ import { ThemeProvider } from '@/theme/context'
 import { AuthProvider } from '@/auth/context'
 import Sidebar from '@/components/layout/Sidebar'
 import { installLocalStorageMock, setMatchMedia, resetThemeDom } from '@/theme/test-utils'
+import {
+  ADMIN_PERMISSIONS,
+  ALL_PERMISSIONS,
+  OPERATOR_PERMISSIONS,
+  READ_ONLY_PERMISSIONS,
+} from '@/test/principals'
 
 class MockWebSocket {
   static readonly OPEN = 1
@@ -27,12 +33,14 @@ const AUTHED_PRINCIPAL = {
   display_name: 'Test User',
   roles: ['operator'],
   kind: 'user',
+  permissions: OPERATOR_PERMISSIONS,
 }
 const ANONYMOUS_PRINCIPAL = {
   subject: 'anonymous',
   display_name: 'Anonymous',
   roles: [],
   kind: 'anonymous',
+  permissions: ALL_PERMISSIONS,
 }
 
 function jsonResponse(status: number, body: unknown, contentType: string): Response {
@@ -192,6 +200,7 @@ describe('Sidebar', () => {
         display_name: 'Read Only User',
         roles: ['read-only'],
         kind: 'user',
+        permissions: READ_ONLY_PERMISSIONS,
       })
       // read-only lacks jobs.write, but holds apikeys.self, which is enough
       // for the Admin hub's api-keys card — so Admin should still show.
@@ -208,6 +217,7 @@ describe('Sidebar', () => {
         display_name: 'Admin User',
         roles: ['admin'],
         kind: 'user',
+        permissions: ADMIN_PERMISSIONS,
       })
       expect(await screen.findByRole('link', { name: 'Submit' })).toBeInTheDocument()
       expect(screen.getByRole('link', { name: 'Jobs' })).toBeInTheDocument()
@@ -221,6 +231,7 @@ describe('Sidebar', () => {
         display_name: 'Unknown Role User',
         roles: ['nonexistent-role'],
         kind: 'user',
+        permissions: [],
       })
       // Dashboard is ungated, so wait on it to let /auth/me resolve before
       // asserting the absent items.
