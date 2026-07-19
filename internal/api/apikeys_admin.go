@@ -25,12 +25,23 @@ func (h *apiKeysHandler) listForUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID := chi.URLParam(r, "id")
 
-	keys, err := h.store.ListAPIKeysForUser(ctx, userID)
-	if err != nil {
+	// Resolve the user first. ListAPIKeysForUser cannot distinguish "no keys"
+	// from "no such user" — it returns an empty slice for both — and answering
+	// 200 [] for a deleted or mistyped id tells an admin the account has no
+	// outstanding credentials when the question was never actually answered.
+	// That is the wrong reply during a credential-revocation incident.
+	if _, err := h.store.GetUser(ctx, userID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "user not found")
 			return
 		}
+		h.logger.ErrorContext(ctx, "apikeys: admin list user lookup failed", slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to list API keys")
+		return
+	}
+
+	keys, err := h.store.ListAPIKeysForUser(ctx, userID)
+	if err != nil {
 		h.logger.ErrorContext(ctx, "apikeys: admin list failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to list API keys")
 		return

@@ -295,6 +295,11 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
+	if cfg.AuthEnabled {
+		// Pay the argon2id derivation here, not on the first login that misses
+		// a username — see dummyHash.
+		warmDummyHash()
+	}
 	usersH := newUsersHandler(deps.Store, logger)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)

@@ -161,6 +161,20 @@ func TestAdminAPIKeys(t *testing.T) {
 		}
 	})
 
+	// 200 [] for an unknown id would tell an admin "this account has no keys"
+	// when the real answer is "no such account" — the wrong reply to act on
+	// during a credential-revocation incident.
+	t.Run("an unknown user id is 404, not an empty list", func(t *testing.T) {
+		f := newAdminKeysFixture(t, "admin")
+
+		resp := doRequest(t, http.MethodGet,
+			f.srv.URL+"/api/v1/users/no-such-user/api-keys", nil, f.cookie)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+
 	t.Run("non-admin roles are forbidden", func(t *testing.T) {
 		for _, role := range []string{"user", "operator", "read-only"} {
 			t.Run(role, func(t *testing.T) {

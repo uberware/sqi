@@ -48,9 +48,18 @@ const dummyVerifyPlaintext = "sqi-auth-timing-equalization-dummy"
 // falling out of sync and reopening the timing side channel.
 //
 // Computed lazily (not at package init) so the ~19 MiB / 30-60 ms derivation
-// is not paid at startup by auth-disabled servers, or by every test binary
-// that imports this package.
+// is not paid by auth-disabled servers or by every test binary that imports
+// this package. An auth-enabled router forces it at construction via
+// warmDummyHash — deferring it to the first request would make the first
+// unknown-username login after each restart measurably slower than a
+// known-username one, which is the very timing signal this exists to erase,
+// and would turn mustDummyHash's fail-fast panic into a 500 on a live
+// request instead of a startup abort.
 var dummyHash = sync.OnceValue(mustDummyHash)
+
+// warmDummyHash forces the dummy-hash derivation before the server accepts
+// traffic. Call it from router construction when auth is enabled.
+func warmDummyHash() { _ = dummyHash() }
 
 func mustDummyHash() string {
 	h, err := password.Hash(dummyVerifyPlaintext)

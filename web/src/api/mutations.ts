@@ -890,24 +890,34 @@ export function useChangePassword() {
   return useMutation({ mutationFn: fetchChangePassword })
 }
 
-/** Update the caller's own display name. Refreshes the cached principal. */
+/**
+ * Update the caller's own display name. Refreshes the cached principal and
+ * the user lists, which render the same display name for an admin viewing
+ * their own row.
+ */
 export function useUpdateMe() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: fetchUpdateMe,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all })
     },
   })
 }
 
-/** Revoke another user's API key. Requires apikeys.admin. */
+/**
+ * Revoke another user's API key. Requires apikeys.admin. Also invalidates the
+ * self-service list, since an admin may be revoking one of their own keys
+ * through this page.
+ */
 export function useRevokeUserApiKey(userId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (keyId: string) => fetchRevokeUserApiKey(userId, keyId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.forUser(userId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.self })
     },
   })
 }
