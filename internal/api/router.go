@@ -157,29 +157,62 @@ type Deps struct {
 	CookieSecure string
 }
 
+// resolveCORSOrigins returns the CORS allow-list to configure, dropping the
+// wildcard when auth is enabled.
+//
+// AllowCredentials + a wildcard origin is an invalid CORS configuration
+// (browsers reject it) and, if honored, would let any origin ride the session
+// cookie. We drop the wildcard rather than silently disabling credentials.
+//
+// Two situations reach that same drop, and they are NOT equally noteworthy —
+// which is why they log at different levels:
+//
+//   - No origins configured at all. This is the default and it is correct: the
+//     embedded web UI is same-origin and unaffected. Only a browser client
+//     served from a different origin needs anything set. Informational.
+//   - "*" configured explicitly. The operator asked for something that cannot
+//     work with credentials, so their intent is not being honored. A warning.
+//
+// Reporting the default case as a failure ("dropping the wildcard") told
+// first-time operators that enabling auth had broken something, when the
+// wildcard was one they never asked for.
+func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
+	origins := cfg.CORSOrigins
+	defaulted := len(origins) == 0
+	if defaulted {
+		origins = []string{"*"}
+	}
+	if !cfg.AuthEnabled || !slices.Contains(origins, "*") {
+		return origins
+	}
+
+	if defaulted {
+		logger.InfoContext(
+			context.Background(),
+			"cors: auth is enabled and no CORS origins are configured — serving "+
+				"same-origin requests only, which is all the built-in web UI needs. "+
+				"A browser client served from another origin must be named via "+
+				"http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
+		)
+	} else {
+		logger.WarnContext(
+			context.Background(),
+			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard, "+
+				"because a wildcard origin cannot carry credentials and would let any "+
+				"site ride the session cookie. Name the real origins explicitly via "+
+				"http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
+		)
+	}
+	return slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
+}
+
 // NewRouter builds and returns the chi router that serves the full sqi-server
 // HTTP surface. The returned router is ready to be handed to http.Server.
 //
 // Pass a [Deps] value carrying every application-layer dependency the
 // handlers need; optional ones (Hub, Scheduler, Products) may be nil.
 func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, hr *health.Registry) chi.Router {
-	origins := cfg.CORSOrigins
-	if len(origins) == 0 {
-		origins = []string{"*"}
-	}
-	if cfg.AuthEnabled && slices.Contains(origins, "*") {
-		// AllowCredentials + a wildcard origin is an invalid CORS
-		// configuration (browsers reject it) and, if honored, would let any
-		// origin ride the session cookie. Drop the wildcard rather than
-		// silently disabling credentials.
-		logger.ErrorContext(
-			context.Background(),
-			"cors: auth is enabled but CORS origins include \"*\" — dropping the wildcard; "+
-				"only same-origin requests will work. Name the real origins explicitly "+
-				"via http.cors_origins / SQI_HTTP_CORS_ORIGINS / --http-cors-origins",
-		)
-		origins = slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
-	}
+	origins := resolveCORSOrigins(cfg, logger)
 
 	r := chi.NewRouter()
 
