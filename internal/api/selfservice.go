@@ -18,7 +18,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/password"
+	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -93,6 +95,71 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	h.issueSession(w, r, u)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// updateMeRequest carries only display_name — deliberately. `role`,
+// `disabled`, and `username` are absent from this struct, so a request body
+// carrying them is ignored by the decoder. Keeping them out of the type makes
+// self-service privilege escalation unrepresentable rather than merely
+// checked-for; do not widen this struct.
+type updateMeRequest struct {
+	DisplayName *string `json:"display_name"`
+}
+
+// updateMe changes the caller's own profile and returns the same principal
+// shape GET /auth/me returns, so the client refreshes identity from one shape.
+//
+// The record is re-read and mutated field-by-field rather than built from the
+// request: every field the caller may not touch keeps its stored value by
+// construction.
+func (h *authHandler) updateMe(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID, ok := callerSubject(r)
+	if !ok {
+		writeProblem(w, r, http.StatusConflict, selfServiceUnavailable)
+		return
+	}
+
+	var req updateMeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	u, err := h.store.GetUser(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "account not found")
+			return
+		}
+		h.logger.ErrorContext(ctx, "selfservice: user lookup failed", slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update account")
+		return
+	}
+
+	if req.DisplayName != nil {
+		u.DisplayName = *req.DisplayName
+	}
+	updated, err := h.store.UpdateUser(ctx, u)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "selfservice: update user failed", slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to update account")
+		return
+	}
+
+	p, _ := auth.FromContext(ctx)
+	roles := p.Roles
+	if roles == nil {
+		roles = []string{}
+	}
+	writeJSON(w, http.StatusOK, principalResponse{
+		Subject:     p.Subject,
+		Username:    updated.Username,
+		DisplayName: updated.DisplayName,
+		Roles:       roles,
+		Permissions: policy.PermissionsFor(p),
+		Kind:        string(p.Kind),
+	})
 }
 
 // issueSession mints a session for u and sets the cookie, matching login's

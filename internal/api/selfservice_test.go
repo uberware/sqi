@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -195,7 +196,8 @@ func TestChangePassword(t *testing.T) {
 		req := httptest.NewRequestWithContext(
 			auth.NewContext(t.Context(), auth.Principal{Kind: auth.KindAnonymous}),
 			http.MethodPut, "/auth/password",
-			bytes.NewBufferString(`{"current_password":"x","new_password":"y"}`))
+			bytes.NewBufferString(`{"current_password":"x","new_password":"y"}`),
+		)
 		rr := httptest.NewRecorder()
 		h.changePassword(rr, req)
 
@@ -210,8 +212,115 @@ func doChangePassword(t *testing.T, h *authHandler, u store.User, body string) *
 	t.Helper()
 	req := httptest.NewRequestWithContext(
 		auth.NewContext(t.Context(), principalFor(u)),
-		http.MethodPut, "/auth/password", bytes.NewBufferString(body))
+		http.MethodPut, "/auth/password", bytes.NewBufferString(body),
+	)
 	rr := httptest.NewRecorder()
 	h.changePassword(rr, req)
+	return rr
+}
+
+func TestUpdateMe(t *testing.T) {
+	t.Run("updates the display name", func(t *testing.T) {
+		st := fake.New()
+		u := seedUserWithPassword(t, st, "alice", "pw", "user")
+		h := newTestAuthHandler(t, st)
+
+		rr := doUpdateMe(t, h, u, `{"display_name":"Alice A."}`)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body)
+		}
+
+		updated, err := st.GetUser(t.Context(), u.ID)
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if updated.DisplayName != "Alice A." {
+			t.Fatalf("DisplayName = %q, want %q", updated.DisplayName, "Alice A.")
+		}
+
+		var body principalResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.DisplayName != "Alice A." {
+			t.Fatalf("response DisplayName = %q, want the updated value", body.DisplayName)
+		}
+	})
+
+	// The highest-value test in B3: a self-service route that can reach `role`
+	// is a privilege-escalation hole. `role`, `disabled`, and `username` are
+	// absent from the request struct, so a body carrying them must be inert.
+	t.Run("cannot escalate role, rename, or re-enable the account", func(t *testing.T) {
+		st := fake.New()
+		u := seedUserWithPassword(t, st, "alice", "pw", "user")
+		h := newTestAuthHandler(t, st)
+
+		rr := doUpdateMe(t, h, u,
+			`{"display_name":"Alice","role":"admin","disabled":false,"username":"root"}`)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body)
+		}
+
+		updated, err := st.GetUser(t.Context(), u.ID)
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if updated.Role != "user" {
+			t.Fatalf("Role = %q, want it untouched at %q", updated.Role, "user")
+		}
+		if updated.Username != "alice" {
+			t.Fatalf("Username = %q, want it untouched", updated.Username)
+		}
+	})
+
+	// A disabled account must not be able to un-disable itself. Guarding the
+	// field is not enough if the round-trip through UpdateUser resets it.
+	t.Run("a disabled account stays disabled", func(t *testing.T) {
+		st := fake.New()
+		u := seedUserWithPassword(t, st, "alice", "pw", "user")
+		u.Disabled = true
+		if _, err := st.UpdateUser(t.Context(), u); err != nil {
+			t.Fatalf("UpdateUser: %v", err)
+		}
+		h := newTestAuthHandler(t, st)
+
+		if rr := doUpdateMe(t, h, u, `{"display_name":"Alice","disabled":false}`); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body)
+		}
+
+		updated, err := st.GetUser(t.Context(), u.ID)
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if !updated.Disabled {
+			t.Fatal("Disabled = false, want the account to stay disabled")
+		}
+	})
+
+	t.Run("auth disabled is 409", func(t *testing.T) {
+		st := fake.New()
+		h := newTestAuthHandler(t, st)
+
+		req := httptest.NewRequestWithContext(
+			auth.NewContext(t.Context(), auth.Principal{Kind: auth.KindAnonymous}),
+			http.MethodPatch, "/auth/me", bytes.NewBufferString(`{"display_name":"x"}`),
+		)
+		rr := httptest.NewRecorder()
+		h.updateMe(rr, req)
+
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", rr.Code)
+		}
+	})
+}
+
+func doUpdateMe(t *testing.T, h *authHandler, u store.User, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(
+		auth.NewContext(t.Context(), principalFor(u)),
+		http.MethodPatch, "/auth/me", bytes.NewBufferString(body),
+	)
+	rr := httptest.NewRecorder()
+	h.updateMe(rr, req)
 	return rr
 }

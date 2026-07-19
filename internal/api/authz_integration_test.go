@@ -112,6 +112,7 @@ var expectedRoutes = []routeExpectation{
 	// Permission-free once authenticated (any principal, no role check).
 	{method: http.MethodPost, pattern: "/api/v1/auth/logout", public: true},
 	{method: http.MethodGet, pattern: "/api/v1/auth/me", public: true},
+	{method: http.MethodPatch, pattern: "/api/v1/auth/me", public: true},
 	{method: http.MethodPut, pattern: "/api/v1/auth/password", public: true},
 	{method: http.MethodGet, pattern: "/api/v1/version", public: true},
 
