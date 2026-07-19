@@ -355,6 +355,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// Permission-free (any authenticated principal).
 			rest.Post("/auth/logout", authH.logout)
 			rest.Get("/auth/me", authH.me)
+			rest.Put("/auth/password", authH.changePassword)
 			rest.Get("/version", versionH.getVersion)
 
 			// users.read / users.manage (admin only)
