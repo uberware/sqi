@@ -764,6 +764,122 @@ func TestLoad_AuthEnabled_UnsetFlagDoesNotClobberEnv(t *testing.T) {
 	}
 }
 
+// ── Env parsing: malformed security-relevant values fail loud ────────────────
+
+// A trailing space must be trimmed, not treated as a parse failure, so a
+// well-meaning "true " still enables auth rather than silently reverting.
+func TestLoad_AuthEnabled_TrailingSpaceEnables(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true ")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("Auth.Enabled = false after SQI_AUTH_ENABLED=\"true \", want true")
+	}
+}
+
+// An unparseable non-empty bool must be a hard load error that names the key,
+// not a silent fail-open to the (disabled) default.
+func TestLoad_AuthEnabled_GarbageValueErrors(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "enabled")
+	_, err := config.Load("", config.FlagOverrides{})
+	if err == nil {
+		t.Fatal("Load: got nil error for SQI_AUTH_ENABLED=enabled, want an error")
+	}
+	if !strings.Contains(err.Error(), "SQI_AUTH_ENABLED") {
+		t.Errorf("error %q does not name the offending env key SQI_AUTH_ENABLED", err)
+	}
+}
+
+// An unparseable non-empty duration must likewise error and name the key.
+func TestLoad_AuthSessionTTL_GarbageValueErrors(t *testing.T) {
+	t.Setenv("SQI_AUTH_SESSION_TTL", "abc")
+	_, err := config.Load("", config.FlagOverrides{})
+	if err == nil {
+		t.Fatal("Load: got nil error for SQI_AUTH_SESSION_TTL=abc, want an error")
+	}
+	if !strings.Contains(err.Error(), "SQI_AUTH_SESSION_TTL") {
+		t.Errorf("error %q does not name the offending env key SQI_AUTH_SESSION_TTL", err)
+	}
+}
+
+// An unparseable non-empty int must error and name the key.
+func TestLoad_IntEnv_GarbageValueErrors(t *testing.T) {
+	t.Setenv("SQI_NATS_MAX_STORE_MB", "lots")
+	_, err := config.Load("", config.FlagOverrides{})
+	if err == nil {
+		t.Fatal("Load: got nil error for SQI_NATS_MAX_STORE_MB=lots, want an error")
+	}
+	if !strings.Contains(err.Error(), "SQI_NATS_MAX_STORE_MB") {
+		t.Errorf("error %q does not name the offending env key SQI_NATS_MAX_STORE_MB", err)
+	}
+}
+
+// An unset var stays a no-op: the default survives and Load succeeds.
+func TestLoad_UnsetEnv_KeepsDefault(t *testing.T) {
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.Enabled {
+		t.Error("Auth.Enabled = true with SQI_AUTH_ENABLED unset, want the false default")
+	}
+}
+
+// Valid bool/int/duration values still parse and apply after the fail-loud
+// change. Table-driven over the accepted bool tokens plus an int and a
+// duration.
+func TestLoad_ValidEnvValuesStillApply(t *testing.T) {
+	boolTokens := []struct {
+		value string
+		want  bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"YES", true},
+		{"On", true},
+		{"0", false},
+		{"false", false},
+		{"NO", false},
+		{"Off", false},
+	}
+	for _, tt := range boolTokens {
+		t.Run("bool_"+tt.value, func(t *testing.T) {
+			t.Setenv("SQI_AUTH_ENABLED", tt.value)
+			cfg, err := config.Load("", config.FlagOverrides{})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Auth.Enabled != tt.want {
+				t.Errorf("Auth.Enabled = %v for %q, want %v", cfg.Auth.Enabled, tt.value, tt.want)
+			}
+		})
+	}
+
+	t.Run("int", func(t *testing.T) {
+		t.Setenv("SQI_NATS_MAX_STORE_MB", "256")
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.NATS.MaxStoreMB != 256 {
+			t.Errorf("NATS.MaxStoreMB = %d, want 256", cfg.NATS.MaxStoreMB)
+		}
+	})
+
+	t.Run("duration", func(t *testing.T) {
+		t.Setenv("SQI_AUTH_SESSION_TTL", "48h")
+		cfg, err := config.Load("", config.FlagOverrides{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Auth.Session.TTL != 48*time.Hour {
+			t.Errorf("Auth.Session.TTL = %s, want 48h", cfg.Auth.Session.TTL)
+		}
+	})
+}
+
 // ── Auth: validate_job_owner (default, env, flag) ────────────────────────────
 
 func TestAuthValidateJobOwnerDefaultsTrue(t *testing.T) {
@@ -1265,6 +1381,9 @@ func TestValidate_CORSOrigins(t *testing.T) {
 		{"path rejected", []string{"https://ui.test/app"}, true},
 		{"whitespace rejected", []string{"https://ui .test"}, true},
 		{"missing scheme rejected", []string{"ui.test"}, true},
+		{"wildcard subdomain rejected", []string{"https://*.example.com"}, true},
+		{"suffix wildcard rejected", []string{"https://app.example.com*"}, true},
+		{"normal explicit origin valid", []string{"https://app.example.com"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

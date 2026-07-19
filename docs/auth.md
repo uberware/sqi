@@ -301,6 +301,18 @@ the shipped UI in its default configuration. It only matters for a
 separately-hosted UI (a different scheme/host/port) that wants to call a
 `sqi-server` instance's cookie-authenticated API cross-origin.
 
+> **Note — a WebSocket is authenticated once, at upgrade.** Authentication and
+> owner-scope resolution happen a single time, when `/api/v1/ws` is upgraded;
+> they are **not** re-evaluated for the life of the connection. Disabling the
+> account, revoking its session, or changing its role does **not** drop a live
+> WebSocket — the connection keeps delivering until the client closes it or it
+> hits the idle timeout (`wsIdleTimeout`, 5 minutes, in `internal/api/ws.go`).
+> The exposure is bounded to that one connection's own already-authorized scope:
+> it can only keep receiving what it was authorized to receive at upgrade, with
+> no cross-user leakage or privilege escalation. REST is different — every
+> request re-authenticates and re-authorizes, so a revoked credential stops
+> working on the next call.
+
 ### Configuring allowed origins
 
 Name the origins a separately-hosted UI will call from, through any of the
@@ -322,7 +334,13 @@ Each entry must be `scheme://host[:port]` or `"*"`. A trailing slash, a
 path, a query, a fragment, or embedded whitespace is rejected at startup
 with a `http.cors_origins` validation error — go-chi/cors could never match
 such a value, so a typo fails loudly at boot instead of silently at request
-time.
+time. **Wildcard patterns other than the bare `"*"` are rejected too**: an
+entry containing an embedded `*` (e.g. `https://*.example.com` or
+`https://app.example.com*`) is refused at startup, because go-chi/cors would
+otherwise honor it as a prefix/suffix match — with credentials, once auth is
+enabled — letting an attacker-registrable origin (like
+`https://app.example.com.evil.io`) ride a victim's session cookie. Name every
+allowed origin explicitly.
 
 Leaving the list empty keeps the previous default of `["*"]`. **The
 wildcard-drop above still applies**: with auth enabled, `"*"` — whether

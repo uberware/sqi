@@ -74,6 +74,18 @@ func validateCORSOrigins(origins []string) []ValidationError {
 			})
 			continue
 		}
+		if strings.Contains(o, "*") {
+			// go-chi/cors treats ANY embedded '*' as a prefix/suffix wildcard,
+			// so "https://*.example.com" or "https://app.example.com*" would be
+			// honored — with credentials, once auth is enabled — letting an
+			// attacker-registrable origin ride the victim's session cookie. Only
+			// the bare "*" (handled above) is supported; reject the rest.
+			errs = append(errs, ValidationError{
+				Field:   "http.cors_origins",
+				Message: fmt.Sprintf("origin %q must not contain a wildcard %q; wildcard patterns are not supported — name explicit origins (only a bare %q is allowed)", o, "*", "*"),
+			})
+			continue
+		}
 		u, err := url.Parse(o)
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			errs = append(errs, ValidationError{
