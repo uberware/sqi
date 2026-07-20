@@ -1453,7 +1453,7 @@ components:
 
     User:
       type: object
-      required: [id, username, role, disabled, created_at, updated_at]
+      required: [id, username, role, auth_source, disabled, created_at, updated_at]
       properties:
         id:
           type: string
@@ -1464,6 +1464,15 @@ components:
         role:
           type: string
           enum: [admin, operator, user, read-only]
+        auth_source:
+          type: string
+          enum: [local, ldap]
+          description: >
+            Credential backend for this account. `local` verifies the stored
+            password hash; `ldap` verifies against the configured directory.
+            Set at creation and immutable. Accounts created through
+            `POST /users` are always `local`; `ldap` accounts are provisioned
+            just-in-time on first successful directory login.
         disabled:
           type: boolean
         created_at:
@@ -3529,7 +3538,9 @@ paths:
         check. On success every session for the account is destroyed and a
         fresh one is issued for this caller, so other devices are logged out
         while this one stays signed in. API keys are not revoked.
-        Returns `409` when auth is disabled.
+        Returns `409` when auth is disabled, and `409` when the account's
+        `auth_source` is `ldap` — a directory account has no local password
+        to change.
       tags: [auth]
       requestBody:
         required: true
@@ -3562,7 +3573,9 @@ paths:
       description: |
         Requires the `users.manage` permission (the `admin` role). `role`
         defaults to `user` when omitted. The response never includes the
-        password hash.
+        password hash. Accounts created here always have `auth_source`
+        `local` — directory accounts are provisioned just-in-time on first
+        successful directory login, never through this endpoint.
       tags: [users]
       requestBody:
         required: true
@@ -3637,7 +3650,11 @@ paths:
       summary: Update a local account's display name, role, or disabled flag
       description: |
         Password is not updatable here — see
-        `PUT /users/{id}/password`.
+        `PUT /users/{id}/password`. Returns `409` for a `role` change on an
+        account whose `auth_source` is `ldap` when `auth.ldap.role_source` is
+        `directory`: the group mapping owns that account's role, so a local
+        edit would silently revert at the user's next login. Non-role fields
+        (`display_name`, `disabled`) remain editable on such accounts.
       tags: [users]
       requestBody:
         required: true
@@ -3660,6 +3677,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -3687,6 +3706,9 @@ paths:
     put:
       operationId: setUserPassword
       summary: Set a local account's password
+      description: |
+        Returns `409` when the account's `auth_source` is `ldap` — a
+        directory account has no local password to set.
       tags: [users]
       requestBody:
         required: true
@@ -3705,6 +3727,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 

@@ -328,6 +328,52 @@ func TestUpdateMe(t *testing.T) {
 	})
 }
 
+// A directory account has no local password to rotate. Without this guard the
+// handler would verify against the placeholder hash and answer "current
+// password is incorrect", which is true but useless.
+func TestSelfService_ChangePasswordRejectedForLDAPUser(t *testing.T) {
+	st := fake.New()
+	u, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newTestAuthHandler(t, st)
+
+	rr := doChangePassword(t, h, u, `{"current_password":"x","new_password":"y"}`)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("got %d, want 409: %s", rr.Code, rr.Body)
+	}
+}
+
+// PATCH /auth/me stays available: the display name is seeded once from the
+// directory and never re-synced, so a self-service edit is meaningful.
+func TestSelfService_UpdateMeAllowedForLDAPUser(t *testing.T) {
+	st := fake.New()
+	u, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		DisplayName: "Alice A", AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newTestAuthHandler(t, st)
+
+	rr := doUpdateMe(t, h, u, `{"display_name":"Ali"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rr.Code, rr.Body)
+	}
+	after, err := st.GetUser(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DisplayName != "Ali" {
+		t.Errorf("DisplayName: got %q, want Ali", after.DisplayName)
+	}
+}
+
 func doUpdateMe(t *testing.T, h *authHandler, u store.User, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(

@@ -26,6 +26,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/store"
@@ -34,10 +35,14 @@ import (
 type usersHandler struct {
 	store  store.Store
 	logger *slog.Logger
+	// ldapRoleSource mirrors auth.ldap.role_source. In "directory" mode the
+	// group mapping owns an LDAP account's role, so a role edit here must be
+	// refused rather than accepted and silently reverted at next login.
+	ldapRoleSource string
 }
 
-func newUsersHandler(st store.Store, logger *slog.Logger) *usersHandler {
-	return &usersHandler{store: st, logger: logger}
+func newUsersHandler(st store.Store, logger *slog.Logger, ldapRoleSource string) *usersHandler {
+	return &usersHandler{store: st, logger: logger, ldapRoleSource: ldapRoleSource}
 }
 
 type userCreateRequest struct {
@@ -92,6 +97,9 @@ func (h *usersHandler) create(w http.ResponseWriter, r *http.Request) {
 	created, err := h.store.CreateUser(ctx, store.User{
 		ID: uuid.NewString(), Username: req.Username, DisplayName: req.DisplayName,
 		PasswordHash: hash, Role: req.Role,
+		// Directory accounts are provisioned by the login path on first
+		// successful bind, never through this form.
+		AuthSource: store.AuthSourceLocal,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -142,6 +150,11 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
+	if req.Role != nil && *req.Role != orig.Role && h.directoryOwnsRole(orig) {
+		writeProblem(w, r, http.StatusConflict,
+			"this account's role is managed by the directory (auth.ldap.role_source=directory); change the user's group membership instead")
+		return
+	}
 	u := orig
 	if req.DisplayName != nil {
 		u.DisplayName = *req.DisplayName
@@ -177,6 +190,16 @@ func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
 	var req passwordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
 		writeProblem(w, r, http.StatusBadRequest, "password is required")
+		return
+	}
+	target, err := h.store.GetUser(ctx, id)
+	if err != nil {
+		h.notFoundOr500(w, r, err, "retrieve")
+		return
+	}
+	if target.AuthSource != store.AuthSourceLocal {
+		writeProblem(w, r, http.StatusConflict,
+			"this account authenticates against the directory and has no local password")
 		return
 	}
 	hash, err := password.Hash(req.Password)
@@ -229,6 +252,16 @@ func (h *usersHandler) wouldRemoveLastAdmin(ctx context.Context, target store.Us
 		return false, err
 	}
 	return n <= 1, nil
+}
+
+// directoryOwnsRole reports whether u's role is recomputed from directory
+// groups at every login, making a local edit a no-op that reverts silently.
+//
+// A no-op "change" (same role in, same role out) is deliberately allowed by
+// the caller's *req.Role != orig.Role check: a client that PATCHes the whole
+// object back unchanged should not be rejected for a field it did not alter.
+func (h *usersHandler) directoryOwnsRole(u store.User) bool {
+	return u.AuthSource == store.AuthSourceLDAP && h.ldapRoleSource == ldap.RoleSourceDirectory
 }
 
 func (h *usersHandler) notFoundOr500(w http.ResponseWriter, r *http.Request, err error, verb string) {

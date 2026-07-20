@@ -9,12 +9,16 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -443,6 +447,201 @@ func TestUpdateUser_DisableLastAdminRejected(t *testing.T) {
 	}
 }
 
+// ── auth_source enforcement ──────────────────────────────────────────────────
+
+// In directory mode the role column is owned by the group mapping, so the
+// API must refuse an edit rather than accept one that silently reverts at the
+// user's next login.
+func TestUsers_RoleEditRejectedForLDAPUserInDirectoryMode(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	target, err := st.CreateUser(ctx, store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+		map[string]any{"role": "admin"}, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw := mustReadAll(t, resp)
+		t.Fatalf("got %d, want 409: %s", resp.StatusCode, raw)
+	}
+	after, err := st.GetUser(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Role != "user" {
+		t.Errorf("role changed despite 409: %q", after.Role)
+	}
+}
+
+// Non-role fields stay editable — an admin must still be able to disable a
+// directory account, which is the local override that works during an outage.
+func TestUsers_DisableAllowedForLDAPUserInDirectoryMode(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	target, err := st.CreateUser(ctx, store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+		map[string]any{"disabled": true}, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw := mustReadAll(t, resp)
+		t.Fatalf("got %d, want 200: %s", resp.StatusCode, raw)
+	}
+	after, err := st.GetUser(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Disabled {
+		t.Error("disabled flag not applied")
+	}
+}
+
+func TestUsers_RoleEditAllowedForLDAPUserInLocalMode(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	target, err := st.CreateUser(ctx, store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceLocal})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+		map[string]any{"role": "admin"}, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw := mustReadAll(t, resp)
+		t.Fatalf("got %d, want 200: %s", resp.StatusCode, raw)
+	}
+	after, err := st.GetUser(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Role != "admin" {
+		t.Errorf("role: got %q, want admin", after.Role)
+	}
+}
+
+// Role edits on LOCAL accounts are unaffected in either mode.
+func TestUsers_RoleEditAlwaysAllowedForLocalUser(t *testing.T) {
+	for _, mode := range []string{ldap.RoleSourceDirectory, ldap.RoleSourceLocal} {
+		t.Run(mode, func(t *testing.T) {
+			st := fake.New()
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			target := seedAuthUser(t, st, "bob", "bob-pw-1234", "user")
+			srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: mode})
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+				map[string]any{"role": "operator"}, cookie)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				raw := mustReadAll(t, resp)
+				t.Fatalf("got %d, want 200: %s", resp.StatusCode, raw)
+			}
+		})
+	}
+}
+
+// There is no local password to set on a directory account; a 409 says so
+// instead of pretending to succeed.
+func TestUsers_SetPasswordRejectedForLDAPUser(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	target, err := st.CreateUser(ctx, store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPut, srv.URL+"/api/v1/users/"+target.ID+"/password",
+		map[string]any{"password": "newpass1234"}, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw := mustReadAll(t, resp)
+		t.Fatalf("got %d, want 409: %s", resp.StatusCode, raw)
+	}
+}
+
+// POST /users always creates a local account: directory accounts arrive
+// through JIT provisioning, never through the admin form.
+func TestUsers_CreateAlwaysLocal(t *testing.T) {
+	st := fake.New()
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPost, srv.URL+"/api/v1/users",
+		map[string]any{
+			"username": "carol", "password": "pw-carol-1", "role": "user",
+			"auth_source": "ldap",
+		}, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw := mustReadAll(t, resp)
+		t.Fatalf("got %d, want 201: %s", resp.StatusCode, raw)
+	}
+	u, err := st.GetUserByUsername(context.Background(), "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.AuthSource != store.AuthSourceLocal {
+		t.Errorf("AuthSource: got %q, want local", u.AuthSource)
+	}
+}
+
+// The wire format exposes auth_source so the UI can explain why an account
+// behaves differently.
+func TestUsers_ResponseIncludesAuthSource(t *testing.T) {
+	st := fake.New()
+	if _, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users", nil, cookie)
+	defer resp.Body.Close()
+	raw, err := readAll(resp)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(raw), `"auth_source":"ldap"`) {
+		t.Errorf("auth_source missing from list response: %s", raw)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // loginCookie logs username/pw in against srv and returns the resulting
@@ -471,6 +670,18 @@ func readAll(resp *http.Response) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// mustReadAll reads resp's full body, failing the test on a read error. For
+// tests that only need the body to enrich a t.Fatalf message on an
+// already-failing status code.
+func mustReadAll(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+	raw, err := readAll(resp)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return raw
 }
 
 // assertNoSecretLeak fails the test if raw (a raw HTTP response body) contains
