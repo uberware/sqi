@@ -851,6 +851,33 @@ func TestLogin_PreC2LDAPRowIsRefusedLoudly(t *testing.T) {
 	}
 }
 
+// The same pre-C2 row, but reached under an alias: the caller types the UPN
+// "alice@example.com" while the row (and the directory) spell the account
+// "alice". The typed-name lookup in login() misses it, so loginLDAP is called
+// with existing=nil — the shape that, before this fix, made the pre-C2
+// diagnostic silently not fire even though docs/auth.md promises the log is
+// "the only signal" for this failure, with no carve-out for aliases.
+func TestLogin_PreC2LDAPRowByAliasIsRefusedLoudly(t *testing.T) {
+	st := fake.New()
+	seedPreC2LDAPUser(t, st, "alice") // directory spelling; the alias is never stored
+
+	v := &fakeVerifier{identity: aliceIdentity()} // Verify returns Username "alice"
+	srv, logs := newLDAPServerLogging(t, st, v, ldapCfg())
+
+	code, _ := postLogin(t, srv, "alice@example.com", "pw")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401 — a pre-C2 row must NOT be adopted", code)
+	}
+
+	got := logs.String()
+	for _, want := range []string{"alice", "recreate"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("server log does not mention %q for an alias-reached pre-C2 row, so "+
+				"the failure is effectively silent:\n%s", want, got)
+		}
+	}
+}
+
 // The diagnostic is server-side only. The 401 an unauthenticated caller sees
 // must stay byte-identical to every other failure, or the pre-C2 state becomes
 // an oracle telling an attacker which usernames exist in the directory.
@@ -919,5 +946,34 @@ func TestLogin_LocalCollisionDoesNotClaimPreC2(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "recreate") {
 		t.Errorf("a local-account collision was misreported as a pre-C2 row:\n%s", logs.String())
+	}
+}
+
+// The pre-C2 diagnostic must also not fire for a POST-C2 row colliding on a
+// recycled username: a new hire is handed a departed employee's directory
+// name, so the directory issues a fresh external_id under the same username.
+// The existing row (the departed user's, still perfectly valid) has
+// AuthSource=ldap and a non-empty ExternalID — the shape the gate at
+// logPreC2Account's second check exists to exclude. Misreporting this as
+// pre-C2 would tell the operator to delete and recreate the WRONG account:
+// the departed user's still-live one, not the new hire's non-existent one.
+// The correct remedy is a rename, not a recreate.
+func TestLogin_RecycledUsernameDoesNotClaimPreC2(t *testing.T) {
+	st := fake.New()
+	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"}) // stable external_id stamped
+
+	// The directory now answers "alice" with a DIFFERENT external id: a new
+	// hire recycling the departed employee's username.
+	newHire := aliceIdentity()
+	newHire.ExternalID = ldapExternalID("alice") + "-new-hire"
+	srv, logs := newLDAPServerLogging(t, st, &fakeVerifier{identity: newHire}, ldapCfg())
+
+	if code, _ := postLogin(t, srv, "alice", "pw"); code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", code)
+	}
+	if strings.Contains(logs.String(), "recreate") {
+		t.Errorf("a recycled-username collision on a post-C2 row was misreported as pre-C2, "+
+			"which would tell the operator to delete and recreate the departed user's still-valid "+
+			"account instead of renaming one of the two:\n%s", logs.String())
 	}
 }

@@ -171,6 +171,17 @@ func uniqueID(e *ldapv3.Entry, name string) string {
 	if len(raw) == 0 {
 		return ""
 	}
+	// This branch is why AD's objectGUID encoding is stable rather than
+	// content-dependent: RFC 4122 fixes the variant field (byte 8) to the
+	// bit pattern 10xxxxxx, i.e. 0x80-0xBF, which is a bare UTF-8 continuation
+	// byte with no valid leading byte before it. utf8.Valid can therefore
+	// never return true for a 16-byte RFC 4122 UUID, so the hex branch below
+	// is the only one a real objectGUID ever takes. For an arbitrary
+	// operator-configured binary attribute that is not a UUID, the choice
+	// becomes genuinely content-dependent — but the mapping stays
+	// deterministic and injective either way, so correctness does not depend
+	// on this invariant, only the "always hex-encoded" framing in
+	// docs/auth.md does.
 	if utf8.Valid(raw) {
 		return string(raw)
 	}

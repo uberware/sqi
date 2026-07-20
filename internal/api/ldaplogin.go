@@ -89,7 +89,7 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 		DisplayName: id.DisplayName,
 	}, role, h.ldapCfg.RoleSource == ldap.RoleSourceDirectory)
 	if err != nil {
-		h.logPreC2Account(ctx, existing, err)
+		h.logPreC2Account(ctx, existing, id.Username, err)
 		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 		return
 	}
@@ -129,9 +129,25 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 // identifier at all is a different fault (auth.ldap.unique_id_attr is wrong
 // for this server) with its own log in resolveExternalUser, and blaming a
 // pre-C2 row for it would send the operator to the wrong fix.
-func (h *authHandler) logPreC2Account(ctx context.Context, existing *store.User, err error) {
-	if existing == nil || !errors.Is(err, store.ErrConflict) {
+//
+// existing is nil when the caller was reached under an alias — the login
+// lookup runs on the typed username (say the UPN "alice@example.com"), which
+// misses a row stored under the directory's own spelling ("alice"), the
+// spelling the collision actually happened on. Re-reading by directoryUsername
+// (id.Username from the verified identity, i.e. the name provisioning just
+// collided on) recovers the row so the diagnostic still fires for the alias
+// case docs/auth.md promises it covers. A failed re-read just means there is
+// nothing more to say than the equalized 401 already says.
+func (h *authHandler) logPreC2Account(ctx context.Context, existing *store.User, directoryUsername string, err error) {
+	if !errors.Is(err, store.ErrConflict) {
 		return
+	}
+	if existing == nil {
+		row, lookupErr := h.store.GetUserByUsername(ctx, directoryUsername)
+		if lookupErr != nil {
+			return
+		}
+		existing = &row
 	}
 	if existing.AuthSource != store.AuthSourceLDAP || existing.ExternalID != "" {
 		return
