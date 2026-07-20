@@ -156,6 +156,9 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
         <div className={styles.field}>
           <label htmlFor="user-role" className={styles.label}>
             Role
+            {roleManagedExternally && (
+              <span className={styles.labelQualifier}> (managed by the directory)</span>
+            )}
           </label>
           <select
             id="user-role"

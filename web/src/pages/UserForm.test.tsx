@@ -29,6 +29,7 @@ function user(overrides: Record<string, unknown> = {}) {
     username: 'alice',
     role: 'operator',
     disabled: false,
+    auth_source: 'local',
     created_at: '2026-06-28T00:00:00Z',
     updated_at: '2026-06-28T00:00:00Z',
     ...overrides,
@@ -204,9 +205,13 @@ describe('UserForm (edit)', () => {
       }),
     )
     renderEdit('u1')
-    const select = await screen.findByLabelText('Role')
+    const select = await screen.findByLabelText('Role (managed by the directory)')
     expect(select).toBeDisabled()
-    expect(screen.getByText(/managed by the directory/i)).toBeInTheDocument()
+    // The accessible-name qualifier on the <label> ("Role (managed by the
+    // directory)") and this hint <p> both contain "managed by the
+    // directory" text, so match on the hint's fuller sentence to target it
+    // specifically rather than the label.
+    expect(screen.getByText(/change this user's group membership instead/i)).toBeInTheDocument()
   })
 
   it('leaves the role control enabled for a local account', async () => {
@@ -240,7 +245,7 @@ describe('UserForm (edit)', () => {
       }),
     )
     renderEdit('u1')
-    await screen.findByLabelText('Role')
+    await screen.findByLabelText('Role (managed by the directory)')
     fetchMock.mockResolvedValueOnce(ok({}))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     // Located by method rather than a fixed call index: a successful PATCH

@@ -36,6 +36,7 @@ function user(overrides: Record<string, unknown> = {}) {
     username: 'alice',
     role: 'operator',
     disabled: false,
+    auth_source: 'local',
     created_at: '2026-06-28T00:00:00Z',
     updated_at: '2026-06-28T00:00:00Z',
     ...overrides,
