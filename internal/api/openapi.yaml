@@ -1453,7 +1453,7 @@ components:
 
     User:
       type: object
-      required: [id, username, role, auth_source, disabled, created_at, updated_at]
+      required: [id, username, role, auth_source, role_editable, disabled, created_at, updated_at]
       properties:
         id:
           type: string
@@ -1473,6 +1473,17 @@ components:
             Set at creation and immutable. Accounts created through
             `POST /users` are always `local`; `ldap` accounts are provisioned
             just-in-time on first successful directory login.
+        role_editable:
+          type: boolean
+          description: >
+            Whether `PATCH /users/{id}` will accept a `role` change for this
+            account. False only when `auth_source` is `ldap` **and**
+            `auth.ldap.role_source` is `directory`, in which case the group
+            mapping owns the role and a role edit returns `409`. Computed
+            server-side because `auth.ldap.role_source` is not otherwise
+            exposed: a client cannot derive this from `auth_source` alone, and
+            one that tries will wrongly lock the control for LDAP accounts
+            under `role_source: local`, where role edits are permitted.
         disabled:
           type: boolean
         created_at:

@@ -105,26 +105,37 @@ type loginRequest struct {
 }
 
 type userResponse struct {
-	ID          string    `json:"id"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"display_name,omitempty"`
-	Role        string    `json:"role"`
-	AuthSource  string    `json:"auth_source"`
-	Disabled    bool      `json:"disabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name,omitempty"`
+	Role        string `json:"role"`
+	AuthSource  string `json:"auth_source"`
+	// RoleEditable tells the client whether PATCH /users/{id} will accept a
+	// role change for this account. It is computed server-side, from the same
+	// predicate that guards the PATCH, precisely so no client has to
+	// reconstruct the two-condition rule (auth_source AND role_source) — the
+	// role_source half is not otherwise exposed by any endpoint, so a client
+	// inferring from auth_source alone gets role_source=local wrong.
+	RoleEditable bool      `json:"role_editable"`
+	Disabled     bool      `json:"disabled"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-func toUserResponse(u store.User) userResponse {
+// toUserResponse renders u for the wire. ldapRoleSource is the active
+// auth.ldap.role_source; it is threaded in rather than read from a global so
+// the value always comes from the handler that owns the request.
+func toUserResponse(u store.User, ldapRoleSource string) userResponse {
 	return userResponse{
-		ID:          u.ID,
-		Username:    u.Username,
-		DisplayName: u.DisplayName,
-		Role:        u.Role,
-		AuthSource:  u.AuthSource,
-		Disabled:    u.Disabled,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:           u.ID,
+		Username:     u.Username,
+		DisplayName:  u.DisplayName,
+		Role:         u.Role,
+		AuthSource:   u.AuthSource,
+		RoleEditable: !directoryOwnsRole(u, ldapRoleSource),
+		Disabled:     u.Disabled,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
 	}
 }
 
@@ -166,8 +177,13 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		h.loginLDAP(w, r, req.Username, req.Password, &u)
 
 	case store.AuthSourceLocal, "":
-		// "" is a row written before the auth_source column existed; both
-		// stores default it to "local" on read, and it means the same thing.
+		// "" is a row written before the auth_source column existed, and it
+		// means the same thing as "local". Nothing normalizes it on read:
+		// SQLite backfills existing rows once, at migration time, and the
+		// fake defaults the field in CreateUser. A row that still carries ""
+		// — one the migration missed, or a hand-written insert — reaches this
+		// switch as "", so the empty case is matched here rather than relied
+		// on to have been rewritten upstream.
 		h.loginLocal(w, r, req, u)
 
 	default:
@@ -236,7 +252,7 @@ func (h *authHandler) loginLocal(w http.ResponseWriter, r *http.Request, req log
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource))
 }
 
 // logout revokes the caller's server-side session (if the cookie resolves to

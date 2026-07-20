@@ -18,8 +18,11 @@ package api
 // unrecognized auth_source) from a local argon2id check from a directory
 // round trip, and so can learn something about which backend owns a
 // username. Equalizing that is not achievable — an argon2id derivation and a
-// WAN LDAP bind cannot be made to cost the same — so rate limiting on
-// /auth/login is the mitigation, not a timing fix in this file.
+// WAN LDAP bind cannot be made to cost the same — so the mitigation is rate
+// limiting, not a timing fix in this file. Note that sqi ships only a generic
+// per-IP limiter over all of /api/v1 (20 req/s, burst 40), which is not a
+// brute-force control; see "Brute force" in docs/auth.md for what that does
+// and does not cover, including AD badPwdCount lockout.
 
 import (
 	"context"
@@ -96,7 +99,7 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource))
 }
 
 // resolveLDAPUser returns the local record for a verified directory identity,

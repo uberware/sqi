@@ -25,7 +25,7 @@ interface Defaults {
   displayName: string
   role: string
   disabled: boolean
-  authSource: string
+  roleEditable: boolean
 }
 
 interface InnerProps {
@@ -48,10 +48,13 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
   const [disabled, setDisabled] = useState(defaults.disabled)
   const [newPassword, setNewPassword] = useState('')
 
-  // Mirrors the server's PATCH /users/{id} guard: in role_source=directory
-  // mode the group mapping owns an LDAP account's role. Showing an editable
-  // control here would offer a change that is rejected on save.
-  const roleManagedExternally = defaults.authSource === 'ldap'
+  // Straight from the server's `role_editable`, which it computes from the
+  // same predicate that guards PATCH /users/{id}. Deliberately not inferred
+  // from auth_source: the guard is two conditions (auth_source=ldap AND
+  // role_source=directory) and role_source is not on the wire, so inferring
+  // would disable the control for LDAP accounts under role_source=local,
+  // where the server does accept a role change.
+  const roleManagedExternally = !defaults.roleEditable
 
   const isPending = createUser.isPending || updateUser.isPending
   const canSubmit =
@@ -73,10 +76,11 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
         await createUser.mutateAsync(input)
         showToast(`User "${trimmedUsername}" created`, 'success')
       } else {
-        // A directory-managed account's role is omitted rather than sent
-        // unchanged: the server rejects any role field in the PATCH body for
-        // an ldap account in role_source=directory mode, even one matching
-        // its current value.
+        // The role is omitted when the server says it is not editable. A
+        // no-op role (equal to the stored one) would in fact be accepted —
+        // the server compares against the current value before rejecting —
+        // but the control is disabled here, so there is nothing to send and
+        // omitting it keeps the request honest about what the form changed.
         const input: UserUpdateInput = roleManagedExternally
           ? { display_name: trimmedDisplayName, disabled }
           : { display_name: trimmedDisplayName, disabled, role }
@@ -260,7 +264,7 @@ export default function UserForm({ mode }: Props) {
           displayName: data.display_name ?? '',
           role: data.role,
           disabled: data.disabled,
-          authSource: data.auth_source,
+          roleEditable: data.role_editable,
         }}
       />
     )
@@ -275,7 +279,9 @@ export default function UserForm({ mode }: Props) {
         displayName: '',
         role: 'user',
         disabled: false,
-        authSource: 'local',
+        // POST /users always creates a local account, so its role is always
+        // editable — there is no server response to read this from yet.
+        roleEditable: true,
       }}
     />
   )

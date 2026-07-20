@@ -526,6 +526,14 @@ export interface User {
    * the server rejects a role edit with 409.
    */
   auth_source: AuthSource
+  /**
+   * Whether `PATCH /users/{id}` accepts a `role` change for this account.
+   * Computed by the server from both halves of its guard (`auth_source` AND
+   * `auth.ldap.role_source`). Do not re-derive it from `auth_source`:
+   * `role_source: local` leaves an LDAP account's role editable, and the
+   * server never exposes `role_source` for a client to check.
+   */
+  role_editable: boolean
   disabled: boolean
   created_at: string
   updated_at: string

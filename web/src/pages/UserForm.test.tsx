@@ -30,6 +30,7 @@ function user(overrides: Record<string, unknown> = {}) {
     role: 'operator',
     disabled: false,
     auth_source: 'local',
+    role_editable: true,
     created_at: '2026-06-28T00:00:00Z',
     updated_at: '2026-06-28T00:00:00Z',
     ...overrides,
@@ -191,7 +192,7 @@ describe('UserForm (edit)', () => {
     expect(patchCalls.length).toBe(0)
   })
 
-  it('disables the role control for a directory-managed account', async () => {
+  it('disables the role control when the server says the role is not editable', async () => {
     fetchMock.mockResolvedValueOnce(
       ok({
         id: 'u1',
@@ -199,6 +200,8 @@ describe('UserForm (edit)', () => {
         display_name: 'Alice',
         role: 'user',
         auth_source: 'ldap',
+        // role_source=directory server-side: the group mapping owns the role.
+        role_editable: false,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -222,6 +225,7 @@ describe('UserForm (edit)', () => {
         display_name: 'Bob',
         role: 'user',
         auth_source: 'local',
+        role_editable: true,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -229,6 +233,60 @@ describe('UserForm (edit)', () => {
     )
     renderEdit('u2')
     expect(await screen.findByLabelText('Role')).toBeEnabled()
+  })
+
+  // The regression this guards: the control used to be derived from
+  // auth_source alone, which disabled it for every LDAP account. Under
+  // auth.ldap.role_source=local the server accepts the role change, so the
+  // only correct source is the server's own role_editable.
+  it('leaves the role control enabled for an ldap account the server says is editable', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok({
+        id: 'u3',
+        username: 'carol',
+        display_name: 'Carol',
+        role: 'user',
+        auth_source: 'ldap',
+        // role_source=local server-side: the local column owns the role.
+        role_editable: true,
+        disabled: false,
+        created_at: '2026-07-19T00:00:00Z',
+        updated_at: '2026-07-19T00:00:00Z',
+      }),
+    )
+    renderEdit('u3')
+    expect(await screen.findByLabelText('Role')).toBeEnabled()
+    expect(screen.queryByText(/change this user's group membership instead/i)).toBeNull()
+  })
+
+  it('sends role in the PATCH body for an ldap account the server says is editable', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok({
+        id: 'u3',
+        username: 'carol',
+        display_name: 'Carol',
+        role: 'user',
+        auth_source: 'ldap',
+        role_editable: true,
+        disabled: false,
+        created_at: '2026-07-19T00:00:00Z',
+        updated_at: '2026-07-19T00:00:00Z',
+      }),
+    )
+    renderEdit('u3')
+    await screen.findByLabelText('Role')
+    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'admin' } })
+    fetchMock.mockResolvedValueOnce(ok({}))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const patch = await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
+      )
+      expect(call).toBeDefined()
+      return call as [string, RequestInit]
+    })
+    const body = JSON.parse(String(patch[1].body ?? '{}')) as Record<string, unknown>
+    expect(body['role']).toBe('admin')
   })
 
   it('omits role from the PATCH body for a directory-managed account', async () => {
@@ -239,6 +297,7 @@ describe('UserForm (edit)', () => {
         display_name: 'Alice',
         role: 'user',
         auth_source: 'ldap',
+        role_editable: false,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -259,7 +318,10 @@ describe('UserForm (edit)', () => {
       return call as [string, RequestInit]
     })
     const body = JSON.parse(String(patch[1].body ?? '{}')) as Record<string, unknown>
-    // Sending role would earn a 409 from the server; the client must not ask.
+    // The control is disabled, so the form has no role change to report. (A
+    // role equal to the stored one would actually be accepted by the server,
+    // which only rejects an actual change — omitting it is about reporting
+    // only what the form edited, not about dodging a 409.)
     expect(body).not.toHaveProperty('role')
     expect(body).toHaveProperty('display_name')
   })

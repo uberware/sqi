@@ -110,7 +110,7 @@ func (h *usersHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create user")
 		return
 	}
-	writeJSON(w, http.StatusCreated, toUserResponse(created))
+	writeJSON(w, http.StatusCreated, toUserResponse(created, h.ldapRoleSource))
 }
 
 func (h *usersHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func (h *usersHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]userResponse, len(users))
 	for i, u := range users {
-		resp[i] = toUserResponse(u)
+		resp[i] = toUserResponse(u, h.ldapRoleSource)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -134,7 +134,7 @@ func (h *usersHandler) get(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapRoleSource))
 }
 
 func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +150,7 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
-	if req.Role != nil && *req.Role != orig.Role && h.directoryOwnsRole(orig) {
+	if req.Role != nil && *req.Role != orig.Role && directoryOwnsRole(orig, h.ldapRoleSource) {
 		writeProblem(w, r, http.StatusConflict,
 			"this account's role is managed by the directory (auth.ldap.role_source=directory); change the user's group membership instead")
 		return
@@ -181,7 +181,7 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "update")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(updated))
+	writeJSON(w, http.StatusOK, toUserResponse(updated, h.ldapRoleSource))
 }
 
 func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
@@ -257,11 +257,17 @@ func (h *usersHandler) wouldRemoveLastAdmin(ctx context.Context, target store.Us
 // directoryOwnsRole reports whether u's role is recomputed from directory
 // groups at every login, making a local edit a no-op that reverts silently.
 //
+// This is the single source of truth for the rule, and it is deliberately a
+// package-level function rather than a method: the PATCH guard below and the
+// role_editable field on the wire format (see toUserResponse) must never be
+// able to disagree, and both conditions matter — an LDAP account under
+// role_source=local IS editable.
+//
 // A no-op "change" (same role in, same role out) is deliberately allowed by
 // the caller's *req.Role != orig.Role check: a client that PATCHes the whole
 // object back unchanged should not be rejected for a field it did not alter.
-func (h *usersHandler) directoryOwnsRole(u store.User) bool {
-	return u.AuthSource == store.AuthSourceLDAP && h.ldapRoleSource == ldap.RoleSourceDirectory
+func directoryOwnsRole(u store.User, ldapRoleSource string) bool {
+	return u.AuthSource == store.AuthSourceLDAP && ldapRoleSource == ldap.RoleSourceDirectory
 }
 
 func (h *usersHandler) notFoundOr500(w http.ResponseWriter, r *http.Request, err error, verb string) {

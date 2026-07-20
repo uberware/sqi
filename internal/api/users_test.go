@@ -688,6 +688,98 @@ func TestUsers_ResponseIncludesAuthSource(t *testing.T) {
 	}
 }
 
+// role_editable is the server telling the client what its own PATCH guard
+// will do. The client cannot compute it: the guard is two conditions and
+// role_source is on neither the user record nor any endpoint. Getting the
+// role_source=local row wrong is the exact bug this field exists to prevent —
+// the UI disabled the role control for every LDAP account, including the ones
+// the server happily accepts edits for.
+func TestUsers_ResponseRoleEditable(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		roleSource string
+		want       bool
+	}{
+		{"ldap user, directory mode", store.AuthSourceLDAP, ldap.RoleSourceDirectory, false},
+		{"ldap user, local mode", store.AuthSourceLDAP, ldap.RoleSourceLocal, true},
+		{"local user, directory mode", store.AuthSourceLocal, ldap.RoleSourceDirectory, true},
+		{"local user, local mode", store.AuthSourceLocal, ldap.RoleSourceLocal, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: tt.authSource, PasswordHash: "!ldap",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: tt.roleSource})
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			resp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("got %d, want 200: %s", resp.StatusCode, mustReadAll(t, resp))
+			}
+			var got struct {
+				RoleEditable bool `json:"role_editable"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.RoleEditable != tt.want {
+				t.Errorf("role_editable: got %v, want %v", got.RoleEditable, tt.want)
+			}
+		})
+	}
+}
+
+// The advertised value and the enforced behavior must agree: whatever
+// role_editable says, a role PATCH must succeed exactly when it is true.
+// Asserting them together is what keeps the field from drifting away from the
+// guard it is supposed to describe.
+func TestUsers_RoleEditableMatchesPatchOutcome(t *testing.T) {
+	for _, mode := range []string{ldap.RoleSourceDirectory, ldap.RoleSourceLocal} {
+		t.Run(mode, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: mode})
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			getResp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			var advertised struct {
+				RoleEditable bool `json:"role_editable"`
+			}
+			if err := json.NewDecoder(getResp.Body).Decode(&advertised); err != nil {
+				getResp.Body.Close()
+				t.Fatalf("decode: %v", err)
+			}
+			getResp.Body.Close()
+
+			patchResp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+				map[string]any{"role": "admin"}, cookie)
+			defer patchResp.Body.Close()
+
+			accepted := patchResp.StatusCode == http.StatusOK
+			if accepted != advertised.RoleEditable {
+				t.Errorf("role_editable=%v but PATCH returned %d — the advertised value and the guard disagree",
+					advertised.RoleEditable, patchResp.StatusCode)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // loginCookie logs username/pw in against srv and returns the resulting
