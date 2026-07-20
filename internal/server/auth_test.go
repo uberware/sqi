@@ -178,6 +178,39 @@ func TestSelectAuth_LDAPDisabledInjectsNoVerifier(t *testing.T) {
 	}
 }
 
+// TestSelectAuth_AuthDisabledInjectsNoVerifier is the auth-off half of the
+// same invariant: auth.enabled=false must produce no verifier even when
+// auth.ldap.* is fully and validly configured with enabled=true. Without the
+// AuthEnabled arm of buildLDAPVerifier's guard, an auth-off server would hold
+// a live directory verifier and POST /auth/login — which is mounted
+// unconditionally and has no AuthEnabled check of its own — would bind
+// against the directory and just-in-time provision accounts on a server the
+// operator believes has authentication turned off entirely.
+func TestSelectAuth_AuthDisabledInjectsNoVerifier(t *testing.T) {
+	cfg := Config{AuthEnabled: false}
+	cfg.AuthLDAP = config.LDAPConfig{
+		Enabled: true,
+		URL:     "ldap://dc.example.com:389",
+		Timeout: 10 * time.Second,
+		BaseDN:  "DC=example,DC=com", BindDN: "CN=svc,DC=example,DC=com",
+		UserFilter: "(sAMAccountName=%s)",
+		RoleSource: "directory", DefaultRole: "read-only",
+	}
+	s := &Server{
+		cfg:    cfg,
+		store:  fake.New(),
+		logger: testLogger(),
+	}
+
+	v, err := s.buildLDAPVerifier(context.Background())
+	if err != nil {
+		t.Fatalf("buildLDAPVerifier: %v", err)
+	}
+	if v != nil {
+		t.Errorf("expected nil verifier when auth is disabled, got %T", v)
+	}
+}
+
 // TestSelectAuth_LDAPBadCAFileFailsBoot: a misconfigured directory must abort
 // boot rather than yield a server that silently cannot authenticate any
 // directory account.

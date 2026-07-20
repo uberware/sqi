@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/session"
@@ -476,6 +477,61 @@ func TestLogin_LDAPDisabledUnknownUserStill401(t *testing.T) {
 	}
 	if _, err := st.GetUserByUsername(t.Context(), "ghost"); err == nil {
 		t.Error("no user may be provisioned with LDAP off")
+	}
+}
+
+// authDisabledRouter mirrors the composition the server builds when
+// auth.enabled=false: the anonymous superuser authenticator, AuthEnabled off,
+// and no directory dependencies at all.
+//
+// The verifier is deliberately NOT wired here even though the test below
+// asserts it is never called. That is not a weaker test, it is the accurate
+// one: Server.buildLDAPVerifier gates on AuthEnabled *before* it looks at
+// auth.ldap.enabled, so an auth-off server cannot hold a verifier however
+// auth.ldap.* is configured. Wiring one in would construct a router
+// production can never produce — login() itself has no AuthEnabled check, by
+// design, because the gate lives one layer up. The gate is pinned directly by
+// TestSelectAuth_AuthDisabledInjectsNoVerifier in internal/server; this test
+// pins the observable behavior on the other side of it.
+func authDisabledRouter(st store.Store) chi.Router {
+	return NewRouter(
+		Config{DisableRateLimit: true},
+		Deps{
+			Store:      st,
+			Products:   product.NewCatalog(st),
+			Auth:       auth.Anonymous(),
+			CookieName: "sqi_session",
+		},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	)
+}
+
+// With auth disabled, nothing in C1 may be reachable: there is no principal to
+// provision against and every pre-C1 login behavior must hold. An unknown
+// username returns the same equalized 401 it returned before the directory
+// path existed, the directory is never consulted, and no account appears in
+// the store.
+func TestLogin_AuthDisabledIgnoresLDAP(t *testing.T) {
+	st := fake.New()
+	v := &fakeVerifier{identity: aliceIdentity()}
+	srv := httptest.NewServer(authDisabledRouter(st))
+	t.Cleanup(srv.Close)
+
+	if code, body := postLogin(t, srv, "alice", "pw"); code != http.StatusUnauthorized {
+		t.Fatalf("login with auth disabled: got %d, want 401: %s", code, body)
+	}
+	if n := v.callCount(); n != 0 {
+		t.Errorf("verifier called %d times with auth disabled, want 0", n)
+	}
+	if _, err := st.GetUserByUsername(t.Context(), "alice"); err == nil {
+		t.Error("no user may be provisioned with auth disabled")
+	}
+	users, err := st.ListUsers(t.Context())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 0 {
+		t.Errorf("got %d users, want 0 — auth-off login must write nothing: %+v", len(users), users)
 	}
 }
 
