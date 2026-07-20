@@ -332,6 +332,17 @@ type LDAPConfig struct {
 	// Env: SQI_AUTH_LDAP_DISPLAY_NAME_ATTR
 	DisplayNameAttr string `yaml:"display_name_attr"`
 
+	// UniqueIDAttr names the attribute holding the entry's stable,
+	// non-reusable identifier: "objectGUID" on Active Directory, "entryUUID"
+	// on OpenLDAP and other RFC 4530 servers.
+	//
+	// Required when LDAP is enabled, with no default: no single value is
+	// correct on both server families, and probing for one would silently
+	// guess wrong on a server exposing both. Accounts are matched on this,
+	// never on username — a name lets a recycled identity inherit an account.
+	// Env: SQI_AUTH_LDAP_UNIQUE_ID_ATTR
+	UniqueIDAttr string `yaml:"unique_id_attr"`
+
 	// RoleSource decides who owns an LDAP user's role:
 	//   - "directory" (default): recomputed from groups on every login, and
 	//     the users API rejects role edits on LDAP accounts.

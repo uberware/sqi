@@ -56,9 +56,15 @@ type Config struct {
 	UserDNTemplate  string
 	UsernameAttr    string
 	DisplayNameAttr string
-	RoleSource      string
-	RoleMap         []RoleMapping
-	DefaultRole     string
+	// UniqueIDAttr names the attribute holding the entry's stable,
+	// non-reusable identifier: objectGUID on Active Directory, entryUUID on
+	// OpenLDAP and other RFC 4530 servers. Required — there is no value
+	// correct on both, and auto-detection would silently guess wrong on a
+	// server exposing both.
+	UniqueIDAttr string
+	RoleSource   string
+	RoleMap      []RoleMapping
+	DefaultRole  string
 	// Logger receives the operational warnings this package cannot resolve on
 	// its own — currently only a failed nested-group expansion, which degrades
 	// silently to flat memberOf and would otherwise demote admins who hold

@@ -184,6 +184,7 @@ type fileConfig struct {
 			UserDNTemplate  *string `yaml:"user_dn_template"`
 			UsernameAttr    *string `yaml:"username_attr"`
 			DisplayNameAttr *string `yaml:"display_name_attr"`
+			UniqueIDAttr    *string `yaml:"unique_id_attr"`
 			RoleSource      *string `yaml:"role_source"`
 			RoleMap         *[]struct {
 				Group string `yaml:"group"`
@@ -492,6 +493,7 @@ func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 	setIfNotNilString(&d.UserDNTemplate, l.UserDNTemplate)
 	setIfNotNilString(&d.UsernameAttr, l.UsernameAttr)
 	setIfNotNilString(&d.DisplayNameAttr, l.DisplayNameAttr)
+	setIfNotNilString(&d.UniqueIDAttr, l.UniqueIDAttr)
 	setIfNotNilString(&d.RoleSource, l.RoleSource)
 	setIfNotNilString(&d.DefaultRole, l.DefaultRole)
 	if l.RoleMap != nil {
@@ -603,6 +605,7 @@ func applyLDAPEnv(cfg *LDAPConfig) error {
 	setString(&cfg.UserDNTemplate, "SQI_AUTH_LDAP_USER_DN_TEMPLATE")
 	setString(&cfg.UsernameAttr, "SQI_AUTH_LDAP_USERNAME_ATTR")
 	setString(&cfg.DisplayNameAttr, "SQI_AUTH_LDAP_DISPLAY_NAME_ATTR")
+	setString(&cfg.UniqueIDAttr, "SQI_AUTH_LDAP_UNIQUE_ID_ATTR")
 	setString(&cfg.RoleSource, "SQI_AUTH_LDAP_ROLE_SOURCE")
 	setString(&cfg.DefaultRole, "SQI_AUTH_LDAP_DEFAULT_ROLE")
 	return errors.Join(errs...)

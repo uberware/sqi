@@ -367,11 +367,14 @@ func validateAuthLDAP(cfg LDAPConfig) []ValidationError {
 	return errs
 }
 
-// validateLDAPAttrs requires the two attribute names that both bind modes put
-// on the wire verbatim. Neither has a safe empty meaning: an empty string is
-// sent as an attribute name in the search request, which directories reject
-// outright or answer in ways nothing here expects. Both carry defaults, so
-// reaching this error means the operator explicitly cleared one.
+// validateLDAPAttrs requires the attribute names that both bind modes put on
+// the wire verbatim. None has a safe empty meaning: an empty string is sent as
+// an attribute name in the search request, which directories reject outright
+// or answer in ways nothing here expects.
+//
+// username_attr and display_name_attr carry defaults, so reaching those errors
+// means the operator explicitly cleared one. unique_id_attr deliberately has
+// no default and must always be stated — see its error message.
 func validateLDAPAttrs(cfg LDAPConfig) []ValidationError {
 	var errs []ValidationError
 	if cfg.UsernameAttr == "" {
@@ -384,6 +387,14 @@ func validateLDAPAttrs(cfg LDAPConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field:   "auth.ldap.display_name_attr",
 			Message: `must not be empty; set SQI_AUTH_LDAP_DISPLAY_NAME_ATTR or auth.ldap.display_name_attr (e.g. "displayName" or "cn")`,
+		})
+	}
+	if cfg.UniqueIDAttr == "" {
+		errs = append(errs, ValidationError{
+			Field: "auth.ldap.unique_id_attr",
+			Message: `must not be empty; set SQI_AUTH_LDAP_UNIQUE_ID_ATTR or auth.ldap.unique_id_attr ` +
+				`("objectGUID" on Active Directory, "entryUUID" on OpenLDAP). There is deliberately no ` +
+				`default: no value is correct on both.`,
 		})
 	}
 	return errs

@@ -592,6 +592,7 @@ func toLDAPConfig(c config.LDAPConfig, logger *slog.Logger) ldap.Config {
 		UserDNTemplate:  c.UserDNTemplate,
 		UsernameAttr:    c.UsernameAttr,
 		DisplayNameAttr: c.DisplayNameAttr,
+		UniqueIDAttr:    c.UniqueIDAttr,
 		RoleSource:      c.RoleSource,
 		DefaultRole:     c.DefaultRole,
 		Logger:          logger,

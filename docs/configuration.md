@@ -824,6 +824,7 @@ below only runs when `auth.ldap.enabled` is true.
 | `auth.ldap.user_dn_template` | string | `""` | `SQI_AUTH_LDAP_USER_DN_TEMPLATE` |
 | `auth.ldap.username_attr` | string | `sAMAccountName` | `SQI_AUTH_LDAP_USERNAME_ATTR` |
 | `auth.ldap.display_name_attr` | string | `displayName` | `SQI_AUTH_LDAP_DISPLAY_NAME_ATTR` |
+| `auth.ldap.unique_id_attr` | string | *(none — required)* | `SQI_AUTH_LDAP_UNIQUE_ID_ATTR` |
 | `auth.ldap.role_source` | string | `directory` | `SQI_AUTH_LDAP_ROLE_SOURCE` |
 | `auth.ldap.role_map` | list | `[]` | *(file only — no env form)* |
 | `auth.ldap.default_role` | string | `read-only` | `SQI_AUTH_LDAP_DEFAULT_ROLE` |
@@ -882,6 +883,7 @@ auth:
     user_filter: "(sAMAccountName=%s)"
     username_attr: "sAMAccountName"
     display_name_attr: "displayName"
+    unique_id_attr: "objectGUID"   # "entryUUID" on OpenLDAP; no default, always required
     nested_groups: true
     role_source: "directory"
     role_map:
@@ -1044,6 +1046,7 @@ for the detector schema reference.
 | `auth.ldap.user_dn_template` | string | `""` | `SQI_AUTH_LDAP_USER_DN_TEMPLATE` | — |
 | `auth.ldap.username_attr` | string | `sAMAccountName` | `SQI_AUTH_LDAP_USERNAME_ATTR` | — |
 | `auth.ldap.display_name_attr` | string | `displayName` | `SQI_AUTH_LDAP_DISPLAY_NAME_ATTR` | — |
+| `auth.ldap.unique_id_attr` | string | *(none — required)* | `SQI_AUTH_LDAP_UNIQUE_ID_ATTR` | — |
 | `auth.ldap.role_source` | string | `directory` | `SQI_AUTH_LDAP_ROLE_SOURCE` | — |
 | `auth.ldap.role_map` | list | `[]` | — | — |
 | `auth.ldap.default_role` | string | `read-only` | `SQI_AUTH_LDAP_DEFAULT_ROLE` | — |

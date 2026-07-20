@@ -957,6 +957,13 @@ func TestAuthConfigDefaults(t *testing.T) {
 	if c.Auth.LDAP.DisplayNameAttr != "displayName" {
 		t.Fatalf("ldap display_name_attr default = %q, want displayName", c.Auth.LDAP.DisplayNameAttr)
 	}
+	// unique_id_attr deliberately has no default: "objectGUID" and
+	// "entryUUID" are each wrong on the other server family, and a default
+	// would let a deployment start with the wrong one rather than say so.
+	if c.Auth.LDAP.UniqueIDAttr != "" {
+		t.Fatalf("ldap unique_id_attr default = %q, want empty (it must be stated explicitly)",
+			c.Auth.LDAP.UniqueIDAttr)
+	}
 	if c.Auth.LDAP.RoleSource != "directory" {
 		t.Fatalf("ldap role_source default = %q, want directory", c.Auth.LDAP.RoleSource)
 	}
@@ -1330,6 +1337,7 @@ func TestMarshalYAML_LDAPConfigFieldsSurviveRedaction(t *testing.T) {
 		UserDNTemplate:  "uid=%s,dc=example,dc=com",
 		UsernameAttr:    "uid",
 		DisplayNameAttr: "cn",
+		UniqueIDAttr:    "objectGUID",
 		RoleSource:      "local",
 		RoleMap: []config.RoleMappingConfig{
 			{Group: "cn=admins,dc=example,dc=com", Role: "admin"},
@@ -1354,6 +1362,7 @@ func TestMarshalYAML_LDAPConfigFieldsSurviveRedaction(t *testing.T) {
 		"uid=%s,dc=example,dc=com",
 		"uid",
 		"cn",
+		"objectGUID",
 		"local",
 		"cn=admins,dc=example,dc=com",
 		"admin",
@@ -1582,6 +1591,7 @@ func TestAuthLDAPEnvOverrides(t *testing.T) {
 	t.Setenv("SQI_AUTH_LDAP_TIMEOUT", "5s")
 	t.Setenv("SQI_AUTH_LDAP_ROLE_SOURCE", "local")
 	t.Setenv("SQI_AUTH_LDAP_DEFAULT_ROLE", "user")
+	t.Setenv("SQI_AUTH_LDAP_UNIQUE_ID_ATTR", "objectGUID")
 
 	c, err := config.Load("", config.FlagOverrides{})
 	if err != nil {
@@ -1611,6 +1621,9 @@ func TestAuthLDAPEnvOverrides(t *testing.T) {
 	if c.Auth.LDAP.DefaultRole != "user" {
 		t.Errorf("Auth.LDAP.DefaultRole: got %q, want user", c.Auth.LDAP.DefaultRole)
 	}
+	if c.Auth.LDAP.UniqueIDAttr != "objectGUID" {
+		t.Errorf("Auth.LDAP.UniqueIDAttr: got %q, want objectGUID", c.Auth.LDAP.UniqueIDAttr)
+	}
 }
 
 func TestLoad_AuthLDAPFileOverride(t *testing.T) {
@@ -1633,6 +1646,7 @@ auth:
       - group: "CN=Artists,DC=example,DC=com"
         role: user
     default_role: "read-only"
+    unique_id_attr: "entryUUID"
 `
 	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -1667,6 +1681,9 @@ auth:
 	}
 	if cfg.Auth.LDAP.DefaultRole != "read-only" {
 		t.Errorf("default_role: got %q, want read-only", cfg.Auth.LDAP.DefaultRole)
+	}
+	if cfg.Auth.LDAP.UniqueIDAttr != "entryUUID" {
+		t.Errorf("unique_id_attr: got %q, want entryUUID", cfg.Auth.LDAP.UniqueIDAttr)
 	}
 	// Unset ldap fields keep defaults; sibling sub-blocks are untouched.
 	if cfg.Auth.LDAP.RoleSource != "directory" {
@@ -1790,6 +1807,22 @@ func TestValidate_AuthLDAP(t *testing.T) {
 			l.DisplayNameAttr = ""
 			c.Auth.LDAP = l
 		}, true},
+		// unique_id_attr is the account-matching key. Unlike the other two it
+		// has no default to fall back on, so an unset value is the state an
+		// operator upgrading from C1 arrives in — and starting anyway would
+		// mean every login presents an empty identifier.
+		{"empty unique_id_attr", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.UniqueIDAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"empty unique_id_attr in template mode", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
+			l.UniqueIDAttr = ""
+			c.Auth.LDAP = l
+		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1818,11 +1851,43 @@ func validSearchLDAP() config.LDAPConfig {
 		BaseDN:       "DC=example,DC=com",
 		UserFilter:   "(sAMAccountName=%s)",
 		UsernameAttr: "sAMAccountName",
-		// Both attribute names go onto the wire verbatim and are required;
-		// see validateLDAPAttrs.
+		// All three attribute names go onto the wire verbatim and are
+		// required; see validateLDAPAttrs. unique_id_attr additionally has no
+		// default, so it must be stated even in a "minimal" config.
 		DisplayNameAttr: "displayName",
+		UniqueIDAttr:    "entryUUID",
 		RoleSource:      "directory",
 		DefaultRole:     "read-only",
 		RoleMap:         []config.RoleMappingConfig{{Group: "CN=Admins,DC=example,DC=com", Role: "admin"}},
+	}
+}
+
+// The unset-unique_id_attr error must name its own field and both correct
+// values. This is the one config error an operator upgrading from C1 is
+// guaranteed to hit, and a generic "invalid ldap config" would leave them
+// guessing between two attribute names, only one of which works on their
+// server.
+func TestValidate_AuthLDAPUniqueIDAttrErrorIsActionable(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.LDAP = validSearchLDAP()
+	cfg.Auth.LDAP.UniqueIDAttr = ""
+
+	errs := config.Validate(cfg)
+	var msg string
+	for _, e := range errs {
+		if e.Field == "auth.ldap.unique_id_attr" {
+			msg = e.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("want an auth.ldap.unique_id_attr error, got %v", errs)
+	}
+	for _, want := range []string{"SQI_AUTH_LDAP_UNIQUE_ID_ATTR", "objectGUID", "entryUUID"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message does not mention %q, so it does not tell the operator "+
+				"what to set: %q", want, msg)
+		}
 	}
 }

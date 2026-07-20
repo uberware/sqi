@@ -475,8 +475,12 @@ func baseLDAPConfig(url string) config.LDAPConfig {
 		Timeout:         10 * time.Second,
 		UsernameAttr:    "uid",
 		DisplayNameAttr: "displayName",
-		RoleSource:      "directory",
-		DefaultRole:     "read-only",
+		// entryUUID is OpenLDAP's RFC 4530 stable identifier. On Active
+		// Directory this would be objectGUID; there is no value correct on
+		// both, which is why the setting has no default.
+		UniqueIDAttr: "entryUUID",
+		RoleSource:   "directory",
+		DefaultRole:  "read-only",
 		RoleMap: []config.RoleMappingConfig{
 			{Group: ldapGroupAdmins, Role: "admin"},
 			{Group: ldapGroupArtists, Role: "user"},
@@ -576,6 +580,7 @@ func startLDAPServer(t *testing.T, ldapCfg config.LDAPConfig) *testServer {
 // loginResult is the subset of the login response these tests assert on.
 type loginResult struct {
 	Status      int
+	ID          string `json:"id"`
 	Username    string `json:"username"`
 	Role        string `json:"role"`
 	AuthSource  string `json:"auth_source"`
@@ -807,5 +812,103 @@ member: uid=alice,ou=people,dc=example,dc=com
 	}
 	if got.Role != "user" {
 		t.Errorf("role = %q, want user: role_source=directory must recompute from live group membership", got.Role)
+	}
+}
+
+// renameEntry changes the RDN of an entry, leaving the entry — and therefore
+// its entryUUID — otherwise intact.
+//
+// -r drops the old RDN attribute value, so the old login name genuinely stops
+// resolving; without it the entry would keep both uid values and the "renamed"
+// user would still be findable under the old name, which would make the test
+// below pass for the wrong reason.
+func renameEntry(t *testing.T, d *directory, dn, newRDN string) {
+	t.Helper()
+	d.ldapExec(t, "", "ldapmodrdn", "-r", "-x", "-H", "ldap://localhost",
+		"-D", ldapAdminDN, "-w", ldapAdminPW, dn, newRDN)
+}
+
+// TestLDAP_StableIdentifierSurvivesRename is the guard for the entryUUID
+// operational-attribute trap.
+//
+// entryUUID is an operational attribute: a real directory omits it from a
+// search response unless the request names it explicitly. A fake conn returns
+// whatever the test scripts, so it cannot show that omission. Drop the name
+// from the attribute list and every login arrives carrying an empty
+// identifier, which looks exactly like a person who has never logged in
+// before — so accounts silently multiply, one per login, with no error
+// anywhere.
+//
+// Renaming the entry is what makes the assertion meaningful: after the rename
+// the username no longer matches the stored row, so ONLY identifier matching
+// can reach the original account. Under username matching this test provisions
+// a second row and fails.
+func TestLDAP_StableIdentifierSurvivesRename(t *testing.T) {
+	d := startDirectory(t)
+	ts := startLDAPServer(t, searchBindConfig(d.URL))
+
+	first := login(t, ts, "alice", "alicepass")
+	if first.Status != http.StatusOK {
+		t.Fatalf("first login: got HTTP %d, want 200", first.Status)
+	}
+	if first.AuthSource != "ldap" {
+		t.Fatalf("auth_source = %q, want ldap", first.AuthSource)
+	}
+	if first.ID == "" {
+		t.Fatal("login response carried no account id; the comparison below would be vacuous")
+	}
+
+	renameEntry(t, d, "uid=alice,ou=people,dc=example,dc=com", "uid=alice.smith")
+
+	second := login(t, ts, "alice.smith", "alicepass")
+	if second.Status != http.StatusOK {
+		t.Fatalf("login after rename: got HTTP %d, want 200", second.Status)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("the rename created a NEW account (%s -> %s): the directory entry is the same "+
+			"person with the same entryUUID, so identifier matching is not in effect. The usual "+
+			"cause is the user search not naming the operational attribute, which makes the "+
+			"directory omit it and every login look like a first login.",
+			first.ID, second.ID)
+	}
+}
+
+// The mirror of the rename case: a NEW directory entry that reuses a departed
+// user's login name must NOT inherit their account.
+//
+// This is the hazard the whole change exists to remove. Under username
+// matching, recreating "carol" hands the newcomer the old carol's row —
+// her role, her owned jobs — with no error anywhere. Under identifier
+// matching the new entry has a new entryUUID, so provisioning runs and
+// collides on the taken username, and the login is refused until an operator
+// intervenes. Refusal is the correct outcome; silent inheritance is not.
+func TestLDAP_RecycledUsernameDoesNotInheritAccount(t *testing.T) {
+	d := startDirectory(t)
+	ts := startLDAPServer(t, searchBindConfig(d.URL))
+
+	assertLogin(t, ts, "carol", "carolpass", "read-only")
+
+	// Delete and recreate: a new entry, hence a new entryUUID, wearing the
+	// same uid.
+	d.ldapExec(t, "", "ldapdelete", "-x", "-H", "ldap://localhost",
+		"-D", ldapAdminDN, "-w", ldapAdminPW, "uid=carol,ou=people,dc=example,dc=com")
+	d.ldapExec(t, `
+dn: uid=carol,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Newcomer
+sn: Newcomer
+displayName: Carol Newcomer
+userPassword: newcarolpw
+`, "ldapadd", "-x", "-H", "ldap://localhost", "-D", ldapAdminDN, "-w", ldapAdminPW)
+
+	got := login(t, ts, "carol", "newcarolpw")
+	if got.Status == http.StatusOK {
+		t.Fatalf("a NEW directory entry reusing the username %q logged straight into the "+
+			"existing account (id=%s). This is the recycled-identity takeover that matching on "+
+			"the stable identifier is meant to prevent.", "carol", got.ID)
+	}
+	if got.Status != http.StatusUnauthorized {
+		t.Errorf("got HTTP %d, want 401 (the username is taken by another identity)", got.Status)
 	}
 }

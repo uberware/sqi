@@ -520,6 +520,49 @@ overwritten at the next login. The trade is that a name changed in the
 directory (a marriage, a correction) does not propagate; an admin edits it,
 or the user does.
 
+### Accounts are matched on a stable identifier, not a username
+
+`unique_id_attr` is **required** whenever LDAP is enabled and has **no
+default**. Set it to `objectGUID` on Active Directory, or `entryUUID` on
+OpenLDAP and other RFC 4530 servers. No single value is correct on both, and
+guessing on a server that exposes both would silently pick the wrong one.
+
+sqi stores that value in `users.external_id` and matches every later login on
+it, never on the username. A username is not an identity: directories recycle
+login names and email addresses, so a new hire given a departed admin's name
+would otherwise log straight into that admin's account — same role, same owned
+jobs, no error anywhere. A rename at the directory is the mirror failure, and
+would orphan the account and provision a duplicate.
+
+Two consequences worth stating plainly:
+
+- **A directory rename is transparent.** The entry keeps its identifier, so
+  the same sqi account is reached under the new name.
+- **A recycled username is refused, not adopted.** A new directory entry
+  wearing an old name has a new identifier, so provisioning runs and collides
+  on the taken username. The login fails until an operator renames or removes
+  one of the two accounts. Refusal is the intended outcome.
+
+Active Directory returns `objectGUID` as raw binary, which sqi hex-encodes
+before storing. That encoding is permanent — changing it would orphan every
+account already stamped.
+
+#### Upgrading from an earlier sqi
+
+LDAP accounts provisioned before identifier matching shipped carry an empty
+`external_id`. They **cannot log in** once matching is in effect: the identity
+lookup misses, provisioning collides on the username, and the result is a
+permanent 401.
+
+This is deliberate. Adopting a row whose stored identifier is empty is
+username matching under another name and would preserve the recycling hazard
+indefinitely, for exactly the long-lived, often privileged accounts most
+likely to predate the upgrade. **Delete and recreate such accounts**; the next
+login re-provisions them with the directory's identifier. The server logs an
+`ERROR` naming the account and this remedy each time one is refused — the 401
+itself is identical to every other login failure by design, so the log is the
+only signal.
+
 ### Both bind modes
 
 The two modes are mutually exclusive; setting `user_dn_template` selects
@@ -541,6 +584,7 @@ auth:
     user_filter: "(sAMAccountName=%s)"
     username_attr: "sAMAccountName"
     display_name_attr: "displayName"
+    unique_id_attr: "objectGUID"
     nested_groups: true
     role_map:
       - group: "CN=Farm Admins,OU=Groups,DC=example,DC=com"
@@ -562,6 +606,7 @@ auth:
     user_dn_template: "uid=%s,ou=people,dc=example,dc=com"
     username_attr: "uid"
     display_name_attr: "cn"
+    unique_id_attr: "entryUUID"
     role_map:
       - group: "cn=farm-admins,ou=groups,dc=example,dc=com"
         role: admin

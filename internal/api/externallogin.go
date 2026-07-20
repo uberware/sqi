@@ -48,6 +48,19 @@ type externalIdentity struct {
 // both satisfy.
 const externalPlaceholderHash = "!external"
 
+// Refusal reasons from resolveExternalUser. They are compared with errors.Is,
+// never by string: the caller has to tell an operator misconfiguration (the
+// provider returned no stable identifier — worth surfacing loudly) from a
+// deliberate local override (the account is disabled — routine) in order to
+// log them differently, while returning the identical 401 for both.
+var (
+	// errNoStableIdentifier means the verified identity carried no external
+	// id, so there is nothing safe to match the account on.
+	errNoStableIdentifier = errors.New("external login: no stable identifier")
+	// errExternalAccountDisabled means the matched local row is disabled.
+	errExternalAccountDisabled = errors.New("external login: account disabled")
+)
+
 // resolveExternalUser returns the local record for a verified external
 // identity, provisioning it on first login and re-syncing the role when the
 // provider owns it.
@@ -64,7 +77,7 @@ func (h *authHandler) resolveExternalUser(
 		// which is the hazard this design removes.
 		h.logger.ErrorContext(ctx, "auth: external login carried no stable identifier",
 			slog.String("auth_source", authSource), slog.String("username", id.Username))
-		return store.User{}, errors.New("external login: no stable identifier")
+		return store.User{}, errNoStableIdentifier
 	}
 
 	existing, err := h.store.GetUserByExternalID(ctx, authSource, id.ExternalID)
@@ -73,7 +86,7 @@ func (h *authHandler) resolveExternalUser(
 		// Known identity. The disabled flag is the operator's override and
 		// holds regardless of what the provider says.
 		if existing.Disabled {
-			return store.User{}, errors.New("external login: account disabled")
+			return store.User{}, errExternalAccountDisabled
 		}
 		return h.syncExternalRole(r, existing, role, providerOwnsRole)
 	case errors.Is(err, store.ErrNotFound):

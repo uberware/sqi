@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 )
@@ -146,4 +148,31 @@ func firstAttr(e *ldapv3.Entry, name string) string {
 		return ""
 	}
 	return vals[0]
+}
+
+// uniqueID reads the stable identifier attribute, hex-encoding it when the
+// directory returns raw bytes.
+//
+// Active Directory returns objectGUID as a 16-byte binary octet string, which
+// is not valid UTF-8 and cannot be stored as text as-is; OpenLDAP returns
+// entryUUID as an ASCII string. Hex is chosen over the Microsoft display form
+// because the only property that matters is stability, and this encoding is
+// permanent: changing it later orphans every account already stamped.
+//
+// The raw accessor is used rather than firstAttr because go-ldap's Values
+// slice is a lossy view of a binary attribute — the string conversion of an
+// invalid UTF-8 octet string is not reversible, so two distinct GUIDs can
+// collapse onto the same replacement-character text.
+func uniqueID(e *ldapv3.Entry, name string) string {
+	if name == "" {
+		return ""
+	}
+	raw := e.GetEqualFoldRawAttributeValue(name)
+	if len(raw) == 0 {
+		return ""
+	}
+	if utf8.Valid(raw) {
+		return string(raw)
+	}
+	return hex.EncodeToString(raw)
 }

@@ -25,6 +25,7 @@ package api
 // and does not cover, including AD badPwdCount lockout.
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -88,6 +89,7 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 		DisplayName: id.DisplayName,
 	}, role, h.ldapCfg.RoleSource == ldap.RoleSourceDirectory)
 	if err != nil {
+		h.logPreC2Account(ctx, existing, err)
 		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 		return
 	}
@@ -98,4 +100,49 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 		return
 	}
 	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource))
+}
+
+// logPreC2Account explains the one login failure whose cause is invisible from
+// every other vantage point.
+//
+// Rows provisioned before C2 carry an empty users.external_id. Once accounts
+// are matched on the directory's stable identifier, such a user's login traces:
+// the username lookup finds the row, the directory bind succeeds, the identity
+// lookup misses because the stored identifier is empty, provisioning then
+// collides on the username, and the login is refused — permanently, on every
+// future attempt.
+//
+// That refusal is deliberate and is not a bug to be fixed here. The tempting
+// repair — adopt the row when its stored identifier is empty — is username
+// matching wearing a different name, and would preserve the recycled-identity
+// hazard that C2 exists to remove, forever, for exactly the accounts most
+// likely to be long-lived and privileged. The design decision is that pre-C2
+// rows are recreated by an operator.
+//
+// What would be a bug is failing silently, since the symptom is
+// indistinguishable from a wrong password. Hence this ERROR, which names the
+// account and the remedy. It is the ONLY thing that differs: the response is
+// the same equalized 401 as every other failure, because a distinguishable
+// body would turn the pre-C2 state into a user-enumeration oracle.
+//
+// Gated on ErrConflict specifically. A verified identity that carried no
+// identifier at all is a different fault (auth.ldap.unique_id_attr is wrong
+// for this server) with its own log in resolveExternalUser, and blaming a
+// pre-C2 row for it would send the operator to the wrong fix.
+func (h *authHandler) logPreC2Account(ctx context.Context, existing *store.User, err error) {
+	if existing == nil || !errors.Is(err, store.ErrConflict) {
+		return
+	}
+	if existing.AuthSource != store.AuthSourceLDAP || existing.ExternalID != "" {
+		return
+	}
+	h.logger.ErrorContext(ctx,
+		"auth: ldap account predates stable-identifier matching and can no longer log in; "+
+			"it carries no external_id, so the directory identity cannot be matched to it and "+
+			"provisioning collides on the username. Delete and recreate the account (the next "+
+			"login will provision it with the directory's identifier). Adopting it automatically "+
+			"is deliberately not done: that is username matching, which lets a recycled directory "+
+			"identity inherit this account.",
+		slog.String("username", existing.Username),
+		slog.String("user_id", existing.ID))
 }

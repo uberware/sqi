@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 )
@@ -530,5 +532,85 @@ func TestSearchBind_NoNestedSearchWhenDisabled(t *testing.T) {
 	}
 	if len(fc.searchFilters) != 1 {
 		t.Fatalf("expected exactly 1 search without nested_groups, got %d", len(fc.searchFilters))
+	}
+}
+
+// TestSearchBind_RequestsAndReadsUniqueIDAttr pins both halves of the stable
+// identifier: that the search asks for it, and that the reply is carried into
+// Identity.
+//
+// Asserting the REQUEST is the part worth having. entryUUID is an operational
+// attribute, so most directories omit it from a response unless it is named
+// explicitly. A fake returns whatever the test scripts, so dropping the name
+// from the request list passes every parse-only assertion and then, against a
+// real server, makes every login look like a brand-new person — provisioning
+// duplicate accounts with no error anywhere.
+func TestSearchBind_RequestsAndReadsUniqueIDAttr(t *testing.T) {
+	e := aliceEntry()
+	e.Attributes = append(e.Attributes, ldapv3.NewEntryAttribute("entryUUID", []string{"uuid-1234"}))
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{e}}}
+	cfg := searchCfg()
+	cfg.UniqueIDAttr = "entryUUID"
+	v := newSearchBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "alice", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.ExternalID != "uuid-1234" {
+		t.Fatalf("ExternalID = %q, want %q", id.ExternalID, "uuid-1234")
+	}
+	if len(fc.searchAttrs) == 0 {
+		t.Fatal("no search was issued")
+	}
+	if !slices.Contains(fc.searchAttrs[0], "entryUUID") {
+		t.Fatalf("user search requested %v, want it to include entryUUID; an operational "+
+			"attribute a real directory will not return unless it is named", fc.searchAttrs[0])
+	}
+}
+
+// Active Directory returns objectGUID as a raw 16-byte octet string that is
+// not valid UTF-8. Stored as-is it would corrupt, so it is hex-encoded. This
+// encoding is permanent: changing it later orphans every account already
+// stamped with the old form.
+func TestSearchBind_HexEncodesBinaryUniqueID(t *testing.T) {
+	raw := []byte{
+		0x00, 0x01, 0x02, 0x03, 0xff, 0xfe, 0x80, 0x81,
+		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+	}
+	e := withRawAttr(aliceEntry(), "objectGUID", raw)
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{e}}}
+	cfg := searchCfg()
+	cfg.UniqueIDAttr = "objectGUID"
+	v := newSearchBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "alice", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.ExternalID != "00010203fffe80811011121314151617" {
+		t.Fatalf("ExternalID = %q, want the hex encoding of the raw GUID", id.ExternalID)
+	}
+	if !utf8.ValidString(id.ExternalID) {
+		t.Fatal("ExternalID is not valid UTF-8 and cannot be stored as text")
+	}
+}
+
+// A directory that returns no value for the configured attribute must yield an
+// empty ExternalID rather than a guess. The login path refuses on empty; a
+// fallback to the username here would reinstate name matching under another
+// name.
+func TestSearchBind_MissingUniqueIDIsEmpty(t *testing.T) {
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{aliceEntry()}}}
+	cfg := searchCfg()
+	cfg.UniqueIDAttr = "entryUUID"
+	v := newSearchBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "alice", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.ExternalID != "" {
+		t.Fatalf("ExternalID = %q, want empty when the directory returned nothing", id.ExternalID)
 	}
 }
