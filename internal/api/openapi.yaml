@@ -3477,6 +3477,116 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /auth/oidc/login:
+    get:
+      operationId: startOIDCLogin
+      summary: Start an OIDC/SSO login
+      description: |
+        Begins the OAuth2 authorization-code flow with PKCE and redirects the
+        browser to the configured identity provider.
+
+        This is a **browser navigation endpoint, not a JSON API call** — it is
+        meant to be reached by pointing a browser at it (an SSO button that is
+        a plain link), and it always answers with a `302`. It is public: no
+        session is required, since its purpose is to create one.
+
+        Registered **only when SSO is configured**. When
+        `auth.oidc.enabled` is false the route does not exist and returns 404,
+        so a client can use `GET /auth/oidc/login` returning 404 as a signal
+        that SSO is unavailable.
+
+        The response sets a short-lived, `HttpOnly`, `SameSite=Lax` state
+        cookie scoped to `/api/v1/auth/oidc`. It carries the signed CSRF state,
+        the ID-token nonce, and the PKCE verifier for this one login attempt,
+        and the callback rejects any request that does not present it. It
+        expires in 10 minutes and is single-use.
+
+        On an internal failure (an unreachable provider, for instance) the
+        response is still a `302`, to the same generic error destination the
+        callback uses. The reason is written to the server log only.
+      tags: [auth]
+      responses:
+        "302":
+          description: |
+            Redirect. `Location` is the provider's authorization URL on
+            success, or `/?sso_error=1` if the login could not be started.
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              description: The per-login state cookie (`sqi_oidc_state`).
+              schema: { type: string }
+
+  /auth/oidc/callback:
+    get:
+      operationId: completeOIDCLogin
+      summary: Complete an OIDC/SSO login
+      description: |
+        The redirect target registered with the identity provider. The browser
+        arrives here from the provider carrying `code` and `state` (or `error`
+        and `error_description` if the provider refused).
+
+        Like `/auth/oidc/login` this is a **browser navigation endpoint** that
+        always answers with a `302`, it is public, and it exists only when SSO
+        is configured. It is not intended to be called directly by an API
+        client: without the state cookie set by `/auth/oidc/login` it always
+        fails.
+
+        On success it mints a server-side session, returns it as an `HttpOnly`
+        `Set-Cookie` exactly as `POST /auth/login` does, and redirects to `/`.
+        The account is provisioned on first login with `auth_source: oidc`, and
+        its role is recomputed from the provider's group claims on every login
+        when `auth.oidc.role_source` is `directory`.
+
+        **Every failure is identical**: a `302` to `/?sso_error=1` with no
+        session cookie and no detail whatsoever. A missing or invalid state
+        cookie, a mismatched `state`, a provider-reported error, a rejected ID
+        token, an identity that maps to no role, a disabled account, and a
+        username that collides with an existing account are indistinguishable
+        to the browser — anything else would make this endpoint a user
+        enumeration oracle. The reason is written to the server log.
+
+        The redirect destination is a constant in both cases. No query
+        parameter can influence where the browser is sent.
+      tags: [auth]
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: The authorization code issued by the provider.
+          schema: { type: string }
+        - name: state
+          in: query
+          required: false
+          description: |
+            The opaque state value issued at login. Must match the value in the
+            state cookie or the login is refused.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            An OAuth2 error code, when the provider refused the login (for
+            example `access_denied`).
+          schema: { type: string }
+        - name: error_description
+          in: query
+          required: false
+          description: The provider's human-readable error text, if any.
+          schema: { type: string }
+      responses:
+        "302":
+          description: |
+            Redirect. `Location` is `/` on success, with the session cookie set
+            via `Set-Cookie`; on any failure it is `/?sso_error=1` and no
+            session cookie is set. The state cookie is cleared either way.
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              description: The session cookie, on success only.
+              schema: { type: string }
+
   /auth/logout:
     post:
       operationId: logout

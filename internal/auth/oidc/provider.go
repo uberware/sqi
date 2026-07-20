@@ -46,16 +46,20 @@ var (
 // end-session URL.
 type Provider interface {
 	// AuthCodeURL builds the URL the browser is redirected to in order to
-	// start a login. forceReauth adds prompt=login.
-	AuthCodeURL(state, nonce, codeChallenge string, forceReauth bool) (string, error)
+	// start a login. forceReauth adds prompt=login. ctx bounds the lazy
+	// discovery this may have to perform, so a caller that gives up (a
+	// browser that navigated away) is not left pinning a goroutine for the
+	// full discovery timeout.
+	AuthCodeURL(ctx context.Context, state, nonce, codeChallenge string, forceReauth bool) (string, error)
 	// Exchange redeems an authorization code and returns the verified
 	// identity. Every ID-token check — signature, issuer, audience, expiry,
 	// nonce — must pass or it returns an error.
 	Exchange(ctx context.Context, code, codeVerifier, nonce string) (Identity, error)
 	// EndSessionURL returns the provider's RP-initiated logout URL, or false
 	// when discovery advertised no end_session_endpoint so the caller degrades
-	// to local logout rather than emitting a broken URL.
-	EndSessionURL(postLogoutRedirect string) (string, bool)
+	// to local logout rather than emitting a broken URL. ctx bounds discovery,
+	// as in AuthCodeURL.
+	EndSessionURL(ctx context.Context, postLogoutRedirect string) (string, bool)
 }
 
 // provider implements Provider against a real identity provider.
@@ -228,8 +232,10 @@ func (p *provider) oauth2Config(d *coreoidc.Provider) oauth2.Config {
 }
 
 // AuthCodeURL implements Provider.
-func (p *provider) AuthCodeURL(state, nonce, codeChallenge string, forceReauth bool) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+func (p *provider) AuthCodeURL(
+	ctx context.Context, state, nonce, codeChallenge string, forceReauth bool,
+) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
 	d, err := p.resolve(ctx)
@@ -326,8 +332,8 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 // would put the first plaintext bearer secret into a schema that otherwise
 // holds only hashes, to save a redirect. Providers that require the hint will
 // simply re-prompt, which is the correct outcome for a logout.
-func (p *provider) EndSessionURL(postLogoutRedirect string) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+func (p *provider) EndSessionURL(ctx context.Context, postLogoutRedirect string) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
 	if _, err := p.resolve(ctx); err != nil {

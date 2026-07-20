@@ -45,7 +45,14 @@ func seedAPIKey(t *testing.T, st store.Store, userID, name string) store.APIKey 
 
 func newTestAuthHandler(t *testing.T, st store.Store) *authHandler {
 	t.Helper()
-	return newAuthHandler(st, slog.New(slog.DiscardHandler), time.Hour, "sqi_session", "false", nil, ldap.Config{})
+	return newAuthHandler(authHandlerDeps{
+		Store:        st,
+		Logger:       slog.New(slog.DiscardHandler),
+		TTL:          time.Hour,
+		CookieName:   "sqi_session",
+		CookieSecure: "false",
+		LDAPConfig:   ldap.Config{},
+	})
 }
 
 // principalFor builds the context principal middleware.Auth would attach for u.

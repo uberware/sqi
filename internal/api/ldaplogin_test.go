@@ -321,7 +321,15 @@ func TestLogin_CollisionWithLocalAccountRejected(t *testing.T) {
 func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 	st := fake.New()
 	v := &fakeVerifier{identity: aliceIdentity()}
-	h := newAuthHandler(st, newTestLogger(), time.Hour, "sqi_session", "false", v, ldapCfg())
+	h := newAuthHandler(authHandlerDeps{
+		Store:        st,
+		Logger:       newTestLogger(),
+		TTL:          time.Hour,
+		CookieName:   "sqi_session",
+		CookieSecure: "false",
+		LDAPVerifier: v,
+		LDAPConfig:   ldapCfg(),
+	})
 
 	seedAuthUser(t, st, "alice", "localpass", "admin")
 

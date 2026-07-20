@@ -21,6 +21,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/ldap"
+	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/auth/session"
@@ -37,6 +38,29 @@ type authHandler struct {
 	// read when it is non-nil. See ldaplogin.go.
 	ldapVerifier ldap.Verifier
 	ldapCfg      ldap.Config
+	// oidcProvider is nil when SSO is disabled; oidcCfg and oidcStateKey are
+	// only read when it is non-nil. See oidclogin.go.
+	oidcProvider oidc.Provider
+	oidcCfg      oidc.Config
+	oidcStateKey []byte
+}
+
+// authHandlerDeps is what newAuthHandler needs. It is a struct rather than a
+// parameter list because the list had grown past the point where a caller could
+// get the order right by reading it — two adjacent strings (cookieName,
+// cookieSecure) and two adjacent nilable backends are exactly the shape that
+// silently transposes.
+type authHandlerDeps struct {
+	Store        store.Store
+	Logger       *slog.Logger
+	TTL          time.Duration
+	CookieName   string
+	CookieSecure string // "auto" | "true" | "false"
+	LDAPVerifier ldap.Verifier
+	LDAPConfig   ldap.Config
+	OIDCProvider oidc.Provider
+	OIDCConfig   oidc.Config
+	OIDCStateKey []byte
 }
 
 // dummyVerifyPlaintext is an arbitrary throwaway string used only to derive
@@ -78,24 +102,24 @@ func mustDummyHash() string {
 	return h
 }
 
-func newAuthHandler(
-	st store.Store, logger *slog.Logger, ttl time.Duration, cookieName, cookieSecure string,
-	ldapVerifier ldap.Verifier, ldapCfg ldap.Config,
-) *authHandler {
-	if cookieName == "" {
-		cookieName = session.DefaultCookieName
+func newAuthHandler(d authHandlerDeps) *authHandler {
+	if d.CookieName == "" {
+		d.CookieName = session.DefaultCookieName
 	}
-	if ttl <= 0 {
-		ttl = 168 * time.Hour
+	if d.TTL <= 0 {
+		d.TTL = 168 * time.Hour
 	}
 	return &authHandler{
-		store:        st,
-		logger:       logger,
-		ttl:          ttl,
-		cookieName:   cookieName,
-		cookieSecure: cookieSecure,
-		ldapVerifier: ldapVerifier,
-		ldapCfg:      ldapCfg,
+		store:        d.Store,
+		logger:       d.Logger,
+		ttl:          d.TTL,
+		cookieName:   d.CookieName,
+		cookieSecure: d.CookieSecure,
+		ldapVerifier: d.LDAPVerifier,
+		ldapCfg:      d.LDAPConfig,
+		oidcProvider: d.OIDCProvider,
+		oidcCfg:      d.OIDCConfig,
+		oidcStateKey: d.OIDCStateKey,
 	}
 }
 

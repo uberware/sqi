@@ -182,7 +182,7 @@ func TestProvider_AuthCodeURL_ForceReauth(t *testing.T) {
 	p := New(testConfig(idp.URL()))
 
 	for _, force := range []bool{false, true} {
-		raw, err := p.AuthCodeURL("state-1", "nonce-1", "challenge-1", force)
+		raw, err := p.AuthCodeURL(t.Context(), "state-1", "nonce-1", "challenge-1", force)
 		if err != nil {
 			t.Fatalf("AuthCodeURL: %v", err)
 		}
@@ -223,11 +223,11 @@ func TestProvider_DiscoveryIsLazyAndRetried(t *testing.T) {
 
 	// New must not have dialed: construction happens at boot, and an
 	// unreachable provider must not stop the server from starting.
-	if _, err := p.AuthCodeURL("s", "n", "c", false); err == nil {
+	if _, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false); err == nil {
 		t.Fatal("want error while discovery is failing")
 	}
 	idp.discoveryFails = false
-	if _, err := p.AuthCodeURL("s", "n", "c", false); err != nil {
+	if _, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false); err != nil {
 		t.Fatalf("discovery must be retried after a failure, got %v", err)
 	}
 }
@@ -241,13 +241,13 @@ func TestProvider_DiscoveryFailureBackoff(t *testing.T) {
 	p := New(testConfig(idp.URL()))
 	asProvider(t, p).failureBackoff = time.Hour
 
-	if _, err := p.AuthCodeURL("s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
+	if _, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
 		t.Fatalf("first attempt: want ErrDiscovery, got %v", err)
 	}
 	before := idp.discoveryHits()
 
 	idp.discoveryFails = false
-	if _, err := p.AuthCodeURL("s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
+	if _, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
 		t.Fatalf("within the backoff window: want the recorded ErrDiscovery, got %v", err)
 	}
 	if got := idp.discoveryHits(); got != before {
@@ -256,7 +256,7 @@ func TestProvider_DiscoveryFailureBackoff(t *testing.T) {
 
 	// Lapse the window; the very next login must retry for real.
 	asProvider(t, p).failureBackoff = 0
-	if _, err := p.AuthCodeURL("s", "n", "c", false); err != nil {
+	if _, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false); err != nil {
 		t.Fatalf("after the window: discovery must be retried, got %v", err)
 	}
 }
@@ -285,7 +285,7 @@ func TestProvider_ConcurrentDiscovery(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			<-start
-			_, err := p.AuthCodeURL("s", "n", "c", false)
+			_, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false)
 			errs <- err
 		})
 	}
@@ -328,7 +328,7 @@ func TestProvider_ConcurrentDiscoveryFailure(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			<-start
-			if _, err := p.AuthCodeURL("s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
+			if _, err := p.AuthCodeURL(t.Context(), "s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
 				t.Errorf("want ErrDiscovery, got %v", err)
 			}
 		})
@@ -419,7 +419,7 @@ func TestProvider_EndSessionURL(t *testing.T) {
 			tt.mutate(idp)
 			p := New(testConfig(idp.URL()))
 
-			raw, ok := p.EndSessionURL(tt.redirect)
+			raw, ok := p.EndSessionURL(t.Context(), tt.redirect)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v (url %q)", ok, tt.wantOK, raw)
 			}
