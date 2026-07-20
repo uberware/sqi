@@ -156,7 +156,7 @@ func TestAPIKeyStore_TouchLastUsed(t *testing.T) {
 }
 
 // TestAPIKeyStore_GetAPIKeyUserByTokenHash covers the joined lookup used on
-// every Bearer-authenticated request. The SQLite implementation scans 17
+// every Bearer-authenticated request. The SQLite implementation scans 18
 // columns positionally across two tables, so this asserts every field of both
 // records — a reordered column would otherwise swap values silently instead
 // of failing.
@@ -164,7 +164,12 @@ func TestAPIKeyStore_GetAPIKeyUserByTokenHash(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			u, err := st.CreateUser(ctx, mkUser("operator"))
+			seed := mkUser("operator")
+			// Use a non-default AuthSource: "" and the "local" default are
+			// indistinguishable in the failure case, so only a non-default
+			// value proves the joined lookup actually round-trips the column.
+			seed.AuthSource = store.AuthSourceLDAP
+			u, err := st.CreateUser(ctx, seed)
 			if err != nil {
 				t.Fatalf("CreateUser: %v", err)
 			}
@@ -214,6 +219,9 @@ func TestAPIKeyStore_GetAPIKeyUserByTokenHash(t *testing.T) {
 			if gotUser.Role != u.Role || gotUser.DisplayName != u.DisplayName {
 				t.Errorf("user role/display_name = (%q, %q), want (%q, %q)",
 					gotUser.Role, gotUser.DisplayName, u.Role, u.DisplayName)
+			}
+			if gotUser.AuthSource != store.AuthSourceLDAP {
+				t.Errorf("user auth_source = %q, want %q", gotUser.AuthSource, store.AuthSourceLDAP)
 			}
 			if gotUser.PasswordHash != u.PasswordHash {
 				t.Errorf("user password_hash = %q, want %q", gotUser.PasswordHash, u.PasswordHash)
