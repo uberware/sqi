@@ -832,31 +832,38 @@ Note that display names and role assignments do not survive that round trip,
 and the user's sessions die with the old row. If you are migrating away from
 LDAP, plan it as a re-provisioning exercise, not a config flag.
 
-### Coverage limit worth knowing
+### How this is tested
 
-Every *automated* test of this feature drives a fake LDAP connection. That
-covers sqi's own logic thoroughly — routing, provisioning, role mapping,
-collisions, the equalized 401 — but it cannot catch a mistake in the go-ldap
-*wire* usage: a wrong search scope, a misnamed attribute, a filter a real
-server rejects. Such a bug passes CI and fails against a live directory. The
-env-gated integration test that would close this permanently is a known
-follow-up.
+Most tests of this feature drive a fake LDAP connection. Those cover sqi's own
+logic thoroughly — routing, provisioning, role mapping, collisions, the
+equalized 401 — but a fake cannot catch a mistake in the go-ldap *wire* usage:
+a wrong search scope, a misnamed attribute, a filter a real server rejects, or
+a server that answers an unsupported request in a way the fake never would.
 
-In the meantime the feature **has** been driven by hand against a real
-OpenLDAP 2.6 server, and the wire traffic inspected, in all three
-configurations: search-then-bind with a service account, template bind, and
-anonymous search-then-bind. Group→role mapping, first-match precedence,
-`default_role`, JIT provisioning, role re-sync under both `role_source`
-modes, the 409 guards, filter and DN injection, and empty-password binds all
-behaved as documented. That is not a substitute for the automated test — it
-is a snapshot, not a regression guard — and it is why the nested-group note
-above can state what OpenLDAP actually does rather than what the RFC implies.
+So `test/integration/ldap_test.go` runs the whole login path against a **real
+OpenLDAP server** in a throwaway container, in every supported configuration:
+search-then-bind with a service account, template bind, and anonymous
+search-then-bind — plus group→role mapping and precedence, `default_role`,
+JIT provisioning, role re-sync under `role_source: directory`, filter and DN
+injection, and empty-password binds. It runs in CI on every change.
+
+```sh
+make test-ldap        # needs Docker (or colima/podman); skips cleanly without it
+```
+
+Point it at a directory you already have — including a real Active Directory —
+with `SQI_TEST_LDAP_URL`, and it uses that instead of starting a container. The
+fixture tree it expects is the `seedLDIF` constant in that file.
+
+That suite exists because of a bug it now guards: OpenLDAP does not reject the
+AD-only nested-group matching rule, it answers *success with zero entries*, and
+an earlier revision let that empty result replace a user's real groups and
+silently demote them. No fake reproduced it.
 
 **Still test a new deployment against your own directory before relying on
-it**, in the bind mode you plan to run. Directories differ in exactly the
-places this integration is sensitive to: whether `memberOf` is populated, what
-the service account may read, and how an unsupported matching rule is
-answered.
+it.** Directories differ in exactly the places this integration is sensitive
+to: whether `memberOf` is populated, what the service account is allowed to
+read, and how an unsupported matching rule is answered.
 
 ## Coming next
 
