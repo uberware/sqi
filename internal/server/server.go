@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/api"
@@ -671,7 +672,7 @@ func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
 		ClientID:              c.ClientID,
 		ClientSecret:          c.ClientSecret,
 		RedirectURL:           c.RedirectURL,
-		Scopes:                c.Scopes,
+		Scopes:                slices.Clone(c.Scopes),
 		UsernameClaim:         c.UsernameClaim,
 		DisplayNameClaim:      c.DisplayNameClaim,
 		GroupsClaim:           c.GroupsClaim,

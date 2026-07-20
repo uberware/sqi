@@ -190,4 +190,24 @@ describe('Login', () => {
     expect(await screen.findByLabelText('Username')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('clears the sso_error marker after showing it, so a later remount does not repeat it', async () => {
+    // Regression test: a failed SSO attempt followed by a successful password
+    // login left the marker in the address bar for the rest of the SPA
+    // session. If the session later expired and Login re-mounted, it told the
+    // user sign-in had failed when nothing of the sort had happened this time.
+    mockAuthEndpoints(passwordOnly)
+    window.history.replaceState({}, '', '/?sso_error=1')
+    const view = renderLogin()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/sign-in failed/i)
+    // The marker must be gone from the address bar once it has been read.
+    expect(window.location.search).toBe('')
+
+    view.unmount()
+    renderLogin()
+
+    expect(await screen.findByLabelText('Username')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })

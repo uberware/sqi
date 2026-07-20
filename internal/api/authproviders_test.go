@@ -18,10 +18,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/oidc"
+	"github.com/uberware/sqi/internal/health"
+	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
@@ -127,5 +131,52 @@ func TestGetAuthProviders(t *testing.T) {
 					got.SSO[0].LoginURL, "/api/v1/auth/oidc/login")
 			}
 		})
+	}
+}
+
+// TestGetAuthProviders_AuthEnabledFalse pins the auth-off deployment: no
+// session, no API key, and none of the auth wiring the cases above build. The
+// route is mounted unconditionally in router.go rather than gated on
+// cfg.AuthEnabled — "no SSO configured" is itself the answer the login page
+// needs even when auth is off entirely — so this must return the same
+// no-SSO shape the "sso off" case above does, and the auth-off path must stay
+// byte-for-byte unchanged, which this test is here to keep true.
+func TestGetAuthProviders_AuthEnabledFalse(t *testing.T) {
+	r := NewRouter(
+		Config{DisableRateLimit: true, AuthEnabled: false},
+		Deps{Store: fake.New(), Auth: auth.Anonymous()},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(
+		context.Background(), http.MethodGet, srv.URL+"/api/v1/auth/providers", nil,
+	)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /auth/providers: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", resp.StatusCode, string(raw))
+	}
+
+	var got authProvidersResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode body %q: %v", string(raw), err)
+	}
+	if !got.Password {
+		t.Error("password = false, want true (local login is always offered, auth on or off)")
+	}
+	if len(got.SSO) != 0 {
+		t.Errorf("sso = %+v, want empty (auth off means no provider is ever built)", got.SSO)
 	}
 }

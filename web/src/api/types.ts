@@ -551,17 +551,19 @@ export interface User {
   display_name?: string
   role: string
   /**
-   * Which backend verifies this account. `ldap` accounts are provisioned on
-   * first directory login; their role may be directory-managed, in which case
-   * the server rejects a role edit with 409.
+   * Which backend verifies this account. `ldap` and `oidc` accounts are
+   * provisioned on first directory/SSO login; their role may be
+   * directory-managed, in which case the server rejects a role edit with 409.
    */
   auth_source: AuthSource
   /**
    * Whether `PATCH /users/{id}` accepts a `role` change for this account.
-   * Computed by the server from both halves of its guard (`auth_source` AND
-   * `auth.ldap.role_source`). Do not re-derive it from `auth_source`:
-   * `role_source: local` leaves an LDAP account's role editable, and the
-   * server never exposes `role_source` for a client to check.
+   * Computed by the server from both halves of its guard: `auth_source` AND
+   * that source's own `role_source` setting (`auth.ldap.role_source` for
+   * `ldap`, `auth.oidc.role_source` for `oidc`). Do not re-derive it from
+   * `auth_source` alone: `role_source: local` leaves an LDAP or OIDC
+   * account's role editable, and the server never exposes `role_source` for
+   * a client to check.
    */
   role_editable: boolean
   disabled: boolean

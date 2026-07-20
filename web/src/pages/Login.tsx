@@ -28,11 +28,25 @@ const SSO_ERROR_MESSAGE = 'Sign-in failed. Please try again or contact your admi
  * navigated to. The marker arrives via a full-page redirect from the server, so
  * the document's own URL is the only place it reliably exists.
  *
- * Read once at module scope rather than per render so the message does not
- * flicker back after the URL is cleaned up by any later navigation.
+ * Read once, via a `useState` lazy initializer, so it reflects only the
+ * marker present on the component's first render and is not re-evaluated on
+ * every subsequent one. That is not the same guarantee module scope would
+ * give: it does not survive unmount/remount (a session expiring later and
+ * `Login` mounting again re-reads the URL from scratch), which is why the
+ * call site also clears the marker once it has been read.
+ *
+ * Clearing it here, rather than leaving it in the address bar, matters
+ * because this is an SPA: without a page load to reset it, the marker would
+ * otherwise persist across a subsequent successful login for the rest of the
+ * session, and reappear as a false "sign-in failed" if `Login` ever
+ * remounts (e.g. the session later expires).
  */
 function hasSSOError(): boolean {
-  return new URLSearchParams(window.location.search).get('sso_error') !== null
+  const present = new URLSearchParams(window.location.search).get('sso_error') !== null
+  if (present) {
+    window.history.replaceState({}, '', window.location.pathname)
+  }
+  return present
 }
 
 /**
@@ -119,7 +133,7 @@ export default function Login() {
         </form>
         {ssoOptions.length > 0 && (
           <>
-            <div className={styles.divider} role="separator">
+            <div className={styles.divider} aria-hidden="true">
               or
             </div>
             {ssoOptions.map((p) => (
