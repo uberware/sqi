@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/session"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -154,5 +156,76 @@ func TestSelectAuth_AuthenticatesAPIKey(t *testing.T) {
 	}
 	if p.Subject != u.ID || p.Kind != auth.KindAPIKey {
 		t.Fatalf("bearer auth via chain failed: %+v", p)
+	}
+}
+
+// TestSelectAuth_LDAPDisabledInjectsNoVerifier asserts that leaving
+// auth.ldap.enabled off produces no verifier at all, so the login path keeps
+// its pre-C1 behavior rather than merely being configured not to use it.
+func TestSelectAuth_LDAPDisabledInjectsNoVerifier(t *testing.T) {
+	s := &Server{
+		cfg:    Config{AuthEnabled: true},
+		store:  fake.New(),
+		logger: testLogger(),
+	}
+
+	v, err := s.buildLDAPVerifier(context.Background())
+	if err != nil {
+		t.Fatalf("buildLDAPVerifier: %v", err)
+	}
+	if v != nil {
+		t.Errorf("expected nil verifier when ldap is disabled, got %T", v)
+	}
+}
+
+// TestSelectAuth_LDAPBadCAFileFailsBoot: a misconfigured directory must abort
+// boot rather than yield a server that silently cannot authenticate any
+// directory account.
+func TestSelectAuth_LDAPBadCAFileFailsBoot(t *testing.T) {
+	cfg := Config{AuthEnabled: true}
+	cfg.AuthLDAP = config.LDAPConfig{
+		Enabled: true,
+		URL:     "ldaps://dc.example.com:636",
+		Timeout: 10 * time.Second,
+		BaseDN:  "DC=example,DC=com", BindDN: "CN=svc,DC=example,DC=com",
+		UserFilter: "(sAMAccountName=%s)",
+		RoleSource: "directory", DefaultRole: "read-only",
+		CAFile: filepath.Join(t.TempDir(), "does-not-exist.pem"),
+	}
+	s := &Server{
+		cfg:    cfg,
+		store:  fake.New(),
+		logger: testLogger(),
+	}
+
+	if _, err := s.buildLDAPVerifier(context.Background()); err == nil {
+		t.Fatal("expected an error for an unreadable ca_file, got nil")
+	}
+}
+
+// TestSelectAuth_LDAPEnabledBuildsVerifier asserts that a valid, enabled LDAP
+// config produces a non-nil verifier.
+func TestSelectAuth_LDAPEnabledBuildsVerifier(t *testing.T) {
+	cfg := Config{AuthEnabled: true}
+	cfg.AuthLDAP = config.LDAPConfig{
+		Enabled: true,
+		URL:     "ldap://dc.example.com:389",
+		Timeout: 10 * time.Second,
+		BaseDN:  "DC=example,DC=com", BindDN: "CN=svc,DC=example,DC=com",
+		UserFilter: "(sAMAccountName=%s)",
+		RoleSource: "directory", DefaultRole: "read-only",
+	}
+	s := &Server{
+		cfg:    cfg,
+		store:  fake.New(),
+		logger: testLogger(),
+	}
+
+	v, err := s.buildLDAPVerifier(context.Background())
+	if err != nil {
+		t.Fatalf("buildLDAPVerifier: %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected a verifier when ldap is enabled")
 	}
 }
