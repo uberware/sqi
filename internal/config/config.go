@@ -22,7 +22,11 @@
 //	}
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/uberware/sqi/internal/auth/oidc"
+)
 
 // Config is the complete runtime configuration for sqi-server.
 // Zero values are not valid; use [DefaultConfig] or [Load] to obtain a
@@ -206,6 +210,11 @@ type AuthConfig struct {
 	// enabled it requires Auth.Enabled — LDAP without the auth gate would
 	// authenticate nobody.
 	LDAP LDAPConfig `yaml:"ldap"`
+
+	// OIDC configures OAuth2/OIDC single sign-on. Disabled by default; when
+	// enabled it requires Auth.Enabled — SSO without the auth gate would
+	// authenticate nobody.
+	OIDC OIDCConfig `yaml:"oidc"`
 }
 
 // SessionConfig controls server-side session cookies.
@@ -383,6 +392,127 @@ type RoleMappingConfig struct {
 	Role  string `yaml:"role"`
 }
 
+// OIDCConfig configures OAuth2/OIDC single sign-on (Phase 3, C2).
+//
+// OIDC is a login-time verifier, not a per-request authenticator: the
+// callback validates the ID token once and then mints the same server-side
+// session a local password login produces. Nothing downstream — RBAC, owner
+// binding, WebSocket scoping — is aware SSO exists.
+//
+// Deliberately a single provider block, not a list. Almost every
+// organization has one identity provider, and configuration shape is
+// uniquely expensive to revise because it lives in operators' files. If
+// multi-provider is ever needed, add an auth.oidc.providers list alongside
+// these fields and treat them as shorthand for a one-element list — do NOT
+// reshape these into a list, which would break every existing config.
+type OIDCConfig struct {
+	// Enabled turns on SSO. Requires auth.enabled.
+	// Env: SQI_AUTH_OIDC_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// Issuer is the provider's discovery root, e.g.
+	// https://login.microsoftonline.com/<tenant>/v2.0. Discovery is
+	// performed lazily on first use, not at boot: a briefly unreachable
+	// provider must not stop the scheduler from starting.
+	// Env: SQI_AUTH_OIDC_ISSUER
+	Issuer string `yaml:"issuer"`
+
+	// ClientID is the application's registered identifier.
+	// Env: SQI_AUTH_OIDC_CLIENT_ID
+	ClientID string `yaml:"client_id"`
+
+	// ClientSecret is the application's secret. Never logged: redacted by
+	// [OIDCConfig.MarshalYAML] whenever the config is re-marshaled.
+	// Env: SQI_AUTH_OIDC_CLIENT_SECRET
+	ClientSecret string `yaml:"client_secret"`
+
+	// RedirectURL is the absolute callback URL registered with the
+	// provider. Must resolve to this server's
+	// /api/v1/auth/oidc/callback.
+	// Env: SQI_AUTH_OIDC_REDIRECT_URL
+	RedirectURL string `yaml:"redirect_url"`
+
+	// Scopes requested at authorization. Must include "openid". Note that
+	// "groups" is NOT standard OIDC — whether group membership needs a
+	// scope, a provider-side mapper, or both varies by vendor.
+	// Env: SQI_AUTH_OIDC_SCOPES (comma-separated)
+	Scopes []string `yaml:"scopes"`
+
+	// UsernameClaim names the claim holding the login name. Used for
+	// display and uniqueness only — accounts are matched on "sub".
+	// Env: SQI_AUTH_OIDC_USERNAME_CLAIM
+	UsernameClaim string `yaml:"username_claim"`
+
+	// DisplayNameClaim names the claim holding the human-facing name. Read
+	// only at provisioning; never overwritten afterwards.
+	// Env: SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM
+	DisplayNameClaim string `yaml:"display_name_claim"`
+
+	// GroupsClaim names the claim holding group memberships, fed to
+	// RoleMap.
+	// Env: SQI_AUTH_OIDC_GROUPS_CLAIM
+	GroupsClaim string `yaml:"groups_claim"`
+
+	// RoleSource decides who owns an OIDC user's role: "directory"
+	// (recomputed from claims on every login; the users API rejects role
+	// edits) or "local" (claims seed it at provisioning only). Separate
+	// from auth.ldap.role_source on purpose — an operator may trust one
+	// provider's groups and not the other's.
+	// Env: SQI_AUTH_OIDC_ROLE_SOURCE
+	RoleSource string `yaml:"role_source"`
+
+	// RoleMap maps group claims to roles, first match wins. Order
+	// expresses precedence. File-only: a list of pairs has no sane env
+	// encoding.
+	RoleMap []RoleMappingConfig `yaml:"role_map"`
+
+	// DefaultRole applies when no group matches. Empty means reject the
+	// login.
+	// Env: SQI_AUTH_OIDC_DEFAULT_ROLE
+	DefaultRole string `yaml:"default_role"`
+
+	// ReauthMode controls when the provider is told to re-prompt for
+	// credentials (prompt=login):
+	//   - "after_logout" (default): only on the login following an
+	//     explicit logout, so "log out" means the next person at a shared
+	//     workstation must authenticate.
+	//   - "always": every login. A hard guarantee, at the cost of SSO's
+	//     convenience.
+	//   - "never": silent re-login always permitted.
+	// Env: SQI_AUTH_OIDC_REAUTH_MODE
+	ReauthMode string `yaml:"reauth_mode"`
+
+	// LogoutMode controls whether logging out of sqi also ends the session
+	// at the provider ("provider") or only locally ("local", default).
+	// Provider logout signs the user out of every company tool, so it is
+	// off unless asked for.
+	// Env: SQI_AUTH_OIDC_LOGOUT_MODE
+	LogoutMode string `yaml:"logout_mode"`
+
+	// PostLogoutRedirectURL is where the provider returns the browser
+	// after a provider-side logout. Must be registered with the provider.
+	// Only read when LogoutMode is "provider".
+	// Env: SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL
+	PostLogoutRedirectURL string `yaml:"post_logout_redirect_url"`
+
+	// ButtonLabel is the login page's SSO button text.
+	// Env: SQI_AUTH_OIDC_BUTTON_LABEL
+	ButtonLabel string `yaml:"button_label"`
+}
+
+// MarshalYAML redacts ClientSecret so it never appears in YAML output (e.g.
+// `sqi-server config print`). Round-tripping a redacted dump is
+// intentionally not supported — redaction wins over round-tripping, as with
+// [LDAPConfig.MarshalYAML].
+func (o OIDCConfig) MarshalYAML() (any, error) {
+	type plain OIDCConfig
+	out := plain(o)
+	if out.ClientSecret != "" {
+		out.ClientSecret = redactedPassword
+	}
+	return out, nil
+}
+
 // DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
 // in the web UI.
 type DiagnosticsConfig struct {
@@ -475,6 +605,18 @@ func DefaultConfig() Config {
 				DisplayNameAttr: "displayName",
 				RoleSource:      "directory",
 				DefaultRole:     "read-only",
+			},
+			OIDC: OIDCConfig{
+				Enabled:          false,
+				Scopes:           []string{"openid", "profile", "email"},
+				UsernameClaim:    "preferred_username",
+				DisplayNameClaim: "name",
+				GroupsClaim:      "groups",
+				RoleSource:       "directory",
+				DefaultRole:      "read-only",
+				ReauthMode:       oidc.ReauthAfterLogout,
+				LogoutMode:       oidc.LogoutLocal,
+				ButtonLabel:      "Sign in with SSO",
 			},
 		},
 	}

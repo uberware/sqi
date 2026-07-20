@@ -192,6 +192,27 @@ type fileConfig struct {
 			} `yaml:"role_map"`
 			DefaultRole *string `yaml:"default_role"`
 		} `yaml:"ldap"`
+		OIDC *struct {
+			Enabled          *bool     `yaml:"enabled"`
+			Issuer           *string   `yaml:"issuer"`
+			ClientID         *string   `yaml:"client_id"`
+			ClientSecret     *string   `yaml:"client_secret"`
+			RedirectURL      *string   `yaml:"redirect_url"`
+			Scopes           *[]string `yaml:"scopes"`
+			UsernameClaim    *string   `yaml:"username_claim"`
+			DisplayNameClaim *string   `yaml:"display_name_claim"`
+			GroupsClaim      *string   `yaml:"groups_claim"`
+			RoleSource       *string   `yaml:"role_source"`
+			RoleMap          *[]struct {
+				Group string `yaml:"group"`
+				Role  string `yaml:"role"`
+			} `yaml:"role_map"`
+			DefaultRole           *string `yaml:"default_role"`
+			ReauthMode            *string `yaml:"reauth_mode"`
+			LogoutMode            *string `yaml:"logout_mode"`
+			PostLogoutRedirectURL *string `yaml:"post_logout_redirect_url"`
+			ButtonLabel           *string `yaml:"button_label"`
+		} `yaml:"oidc"`
 	} `yaml:"auth"`
 }
 
@@ -415,6 +436,7 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 	mergeAuthSessionFile(cfg, fc.Auth.Session)
 	mergeAuthBootstrapFile(cfg, fc.Auth.Bootstrap)
 	mergeAuthLDAPFile(cfg, fc)
+	mergeAuthOIDCFile(cfg, fc)
 }
 
 // mergeAuthSessionFile overlays the auth.session sub-fields from fc onto cfg.
@@ -505,6 +527,48 @@ func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 	}
 }
 
+// mergeAuthOIDCFile overlays the auth.oidc sub-fields from fc onto cfg. Split
+// out of [mergeAuthFile] for cyclomatic complexity, mirroring
+// [mergeAuthLDAPFile]. Unlike the sibling helpers it takes the whole
+// fileConfig: its shadow struct has too many fields to restate as a parameter
+// type.
+//
+// role_map uses the same pointer-nil-vs-empty discrimination as
+// auth.ldap.role_map: a nil field (key absent from the file) leaves the
+// default list untouched, while an explicit empty list ("role_map: []")
+// clears it.
+func mergeAuthOIDCFile(cfg *Config, fc fileConfig) {
+	if fc.Auth == nil || fc.Auth.OIDC == nil {
+		return
+	}
+	o := fc.Auth.OIDC
+	d := &cfg.Auth.OIDC
+	setIfNotNilBool(&d.Enabled, o.Enabled)
+	setIfNotNilString(&d.Issuer, o.Issuer)
+	setIfNotNilString(&d.ClientID, o.ClientID)
+	setIfNotNilString(&d.ClientSecret, o.ClientSecret)
+	setIfNotNilString(&d.RedirectURL, o.RedirectURL)
+	if o.Scopes != nil {
+		d.Scopes = *o.Scopes
+	}
+	setIfNotNilString(&d.UsernameClaim, o.UsernameClaim)
+	setIfNotNilString(&d.DisplayNameClaim, o.DisplayNameClaim)
+	setIfNotNilString(&d.GroupsClaim, o.GroupsClaim)
+	setIfNotNilString(&d.RoleSource, o.RoleSource)
+	setIfNotNilString(&d.DefaultRole, o.DefaultRole)
+	setIfNotNilString(&d.ReauthMode, o.ReauthMode)
+	setIfNotNilString(&d.LogoutMode, o.LogoutMode)
+	setIfNotNilString(&d.PostLogoutRedirectURL, o.PostLogoutRedirectURL)
+	setIfNotNilString(&d.ButtonLabel, o.ButtonLabel)
+	if o.RoleMap != nil {
+		out := make([]RoleMappingConfig, 0, len(*o.RoleMap))
+		for _, m := range *o.RoleMap {
+			out = append(out, RoleMappingConfig{Group: m.Group, Role: m.Role})
+		}
+		d.RoleMap = out
+	}
+}
+
 // setIfNotNilString assigns *src to *dst when src is non-nil.
 func setIfNotNilString(dst, src *string) {
 	if src != nil {
@@ -577,6 +641,7 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.Auth.Bootstrap.Username, "SQI_AUTH_BOOTSTRAP_USERNAME")
 	setString(&cfg.Auth.Bootstrap.Password, "SQI_AUTH_BOOTSTRAP_PASSWORD")
 	collect(applyLDAPEnv(&cfg.Auth.LDAP))
+	collect(applyOIDCEnv(&cfg.Auth.OIDC))
 
 	return errors.Join(errs...)
 }
@@ -608,6 +673,35 @@ func applyLDAPEnv(cfg *LDAPConfig) error {
 	setString(&cfg.UniqueIDAttr, "SQI_AUTH_LDAP_UNIQUE_ID_ATTR")
 	setString(&cfg.RoleSource, "SQI_AUTH_LDAP_ROLE_SOURCE")
 	setString(&cfg.DefaultRole, "SQI_AUTH_LDAP_DEFAULT_ROLE")
+	return errors.Join(errs...)
+}
+
+// applyOIDCEnv overlays SQI_AUTH_OIDC_* onto cfg. Split out of [applyEnv] to
+// keep its cyclomatic complexity under the lint threshold. role_map has no
+// env form — a list of pairs has no sane flat encoding, so it is file-only,
+// exactly as auth.ldap.role_map is.
+func applyOIDCEnv(cfg *OIDCConfig) error {
+	var errs []error
+	collect := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	collect(setBool(&cfg.Enabled, "SQI_AUTH_OIDC_ENABLED"))
+	setString(&cfg.Issuer, "SQI_AUTH_OIDC_ISSUER")
+	setString(&cfg.ClientID, "SQI_AUTH_OIDC_CLIENT_ID")
+	setString(&cfg.ClientSecret, "SQI_AUTH_OIDC_CLIENT_SECRET")
+	setString(&cfg.RedirectURL, "SQI_AUTH_OIDC_REDIRECT_URL")
+	setStringSlice(&cfg.Scopes, "SQI_AUTH_OIDC_SCOPES")
+	setString(&cfg.UsernameClaim, "SQI_AUTH_OIDC_USERNAME_CLAIM")
+	setString(&cfg.DisplayNameClaim, "SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM")
+	setString(&cfg.GroupsClaim, "SQI_AUTH_OIDC_GROUPS_CLAIM")
+	setString(&cfg.RoleSource, "SQI_AUTH_OIDC_ROLE_SOURCE")
+	setString(&cfg.DefaultRole, "SQI_AUTH_OIDC_DEFAULT_ROLE")
+	setString(&cfg.ReauthMode, "SQI_AUTH_OIDC_REAUTH_MODE")
+	setString(&cfg.LogoutMode, "SQI_AUTH_OIDC_LOGOUT_MODE")
+	setString(&cfg.PostLogoutRedirectURL, "SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL")
+	setString(&cfg.ButtonLabel, "SQI_AUTH_OIDC_BUTTON_LABEL")
 	return errors.Join(errs...)
 }
 

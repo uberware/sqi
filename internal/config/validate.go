@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 
+	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/policy"
 )
 
@@ -293,6 +295,12 @@ func validateAuth(cfg AuthConfig) []ValidationError {
 				Message: "requires auth.enabled=true; LDAP without the auth gate authenticates nobody",
 			})
 		}
+		if cfg.OIDC.Enabled {
+			errs = append(errs, ValidationError{
+				Field:   "auth.oidc.enabled",
+				Message: "requires auth.enabled=true; SSO without the auth gate authenticates nobody",
+			})
+		}
 		return errs
 	}
 	if cfg.Session.TTL <= 0 {
@@ -327,6 +335,7 @@ func validateAuth(cfg AuthConfig) []ValidationError {
 	}
 	errs = append(errs, validateAuthBootstrap(cfg.Bootstrap)...)
 	errs = append(errs, validateAuthLDAP(cfg.LDAP)...)
+	errs = append(errs, validateAuthOIDC(cfg.OIDC)...)
 	return errs
 }
 
@@ -533,6 +542,181 @@ func validateLDAPRoles(cfg LDAPConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field:   "auth.ldap.default_role",
 			Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only, or empty to reject unmapped logins", cfg.DefaultRole),
+		})
+	}
+	return errs
+}
+
+// validateAuthOIDC checks the auth.oidc block. It assumes auth.enabled is
+// true (validateAuth returns early otherwise). Everything here fails closed:
+// a misconfigured provider must abort boot rather than leave a server that
+// silently cannot authenticate anyone via SSO.
+func validateAuthOIDC(cfg OIDCConfig) []ValidationError {
+	var errs []ValidationError
+	if !cfg.Enabled {
+		return errs
+	}
+	errs = append(errs, validateOIDCEndpoint(cfg)...)
+	errs = append(errs, validateOIDCClaims(cfg)...)
+	errs = append(errs, validateOIDCRoles(cfg)...)
+	errs = append(errs, validateOIDCModes(cfg)...)
+	return errs
+}
+
+// validateOIDCEndpoint checks the fields needed to talk to the provider.
+// None has a safe empty meaning when SSO is enabled.
+func validateOIDCEndpoint(cfg OIDCConfig) []ValidationError {
+	var errs []ValidationError
+	switch cfg.Issuer {
+	case "":
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.issuer",
+			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_ISSUER or auth.oidc.issuer",
+		})
+	default:
+		if u, err := url.Parse(cfg.Issuer); err != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, ValidationError{
+				Field:   "auth.oidc.issuer",
+				Message: fmt.Sprintf("must be an absolute URL, got %q", cfg.Issuer),
+			})
+		}
+	}
+	if cfg.ClientID == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.client_id",
+			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_CLIENT_ID or auth.oidc.client_id",
+		})
+	}
+	if cfg.ClientSecret == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.client_secret",
+			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_CLIENT_SECRET or auth.oidc.client_secret",
+		})
+	}
+	switch cfg.RedirectURL {
+	case "":
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.redirect_url",
+			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_REDIRECT_URL or auth.oidc.redirect_url",
+		})
+	default:
+		if u, err := url.Parse(cfg.RedirectURL); err != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, ValidationError{
+				Field:   "auth.oidc.redirect_url",
+				Message: fmt.Sprintf("must be an absolute URL, got %q", cfg.RedirectURL),
+			})
+		}
+	}
+	return errs
+}
+
+// validateOIDCClaims checks the scope list and claim-name fields.
+// UsernameClaim and DisplayNameClaim carry defaults, so reaching those errors
+// means the operator explicitly cleared one — mirrors validateLDAPAttrs.
+func validateOIDCClaims(cfg OIDCConfig) []ValidationError {
+	var errs []ValidationError
+	if len(cfg.Scopes) == 0 {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.scopes",
+			Message: `must not be empty; set SQI_AUTH_OIDC_SCOPES or auth.oidc.scopes and include "openid"`,
+		})
+	} else if !slices.Contains(cfg.Scopes, "openid") {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.scopes",
+			Message: fmt.Sprintf(`must include "openid", got %v`, cfg.Scopes),
+		})
+	}
+	if cfg.UsernameClaim == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.username_claim",
+			Message: `must not be empty; set SQI_AUTH_OIDC_USERNAME_CLAIM or auth.oidc.username_claim (e.g. "preferred_username")`,
+		})
+	}
+	if cfg.DisplayNameClaim == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.display_name_claim",
+			Message: `must not be empty; set SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM or auth.oidc.display_name_claim (e.g. "name")`,
+		})
+	}
+	if cfg.GroupsClaim == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.groups_claim",
+			Message: `must not be empty; set SQI_AUTH_OIDC_GROUPS_CLAIM or auth.oidc.groups_claim (e.g. "groups")`,
+		})
+	}
+	return errs
+}
+
+// validateOIDCRoles checks role_source, role_map, and default_role. A
+// typo'd role must abort boot, not silently fall through to default_role —
+// mirrors validateLDAPRoles exactly.
+func validateOIDCRoles(cfg OIDCConfig) []ValidationError {
+	var errs []ValidationError
+	switch cfg.RoleSource {
+	case oidc.RoleSourceDirectory, oidc.RoleSourceLocal:
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.role_source",
+			Message: fmt.Sprintf("must be %q or %q, got %q", oidc.RoleSourceDirectory, oidc.RoleSourceLocal, cfg.RoleSource),
+		})
+	}
+	for i, m := range cfg.RoleMap {
+		if m.Group == "" {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("auth.oidc.role_map[%d].group", i),
+				Message: "must not be empty",
+			})
+		}
+		if !policy.IsRole(m.Role) {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("auth.oidc.role_map[%d].role", i),
+				Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only", m.Role),
+			})
+		}
+	}
+	// Empty is meaningful: reject logins that match no group.
+	if cfg.DefaultRole != "" && !policy.IsRole(cfg.DefaultRole) {
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.default_role",
+			Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only, or empty to reject unmapped logins", cfg.DefaultRole),
+		})
+	}
+	return errs
+}
+
+// validateOIDCModes checks reauth_mode and logout_mode against the mode
+// constants defined in internal/auth/oidc — the same package that will read
+// them once the callback route consumes this config (Task 6).
+func validateOIDCModes(cfg OIDCConfig) []ValidationError {
+	var errs []ValidationError
+	switch cfg.ReauthMode {
+	case oidc.ReauthAfterLogout, oidc.ReauthAlways, oidc.ReauthNever:
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Field: "auth.oidc.reauth_mode",
+			Message: fmt.Sprintf("must be %q, %q, or %q, got %q",
+				oidc.ReauthAfterLogout, oidc.ReauthAlways, oidc.ReauthNever, cfg.ReauthMode),
+		})
+	}
+	switch cfg.LogoutMode {
+	case oidc.LogoutLocal:
+		// valid
+	case oidc.LogoutProvider:
+		if cfg.PostLogoutRedirectURL == "" {
+			errs = append(errs, ValidationError{
+				Field: "auth.oidc.post_logout_redirect_url",
+				Message: fmt.Sprintf(
+					"must be set when auth.oidc.logout_mode is %q; set SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL or auth.oidc.post_logout_redirect_url",
+					oidc.LogoutProvider,
+				),
+			})
+		}
+	default:
+		errs = append(errs, ValidationError{
+			Field:   "auth.oidc.logout_mode",
+			Message: fmt.Sprintf("must be %q or %q, got %q", oidc.LogoutLocal, oidc.LogoutProvider, cfg.LogoutMode),
 		})
 	}
 	return errs

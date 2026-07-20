@@ -1891,3 +1891,502 @@ func TestValidate_AuthLDAPUniqueIDAttrErrorIsActionable(t *testing.T) {
 		}
 	}
 }
+
+// ── auth.oidc ──────────────────────────────────────────────────────────────
+
+func TestOIDCConfigDefaults(t *testing.T) {
+	c := config.DefaultConfig()
+	if c.Auth.OIDC.Enabled {
+		t.Fatal("oidc must default disabled")
+	}
+	if !slices.Equal(c.Auth.OIDC.Scopes, []string{"openid", "profile", "email"}) {
+		t.Fatalf("oidc scopes default = %v, want [openid profile email]", c.Auth.OIDC.Scopes)
+	}
+	if c.Auth.OIDC.UsernameClaim != "preferred_username" {
+		t.Fatalf("oidc username_claim default = %q, want preferred_username", c.Auth.OIDC.UsernameClaim)
+	}
+	if c.Auth.OIDC.DisplayNameClaim != "name" {
+		t.Fatalf("oidc display_name_claim default = %q, want name", c.Auth.OIDC.DisplayNameClaim)
+	}
+	if c.Auth.OIDC.GroupsClaim != "groups" {
+		t.Fatalf("oidc groups_claim default = %q, want groups", c.Auth.OIDC.GroupsClaim)
+	}
+	if c.Auth.OIDC.RoleSource != "directory" {
+		t.Fatalf("oidc role_source default = %q, want directory", c.Auth.OIDC.RoleSource)
+	}
+	if c.Auth.OIDC.DefaultRole != "read-only" {
+		t.Fatalf("oidc default_role default = %q, want read-only", c.Auth.OIDC.DefaultRole)
+	}
+	if c.Auth.OIDC.ReauthMode != "after_logout" {
+		t.Fatalf("oidc reauth_mode default = %q, want after_logout", c.Auth.OIDC.ReauthMode)
+	}
+	if c.Auth.OIDC.LogoutMode != "local" {
+		t.Fatalf("oidc logout_mode default = %q, want local", c.Auth.OIDC.LogoutMode)
+	}
+	if c.Auth.OIDC.ButtonLabel != "Sign in with SSO" {
+		t.Fatalf("oidc button_label default = %q, want %q", c.Auth.OIDC.ButtonLabel, "Sign in with SSO")
+	}
+	if c.Auth.OIDC.Issuer != "" || c.Auth.OIDC.ClientID != "" || c.Auth.OIDC.ClientSecret != "" ||
+		c.Auth.OIDC.RedirectURL != "" || c.Auth.OIDC.PostLogoutRedirectURL != "" {
+		t.Fatalf("oidc unset string fields default = %+v, want all empty", c.Auth.OIDC)
+	}
+	if len(c.Auth.OIDC.RoleMap) != 0 {
+		t.Fatalf("oidc role_map default = %+v, want empty", c.Auth.OIDC.RoleMap)
+	}
+}
+
+func TestAuthOIDCEnvOverrides(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true")
+	t.Setenv("SQI_AUTH_OIDC_ENABLED", "true")
+	t.Setenv("SQI_AUTH_OIDC_ISSUER", "https://idp.example.com")
+	t.Setenv("SQI_AUTH_OIDC_CLIENT_ID", "sqi")
+	t.Setenv("SQI_AUTH_OIDC_CLIENT_SECRET", "s3cret")
+	t.Setenv("SQI_AUTH_OIDC_REDIRECT_URL", "https://sqi.example.com/api/v1/auth/oidc/callback")
+	t.Setenv("SQI_AUTH_OIDC_SCOPES", "openid, profile")
+	t.Setenv("SQI_AUTH_OIDC_USERNAME_CLAIM", "upn")
+	t.Setenv("SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM", "displayName")
+	t.Setenv("SQI_AUTH_OIDC_GROUPS_CLAIM", "roles")
+	t.Setenv("SQI_AUTH_OIDC_ROLE_SOURCE", "local")
+	t.Setenv("SQI_AUTH_OIDC_DEFAULT_ROLE", "user")
+	t.Setenv("SQI_AUTH_OIDC_REAUTH_MODE", "always")
+	t.Setenv("SQI_AUTH_OIDC_LOGOUT_MODE", "provider")
+	t.Setenv("SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL", "https://sqi.example.com/logged-out")
+	t.Setenv("SQI_AUTH_OIDC_BUTTON_LABEL", "Sign in with Acme SSO")
+
+	c, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Auth.OIDC.Enabled {
+		t.Error("Auth.OIDC.Enabled: got false, want true")
+	}
+	if c.Auth.OIDC.Issuer != "https://idp.example.com" {
+		t.Errorf("Auth.OIDC.Issuer: got %q", c.Auth.OIDC.Issuer)
+	}
+	if c.Auth.OIDC.ClientID != "sqi" {
+		t.Errorf("Auth.OIDC.ClientID: got %q", c.Auth.OIDC.ClientID)
+	}
+	if c.Auth.OIDC.ClientSecret != "s3cret" {
+		t.Errorf("Auth.OIDC.ClientSecret: got %q", c.Auth.OIDC.ClientSecret)
+	}
+	if c.Auth.OIDC.RedirectURL != "https://sqi.example.com/api/v1/auth/oidc/callback" {
+		t.Errorf("Auth.OIDC.RedirectURL: got %q", c.Auth.OIDC.RedirectURL)
+	}
+	if !slices.Equal(c.Auth.OIDC.Scopes, []string{"openid", "profile"}) {
+		t.Errorf("Auth.OIDC.Scopes: got %v, want [openid profile]", c.Auth.OIDC.Scopes)
+	}
+	if c.Auth.OIDC.UsernameClaim != "upn" {
+		t.Errorf("Auth.OIDC.UsernameClaim: got %q, want upn", c.Auth.OIDC.UsernameClaim)
+	}
+	if c.Auth.OIDC.DisplayNameClaim != "displayName" {
+		t.Errorf("Auth.OIDC.DisplayNameClaim: got %q, want displayName", c.Auth.OIDC.DisplayNameClaim)
+	}
+	if c.Auth.OIDC.GroupsClaim != "roles" {
+		t.Errorf("Auth.OIDC.GroupsClaim: got %q, want roles", c.Auth.OIDC.GroupsClaim)
+	}
+	if c.Auth.OIDC.RoleSource != "local" {
+		t.Errorf("Auth.OIDC.RoleSource: got %q, want local", c.Auth.OIDC.RoleSource)
+	}
+	if c.Auth.OIDC.DefaultRole != "user" {
+		t.Errorf("Auth.OIDC.DefaultRole: got %q, want user", c.Auth.OIDC.DefaultRole)
+	}
+	if c.Auth.OIDC.ReauthMode != "always" {
+		t.Errorf("Auth.OIDC.ReauthMode: got %q, want always", c.Auth.OIDC.ReauthMode)
+	}
+	if c.Auth.OIDC.LogoutMode != "provider" {
+		t.Errorf("Auth.OIDC.LogoutMode: got %q, want provider", c.Auth.OIDC.LogoutMode)
+	}
+	if c.Auth.OIDC.PostLogoutRedirectURL != "https://sqi.example.com/logged-out" {
+		t.Errorf("Auth.OIDC.PostLogoutRedirectURL: got %q", c.Auth.OIDC.PostLogoutRedirectURL)
+	}
+	if c.Auth.OIDC.ButtonLabel != "Sign in with Acme SSO" {
+		t.Errorf("Auth.OIDC.ButtonLabel: got %q", c.Auth.OIDC.ButtonLabel)
+	}
+}
+
+func TestAuthOIDCEnvOverrides_RoleMapHasNoEnvForm(t *testing.T) {
+	// role_map is file-only, exactly as auth.ldap.role_map is: a list of
+	// group->role pairs has no sane comma-separated env encoding. There is no
+	// SQI_AUTH_OIDC_ROLE_MAP to set, so this test documents the absence by
+	// checking the default survives Load with every other oidc.* var set.
+	t.Setenv("SQI_AUTH_OIDC_ENABLED", "true")
+	c, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Auth.OIDC.RoleMap) != 0 {
+		t.Fatalf("Auth.OIDC.RoleMap: got %+v, want empty (no env form exists)", c.Auth.OIDC.RoleMap)
+	}
+}
+
+func TestLoad_AuthOIDCFileOverride(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yamlSrc := `
+auth:
+  enabled: true
+  oidc:
+    enabled: true
+    issuer: "https://idp.example.com"
+    client_id: "sqi"
+    client_secret: "filesecret"
+    redirect_url: "https://sqi.example.com/api/v1/auth/oidc/callback"
+    scopes: ["openid", "profile", "email", "groups"]
+    username_claim: "preferred_username"
+    display_name_claim: "name"
+    groups_claim: "groups"
+    role_source: "local"
+    role_map:
+      - group: "sqi-admins"
+        role: admin
+      - group: "sqi-artists"
+        role: user
+    default_role: "read-only"
+    reauth_mode: "always"
+    logout_mode: "provider"
+    post_logout_redirect_url: "https://sqi.example.com/logged-out"
+    button_label: "Sign in with Acme SSO"
+`
+	if err := os.WriteFile(f, []byte(yamlSrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.OIDC.Enabled {
+		t.Fatalf("oidc enabled not applied: %+v", cfg.Auth.OIDC)
+	}
+	if cfg.Auth.OIDC.Issuer != "https://idp.example.com" {
+		t.Errorf("issuer: got %q", cfg.Auth.OIDC.Issuer)
+	}
+	if cfg.Auth.OIDC.ClientID != "sqi" {
+		t.Errorf("client_id: got %q", cfg.Auth.OIDC.ClientID)
+	}
+	if cfg.Auth.OIDC.ClientSecret != "filesecret" {
+		t.Errorf("client_secret: got %q", cfg.Auth.OIDC.ClientSecret)
+	}
+	if cfg.Auth.OIDC.RedirectURL != "https://sqi.example.com/api/v1/auth/oidc/callback" {
+		t.Errorf("redirect_url: got %q", cfg.Auth.OIDC.RedirectURL)
+	}
+	if !slices.Equal(cfg.Auth.OIDC.Scopes, []string{"openid", "profile", "email", "groups"}) {
+		t.Errorf("scopes: got %v", cfg.Auth.OIDC.Scopes)
+	}
+	if len(cfg.Auth.OIDC.RoleMap) != 2 {
+		t.Fatalf("role_map: got %d entries, want 2", len(cfg.Auth.OIDC.RoleMap))
+	}
+	if cfg.Auth.OIDC.RoleMap[0].Role != "admin" || cfg.Auth.OIDC.RoleMap[1].Role != "user" {
+		t.Errorf("role_map order not preserved: %+v", cfg.Auth.OIDC.RoleMap)
+	}
+	if cfg.Auth.OIDC.DefaultRole != "read-only" {
+		t.Errorf("default_role: got %q, want read-only", cfg.Auth.OIDC.DefaultRole)
+	}
+	if cfg.Auth.OIDC.ReauthMode != "always" {
+		t.Errorf("reauth_mode: got %q, want always", cfg.Auth.OIDC.ReauthMode)
+	}
+	if cfg.Auth.OIDC.LogoutMode != "provider" {
+		t.Errorf("logout_mode: got %q, want provider", cfg.Auth.OIDC.LogoutMode)
+	}
+	if cfg.Auth.OIDC.PostLogoutRedirectURL != "https://sqi.example.com/logged-out" {
+		t.Errorf("post_logout_redirect_url: got %q", cfg.Auth.OIDC.PostLogoutRedirectURL)
+	}
+	if cfg.Auth.OIDC.ButtonLabel != "Sign in with Acme SSO" {
+		t.Errorf("button_label: got %q", cfg.Auth.OIDC.ButtonLabel)
+	}
+	// Unset oidc fields keep defaults; sibling sub-blocks are untouched.
+	if cfg.Auth.OIDC.UsernameClaim != "preferred_username" {
+		t.Errorf("username_claim: got %q", cfg.Auth.OIDC.UsernameClaim)
+	}
+	if cfg.Auth.LDAP.RoleSource != "directory" {
+		t.Errorf("auth.ldap.role_source: expected default directory, got %q", cfg.Auth.LDAP.RoleSource)
+	}
+}
+
+// TestLoad_AuthOIDCRoleMapExplicitEmptyClearsDefault guards the
+// pointer-nil-vs-empty discrimination mergeAuthOIDCFile shares with
+// mergeAuthLDAPFile: a "role_map: []" key present in the file must produce a
+// non-nil empty slice (a deliberate clear), not be indistinguishable from the
+// key being absent (which leaves the untouched default, also empty here, but
+// via a different code path — nil vs an explicitly-set empty slice).
+func TestLoad_AuthOIDCRoleMapExplicitEmptyClearsDefault(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yamlSrc := `
+auth:
+  enabled: true
+  oidc:
+    enabled: true
+    role_map: []
+`
+	if err := os.WriteFile(f, []byte(yamlSrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.OIDC.RoleMap == nil {
+		t.Fatal("an explicit role_map: [] in the file must produce a non-nil empty slice, " +
+			"not leave the (also-empty) default untouched")
+	}
+}
+
+func TestMarshalYAML_OIDCClientSecretRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.OIDC.ClientID = "sqi"
+	cfg.Auth.OIDC.ClientSecret = "hunter2"
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "hunter2") {
+		t.Fatalf("marshaled config contains the plaintext OIDC client secret:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not contain the <redacted> placeholder:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_OIDCClientSecretSentinelNeverAppears(t *testing.T) {
+	const sentinel = "S3CRET-SENTINEL"
+
+	cfg := config.DefaultConfig()
+	cfg.Auth.OIDC.ClientID = "sqi"
+	cfg.Auth.OIDC.ClientSecret = sentinel
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), sentinel) {
+		t.Fatalf("marshaled config leaks the OIDC client secret sentinel:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_OIDCClientSecretEmptyNotRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.OIDC.ClientID = ""
+	cfg.Auth.OIDC.ClientSecret = ""
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config redacts an empty OIDC client secret:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_OIDCConfigFieldsSurviveRedaction(t *testing.T) {
+	// Guards against the alias-type indirection in OIDCConfig.MarshalYAML
+	// silently dropping a field: every non-secret field is set to a distinct
+	// recognizable value and must still appear in the marshaled output.
+	cfg := config.DefaultConfig()
+	cfg.Auth.OIDC = config.OIDCConfig{
+		Enabled:          true,
+		Issuer:           "https://idp.example.com",
+		ClientID:         "sqi-client",
+		ClientSecret:     "hunter2",
+		RedirectURL:      "https://sqi.example.com/api/v1/auth/oidc/callback",
+		Scopes:           []string{"openid", "profile", "email"},
+		UsernameClaim:    "preferred_username",
+		DisplayNameClaim: "name",
+		GroupsClaim:      "groups",
+		RoleSource:       "local",
+		RoleMap: []config.RoleMappingConfig{
+			{Group: "sqi-admins", Role: "admin"},
+			{Group: "sqi-operators", Role: "operator"},
+		},
+		DefaultRole:           "read-only",
+		ReauthMode:            "always",
+		LogoutMode:            "provider",
+		PostLogoutRedirectURL: "https://sqi.example.com/logged-out",
+		ButtonLabel:           "Sign in with Acme SSO",
+	}
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	got := string(out)
+
+	wantSubstrings := []string{
+		"https://idp.example.com",
+		"sqi-client",
+		"https://sqi.example.com/api/v1/auth/oidc/callback",
+		"preferred_username",
+		"name",
+		"groups",
+		"local",
+		"sqi-admins",
+		"admin",
+		"sqi-operators",
+		"operator",
+		"read-only",
+		"always",
+		"provider",
+		"https://sqi.example.com/logged-out",
+		"Sign in with Acme SSO",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshaled config missing expected field value %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "<redacted>") {
+		t.Fatalf("marshaled config does not redact OIDC client secret:\n%s", got)
+	}
+}
+
+func TestLoad_AuthOIDCClientSecretSurvivesRedactedMarshal(t *testing.T) {
+	// Redaction on marshal must not affect the loaded (unmarshaled) value —
+	// round-tripping a redacted dump is not a goal, but loading the real
+	// config must still populate the real secret.
+	t.Setenv("SQI_AUTH_OIDC_CLIENT_SECRET", "s3cret")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.OIDC.ClientSecret != "s3cret" {
+		t.Fatalf("Auth.OIDC.ClientSecret: got %q, want s3cret", cfg.Auth.OIDC.ClientSecret)
+	}
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not redact OIDC client secret:\n%s", out)
+	}
+	if cfg.Auth.OIDC.ClientSecret != "s3cret" {
+		t.Fatalf("marshaling mutated the in-memory config: ClientSecret = %q, want s3cret", cfg.Auth.OIDC.ClientSecret)
+	}
+}
+
+func TestValidate_AuthDisabled_OIDCNoErrorsEvenWithBadValues(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Enabled = false
+	cfg.Auth.OIDC = config.OIDCConfig{
+		Enabled:    true,
+		RoleSource: "nonsense",
+		ReauthMode: "nonsense",
+		LogoutMode: "nonsense",
+	}
+	// auth disabled short-circuits everything except the cross-gate error, so
+	// exactly one error (auth.oidc.enabled) is expected here, not the pile of
+	// downstream OIDC errors this config would otherwise produce.
+	errs := config.Validate(cfg)
+	if len(errs) != 1 || errs[0].Field != "auth.oidc.enabled" {
+		t.Fatalf("want exactly one auth.oidc.enabled error, got %v", errs)
+	}
+}
+
+func TestValidateAuthOIDC(t *testing.T) {
+	base := func() config.Config {
+		c := config.DefaultConfig()
+		c.Auth.Enabled = true
+		c.Auth.OIDC = config.OIDCConfig{
+			Enabled: true, Issuer: "https://idp.example.com",
+			ClientID: "sqi", ClientSecret: "s3cret",
+			RedirectURL:   "https://sqi.example.com/api/v1/auth/oidc/callback",
+			Scopes:        []string{"openid", "profile", "email"},
+			UsernameClaim: "preferred_username", DisplayNameClaim: "name", GroupsClaim: "groups",
+			RoleSource: "directory", DefaultRole: "read-only",
+			ReauthMode: "after_logout", LogoutMode: "local",
+		}
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*config.Config)
+		wantField string
+	}{
+		{name: "valid", mutate: func(*config.Config) {}},
+		{
+			name:      "oidc without the auth gate",
+			mutate:    func(c *config.Config) { c.Auth.Enabled = false },
+			wantField: "auth.oidc.enabled",
+		},
+		{name: "missing issuer", mutate: func(c *config.Config) { c.Auth.OIDC.Issuer = "" }, wantField: "auth.oidc.issuer"},
+		{name: "missing client id", mutate: func(c *config.Config) { c.Auth.OIDC.ClientID = "" }, wantField: "auth.oidc.client_id"},
+		{
+			name:      "missing client secret",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.ClientSecret = "" },
+			wantField: "auth.oidc.client_secret",
+		},
+		{
+			name:      "missing redirect url",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.RedirectURL = "" },
+			wantField: "auth.oidc.redirect_url",
+		},
+		{
+			name:      "bad role source",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.RoleSource = "nope" },
+			wantField: "auth.oidc.role_source",
+		},
+		{
+			name:      "bad reauth mode",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.ReauthMode = "sometimes" },
+			wantField: "auth.oidc.reauth_mode",
+		},
+		{
+			name:      "bad logout mode",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.LogoutMode = "everywhere" },
+			wantField: "auth.oidc.logout_mode",
+		},
+		{
+			name:      "typo'd role in map aborts boot",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.RoleMap = []config.RoleMappingConfig{{Group: "g", Role: "admn"}} },
+			wantField: "auth.oidc.role_map[0].role",
+		},
+		{
+			name:      "unknown default role",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.DefaultRole = "superuser" },
+			wantField: "auth.oidc.default_role",
+		},
+		{name: "missing scopes", mutate: func(c *config.Config) { c.Auth.OIDC.Scopes = nil }, wantField: "auth.oidc.scopes"},
+	}
+
+	hasFieldError := func(errs []config.ValidationError, field string) bool {
+		for _, e := range errs {
+			if e.Field == field {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base()
+			tt.mutate(&cfg)
+			errs := config.Validate(cfg)
+			if tt.wantField == "" {
+				if len(errs) != 0 {
+					t.Fatalf("want no errors, got %v", errs)
+				}
+				return
+			}
+			if !hasFieldError(errs, tt.wantField) {
+				t.Fatalf("want error on %s, got %v", tt.wantField, errs)
+			}
+		})
+	}
+}
+
+func TestOIDCConfig_MarshalYAMLRedactsSecret(t *testing.T) {
+	c := config.OIDCConfig{ClientSecret: "s3cret"}
+	out, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "s3cret") {
+		t.Fatalf("client_secret leaked into YAML output:\n%s", out)
+	}
+}
