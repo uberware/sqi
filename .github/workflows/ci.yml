@@ -648,6 +648,56 @@ jobs:
       - name: Run LDAP integration tests
         run: make test-ldap
 
+  # ── SSO against a real identity provider ─────────────────────────────────────
+  # The SSO unit tests drive a fake provider. It signs real tokens, so a
+  # validation mistake surfaces — but a fake returns whatever the test asks for,
+  # so it cannot show what a real provider OMITS. Keycloak emits no group
+  # membership at all without a protocol mapper configured for it, and a token
+  # with no groups still validates: every user then lands on default_role, a
+  # silent privilege downgrade with no error anywhere. This job is what makes
+  # that class of bug fail before it merges. It also pins the two vendor
+  # behaviors the logout design rests on (see test/integration/oidc_test.go).
+  #
+  # ONE architecture, unlike ldap-integration above, and deliberately so rather
+  # than by oversight: that job runs both because the OpenLDAP image's arm64 and
+  # amd64 variants have already proven to differ in real, test-visible ways
+  # (cn=config credentials, overlay instantiation, module-registration timing).
+  # No such divergence is known for the Keycloak image — it is a JVM application
+  # whose HTTP and token behavior is what this job asserts on, none of which is
+  # architecture-dependent — so a second runner would cost time without pinning
+  # anything the first does not. Revisit if an arch-specific difference ever
+  # does show up.
+  #
+  # Docker is preinstalled on the ubuntu runners, so the test provisions its own
+  # container and needs no service definition here. It skips (does not fail)
+  # when Docker is unavailable. Tagged `integration`, so it does not run in the
+  # default `make test`.
+  oidc-integration:
+    name: OIDC integration
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Pulled explicitly so an image-registry problem fails here, with a clear
+      # message, rather than inside the test where it would surface as a skip
+      # and quietly turn this job green without having verified anything.
+      #
+      # Keep this tag in step with keycloakImage in test/integration/oidc_test.go:
+      # the test scrapes Keycloak's login form, so the pin is load-bearing.
+      - name: Pull Keycloak image
+        run: docker pull quay.io/keycloak/keycloak:26.0.7
+
+      - name: Run OIDC integration tests
+        run: make test-oidc
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run
