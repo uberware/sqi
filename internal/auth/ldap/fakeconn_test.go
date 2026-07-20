@@ -9,15 +9,33 @@ import (
 	ldapv3 "github.com/go-ldap/ldap/v3"
 )
 
+// bindKey identifies one bind attempt by BOTH the DN and the password.
+//
+// Keying on the DN alone would make the password invisible to every
+// assertion: a verifier that re-bound the user with the *service account's*
+// password — authenticating everyone as long as the service credentials were
+// right — would still satisfy a DN-only fake. The credential is the one thing
+// a bind actually proves, so it belongs in the key.
+type bindKey struct {
+	DN string
+	PW string
+}
+
 // fakeConn is a scripted conn. Every verifier test drives this rather than a
 // real directory, so the suite needs no network and no container.
 type fakeConn struct {
-	// bindErr maps a DN to the error its bind returns; a DN absent from the
-	// map binds successfully.
-	bindErr map[string]error
-	// binds records every DN bound, in order — the assertion surface for
-	// "did it re-bind as the user after searching?".
-	binds []string
+	// bindErr maps a (DN, password) pair to the error its bind returns; a pair
+	// absent from the map binds successfully. Keying on the pair is what makes
+	// binding with the wrong password observable.
+	bindErr map[bindKey]error
+	// binds records every (DN, password) bound, in order — the assertion
+	// surface for "did it re-bind as the user, with the USER's password?".
+	binds []bindKey
+	// ops records binds and searches in one ordered log ("bind:<dn>",
+	// "search:<filter>"), so a test can assert not just that an operation
+	// happened but that it happened on the right side of a bind — which is
+	// what "the nested lookup runs on the service connection" means.
+	ops []string
 	// searchResult is returned by every Search call.
 	searchResult *ldapv3.SearchResult
 	// searchErr, when set, is returned by Search calls from searchErrFrom on.
@@ -32,9 +50,10 @@ type fakeConn struct {
 	closed        bool
 }
 
-func (f *fakeConn) Bind(dn, _ string) error {
-	f.binds = append(f.binds, dn)
-	if err, ok := f.bindErr[dn]; ok {
+func (f *fakeConn) Bind(dn, pw string) error {
+	f.binds = append(f.binds, bindKey{DN: dn, PW: pw})
+	f.ops = append(f.ops, "bind:"+dn)
+	if err, ok := f.bindErr[bindKey{DN: dn, PW: pw}]; ok {
 		return err
 	}
 	return nil
@@ -42,6 +61,7 @@ func (f *fakeConn) Bind(dn, _ string) error {
 
 func (f *fakeConn) Search(req *ldapv3.SearchRequest) (*ldapv3.SearchResult, error) {
 	f.searchFilters = append(f.searchFilters, req.Filter)
+	f.ops = append(f.ops, "search:"+req.Filter)
 	if f.searchErr != nil && len(f.searchFilters) >= f.searchErrFrom {
 		return nil, f.searchErr
 	}

@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
@@ -69,11 +71,28 @@ func realDialer(cfg Config) (dialFunc, error) {
 		}
 		tlsCfg.RootCAs = pool
 	}
+	// Bound the TCP connect itself. Without an explicit dialer go-ldap falls
+	// back to its package-level DefaultTimeout of 60 seconds, so an operator
+	// who wrote timeout: 5s would still wait a minute per login against a
+	// blackholed directory. A non-positive timeout keeps go-ldap's default
+	// rather than becoming an unbounded connect.
+	opts := []ldapv3.DialOpt{ldapv3.DialWithTLSConfig(tlsCfg)}
+	if cfg.Timeout > 0 {
+		opts = append(opts, ldapv3.DialWithDialer(&net.Dialer{Timeout: cfg.Timeout}))
+	}
+
 	return func(_ context.Context) (conn, error) {
-		c, err := ldapv3.DialURL(cfg.URL, ldapv3.DialWithTLSConfig(tlsCfg))
+		c, err := ldapv3.DialURL(cfg.URL, opts...)
 		if err != nil {
 			return nil, err
 		}
+		// SetTimeout BEFORE StartTLS, not after. go-ldap arms a per-request
+		// timer only when its internal requestTimeout is already > 0 at send
+		// time, and SetTimeout is the only thing that sets it. Called after the
+		// StartTLS branch, the StartTLS extended request would go out with no
+		// timer at all and block forever against a server that completes the
+		// TCP handshake and then goes silent.
+		c.SetTimeout(cfg.Timeout)
 		if cfg.StartTLS {
 			if err := c.StartTLS(tlsCfg); err != nil {
 				// Already failing; the StartTLS error is the one that matters.
@@ -81,7 +100,6 @@ func realDialer(cfg Config) (dialFunc, error) {
 				return nil, err
 			}
 		}
-		c.SetTimeout(cfg.Timeout)
 		return c, nil
 	}, nil
 }
@@ -119,4 +137,21 @@ func firstAttr(e *ldapv3.Entry, name string) string {
 		return ""
 	}
 	return vals[0]
+}
+
+// attrValuesFold returns the values of the named attribute, matching the
+// attribute name case-insensitively.
+//
+// RFC 4512 §2.5 makes attribute descriptions case-insensitive, and a directory
+// is free to echo back "memberof" or "MEMBEROF" whatever case was requested.
+// Entry.GetAttributeValues compares byte-for-byte, so against such a server a
+// case-sensitive lookup yields zero groups — which is not an error anywhere:
+// it silently drops every role mapping and demotes the user to DefaultRole.
+func attrValuesFold(e *ldapv3.Entry, name string) []string {
+	for _, a := range e.Attributes {
+		if strings.EqualFold(a.Name, name) {
+			return a.Values
+		}
+	}
+	return nil
 }

@@ -35,7 +35,7 @@ func TestTemplateBind_Success(t *testing.T) {
 	}}}
 	v := newTemplateBind(templateCfg(), dialTo(fc))
 
-	id, err := v.Verify(context.Background(), "bob", "pw")
+	id, err := v.Verify(context.Background(), "bob", "bob-secret")
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -48,10 +48,16 @@ func TestTemplateBind_Success(t *testing.T) {
 	if len(id.Groups) != 1 || id.Groups[0] != "cn=admins,dc=example,dc=com" {
 		t.Errorf("Groups: got %v", id.Groups)
 	}
-	// Exactly one bind, as the user: template mode's entire point is having
-	// no service account. A second bind would mean one crept back in.
-	if len(fc.binds) != 1 || fc.binds[0] != "uid=bob,ou=people,dc=example,dc=com" {
-		t.Errorf("binds: got %v, want one user bind", fc.binds)
+	// Exactly one bind, as the user, carrying the USER's password: template
+	// mode's entire point is having no service account. A second bind would
+	// mean one crept back in, and a bind sending anything other than what the
+	// caller supplied would authenticate the wrong credential.
+	want := bindKey{DN: "uid=bob,ou=people,dc=example,dc=com", PW: "bob-secret"}
+	if len(fc.binds) != 1 || fc.binds[0] != want {
+		t.Errorf("binds: got %v, want exactly one user bind %v", fc.binds, want)
+	}
+	if len(fc.binds) == 1 && fc.binds[0].PW != "bob-secret" {
+		t.Errorf("the bind sent password %q, want the caller's password %q", fc.binds[0].PW, "bob-secret")
 	}
 	if id.DisplayName != "Bob Brown" {
 		t.Errorf("DisplayName: got %q", id.DisplayName)
@@ -91,8 +97,8 @@ func TestTemplateBind_SelfReadErrorStillAuthenticates(t *testing.T) {
 }
 
 func TestTemplateBind_WrongPassword(t *testing.T) {
-	fc := &fakeConn{bindErr: map[string]error{
-		"uid=bob,ou=people,dc=example,dc=com": errors.New("invalid credentials"),
+	fc := &fakeConn{bindErr: map[bindKey]error{
+		{DN: "uid=bob,ou=people,dc=example,dc=com", PW: "wrong"}: errors.New("invalid credentials"),
 	}}
 	v := newTemplateBind(templateCfg(), dialTo(fc))
 	if _, err := v.Verify(context.Background(), "bob", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
@@ -118,8 +124,32 @@ func TestTemplateBind_EscapesUsernameInDN(t *testing.T) {
 	}
 	// An unescaped comma would have produced the DN
 	// "uid=x,ou=admins,ou=people,..." — binding as a different entry.
-	if !strings.HasPrefix(fc.binds[0], `uid=x\,ou\=admins,ou=people`) {
-		t.Fatalf("DN was not escaped: %q", fc.binds[0])
+	if !strings.HasPrefix(fc.binds[0].DN, `uid=x\,ou\=admins,ou=people`) {
+		t.Fatalf("DN was not escaped: %q", fc.binds[0].DN)
+	}
+}
+
+// LDAP attribute descriptions are case-insensitive (RFC 4512 §2.5) and a
+// directory may echo back any casing. Matched byte-for-byte, a "MEMBEROF"
+// reply yields zero groups — no error, just a silent demotion to DefaultRole.
+func TestTemplateBind_MemberOfIsCaseInsensitive(t *testing.T) {
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{
+		entry("uid=bob,ou=people,dc=example,dc=com", map[string][]string{
+			"uid":      {"bob"},
+			"MEMBEROF": {"cn=admins,dc=example,dc=com"},
+		}),
+	}}}
+	v := newTemplateBind(templateCfg(), dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "bob", "bob-secret")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(id.Groups) != 1 || id.Groups[0] != "cn=admins,dc=example,dc=com" {
+		t.Fatalf("Groups: got %v, want the uppercase-attribute value to be found", id.Groups)
+	}
+	if role, ok := templateCfg().MapRole(id.Groups); !ok || role != "admin" {
+		t.Errorf("MapRole: got %q (ok=%v), want admin", role, ok)
 	}
 }
 

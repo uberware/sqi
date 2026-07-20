@@ -44,10 +44,18 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 	// Best-effort close of a directory connection.
 	defer func() { _ = c.Close() }()
 
-	if err := c.Bind(v.cfg.BindDN, v.cfg.BindPassword); err != nil {
-		// The service account is ours, not the user's: a failure here is an
-		// operations problem and must not be reported as a bad password.
-		return Identity{}, fmt.Errorf("%w: service account bind: %w", ErrUnavailable, err)
+	// An empty BindDN means anonymous search, a real OpenLDAP deployment
+	// pattern where the directory is world-readable and no service account
+	// exists. Binding "" with "" is not that — go-ldap rejects it client-side
+	// before any network I/O, so every login would fail as ErrUnavailable and
+	// misreport a working config as a broken service account. Skipping the
+	// bind leaves the connection anonymous, which is what was asked for.
+	if v.cfg.BindDN != "" {
+		if err := c.Bind(v.cfg.BindDN, v.cfg.BindPassword); err != nil {
+			// The service account is ours, not the user's: a failure here is an
+			// operations problem and must not be reported as a bad password.
+			return Identity{}, fmt.Errorf("%w: service account bind: %w", ErrUnavailable, err)
+		}
 	}
 
 	e, err := v.findUser(c, username)
@@ -55,19 +63,19 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 		return Identity{}, err
 	}
 
+	// Groups are resolved BEFORE the user re-bind, while the connection still
+	// carries the service account's rights. The nested expansion is a search
+	// over group objects, which ordinary users frequently may not read; run
+	// after the re-bind it would fail on every login and degrade to flat
+	// memberOf permanently rather than exceptionally.
+	//
+	// This does not weaken authentication: nothing here is returned to the
+	// caller unless the bind below succeeds, and that bind — the user's DN
+	// with the user's password — remains the sole gate.
+	groups := v.resolveGroups(ctx, c, e)
+
 	if err := c.Bind(e.DN, pw); err != nil {
 		return Identity{}, ErrInvalidCredentials
-	}
-
-	groups := e.GetAttributeValues("memberOf")
-	if v.cfg.NestedGroups {
-		nested, nerr := v.nestedGroups(c, e.DN)
-		if nerr == nil {
-			groups = nested
-		}
-		// A failed nested lookup falls back to the flat memberOf values
-		// already in hand rather than failing the login: degraded group
-		// resolution beats locking everyone out of a working directory.
 	}
 
 	name := firstAttr(e, v.cfg.UsernameAttr)
@@ -80,6 +88,32 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 		DisplayName: firstAttr(e, v.cfg.DisplayNameAttr),
 		Groups:      groups,
 	}, nil
+}
+
+// resolveGroups returns the group DNs for entry e, expanding nested
+// membership when configured.
+//
+// A failed nested lookup falls back to the flat memberOf values already in
+// hand rather than failing the login: degraded group resolution beats locking
+// everyone out of a working directory. It is logged at WARN because the
+// degradation is otherwise invisible — a persistently failing expansion
+// quietly demotes every admin who holds admin only through a nested group.
+// ctx is carried solely so the warning below can be correlated with the login
+// it belongs to; the search itself is bounded by the connection's timeout.
+func (v *searchBindVerifier) resolveGroups(ctx context.Context, c conn, e *ldapv3.Entry) []string {
+	groups := attrValuesFold(e, "memberOf")
+	if !v.cfg.NestedGroups {
+		return groups
+	}
+	nested, err := v.nestedGroups(c, e.DN)
+	if err != nil {
+		if v.cfg.Logger != nil {
+			v.cfg.Logger.WarnContext(ctx, "ldap: nested group expansion failed, falling back to flat memberOf",
+				"user_dn", e.DN, "error", err)
+		}
+		return groups
+	}
+	return nested
 }
 
 // findUser searches BaseDN for the single entry matching username.

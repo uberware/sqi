@@ -14,6 +14,7 @@ package ldap
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -58,6 +59,12 @@ type Config struct {
 	RoleSource      string
 	RoleMap         []RoleMapping
 	DefaultRole     string
+	// Logger receives the operational warnings this package cannot resolve on
+	// its own — currently only a failed nested-group expansion, which degrades
+	// silently to flat memberOf and would otherwise demote admins who hold
+	// admin solely through a nested group with no signal anywhere. Optional:
+	// nil is safe and disables that logging.
+	Logger *slog.Logger
 }
 
 // RoleSourceDirectory and RoleSourceLocal are the two role-authority modes.
