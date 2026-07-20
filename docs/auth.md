@@ -22,10 +22,16 @@ credential.
 Every request carries a `Principal` in its context. When auth is off, the
 middleware injects an anonymous principal with the superuser flag set, so
 authorization checks are bypassed. Authentication is pluggable: an
-`Authenticator` resolves a request's credentials to a `Principal`, and future
-credential types (API keys, LDAP, OIDC) each implement that one interface.
-Today, the only non-anonymous `Authenticator`s are the session-cookie and
-API-key ones described below.
+`Authenticator` resolves a request's credentials to a `Principal`. Today the
+only non-anonymous `Authenticator`s are the session-cookie and API-key ones
+described below.
+
+Directory-backed credentials do **not** implement that interface.
+[LDAP/AD](#ldap--active-directory) (C1), and OIDC (C2) after it, attach at
+`POST /auth/login` instead: they verify the credential once and then mint an
+ordinary session, so no request path binds against an external identity
+provider. See [It attaches at login, not at every
+request](#it-attaches-at-login-not-at-every-request).
 
 `Principal` carries `Subject` (opaque user id), `Username` (login name — the
 value bound to `Job.Owner`/`Job.Submitter`), `DisplayName`, `Roles`, `Kind`,
@@ -450,8 +456,279 @@ posture elsewhere in this doc.
 requests that carry the session cookie in the first place, and a
 Bearer-authenticated request has nothing for it to check.
 
+## LDAP / Active Directory
+
+As of component C1, `sqi-server` can verify passwords against an LDAP or
+Active Directory server instead of its own store. Enable it with
+`auth.ldap.enabled` on top of `auth.enabled` — LDAP is an addition to the
+auth system, not an alternative to it, and an auth-off server never contacts
+a directory whatever `auth.ldap.*` says. Every field is catalogued in
+[`docs/configuration.md`](configuration.md#authldap).
+
+### It attaches at login, not at every request
+
+LDAP is a **login-time credential verifier**, not an `Authenticator`. This is
+a deliberate departure from the obvious design (an `Authenticator`
+implementation alongside the session and API-key ones): a per-request
+authenticator would mean a directory bind on *every API call*, which turns
+the DC into a hard dependency of every page load and every SDK poll.
+
+Instead, `POST /api/v1/auth/login` checks the password against the directory
+and then mints **the same server-side session a local account gets**. After
+that moment nothing is LDAP-specific: `auth.Chain(apikey, session)` is
+untouched, and the session cookie, its TTL, roles and permissions, job owner
+binding, and WebSocket scoping all behave exactly as documented above. A
+directory outage blocks new *logins*; it does not disturb sessions already
+issued.
+
+The practical consequence is [revocation lag](#revocation-lag), below.
+
+### Per-account routing
+
+Each account carries `users.auth_source`, either `local` or `ldap`. It is set
+when the account is created and is **immutable** — no route can change it.
+Login reads it and consults exactly one backend: the stored argon2id hash, or
+the directory. Never both, never in sequence.
+
+Not chaining the two is a security decision, not an optimization. If a failed
+local login fell through to a directory bind, every wrong password in sqi
+would become a failed bind against a real DN — and in Active Directory
+repeated bad binds *lock the directory account*. A brute force against sqi
+would become an org-wide denial of service.
+
+The same routing means **a local account shadows a same-named directory
+account outright**. If `alice` exists locally, a directory `alice` can never
+log in, and the directory is not even contacted. The reverse — a directory
+login adopting an existing local record — is refused rather than allowed:
+adopting would mean anyone who can create a directory account named `admin`
+inherits the local admin. Both cases return the same generic 401, so the
+users page (Admin → Users) shows each account's source; that column is
+usually the fastest way to see *why* a login is being refused.
+
+### Just-in-time provisioning
+
+An unknown username with LDAP enabled is a provisioning event: sqi binds
+against the directory, maps a role from the returned groups, and creates a
+local record with `auth_source: ldap`. There is no import step and no
+pre-registration. The stored `password_hash` is an unusable placeholder, not
+a copy of the directory password.
+
+The display name is read from `display_name_attr` **once, at creation, and
+never re-synced**. That is what makes `PATCH /api/v1/auth/me` meaningful for
+a directory user — a self-service display-name edit persists instead of being
+overwritten at the next login. The trade is that a name changed in the
+directory (a marriage, a correction) does not propagate; an admin edits it,
+or the user does.
+
+### Both bind modes
+
+The two modes are mutually exclusive; setting `user_dn_template` selects
+template bind, and config validation rejects any attempt to combine it with
+`bind_dn`/`base_dn`.
+
+**Search-then-bind** (the usual Active Directory shape): a service account
+searches for the user's entry, then sqi binds as the DN it found.
+
+```yaml
+auth:
+  enabled: true
+  ldap:
+    enabled: true
+    url: "ldaps://dc01.example.com:636"
+    bind_dn: "CN=sqi-svc,OU=Service Accounts,DC=example,DC=com"
+    bind_password: "…"           # SQI_AUTH_LDAP_BIND_PASSWORD in practice
+    base_dn: "DC=example,DC=com"
+    user_filter: "(sAMAccountName=%s)"
+    username_attr: "sAMAccountName"
+    display_name_attr: "displayName"
+    nested_groups: true
+    role_map:
+      - group: "CN=Farm Admins,OU=Groups,DC=example,DC=com"
+        role: admin
+      - group: "CN=Farm Operators,OU=Groups,DC=example,DC=com"
+        role: operator
+    default_role: "read-only"
+```
+
+**Template bind** (typical OpenLDAP, no service account): sqi builds the
+user's DN directly and binds as them, then reads their own `memberOf`.
+
+```yaml
+auth:
+  ldap:
+    enabled: true
+    url: "ldap://ldap.example.com:389"
+    start_tls: true
+    user_dn_template: "uid=%s,ou=people,dc=example,dc=com"
+    username_attr: "uid"
+    display_name_attr: "cn"
+    role_map:
+      - group: "cn=farm-admins,ou=groups,dc=example,dc=com"
+        role: admin
+    default_role: "read-only"
+```
+
+In both modes `%s` is the username, escaped for its context (filter escaping
+for `user_filter`, DN escaping for `user_dn_template`) before substitution.
+
+**Anonymous search is supported.** Setting `base_dn` with no `bind_dn` runs
+the search on an anonymous connection, which is what a world-readable
+directory wants. Setting `bind_password` *without* `bind_dn` is rejected at
+boot instead: the password would be silently discarded and the search would
+go out anonymously with nothing in the logs to say so.
+
+**Alias / UPN login works.** With `user_filter: "(userPrincipalName=%s)"` and
+`username_attr: "sAMAccountName"`, a user typing `alice@example.com` is
+provisioned as `alice` and is recognized as that same account on every
+subsequent login. The two spellings deliberately do not create two records.
+
+**Nested groups are search-mode only.** `nested_groups: true` expands
+transitive membership via the AD matching-rule OID; template bind reads the
+flat `memberOf` attribute and cannot do it, so config validation rejects the
+combination rather than silently ignoring it. Two things are worth knowing
+about the expansion:
+
+- It runs on the **service-account connection**, not the user's, so the
+  service account needs read access to the group tree.
+- If it fails, sqi **falls back to flat `memberOf` and logs a `WARN`** rather
+  than failing the login. That is the safer failure for availability, but it
+  means a user who holds `admin` *only* through a nested group can be silently
+  granted a lower role for that session. The warning in the server log is the
+  only signal. If your admin group is nested, treat that `WARN` as an alert.
+
+### Group → role mapping
+
+`role_map` is an **ordered** list of group-DN → role rules and **the first
+match wins** — order is how you express precedence, so put `admin` above
+`operator`. A role naming anything other than `admin`, `operator`, `user`, or
+`read-only` fails config validation at boot rather than falling through to
+`default_role`, which would hand out the wrong privileges with no error to
+explain it.
+
+`default_role` applies when no rule matches. Setting it to **empty rejects
+the login entirely**, which is how a deployment requires group membership to
+sign in at all. The default is `read-only`.
+
+### `role_source` — who owns a user's role
+
+| Value | Role on login | `PATCH /users/{id}` role edit |
+|---|---|---|
+| `directory` (default) | Recomputed from groups on **every** login | **409 Conflict** |
+| `local` | Seeded from groups at JIT-create only | Allowed |
+
+One value drives both halves, and it must stay that way. Splitting them
+produces the worst outcome available here: an admin edits a role, the API
+returns 200, and the next login silently reverts it with nothing to indicate
+which value is real.
+
+Switching `local` → `directory` is not a neutral change. At each user's next
+login their role is recomputed from their groups, so **every manual role
+assignment is overwritten**, quietly and one user at a time as people log
+back in. The server logs the active `role_source` at boot so there is at
+least a record of when the mode changed.
+
+### Keep a local admin account
+
+**In `directory` mode, a local admin account is a requirement, not a
+suggestion.** Consider a renamed or deleted admin group: at their next login
+every LDAP admin maps to `default_role` and is demoted. There is now no admin
+in the system, and no way to fix it through the UI — role edits on directory
+accounts are 409 by design, and there is nobody with `users.manage` left to
+make them anyway.
+
+A local account (the [bootstrap admin](#first-admin-bootstrap) is exactly
+this) is unaffected by any directory-side change and can always log in and
+repair the configuration.
+
+**Known gap:** the [last-admin guard](#roles--permissions) does not cover
+this. It refuses the last admin's deletion, disablement, or demotion *through
+the API*, which is the only place it can see. A group renamed in Active
+Directory reaches the same end state through a path the guard has no
+visibility into. Nothing in sqi can detect that; the local admin account is
+the mitigation.
+
+### Revocation lag
+
+Login is the only moment sqi talks to the directory, so a user disabled or
+deleted in the directory **keeps their sqi session until it expires** —
+`auth.session.ttl`, 7 days by default. They cannot get a *new* session, but
+the one they hold keeps working.
+
+Shorten `auth.session.ttl` if that window matters. To cut a user off
+immediately, disable the account in sqi (`PATCH /api/v1/users/{id}` with
+`disabled: true`): the session authenticator re-checks the user record on
+every request, so it takes effect on the next call, and the local `disabled`
+flag overrides the directory for both session checks and login.
+
+sqi deliberately does **not** auto-disable accounts when a directory lookup
+fails. A DC outage would otherwise mass-disable the entire farm — an
+availability failure far worse than the lag it would close.
+
+### Timing
+
+The 401 bodies are byte-identical across every failure path — unknown user,
+wrong local password, wrong directory password, directory unreachable, no
+role matched, collision with a local account, disabled account,
+unrecognized `auth_source`. That is tested. **The latencies are not
+identical, and cannot be made so.**
+
+The local-only equalization described under
+[Login & sessions](#login--sessions) works because both sides of that
+comparison are argon2id derivations of matching cost. A directory bind is a
+network round trip; no local computation can be made to match it. So an
+observer timing `/auth/login` can distinguish, at minimum, an immediate
+rejection (a locally disabled account, a shadowed local account) from a local
+password check from a directory round trip. Whether that yields useful
+account enumeration depends on your directory's own timing behavior — a bind
+against a nonexistent DN typically differs from one against a real DN, and
+that is the directory's behavior, not something sqi can conceal.
+
+**Rate limiting on `/auth/login` is the mitigation** (per-IP, on by default —
+see `internal/middleware`). Do not disable it on an internet-reachable
+deployment with LDAP enabled.
+
+### A hung directory
+
+go-ldap offers no context-aware dial, so a login in progress **cannot be
+aborted by request cancellation** — a client that gives up does not free the
+server-side attempt. What bounds it is `auth.ldap.timeout` (default `10s`),
+applied to the TCP connect and to each subsequent request leg. Set it to
+something you are willing to have a request block for; the default is not a
+generous one by accident.
+
+### Directory accounts have no local password
+
+There is no password in sqi for a directory account to change, so the
+password routes refuse rather than pretend:
+
+| Route | On an `ldap` account |
+|---|---|
+| `PUT /api/v1/users/{id}/password` (admin) | **409 Conflict** |
+| `PUT /api/v1/auth/password` (self-service) | **409 Conflict** |
+| `PATCH /api/v1/auth/me` (display name) | **Works** |
+
+The admin-side 409 also closes a real hole: without it, an admin could write
+a genuine argon2id hash onto a directory account. Login routes on
+`auth_source` and would not consult it today, but leaving a usable credential
+lying in the row is the kind of thing a future refactor turns into a bypass.
+
+`PATCH /auth/me` is deliberately *not* guarded, for the reason given under
+[just-in-time provisioning](#just-in-time-provisioning): the display name is
+seeded from the directory once and never re-synced, so a self-service edit
+has nothing to conflict with and persists.
+
+### Coverage limit worth knowing
+
+Every automated test of this feature drives a fake LDAP connection. That
+covers sqi's own logic thoroughly — routing, provisioning, role mapping,
+collisions, the equalized 401 — but it cannot catch a mistake in the go-ldap
+*wire* usage: a wrong search scope, a misnamed attribute, a filter a real
+server rejects. Such a bug passes CI and fails against a live directory. The
+env-gated integration test against a containerized OpenLDAP is a known
+follow-up. Until it lands, **test a new deployment against your actual
+directory before relying on it**, in whichever bind mode you plan to run.
+
 ## Coming next
 
-- C1 — LDAP/AD integration.
 - C2 — OAuth2/OIDC (SSO).
 - D1 — per-user concurrent task caps.
