@@ -162,15 +162,32 @@ func startDirectory(t *testing.T) *directory {
 	return d
 }
 
-// waitReady polls until the directory can serve the fixture, or fails the test.
+// slapdHandoffMarker is logged by the image's entrypoint immediately before it
+// launches the long-lived slapd.
 //
-// "Ready" deliberately means two things, not one. Answering a bind is not
-// enough: the image finishes registering the memberof module's schema a few
-// seconds AFTER the admin becomes bindable (measured at 5s vs 8s on an x86
-// runner). Returning on the bind alone lands in that window, and
-// configureMemberOf then fails with "objectClass: value #1 invalid per syntax"
-// — a message that reads like a malformed LDIF rather than a race, which is
-// exactly how much time it costs to debug.
+// It matters because the entrypoint runs slapd TWICE: a short-lived instance
+// that applies the initial configuration, then a restart into the real one.
+// Measured locally, the first is up at 0.3s and replaced at 0.6s. A readiness
+// check that only asks "does it answer?" can be satisfied by the temporary
+// instance and return into the restart gap — after which every ldapi command
+// fails with "Can't contact LDAP server", which reads like a broken fixture
+// rather than a race. That is not theoretical: it is what turned the arm64 CI
+// job red while amd64 and every local run stayed green, because the gap lands
+// differently on a faster machine.
+const slapdHandoffMarker = "Running /container/run/process/slapd/run"
+
+// waitReady blocks until the directory can actually serve the fixture.
+//
+// Three conditions, in order, because each is necessary and none implies the
+// others:
+//
+//  1. the entrypoint has handed off to the long-lived slapd (not the
+//     configuration-time one it restarts away from);
+//  2. that slapd answers an authenticated bind;
+//  3. the memberof module has registered its schema — which lands a few
+//     seconds after the bind starts working (5s vs 8s on an x86 runner), and
+//     without which configureMemberOf fails with "objectClass: value #1
+//     invalid per syntax".
 //
 // Polling beats a fixed sleep in both directions: a sleep long enough for a
 // cold CI runner is wasted on every local run, and one tuned for local is
@@ -180,6 +197,12 @@ func (d *directory) waitReady(t *testing.T) {
 	deadline := time.Now().Add(ldapReadyTimeout)
 	var last string
 	for time.Now().Before(deadline) {
+		if logs, err := d.containerLogs(t); err != nil || !strings.Contains(logs, slapdHandoffMarker) {
+			last = "entrypoint has not started the long-lived slapd yet (no %q in container logs)"
+			last = fmt.Sprintf(last, slapdHandoffMarker)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
 		out, err := d.tryLDAPExec(t, "", "ldapwhoami", "-x", "-H", "ldap://localhost",
 			"-D", ldapAdminDN, "-w", ldapAdminPW)
 		if err != nil {
@@ -187,8 +210,6 @@ func (d *directory) waitReady(t *testing.T) {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		// The schema the overlay config depends on. Present only once the
-		// memberof module has finished loading.
 		out, err = d.tryLDAPExec(t, "", "ldapsearch", "-Q", "-Y", "EXTERNAL", "-H", "ldapi:///",
 			"-LLL", "-b", "cn=schema,cn=config", "(olcObjectClasses=*olcMemberOf*)", "dn")
 		if err == nil && strings.Contains(out, "dn:") {
@@ -198,6 +219,15 @@ func (d *directory) waitReady(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("directory did not become ready within %s: %s", ldapReadyTimeout, last)
+}
+
+// containerLogs returns everything the container has written so far.
+func (d *directory) containerLogs(t *testing.T) (string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "logs", d.container).CombinedOutput()
+	return string(out), err
 }
 
 // ldapExec runs an LDAP client command inside the container, feeding stdin.
