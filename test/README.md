@@ -33,7 +33,8 @@ directory you already have (including a real Active Directory) instead of
 starting a container; that directory must hold the tree in the file's
 `seedLDIF` constant.
 
-It runs in CI on every change (`ldap-integration`), and it is a genuine
+It runs in CI on every change (`ldap-integration`, on both amd64 and arm64
+because the image's variants differ), and it is a genuine
 regression guard, not a smoke test: it was written after a real bug in which
 OpenLDAP answered the AD-only nested-group matching rule with *success and zero
 entries*, which silently demoted users to `default_role`. See `docs/auth.md`

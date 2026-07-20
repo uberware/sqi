@@ -845,7 +845,8 @@ OpenLDAP server** in a throwaway container, in every supported configuration:
 search-then-bind with a service account, template bind, and anonymous
 search-then-bind — plus group→role mapping and precedence, `default_role`,
 JIT provisioning, role re-sync under `role_source: directory`, filter and DN
-injection, and empty-password binds. It runs in CI on every change.
+injection, and empty-password binds. It runs in CI on every change, on both
+amd64 and arm64.
 
 ```sh
 make test-ldap        # needs Docker (or colima/podman); skips cleanly without it

@@ -606,9 +606,29 @@ jobs:
   # when Docker is unavailable, which keeps it harmless on any runner that lacks
   # it. Tagged `integration`, so it does not run in the default `make test`.
   ldap-integration:
-    name: LDAP integration (real directory)
-    runs-on: ubuntu-latest
+    name: LDAP integration (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     needs: test
+
+    # Both architectures, because the container image is multi-arch and its
+    # variants have already proven not to be equivalent: the memberof module
+    # registers its schema several seconds later on amd64 than on arm64, which
+    # is a race a fixture can sit inside on one architecture and not the other.
+    # Testing one arch would leave the other free to rot — and the LDAP wire
+    # behavior this job exists to pin is exactly where that divergence showed
+    # up. Native runners rather than QEMU: emulation is several times slower
+    # and would test the emulator's timing rather than the runner's.
+    #
+    # fail-fast is off on purpose. When these two disagree, the disagreement IS
+    # the finding, and cancelling the sibling job throws away half of it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout

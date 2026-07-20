@@ -115,7 +115,8 @@ cannot catch a mistake in how it uses go-ldap *on the wire* — a wrong search
 scope, a misnamed attribute, a filter a real server rejects. `make test-ldap`
 closes that: it boots a throwaway OpenLDAP container and drives the whole login
 path against it in every supported bind mode. It runs in CI on every change
-(the `ldap-integration` job).
+(the `ldap-integration` job), on **both amd64 and arm64** — the container image
+is multi-arch and its variants have already proven not to be equivalent.
 
 It **skips**, rather than fails, when Docker is unavailable, so it never blocks
 a contributor who has not installed it — but a skip verifies nothing, so run it
@@ -131,11 +132,11 @@ SQI_TEST_LDAP_URL=ldap://dc01.example.com:389 make test-ldap
 That directory must already hold the fixture tree — see the `seedLDIF` constant
 in `test/integration/ldap_test.go` for the exact users, groups, and passwords.
 
-**Reproducing a CI-only failure.** The container image is multi-arch, and its
-variants are not identical — most visibly, the memberof module registers its
-schema several seconds later on x86 than on arm64. A fixture that works on an
-Apple Silicon laptop can therefore fail on an x86 CI runner. Force the other
-architecture rather than guessing:
+**Reproducing an architecture-specific failure.** The image's variants are not
+identical — most visibly, the memberof module registers its schema several
+seconds later on x86 than on arm64, a window a fixture can sit inside on one
+architecture and not the other. CI covers both, so it will tell you *which*
+architecture broke; this reproduces that one locally without pushing:
 
 ```sh
 SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
