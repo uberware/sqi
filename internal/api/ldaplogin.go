@@ -99,7 +99,7 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource, h.oidcCfg.RoleSource))
 }
 
 // logPreC2Account explains the one login failure whose cause is invisible from

@@ -62,6 +62,12 @@ type fakeOIDCProvider struct {
 	lastCode      string
 	lastVerifier  string
 	exchanges     int
+	// endSessionURL/endSessionOK script EndSessionURL. The zero value models a
+	// provider that advertises no end-session endpoint — which is also what an
+	// unreachable discovery document looks like from the caller's side.
+	endSessionURL string
+	endSessionOK  bool
+	lastPostOut   string
 }
 
 func (f *fakeOIDCProvider) AuthCodeURL(
@@ -91,7 +97,22 @@ func (f *fakeOIDCProvider) Exchange(_ context.Context, code, codeVerifier, _ str
 	return f.identity, nil
 }
 
-func (*fakeOIDCProvider) EndSessionURL(_ context.Context, _ string) (string, bool) { return "", false }
+func (f *fakeOIDCProvider) EndSessionURL(_ context.Context, postLogoutRedirect string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastPostOut = postLogoutRedirect
+	if !f.endSessionOK {
+		return "", false
+	}
+	return f.endSessionURL, true
+}
+
+// postLogoutRedirectSeen reports the argument of the most recent EndSessionURL.
+func (f *fakeOIDCProvider) postLogoutRedirectSeen() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastPostOut
+}
 
 // exchangeCount reports how many times the provider was asked to redeem a code.
 func (f *fakeOIDCProvider) exchangeCount() int {

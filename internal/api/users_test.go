@@ -15,10 +15,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth/ldap"
+	"github.com/uberware/sqi/internal/auth/oidc"
+	"github.com/uberware/sqi/internal/auth/session"
+	"github.com/uberware/sqi/internal/health"
+	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -780,7 +786,172 @@ func TestUsers_RoleEditableMatchesPatchOutcome(t *testing.T) {
 	}
 }
 
+// directoryOwnsRole is the single predicate behind both the PATCH guard and the
+// role_editable field. It takes the two role sources SEPARATELY because LDAP
+// and OIDC are configured independently — an operator may trust one provider's
+// groups and not the other's — so a cross-source row (LDAP account, OIDC in
+// directory mode) must come back editable.
+func TestDirectoryOwnsRole(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		ldapSource string
+		oidcSource string
+		want       bool
+	}{
+		{"ldap under directory", store.AuthSourceLDAP, ldap.RoleSourceDirectory, oidc.RoleSourceLocal, true},
+		{"ldap under local", store.AuthSourceLDAP, ldap.RoleSourceLocal, oidc.RoleSourceDirectory, false},
+		{"oidc under directory", store.AuthSourceOIDC, ldap.RoleSourceLocal, oidc.RoleSourceDirectory, true},
+		{"oidc under local", store.AuthSourceOIDC, ldap.RoleSourceDirectory, oidc.RoleSourceLocal, false},
+		{"local account is always editable", store.AuthSourceLocal, ldap.RoleSourceDirectory, oidc.RoleSourceDirectory, false},
+		{"legacy empty auth_source is local", "", ldap.RoleSourceDirectory, oidc.RoleSourceDirectory, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := directoryOwnsRole(store.User{AuthSource: tt.authSource}, tt.ldapSource, tt.oidcSource)
+			if got != tt.want {
+				t.Errorf("directoryOwnsRole(%q, ldap=%q, oidc=%q) = %v, want %v",
+					tt.authSource, tt.ldapSource, tt.oidcSource, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPatchUserRole_RejectedForOIDCUnderDirectory pins the two consumers of
+// directoryOwnsRole together for an OIDC account. They must never disagree: an
+// admin who sees an editable field, edits it, and gets a 200 would watch the
+// change revert silently at the user's next login. Updating the guard without
+// the wire field (or the reverse) fails here.
+func TestPatchUserRole_RejectedForOIDCUnderDirectory(t *testing.T) {
+	modes := []struct {
+		roleSource string
+		wantStatus int
+		wantEdit   bool
+	}{
+		{oidc.RoleSourceDirectory, http.StatusConflict, false},
+		{oidc.RoleSourceLocal, http.StatusOK, true},
+	}
+	for _, m := range modes {
+		t.Run(m.roleSource, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: store.AuthSourceOIDC, PasswordHash: "!oidc",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			// LDAP is deliberately in directory mode throughout: it must have no
+			// bearing on an OIDC account.
+			srv := newOIDCUsersServer(t, st,
+				ldap.Config{RoleSource: ldap.RoleSourceDirectory},
+				oidc.Config{RoleSource: m.roleSource})
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			getResp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			var advertised struct {
+				RoleEditable bool `json:"role_editable"`
+			}
+			if err := json.NewDecoder(getResp.Body).Decode(&advertised); err != nil {
+				getResp.Body.Close()
+				t.Fatalf("decode: %v", err)
+			}
+			getResp.Body.Close()
+			if advertised.RoleEditable != m.wantEdit {
+				t.Errorf("role_editable = %v, want %v", advertised.RoleEditable, m.wantEdit)
+			}
+
+			patchResp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+				map[string]any{"role": "admin"}, cookie)
+			defer patchResp.Body.Close()
+			if patchResp.StatusCode != m.wantStatus {
+				t.Errorf("PATCH status = %d, want %d: %s",
+					patchResp.StatusCode, m.wantStatus, mustReadAll(t, patchResp))
+			}
+			if (patchResp.StatusCode == http.StatusOK) != advertised.RoleEditable {
+				t.Errorf("role_editable=%v but PATCH returned %d — the advertised value and the guard disagree",
+					advertised.RoleEditable, patchResp.StatusCode)
+			}
+		})
+	}
+}
+
+// An LDAP account must not be frozen by the OIDC role source, nor the reverse:
+// the two sources are independent parameters, and collapsing them into one
+// would make configuring either provider in directory mode lock down every
+// external account.
+func TestUsers_RoleEditableIsPerSource(t *testing.T) {
+	st := fake.New()
+	ldapUser, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "lisa", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oidcUser, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "olive", Role: "user",
+		AuthSource: store.AuthSourceOIDC, PasswordHash: "!oidc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	// Only OIDC is in directory mode.
+	srv := newOIDCUsersServer(t, st,
+		ldap.Config{RoleSource: ldap.RoleSourceLocal},
+		oidc.Config{RoleSource: oidc.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	for _, tc := range []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{"ldap account stays editable", ldapUser.ID, true},
+		{"oidc account is frozen", oidcUser.ID, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+tc.id, nil, cookie)
+			defer resp.Body.Close()
+			var got struct {
+				RoleEditable bool `json:"role_editable"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.RoleEditable != tc.want {
+				t.Errorf("role_editable = %v, want %v", got.RoleEditable, tc.want)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// newOIDCUsersServer builds an auth-enabled router carrying BOTH role-source
+// settings. No OIDC provider is wired: the users routes read only the config,
+// so this exercises the role-source plumbing without an SSO round trip.
+func newOIDCUsersServer(t *testing.T, st store.Store, lcfg ldap.Config, ocfg oidc.Config) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(NewRouter(
+		Config{DisableRateLimit: true, AuthEnabled: true},
+		Deps{
+			Store:        st,
+			Products:     product.NewCatalog(st),
+			Auth:         session.New(st, "sqi_session", nil),
+			SessionTTL:   time.Hour,
+			CookieName:   "sqi_session",
+			CookieSecure: "false",
+			LDAPConfig:   lcfg,
+			OIDCConfig:   ocfg,
+		},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	))
+	t.Cleanup(srv.Close)
+	return srv
+}
 
 // loginCookie logs username/pw in against srv and returns the resulting
 // session cookie, failing the test if login does not succeed.

@@ -219,7 +219,10 @@ becomes invalid at exactly `created_at + ttl` regardless of activity; the
 user must log in again.
 
 `POST /api/v1/auth/logout` deletes the session server-side and clears the
-cookie; it always returns `204` (even if the cookie was already invalid).
+cookie; it always returns `200` with a JSON body (even if the cookie was
+already invalid). The body is `{}` for a local logout, and carries
+`redirect_url` — the identity provider's RP-initiated logout URL — when SSO is
+configured with `auth.oidc.logout_mode=provider`.
 `GET /api/v1/auth/me` returns the current `Principal` — `401` if
 unauthenticated, otherwise the resolved subject/display name/roles/kind. This
 is the single endpoint the web UI polls to decide shell-vs-login; see

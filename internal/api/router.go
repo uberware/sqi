@@ -369,7 +369,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// a username — see dummyHash.
 		warmDummyHash()
 	}
-	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource)
+	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource, deps.OIDCConfig.RoleSource)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)
 

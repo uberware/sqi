@@ -33,6 +33,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/store"
@@ -49,6 +50,11 @@ const (
 	oidcCookiePath = "/api/v1/auth/oidc"
 	// oidcAppRoot is the only place a callback ever sends a browser.
 	oidcAppRoot = "/"
+	// reauthMarkerTTL bounds how long a logout's re-auth marker stays useful.
+	// It is a convenience for the browser, not a security control: the marker
+	// only ever causes an EXTRA credential prompt, so an expired one degrades to
+	// a silent SSO login, which is what reauth_mode=never does by design.
+	reauthMarkerTTL = 24 * time.Hour
 	// oidcErrorRedirect is the login page with a generic failure marker. It
 	// carries no reason: distinguishing "unknown user" from "no role mapping"
 	// would turn the callback into an enumeration oracle.
@@ -224,6 +230,24 @@ func (h *authHandler) forceReauth(r *http.Request) bool {
 		// validation rejects unknown modes, so this is unreachable in practice.
 		c, err := r.Cookie(oidcReauthCookie)
 		return err == nil && c.Value != ""
+	}
+}
+
+// markReauthOnLogout reports whether logout should leave the re-auth marker
+// behind. It is the exact complement of forceReauth's default arm and must stay
+// that way: the two are a pair, and a mode that sets no marker but reads one
+// (or the reverse) is a mode where after_logout quietly becomes never.
+//
+// Under ReauthAlways the marker is redundant (every login re-prompts) and under
+// ReauthNever it must not be written at all — it would sit in the browser
+// waiting for someone to switch the mode.
+func (h *authHandler) markReauthOnLogout() bool {
+	switch h.oidcCfg.ReauthMode {
+	case oidc.ReauthAlways, oidc.ReauthNever:
+		return false
+	default:
+		// ReauthAfterLogout, and the zero value, which means the same.
+		return true
 	}
 }
 

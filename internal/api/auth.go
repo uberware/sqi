@@ -146,17 +146,18 @@ type userResponse struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// toUserResponse renders u for the wire. ldapRoleSource is the active
-// auth.ldap.role_source; it is threaded in rather than read from a global so
-// the value always comes from the handler that owns the request.
-func toUserResponse(u store.User, ldapRoleSource string) userResponse {
+// toUserResponse renders u for the wire. ldapRoleSource and oidcRoleSource are
+// the active auth.ldap.role_source and auth.oidc.role_source; they are threaded
+// in rather than read from a global so the values always come from the handler
+// that owns the request.
+func toUserResponse(u store.User, ldapRoleSource, oidcRoleSource string) userResponse {
 	return userResponse{
 		ID:           u.ID,
 		Username:     u.Username,
 		DisplayName:  u.DisplayName,
 		Role:         u.Role,
 		AuthSource:   u.AuthSource,
-		RoleEditable: !directoryOwnsRole(u, ldapRoleSource),
+		RoleEditable: !directoryOwnsRole(u, ldapRoleSource, oidcRoleSource),
 		Disabled:     u.Disabled,
 		CreatedAt:    u.CreatedAt,
 		UpdatedAt:    u.UpdatedAt,
@@ -276,11 +277,30 @@ func (h *authHandler) loginLocal(w http.ResponseWriter, r *http.Request, req log
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource, h.oidcCfg.RoleSource))
+}
+
+// logoutResponse is what POST /auth/logout returns. RedirectURL is present
+// only under auth.oidc.logout_mode=provider with a provider that advertises an
+// end-session endpoint; the client is expected to navigate to it. Every other
+// logout returns an empty object, which a client may ignore.
+type logoutResponse struct {
+	RedirectURL string `json:"redirect_url,omitempty"`
 }
 
 // logout revokes the caller's server-side session (if the cookie resolves to
 // one) and clears the cookie regardless.
+//
+// It also carries the two SSO logout mechanisms, which are separate and answer
+// different problems:
+//
+//   - reauth_mode governs whether the NEXT SSO login is allowed to be silent.
+//     Clearing sqi's session while the provider still considers the person
+//     signed in is how a shared workstation signs the next person in as the
+//     last one.
+//   - logout_mode governs whether this logout also ends the session AT the
+//     provider, i.e. signs the person out of every tool in the company. Off by
+//     default because that is heavy-handed for someone mid-task elsewhere.
 func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
@@ -300,7 +320,33 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.secure(r),
 		MaxAge:   -1,
 	})
-	w.WriteHeader(http.StatusNoContent)
+
+	// Mark this browser as having explicitly logged out, so the next SSO login
+	// forces re-authentication. Written through setOIDCCookie, not a literal
+	// http.Cookie, so its Path and attributes cannot drift from the ones
+	// forceReauth reads back — scoped anywhere else, the marker is invisible to
+	// the only code that looks for it and after_logout silently degrades to
+	// never.
+	if h.oidcProvider != nil && h.markReauthOnLogout() {
+		h.setOIDCCookie(w, r, oidcReauthCookie, "1", int(reauthMarkerTTL.Seconds()))
+	}
+
+	var out logoutResponse
+	if h.oidcProvider != nil && h.oidcCfg.LogoutMode == oidc.LogoutProvider {
+		if u, ok := h.oidcProvider.EndSessionURL(ctx, h.oidcCfg.PostLogoutRedirectURL); ok {
+			out.RedirectURL = u
+		} else {
+			// Loud, not silent: an operator who configured provider logout and
+			// silently got local logout would believe a guarantee they do not
+			// have. EndSessionURL reports the same false for "no end-session
+			// endpoint advertised" and "discovery is unreachable", so this
+			// message names both rather than asserting the wrong one.
+			h.logger.ErrorContext(ctx,
+				"auth: oidc logout_mode=provider but no end-session endpoint is available "+
+					"(the provider advertises none, or discovery failed); degrading to local logout")
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // issueSession mints a session for u and sets the session cookie. It is the

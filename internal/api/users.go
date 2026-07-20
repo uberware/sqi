@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth/ldap"
+	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/store"
@@ -35,14 +36,22 @@ import (
 type usersHandler struct {
 	store  store.Store
 	logger *slog.Logger
-	// ldapRoleSource mirrors auth.ldap.role_source. In "directory" mode the
-	// group mapping owns an LDAP account's role, so a role edit here must be
-	// refused rather than accepted and silently reverted at next login.
+	// ldapRoleSource mirrors auth.ldap.role_source and oidcRoleSource mirrors
+	// auth.oidc.role_source. In "directory" mode the group mapping owns that
+	// source's accounts' roles, so a role edit here must be refused rather than
+	// accepted and silently reverted at next login. They are held separately
+	// because the two providers are configured independently.
 	ldapRoleSource string
+	oidcRoleSource string
 }
 
-func newUsersHandler(st store.Store, logger *slog.Logger, ldapRoleSource string) *usersHandler {
-	return &usersHandler{store: st, logger: logger, ldapRoleSource: ldapRoleSource}
+func newUsersHandler(st store.Store, logger *slog.Logger, ldapRoleSource, oidcRoleSource string) *usersHandler {
+	return &usersHandler{
+		store:          st,
+		logger:         logger,
+		ldapRoleSource: ldapRoleSource,
+		oidcRoleSource: oidcRoleSource,
+	}
 }
 
 type userCreateRequest struct {
@@ -110,7 +119,7 @@ func (h *usersHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create user")
 		return
 	}
-	writeJSON(w, http.StatusCreated, toUserResponse(created, h.ldapRoleSource))
+	writeJSON(w, http.StatusCreated, toUserResponse(created, h.ldapRoleSource, h.oidcRoleSource))
 }
 
 func (h *usersHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +132,7 @@ func (h *usersHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]userResponse, len(users))
 	for i, u := range users {
-		resp[i] = toUserResponse(u, h.ldapRoleSource)
+		resp[i] = toUserResponse(u, h.ldapRoleSource, h.oidcRoleSource)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -134,7 +143,7 @@ func (h *usersHandler) get(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapRoleSource))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapRoleSource, h.oidcRoleSource))
 }
 
 func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
@@ -150,9 +159,8 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
-	if req.Role != nil && *req.Role != orig.Role && directoryOwnsRole(orig, h.ldapRoleSource) {
-		writeProblem(w, r, http.StatusConflict,
-			"this account's role is managed by the directory (auth.ldap.role_source=directory); change the user's group membership instead")
+	if req.Role != nil && *req.Role != orig.Role && directoryOwnsRole(orig, h.ldapRoleSource, h.oidcRoleSource) {
+		writeProblem(w, r, http.StatusConflict, directoryRoleConflictDetail(orig))
 		return
 	}
 	u := orig
@@ -181,7 +189,7 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "update")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(updated, h.ldapRoleSource))
+	writeJSON(w, http.StatusOK, toUserResponse(updated, h.ldapRoleSource, h.oidcRoleSource))
 }
 
 func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
@@ -254,20 +262,42 @@ func (h *usersHandler) wouldRemoveLastAdmin(ctx context.Context, target store.Us
 	return n <= 1, nil
 }
 
-// directoryOwnsRole reports whether u's role is recomputed from directory
-// groups at every login, making a local edit a no-op that reverts silently.
+// directoryOwnsRole reports whether u's role is recomputed from an external
+// provider's groups at every login, making a local edit a no-op that reverts
+// silently.
 //
 // This is the single source of truth for the rule, and it is deliberately a
 // package-level function rather than a method: the PATCH guard below and the
 // role_editable field on the wire format (see toUserResponse) must never be
-// able to disagree, and both conditions matter — an LDAP account under
-// role_source=local IS editable.
+// able to disagree. Both conditions matter per source — an LDAP account under
+// role_source=local IS editable, and so is an OIDC one.
+//
+// The two role sources are separate parameters, not one value, because LDAP
+// and OIDC are configured independently: an operator may trust one provider's
+// group memberships and not the other's.
 //
 // A no-op "change" (same role in, same role out) is deliberately allowed by
 // the caller's *req.Role != orig.Role check: a client that PATCHes the whole
 // object back unchanged should not be rejected for a field it did not alter.
-func directoryOwnsRole(u store.User, ldapRoleSource string) bool {
-	return u.AuthSource == store.AuthSourceLDAP && ldapRoleSource == ldap.RoleSourceDirectory
+func directoryOwnsRole(u store.User, ldapRoleSource, oidcRoleSource string) bool {
+	switch u.AuthSource {
+	case store.AuthSourceLDAP:
+		return ldapRoleSource == ldap.RoleSourceDirectory
+	case store.AuthSourceOIDC:
+		return oidcRoleSource == oidc.RoleSourceDirectory
+	default:
+		return false
+	}
+}
+
+// directoryRoleConflictDetail names the setting an operator has to change,
+// which differs per source — pointing an OIDC deployment at auth.ldap.* would
+// send them looking at a block they never configured.
+func directoryRoleConflictDetail(u store.User) string {
+	if u.AuthSource == store.AuthSourceOIDC {
+		return "this account's role is managed by the identity provider (auth.oidc.role_source=directory); change the user's group membership instead"
+	}
+	return "this account's role is managed by the directory (auth.ldap.role_source=directory); change the user's group membership instead"
 }
 
 func (h *usersHandler) notFoundOr500(w http.ResponseWriter, r *http.Request, err error, verb string) {

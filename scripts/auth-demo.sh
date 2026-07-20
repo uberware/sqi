@@ -566,7 +566,7 @@ assert_eq "artist session still valid after key revocation" "200" \
 
 step "logout revokes the session server-side"
 
-assert_eq "POST /auth/logout" "204" \
+assert_eq "POST /auth/logout" "200" \
   "$(code_cookie "$ARTIST_JAR_A" -X POST "${API}/auth/logout")"
 assert_eq "session is dead after logout" "401" \
   "$(code_cookie "$ARTIST_JAR_A" "${API}/auth/me")"

@@ -1622,6 +1622,23 @@ components:
         kind:
           type: string
 
+    LogoutResult:
+      type: object
+      description: >-
+        The result of POST /auth/logout. Empty (`{}`) for a purely local
+        logout, which is the default and the only outcome when SSO is not
+        configured.
+      properties:
+        redirect_url:
+          type: string
+          format: uri
+          description: >-
+            The identity provider's RP-initiated logout URL, present only under
+            auth.oidc.logout_mode=provider when the provider advertises an
+            end-session endpoint. Built from client_id and
+            post_logout_redirect_uri only; it carries no id_token_hint, because
+            sqi does not store ID tokens.
+
   responses:
     BadRequest:
       description: Bad request — missing or invalid parameters.
@@ -3594,10 +3611,29 @@ paths:
       description: |
         Deletes the caller's session server-side and clears the session
         cookie. Requires an authenticated request.
+
+        When SSO is configured with `auth.oidc.reauth_mode=after_logout`
+        (the default), this also sets a marker cookie so the next
+        `GET /auth/oidc/login` asks the provider to re-prompt for
+        credentials, rather than silently signing in whoever the provider
+        still considers logged in — the shared-workstation case.
+
+        When `auth.oidc.logout_mode=provider`, the response body carries
+        `redirect_url`, the provider's RP-initiated logout endpoint; the
+        client should navigate to it to end the session at the identity
+        provider as well. The URL never carries an `id_token_hint` — sqi
+        does not store ID tokens. If the provider advertises no end-session
+        endpoint, logout still succeeds, `redirect_url` is omitted, and the
+        server logs the degradation at ERROR.
       tags: [auth]
       responses:
-        "204":
-          description: Logged out; the session was revoked and the cookie cleared.
+        "200":
+          description: |
+            Logged out; the session was revoked and the cookie cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoutResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
