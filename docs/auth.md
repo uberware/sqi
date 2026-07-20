@@ -582,6 +582,18 @@ go out anonymously with nothing in the logs to say so.
 provisioned as `alice` and is recognized as that same account on every
 subsequent login. The two spellings deliberately do not create two records.
 
+**`username_attr` must name a directory-controlled, unique attribute.** It is
+the identity sqi keys a local row on, and the alias-recovery path re-reads
+whichever row already owns that username. Point it at something *users can
+edit themselves* — `mail` is the obvious trap — and a user who sets their own
+attribute to another person's value can steer that recovery onto the other
+person's row and inherit their sqi role. `sAMAccountName` and `uid` are the
+right kind of attribute; a self-service directory field is not. This is
+bounded — a **local** row is always refused, so the bootstrap admin and every
+locally-created account are out of reach, and only *directory* users can be
+impersonated — and it requires a misconfiguration to reach at all. Configure
+it correctly and the path does not exist.
+
 **Nested groups are search-mode only.** `nested_groups: true` expands
 transitive membership via the AD matching-rule OID; template bind reads the
 flat `memberOf` attribute and cannot do it, so config validation rejects the
@@ -590,11 +602,18 @@ about the expansion:
 
 - It runs on the **service-account connection**, not the user's, so the
   service account needs read access to the group tree.
-- If it fails, sqi **falls back to flat `memberOf` and logs a `WARN`** rather
-  than failing the login. That is the safer failure for availability, but it
-  means a user who holds `admin` *only* through a nested group can be silently
-  granted a lower role for that session. The warning in the server log is the
-  only signal. If your admin group is nested, treat that `WARN` as an alert.
+- **`base_dn` must cover the group tree, not just the user tree.** The
+  expansion reuses `base_dn` as its search base. Scoping it narrowly — say
+  `base_dn: "OU=Users,DC=example,DC=com"` while groups live under
+  `OU=Groups` — produces a search that succeeds and matches nothing, with no
+  error to notice. Set `base_dn` to a subtree containing both (commonly the
+  domain root, `DC=example,DC=com`).
+- If it fails **or returns nothing while flat `memberOf` had values**, sqi
+  **falls back to flat `memberOf` and logs a `WARN`** rather than failing the
+  login. That is the safer failure for availability, but it means a user who
+  holds `admin` *only* through a nested group can be silently granted a lower
+  role for that session. The warning in the server log is the only signal. If
+  your admin group is nested, treat that `WARN` as an alert.
 
 ### Group → role mapping
 
@@ -683,9 +702,43 @@ account enumeration depends on your directory's own timing behavior — a bind
 against a nonexistent DN typically differs from one against a real DN, and
 that is the directory's behavior, not something sqi can conceal.
 
-**Rate limiting on `/auth/login` is the mitigation** (per-IP, on by default —
-see `internal/middleware`). Do not disable it on an internet-reachable
-deployment with LDAP enabled.
+The mitigation for the timing channel is rate limiting — but read the next
+section before assuming the shipped limiter provides it.
+
+### Brute force: what sqi actually does, and does not, protect against
+
+**There is no login-specific throttle.** The only control is the generic
+per-IP token bucket applied to all of `/api/v1` (`internal/api/router.go`):
+**20 requests/second sustained, burst 40, keyed on client IP**. Nothing
+counts failures, nothing backs off after a wrong password, nothing locks an
+account, and nothing distinguishes `/auth/login` from a job listing.
+
+Twenty per second is roughly **1.7 million login attempts per day, per source
+IP**. Treat that as no brute-force control at all. It is a capacity guard
+that keeps one client from saturating the API; it was never a credential
+defense and does not become one because the login route sits behind it.
+
+**Failed logins against directory accounts hit your directory.** For an
+account whose `auth_source` is `ldap`, every wrong password produces a real
+bind against a real DN. In Active Directory that increments
+**`badPwdCount`**, so an unauthenticated attacker who can *name* your users
+can drive them into **domain-wide lockout** — locking them out of Windows,
+email, and everything else, not just sqi. That is the same end state the
+[per-account routing](#per-account-routing) rule was designed to avoid for
+local accounts, reached instead through the front door.
+
+**Unknown usernames also cost the directory.** With LDAP enabled, an
+unrecognized username takes the just-in-time provisioning path, which
+consults the directory before failing. So `/auth/login` will happily convert
+unauthenticated HTTP requests into domain-controller round trips — an
+amplifier aimed at your DC.
+
+**If any of this matters to you, put a real control in front of sqi.** A
+login-specific throttle, fail2ban on the access log, or a WAF rule on
+`POST /api/v1/auth/login` — something that counts failures per account and
+per source and backs off. sqi does not ship one today, and the generic
+limiter should not be mistaken for one. Do not expose an LDAP-enabled
+deployment to the internet without it.
 
 ### A hung directory
 
@@ -716,6 +769,30 @@ lying in the row is the kind of thing a future refactor turns into a bypass.
 [just-in-time provisioning](#just-in-time-provisioning): the display name is
 seeded from the directory once and never re-synced, so a self-service edit
 has nothing to conflict with and persists.
+
+### Turning LDAP off strands the accounts it created
+
+Disabling `auth.ldap.enabled` does not clean up after itself. Every row
+already provisioned with `auth_source: ldap` stays exactly as it is, and
+every route that touches it now refuses:
+
+| Action on a stranded `ldap` account | Result |
+|---|---|
+| Login | **401** — no verifier is configured, so no credential can satisfy it |
+| `PUT /users/{id}/password` | **409** — a directory account has no local password |
+| `PATCH /users/{id}` role edit (under `role_source: directory`) | **409** — the role is directory-owned |
+
+The account is unusable and unrepairable in place. **Delete and recreate it
+as a local account** — that is the only remedy, and it is deliberate: there
+is no conversion endpoint, because flipping an account's `auth_source` is
+exactly the operation that would let a directory entry inherit a local
+account's privileges (see [per-account routing](#per-account-routing)). A
+missing convenience is the correct trade against a privilege-escalation
+primitive.
+
+Note that display names and role assignments do not survive that round trip,
+and the user's sessions die with the old row. If you are migrating away from
+LDAP, plan it as a re-provisioning exercise, not a config flag.
 
 ### Coverage limit worth knowing
 

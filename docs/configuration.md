@@ -864,11 +864,10 @@ means and why one value drives both the login re-sync and the API's 409).
 `default_role`. `default_role` accepts those same four values **or empty**,
 where empty means reject any login that matched no group.
 
-> **`bind_password` is not redacted in config dumps.** Unlike
-> `auth.bootstrap.password`, it has no `MarshalYAML` redaction, so it appears
-> in plaintext in `sqi-server config print`. Prefer
-> `SQI_AUTH_LDAP_BIND_PASSWORD` over writing it into a config file, and treat
-> the output of `config print` as sensitive on an LDAP-enabled server.
+`bind_password` is **redacted** (`<redacted>`) in `sqi-server config print`,
+the same as `auth.bootstrap.password`. Prefer `SQI_AUTH_LDAP_BIND_PASSWORD`
+over writing it into a config file regardless — a secret that never lands on
+disk cannot leak from one.
 
 ```yaml
 auth:
