@@ -67,9 +67,10 @@ type Provider interface {
 //
 // The fetch itself happens OUTSIDE the mutex, with one attempt elected and the
 // rest of a concurrent batch waiting on its result. Holding the lock across the
-// network call made N simultaneous logins strictly serial — against a dead
-// provider the Nth waited N×discoveryTimeout, each pinning an HTTP handler
-// goroutine.
+// network call was fine against a healthy provider — the first caller
+// populated the cache before releasing the lock, so the rest just read it.
+// Against a dead provider, with nothing cached, every queued caller ran its
+// own full discoveryTimeout attempt, each pinning an HTTP handler goroutine.
 type provider struct {
 	cfg Config
 
@@ -120,14 +121,27 @@ func (p *provider) resolve(ctx context.Context) (*coreoidc.Provider, error) {
 		return p.joinDiscovery(ctx)
 	}
 
+	defer close(call.done)
+	defer func() {
+		p.mu.Lock()
+		p.inflight = nil
+		p.mu.Unlock()
+	}()
+
 	d, md, err := p.fetch(ctx)
 
 	p.mu.Lock()
-	p.inflight = nil
 	if err != nil {
-		p.failedAt = time.Now()
-		p.failErr = err
 		call.err = err
+		// A canceled or timed-out caller context says nothing about the
+		// provider's health — it means the caller hung up, not that the
+		// provider is down. Recording it here would poison the backoff cache
+		// and reject every other caller, including ones with a perfectly
+		// healthy context, for discoveryFailureBackoff.
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			p.failedAt = time.Now()
+			p.failErr = err
+		}
 	} else {
 		p.discover = d
 		p.metadata = md
@@ -135,7 +149,6 @@ func (p *provider) resolve(ctx context.Context) (*coreoidc.Provider, error) {
 		call.d = d
 	}
 	p.mu.Unlock()
-	close(call.done)
 	return d, err
 }
 
