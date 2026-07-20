@@ -11,33 +11,35 @@ import (
 
 const (
 	sqlInsertUser = `
-INSERT INTO users (id, username, display_name, password_hash, role, disabled, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, username, display_name, password_hash, role, disabled, created_at, updated_at`
+INSERT INTO users (id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at`
 
 	sqlGetUser = `
-SELECT id, username, display_name, password_hash, role, disabled, created_at, updated_at
+SELECT id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at
 FROM users WHERE id = ?`
 
 	sqlGetUserByUsername = `
-SELECT id, username, display_name, password_hash, role, disabled, created_at, updated_at
+SELECT id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at
 FROM users WHERE username = ? COLLATE NOCASE`
 
 	sqlListUsers = `
-SELECT id, username, display_name, password_hash, role, disabled, created_at, updated_at
+SELECT id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at
 FROM users ORDER BY username`
 
+	// auth_source is deliberately absent from the SET list: an account's
+	// credential backend is fixed at creation.
 	sqlUpdateUser = `
 UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, username, display_name, password_hash, role, disabled, created_at, updated_at`
+RETURNING id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at`
 
 	sqlSetUserPassword = `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?` //nolint:gosec // G101: SQL text, not a credential
 
 	sqlSetUserDisplayName = `
 UPDATE users SET display_name = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, username, display_name, password_hash, role, disabled, created_at, updated_at`
+RETURNING id, username, display_name, password_hash, role, auth_source, disabled, created_at, updated_at`
 	sqlDeleteUser  = `DELETE FROM users WHERE id = ?`
 	sqlCountUsers  = `SELECT COUNT(*) FROM users`
 	sqlCountAdmins = `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`
@@ -48,7 +50,7 @@ func scanUser(row scanner) (store.User, error) {
 	var disabled int
 	var createdAt, updatedAt string
 	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash,
-		&u.Role, &disabled, &createdAt, &updatedAt); err != nil {
+		&u.Role, &u.AuthSource, &disabled, &createdAt, &updatedAt); err != nil {
 		return store.User{}, err
 	}
 	u.Disabled = disabled != 0
@@ -60,8 +62,11 @@ func scanUser(row scanner) (store.User, error) {
 // CreateUser implements [store.UserStore].
 func (s *Store) CreateUser(ctx context.Context, u store.User) (store.User, error) {
 	now := timeToText(time.Now().UTC())
+	if u.AuthSource == "" {
+		u.AuthSource = store.AuthSourceLocal
+	}
 	row := s.stmtInsertUser.QueryRowContext(ctx, u.ID, u.Username, u.DisplayName,
-		u.PasswordHash, u.Role, boolToInt(u.Disabled), now, now)
+		u.PasswordHash, u.Role, u.AuthSource, boolToInt(u.Disabled), now, now)
 	out, err := scanUser(row)
 	return out, mapErr(err)
 }
