@@ -1760,6 +1760,36 @@ func TestValidate_AuthLDAP(t *testing.T) {
 			l.RoleSource = "wherever"
 			c.Auth.LDAP = l
 		}, true},
+		// An empty attribute name is sent to the directory as "", which some
+		// servers reject outright. Both fields have defaults, so an empty one
+		// means the operator cleared it deliberately — fail at boot rather
+		// than on every login.
+		{"empty username_attr", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.UsernameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"empty display_name_attr", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.DisplayNameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		// Template bind requests the same two attributes, so the requirement
+		// is not search-mode-specific.
+		{"empty username_attr in template mode", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
+			l.UsernameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"empty display_name_attr in template mode", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
+			l.DisplayNameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1788,8 +1818,11 @@ func validSearchLDAP() config.LDAPConfig {
 		BaseDN:       "DC=example,DC=com",
 		UserFilter:   "(sAMAccountName=%s)",
 		UsernameAttr: "sAMAccountName",
-		RoleSource:   "directory",
-		DefaultRole:  "read-only",
-		RoleMap:      []config.RoleMappingConfig{{Group: "CN=Admins,DC=example,DC=com", Role: "admin"}},
+		// Both attribute names go onto the wire verbatim and are required;
+		// see validateLDAPAttrs.
+		DisplayNameAttr: "displayName",
+		RoleSource:      "directory",
+		DefaultRole:     "read-only",
+		RoleMap:         []config.RoleMappingConfig{{Group: "CN=Admins,DC=example,DC=com", Role: "admin"}},
 	}
 }

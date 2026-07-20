@@ -362,7 +362,30 @@ func validateAuthLDAP(cfg LDAPConfig) []ValidationError {
 	}
 	errs = append(errs, validateLDAPTransport(cfg)...)
 	errs = append(errs, validateLDAPBindMode(cfg)...)
+	errs = append(errs, validateLDAPAttrs(cfg)...)
 	errs = append(errs, validateLDAPRoles(cfg)...)
+	return errs
+}
+
+// validateLDAPAttrs requires the two attribute names that both bind modes put
+// on the wire verbatim. Neither has a safe empty meaning: an empty string is
+// sent as an attribute name in the search request, which directories reject
+// outright or answer in ways nothing here expects. Both carry defaults, so
+// reaching this error means the operator explicitly cleared one.
+func validateLDAPAttrs(cfg LDAPConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.UsernameAttr == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.username_attr",
+			Message: `must not be empty; set SQI_AUTH_LDAP_USERNAME_ATTR or auth.ldap.username_attr (e.g. "sAMAccountName" or "uid")`,
+		})
+	}
+	if cfg.DisplayNameAttr == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.display_name_attr",
+			Message: `must not be empty; set SQI_AUTH_LDAP_DISPLAY_NAME_ATTR or auth.ldap.display_name_attr (e.g. "displayName" or "cn")`,
+		})
+	}
 	return errs
 }
 
@@ -412,30 +435,12 @@ func validateLDAPBindMode(cfg LDAPConfig) []ValidationError {
 			Field:   "auth.ldap.base_dn",
 			Message: "set auth.ldap.bind_dn+base_dn (search-then-bind) or auth.ldap.user_dn_template (template bind)",
 		})
-	case searchMode:
-		if cfg.BaseDN == "" {
-			errs = append(errs, ValidationError{
-				Field:   "auth.ldap.base_dn",
-				Message: "must be set for search-then-bind; set SQI_AUTH_LDAP_BASE_DN or auth.ldap.base_dn",
-			})
-		}
-		// An empty bind_dn selects anonymous search, a legitimate deployment
-		// for a world-readable directory. But a bind_password with no bind_dn
-		// to go with it is not that — it is silently discarded and the
-		// service searches anonymously, with no error and no log. Whatever
-		// password the operator meant to configure never reaches the wire.
-		if cfg.BindDN == "" && cfg.BindPassword != "" {
-			errs = append(errs, ValidationError{
-				Field:   "auth.ldap.bind_dn",
-				Message: "must be set when auth.ldap.bind_password is set; set SQI_AUTH_LDAP_BIND_DN or auth.ldap.bind_dn, or clear SQI_AUTH_LDAP_BIND_PASSWORD/auth.ldap.bind_password for anonymous search",
-			})
-		}
-		if cfg.UserFilter == "" || !strings.Contains(cfg.UserFilter, "%s") {
-			errs = append(errs, ValidationError{
-				Field:   "auth.ldap.user_filter",
-				Message: `must contain %s, the placeholder for the escaped username (e.g. "(sAMAccountName=%s)")`,
-			})
-		}
+	// Reachable only when templateMode is false: the combined case above has
+	// already claimed searchMode && templateMode. Spelled out rather than
+	// left to case ordering, so reordering these arms cannot silently change
+	// which one a both-modes-set config lands in.
+	case searchMode && !templateMode:
+		errs = append(errs, validateSearchBind(cfg)...)
 	case templateMode:
 		if !strings.Contains(cfg.UserDNTemplate, "%s") {
 			errs = append(errs, ValidationError{
@@ -449,6 +454,37 @@ func validateLDAPBindMode(cfg LDAPConfig) []ValidationError {
 				Message: "requires search-then-bind; template bind reads the flat memberOf attribute and cannot expand nested groups",
 			})
 		}
+	}
+	return errs
+}
+
+// validateSearchBind checks the search-then-bind keys. Split out of
+// validateLDAPBindMode so that function stays inside the complexity budget
+// and each bind mode's rules read as one unit.
+func validateSearchBind(cfg LDAPConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.BaseDN == "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.base_dn",
+			Message: "must be set for search-then-bind; set SQI_AUTH_LDAP_BASE_DN or auth.ldap.base_dn",
+		})
+	}
+	// An empty bind_dn selects anonymous search, a legitimate deployment
+	// for a world-readable directory. But a bind_password with no bind_dn
+	// to go with it is not that — it is silently discarded and the
+	// service searches anonymously, with no error and no log. Whatever
+	// password the operator meant to configure never reaches the wire.
+	if cfg.BindDN == "" && cfg.BindPassword != "" {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.bind_dn",
+			Message: "must be set when auth.ldap.bind_password is set; set SQI_AUTH_LDAP_BIND_DN or auth.ldap.bind_dn, or clear SQI_AUTH_LDAP_BIND_PASSWORD/auth.ldap.bind_password for anonymous search",
+		})
+	}
+	if cfg.UserFilter == "" || !strings.Contains(cfg.UserFilter, "%s") {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.user_filter",
+			Message: `must contain %s, the placeholder for the escaped username (e.g. "(sAMAccountName=%s)")`,
+		})
 	}
 	return errs
 }
