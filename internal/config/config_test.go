@@ -2351,6 +2351,23 @@ func TestValidateAuthOIDC(t *testing.T) {
 			wantField: "auth.oidc.default_role",
 		},
 		{name: "missing scopes", mutate: func(c *config.Config) { c.Auth.OIDC.Scopes = nil }, wantField: "auth.oidc.scopes"},
+		{
+			name:      "schemeless issuer is not absolute",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.Issuer = "idp.example.com" },
+			wantField: "auth.oidc.issuer",
+		},
+		{
+			name:      "relative redirect url is not absolute",
+			mutate:    func(c *config.Config) { c.Auth.OIDC.RedirectURL = "/api/v1/auth/oidc/callback" },
+			wantField: "auth.oidc.redirect_url",
+		},
+		{
+			name: "provider logout mode requires post logout redirect url",
+			mutate: func(c *config.Config) {
+				c.Auth.OIDC.LogoutMode = "provider"
+			},
+			wantField: "auth.oidc.post_logout_redirect_url",
+		},
 	}
 
 	hasFieldError := func(errs []config.ValidationError, field string) bool {
