@@ -1132,6 +1132,28 @@ func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
 	wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypePing})
 	pong := wsRead(t, ctx, conn)
 	if pong.Type != internalws.TypePong {
-		t.Fatalf("expected TypePong (no cross-owner push queued), got type=%q subject=%q", pong.Type, pong.Subject)
+		// Name the job in the unexpected frame. The two ways this assertion
+		// can fail are not equally serious and the frame type alone cannot
+		// tell them apart: a second push for job-alice is a duplicate — bad,
+		// but benign — whereas a push for job-bob is a cross-owner leak, i.e.
+		// the exact security property this test exists to protect. A bare
+		// type/subject message forces whoever sees it in CI to guess, so
+		// decode the payload and say which one happened.
+		detail := ""
+		if pong.Type == internalws.TypePush && pong.Subject == internalws.SubjectJobs {
+			var leaked internalws.JobSummaryPush
+			if err := json.Unmarshal(pong.Payload, &leaked); err == nil {
+				switch leaked.JobID {
+				case "job-bob":
+					detail = " — CROSS-OWNER LEAK: alice received a push for job-bob"
+				case "job-alice":
+					detail = " — duplicate push for job-alice (not a leak, but the hub sent it twice)"
+				default:
+					detail = fmt.Sprintf(" — unexpected job_id %q", leaked.JobID)
+				}
+			}
+		}
+		t.Fatalf("expected TypePong (no cross-owner push queued), got type=%q subject=%q%s",
+			pong.Type, pong.Subject, detail)
 	}
 }
