@@ -817,6 +817,37 @@ func TestDirectoryOwnsRole(t *testing.T) {
 	}
 }
 
+// TestDirectoryRoleConflictDetail pins the 409 detail text to the account's
+// own AuthSource: collapsing both branches to the LDAP wording would send an
+// OIDC operator looking at an auth.ldap.* block they never configured.
+func TestDirectoryRoleConflictDetail(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		wantSubstr string
+	}{
+		{"ldap account names auth.ldap.role_source", store.AuthSourceLDAP, "auth.ldap.role_source=directory"},
+		{"oidc account names auth.oidc.role_source", store.AuthSourceOIDC, "auth.oidc.role_source=directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := directoryRoleConflictDetail(store.User{AuthSource: tt.authSource})
+			if !strings.Contains(got, tt.wantSubstr) {
+				t.Errorf("directoryRoleConflictDetail(%q) = %q, want it to contain %q",
+					tt.authSource, got, tt.wantSubstr)
+			}
+		})
+	}
+	// The two details must actually differ, or a test asserting each contains
+	// its own substring could pass against a single hardcoded string in the
+	// rare case both substrings were (wrongly) present in it.
+	ldapDetail := directoryRoleConflictDetail(store.User{AuthSource: store.AuthSourceLDAP})
+	oidcDetail := directoryRoleConflictDetail(store.User{AuthSource: store.AuthSourceOIDC})
+	if ldapDetail == oidcDetail {
+		t.Errorf("directoryRoleConflictDetail returned the same text for ldap and oidc: %q", ldapDetail)
+	}
+}
+
 // TestPatchUserRole_RejectedForOIDCUnderDirectory pins the two consumers of
 // directoryOwnsRole together for an OIDC account. They must never disagree: an
 // admin who sees an editable field, edits it, and gets a 200 would watch the

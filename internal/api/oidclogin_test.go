@@ -302,6 +302,11 @@ func TestOIDCLogin_RedirectsToProviderAndSealsState(t *testing.T) {
 	if c.Path != oidcCookiePath {
 		t.Errorf("state cookie Path = %q, want %q", c.Path, oidcCookiePath)
 	}
+	// Pin the constant's own value: comparing only against oidcCookiePath
+	// would still pass if the constant itself were widened (e.g. to "/").
+	if c.Path != "/api/v1/auth/oidc" {
+		t.Errorf("state cookie Path = %q, want %q", c.Path, "/api/v1/auth/oidc")
+	}
 	// The same bound the server enforces on the sealed issued-at, so a
 	// cooperating browser and the server agree on when a flow is dead.
 	if c.MaxAge != int(oidc.StateTTL.Seconds()) {

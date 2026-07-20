@@ -1477,12 +1477,14 @@ components:
           type: boolean
           description: >
             Whether `PATCH /users/{id}` will accept a `role` change for this
-            account. False only when `auth_source` is `ldap` **and**
-            `auth.ldap.role_source` is `directory`, in which case the group
-            mapping owns the role and a role edit returns `409`. Computed
-            server-side because `auth.ldap.role_source` is not otherwise
-            exposed: a client cannot derive this from `auth_source` alone, and
-            one that tries will wrongly lock the control for LDAP accounts
+            account. False when `auth_source` is `ldap` **and**
+            `auth.ldap.role_source` is `directory`, or when `auth_source` is
+            `oidc` **and** `auth.oidc.role_source` is `directory`; in either
+            case the group/claim mapping owns the role and a role edit
+            returns `409`. Computed server-side because `auth.ldap.role_source`
+            and `auth.oidc.role_source` are not otherwise exposed: a client
+            cannot derive this from `auth_source` alone, and one that tries
+            will wrongly lock the control for LDAP or OIDC accounts
             under `role_source: local`, where role edits are permitted.
         disabled:
           type: boolean
@@ -3809,8 +3811,10 @@ paths:
         Password is not updatable here — see
         `PUT /users/{id}/password`. Returns `409` for a `role` change on an
         account whose `auth_source` is `ldap` when `auth.ldap.role_source` is
-        `directory`: the group mapping owns that account's role, so a local
-        edit would silently revert at the user's next login. Non-role fields
+        `directory`, or whose `auth_source` is `oidc` when
+        `auth.oidc.role_source` is `directory`: the group/claim mapping owns
+        that account's role, so a local edit would silently revert at the
+        user's next login. Non-role fields
         (`display_name`, `disabled`) remain editable on such accounts.
       tags: [users]
       requestBody:

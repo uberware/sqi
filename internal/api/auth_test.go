@@ -418,8 +418,12 @@ func TestLogout_ProviderModeDegradesWhenUnsupported(t *testing.T) {
 	if out.RedirectURL != "" {
 		t.Errorf("redirect_url = %q, want it absent", out.RedirectURL)
 	}
-	if !strings.Contains(rr.Body.String(), "{}") {
-		t.Errorf("body = %q, want an empty object (redirect_url is omitempty)", rr.Body)
+	// Exact match, not Contains: the point is that redirect_url is omitempty
+	// and no other field is set, so the encoded object is empty — a
+	// substring check would pass even if a fatter body happened to contain
+	// the two literal characters "{}" somewhere inside it.
+	if got := strings.TrimSpace(rr.Body.String()); got != "{}" {
+		t.Errorf("body = %q, want the empty object %q (redirect_url is omitempty)", got, "{}")
 	}
 	logged := logs.String()
 	if !strings.Contains(logged, "level=ERROR") {
@@ -487,6 +491,13 @@ func TestLogout_ReauthMarkerCookie(t *testing.T) {
 			if marker.Path != oidcCookiePath {
 				t.Errorf("marker Path = %q, want %q — forceReauth reads it only at that scope",
 					marker.Path, oidcCookiePath)
+			}
+			// Pin the constant's own value, not just the plumbing that
+			// copies it onto the cookie: comparing only against
+			// oidcCookiePath would still pass if the constant itself were
+			// widened (e.g. to "/").
+			if marker.Path != "/api/v1/auth/oidc" {
+				t.Errorf("marker Path = %q, want %q", marker.Path, "/api/v1/auth/oidc")
 			}
 			if !marker.HttpOnly {
 				t.Error("marker cookie is not HttpOnly")
