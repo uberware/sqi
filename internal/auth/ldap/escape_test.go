@@ -44,6 +44,11 @@ func TestEscapeUsernameDN(t *testing.T) {
 		{"equals", "a=b", `a\=b`},
 		{"plus", "a+b", `a\+b`},
 		{"rdn injection", "x,ou=admins", `x\,ou\=admins`},
+		{"backslash", `a\b`, `a\\b`},
+		{"nul byte", "a\x00b", `a\00b`},
+		{"multi-byte rune", "café", "café"},
+		{"leading space", " a", `\ a`},
+		{"trailing space", "a ", `a\ `},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
