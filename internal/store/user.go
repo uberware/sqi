@@ -13,6 +13,8 @@ const (
 	AuthSourceLocal = "local"
 	// AuthSourceLDAP verifies against the configured directory.
 	AuthSourceLDAP = "ldap"
+	// AuthSourceOIDC verifies against the configured OIDC provider.
+	AuthSourceOIDC = "oidc"
 )
 
 // User is a local account. PasswordHash is a Go-side field only; it is never
@@ -28,6 +30,16 @@ type User struct {
 	// directory). It is set at creation and never changes — UpdateUser does
 	// not write it, so an account cannot drift between backends.
 	AuthSource string
+	// ExternalID is the identity-provider-assigned identifier that is stable
+	// across renames and is never reused: the OIDC "sub" claim, or the
+	// directory attribute named by auth.ldap.unique_id_attr. Empty for local
+	// accounts.
+	//
+	// This, not Username, is what an external login matches on. Matching on a
+	// name lets a recycled address inherit a departed user's account and lets
+	// a provider-side rename orphan one — both silently. Set at creation and
+	// never changed: UpdateUser does not write it.
+	ExternalID string
 	Disabled   bool
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -43,6 +55,10 @@ type UserStore interface {
 	// GetUserByUsername returns the user with the given username
 	// (case-insensitive), or [ErrNotFound].
 	GetUserByUsername(ctx context.Context, username string) (User, error)
+	// GetUserByExternalID returns the account an external identity provider
+	// owns, or [ErrNotFound]. authSource scopes the lookup so an OIDC "sub"
+	// can never collide with an LDAP objectGUID.
+	GetUserByExternalID(ctx context.Context, authSource, externalID string) (User, error)
 	// ListUsers returns all users ordered by username.
 	ListUsers(ctx context.Context) ([]User, error)
 	// UpdateUser replaces display_name, role and disabled, and bumps

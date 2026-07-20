@@ -334,6 +334,98 @@ func TestUserStore_AuthSource(t *testing.T) {
 	}
 }
 
+// TestUserStore_GetUserByExternalID pins the (auth_source, external_id)
+// lookup contract across both implementations: same external_id under
+// different auth sources resolves to different accounts, an unknown pairing
+// misses, and an empty external_id never matches a local account (local
+// accounts all carry "").
+func TestUserStore_GetUserByExternalID(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seed := func(username, src, ext string) {
+				t.Helper()
+				u := mkUser("user")
+				u.Username = username
+				u.AuthSource = src
+				u.ExternalID = ext
+				if _, err := st.CreateUser(ctx, u); err != nil {
+					t.Fatalf("seed %s: %v", username, err)
+				}
+			}
+			seed("alice-"+uuid.NewString()[:8], store.AuthSourceLDAP, "shared-id")
+			seed("bob-"+uuid.NewString()[:8], store.AuthSourceOIDC, "shared-id")
+			seed("carol-"+uuid.NewString()[:8], store.AuthSourceLocal, "")
+
+			tests := []struct {
+				name, src, ext string
+				wantErr        error
+			}{
+				{name: "ldap hit", src: store.AuthSourceLDAP, ext: "shared-id"},
+				{name: "oidc hit, same id different source", src: store.AuthSourceOIDC, ext: "shared-id"},
+				{name: "wrong source misses", src: store.AuthSourceOIDC, ext: "nope", wantErr: store.ErrNotFound},
+				{name: "empty never matches a local account", src: store.AuthSourceLocal, ext: "", wantErr: store.ErrNotFound},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					got, err := st.GetUserByExternalID(ctx, tt.src, tt.ext)
+					if tt.wantErr != nil {
+						if !errors.Is(err, tt.wantErr) {
+							t.Fatalf("err = %v, want %v", err, tt.wantErr)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("unexpected err: %v", err)
+					}
+					if got.AuthSource != tt.src || got.ExternalID != tt.ext {
+						t.Fatalf("got AuthSource=%q ExternalID=%q, want %q/%q", got.AuthSource, got.ExternalID, tt.src, tt.ext)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestUserStore_ExternalIDIsImmutableAndUnique pins that UpdateUser never
+// writes external_id, and that the partial unique index (SQLite) / mirrored
+// check (fake) rejects a second account claiming the same (auth_source,
+// external_id) pair.
+func TestUserStore_ExternalIDIsImmutableAndUnique(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			u := mkUser("user")
+			u.AuthSource = store.AuthSourceLDAP
+			u.ExternalID = "guid-1"
+			created, err := st.CreateUser(ctx, u)
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			// UpdateUser must not write external_id.
+			created.ExternalID = "guid-hijacked"
+			created.DisplayName = "Alice A"
+			got, err := st.UpdateUser(ctx, created)
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if got.ExternalID != "guid-1" {
+				t.Fatalf("ExternalID = %q after update, want it unchanged at %q", got.ExternalID, "guid-1")
+			}
+
+			// The partial unique index rejects a second account claiming the
+			// same identity within the same source.
+			dup := mkUser("user")
+			dup.AuthSource = store.AuthSourceLDAP
+			dup.ExternalID = "guid-1"
+			if _, err := st.CreateUser(ctx, dup); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate external_id err = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
 func upper(s string) string {
 	// simple ASCII upper for the test username
 	b := []byte(s)
