@@ -1260,6 +1260,142 @@ func TestLoad_AuthBootstrapPasswordSurvivesRedactedMarshal(t *testing.T) {
 	}
 }
 
+func TestMarshalYAML_LDAPBindPasswordRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP.BindDN = "cn=svc,dc=example,dc=com"
+	cfg.Auth.LDAP.BindPassword = "hunter2"
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "hunter2") {
+		t.Fatalf("marshaled config contains the plaintext LDAP bind password:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not contain the <redacted> placeholder:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_LDAPBindPasswordSentinelNeverAppears(t *testing.T) {
+	const sentinel = "S3CRET-SENTINEL"
+
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP.BindDN = "cn=svc,dc=example,dc=com"
+	cfg.Auth.LDAP.BindPassword = sentinel
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), sentinel) {
+		t.Fatalf("marshaled config leaks the LDAP bind password sentinel:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_LDAPBindPasswordEmptyNotRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP.BindDN = ""
+	cfg.Auth.LDAP.BindPassword = ""
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config redacts an empty LDAP bind password:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_LDAPConfigFieldsSurviveRedaction(t *testing.T) {
+	// Guards against the alias-type indirection in LDAPConfig.MarshalYAML
+	// silently dropping a field: every non-secret field is set to a distinct
+	// recognizable value and must still appear in the marshaled output.
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP = config.LDAPConfig{
+		Enabled:         true,
+		URL:             "ldaps://directory.example.com:636",
+		StartTLS:        true,
+		TLSSkipVerify:   true,
+		CAFile:          "/etc/sqi/ldap-ca.pem",
+		Timeout:         42 * time.Second,
+		BindDN:          "cn=svc-sqi,dc=example,dc=com",
+		BindPassword:    "hunter2",
+		BaseDN:          "dc=example,dc=com",
+		UserFilter:      "(uid=%s)",
+		NestedGroups:    true,
+		UserDNTemplate:  "uid=%s,dc=example,dc=com",
+		UsernameAttr:    "uid",
+		DisplayNameAttr: "cn",
+		RoleSource:      "local",
+		RoleMap: []config.RoleMappingConfig{
+			{Group: "cn=admins,dc=example,dc=com", Role: "admin"},
+			{Group: "cn=operators,dc=example,dc=com", Role: "operator"},
+		},
+		DefaultRole: "read-only",
+	}
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	got := string(out)
+
+	wantSubstrings := []string{
+		"ldaps://directory.example.com:636",
+		"/etc/sqi/ldap-ca.pem",
+		"42s",
+		"cn=svc-sqi,dc=example,dc=com",
+		"dc=example,dc=com",
+		"(uid=%s)",
+		"uid=%s,dc=example,dc=com",
+		"uid",
+		"cn",
+		"local",
+		"cn=admins,dc=example,dc=com",
+		"admin",
+		"cn=operators,dc=example,dc=com",
+		"operator",
+		"read-only",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshaled config missing expected field value %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "<redacted>") {
+		t.Fatalf("marshaled config does not redact LDAP bind password:\n%s", got)
+	}
+}
+
+func TestLoad_AuthLDAPBindPasswordSurvivesRedactedMarshal(t *testing.T) {
+	// Redaction on marshal must not affect the loaded (unmarshaled) value —
+	// round-tripping a redacted dump is not a goal, but loading the real
+	// config must still populate the real password.
+	t.Setenv("SQI_AUTH_LDAP_BIND_DN", "cn=svc,dc=example,dc=com")
+	t.Setenv("SQI_AUTH_LDAP_BIND_PASSWORD", "s3cret")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.LDAP.BindPassword != "s3cret" {
+		t.Errorf("Auth.LDAP.BindPassword: got %q, want s3cret", cfg.Auth.LDAP.BindPassword)
+	}
+
+	// Marshaling the loaded config must still redact.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "s3cret") {
+		t.Fatalf("marshaled loaded config leaks LDAP bind password:\n%s", out)
+	}
+}
+
 // ── Auth: bootstrap username/password pairing validation ─────────────────────
 
 func TestValidate_AuthBootstrapPairing(t *testing.T) {

@@ -300,7 +300,9 @@ type LDAPConfig struct {
 	// Env: SQI_AUTH_LDAP_BIND_DN
 	BindDN string `yaml:"bind_dn"`
 
-	// BindPassword is the service account's password. Never logged.
+	// BindPassword is the service account's password. Never logged: redacted
+	// by [LDAPConfig.MarshalYAML] whenever the config is re-marshaled (e.g.
+	// `sqi-server config print`).
 	// Env: SQI_AUTH_LDAP_BIND_PASSWORD
 	BindPassword string `yaml:"bind_password"`
 
@@ -348,6 +350,20 @@ type LDAPConfig struct {
 	// login, so a deployment can require group membership to sign in at all.
 	// Env: SQI_AUTH_LDAP_DEFAULT_ROLE
 	DefaultRole string `yaml:"default_role"`
+}
+
+// MarshalYAML redacts BindPassword so it never appears in YAML output (e.g.
+// `sqi-server config print`, logs of a marshaled config). It does not affect
+// unmarshaling: loading a config file with a real `bind_password:` value is
+// unaffected. Round-tripping a redacted dump is intentionally not supported —
+// redaction wins over round-tripping.
+func (l LDAPConfig) MarshalYAML() (any, error) {
+	type plain LDAPConfig
+	out := plain(l)
+	if out.BindPassword != "" {
+		out.BindPassword = redactedPassword
+	}
+	return out, nil
 }
 
 // RoleMappingConfig is one group-DN → role rule.
