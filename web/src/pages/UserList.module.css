@@ -1,0 +1,23 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* ── Auth-source badge ───────────────────────────────────────────────────────
+   Page-local rather than added to the shared entityList.module.css, which is
+   imported by eight list pages that have no use for it. Mirrors the source
+   badge in ProductList.module.css. */
+
+.badge {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+}
+
+/* local keeps the default grey; ldap gets an accent so directory-backed
+   accounts are scannable in a long list */
+.badge[data-source='ldap'] {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}

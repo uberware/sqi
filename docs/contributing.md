@@ -48,8 +48,9 @@ npm run dev
 **Testing:**
 
 - Unit tests are required for code changes. The enforced coverage floor is 70% (`COVERAGE_MIN` in the Makefile); aim higher on new code
-- Integration tests are encouraged for complex features
+- Integration tests are encouraged for complex features. They live in `test/integration/`; those behind the `integration` build tag need `make test-integration`, because they depend on something the default suite should not require (a built binary, or an external service)
 - Run `make test` (or `make ci`) before submitting a PR — do not run bare `go test ./...` from the repo root, since `web/node_modules/` contains third-party Go files the Makefile filters out
+- **Changing LDAP code?** Run `make test-ldap`. It drives the login path against a real OpenLDAP server in a throwaway container, which is the only thing that catches a mistake in how sqi talks to a directory *on the wire*. It needs Docker and **skips** without it — and a skip verifies nothing, so check it actually ran. Details in [`docs/development.md`](development.md#testing-against-a-real-ldap-directory)
 
 **Submitting a PR:**
 

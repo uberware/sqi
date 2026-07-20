@@ -795,6 +795,110 @@ account model, and the interim authorization gap before role enforcement
 
 ---
 
+### `auth.ldap.*`
+
+Directory (LDAP / Active Directory) authentication, component C1. Every key
+below sits under `auth.ldap`. **No `ldap.*` key has a CLI flag** — these are
+file- or environment-configured only. `role_map` is additionally **file-only:
+it has no environment form**, because a list of group→role pairs has no
+sensible flat encoding.
+
+The whole block is inert unless **both** `auth.enabled` and
+`auth.ldap.enabled` are true; an auth-off server never builds a verifier and
+never contacts a directory, whatever else is set here. Validation of the keys
+below only runs when `auth.ldap.enabled` is true.
+
+| Key | Type | Default | Env var |
+|---|---|---|---|
+| `auth.ldap.enabled` | bool | `false` | `SQI_AUTH_LDAP_ENABLED` |
+| `auth.ldap.url` | string | `""` | `SQI_AUTH_LDAP_URL` |
+| `auth.ldap.start_tls` | bool | `false` | `SQI_AUTH_LDAP_START_TLS` |
+| `auth.ldap.tls_skip_verify` | bool | `false` | `SQI_AUTH_LDAP_TLS_SKIP_VERIFY` |
+| `auth.ldap.ca_file` | string | `""` | `SQI_AUTH_LDAP_CA_FILE` |
+| `auth.ldap.timeout` | duration | `10s` | `SQI_AUTH_LDAP_TIMEOUT` |
+| `auth.ldap.bind_dn` | string | `""` | `SQI_AUTH_LDAP_BIND_DN` |
+| `auth.ldap.bind_password` | string | `""` | `SQI_AUTH_LDAP_BIND_PASSWORD` |
+| `auth.ldap.base_dn` | string | `""` | `SQI_AUTH_LDAP_BASE_DN` |
+| `auth.ldap.user_filter` | string | `(sAMAccountName=%s)` | `SQI_AUTH_LDAP_USER_FILTER` |
+| `auth.ldap.nested_groups` | bool | `false` | `SQI_AUTH_LDAP_NESTED_GROUPS` |
+| `auth.ldap.user_dn_template` | string | `""` | `SQI_AUTH_LDAP_USER_DN_TEMPLATE` |
+| `auth.ldap.username_attr` | string | `sAMAccountName` | `SQI_AUTH_LDAP_USERNAME_ATTR` |
+| `auth.ldap.display_name_attr` | string | `displayName` | `SQI_AUTH_LDAP_DISPLAY_NAME_ATTR` |
+| `auth.ldap.role_source` | string | `directory` | `SQI_AUTH_LDAP_ROLE_SOURCE` |
+| `auth.ldap.role_map` | list | `[]` | *(file only — no env form)* |
+| `auth.ldap.default_role` | string | `read-only` | `SQI_AUTH_LDAP_DEFAULT_ROLE` |
+
+**Transport.** `url` must be `ldap://…` or `ldaps://…` and is required when
+enabled. `start_tls` upgrades a plain `ldap://` connection and is rejected
+against `ldaps://`, which is already TLS. `ca_file` is a PEM bundle used to
+verify the directory's certificate; an unreadable file **aborts boot** rather
+than yielding a server that looks healthy but can authenticate nobody.
+`tls_skip_verify` disables certificate verification entirely — a MITM can
+then harvest every password that crosses the connection — so it is logged as
+a `WARN` at boot and should never be set outside a lab. `timeout` must be
+`> 0`; it bounds the TCP connect and each request leg, and is the *only*
+bound on a hung directory (see
+[A hung directory](auth.md#a-hung-directory)).
+
+**Bind mode** — mutually exclusive, one is required:
+
+- **Search-then-bind:** set `base_dn` (required) and usually `bind_dn` +
+  `bind_password`. `user_filter` must contain `%s`, the placeholder for the
+  escaped username. Leaving `bind_dn` empty selects **anonymous search**,
+  which is valid; setting `bind_password` *without* `bind_dn` is a validation
+  error, because the password would be silently discarded.
+- **Template bind:** set `user_dn_template`, which must contain `%s` (e.g.
+  `uid=%s,ou=people,dc=example,dc=com`). Combining it with
+  `bind_dn`/`base_dn` is a validation error.
+
+`nested_groups` requires search mode — template bind reads the flat
+`memberOf` attribute, so the combination is rejected at boot rather than
+silently ignored.
+
+**Roles.** `role_source` must be `directory` or `local` (see
+[`role_source`](auth.md#role_source--who-owns-a-users-role) for what each
+means and why one value drives both the login re-sync and the API's 409).
+`role_map` is ordered and **first match wins**; each entry needs a non-empty
+`group` and a `role` that is one of `admin`, `operator`, `user`, `read-only`
+— an unknown role fails validation rather than falling through to
+`default_role`. `default_role` accepts those same four values **or empty**,
+where empty means reject any login that matched no group.
+
+`bind_password` is **redacted** (`<redacted>`) in `sqi-server config print`,
+the same as `auth.bootstrap.password`. Prefer `SQI_AUTH_LDAP_BIND_PASSWORD`
+over writing it into a config file regardless — a secret that never lands on
+disk cannot leak from one.
+
+```yaml
+auth:
+  enabled: true
+  ldap:
+    enabled: true
+    url: "ldaps://dc01.example.com:636"
+    timeout: "10s"
+    bind_dn: "CN=sqi-svc,OU=Service Accounts,DC=example,DC=com"
+    # bind_password via SQI_AUTH_LDAP_BIND_PASSWORD
+    base_dn: "DC=example,DC=com"
+    user_filter: "(sAMAccountName=%s)"
+    username_attr: "sAMAccountName"
+    display_name_attr: "displayName"
+    nested_groups: true
+    role_source: "directory"
+    role_map:
+      - group: "CN=Farm Admins,OU=Groups,DC=example,DC=com"
+        role: admin
+      - group: "CN=Farm Operators,OU=Groups,DC=example,DC=com"
+        role: operator
+    default_role: "read-only"
+```
+
+See [`docs/auth.md`](auth.md#ldap--active-directory) for the model behind
+these keys: why LDAP attaches at login rather than per request, how
+just-in-time provisioning works, why a local admin account is required in
+`directory` mode, and the revocation-lag and timing caveats.
+
+---
+
 ## Worker configuration
 
 Worker configuration applies to `sqi-worker` instances, not the server. Workers
@@ -926,6 +1030,23 @@ for the detector schema reference.
 | `auth.session.cookie_secure` | string | `auto` | `SQI_AUTH_SESSION_COOKIE_SECURE` | — |
 | `auth.bootstrap.username` | string | `""` | `SQI_AUTH_BOOTSTRAP_USERNAME` | — |
 | `auth.bootstrap.password` | string | `""` | `SQI_AUTH_BOOTSTRAP_PASSWORD` | — |
+| `auth.ldap.enabled` | bool | `false` | `SQI_AUTH_LDAP_ENABLED` | — |
+| `auth.ldap.url` | string | `""` | `SQI_AUTH_LDAP_URL` | — |
+| `auth.ldap.start_tls` | bool | `false` | `SQI_AUTH_LDAP_START_TLS` | — |
+| `auth.ldap.tls_skip_verify` | bool | `false` | `SQI_AUTH_LDAP_TLS_SKIP_VERIFY` | — |
+| `auth.ldap.ca_file` | string | `""` | `SQI_AUTH_LDAP_CA_FILE` | — |
+| `auth.ldap.timeout` | duration | `10s` | `SQI_AUTH_LDAP_TIMEOUT` | — |
+| `auth.ldap.bind_dn` | string | `""` | `SQI_AUTH_LDAP_BIND_DN` | — |
+| `auth.ldap.bind_password` | string | `""` | `SQI_AUTH_LDAP_BIND_PASSWORD` | — |
+| `auth.ldap.base_dn` | string | `""` | `SQI_AUTH_LDAP_BASE_DN` | — |
+| `auth.ldap.user_filter` | string | `(sAMAccountName=%s)` | `SQI_AUTH_LDAP_USER_FILTER` | — |
+| `auth.ldap.nested_groups` | bool | `false` | `SQI_AUTH_LDAP_NESTED_GROUPS` | — |
+| `auth.ldap.user_dn_template` | string | `""` | `SQI_AUTH_LDAP_USER_DN_TEMPLATE` | — |
+| `auth.ldap.username_attr` | string | `sAMAccountName` | `SQI_AUTH_LDAP_USERNAME_ATTR` | — |
+| `auth.ldap.display_name_attr` | string | `displayName` | `SQI_AUTH_LDAP_DISPLAY_NAME_ATTR` | — |
+| `auth.ldap.role_source` | string | `directory` | `SQI_AUTH_LDAP_ROLE_SOURCE` | — |
+| `auth.ldap.role_map` | list | `[]` | — | — |
+| `auth.ldap.default_role` | string | `read-only` | `SQI_AUTH_LDAP_DEFAULT_ROLE` | — |
 
 ---
 

@@ -12,6 +12,7 @@ import { useDeleteUser } from '@/api/mutations'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import styles from './entityList.module.css'
+import badgeStyles from './UserList.module.css'
 
 export default function UserList() {
   const { data: users, isLoading, isError, error } = useListUsers()
@@ -72,6 +73,7 @@ export default function UserList() {
               <th>Username</th>
               <th>Display Name</th>
               <th>Role</th>
+              <th>Source</th>
               <th>Status</th>
               <th aria-label="Actions" />
             </tr>
@@ -79,12 +81,12 @@ export default function UserList() {
           <tbody>
             {isLoading && (
               <tr className={styles.emptyRow}>
-                <td colSpan={5}>Loading…</td>
+                <td colSpan={6}>Loading…</td>
               </tr>
             )}
             {!isLoading && rows.length === 0 && (
               <tr className={styles.emptyRow}>
-                <td colSpan={5}>
+                <td colSpan={6}>
                   No user accounts yet. Create one to let someone else sign in to this server.
                 </td>
               </tr>
@@ -98,6 +100,11 @@ export default function UserList() {
                 </td>
                 <td>{user.display_name ?? '—'}</td>
                 <td>{user.role}</td>
+                <td>
+                  <span className={badgeStyles.badge} data-source={user.auth_source}>
+                    {user.auth_source}
+                  </span>
+                </td>
                 <td>{user.disabled ? 'Disabled' : 'Active'}</td>
                 <td>
                   {mayManageKeys && (

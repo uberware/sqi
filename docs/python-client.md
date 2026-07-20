@@ -66,7 +66,8 @@ Constructor options:
 |---|---|---|
 | `base_url` | — | Server root, e.g. `http://localhost:8080`. A subpath is preserved (reverse-proxy friendly). |
 | `timeout` | `30.0` | Per-request timeout in seconds. |
-| `headers` | `None` | Extra default headers merged into every request — the Phase 3 auth hook. Caller headers win on conflict. |
+| `token` | `None` | API key or session token, sent as `Authorization: Bearer` on every request and on the WebSocket upgrade. Falls back to `$SQI_TOKEN`, then `$SQI_API_KEY`. |
+| `headers` | `None` | Extra default headers merged into every request. Merged *after* `token`, so an explicit `Authorization` header wins — useful behind a gateway with its own scheme. |
 | `max_attempts` | `3` | Total attempts for a retried (idempotent GET) request; `1` disables retries. |
 | `retry_backoff` | `0.5` | Base seconds for exponential backoff between retries. |
 | `retry_backoff_max` | `30.0` | Cap on the computed backoff delay. |
@@ -81,10 +82,14 @@ request logs at `DEBUG` and each retry at `WARNING` on the `sqi_client` logger
 sqi = SqiClient(
     "https://farm.studio.example",
     timeout=15.0,
-    headers={"Authorization": "Bearer …"},  # forward-compatible auth hook
+    token="sqi_…",  # or leave unset and export SQI_API_KEY
     max_attempts=5,
 )
 ```
+
+When the server has auth enabled, a missing or rejected credential raises
+`SqiAuthError` (401/403). Issue an API key from the web UI or
+`POST /api/v1/api-keys` — see [`docs/auth.md`](auth.md).
 
 ## Error handling
 

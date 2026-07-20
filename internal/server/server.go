@@ -24,8 +24,10 @@ import (
 	"github.com/uberware/sqi/internal/api"
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/apikey"
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/session"
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/discovery"
 	"github.com/uberware/sqi/internal/health"
@@ -147,6 +149,12 @@ type Config struct {
 	// plaintext password for the first admin. Never logged; hashed with
 	// password.Hash before it reaches the store.
 	AuthBootstrapPassword string
+
+	// AuthLDAP mirrors config.AuthConfig.LDAP. Carried as a nested struct
+	// rather than flattened into Auth* fields like its siblings: the block
+	// has seventeen fields, and flattening them would bury the rest of this
+	// struct. Only consulted when AuthEnabled is true.
+	AuthLDAP config.LDAPConfig
 
 	// SeedDefaults, when true, creates a "default" farm and queue on first
 	// startup if the store has no farms yet. No-op once any farm exists.
@@ -374,9 +382,8 @@ func (s *Server) start(ctx context.Context) error {
 	if s.cfg.PresetLibraryURL != "" {
 		deps.PresetLib = presetlib.New(s.cfg.PresetLibraryURL, presetlib.DefaultCacheTTL)
 	}
-	deps.Auth, err = s.selectAuth(ctx)
-	if err != nil {
-		return fmt.Errorf("select auth: %w", err)
+	if err := s.wireAuthDeps(ctx, &deps); err != nil {
+		return err
 	}
 	deps.SessionTTL = s.cfg.AuthSessionTTL
 	deps.CookieName = s.cfg.AuthCookieName
@@ -492,6 +499,27 @@ func newWSHub(logger *slog.Logger, st store.Store, authEnabled bool) *ws.Hub {
 	})
 }
 
+// wireAuthDeps selects the request authenticator and, when configured,
+// constructs the directory verifier, assigning both into deps. Split out of
+// start so that the LDAP-specific error branch does not push start over its
+// complexity budget; the two are still sequenced together here because both
+// gate on AuthEnabled and both must succeed before the router is built.
+func (s *Server) wireAuthDeps(ctx context.Context, deps *api.Deps) error {
+	a, err := s.selectAuth(ctx)
+	if err != nil {
+		return fmt.Errorf("select auth: %w", err)
+	}
+	deps.Auth = a
+
+	v, err := s.buildLDAPVerifier(ctx)
+	if err != nil {
+		return fmt.Errorf("auth ldap: %w", err)
+	}
+	deps.LDAPVerifier = v
+	deps.LDAPConfig = toLDAPConfig(s.cfg.AuthLDAP, s.logger)
+	return nil
+}
+
 // selectAuth chooses the authenticator wired into the HTTP router. When auth
 // is disabled it returns the anonymous superuser authenticator unchanged
 // (auth-off must remain byte-for-byte pre-A1 behavior — no bootstrap runs, no
@@ -513,6 +541,66 @@ func (s *Server) selectAuth(ctx context.Context) (auth.Authenticator, error) {
 	keyAuthn := apikey.New(s.store, nil)
 	sessAuthn := session.New(s.store, s.cfg.AuthCookieName, nil)
 	return auth.Chain(keyAuthn, sessAuthn), nil
+}
+
+// buildLDAPVerifier constructs the directory verifier, or nil when LDAP is
+// disabled. A configuration fault (an unreadable CA bundle, say) is returned
+// as an error so boot aborts: a server that accepted connections but could
+// authenticate no directory account would look healthy while locking out
+// every user it is supposed to serve.
+func (s *Server) buildLDAPVerifier(ctx context.Context) (ldap.Verifier, error) {
+	c := s.cfg.AuthLDAP
+	if !s.cfg.AuthEnabled || !c.Enabled {
+		return nil, nil
+	}
+	if c.TLSSkipVerify {
+		// Loud on purpose: this disables certificate verification against the
+		// directory, so a MITM can harvest every password that crosses it.
+		s.logger.WarnContext(ctx, "auth: ldap TLS certificate verification is DISABLED (auth.ldap.tls_skip_verify)",
+			slog.String("url", c.URL))
+	}
+	s.logger.InfoContext(
+		ctx, "auth: ldap enabled",
+		slog.String("url", c.URL),
+		slog.Bool("template_bind", c.UserDNTemplate != ""),
+		// Logged because flipping local -> directory silently overwrites
+		// every manual role assignment as users log back in; the operator
+		// deserves a record of which mode was live.
+		slog.String("role_source", c.RoleSource),
+		slog.Int("role_mappings", len(c.RoleMap)),
+	)
+	return ldap.New(toLDAPConfig(c, s.logger))
+}
+
+// toLDAPConfig converts the loader's config shape into the ldap package's,
+// which is deliberately independent of internal/config. c.Enabled is not
+// carried across: ldap.Config has no such field because the gate is applied
+// here, before ldap.New is ever called, so the verifier type has no use for
+// it.
+func toLDAPConfig(c config.LDAPConfig, logger *slog.Logger) ldap.Config {
+	out := ldap.Config{
+		URL:             c.URL,
+		StartTLS:        c.StartTLS,
+		TLSSkipVerify:   c.TLSSkipVerify,
+		CAFile:          c.CAFile,
+		Timeout:         c.Timeout,
+		BindDN:          c.BindDN,
+		BindPassword:    c.BindPassword,
+		BaseDN:          c.BaseDN,
+		UserFilter:      c.UserFilter,
+		NestedGroups:    c.NestedGroups,
+		UserDNTemplate:  c.UserDNTemplate,
+		UsernameAttr:    c.UsernameAttr,
+		DisplayNameAttr: c.DisplayNameAttr,
+		RoleSource:      c.RoleSource,
+		DefaultRole:     c.DefaultRole,
+		Logger:          logger,
+	}
+	out.RoleMap = make([]ldap.RoleMapping, 0, len(c.RoleMap))
+	for _, m := range c.RoleMap {
+		out.RoleMap = append(out.RoleMap, ldap.RoleMapping{Group: m.Group, Role: m.Role})
+	}
+	return out
 }
 
 // browseURL turns a TCP bind address into a URL a human can paste into a

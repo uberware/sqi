@@ -167,6 +167,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthCookieSecure:      cfg.Auth.Session.CookieSecure,
 		AuthBootstrapUsername: cfg.Auth.Bootstrap.Username,
 		AuthBootstrapPassword: cfg.Auth.Bootstrap.Password,
+		AuthLDAP:              cfg.Auth.LDAP,
 		Scheduler:             schedCfg,
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.

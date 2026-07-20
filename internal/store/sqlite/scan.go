@@ -19,6 +19,20 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+// prefixScanner adapts a scanner so a fixed set of destinations is scanned
+// ahead of whatever destinations the caller passes to Scan. It lets a joined
+// query reuse an entity's own scan helper (e.g. scanUser) for its trailing
+// columns instead of hand-duplicating that helper's column list, so a column
+// added to the helper's query is automatically picked up here too.
+type prefixScanner struct {
+	row    scanner
+	prefix []any
+}
+
+func (p prefixScanner) Scan(dest ...any) error {
+	return p.row.Scan(append(p.prefix, dest...)...)
+}
+
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
 const timeLayout = time.RFC3339Nano

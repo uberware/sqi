@@ -593,6 +593,61 @@ jobs:
           SQI_WORKER_BIN: bin/sqi-worker
         run: bash scripts/auth-demo.sh
 
+  # ── LDAP: real-directory integration ─────────────────────────────────────────
+  # Runs the LDAP tests against an actual OpenLDAP server in a container, which
+  # is the only thing that exercises sqi's go-ldap *wire* usage: search scopes,
+  # attribute names, filter syntax, and how a real server answers a request it
+  # does not support. Every other LDAP test drives a fake connection and cannot
+  # see any of that — a wire bug passes the rest of CI and fails only against a
+  # live directory. This job exists so that class of bug cannot merge.
+  #
+  # Docker is preinstalled on the ubuntu runners, so the test provisions its own
+  # container and needs no service definition here. It skips (does not fail)
+  # when Docker is unavailable, which keeps it harmless on any runner that lacks
+  # it. Tagged `integration`, so it does not run in the default `make test`.
+  ldap-integration:
+    name: LDAP integration (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: test
+
+    # Both architectures, because the container image is multi-arch and its
+    # variants have already proven not to be equivalent: the memberof module
+    # registers its schema several seconds later on amd64 than on arm64, which
+    # is a race a fixture can sit inside on one architecture and not the other.
+    # Testing one arch would leave the other free to rot — and the LDAP wire
+    # behavior this job exists to pin is exactly where that divergence showed
+    # up. Native runners rather than QEMU: emulation is several times slower
+    # and would test the emulator's timing rather than the runner's.
+    #
+    # fail-fast is off on purpose. When these two disagree, the disagreement IS
+    # the finding, and cancelling the sibling job throws away half of it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Pulled explicitly so an image-registry problem fails here, with a clear
+      # message, rather than inside the test where it would surface as a skip
+      # and quietly turn this job green without having verified anything.
+      - name: Pull OpenLDAP image
+        run: docker pull osixia/openldap:1.5.0
+
+      - name: Run LDAP integration tests
+        run: make test-ldap
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run

@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/auth/session"
@@ -32,6 +33,10 @@ type authHandler struct {
 	ttl          time.Duration
 	cookieName   string
 	cookieSecure string // "auto" | "true" | "false"
+	// ldapVerifier is nil when directory auth is disabled; ldapCfg is only
+	// read when it is non-nil. See ldaplogin.go.
+	ldapVerifier ldap.Verifier
+	ldapCfg      ldap.Config
 }
 
 // dummyVerifyPlaintext is an arbitrary throwaway string used only to derive
@@ -73,14 +78,25 @@ func mustDummyHash() string {
 	return h
 }
 
-func newAuthHandler(st store.Store, logger *slog.Logger, ttl time.Duration, cookieName, cookieSecure string) *authHandler {
+func newAuthHandler(
+	st store.Store, logger *slog.Logger, ttl time.Duration, cookieName, cookieSecure string,
+	ldapVerifier ldap.Verifier, ldapCfg ldap.Config,
+) *authHandler {
 	if cookieName == "" {
 		cookieName = session.DefaultCookieName
 	}
 	if ttl <= 0 {
 		ttl = 168 * time.Hour
 	}
-	return &authHandler{store: st, logger: logger, ttl: ttl, cookieName: cookieName, cookieSecure: cookieSecure}
+	return &authHandler{
+		store:        st,
+		logger:       logger,
+		ttl:          ttl,
+		cookieName:   cookieName,
+		cookieSecure: cookieSecure,
+		ldapVerifier: ldapVerifier,
+		ldapCfg:      ldapCfg,
+	}
 }
 
 type loginRequest struct {
@@ -89,31 +105,57 @@ type loginRequest struct {
 }
 
 type userResponse struct {
-	ID          string    `json:"id"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"display_name,omitempty"`
-	Role        string    `json:"role"`
-	Disabled    bool      `json:"disabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name,omitempty"`
+	Role        string `json:"role"`
+	AuthSource  string `json:"auth_source"`
+	// RoleEditable tells the client whether PATCH /users/{id} will accept a
+	// role change for this account. It is computed server-side, from the same
+	// predicate that guards the PATCH, precisely so no client has to
+	// reconstruct the two-condition rule (auth_source AND role_source) — the
+	// role_source half is not otherwise exposed by any endpoint, so a client
+	// inferring from auth_source alone gets role_source=local wrong.
+	RoleEditable bool      `json:"role_editable"`
+	Disabled     bool      `json:"disabled"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-func toUserResponse(u store.User) userResponse {
+// toUserResponse renders u for the wire. ldapRoleSource is the active
+// auth.ldap.role_source; it is threaded in rather than read from a global so
+// the value always comes from the handler that owns the request.
+func toUserResponse(u store.User, ldapRoleSource string) userResponse {
 	return userResponse{
-		ID:          u.ID,
-		Username:    u.Username,
-		DisplayName: u.DisplayName,
-		Role:        u.Role,
-		Disabled:    u.Disabled,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:           u.ID,
+		Username:     u.Username,
+		DisplayName:  u.DisplayName,
+		Role:         u.Role,
+		AuthSource:   u.AuthSource,
+		RoleEditable: !directoryOwnsRole(u, ldapRoleSource),
+		Disabled:     u.Disabled,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
 	}
 }
 
+// invalidLoginDetail is the single detail string every failed login returns,
+// whatever the reason. Unknown username, wrong local password, wrong directory
+// password, an unreachable directory, no role mapping, and a username
+// collision must be indistinguishable to the client — any difference turns
+// login into a user-enumeration oracle.
+const invalidLoginDetail = "invalid credentials"
+
 // login verifies a username/password pair and, on success, mints a new
-// server-side session and sets it as an HttpOnly cookie. Unknown username,
-// wrong password, and disabled accounts all produce an identical 401 response
-// so the endpoint cannot be used to enumerate valid usernames.
+// server-side session and sets it as an HttpOnly cookie.
+//
+// Credentials are verified by the backend named in the account's AuthSource:
+// the stored argon2id hash for local accounts, the directory for LDAP ones.
+// A local account is never sent to the directory, not even on a wrong
+// password — every failed login would otherwise cost a network round trip,
+// and in Active Directory repeated bad binds against a real DN can lock the
+// *directory* account, turning a brute force against sqi into an org-wide
+// denial of service.
 func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req loginRequest
@@ -122,33 +164,82 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	const invalid = "invalid credentials"
 	u, err := h.store.GetUserByUsername(ctx, req.Username)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			// A real store/infrastructure failure (as opposed to "no such
-			// user") deserves a server-side signal — otherwise a database
-			// outage looks identical to a mistyped password with no way to
-			// tell them apart from the logs. This must NOT change what the
-			// client sees: the response below is the same either way.
-			h.logger.WarnContext(ctx, "auth: user lookup failed", slog.Any("error", err))
-		}
-		// Run a dummy argon2id verify so this path costs about the same as
-		// the known-user path below, which always calls password.Verify.
-		// Without this, returning immediately here makes an unknown-username
-		// request measurably faster than a known-username one — a timing
-		// side channel that lets an attacker enumerate valid usernames even
-		// though the response bodies are byte-identical. Do not remove this
-		// as a "wasted" call.
-		if _, verr := password.Verify(dummyHash(), req.Password); verr != nil {
-			h.logger.WarnContext(ctx, "auth: dummy verify failed unexpectedly", slog.Any("error", verr))
-		}
-		writeProblem(w, r, http.StatusUnauthorized, invalid)
+		h.loginUnknownUser(w, r, req, err)
 		return
 	}
+
+	switch u.AuthSource {
+	case store.AuthSourceLDAP:
+		// The directory is the only authority for this account. Its stored
+		// PasswordHash is a placeholder and must never be verified against.
+		h.loginLDAP(w, r, req.Username, req.Password, &u)
+
+	case store.AuthSourceLocal, "":
+		// "" is a row written before the auth_source column existed, and it
+		// means the same thing as "local". Nothing normalizes it on read:
+		// SQLite backfills existing rows once, at migration time, and the
+		// fake defaults the field in CreateUser. A row that still carries ""
+		// — one the migration missed, or a hand-written insert — reaches this
+		// switch as "", so the empty case is matched here rather than relied
+		// on to have been rewritten upstream.
+		h.loginLocal(w, r, req, u)
+
+	default:
+		// Nothing validates auth_source in Go (the SQL CHECK was deliberately
+		// omitted so the Down migration works), so a hand-edited row or one
+		// written by a newer binary is reachable here. Falling through to the
+		// local-password branch would authenticate such an account against
+		// whatever happens to sit in password_hash. Fail closed instead.
+		h.logger.ErrorContext(ctx, "auth: unknown auth_source, refusing login",
+			slog.String("username", u.Username), slog.String("auth_source", u.AuthSource))
+		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
+	}
+}
+
+// loginUnknownUser handles a failed user lookup: JIT provisioning when the
+// username is simply unknown and a directory is configured, an equalized 401
+// otherwise.
+func (h *authHandler) loginUnknownUser(w http.ResponseWriter, r *http.Request, req loginRequest, err error) {
+	ctx := r.Context()
+	if errors.Is(err, store.ErrNotFound) && h.ldapVerifier != nil {
+		// Unknown username with LDAP on: this is the just-in-time
+		// provisioning path. No dummy verify here — not because the
+		// equalization is unnecessary, but because it is unattainable. The
+		// dummy hash works below only because both sides of that comparison
+		// are argon2id derivations of matching cost; a directory bind is a
+		// network round trip whose cost no local computation can be made to
+		// match. See the security-posture note at the top of ldaplogin.go.
+		h.loginLDAP(w, r, req.Username, req.Password, nil)
+		return
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		// A real store/infrastructure failure (as opposed to "no such
+		// user") deserves a server-side signal — otherwise a database
+		// outage looks identical to a mistyped password with no way to
+		// tell them apart from the logs. This must NOT change what the
+		// client sees: the response below is the same either way.
+		h.logger.WarnContext(ctx, "auth: user lookup failed", slog.Any("error", err))
+	}
+	// Run a dummy argon2id verify so this path costs about the same as the
+	// known-user path, which always calls password.Verify. Without this,
+	// returning immediately here makes an unknown-username request measurably
+	// faster than a known-username one — a timing side channel that lets an
+	// attacker enumerate valid usernames even though the response bodies are
+	// byte-identical. Do not remove this as a "wasted" call.
+	if _, verr := password.Verify(dummyHash(), req.Password); verr != nil {
+		h.logger.WarnContext(ctx, "auth: dummy verify failed unexpectedly", slog.Any("error", verr))
+	}
+	writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
+}
+
+// loginLocal verifies req against the account's stored password hash. This is
+// the pre-C1 behavior, unchanged.
+func (h *authHandler) loginLocal(w http.ResponseWriter, r *http.Request, req loginRequest, u store.User) {
 	ok, verr := password.Verify(u.PasswordHash, req.Password)
 	if verr != nil || !ok || u.Disabled {
-		writeProblem(w, r, http.StatusUnauthorized, invalid)
+		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 		return
 	}
 
@@ -157,11 +248,11 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	// — none are client errors, so this is a 500 rather than the CRUD-style
 	// 409 "already exists", which would be misleading.
 	if err := h.issueSession(w, r, u); err != nil {
-		h.logger.ErrorContext(ctx, "auth: create session failed", slog.Any("error", err))
+		h.logger.ErrorContext(r.Context(), "auth: create session failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	writeJSON(w, http.StatusOK, toUserResponse(u, h.ldapCfg.RoleSource))
 }
 
 // logout revokes the caller's server-side session (if the cookie resolves to

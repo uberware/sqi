@@ -267,6 +267,73 @@ func TestUserStore_CreateUser_AsciiFoldOnly(t *testing.T) {
 	}
 }
 
+// TestUserStore_AuthSource pins the auth_source column's semantics across
+// both implementations: it defaults to "local", round-trips an explicit
+// value, and is immutable through UpdateUser.
+func TestUserStore_AuthSource(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// An unset AuthSource must land as "local" in BOTH stores.
+			// SQLite gets this from the column DEFAULT; the fake has to do it
+			// explicitly, and without that the login path would branch
+			// differently under test than in production.
+			plain := mkUser("user")
+			plain.AuthSource = ""
+			created, err := st.CreateUser(ctx, plain)
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			if created.AuthSource != store.AuthSourceLocal {
+				t.Errorf("AuthSource default: got %q, want %q", created.AuthSource, store.AuthSourceLocal)
+			}
+
+			// An explicit value round-trips through every read path.
+			dir := mkUser("operator")
+			dir.AuthSource = store.AuthSourceLDAP
+			if _, err := st.CreateUser(ctx, dir); err != nil {
+				t.Fatalf("CreateUser(ldap): %v", err)
+			}
+			got, err := st.GetUser(ctx, dir.ID)
+			if err != nil || got.AuthSource != store.AuthSourceLDAP {
+				t.Fatalf("GetUser: AuthSource=%q err=%v", got.AuthSource, err)
+			}
+			byName, err := st.GetUserByUsername(ctx, dir.Username)
+			if err != nil || byName.AuthSource != store.AuthSourceLDAP {
+				t.Fatalf("GetUserByUsername: AuthSource=%q err=%v", byName.AuthSource, err)
+			}
+
+			// UpdateUser must not move an account between backends: that
+			// would let a role/display-name edit silently convert a directory
+			// account into a local one (or vice versa).
+			got.AuthSource = store.AuthSourceLocal
+			got.DisplayName = "Renamed"
+			upd, err := st.UpdateUser(ctx, got)
+			if err != nil {
+				t.Fatalf("UpdateUser: %v", err)
+			}
+			if upd.AuthSource != store.AuthSourceLDAP {
+				t.Errorf("UpdateUser must not change AuthSource: got %q, want %q", upd.AuthSource, store.AuthSourceLDAP)
+			}
+			if upd.DisplayName != "Renamed" {
+				t.Errorf("UpdateUser should still apply DisplayName: got %q", upd.DisplayName)
+			}
+
+			// ListUsers carries it too.
+			users, err := st.ListUsers(ctx)
+			if err != nil {
+				t.Fatalf("ListUsers: %v", err)
+			}
+			for _, u := range users {
+				if u.AuthSource == "" {
+					t.Errorf("ListUsers returned empty AuthSource for %q", u.Username)
+				}
+			}
+		})
+	}
+}
+
 func upper(s string) string {
 	// simple ASCII upper for the test username
 	b := []byte(s)

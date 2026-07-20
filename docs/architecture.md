@@ -557,10 +557,13 @@ for live events. It lives in the repository at `clients/python/` (import name
   the library can be embedded in DCC Python environments (Maya, Houdini, Nuke).
   `PyYAML` and `websockets` are optional extras (`sqi-sdk[yaml]`,
   `sqi-sdk[ws]`), imported lazily and never required by the core.
-- **Phase 3 auth extension point.** `SqiClient` accepts a `headers` mapping
-  merged into every request (and carried onto the WebSocket upgrade); this is the
-  forward-compatible hook for injecting authentication tokens once Phase 3 lands,
-  with no change to the public method signatures.
+- **Authentication.** `SqiClient` takes a `token` argument, falling back to
+  `$SQI_TOKEN` then `$SQI_API_KEY`, and sends it as `Authorization: Bearer` on
+  every request and on the WebSocket upgrade. A `headers` mapping is still
+  accepted and is merged in afterwards, so an explicit header wins over the
+  resolved token — useful for a gateway that expects its own scheme. A 401 or
+  403 raises `SqiAuthError`. The credential to use is an API key issued from the
+  web UI or `POST /api/v1/api-keys`; see [`docs/auth.md`](auth.md).
 
 See [`docs/python-client.md`](python-client.md) for the full client reference.
 

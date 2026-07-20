@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// Credential backends for [User.AuthSource].
+const (
+	// AuthSourceLocal verifies against the stored password hash.
+	AuthSourceLocal = "local"
+	// AuthSourceLDAP verifies against the configured directory.
+	AuthSourceLDAP = "ldap"
+)
+
 // User is a local account. PasswordHash is a Go-side field only; it is never
 // marshaled into a REST response. Role is stored but not enforced until B1.
 type User struct {
@@ -15,9 +23,14 @@ type User struct {
 	DisplayName  string
 	PasswordHash string
 	Role         string
-	Disabled     bool
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// AuthSource names the credential backend that verifies this account:
+	// [AuthSourceLocal] (the stored password hash) or [AuthSourceLDAP] (the
+	// directory). It is set at creation and never changes — UpdateUser does
+	// not write it, so an account cannot drift between backends.
+	AuthSource string
+	Disabled   bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // UserStore is the persistence interface for [User] records.

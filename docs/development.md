@@ -17,7 +17,7 @@ guides for extending the worker.
 | `golangci-lint` | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
-| Docker | Build and run the container image | [docs.docker.com](https://docs.docker.com/get-docker/) |
+| Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
 pre-commit hooks. Install them before running `make hooks`.
@@ -100,10 +100,62 @@ go test -race -v ./internal/openjd/...
 # Integration tests (require the integration build tag)
 make test-integration
 
+# LDAP tests against a real directory in a container (needs Docker)
+make test-ldap
+
 # Fuzz targets (run for 30 seconds each)
 go test -fuzz=FuzzParse         -fuzztime=30s ./internal/openjd/...
 go test -fuzz=FuzzRESTPayloads  -fuzztime=30s ./internal/api/...
 ```
+
+### Testing against a real LDAP directory
+
+Most LDAP tests drive a fake connection, which covers sqi's own logic but
+cannot catch a mistake in how it uses go-ldap *on the wire* — a wrong search
+scope, a misnamed attribute, a filter a real server rejects. `make test-ldap`
+closes that: it boots a throwaway OpenLDAP container and drives the whole login
+path against it in every supported bind mode. It runs in CI on every change
+(the `ldap-integration` job), on **both amd64 and arm64** — the container image
+is multi-arch and its variants have already proven not to be equivalent.
+
+It **skips**, rather than fails, when Docker is unavailable, so it never blocks
+a contributor who has not installed it — but a skip verifies nothing, so run it
+before touching anything under `internal/auth/ldap/`.
+
+To point it at a directory you already have, including a real Active Directory,
+set `SQI_TEST_LDAP_URL` and no container is started:
+
+```sh
+SQI_TEST_LDAP_URL=ldap://dc01.example.com:389 make test-ldap
+```
+
+That directory must already hold the fixture tree — see the `seedLDIF` constant
+in `test/integration/ldap_test.go` for the exact users, groups, and passwords.
+
+**Reproducing an architecture-specific failure.** The image's variants are not
+identical — most visibly, the memberof module registers its schema several
+seconds later on x86 than on arm64, a window a fixture can sit inside on one
+architecture and not the other. CI covers both, so it will tell you *which*
+architecture broke; this reproduces that one locally without pushing:
+
+```sh
+SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
+```
+
+It runs under emulation, so expect it to be several times slower than native —
+worth it when CI is red and your machine is green.
+Two fixture properties are load-bearing and easy to get wrong:
+
+- **`memberOf` must be populated.** AD does this natively; OpenLDAP needs the
+  `memberof` overlay, and the overlay's `olcMemberOfGroupOC` must match the
+  objectClass your groups actually use. Get it wrong and every user
+  authenticates successfully and silently lands on `default_role`.
+- **The service account must be able to read other entries.** Template bind
+  works without this (sqi binds *as* the user and reads that user's own entry),
+  so a directory that fails only in search mode is the usual symptom.
+
+The fixture asserts both up front, as the service account, and fails with a
+message naming the cause rather than letting them surface as wrong roles later.
 
 ---
 

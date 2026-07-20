@@ -942,6 +942,37 @@ func TestAuthConfigDefaults(t *testing.T) {
 	if c.Auth.Bootstrap.Username != "" || c.Auth.Bootstrap.Password != "" {
 		t.Fatalf("bootstrap credentials default = %+v, want empty", c.Auth.Bootstrap)
 	}
+	if c.Auth.LDAP.Enabled {
+		t.Fatal("ldap must default disabled")
+	}
+	if c.Auth.LDAP.Timeout != 10*time.Second {
+		t.Fatalf("ldap timeout default = %v, want 10s", c.Auth.LDAP.Timeout)
+	}
+	if c.Auth.LDAP.UserFilter != "(sAMAccountName=%s)" {
+		t.Fatalf("ldap user_filter default = %q, want (sAMAccountName=%%s)", c.Auth.LDAP.UserFilter)
+	}
+	if c.Auth.LDAP.UsernameAttr != "sAMAccountName" {
+		t.Fatalf("ldap username_attr default = %q, want sAMAccountName", c.Auth.LDAP.UsernameAttr)
+	}
+	if c.Auth.LDAP.DisplayNameAttr != "displayName" {
+		t.Fatalf("ldap display_name_attr default = %q, want displayName", c.Auth.LDAP.DisplayNameAttr)
+	}
+	if c.Auth.LDAP.RoleSource != "directory" {
+		t.Fatalf("ldap role_source default = %q, want directory", c.Auth.LDAP.RoleSource)
+	}
+	if c.Auth.LDAP.DefaultRole != "read-only" {
+		t.Fatalf("ldap default_role default = %q, want read-only", c.Auth.LDAP.DefaultRole)
+	}
+	if c.Auth.LDAP.URL != "" || c.Auth.LDAP.BindDN != "" || c.Auth.LDAP.BindPassword != "" ||
+		c.Auth.LDAP.BaseDN != "" || c.Auth.LDAP.UserDNTemplate != "" || c.Auth.LDAP.CAFile != "" {
+		t.Fatalf("ldap unset string fields default = %+v, want all empty", c.Auth.LDAP)
+	}
+	if c.Auth.LDAP.StartTLS || c.Auth.LDAP.TLSSkipVerify || c.Auth.LDAP.NestedGroups {
+		t.Fatalf("ldap unset bool fields default = %+v, want all false", c.Auth.LDAP)
+	}
+	if len(c.Auth.LDAP.RoleMap) != 0 {
+		t.Fatalf("ldap role_map default = %+v, want empty", c.Auth.LDAP.RoleMap)
+	}
 }
 
 func TestAuthEnvOverrides(t *testing.T) {
@@ -1229,6 +1260,142 @@ func TestLoad_AuthBootstrapPasswordSurvivesRedactedMarshal(t *testing.T) {
 	}
 }
 
+func TestMarshalYAML_LDAPBindPasswordRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP.BindDN = "cn=svc,dc=example,dc=com"
+	cfg.Auth.LDAP.BindPassword = "hunter2"
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "hunter2") {
+		t.Fatalf("marshaled config contains the plaintext LDAP bind password:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not contain the <redacted> placeholder:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_LDAPBindPasswordSentinelNeverAppears(t *testing.T) {
+	const sentinel = "S3CRET-SENTINEL"
+
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP.BindDN = "cn=svc,dc=example,dc=com"
+	cfg.Auth.LDAP.BindPassword = sentinel
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), sentinel) {
+		t.Fatalf("marshaled config leaks the LDAP bind password sentinel:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_LDAPBindPasswordEmptyNotRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP.BindDN = ""
+	cfg.Auth.LDAP.BindPassword = ""
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config redacts an empty LDAP bind password:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_LDAPConfigFieldsSurviveRedaction(t *testing.T) {
+	// Guards against the alias-type indirection in LDAPConfig.MarshalYAML
+	// silently dropping a field: every non-secret field is set to a distinct
+	// recognizable value and must still appear in the marshaled output.
+	cfg := config.DefaultConfig()
+	cfg.Auth.LDAP = config.LDAPConfig{
+		Enabled:         true,
+		URL:             "ldaps://directory.example.com:636",
+		StartTLS:        true,
+		TLSSkipVerify:   true,
+		CAFile:          "/etc/sqi/ldap-ca.pem",
+		Timeout:         42 * time.Second,
+		BindDN:          "cn=svc-sqi,dc=example,dc=com",
+		BindPassword:    "hunter2",
+		BaseDN:          "dc=example,dc=com",
+		UserFilter:      "(uid=%s)",
+		NestedGroups:    true,
+		UserDNTemplate:  "uid=%s,dc=example,dc=com",
+		UsernameAttr:    "uid",
+		DisplayNameAttr: "cn",
+		RoleSource:      "local",
+		RoleMap: []config.RoleMappingConfig{
+			{Group: "cn=admins,dc=example,dc=com", Role: "admin"},
+			{Group: "cn=operators,dc=example,dc=com", Role: "operator"},
+		},
+		DefaultRole: "read-only",
+	}
+
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	got := string(out)
+
+	wantSubstrings := []string{
+		"ldaps://directory.example.com:636",
+		"/etc/sqi/ldap-ca.pem",
+		"42s",
+		"cn=svc-sqi,dc=example,dc=com",
+		"dc=example,dc=com",
+		"(uid=%s)",
+		"uid=%s,dc=example,dc=com",
+		"uid",
+		"cn",
+		"local",
+		"cn=admins,dc=example,dc=com",
+		"admin",
+		"cn=operators,dc=example,dc=com",
+		"operator",
+		"read-only",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshaled config missing expected field value %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "<redacted>") {
+		t.Fatalf("marshaled config does not redact LDAP bind password:\n%s", got)
+	}
+}
+
+func TestLoad_AuthLDAPBindPasswordSurvivesRedactedMarshal(t *testing.T) {
+	// Redaction on marshal must not affect the loaded (unmarshaled) value —
+	// round-tripping a redacted dump is not a goal, but loading the real
+	// config must still populate the real password.
+	t.Setenv("SQI_AUTH_LDAP_BIND_DN", "cn=svc,dc=example,dc=com")
+	t.Setenv("SQI_AUTH_LDAP_BIND_PASSWORD", "s3cret")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.LDAP.BindPassword != "s3cret" {
+		t.Errorf("Auth.LDAP.BindPassword: got %q, want s3cret", cfg.Auth.LDAP.BindPassword)
+	}
+
+	// Marshaling the loaded config must still redact.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "s3cret") {
+		t.Fatalf("marshaled loaded config leaks LDAP bind password:\n%s", out)
+	}
+}
+
 // ── Auth: bootstrap username/password pairing validation ─────────────────────
 
 func TestValidate_AuthBootstrapPairing(t *testing.T) {
@@ -1402,5 +1569,260 @@ func TestValidate_CORSOrigins(t *testing.T) {
 				t.Fatalf("Validate(%v): got %v, want no errors", tt.origins, got)
 			}
 		})
+	}
+}
+
+func TestAuthLDAPEnvOverrides(t *testing.T) {
+	t.Setenv("SQI_AUTH_ENABLED", "true")
+	t.Setenv("SQI_AUTH_LDAP_ENABLED", "true")
+	t.Setenv("SQI_AUTH_LDAP_URL", "ldaps://dc01.example.com:636")
+	t.Setenv("SQI_AUTH_LDAP_BIND_DN", "CN=svc,DC=example,DC=com")
+	t.Setenv("SQI_AUTH_LDAP_BIND_PASSWORD", "s3cret")
+	t.Setenv("SQI_AUTH_LDAP_BASE_DN", "DC=example,DC=com")
+	t.Setenv("SQI_AUTH_LDAP_TIMEOUT", "5s")
+	t.Setenv("SQI_AUTH_LDAP_ROLE_SOURCE", "local")
+	t.Setenv("SQI_AUTH_LDAP_DEFAULT_ROLE", "user")
+
+	c, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Auth.LDAP.Enabled {
+		t.Error("Auth.LDAP.Enabled: got false, want true")
+	}
+	if c.Auth.LDAP.URL != "ldaps://dc01.example.com:636" {
+		t.Errorf("Auth.LDAP.URL: got %q", c.Auth.LDAP.URL)
+	}
+	if c.Auth.LDAP.BindDN != "CN=svc,DC=example,DC=com" {
+		t.Errorf("Auth.LDAP.BindDN: got %q", c.Auth.LDAP.BindDN)
+	}
+	if c.Auth.LDAP.BindPassword != "s3cret" {
+		t.Errorf("Auth.LDAP.BindPassword: got %q", c.Auth.LDAP.BindPassword)
+	}
+	if c.Auth.LDAP.BaseDN != "DC=example,DC=com" {
+		t.Errorf("Auth.LDAP.BaseDN: got %q", c.Auth.LDAP.BaseDN)
+	}
+	if c.Auth.LDAP.Timeout != 5*time.Second {
+		t.Errorf("Auth.LDAP.Timeout: got %v, want 5s", c.Auth.LDAP.Timeout)
+	}
+	if c.Auth.LDAP.RoleSource != "local" {
+		t.Errorf("Auth.LDAP.RoleSource: got %q, want local", c.Auth.LDAP.RoleSource)
+	}
+	if c.Auth.LDAP.DefaultRole != "user" {
+		t.Errorf("Auth.LDAP.DefaultRole: got %q, want user", c.Auth.LDAP.DefaultRole)
+	}
+}
+
+func TestLoad_AuthLDAPFileOverride(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "sqi-server.yaml")
+	yaml := `
+auth:
+  enabled: true
+  ldap:
+    enabled: true
+    url: "ldap://dc.example.com:389"
+    start_tls: true
+    base_dn: "DC=example,DC=com"
+    bind_dn: "CN=svc,DC=example,DC=com"
+    bind_password: "filepass"
+    user_filter: "(uid=%s)"
+    role_map:
+      - group: "CN=Admins,DC=example,DC=com"
+        role: admin
+      - group: "CN=Artists,DC=example,DC=com"
+        role: user
+    default_role: "read-only"
+`
+	if err := os.WriteFile(f, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Auth.LDAP.Enabled || !cfg.Auth.LDAP.StartTLS {
+		t.Fatalf("ldap enabled/start_tls not applied: %+v", cfg.Auth.LDAP)
+	}
+	if cfg.Auth.LDAP.URL != "ldap://dc.example.com:389" {
+		t.Errorf("url: got %q", cfg.Auth.LDAP.URL)
+	}
+	if cfg.Auth.LDAP.BaseDN != "DC=example,DC=com" {
+		t.Errorf("base_dn: got %q", cfg.Auth.LDAP.BaseDN)
+	}
+	if cfg.Auth.LDAP.BindDN != "CN=svc,DC=example,DC=com" {
+		t.Errorf("bind_dn: got %q", cfg.Auth.LDAP.BindDN)
+	}
+	if cfg.Auth.LDAP.BindPassword != "filepass" {
+		t.Errorf("bind_password: got %q", cfg.Auth.LDAP.BindPassword)
+	}
+	if cfg.Auth.LDAP.UserFilter != "(uid=%s)" {
+		t.Errorf("user_filter: got %q", cfg.Auth.LDAP.UserFilter)
+	}
+	if len(cfg.Auth.LDAP.RoleMap) != 2 {
+		t.Fatalf("role_map: got %d entries, want 2", len(cfg.Auth.LDAP.RoleMap))
+	}
+	if cfg.Auth.LDAP.RoleMap[0].Role != "admin" || cfg.Auth.LDAP.RoleMap[1].Role != "user" {
+		t.Errorf("role_map order not preserved: %+v", cfg.Auth.LDAP.RoleMap)
+	}
+	if cfg.Auth.LDAP.DefaultRole != "read-only" {
+		t.Errorf("default_role: got %q, want read-only", cfg.Auth.LDAP.DefaultRole)
+	}
+	// Unset ldap fields keep defaults; sibling sub-blocks are untouched.
+	if cfg.Auth.LDAP.RoleSource != "directory" {
+		t.Errorf("role_source: expected default directory, got %q", cfg.Auth.LDAP.RoleSource)
+	}
+	if cfg.Auth.Session.CookieName != "sqi_session" {
+		t.Errorf("auth.session.cookie_name: expected default, got %q", cfg.Auth.Session.CookieName)
+	}
+}
+
+func TestValidate_AuthLDAP(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantErr bool
+	}{
+		{"disabled ldap needs nothing", func(_ *config.Config) {}, false},
+		{"valid search-bind", func(c *config.Config) {
+			c.Auth.LDAP = validSearchLDAP()
+		}, false},
+		{"valid template-bind", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
+			c.Auth.LDAP = l
+		}, false},
+		{"valid anonymous search (no bind_dn, no bind_password)", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BindPassword = "", ""
+			c.Auth.LDAP = l
+		}, false},
+		{"bind_password set without bind_dn is rejected", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"ldap enabled without auth enabled", func(c *config.Config) {
+			c.Auth.Enabled = false
+			c.Auth.LDAP = validSearchLDAP()
+		}, true},
+		{"missing url", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.URL = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"bad url scheme", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.URL = "https://dc.example.com"
+			c.Auth.LDAP = l
+		}, true},
+		{"both bind modes configured", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.UserDNTemplate = "uid=%s,dc=example,dc=com"
+			c.Auth.LDAP = l
+		}, true},
+		{"neither bind mode configured", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN, l.UserDNTemplate = "", "", ""
+			c.Auth.LDAP = l
+		}, true},
+		{"start_tls with ldaps", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.URL = "ldaps://dc.example.com:636"
+			l.StartTLS = true
+			c.Auth.LDAP = l
+		}, true},
+		{"nested_groups in template mode", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,dc=example,dc=com"
+			l.NestedGroups = true
+			c.Auth.LDAP = l
+		}, true},
+		{"unknown role in role_map", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.RoleMap = []config.RoleMappingConfig{{Group: "CN=X", Role: "superadmin"}}
+			c.Auth.LDAP = l
+		}, true},
+		{"unknown default_role", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.DefaultRole = "nobody"
+			c.Auth.LDAP = l
+		}, true},
+		{"empty default_role is valid (reject unmapped)", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.DefaultRole = ""
+			c.Auth.LDAP = l
+		}, false},
+		{"bad role_source", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.RoleSource = "wherever"
+			c.Auth.LDAP = l
+		}, true},
+		// An empty attribute name is sent to the directory as "", which some
+		// servers reject outright. Both fields have defaults, so an empty one
+		// means the operator cleared it deliberately — fail at boot rather
+		// than on every login.
+		{"empty username_attr", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.UsernameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"empty display_name_attr", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.DisplayNameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		// Template bind requests the same two attributes, so the requirement
+		// is not search-mode-specific.
+		{"empty username_attr in template mode", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
+			l.UsernameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+		{"empty display_name_attr in template mode", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BaseDN = "", ""
+			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
+			l.DisplayNameAttr = ""
+			c.Auth.LDAP = l
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Enabled = true
+			tt.mutate(&cfg)
+			errs := config.Validate(cfg)
+			if tt.wantErr && len(errs) == 0 {
+				t.Fatal("expected a validation error, got none")
+			}
+			if !tt.wantErr && len(errs) > 0 {
+				t.Fatalf("expected no validation errors, got %v", errs)
+			}
+		})
+	}
+}
+
+// validSearchLDAP returns a minimal valid search-then-bind LDAP config.
+func validSearchLDAP() config.LDAPConfig {
+	return config.LDAPConfig{
+		Enabled:      true,
+		URL:          "ldap://dc.example.com:389",
+		Timeout:      10 * time.Second,
+		BindDN:       "CN=svc,DC=example,DC=com",
+		BindPassword: "s3cret",
+		BaseDN:       "DC=example,DC=com",
+		UserFilter:   "(sAMAccountName=%s)",
+		UsernameAttr: "sAMAccountName",
+		// Both attribute names go onto the wire verbatim and are required;
+		// see validateLDAPAttrs.
+		DisplayNameAttr: "displayName",
+		RoleSource:      "directory",
+		DefaultRole:     "read-only",
+		RoleMap:         []config.RoleMappingConfig{{Group: "CN=Admins,DC=example,DC=com", Role: "admin"}},
 	}
 }

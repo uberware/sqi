@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
@@ -44,7 +45,7 @@ func seedAPIKey(t *testing.T, st store.Store, userID, name string) store.APIKey 
 
 func newTestAuthHandler(t *testing.T, st store.Store) *authHandler {
 	t.Helper()
-	return newAuthHandler(st, slog.New(slog.DiscardHandler), time.Hour, "sqi_session", "false")
+	return newAuthHandler(st, slog.New(slog.DiscardHandler), time.Hour, "sqi_session", "false", nil, ldap.Config{})
 }
 
 // principalFor builds the context principal middleware.Auth would attach for u.
@@ -325,6 +326,68 @@ func TestUpdateMe(t *testing.T) {
 			t.Fatalf("status = %d, want 409", rr.Code)
 		}
 	})
+}
+
+// A directory account has no local password to rotate. Without this guard the
+// handler would verify against the placeholder hash and answer "current
+// password is incorrect", which is true but useless.
+func TestSelfService_ChangePasswordRejectedForLDAPUser(t *testing.T) {
+	st := fake.New()
+	u, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newTestAuthHandler(t, st)
+
+	rr := doChangePassword(t, h, u, `{"current_password":"x","new_password":"y"}`)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("got %d, want 409: %s", rr.Code, rr.Body)
+	}
+	after, err := st.GetUser(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PasswordHash != "!ldap" {
+		t.Errorf("PasswordHash changed despite 409: %q", after.PasswordHash)
+	}
+	// No session side effects: the guard fires before SetUserPasswordAndEvict-
+	// Sessions or issueSession run, so no cookie should be set. There is no
+	// pre-existing session to check for eviction here (this test never logs
+	// in — the principal is constructed directly via principalFor), so a
+	// live-session check would be a no-op; the cookie check is the cheap
+	// signal that issueSession was never reached.
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("got %d cookies, want none set on a rejected password change", len(cookies))
+	}
+}
+
+// PATCH /auth/me stays available: the display name is seeded once from the
+// directory and never re-synced, so a self-service edit is meaningful.
+func TestSelfService_UpdateMeAllowedForLDAPUser(t *testing.T) {
+	st := fake.New()
+	u, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		DisplayName: "Alice A", AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newTestAuthHandler(t, st)
+
+	rr := doUpdateMe(t, h, u, `{"display_name":"Ali"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rr.Code, rr.Body)
+	}
+	after, err := st.GetUser(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DisplayName != "Ali" {
+		t.Errorf("DisplayName: got %q, want Ali", after.DisplayName)
+	}
 }
 
 func doUpdateMe(t *testing.T, h *authHandler, u store.User, body string) *httptest.ResponseRecorder {

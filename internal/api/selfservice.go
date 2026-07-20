@@ -62,6 +62,14 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "failed to change password")
 		return
 	}
+	if u.AuthSource != store.AuthSourceLocal {
+		// Falling through would compare the caller's password against the
+		// LDAP placeholder hash and answer "current password is incorrect" —
+		// accurate but misleading, since no password would ever work here.
+		writeProblem(w, r, http.StatusConflict,
+			"your account authenticates against the directory; change your password there")
+		return
+	}
 
 	valid, verr := password.Verify(u.PasswordHash, req.CurrentPassword)
 	if verr != nil || !valid {

@@ -36,6 +36,7 @@ function user(overrides: Record<string, unknown> = {}) {
     username: 'alice',
     role: 'operator',
     disabled: false,
+    auth_source: 'local',
     created_at: '2026-06-28T00:00:00Z',
     updated_at: '2026-06-28T00:00:00Z',
     ...overrides,
@@ -109,6 +110,19 @@ describe('UserList', () => {
     renderPage()
     const link = await screen.findByRole('link', { name: 'alice' })
     expect(link.getAttribute('href')).toBe('/users/u1/edit')
+  })
+
+  it('shows the auth source for each user', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([
+        user({ id: 'u1', username: 'alice', auth_source: 'ldap' }),
+        user({ id: 'u2', username: 'bob', auth_source: 'local' }),
+      ]),
+    )
+    renderPage()
+    expect(await screen.findByRole('link', { name: 'alice' })).toBeInTheDocument()
+    expect(screen.getByText('ldap')).toBeInTheDocument()
+    expect(screen.getByText('local')).toBeInTheDocument()
   })
 
   it('confirms before deleting', async () => {

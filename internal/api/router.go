@@ -48,6 +48,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
@@ -155,6 +156,15 @@ type Deps struct {
 	// (Secure when the request is TLS or carries X-Forwarded-Proto: https),
 	// "true", or "false". Mirrors config.AuthConfig.Session.CookieSecure.
 	CookieSecure string
+
+	// LDAPVerifier authenticates accounts whose AuthSource is
+	// store.AuthSourceLDAP. Nil when directory auth is disabled, in which
+	// case login behaves exactly as it did before C1.
+	LDAPVerifier ldap.Verifier
+
+	// LDAPConfig supplies the role mapping and role-source mode. Only read
+	// when LDAPVerifier is non-nil.
+	LDAPConfig ldap.Config
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -327,13 +337,14 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
-	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure)
+	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure,
+		deps.LDAPVerifier, deps.LDAPConfig)
 	if cfg.AuthEnabled {
 		// Pay the argon2id derivation here, not on the first login that misses
 		// a username — see dummyHash.
 		warmDummyHash()
 	}
-	usersH := newUsersHandler(deps.Store, logger)
+	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)
 

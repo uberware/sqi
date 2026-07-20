@@ -46,6 +46,13 @@ func (s *Store) CreateUser(_ context.Context, u store.User) (store.User, error) 
 		}
 	}
 	now := time.Now().UTC()
+	// Mirror the SQLite column DEFAULT. Without this the fake keeps "" while
+	// SQLite yields "local", and the login path branches on exactly this
+	// field — so the two stores would disagree about which backend verifies
+	// an account.
+	if u.AuthSource == "" {
+		u.AuthSource = store.AuthSourceLocal
+	}
 	u.CreatedAt, u.UpdatedAt = now, now
 	s.users[u.ID] = u
 	return u, nil

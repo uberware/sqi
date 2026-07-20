@@ -63,3 +63,14 @@
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
 }
+
+.hint {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.labelQualifier {
+  font-weight: var(--font-weight-normal);
+  color: var(--color-text-secondary);
+}

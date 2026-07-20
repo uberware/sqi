@@ -22,7 +22,7 @@ const (
 
 	// Joined lookup used on every Bearer-authenticated request. The column
 	// order must match scanAPIKey followed by scanUser.
-	sqlGetAPIKeyUserByTokenHash = `SELECT k.id, k.user_id, k.name, k.token_hash, k.prefix, k.expires_at, k.last_used_at, k.revoked_at, k.created_at, u.id, u.username, u.display_name, u.password_hash, u.role, u.disabled, u.created_at, u.updated_at FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.token_hash = ? AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?)` //nolint:gosec // G101: SQL text, not a credential
+	sqlGetAPIKeyUserByTokenHash = `SELECT k.id, k.user_id, k.name, k.token_hash, k.prefix, k.expires_at, k.last_used_at, k.revoked_at, k.created_at, u.id, u.username, u.display_name, u.password_hash, u.role, u.auth_source, u.disabled, u.created_at, u.updated_at FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.token_hash = ? AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?)` //nolint:gosec // G101: SQL text, not a credential
 
 	sqlListAPIKeysForUser = `SELECT id, user_id, name, token_hash, prefix, expires_at, last_used_at, revoked_at, created_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC` //nolint:gosec // G101: SQL text, not a credential
 
@@ -66,26 +66,19 @@ func (s *Store) GetAPIKeyUserByTokenHash(ctx context.Context, tokenHash string, 
 	row := s.stmtGetAPIKeyUserByTokenHash.QueryRowContext(ctx, tokenHash, timeToText(now))
 
 	var k store.APIKey
-	var u store.User
 	var expiresAt, lastUsedAt, revokedAt sql.NullString
 	var keyCreatedAt string
-	var disabled int
-	var userCreatedAt, userUpdatedAt string
-	if err := row.Scan(
+	u, err := scanUser(prefixScanner{row: row, prefix: []any{
 		&k.ID, &k.UserID, &k.Name, &k.TokenHash, &k.Prefix,
 		&expiresAt, &lastUsedAt, &revokedAt, &keyCreatedAt,
-		&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Role, &disabled,
-		&userCreatedAt, &userUpdatedAt,
-	); err != nil {
+	}})
+	if err != nil {
 		return store.APIKey{}, store.User{}, mapErr(err)
 	}
 	k.ExpiresAt = nullTextToTime(expiresAt)
 	k.LastUsedAt = nullTextToTime(lastUsedAt)
 	k.RevokedAt = nullTextToTime(revokedAt)
 	k.CreatedAt = mustTime(keyCreatedAt)
-	u.Disabled = disabled != 0
-	u.CreatedAt = mustTime(userCreatedAt)
-	u.UpdatedAt = mustTime(userUpdatedAt)
 	return k, u, nil
 }
 

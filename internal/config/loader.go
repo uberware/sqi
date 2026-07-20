@@ -169,6 +169,28 @@ type fileConfig struct {
 			Username *string `yaml:"username"`
 			Password *string `yaml:"password"`
 		} `yaml:"bootstrap"`
+		LDAP *struct {
+			Enabled         *bool   `yaml:"enabled"`
+			URL             *string `yaml:"url"`
+			StartTLS        *bool   `yaml:"start_tls"`
+			TLSSkipVerify   *bool   `yaml:"tls_skip_verify"`
+			CAFile          *string `yaml:"ca_file"`
+			Timeout         *string `yaml:"timeout"`
+			BindDN          *string `yaml:"bind_dn"`
+			BindPassword    *string `yaml:"bind_password"`
+			BaseDN          *string `yaml:"base_dn"`
+			UserFilter      *string `yaml:"user_filter"`
+			NestedGroups    *bool   `yaml:"nested_groups"`
+			UserDNTemplate  *string `yaml:"user_dn_template"`
+			UsernameAttr    *string `yaml:"username_attr"`
+			DisplayNameAttr *string `yaml:"display_name_attr"`
+			RoleSource      *string `yaml:"role_source"`
+			RoleMap         *[]struct {
+				Group string `yaml:"group"`
+				Role  string `yaml:"role"`
+			} `yaml:"role_map"`
+			DefaultRole *string `yaml:"default_role"`
+		} `yaml:"ldap"`
 	} `yaml:"auth"`
 }
 
@@ -391,6 +413,7 @@ func mergeAuthFile(cfg *Config, fc fileConfig) {
 	}
 	mergeAuthSessionFile(cfg, fc.Auth.Session)
 	mergeAuthBootstrapFile(cfg, fc.Auth.Bootstrap)
+	mergeAuthLDAPFile(cfg, fc)
 }
 
 // mergeAuthSessionFile overlays the auth.session sub-fields from fc onto cfg.
@@ -434,6 +457,63 @@ func mergeAuthBootstrapFile(cfg *Config, b *struct {
 	}
 	if b.Password != nil {
 		cfg.Auth.Bootstrap.Password = *b.Password
+	}
+}
+
+// mergeAuthLDAPFile overlays the auth.ldap sub-fields from fc onto cfg. Split
+// out of [mergeAuthFile] for cyclomatic complexity. Unlike the sibling
+// helpers it takes the whole fileConfig: its shadow struct has too many
+// fields to restate as a parameter type.
+//
+// A malformed timeout is ignored rather than fatal, matching
+// [mergeAuthSessionFile]'s handling of auth.session.ttl — the file layer is
+// lenient where the env layer is strict, and diverging here would surprise.
+func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
+	if fc.Auth == nil || fc.Auth.LDAP == nil {
+		return
+	}
+	l := fc.Auth.LDAP
+	d := &cfg.Auth.LDAP
+	setIfNotNilBool(&d.Enabled, l.Enabled)
+	setIfNotNilString(&d.URL, l.URL)
+	setIfNotNilBool(&d.StartTLS, l.StartTLS)
+	setIfNotNilBool(&d.TLSSkipVerify, l.TLSSkipVerify)
+	setIfNotNilString(&d.CAFile, l.CAFile)
+	if l.Timeout != nil {
+		if v, err := time.ParseDuration(*l.Timeout); err == nil {
+			d.Timeout = v
+		}
+	}
+	setIfNotNilString(&d.BindDN, l.BindDN)
+	setIfNotNilString(&d.BindPassword, l.BindPassword)
+	setIfNotNilString(&d.BaseDN, l.BaseDN)
+	setIfNotNilString(&d.UserFilter, l.UserFilter)
+	setIfNotNilBool(&d.NestedGroups, l.NestedGroups)
+	setIfNotNilString(&d.UserDNTemplate, l.UserDNTemplate)
+	setIfNotNilString(&d.UsernameAttr, l.UsernameAttr)
+	setIfNotNilString(&d.DisplayNameAttr, l.DisplayNameAttr)
+	setIfNotNilString(&d.RoleSource, l.RoleSource)
+	setIfNotNilString(&d.DefaultRole, l.DefaultRole)
+	if l.RoleMap != nil {
+		out := make([]RoleMappingConfig, 0, len(*l.RoleMap))
+		for _, m := range *l.RoleMap {
+			out = append(out, RoleMappingConfig{Group: m.Group, Role: m.Role})
+		}
+		d.RoleMap = out
+	}
+}
+
+// setIfNotNilString assigns *src to *dst when src is non-nil.
+func setIfNotNilString(dst, src *string) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+// setIfNotNilBool assigns *src to *dst when src is non-nil.
+func setIfNotNilBool(dst, src *bool) {
+	if src != nil {
+		*dst = *src
 	}
 }
 
@@ -494,7 +574,37 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.Auth.Session.CookieSecure, "SQI_AUTH_SESSION_COOKIE_SECURE")
 	setString(&cfg.Auth.Bootstrap.Username, "SQI_AUTH_BOOTSTRAP_USERNAME")
 	setString(&cfg.Auth.Bootstrap.Password, "SQI_AUTH_BOOTSTRAP_PASSWORD")
+	collect(applyLDAPEnv(&cfg.Auth.LDAP))
 
+	return errors.Join(errs...)
+}
+
+// applyLDAPEnv overlays SQI_AUTH_LDAP_* onto cfg. Split out of [applyEnv] to
+// keep its cyclomatic complexity under the lint threshold. role_map has no env
+// form — a list of pairs has no sane flat encoding, so it is file-only.
+func applyLDAPEnv(cfg *LDAPConfig) error {
+	var errs []error
+	collect := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	collect(setBool(&cfg.Enabled, "SQI_AUTH_LDAP_ENABLED"))
+	setString(&cfg.URL, "SQI_AUTH_LDAP_URL")
+	collect(setBool(&cfg.StartTLS, "SQI_AUTH_LDAP_START_TLS"))
+	collect(setBool(&cfg.TLSSkipVerify, "SQI_AUTH_LDAP_TLS_SKIP_VERIFY"))
+	setString(&cfg.CAFile, "SQI_AUTH_LDAP_CA_FILE")
+	collect(setDuration(&cfg.Timeout, "SQI_AUTH_LDAP_TIMEOUT"))
+	setString(&cfg.BindDN, "SQI_AUTH_LDAP_BIND_DN")
+	setString(&cfg.BindPassword, "SQI_AUTH_LDAP_BIND_PASSWORD")
+	setString(&cfg.BaseDN, "SQI_AUTH_LDAP_BASE_DN")
+	setString(&cfg.UserFilter, "SQI_AUTH_LDAP_USER_FILTER")
+	collect(setBool(&cfg.NestedGroups, "SQI_AUTH_LDAP_NESTED_GROUPS"))
+	setString(&cfg.UserDNTemplate, "SQI_AUTH_LDAP_USER_DN_TEMPLATE")
+	setString(&cfg.UsernameAttr, "SQI_AUTH_LDAP_USERNAME_ATTR")
+	setString(&cfg.DisplayNameAttr, "SQI_AUTH_LDAP_DISPLAY_NAME_ATTR")
+	setString(&cfg.RoleSource, "SQI_AUTH_LDAP_ROLE_SOURCE")
+	setString(&cfg.DefaultRole, "SQI_AUTH_LDAP_DEFAULT_ROLE")
 	return errors.Join(errs...)
 }
 
