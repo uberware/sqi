@@ -942,6 +942,37 @@ func TestAuthConfigDefaults(t *testing.T) {
 	if c.Auth.Bootstrap.Username != "" || c.Auth.Bootstrap.Password != "" {
 		t.Fatalf("bootstrap credentials default = %+v, want empty", c.Auth.Bootstrap)
 	}
+	if c.Auth.LDAP.Enabled {
+		t.Fatal("ldap must default disabled")
+	}
+	if c.Auth.LDAP.Timeout != 10*time.Second {
+		t.Fatalf("ldap timeout default = %v, want 10s", c.Auth.LDAP.Timeout)
+	}
+	if c.Auth.LDAP.UserFilter != "(sAMAccountName=%s)" {
+		t.Fatalf("ldap user_filter default = %q, want (sAMAccountName=%%s)", c.Auth.LDAP.UserFilter)
+	}
+	if c.Auth.LDAP.UsernameAttr != "sAMAccountName" {
+		t.Fatalf("ldap username_attr default = %q, want sAMAccountName", c.Auth.LDAP.UsernameAttr)
+	}
+	if c.Auth.LDAP.DisplayNameAttr != "displayName" {
+		t.Fatalf("ldap display_name_attr default = %q, want displayName", c.Auth.LDAP.DisplayNameAttr)
+	}
+	if c.Auth.LDAP.RoleSource != "directory" {
+		t.Fatalf("ldap role_source default = %q, want directory", c.Auth.LDAP.RoleSource)
+	}
+	if c.Auth.LDAP.DefaultRole != "read-only" {
+		t.Fatalf("ldap default_role default = %q, want read-only", c.Auth.LDAP.DefaultRole)
+	}
+	if c.Auth.LDAP.URL != "" || c.Auth.LDAP.BindDN != "" || c.Auth.LDAP.BindPassword != "" ||
+		c.Auth.LDAP.BaseDN != "" || c.Auth.LDAP.UserDNTemplate != "" || c.Auth.LDAP.CAFile != "" {
+		t.Fatalf("ldap unset string fields default = %+v, want all empty", c.Auth.LDAP)
+	}
+	if c.Auth.LDAP.StartTLS || c.Auth.LDAP.TLSSkipVerify || c.Auth.LDAP.NestedGroups {
+		t.Fatalf("ldap unset bool fields default = %+v, want all false", c.Auth.LDAP)
+	}
+	if len(c.Auth.LDAP.RoleMap) != 0 {
+		t.Fatalf("ldap role_map default = %+v, want empty", c.Auth.LDAP.RoleMap)
+	}
 }
 
 func TestAuthEnvOverrides(t *testing.T) {
@@ -1426,14 +1457,23 @@ func TestAuthLDAPEnvOverrides(t *testing.T) {
 	if c.Auth.LDAP.URL != "ldaps://dc01.example.com:636" {
 		t.Errorf("Auth.LDAP.URL: got %q", c.Auth.LDAP.URL)
 	}
+	if c.Auth.LDAP.BindDN != "CN=svc,DC=example,DC=com" {
+		t.Errorf("Auth.LDAP.BindDN: got %q", c.Auth.LDAP.BindDN)
+	}
 	if c.Auth.LDAP.BindPassword != "s3cret" {
 		t.Errorf("Auth.LDAP.BindPassword: got %q", c.Auth.LDAP.BindPassword)
+	}
+	if c.Auth.LDAP.BaseDN != "DC=example,DC=com" {
+		t.Errorf("Auth.LDAP.BaseDN: got %q", c.Auth.LDAP.BaseDN)
 	}
 	if c.Auth.LDAP.Timeout != 5*time.Second {
 		t.Errorf("Auth.LDAP.Timeout: got %v, want 5s", c.Auth.LDAP.Timeout)
 	}
 	if c.Auth.LDAP.RoleSource != "local" {
 		t.Errorf("Auth.LDAP.RoleSource: got %q, want local", c.Auth.LDAP.RoleSource)
+	}
+	if c.Auth.LDAP.DefaultRole != "user" {
+		t.Errorf("Auth.LDAP.DefaultRole: got %q, want user", c.Auth.LDAP.DefaultRole)
 	}
 }
 
@@ -1468,6 +1508,18 @@ auth:
 	if !cfg.Auth.LDAP.Enabled || !cfg.Auth.LDAP.StartTLS {
 		t.Fatalf("ldap enabled/start_tls not applied: %+v", cfg.Auth.LDAP)
 	}
+	if cfg.Auth.LDAP.URL != "ldap://dc.example.com:389" {
+		t.Errorf("url: got %q", cfg.Auth.LDAP.URL)
+	}
+	if cfg.Auth.LDAP.BaseDN != "DC=example,DC=com" {
+		t.Errorf("base_dn: got %q", cfg.Auth.LDAP.BaseDN)
+	}
+	if cfg.Auth.LDAP.BindDN != "CN=svc,DC=example,DC=com" {
+		t.Errorf("bind_dn: got %q", cfg.Auth.LDAP.BindDN)
+	}
+	if cfg.Auth.LDAP.BindPassword != "filepass" {
+		t.Errorf("bind_password: got %q", cfg.Auth.LDAP.BindPassword)
+	}
 	if cfg.Auth.LDAP.UserFilter != "(uid=%s)" {
 		t.Errorf("user_filter: got %q", cfg.Auth.LDAP.UserFilter)
 	}
@@ -1476,6 +1528,9 @@ auth:
 	}
 	if cfg.Auth.LDAP.RoleMap[0].Role != "admin" || cfg.Auth.LDAP.RoleMap[1].Role != "user" {
 		t.Errorf("role_map order not preserved: %+v", cfg.Auth.LDAP.RoleMap)
+	}
+	if cfg.Auth.LDAP.DefaultRole != "read-only" {
+		t.Errorf("default_role: got %q, want read-only", cfg.Auth.LDAP.DefaultRole)
 	}
 	// Unset ldap fields keep defaults; sibling sub-blocks are untouched.
 	if cfg.Auth.LDAP.RoleSource != "directory" {
