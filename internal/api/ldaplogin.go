@@ -11,8 +11,18 @@ package api
 // Distinguishing "no such directory entry" from "wrong password" — or from
 // "this username is taken by a local account" — would turn login into a
 // user-enumeration oracle.
+//
+// Security posture, stated plainly: the 401 *bodies* are equalized across
+// every failure path, but the *latencies* are not. An observer who times
+// /auth/login can still tell an immediate rejection (disabled account,
+// unrecognized auth_source) from a local argon2id check from a directory
+// round trip, and so can learn something about which backend owns a
+// username. Equalizing that is not achievable — an argon2id derivation and a
+// WAN LDAP bind cannot be made to cost the same — so rate limiting on
+// /auth/login is the mitigation, not a timing fix in this file.
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -96,7 +106,24 @@ func (h *authHandler) resolveLDAPUser(
 	r *http.Request, existing *store.User, id ldap.Identity, role string,
 ) (store.User, error) {
 	if existing == nil {
-		return h.provisionLDAPUser(r, id, role)
+		created, err := h.provisionLDAPUser(r, id, role)
+		if err == nil {
+			return created, nil
+		}
+		if !errors.Is(err, store.ErrConflict) {
+			return store.User{}, err
+		}
+		// The insert collided. That is either a genuine clash with a local
+		// account (reject) or the same directory user arriving under an alias
+		// — e.g. user_filter matches userPrincipalName while username_attr is
+		// sAMAccountName, so a caller typing "alice@example.com" is looked up
+		// under that spelling but was provisioned as "alice". Without this,
+		// every login after the first would fail forever.
+		adopted, aerr := h.aliasedLDAPRow(r.Context(), id.Username)
+		if aerr != nil {
+			return store.User{}, aerr
+		}
+		existing = &adopted
 	}
 	// role_source=local: the mapping seeded the role at creation and the
 	// local column owns it from then on. Touching it here would silently
@@ -141,16 +168,43 @@ func (h *authHandler) provisionLDAPUser(r *http.Request, id ldap.Identity, role 
 		return created, nil
 	}
 	if errors.Is(err, store.ErrConflict) {
-		// A local account already owns this username. Adopting it — flipping
-		// auth_source to "ldap" — would mean anyone able to create a
-		// directory account named "admin" inherits the local admin's
-		// privileges. Refuse, and give the operator a signal they can act on;
-		// the client still sees only the generic 401.
-		h.logger.WarnContext(ctx, "auth: ldap username collides with an existing local account",
-			slog.String("username", username))
+		// Some row already owns this username. Whether that row may be used is
+		// decided by aliasedLDAPRow, which re-reads it: a local account is
+		// never adopted, a directory account is simply recognized.
 		return store.User{}, err
 	}
 	h.logger.ErrorContext(ctx, "auth: ldap user provisioning failed",
 		slog.String("username", username), slog.Any("error", err))
 	return store.User{}, err
+}
+
+// aliasedLDAPRow resolves the store.ErrConflict from provisionLDAPUser by
+// re-reading the row that owns username.
+//
+// Only a row whose AuthSource is already store.AuthSourceLDAP is returned.
+// That is not adoption: the directory provisioned that row itself, and
+// recognizing it is what lets a user log in under an alias (their UPN) on
+// every login rather than only the first. A local row — or anything that is
+// not exactly "ldap", including the empty string a pre-auth_source row can
+// carry — is refused, because flipping such an account to the directory would
+// mean anyone able to create a directory entry named "admin" inherits the
+// local admin's privileges. A disabled directory row is refused too: the
+// disabled flag is the operator's override and must hold on the alias path
+// exactly as loginLDAP enforces it on the direct one.
+func (h *authHandler) aliasedLDAPRow(ctx context.Context, username string) (store.User, error) {
+	u, err := h.store.GetUserByUsername(ctx, username)
+	if err != nil {
+		h.logger.WarnContext(ctx, "auth: ldap username collides with an existing local account",
+			slog.String("username", username), slog.Any("error", err))
+		return store.User{}, store.ErrConflict
+	}
+	if u.AuthSource != store.AuthSourceLDAP {
+		h.logger.WarnContext(ctx, "auth: ldap username collides with an existing local account",
+			slog.String("username", username), slog.String("auth_source", u.AuthSource))
+		return store.User{}, store.ErrConflict
+	}
+	if u.Disabled {
+		return store.User{}, store.ErrConflict
+	}
+	return u, nil
 }

@@ -245,9 +245,14 @@ func TestLogin_LocalModeDoesNotResyncRole(t *testing.T) {
 
 // The display name is seeded once and never re-synced, so a self-service
 // PATCH /auth/me edit survives the next login.
+//
+// The seeded role is deliberately NOT the role the directory maps to. If it
+// matched, resolveLDAPUser would short-circuit before UpdateUser and this test
+// would pass without ever reaching the write it exists to guard. The role
+// assertion below is what proves the update path actually ran.
 func TestLogin_DisplayNameNotResynced(t *testing.T) {
 	st := fake.New()
-	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin", DisplayName: "Ali"})
+	seedLDAPUser(t, st, store.User{Username: "alice", Role: "read-only", DisplayName: "Ali"})
 	v := &fakeVerifier{identity: aliceIdentity()} // directory says "Alice Anderson"
 	srv := newLDAPServer(t, st, v, ldapCfg())
 
@@ -257,6 +262,10 @@ func TestLogin_DisplayNameNotResynced(t *testing.T) {
 	u, err := st.GetUserByUsername(t.Context(), "alice")
 	if err != nil {
 		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if u.Role != "admin" {
+		t.Fatalf("Role: got %q, want admin — the update path did not run, so the "+
+			"display-name assertion below would be vacuous", u.Role)
 	}
 	if u.DisplayName != "Ali" {
 		t.Errorf("DisplayName: got %q, want the self-service value preserved", u.DisplayName)
@@ -317,6 +326,79 @@ func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 	}
 	if u.AuthSource != store.AuthSourceLocal {
 		t.Errorf("local account was adopted: AuthSource=%q", u.AuthSource)
+	}
+	if u.Role != "admin" {
+		t.Errorf("local account role was modified: %q", u.Role)
+	}
+}
+
+// A directory account that logs in under an alias — user_filter matches
+// userPrincipalName while username_attr is sAMAccountName, so the caller types
+// "alice@example.com" but the row is "alice" — must be recognized on every
+// login, not just the first. The lookup in login misses, provisioning collides,
+// and the ErrConflict branch has to resolve it to the existing directory row
+// rather than a permanent 401.
+func TestLogin_AliasLoginRecognizesExistingLDAPAccount(t *testing.T) {
+	st := fake.New()
+	seeded := seedLDAPUser(t, st, store.User{Username: "alice", Role: "read-only"})
+	v := &fakeVerifier{identity: aliceIdentity()} // directory returns Username "alice"
+	srv := newLDAPServer(t, st, v, ldapCfg())
+
+	// Twice: a one-shot success would not prove the path is stable.
+	for i := range 2 {
+		if code, body := postLogin(t, srv, "alice@example.com", "pw"); code != http.StatusOK {
+			t.Fatalf("alias login %d: got %d, want 200: %s", i, code, body)
+		}
+	}
+
+	users, err := st.ListUsers(t.Context())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("got %d users, want 1 — the alias must not create a second row: %+v", len(users), users)
+	}
+	u := users[0]
+	if u.ID != seeded.ID {
+		t.Errorf("ID: got %q, want the existing row %q", u.ID, seeded.ID)
+	}
+	if u.Username != "alice" {
+		t.Errorf("Username: got %q, want the directory spelling preserved", u.Username)
+	}
+	// Recognizing the row still runs the normal role sync.
+	if u.Role != "admin" {
+		t.Errorf("Role: got %q, want admin re-synced from the directory", u.Role)
+	}
+}
+
+// The same ErrConflict branch must still refuse a LOCAL row. Recognizing an
+// account the directory itself provisioned is fine; taking over a local one is
+// the privilege-escalation this defense exists to stop.
+func TestLogin_AliasLoginDoesNotAdoptLocalAccount(t *testing.T) {
+	st := fake.New()
+	seedAuthUser(t, st, "alice", "localpass", "admin")
+	v := &fakeVerifier{identity: aliceIdentity()} // directory returns Username "alice"
+	srv := newLDAPServer(t, st, v, ldapCfg())
+
+	if code, body := postLogin(t, srv, "alice@example.com", "dirpass"); code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401: %s", code, body)
+	}
+	users, err := st.ListUsers(t.Context())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("got %d users, want 1: %+v", len(users), users)
+	}
+	u := users[0]
+	if u.AuthSource != store.AuthSourceLocal {
+		t.Errorf("local account was adopted: AuthSource=%q", u.AuthSource)
+	}
+	if u.Role != "admin" {
+		t.Errorf("local account role was modified: %q", u.Role)
+	}
+	if u.Username != "alice" {
+		t.Errorf("Username: got %q", u.Username)
 	}
 }
 
@@ -454,8 +536,10 @@ func postLoginFixedID(t *testing.T, srv *httptest.Server, reqID, username, pw st
 
 // The response body must be byte-identical across every failure mode:
 // unknown account, local account with a bad password, directory account with
-// a bad password, directory down, no role matched, and a collision with a
-// local account. Any difference is a user-enumeration oracle.
+// a bad password, directory down, no role matched, a collision with a local
+// account, a locally disabled directory account, an unrecognized auth_source,
+// and a directory account whose verifier has been switched off. Any difference
+// is a user-enumeration oracle.
 func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 	const reqID = "fixed-request-id-for-body-comparison"
 
@@ -466,6 +550,10 @@ func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 		setup func(t *testing.T, st store.Store) *fakeVerifier
 		user  string
 		pw    string
+		// ldapOff models auth.ldap.enabled=false: the router gets a nil
+		// ldap.Verifier interface, which a typed-nil *fakeVerifier would not
+		// produce.
+		ldapOff bool
 	}{
 		{
 			name:  "unknown account, ldap rejects",
@@ -522,6 +610,37 @@ func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 			},
 			user: "alice", pw: "pw",
 		},
+		{
+			// Fails closed in login's default branch, before any of the LDAP
+			// code runs — a different call site, so it must be pinned here too.
+			name: "unrecognized auth_source",
+			setup: func(t *testing.T, st store.Store) *fakeVerifier {
+				t.Helper()
+				hash, err := password.Hash("localpass")
+				if err != nil {
+					t.Fatalf("password.Hash: %v", err)
+				}
+				if _, err := st.CreateUser(t.Context(), store.User{
+					ID: uuid.NewString(), Username: "mallory", PasswordHash: hash,
+					Role: "admin", AuthSource: "saml",
+				}); err != nil {
+					t.Fatalf("CreateUser: %v", err)
+				}
+				return &fakeVerifier{identity: aliceIdentity()}
+			},
+			user: "mallory", pw: "localpass",
+		},
+		{
+			// A directory account left behind after LDAP was switched off:
+			// rejected by loginLDAP's nil-verifier guard, another distinct exit.
+			name: "directory account, verifier switched off",
+			setup: func(t *testing.T, st store.Store) *fakeVerifier {
+				t.Helper()
+				seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"})
+				return nil
+			},
+			user: "alice", pw: "pw", ldapOff: true,
+		},
 	}
 
 	bodies := make([]string, 0, len(cases))
@@ -531,8 +650,11 @@ func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 		if c.name == "no role matched" {
 			cfg.DefaultRole = ""
 		}
-		v := c.setup(t, st)
-		srv := newLDAPServer(t, st, v, cfg)
+		var verifier ldap.Verifier
+		if v := c.setup(t, st); !c.ldapOff {
+			verifier = v
+		}
+		srv := newLDAPServer(t, st, verifier, cfg)
 
 		code, body := postLoginFixedID(t, srv, reqID, c.user, c.pw)
 		if code != http.StatusUnauthorized {

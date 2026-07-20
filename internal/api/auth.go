@@ -187,9 +187,12 @@ func (h *authHandler) loginUnknownUser(w http.ResponseWriter, r *http.Request, r
 	ctx := r.Context()
 	if errors.Is(err, store.ErrNotFound) && h.ldapVerifier != nil {
 		// Unknown username with LDAP on: this is the just-in-time
-		// provisioning path. No dummy verify here — the directory bind
-		// dominates the cost and an extra argon2id derivation would only add
-		// noise.
+		// provisioning path. No dummy verify here — not because the
+		// equalization is unnecessary, but because it is unattainable. The
+		// dummy hash works below only because both sides of that comparison
+		// are argon2id derivations of matching cost; a directory bind is a
+		// network round trip whose cost no local computation can be made to
+		// match. See the security-posture note at the top of ldaplogin.go.
 		h.loginLDAP(w, r, req.Username, req.Password, nil)
 		return
 	}
