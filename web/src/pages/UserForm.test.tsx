@@ -57,13 +57,13 @@ function renderCreate() {
   )
 }
 
-function renderEdit() {
+function renderEdit(id = 'u1') {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/users/u1/edit']}>
+      <MemoryRouter initialEntries={[`/users/${id}/edit`]}>
         <ToastProvider>
           {
             (
@@ -188,5 +188,74 @@ describe('UserForm (edit)', () => {
       (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
     )
     expect(patchCalls.length).toBe(0)
+  })
+
+  it('disables the role control for a directory-managed account', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok({
+        id: 'u1',
+        username: 'alice',
+        display_name: 'Alice',
+        role: 'user',
+        auth_source: 'ldap',
+        disabled: false,
+        created_at: '2026-07-19T00:00:00Z',
+        updated_at: '2026-07-19T00:00:00Z',
+      }),
+    )
+    renderEdit('u1')
+    const select = await screen.findByLabelText('Role')
+    expect(select).toBeDisabled()
+    expect(screen.getByText(/managed by the directory/i)).toBeInTheDocument()
+  })
+
+  it('leaves the role control enabled for a local account', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok({
+        id: 'u2',
+        username: 'bob',
+        display_name: 'Bob',
+        role: 'user',
+        auth_source: 'local',
+        disabled: false,
+        created_at: '2026-07-19T00:00:00Z',
+        updated_at: '2026-07-19T00:00:00Z',
+      }),
+    )
+    renderEdit('u2')
+    expect(await screen.findByLabelText('Role')).toBeEnabled()
+  })
+
+  it('omits role from the PATCH body for a directory-managed account', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok({
+        id: 'u1',
+        username: 'alice',
+        display_name: 'Alice',
+        role: 'user',
+        auth_source: 'ldap',
+        disabled: false,
+        created_at: '2026-07-19T00:00:00Z',
+        updated_at: '2026-07-19T00:00:00Z',
+      }),
+    )
+    renderEdit('u1')
+    await screen.findByLabelText('Role')
+    fetchMock.mockResolvedValueOnce(ok({}))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    // Located by method rather than a fixed call index: a successful PATCH
+    // invalidates the user-detail query too, which refetches it as a third
+    // fetch call (see the GET/PATCH/GET sequence elsewhere in this file).
+    const patch = await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
+      )
+      expect(call).toBeDefined()
+      return call as [string, RequestInit]
+    })
+    const body = JSON.parse(String(patch[1].body ?? '{}')) as Record<string, unknown>
+    // Sending role would earn a 409 from the server; the client must not ask.
+    expect(body).not.toHaveProperty('role')
+    expect(body).toHaveProperty('display_name')
   })
 })

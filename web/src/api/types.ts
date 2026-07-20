@@ -511,12 +511,21 @@ export interface UpdateMeInput {
   display_name: string
 }
 
-/** A local user account (secrets are never included in the wire format). */
+/** Credential backend for a user account (mirrors store.AuthSource). */
+export type AuthSource = 'local' | 'ldap'
+
+/** A user account (secrets are never included in the wire format). */
 export interface User {
   id: string
   username: string
   display_name?: string
   role: string
+  /**
+   * Which backend verifies this account. `ldap` accounts are provisioned on
+   * first directory login; their role may be directory-managed, in which case
+   * the server rejects a role edit with 409.
+   */
+  auth_source: AuthSource
   disabled: boolean
   created_at: string
   updated_at: string

@@ -111,6 +111,19 @@ describe('UserList', () => {
     expect(link.getAttribute('href')).toBe('/users/u1/edit')
   })
 
+  it('shows the auth source for each user', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([
+        user({ id: 'u1', username: 'alice', auth_source: 'ldap' }),
+        user({ id: 'u2', username: 'bob', auth_source: 'local' }),
+      ]),
+    )
+    renderPage()
+    expect(await screen.findByRole('link', { name: 'alice' })).toBeInTheDocument()
+    expect(screen.getByText('ldap')).toBeInTheDocument()
+    expect(screen.getByText('local')).toBeInTheDocument()
+  })
+
   it('confirms before deleting', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     fetchMock.mockResolvedValueOnce(ok([user()]))

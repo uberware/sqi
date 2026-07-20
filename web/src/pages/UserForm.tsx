@@ -25,6 +25,7 @@ interface Defaults {
   displayName: string
   role: string
   disabled: boolean
+  authSource: string
 }
 
 interface InnerProps {
@@ -47,6 +48,11 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
   const [disabled, setDisabled] = useState(defaults.disabled)
   const [newPassword, setNewPassword] = useState('')
 
+  // Mirrors the server's PATCH /users/{id} guard: in role_source=directory
+  // mode the group mapping owns an LDAP account's role. Showing an editable
+  // control here would offer a change that is rejected on save.
+  const roleManagedExternally = defaults.authSource === 'ldap'
+
   const isPending = createUser.isPending || updateUser.isPending
   const canSubmit =
     mode === 'create' ? username.trim() !== '' && password !== '' && !isPending : !isPending
@@ -67,11 +73,13 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
         await createUser.mutateAsync(input)
         showToast(`User "${trimmedUsername}" created`, 'success')
       } else {
-        const input: UserUpdateInput = {
-          display_name: trimmedDisplayName,
-          role,
-          disabled,
-        }
+        // A directory-managed account's role is omitted rather than sent
+        // unchanged: the server rejects any role field in the PATCH body for
+        // an ldap account in role_source=directory mode, even one matching
+        // its current value.
+        const input: UserUpdateInput = roleManagedExternally
+          ? { display_name: trimmedDisplayName, disabled }
+          : { display_name: trimmedDisplayName, disabled, role }
         await updateUser.mutateAsync({ id, input })
         showToast(`User "${username}" saved`, 'success')
       }
@@ -153,6 +161,8 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
             id="user-role"
             className={styles.select}
             value={role}
+            disabled={roleManagedExternally}
+            aria-describedby={roleManagedExternally ? 'user-role-hint' : undefined}
             onChange={(e) => setRole(e.target.value)}
           >
             {ROLES.map((r) => (
@@ -161,6 +171,11 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
               </option>
             ))}
           </select>
+          {roleManagedExternally && (
+            <p id="user-role-hint" className={styles.hint}>
+              Managed by the directory — change this user&apos;s group membership instead.
+            </p>
+          )}
         </div>
 
         {mode === 'edit' && (
@@ -242,6 +257,7 @@ export default function UserForm({ mode }: Props) {
           displayName: data.display_name ?? '',
           role: data.role,
           disabled: data.disabled,
+          authSource: data.auth_source,
         }}
       />
     )
@@ -251,7 +267,13 @@ export default function UserForm({ mode }: Props) {
     <UserFormInner
       mode="create"
       id=""
-      defaults={{ username: '', displayName: '', role: 'user', disabled: false }}
+      defaults={{
+        username: '',
+        displayName: '',
+        role: 'user',
+        disabled: false,
+        authSource: 'local',
+      }}
     />
   )
 }
