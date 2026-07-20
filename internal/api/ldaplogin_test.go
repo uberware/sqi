@@ -509,19 +509,21 @@ func authDisabledRouter(st store.Store) chi.Router {
 // With auth disabled, nothing in C1 may be reachable: there is no principal to
 // provision against and every pre-C1 login behavior must hold. An unknown
 // username returns the same equalized 401 it returned before the directory
-// path existed, the directory is never consulted, and no account appears in
-// the store.
+// path existed, and no account appears in the store.
+//
+// No verifier is wired here, deliberately: authDisabledRouter is the thing
+// under test, and an auth-disabled router builds no verifier at all. "The
+// directory is never consulted" is therefore established by construction —
+// there is nothing to consult — so the store assertions below carry the test.
+// (Handing this router a verifier just to assert it went uncalled would be an
+// assertion about a value the router never receives, which cannot fail.)
 func TestLogin_AuthDisabledIgnoresLDAP(t *testing.T) {
 	st := fake.New()
-	v := &fakeVerifier{identity: aliceIdentity()}
 	srv := httptest.NewServer(authDisabledRouter(st))
 	t.Cleanup(srv.Close)
 
 	if code, body := postLogin(t, srv, "alice", "pw"); code != http.StatusUnauthorized {
 		t.Fatalf("login with auth disabled: got %d, want 401: %s", code, body)
-	}
-	if n := v.callCount(); n != 0 {
-		t.Errorf("verifier called %d times with auth disabled, want 0", n)
 	}
 	if _, err := st.GetUserByUsername(t.Context(), "alice"); err == nil {
 		t.Error("no user may be provisioned with auth disabled")
