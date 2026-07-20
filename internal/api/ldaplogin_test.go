@@ -61,11 +61,18 @@ func (f *fakeVerifier) callCount() int {
 	return f.calls
 }
 
+// ldapExternalID is the stable directory identifier a fixture uses for
+// username. Tests derive it rather than hardcoding one per case so a seeded
+// row and the identity the verifier returns for the same person always agree —
+// matching is by this value, not by name.
+func ldapExternalID(username string) string { return "ldap-uid-" + username }
+
 func aliceIdentity() ldap.Identity {
 	return ldap.Identity{
 		DN:          "CN=Alice,DC=example,DC=com",
 		Username:    "alice",
 		DisplayName: "Alice Anderson",
+		ExternalID:  ldapExternalID("alice"),
 		Groups:      []string{"CN=Admins,DC=example,DC=com"},
 	}
 }
@@ -127,7 +134,10 @@ func seedLDAPUser(t *testing.T, st store.Store, u store.User) store.User {
 	u.ID = uuid.NewString()
 	u.AuthSource = store.AuthSourceLDAP
 	if u.PasswordHash == "" {
-		u.PasswordHash = ldapPlaceholderHash
+		u.PasswordHash = externalPlaceholderHash
+	}
+	if u.ExternalID == "" {
+		u.ExternalID = ldapExternalID(u.Username)
 	}
 	out, err := st.CreateUser(t.Context(), u)
 	if err != nil {
@@ -248,7 +258,7 @@ func TestLogin_LocalModeDoesNotResyncRole(t *testing.T) {
 // PATCH /auth/me edit survives the next login.
 //
 // The seeded role is deliberately NOT the role the directory maps to. If it
-// matched, resolveLDAPUser would short-circuit before UpdateUser and this test
+// matched, syncExternalRole would short-circuit before UpdateUser and this test
 // would pass without ever reaching the write it exists to guard. The role
 // assertion below is what proves the update path actually ran.
 func TestLogin_DisplayNameNotResynced(t *testing.T) {
@@ -318,8 +328,13 @@ func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	if _, err := h.provisionLDAPUser(req, aliceIdentity(), "admin"); err == nil {
-		t.Fatal("provisionLDAPUser adopted an existing local account, want an error")
+	id := aliceIdentity()
+	if _, err := h.provisionExternalUser(req, store.AuthSourceLDAP, externalIdentity{
+		ExternalID:  id.ExternalID,
+		Username:    id.Username,
+		DisplayName: id.DisplayName,
+	}, "admin"); err == nil {
+		t.Fatal("provisionExternalUser adopted an existing local account, want an error")
 	}
 	u, err := st.GetUserByUsername(t.Context(), "alice")
 	if err != nil {
@@ -336,9 +351,15 @@ func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 // A directory account that logs in under an alias — user_filter matches
 // userPrincipalName while username_attr is sAMAccountName, so the caller types
 // "alice@example.com" but the row is "alice" — must be recognized on every
-// login, not just the first. The lookup in login misses, provisioning collides,
-// and the ErrConflict branch has to resolve it to the existing directory row
-// rather than a permanent 401.
+// login, not just the first.
+//
+// The mechanism changed in C2 and the intent did not. C1 resolved this after
+// the fact: the username lookup missed, provisioning collided, and an
+// ErrConflict branch re-read the row by name and adopted it if it was already a
+// directory row. C2 never gets that far, because the alias and the canonical
+// spelling are the same directory entry and therefore carry the same
+// ExternalID, so the identity lookup hits the existing row directly. What is
+// asserted below is unchanged: one row, the same row, still role-synced.
 func TestLogin_AliasLoginRecognizesExistingLDAPAccount(t *testing.T) {
 	st := fake.New()
 	seeded := seedLDAPUser(t, st, store.User{Username: "alice", Role: "read-only"})
@@ -372,9 +393,15 @@ func TestLogin_AliasLoginRecognizesExistingLDAPAccount(t *testing.T) {
 	}
 }
 
-// The same ErrConflict branch must still refuse a LOCAL row. Recognizing an
-// account the directory itself provisioned is fine; taking over a local one is
-// the privilege-escalation this defense exists to stop.
+// The alias path must still refuse a LOCAL row. Recognizing an account the
+// directory itself provisioned is fine; taking over a local one is the
+// privilege-escalation this defense exists to stop.
+//
+// Under C2 the refusal comes from a different place — the local row has no
+// external_id, so the identity lookup cannot find it and provisioning is left
+// to collide on the username, which is refused outright rather than adopted.
+// The guarantee is the same and is stated the same way: 401, and the local row
+// untouched.
 func TestLogin_AliasLoginDoesNotAdoptLocalAccount(t *testing.T) {
 	st := fake.New()
 	seedAuthUser(t, st, "alice", "localpass", "admin")
@@ -443,7 +470,9 @@ func TestLogin_DirectoryUserWithoutVerifierRejected(t *testing.T) {
 	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"})
 	srv := newLDAPServer(t, st, nil, ldap.Config{})
 
-	for _, pw := range []string{"pw", ldapPlaceholderHash, ""} {
+	// "!ldap" is the placeholder C1 wrote and pre-C2 rows still carry; both it
+	// and the current one must be unusable as a password.
+	for _, pw := range []string{"pw", externalPlaceholderHash, "!ldap", ""} {
 		if code, body := postLogin(t, srv, "alice", pw); code != http.StatusUnauthorized {
 			t.Fatalf("password %q: got %d, want 401: %s", pw, code, body)
 		}

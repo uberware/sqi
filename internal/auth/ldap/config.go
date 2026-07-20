@@ -90,6 +90,11 @@ type Identity struct {
 	Username string
 	// DisplayName is the human-facing label. Consumed only at JIT-create.
 	DisplayName string
+	// ExternalID is the entry's stable, non-reusable identifier, read from the
+	// attribute named by Config.UniqueIDAttr. Empty means the directory did not
+	// return it, which the login path treats as a failure rather than falling
+	// back to name matching.
+	ExternalID string
 	// Groups are the group DNs the entry belongs to.
 	Groups []string
 }
