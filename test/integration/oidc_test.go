@@ -86,6 +86,10 @@ const (
 	// Keycloak builds its augmented distribution on first boot, so this is
 	// considerably longer than the LDAP fixture needs.
 	kcReadyTimeout = 180 * time.Second
+
+	// Attempts allowed for the admin token grant, with a linear backoff between
+	// them. See adminToken for why one attempt is not enough.
+	kcAdminTokenAttempts = 4
 )
 
 // keycloak is a running identity provider under test.
@@ -194,7 +198,7 @@ func (k *keycloak) waitReady(t *testing.T) {
 		resp, err := k.client.Do(req)
 		if err == nil {
 			code := resp.StatusCode
-			_ = resp.Body.Close() //nolint:errcheck // probe body is discarded
+			_ = resp.Body.Close()
 			cancel()
 			if code == http.StatusOK {
 				return
@@ -211,9 +215,32 @@ func (k *keycloak) waitReady(t *testing.T) {
 
 // ── Admin API ─────────────────────────────────────────────────────────────────
 
-// adminToken fetches an admin access token from the master realm.
+// adminToken fetches an admin access token from the master realm, retrying a
+// few times.
+//
+// waitReady only proves that master-realm *discovery* answers, and the admin
+// endpoints can still be warming up behind it — on a loaded CI runner the first
+// token request can come back 401 or 503. A single attempt turns that into a
+// t.Fatalf that looks like a credential bug.
 func (k *keycloak) adminToken(t *testing.T) string {
 	t.Helper()
+	var last string
+	for attempt := range kcAdminTokenAttempts {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		token, err := k.tryAdminToken()
+		if err == nil {
+			return token
+		}
+		last = err.Error()
+	}
+	t.Fatalf("admin token failed after %d attempts: %s", kcAdminTokenAttempts, last)
+	return ""
+}
+
+// tryAdminToken is one attempt at the admin token grant.
+func (k *keycloak) tryAdminToken() (string, error) {
 	form := url.Values{
 		"grant_type": {"password"},
 		"client_id":  {"admin-cli"},
@@ -225,31 +252,31 @@ func (k *keycloak) adminToken(t *testing.T) string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		k.BaseURL+"/realms/master/protocol/openid-connect/token", strings.NewReader(form.Encode()))
 	if err != nil {
-		t.Fatalf("build admin token request: %v", err)
+		return "", fmt.Errorf("build admin token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := k.client.Do(req)
 	if err != nil {
-		t.Fatalf("admin token request: %v", err)
+		return "", fmt.Errorf("admin token request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("read admin token response: %v", err)
+		return "", fmt.Errorf("read admin token response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("admin token: HTTP %d\n%s", resp.StatusCode, body)
+		return "", fmt.Errorf("admin token: HTTP %d\n%s", resp.StatusCode, body)
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("decode admin token: %v\n%s", err, body)
+		return "", fmt.Errorf("decode admin token: %w\n%s", err, body)
 	}
 	if out.AccessToken == "" {
-		t.Fatalf("admin token response carried no access_token:\n%s", body)
+		return "", fmt.Errorf("admin token response carried no access_token:\n%s", body)
 	}
-	return out.AccessToken
+	return out.AccessToken, nil
 }
 
 // admin performs an authenticated admin-API call and asserts the status is one
@@ -283,7 +310,7 @@ func (k *keycloak) admin(t *testing.T, method, path string, payload any, wantSta
 	if err != nil {
 		t.Fatalf("admin %s %s: %v", method, path, err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read admin response: %v", err)
@@ -542,32 +569,6 @@ func startOIDCServer(t *testing.T, httpAddr string, oidcCfg config.OIDCConfig) *
 // hanging until the test timeout.
 const browserMaxHops = 20
 
-// laxJar is a cookie jar that stores every cookie as non-Secure.
-//
-// This is not a shortcut around a security property — it restores one. Keycloak
-// marks AUTH_SESSION_ID and KEYCLOAK_IDENTITY SameSite=None, and SameSite=None
-// obliges it to also set Secure, which it does unconditionally — there is no
-// realm setting that turns it off (sslRequired=none does not). This fixture
-// speaks plain HTTP, so a spec-compliant jar silently drops those cookies and
-// every login fails at the credential POST with a bare HTTP 400.
-//
-// A real browser reaching a real Keycloak over HTTPS returns those cookies.
-// Relaxing the flag here makes this client behave as that browser does; without
-// it the provider's session would be invisible, and TestOIDC_PromptLoginForcesReauth
-// in particular would "pass" vacuously — never having had an SSO session to
-// suppress in the first place.
-type laxJar struct{ *cookiejar.Jar }
-
-func (j laxJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
-	relaxed := make([]*http.Cookie, 0, len(cookies))
-	for _, c := range cookies {
-		clone := *c
-		clone.Secure = false
-		relaxed = append(relaxed, &clone)
-	}
-	j.Jar.SetCookies(u, relaxed)
-}
-
 // browser is a headless stand-in for the user agent the auth-code flow needs.
 // It holds a cookie jar (both sqi's and the provider's cookies matter) and
 // follows redirects by hand so a test can inspect, or interrupt, the chain.
@@ -583,8 +584,18 @@ func newBrowser(t *testing.T) *browser {
 	if err != nil {
 		t.Fatalf("new cookie jar: %v", err)
 	}
+	// A stock cookiejar is enough even though this fixture speaks plain HTTP and
+	// Keycloak marks AUTH_SESSION_ID / KEYCLOAK_IDENTITY / KEYCLOAK_SESSION /
+	// KC_RESTART Secure unconditionally (they are SameSite=None, which obliges
+	// it; sslRequired=none does not turn it off). Go's jar treats a loopback
+	// host as a secure origin and sends Secure cookies to it anyway — see
+	// entry.secureMatch in $GOROOT/src/net/http/cookiejar/jar.go — and the
+	// container is published on 127.0.0.1. If SQI_TEST_OIDC_ISSUER ever pointed
+	// at a NON-loopback provider over plain HTTP, that exemption would not
+	// apply, the provider's session would be invisible to this client, and the
+	// control step in TestOIDC_PromptLoginForcesReauth is what would catch it.
 	return &browser{t: t, c: &http.Client{
-		Jar: laxJar{jar},
+		Jar: jar,
 		// Redirects are followed manually below, so every hop is recorded and
 		// a test can stop the walk before a particular request is made.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -667,7 +678,7 @@ func (b *browser) request(method, raw string, form url.Values) (int, string, str
 	if err != nil {
 		b.t.Fatalf("%s %s: %v (chain: %v)", method, raw, err, b.chain)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
 		b.t.Fatalf("read %s %s: %v", method, raw, err)
@@ -695,10 +706,15 @@ func (b *browser) cookie(rawURL, name string) string {
 // These are the coupling to Keycloak's markup that keycloakImage is pinned for.
 var (
 	kcLoginFormRe = regexp.MustCompile(`(?s)<form[^>]*id="kc-form-login"[^>]*?action="([^"]*)"[^>]*>(.*?)</form>`)
-	kcAnyFormRe   = regexp.MustCompile(`(?s)<form[^>]*action="([^"]*)"[^>]*>(.*?)</form>`)
-	kcHiddenRe    = regexp.MustCompile(`(?s)<input[^>]*type="hidden"[^>]*>`)
-	kcNameAttrRe  = regexp.MustCompile(`name="([^"]*)"`)
-	kcValueAttrRe = regexp.MustCompile(`value="([^"]*)"`)
+	// The logout-confirm form itself carries no id — in logout-confirm.ftl it is
+	// a bare <form class="form-actions"> inside <div id="kc-logout-confirm">. So
+	// anchor on the wrapper and take the first form within it, rather than the
+	// first form on the page: anything Keycloak renders above the content area
+	// (a locale selector, say) would otherwise be posted instead.
+	kcLogoutConfirmRe = regexp.MustCompile(`(?s)<div[^>]*id="kc-logout-confirm".*?<form[^>]*action="([^"]*)"[^>]*>(.*?)</form>`)
+	kcHiddenRe        = regexp.MustCompile(`(?s)<input[^>]*type="hidden"[^>]*>`)
+	kcNameAttrRe      = regexp.MustCompile(`name="([^"]*)"`)
+	kcValueAttrRe     = regexp.MustCompile(`value="([^"]*)"`)
 )
 
 // scrapeForm pulls a form's absolute action URL and its hidden inputs out of a
@@ -754,7 +770,7 @@ func (f *oidcFixture) beginLogin(b *browser) page {
 }
 
 // submitCredentials fills in and posts the credential form on p.
-func (f *oidcFixture) submitCredentials(b *browser, p page, username, pass string) page {
+func (*oidcFixture) submitCredentials(b *browser, p page, username, pass string) page {
 	b.t.Helper()
 	action, form := scrapeForm(b.t, p, kcLoginFormRe, "credential form")
 	form.Set("username", username)
@@ -862,7 +878,7 @@ func (f *oidcFixture) logout(b *browser) string {
 	if err != nil {
 		b.t.Fatalf("POST /auth/logout: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		b.t.Fatalf("read logout response: %v", err)
@@ -1187,7 +1203,7 @@ func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 	// page carries a single-use session_code, and the probe above has already
 	// spent the one it came with.
 	fresh := b.visit(http.MethodGet, redirect, nil)
-	action, form := scrapeForm(t, fresh, kcAnyFormRe, "logout confirmation form")
+	action, form := scrapeForm(t, fresh, kcLogoutConfirmRe, "logout confirmation form")
 	done := b.visit(http.MethodPost, action, form)
 	if !strings.HasPrefix(done.URL.String(), "http://"+f.sqiAddr) {
 		t.Errorf("after confirming logout, expected to land on the registered post-logout URI "+
@@ -1204,10 +1220,9 @@ func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 // redirecting back with a code.
 //
 // The control in the middle is what makes it a test rather than a tautology: if
-// this browser's provider session were not live to begin with — the jar dropping
-// Keycloak's Secure cookies is the easy way for that to happen, see laxJar — then
-// every login would show a credential form and the final assertion would pass
-// having proved nothing.
+// this browser's provider session were not live to begin with, every login would
+// show a credential form and the final assertion would pass having proved
+// nothing.
 func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 	f := newOIDCFixture(t, func(c *config.OIDCConfig) { c.ReauthMode = oidc.ReauthAfterLogout })
 	b := newBrowser(t)
@@ -1221,8 +1236,12 @@ func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 	if !f.sqiLoginIsSilent(b) {
 		t.Fatal("a re-login with no logout in between was challenged for credentials. The " +
 			"provider session is not live in this browser, so the assertion below cannot " +
-			"distinguish prompt=login working from it never having been needed. Check laxJar: " +
-			"Keycloak marks its session cookies Secure and this fixture speaks plain HTTP.")
+			"distinguish prompt=login working from it never having been needed. Most likely " +
+			"the browser is not retaining Keycloak's session cookies: it marks them Secure, " +
+			"and the stock cookiejar only sends those over plain HTTP because the host is " +
+			"loopback. Check that the provider is reachable on 127.0.0.1 (a non-loopback " +
+			"SQI_TEST_OIDC_ISSUER over http:// would lose them). Failing that, sqi is sending " +
+			"prompt=login unconditionally instead of only after a logout.")
 	}
 
 	// 3. After an explicit logout, reauth_mode=after_logout must force the
