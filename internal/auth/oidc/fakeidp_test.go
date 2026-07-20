@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 )
@@ -50,10 +51,14 @@ type fakeIDP struct {
 	nonceOverride       string        // wrong "nonce" claim
 	discoveryFails      bool          // discovery endpoint returns 500
 	noEndSessionSupport bool          // discovery omits end_session_endpoint
+	discoveryDelay      time.Duration // stalls discovery, to expose serialization
 
 	// lastTokenForm records the last form posted to /token, so tests can
 	// assert PKCE parameters actually reach the provider.
 	lastTokenForm url.Values
+
+	mu             sync.Mutex
+	discoveryCount int
 }
 
 const testClientID = "sqi-test-client"
@@ -94,7 +99,22 @@ func newFakeIDP(t *testing.T) *fakeIDP {
 // URL is the issuer URL to configure a Provider with.
 func (f *fakeIDP) URL() string { return f.srv.URL }
 
+// discoveryHits is how many times the discovery document has been requested.
+// Concurrency tests use it to prove a herd of first-use callers costs exactly
+// one fetch.
+func (f *fakeIDP) discoveryHits() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.discoveryCount
+}
+
 func (f *fakeIDP) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	f.discoveryCount++
+	f.mu.Unlock()
+	if f.discoveryDelay > 0 {
+		time.Sleep(f.discoveryDelay)
+	}
 	if f.discoveryFails {
 		http.Error(w, "provider unavailable", http.StatusInternalServerError)
 		return

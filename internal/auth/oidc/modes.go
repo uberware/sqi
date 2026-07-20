@@ -1,18 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package oidc will authenticate sqi web UI logins against an OAuth2/OIDC
-// identity provider (Phase 3, C2).
+// Package oidc authenticates sqi web UI logins against an OAuth2/OIDC identity
+// provider (Phase 3, C2).
 //
-// Today this package holds only the mode constants shared between
-// internal/config (which validates an operator's auth.oidc.* configuration
-// against them) and internal/api (which will act on them once the callback
-// route exists). A later task grows it into the provider itself: discovery,
-// the authorization-code exchange, ID-token verification, and claim mapping.
+// It provides the login-time half of the authorization-code flow with PKCE:
 //
-// The constants live here rather than in internal/config so that
-// internal/api can depend on them without importing internal/config —
-// internal/api must not import the config loader, which is also why
-// toLDAPConfig exists in the LDAP integration.
+//   - Provider (provider.go) — lazy, retried discovery; AuthCodeURL to start a
+//     login; Exchange to redeem the code and return a verified Identity with
+//     signature, issuer, audience, expiry, and nonce all checked; EndSessionURL
+//     for RP-initiated logout.
+//   - FlowState (state.go) — the HMAC-signed state cookie carrying the state
+//     value, nonce, and PKCE verifier across the redirect to the provider.
+//   - Config and Identity (config.go) — the package-side configuration shape and
+//     the claim-mapped result of a successful login, including role mapping.
+//   - The mode constants below, describing reauth, logout, and role-source
+//     policy.
+//
+// The package holds no HTTP routes and no persistence: it verifies a login and
+// hands back an Identity, leaving session issuance and account provisioning to
+// internal/api.
+//
+// Config is defined here rather than reused from internal/config so that this
+// package and internal/api can depend on it without importing the config
+// loader — the same reason toLDAPConfig exists in the LDAP integration.
 package oidc
 
 // Reauth modes control when the provider is asked to re-prompt for

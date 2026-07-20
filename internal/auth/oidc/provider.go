@@ -20,6 +20,13 @@ import (
 // wait on an unreachable provider should fail in seconds, not hang the request.
 const discoveryTimeout = 15 * time.Second
 
+// discoveryFailureBackoff is how long a failed discovery attempt is remembered.
+// Within the window, callers are handed the recorded error immediately instead
+// of queueing behind their own full-timeout attempt. It is deliberately short:
+// the point is to collapse a thundering herd into one attempt, not to cache the
+// failure — an unreachable provider must recover without a process restart.
+const discoveryFailureBackoff = 5 * time.Second
+
 // Errors returned by a Provider. Callers must not distinguish them in what
 // they show the user: an ID token that fails any check is a failed login, and
 // saying which check failed helps only an attacker probing the deployment.
@@ -57,12 +64,36 @@ type Provider interface {
 // Once would cache the first failure forever, so a provider that was
 // unreachable during the boot-time first login would require a server restart
 // to recover. Configuration faults abort boot; network faults must not.
+//
+// The fetch itself happens OUTSIDE the mutex, with one attempt elected and the
+// rest of a concurrent batch waiting on its result. Holding the lock across the
+// network call made N simultaneous logins strictly serial — against a dead
+// provider the Nth waited N×discoveryTimeout, each pinning an HTTP handler
+// goroutine.
 type provider struct {
 	cfg Config
 
 	mu       sync.Mutex
 	discover *coreoidc.Provider
 	metadata providerMetadata
+	// inflight is the discovery attempt currently in progress, if any.
+	inflight *discoveryCall
+	// failedAt/failErr remember the most recent failure for
+	// failureBackoff, so a herd arriving behind a dead provider costs one
+	// attempt rather than one per caller.
+	failedAt time.Time
+	failErr  error
+	// failureBackoff is discoveryFailureBackoff except in tests, which
+	// zero it to assert that a failure is retried immediately.
+	failureBackoff time.Duration
+}
+
+// discoveryCall is one in-progress discovery attempt. Waiters block on done and
+// then read d/err, which the electee writes before closing it.
+type discoveryCall struct {
+	done chan struct{}
+	d    *coreoidc.Provider
+	err  error
 }
 
 // providerMetadata holds the discovery-document fields go-oidc does not expose
@@ -74,25 +105,86 @@ type providerMetadata struct {
 // New builds a Provider. It performs no network I/O — the identity provider is
 // not contacted until the first login.
 func New(cfg Config) Provider {
-	return &provider{cfg: cfg}
+	return &provider{cfg: cfg, failureBackoff: discoveryFailureBackoff}
 }
 
 // resolve returns the discovered provider, fetching it on first use and after
-// any previous failure.
+// any previous failure. Concurrent callers share a single attempt.
 func (p *provider) resolve(ctx context.Context) (*coreoidc.Provider, error) {
+	call, wait := p.claimDiscovery()
+	if wait != nil {
+		return wait.d, wait.err
+	}
+	if call == nil {
+		// A batch is already in flight; join it rather than starting another.
+		return p.joinDiscovery(ctx)
+	}
+
+	d, md, err := p.fetch(ctx)
+
+	p.mu.Lock()
+	p.inflight = nil
+	if err != nil {
+		p.failedAt = time.Now()
+		p.failErr = err
+		call.err = err
+	} else {
+		p.discover = d
+		p.metadata = md
+		p.failErr = nil
+		call.d = d
+	}
+	p.mu.Unlock()
+	close(call.done)
+	return d, err
+}
+
+// claimDiscovery decides this caller's role under the lock. It returns a
+// non-nil call when this caller must perform the fetch, a non-nil wait when the
+// answer is already known, and (nil, nil) when a fetch is in flight to join.
+func (p *provider) claimDiscovery() (call, settled *discoveryCall) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.discover != nil {
-		return p.discover, nil
+		return nil, &discoveryCall{d: p.discover}
 	}
+	if p.failErr != nil && time.Since(p.failedAt) < p.failureBackoff {
+		return nil, &discoveryCall{err: p.failErr}
+	}
+	if p.inflight != nil {
+		return nil, nil
+	}
+	p.inflight = &discoveryCall{done: make(chan struct{})}
+	return p.inflight, nil
+}
 
+// joinDiscovery waits for the in-flight attempt claimed by another caller.
+func (p *provider) joinDiscovery(ctx context.Context) (*coreoidc.Provider, error) {
+	p.mu.Lock()
+	call := p.inflight
+	p.mu.Unlock()
+	if call == nil {
+		// It finished between claimDiscovery and here; re-read the result.
+		return p.resolve(ctx)
+	}
+	select {
+	case <-call.done:
+		return call.d, call.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", ErrDiscovery, ctx.Err())
+	}
+}
+
+// fetch performs the discovery request. It touches no provider state, so it is
+// safe to call with the mutex released.
+func (p *provider) fetch(ctx context.Context) (*coreoidc.Provider, providerMetadata, error) {
 	d, err := coreoidc.NewProvider(ctx, p.cfg.Issuer)
 	if err != nil {
 		if p.cfg.Logger != nil {
 			p.cfg.Logger.WarnContext(ctx, "oidc discovery failed; will retry on the next login",
 				"issuer", p.cfg.Issuer, "error", err)
 		}
-		return nil, fmt.Errorf("%w: %w", ErrDiscovery, err)
+		return nil, providerMetadata{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
 	}
 
 	var md providerMetadata
@@ -102,10 +194,7 @@ func (p *provider) resolve(ctx context.Context) (*coreoidc.Provider, error) {
 		p.cfg.Logger.WarnContext(ctx, "oidc discovery document has unreadable extra claims",
 			"issuer", p.cfg.Issuer, "error", err)
 	}
-
-	p.discover = d
-	p.metadata = md
-	return d, nil
+	return d, md, nil
 }
 
 // oauth2Config builds the OAuth2 client config against a discovered provider.
@@ -177,8 +266,17 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 		return Identity{}, fmt.Errorf("%w: %w", ErrTokenInvalid, err)
 	}
 
-	// Nonce is not the library's job. Constant-time, like any other secret
-	// comparison: a byte-by-byte compare leaks how much of a guess is right.
+	// Nonce is not the library's job. Reject an empty nonce on either side
+	// BEFORE comparing: subtle.ConstantTimeCompare(nil, nil) returns 1, so two
+	// empty nonces would compare equal and the only hand-written check in this
+	// package would silently pass. The caller's OpenState happens to reject an
+	// empty nonce today, but a security check must not rest on an invariant
+	// enforced in another file.
+	if nonce == "" || idToken.Nonce == "" {
+		return Identity{}, fmt.Errorf("%w: nonce missing", ErrTokenInvalid)
+	}
+	// Constant-time, like any other secret comparison: a byte-by-byte compare
+	// leaks how much of a guess is right.
 	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(nonce)) != 1 {
 		return Identity{}, fmt.Errorf("%w: nonce mismatch", ErrTokenInvalid)
 	}
@@ -188,9 +286,22 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 		return Identity{}, fmt.Errorf("%w: claims unreadable: %w", ErrTokenInvalid, err)
 	}
 
+	// An identity with no subject or no username is not a usable login: the
+	// subject is what accounts are matched on, and a username claim that reads
+	// empty would provision every SSO user with a blank name. Both are almost
+	// always a claim-name misconfiguration, so the error says which claim.
+	if idToken.Subject == "" {
+		return Identity{}, fmt.Errorf("%w: id token has an empty \"sub\" claim", ErrTokenInvalid)
+	}
+	username := stringClaim(claims, p.cfg.UsernameClaim)
+	if username == "" {
+		return Identity{}, fmt.Errorf("%w: username claim %q is absent, null, or not a string",
+			ErrTokenInvalid, p.cfg.UsernameClaim)
+	}
+
 	return Identity{
 		Subject:     idToken.Subject,
-		Username:    stringClaim(claims, p.cfg.UsernameClaim),
+		Username:    username,
 		DisplayName: stringClaim(claims, p.cfg.DisplayNameClaim),
 		Groups:      stringsClaim(claims, p.cfg.GroupsClaim),
 	}, nil

@@ -3,14 +3,28 @@
 package oidc
 
 import (
+	"errors"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/auth/rolemap"
 )
+
+// asProvider reaches through the Provider interface to the implementation, so
+// a test can override the failure backoff. Checked rather than a bare
+// assertion: forcetypeassert rejects the one-value form.
+func asProvider(t *testing.T, p Provider) *provider {
+	t.Helper()
+	impl, ok := p.(*provider)
+	if !ok {
+		t.Fatalf("New returned %T, want *provider", p)
+	}
+	return impl
+}
 
 func testConfig(issuer string) Config {
 	return Config{
@@ -35,25 +49,57 @@ func testConfig(issuer string) Config {
 // exactly one property, so removing any single check in the implementation
 // makes that case — and only that case — fail.
 func TestProvider_Exchange(t *testing.T) {
+	noop := func(*fakeIDP) {}
 	tests := []struct {
-		name    string
-		mutate  func(*fakeIDP)
-		wantErr bool
+		name   string
+		mutate func(*fakeIDP)
+		// mutateCfg breaks the relying party's configuration rather than the
+		// provider's response.
+		mutateCfg func(*Config)
+		// noCallerNonce makes Exchange be called with an empty nonce.
+		noCallerNonce bool
+		wantErr       bool
 	}{
-		{name: "valid", mutate: func(*fakeIDP) {}},
+		{name: "valid", mutate: noop},
 		{name: "wrong issuer", mutate: func(f *fakeIDP) { f.issuerOverride = "https://evil.example.com" }, wantErr: true},
 		{name: "wrong audience", mutate: func(f *fakeIDP) { f.audienceOverride = "someone-else" }, wantErr: true},
 		{name: "expired", mutate: func(f *fakeIDP) { f.expiryOffset = -time.Hour }, wantErr: true},
 		{name: "signature from an unpublished key", mutate: func(f *fakeIDP) { f.signWithRogueKey = true }, wantErr: true},
 		{name: "nonce mismatch", mutate: func(f *fakeIDP) { f.nonceOverride = "not-the-one-we-sent" }, wantErr: true},
+		// The case a constant-time compare alone lets through:
+		// subtle.ConstantTimeCompare(nil, nil) returns 1, so two empty nonces
+		// compare equal and the check silently no-ops.
+		{
+			name: "nonce empty on both sides", mutate: func(f *fakeIDP) { f.nonce = "" },
+			noCallerNonce: true, wantErr: true,
+		},
+		{name: "provider omits the nonce claim", mutate: func(f *fakeIDP) { f.nonce = "" }, wantErr: true},
+		{name: "caller supplies no nonce", mutate: noop, noCallerNonce: true, wantErr: true},
+		// An empty subject is what accounts would be matched on; an empty
+		// username would be provisioned verbatim. Both are rejected here so the
+		// error names the claim instead of surfacing later as a bad account.
+		{name: "empty subject", mutate: func(f *fakeIDP) { f.subject = "" }, wantErr: true},
+		{name: "username claim reads empty", mutate: func(f *fakeIDP) { f.username = "" }, wantErr: true},
+		{
+			name: "username claim misconfigured", mutate: noop,
+			mutateCfg: func(c *Config) { c.UsernameClaim = "no_such_claim" }, wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			idp := newFakeIDP(t)
 			tt.mutate(idp)
-			p := New(testConfig(idp.URL()))
+			cfg := testConfig(idp.URL())
+			if tt.mutateCfg != nil {
+				tt.mutateCfg(&cfg)
+			}
+			p := New(cfg)
 
-			id, err := p.Exchange(t.Context(), "code-1", "verifier-1", "nonce-1")
+			nonce := "nonce-1"
+			if tt.noCallerNonce {
+				nonce = ""
+			}
+			id, err := p.Exchange(t.Context(), "code-1", "verifier-1", nonce)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got identity %+v", id)
@@ -170,6 +216,9 @@ func TestProvider_DiscoveryIsLazyAndRetried(t *testing.T) {
 	idp := newFakeIDP(t)
 	idp.discoveryFails = true
 	p := New(testConfig(idp.URL()))
+	// Zero the herd-collapsing backoff: this test is about recoverability, and
+	// the real window would hand back the recorded error instead of retrying.
+	asProvider(t, p).failureBackoff = 0
 
 	// New must not have dialed: construction happens at boot, and an
 	// unreachable provider must not stop the server from starting.
@@ -179,6 +228,118 @@ func TestProvider_DiscoveryIsLazyAndRetried(t *testing.T) {
 	idp.discoveryFails = false
 	if _, err := p.AuthCodeURL("s", "n", "c", false); err != nil {
 		t.Fatalf("discovery must be retried after a failure, got %v", err)
+	}
+}
+
+// TestProvider_DiscoveryFailureBackoff proves the failure is remembered only
+// briefly: within the window a caller gets the recorded error without a second
+// network attempt, and once the window lapses discovery is retried.
+func TestProvider_DiscoveryFailureBackoff(t *testing.T) {
+	idp := newFakeIDP(t)
+	idp.discoveryFails = true
+	p := New(testConfig(idp.URL()))
+	asProvider(t, p).failureBackoff = time.Hour
+
+	if _, err := p.AuthCodeURL("s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
+		t.Fatalf("first attempt: want ErrDiscovery, got %v", err)
+	}
+	before := idp.discoveryHits()
+
+	idp.discoveryFails = false
+	if _, err := p.AuthCodeURL("s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
+		t.Fatalf("within the backoff window: want the recorded ErrDiscovery, got %v", err)
+	}
+	if got := idp.discoveryHits(); got != before {
+		t.Fatalf("backoff window made %d extra discovery requests, want 0", got-before)
+	}
+
+	// Lapse the window; the very next login must retry for real.
+	asProvider(t, p).failureBackoff = 0
+	if _, err := p.AuthCodeURL("s", "n", "c", false); err != nil {
+		t.Fatalf("after the window: discovery must be retried, got %v", err)
+	}
+}
+
+// TestProvider_ConcurrentDiscovery pins both halves of the resolve contract: a
+// herd of first-use callers fetches discovery exactly once, and they do not
+// serialize behind one another. The earlier implementation held the mutex
+// across the network call, so N callers cost N × the provider's latency — and
+// against a dead provider, N × discoveryTimeout, each pinning a handler
+// goroutine.
+func TestProvider_ConcurrentDiscovery(t *testing.T) {
+	const (
+		goroutines = 50
+		latency    = 200 * time.Millisecond
+	)
+	idp := newFakeIDP(t)
+	idp.discoveryDelay = latency
+	p := New(testConfig(idp.URL()))
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+	for range goroutines {
+		wg.Go(func() {
+			<-start
+			_, err := p.AuthCodeURL("s", "n", "c", false)
+			errs <- err
+		})
+	}
+
+	began := time.Now()
+	close(start)
+	wg.Wait()
+	elapsed := time.Since(began)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("AuthCodeURL: %v", err)
+		}
+	}
+
+	if got := idp.discoveryHits(); got != 1 {
+		t.Fatalf("discovery fetched %d times, want exactly 1", got)
+	}
+	// Serial execution would need goroutines × latency; allow generous slack
+	// for scheduling while still failing on serialization.
+	if limit := 4 * latency; elapsed > limit {
+		t.Fatalf("concurrent first use took %v, want under %v (callers are serializing)", elapsed, limit)
+	}
+}
+
+// TestProvider_ConcurrentDiscoveryFailure is the dead-provider half: a herd
+// must cost one timed-out attempt in total, not one per caller.
+func TestProvider_ConcurrentDiscoveryFailure(t *testing.T) {
+	const (
+		goroutines = 5
+		latency    = 200 * time.Millisecond
+	)
+	idp := newFakeIDP(t)
+	idp.discoveryDelay = latency
+	idp.discoveryFails = true
+	p := New(testConfig(idp.URL()))
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Go(func() {
+			<-start
+			if _, err := p.AuthCodeURL("s", "n", "c", false); !errors.Is(err, ErrDiscovery) {
+				t.Errorf("want ErrDiscovery, got %v", err)
+			}
+		})
+	}
+
+	began := time.Now()
+	close(start)
+	wg.Wait()
+	elapsed := time.Since(began)
+
+	if got := idp.discoveryHits(); got != 1 {
+		t.Fatalf("failing discovery fetched %d times, want exactly 1", got)
+	}
+	if limit := 4 * latency; elapsed > limit {
+		t.Fatalf("concurrent failing logins took %v, want under %v", elapsed, limit)
 	}
 }
 
