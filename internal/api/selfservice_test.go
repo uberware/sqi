@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/ldap"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
@@ -44,7 +45,7 @@ func seedAPIKey(t *testing.T, st store.Store, userID, name string) store.APIKey 
 
 func newTestAuthHandler(t *testing.T, st store.Store) *authHandler {
 	t.Helper()
-	return newAuthHandler(st, slog.New(slog.DiscardHandler), time.Hour, "sqi_session", "false")
+	return newAuthHandler(st, slog.New(slog.DiscardHandler), time.Hour, "sqi_session", "false", nil, ldap.Config{})
 }
 
 // principalFor builds the context principal middleware.Auth would attach for u.
