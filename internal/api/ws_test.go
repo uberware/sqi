@@ -1130,39 +1130,31 @@ func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
 	// Confirm job-bob's event never arrives: a ping/pong round-trip must be
 	// the very next frame, not a second push.
 	wsWrite(t, ctx, conn, internalws.Envelope{Type: internalws.TypePing})
-
-	// Read until the pong, rejecting any push for a job alice does not own.
-	//
-	// The property under test is the one in this test's name: a scoped client
-	// must never receive another owner's event. A push for job-bob here fails
-	// the test loudly and always.
-	//
-	// A *repeat* push for job-alice does not. That is a deliberate loosening:
-	// the hub occasionally emits alice's own event twice, which made the
-	// original "the pong must be the very next frame" assertion flaky in CI
-	// (roughly 1 run in 4) while passing 350+ consecutive local iterations.
-	// Duplicate delivery of a client's own event is a correctness wart, not a
-	// confidentiality bug, and it is not what this test guards — so it is
-	// tolerated here and tracked separately rather than being allowed to mask
-	// the leak assertion behind an unrelated red build.
-	//
-	// The loop is bounded by ctx (5s) via wsRead, so a hub that never pongs
-	// still fails rather than hanging.
-	for {
-		frame := wsRead(t, ctx, conn)
-		if frame.Type == internalws.TypePong {
-			break
+	pong := wsRead(t, ctx, conn)
+	if pong.Type != internalws.TypePong {
+		// Name the job in the unexpected frame. The two ways this can fail are
+		// not equally serious and the frame type alone cannot tell them apart:
+		// a push for job-bob is a cross-owner leak — the security property this
+		// test exists to protect — whereas a second push for job-alice is a
+		// duplicate-delivery bug. The latter is what made this assertion flaky
+		// in CI until the hub stopped replaying events it had already fanned
+		// out live (see TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay).
+		// Say which one happened rather than making the next reader guess.
+		detail := ""
+		if pong.Type == internalws.TypePush && pong.Subject == internalws.SubjectJobs {
+			var unexpected internalws.JobSummaryPush
+			if err := json.Unmarshal(pong.Payload, &unexpected); err == nil {
+				switch unexpected.JobID {
+				case "job-bob":
+					detail = " — CROSS-OWNER LEAK: alice received a push for job-bob"
+				case "job-alice":
+					detail = " — duplicate push for job-alice (not a leak; the hub delivered it twice)"
+				default:
+					detail = fmt.Sprintf(" — unexpected job_id %q", unexpected.JobID)
+				}
+			}
 		}
-		if frame.Type != internalws.TypePush || frame.Subject != internalws.SubjectJobs {
-			t.Fatalf("expected TypePong or a jobs push, got type=%q subject=%q", frame.Type, frame.Subject)
-		}
-		var extra internalws.JobSummaryPush
-		if err := json.Unmarshal(frame.Payload, &extra); err != nil {
-			t.Fatalf("unmarshal unexpected push: %v", err)
-		}
-		if extra.JobID != "job-alice" {
-			t.Fatalf("CROSS-OWNER LEAK: alice received a push for job_id=%q", extra.JobID)
-		}
-		t.Logf("tolerated duplicate push for own job %q (see comment above)", extra.JobID)
+		t.Fatalf("expected TypePong (no cross-owner push queued), got type=%q subject=%q%s",
+			pong.Type, pong.Subject, detail)
 	}
 }

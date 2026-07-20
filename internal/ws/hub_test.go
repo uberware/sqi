@@ -819,3 +819,101 @@ func TestHub_DiagnosticsIsValidSubject(t *testing.T) {
 		t.Fatalf("diagnostics should be a valid subject: %v", err)
 	}
 }
+
+// TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay pins the exactly-once
+// delivery boundary between live fan-out and ring replay.
+//
+// internal/api's handleSubscribe calls Subscribe TWICE by design: once with a
+// no-replay cursor to register the subscription, then — after the ack has been
+// written, so clients always see the ack before any replayed push — again with
+// the client's real since_seq to drain the ring. That split leaves a window in
+// which the client is already in h.subs (so fan-out delivers to it live) while
+// the replay has not yet run. An event published inside that window is both
+// delivered live AND appended to the ring, so the replay sends it a second
+// time.
+//
+// This is not a theoretical race. It reached production behind a default:
+// a client that omits the subscribe payload gets since_seq==0, which replays
+// the entire ring, so any event arriving during subscribe is duplicated. It
+// surfaced as a ~25% flake in the API-level owner-scoping test, where the
+// duplicate arrived where a pong was expected.
+func TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay(t *testing.T) {
+	h := newTestHub()
+	const id = "client-1"
+	ch := h.Register(id, Scope{All: true})
+
+	// Mirror handleSubscribe exactly: register with no replay...
+	const noReplaySeq = ^uint64(0)
+	if err := h.Subscribe(id, SubjectJobs, noReplaySeq); err != nil {
+		t.Fatalf("Subscribe (register): %v", err)
+	}
+
+	// ...an event lands in the window where the ack would be written...
+	h.NotifyJob(JobEvent{JobID: "job-1", Status: "running"})
+
+	// ...then the replay pass runs with the default since_seq of 0.
+	if err := h.Subscribe(id, SubjectJobs, 0); err != nil {
+		t.Fatalf("Subscribe (replay): %v", err)
+	}
+
+	var got []Envelope
+	for {
+		select {
+		case env := <-ch:
+			got = append(got, env)
+			continue
+		default:
+		}
+		break
+	}
+
+	if len(got) != 1 {
+		seqs := make([]uint64, len(got))
+		for i, e := range got {
+			seqs[i] = e.Seq
+		}
+		t.Fatalf("one NotifyJob delivered %d envelopes (seqs %v), want exactly 1: "+
+			"an event published during subscribe was sent live and then replayed", len(got), seqs)
+	}
+}
+
+// TestHub_Subscribe_ReplaysEventsPredatingSubscription is the other half of the
+// boundary: suppressing the duplicate above must not suppress genuine replay of
+// events that were already buffered when the client subscribed.
+//
+// A first client has to be subscribed for the event to reach the ring at all —
+// NotifyJob short-circuits when the subject has no subscribers and owner
+// scoping is off — so the late joiner is what exercises replay.
+func TestHub_Subscribe_ReplaysEventsPredatingSubscription(t *testing.T) {
+	h := newTestHub()
+	const noReplaySeq = ^uint64(0)
+
+	// An early subscriber, so the event is buffered.
+	h.Register("early", Scope{All: true})
+	if err := h.Subscribe("early", SubjectJobs, noReplaySeq); err != nil {
+		t.Fatalf("Subscribe (early): %v", err)
+	}
+	h.NotifyJob(JobEvent{JobID: "job-old", Status: "running"})
+
+	// A late joiner must receive it via replay.
+	late := h.Register("late", Scope{All: true})
+	if err := h.Subscribe("late", SubjectJobs, noReplaySeq); err != nil {
+		t.Fatalf("Subscribe (late, register): %v", err)
+	}
+	if err := h.Subscribe("late", SubjectJobs, 0); err != nil {
+		t.Fatalf("Subscribe (late, replay): %v", err)
+	}
+
+	select {
+	case env := <-late:
+		var push JobSummaryPush
+		if err := json.Unmarshal(env.Payload, &push); err != nil {
+			t.Fatalf("unmarshal replayed push: %v", err)
+		}
+		if push.JobID != "job-old" {
+			t.Fatalf("replayed job_id = %q, want job-old", push.JobID)
+		}
+	default:
+		t.Fatal("event buffered before the late client subscribed was not replayed")
+	}
+}

@@ -135,6 +135,19 @@ type hubClient struct {
 	id     string
 	scope  Scope
 	sendCh chan Envelope
+
+	// replayCeil is the highest ring seq per subject that this client may
+	// receive via replay, frozen when it first subscribes to that subject.
+	//
+	// It exists because registration and replay are two separate steps with a
+	// gap between them (see Subscribe). Once registered, the client receives
+	// live fan-out; anything published from that moment on must therefore NOT
+	// also be replayed, or it arrives twice. The ceiling is the ring head at
+	// registration: at-or-below it predates the subscription and is legitimate
+	// catch-up, above it was already delivered live.
+	//
+	// Guarded by Hub.mu.
+	replayCeil map[string]uint64
 }
 
 // ── subjectRing ───────────────────────────────────────────────────────────────
@@ -169,6 +182,17 @@ func (r *subjectRing) add(env Envelope) uint64 {
 		r.count++
 	}
 	return seq
+}
+
+// headSeq returns the highest seq assigned so far, or 0 when the ring is
+// empty. Used to freeze a subscriber's replay ceiling at subscribe time.
+func (r *subjectRing) headSeq() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.nextSeq == 0 {
+		return 0
+	}
+	return r.nextSeq - 1
 }
 
 // since returns all buffered envelopes with Seq strictly greater than
@@ -269,9 +293,10 @@ func (h *Hub) Register(clientID string, scope Scope) chan Envelope {
 		return existing.sendCh
 	}
 	c := &hubClient{
-		id:     clientID,
-		scope:  scope,
-		sendCh: make(chan Envelope, clientSendBuf),
+		id:         clientID,
+		scope:      scope,
+		sendCh:     make(chan Envelope, clientSendBuf),
+		replayCeil: make(map[string]uint64),
 	}
 	h.clients[clientID] = c
 	return c.sendCh
@@ -320,8 +345,17 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 	if h.subs[subject] == nil {
 		h.subs[subject] = make(map[string]*hubClient)
 	}
-	h.subs[subject][clientID] = c
 	ring := h.ensureRingLocked(subject)
+	if _, already := h.subs[subject][clientID]; !already {
+		// First subscription to this subject. Freeze the replay ceiling at the
+		// ring's current head, in the same critical section that makes the
+		// client visible to fanout — otherwise an event published between the
+		// two would slip in above the ceiling and be both delivered live and
+		// replayed.
+		c.replayCeil[subject] = ring.headSeq()
+	}
+	h.subs[subject][clientID] = c
+	replayCeil := c.replayCeil[subject]
 	h.mu.Unlock()
 
 	// Replay outside the hub lock; ring has its own mutex. The scope check
@@ -329,6 +363,11 @@ func (h *Hub) Subscribe(clientID, subject string, sinceSeq uint64) error {
 	// without it every buffered event would bypass filtering.
 	// sinceSeq==0 replays all buffered messages; sinceSeq>0 replays from that cursor.
 	for _, env := range ring.since(sinceSeq) {
+		if env.Seq > replayCeil {
+			// Published after this client subscribed, so fanout has already
+			// delivered it live. Replaying it here is the duplicate.
+			continue
+		}
 		if !c.scope.allows(env) {
 			continue
 		}
@@ -368,6 +407,13 @@ func (h *Hub) Unsubscribe(clientID, subject string) {
 	delete(members, clientID)
 	if len(members) == 0 {
 		delete(h.subs, subject)
+	}
+	// Drop the frozen ceiling so a later re-subscribe takes a fresh one at the
+	// then-current ring head. Keeping the stale value would wrongly suppress
+	// replay of everything that arrived while the client was unsubscribed —
+	// which is exactly the catch-up replay exists for.
+	if c, ok := h.clients[clientID]; ok {
+		delete(c.replayCeil, subject)
 	}
 }
 
