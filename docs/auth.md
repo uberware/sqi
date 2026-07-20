@@ -614,6 +614,44 @@ about the expansion:
   holds `admin` *only* through a nested group can be silently granted a lower
   role for that session. The warning in the server log is the only signal. If
   your admin group is nested, treat that `WARN` as an alert.
+- **The matching rule is Active-Directory-only.** Verified against OpenLDAP
+  2.6: it does not reject the unknown rule, it rewrites the filter to
+  `(?=undefined)` and answers **success with zero entries**. So on a non-AD
+  directory `nested_groups: true` never expands anything — it just takes the
+  fallback path above on every login, logging a `WARN` each time. Leave it
+  `false` unless you are actually on AD.
+
+### Your directory must populate `memberOf`
+
+**Both** bind modes read group membership from the `memberOf` attribute on the
+user's own entry. Active Directory populates it natively. **OpenLDAP does
+not** — it requires the `memberof` overlay to be configured on the database:
+
+```
+overlay memberof
+memberof-group-oc groupOfNames
+memberof-member-ad member
+memberof-memberof-ad memberOf
+```
+
+Without it, every search and bind succeeds, the user authenticates, and sqi
+sees **no groups at all** — so every account silently lands on `default_role`.
+There is no warning for this, because "this user is in no groups" is a
+legitimate state indistinguishable from "the directory never populates
+`memberOf`". If every LDAP user is arriving with your `default_role`, check
+the overlay before anything else.
+
+Verify from the command line before configuring sqi — the attribute must come
+back for a user you expect to be in a group:
+
+```sh
+ldapsearch -x -H ldap://ldap.example.com -D "<bind_dn>" -W \
+  -b "dc=example,dc=com" "(uid=alice)" memberOf
+```
+
+The account that reads it must also be allowed to: in search mode that is the
+service account (or the anonymous connection, if `bind_dn` is unset), and in
+template mode it is the *user themselves*, reading their own entry.
 
 ### Group → role mapping
 
@@ -796,14 +834,29 @@ LDAP, plan it as a re-provisioning exercise, not a config flag.
 
 ### Coverage limit worth knowing
 
-Every automated test of this feature drives a fake LDAP connection. That
+Every *automated* test of this feature drives a fake LDAP connection. That
 covers sqi's own logic thoroughly — routing, provisioning, role mapping,
 collisions, the equalized 401 — but it cannot catch a mistake in the go-ldap
 *wire* usage: a wrong search scope, a misnamed attribute, a filter a real
 server rejects. Such a bug passes CI and fails against a live directory. The
-env-gated integration test against a containerized OpenLDAP is a known
-follow-up. Until it lands, **test a new deployment against your actual
-directory before relying on it**, in whichever bind mode you plan to run.
+env-gated integration test that would close this permanently is a known
+follow-up.
+
+In the meantime the feature **has** been driven by hand against a real
+OpenLDAP 2.6 server, and the wire traffic inspected, in all three
+configurations: search-then-bind with a service account, template bind, and
+anonymous search-then-bind. Group→role mapping, first-match precedence,
+`default_role`, JIT provisioning, role re-sync under both `role_source`
+modes, the 409 guards, filter and DN injection, and empty-password binds all
+behaved as documented. That is not a substitute for the automated test — it
+is a snapshot, not a regression guard — and it is why the nested-group note
+above can state what OpenLDAP actually does rather than what the RFC implies.
+
+**Still test a new deployment against your own directory before relying on
+it**, in the bind mode you plan to run. Directories differ in exactly the
+places this integration is sensitive to: whether `memberOf` is populated, what
+the service account may read, and how an unsupported matching rule is
+answered.
 
 ## Coming next
 
