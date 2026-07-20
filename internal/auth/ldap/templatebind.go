@@ -58,7 +58,7 @@ func (v *templateBindVerifier) Verify(ctx context.Context, username, pw string) 
 			id.Username = name
 		}
 		id.DisplayName = firstAttr(e, v.cfg.DisplayNameAttr)
-		id.Groups = attrValuesFold(e, "memberOf")
+		id.Groups = e.GetEqualFoldAttributeValues("memberOf")
 	}
 	return id, nil
 }

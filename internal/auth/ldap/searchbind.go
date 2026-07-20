@@ -101,7 +101,7 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 // ctx is carried solely so the warning below can be correlated with the login
 // it belongs to; the search itself is bounded by the connection's timeout.
 func (v *searchBindVerifier) resolveGroups(ctx context.Context, c conn, e *ldapv3.Entry) []string {
-	groups := attrValuesFold(e, "memberOf")
+	groups := e.GetEqualFoldAttributeValues("memberOf")
 	if !v.cfg.NestedGroups {
 		return groups
 	}

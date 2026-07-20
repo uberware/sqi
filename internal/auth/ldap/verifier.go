@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"time"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
@@ -128,30 +127,23 @@ func searchTimeLimit(d time.Duration) int {
 }
 
 // firstAttr returns the first value of the named attribute, or "".
+//
+// Matching is case-insensitive for the same reason the memberOf lookups at
+// the group-resolution sites are (see e.GetEqualFoldAttributeValues there):
+// RFC 4512 §2.5 makes attribute descriptions case-insensitive, and a
+// directory is free to echo back a different case than what was requested.
+// UsernameAttr and DisplayNameAttr are lower stakes than memberOf —
+// UsernameAttr falls back to the typed username, and DisplayNameAttr is only
+// consumed at first provisioning — but there is no reason for this lookup to
+// use different case semantics than the group lookups, so it shares the same
+// go-ldap library method rather than a bespoke case-sensitive walk.
 func firstAttr(e *ldapv3.Entry, name string) string {
 	if name == "" {
 		return ""
 	}
-	vals := e.GetAttributeValues(name)
+	vals := e.GetEqualFoldAttributeValues(name)
 	if len(vals) == 0 {
 		return ""
 	}
 	return vals[0]
-}
-
-// attrValuesFold returns the values of the named attribute, matching the
-// attribute name case-insensitively.
-//
-// RFC 4512 §2.5 makes attribute descriptions case-insensitive, and a directory
-// is free to echo back "memberof" or "MEMBEROF" whatever case was requested.
-// Entry.GetAttributeValues compares byte-for-byte, so against such a server a
-// case-sensitive lookup yields zero groups — which is not an error anywhere:
-// it silently drops every role mapping and demotes the user to DefaultRole.
-func attrValuesFold(e *ldapv3.Entry, name string) []string {
-	for _, a := range e.Attributes {
-		if strings.EqualFold(a.Name, name) {
-			return a.Values
-		}
-	}
-	return nil
 }

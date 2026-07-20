@@ -153,6 +153,31 @@ func TestTemplateBind_MemberOfIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// firstAttr shares the same case-insensitive lookup as the memberOf
+// resolution above it, rather than the byte-for-byte match it used to be — so
+// a directory that echoes UsernameAttr or DisplayNameAttr back in a different
+// case still populates Identity.Username and Identity.DisplayName.
+func TestTemplateBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{
+		entry("uid=bob,ou=people,dc=example,dc=com", map[string][]string{
+			"UID":         {"bob"},
+			"displayname": {"Bob Brown"},
+		}),
+	}}}
+	v := newTemplateBind(templateCfg(), dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "bob", "bob-secret")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.Username != "bob" {
+		t.Errorf("Username: got %q, want the differently-cased UID value", id.Username)
+	}
+	if id.DisplayName != "Bob Brown" {
+		t.Errorf("DisplayName: got %q, want the differently-cased displayname value", id.DisplayName)
+	}
+}
+
 // The user's own entry is missing or unreadable: authentication succeeded but
 // we cannot resolve groups, so there is no basis for a role.
 func TestTemplateBind_NoEntryAfterBind(t *testing.T) {

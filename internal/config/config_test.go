@@ -1557,6 +1557,16 @@ func TestValidate_AuthLDAP(t *testing.T) {
 			l.UserDNTemplate = "uid=%s,ou=people,dc=example,dc=com"
 			c.Auth.LDAP = l
 		}, false},
+		{"valid anonymous search (no bind_dn, no bind_password)", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN, l.BindPassword = "", ""
+			c.Auth.LDAP = l
+		}, false},
+		{"bind_password set without bind_dn is rejected", func(c *config.Config) {
+			l := validSearchLDAP()
+			l.BindDN = ""
+			c.Auth.LDAP = l
+		}, true},
 		{"ldap enabled without auth enabled", func(c *config.Config) {
 			c.Auth.Enabled = false
 			c.Auth.LDAP = validSearchLDAP()

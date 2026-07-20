@@ -363,6 +363,30 @@ func TestSearchBind_MemberOfIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// firstAttr shares the same case-insensitive lookup as the memberOf
+// resolution above it, rather than the byte-for-byte match it used to be — so
+// a directory that echoes UsernameAttr or DisplayNameAttr back in a different
+// case still populates Identity.Username and Identity.DisplayName.
+func TestSearchBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
+	e := entry("CN=Alice,OU=People,DC=example,DC=com", map[string][]string{
+		"samaccountname": {"alice"},
+		"DISPLAYNAME":    {"Alice Anderson"},
+	})
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{e}}}
+	v := newSearchBind(searchCfg(), dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "alice", "alice-secret")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.Username != "alice" {
+		t.Errorf("Username: got %q, want the differently-cased samaccountname value", id.Username)
+	}
+	if id.DisplayName != "Alice Anderson" {
+		t.Errorf("DisplayName: got %q, want the differently-cased DISPLAYNAME value", id.DisplayName)
+	}
+}
+
 // The nested fallback is silent by construction — it returns a valid login. A
 // persistently failing expansion would demote every admin who holds admin only
 // through a nested group, with no signal anywhere, so it must be logged.

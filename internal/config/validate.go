@@ -419,6 +419,17 @@ func validateLDAPBindMode(cfg LDAPConfig) []ValidationError {
 				Message: "must be set for search-then-bind; set SQI_AUTH_LDAP_BASE_DN or auth.ldap.base_dn",
 			})
 		}
+		// An empty bind_dn selects anonymous search, a legitimate deployment
+		// for a world-readable directory. But a bind_password with no bind_dn
+		// to go with it is not that — it is silently discarded and the
+		// service searches anonymously, with no error and no log. Whatever
+		// password the operator meant to configure never reaches the wire.
+		if cfg.BindDN == "" && cfg.BindPassword != "" {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.bind_dn",
+				Message: "must be set when auth.ldap.bind_password is set; set SQI_AUTH_LDAP_BIND_DN or auth.ldap.bind_dn, or clear SQI_AUTH_LDAP_BIND_PASSWORD/auth.ldap.bind_password for anonymous search",
+			})
+		}
 		if cfg.UserFilter == "" || !strings.Contains(cfg.UserFilter, "%s") {
 			errs = append(errs, ValidationError{
 				Field:   "auth.ldap.user_filter",
