@@ -107,13 +107,35 @@ func (v *searchBindVerifier) resolveGroups(ctx context.Context, c conn, e *ldapv
 	}
 	nested, err := v.nestedGroups(c, e.DN)
 	if err != nil {
-		if v.cfg.Logger != nil {
-			v.cfg.Logger.WarnContext(ctx, "ldap: nested group expansion failed, falling back to flat memberOf",
-				"user_dn", e.DN, "error", err)
-		}
+		v.warnNestedFallback(ctx, e.DN, "error", err)
+		return groups
+	}
+	// A successful search that matched nothing is NOT evidence that the user
+	// has no groups — it is the signature of a misscoped search base. The
+	// expansion reuses BaseDN, which is the *user* search base; an operator
+	// who sets base_dn to "OU=Users,..." while groups live under "OU=Groups"
+	// gets a valid, successful, empty result on every login. Replacing a
+	// non-empty flat memberOf with that would map every user, admins
+	// included, onto default_role with no error anywhere. Keep what we hold
+	// and warn, exactly as the error path does.
+	if len(nested) == 0 && len(groups) > 0 {
+		v.warnNestedFallback(ctx, e.DN, "reason",
+			"nested search succeeded but matched no groups; check that auth.ldap.base_dn covers the group tree")
 		return groups
 	}
 	return nested
+}
+
+// warnNestedFallback logs the one WARN that makes a degraded expansion
+// visible. Both fallback paths share it deliberately: an operator watching
+// for "nested group expansion failed" must see the misscoped-base_dn case
+// too, which is otherwise indistinguishable from a user with no groups.
+func (v *searchBindVerifier) warnNestedFallback(ctx context.Context, userDN, key string, val any) {
+	if v.cfg.Logger == nil {
+		return
+	}
+	v.cfg.Logger.WarnContext(ctx, "ldap: nested group expansion failed, falling back to flat memberOf",
+		"user_dn", userDN, key, val)
 }
 
 // findUser searches BaseDN for the single entry matching username.

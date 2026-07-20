@@ -119,6 +119,88 @@ func TestSearchBind_NestedGroupsFallsBackOnSearchError(t *testing.T) {
 	}
 }
 
+// The failure mode with no error to key on: the nested search succeeds and
+// returns zero entries. That is what a base_dn scoped to the user subtree
+// produces when groups live elsewhere — a completely normal, successful
+// search. Before this, the empty slice replaced the flat memberOf values and
+// every user silently landed on default_role.
+func TestSearchBind_NestedGroupsFallsBackOnEmptyResult(t *testing.T) {
+	cfg := searchCfg()
+	cfg.NestedGroups = true
+	fc := &fakeConn{
+		searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{aliceEntry()}},
+		// Search #2 is the nested expansion: successful, and empty.
+		searchResultAt: map[int]*ldapv3.SearchResult{2: {}},
+	}
+	v := newSearchBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "alice", "alice-secret")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(fc.searchFilters) != 2 {
+		t.Fatalf("expected the nested search to have been attempted, got %v", fc.searchFilters)
+	}
+	want := []string{"CN=Admins,DC=example,DC=com", "CN=Artists,DC=example,DC=com"}
+	if len(id.Groups) != len(want) || id.Groups[0] != want[0] || id.Groups[1] != want[1] {
+		t.Errorf("Groups: got %v, want the flat memberOf values %v — an empty nested result must not discard them", id.Groups, want)
+	}
+}
+
+// The empty-result fallback must be as visible as the error one, or the only
+// documented signal never fires for the likelier misconfiguration.
+func TestSearchBind_NestedEmptyResultLogsWarning(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := searchCfg()
+	cfg.NestedGroups = true
+	cfg.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	fc := &fakeConn{
+		searchResult:   &ldapv3.SearchResult{Entries: []*ldapv3.Entry{aliceEntry()}},
+		searchResultAt: map[int]*ldapv3.SearchResult{2: {}},
+	}
+	v := newSearchBind(cfg, dialTo(fc))
+	if _, err := v.Verify(context.Background(), "alice", "alice-secret"); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "level=WARN") {
+		t.Errorf("expected a WARN record, got %q", got)
+	}
+	if !strings.Contains(got, "nested group expansion failed") {
+		t.Errorf("expected the shared fallback message, got %q", got)
+	}
+	// The operator needs to be pointed at the actual cause, which is a config
+	// mistake rather than a directory fault.
+	if !strings.Contains(got, "base_dn") {
+		t.Errorf("expected the warning to name base_dn as the thing to check, got %q", got)
+	}
+}
+
+// A user genuinely in no groups must still end up with no groups: the
+// fallback is guarded on the flat list being non-empty precisely so it cannot
+// resurrect values that were never there.
+func TestSearchBind_NestedEmptyResultWithEmptyFlatStaysEmpty(t *testing.T) {
+	cfg := searchCfg()
+	cfg.NestedGroups = true
+	groupless := entry("uid=alice,dc=example,dc=com", map[string][]string{
+		"sAMAccountName": {"alice"},
+		"displayName":    {"Alice Anderson"},
+	})
+	fc := &fakeConn{
+		searchResult:   &ldapv3.SearchResult{Entries: []*ldapv3.Entry{groupless}},
+		searchResultAt: map[int]*ldapv3.SearchResult{2: {}},
+	}
+	v := newSearchBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "alice", "alice-secret")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(id.Groups) != 0 {
+		t.Errorf("Groups: got %v, want empty", id.Groups)
+	}
+}
+
 // The user search failing is a directory fault, not a credential problem.
 func TestSearchBind_UserSearchErrorIsUnavailable(t *testing.T) {
 	fc := &fakeConn{searchErr: errors.New("server is busy")}

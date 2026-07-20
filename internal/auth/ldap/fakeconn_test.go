@@ -36,8 +36,15 @@ type fakeConn struct {
 	// happened but that it happened on the right side of a bind — which is
 	// what "the nested lookup runs on the service connection" means.
 	ops []string
-	// searchResult is returned by every Search call.
+	// searchResult is returned by every Search call not overridden by
+	// searchResultAt.
 	searchResult *ldapv3.SearchResult
+	// searchResultAt overrides searchResult for specific 1-based Search call
+	// indexes. It exists so a test can let the user search hit while the
+	// nested-group expansion returns a successful but EMPTY result — the
+	// misscoped-base_dn case, which no error field can express because there
+	// is no error.
+	searchResultAt map[int]*ldapv3.SearchResult
 	// searchErr, when set, is returned by Search calls from searchErrFrom on.
 	searchErr error
 	// searchErrFrom is the 1-based index of the first Search call searchErr
@@ -64,6 +71,9 @@ func (f *fakeConn) Search(req *ldapv3.SearchRequest) (*ldapv3.SearchResult, erro
 	f.ops = append(f.ops, "search:"+req.Filter)
 	if f.searchErr != nil && len(f.searchFilters) >= f.searchErrFrom {
 		return nil, f.searchErr
+	}
+	if r, ok := f.searchResultAt[len(f.searchFilters)]; ok {
+		return r, nil
 	}
 	if f.searchResult == nil {
 		return &ldapv3.SearchResult{}, nil
