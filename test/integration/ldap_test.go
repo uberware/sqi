@@ -140,7 +140,10 @@ func startDirectory(t *testing.T) *directory {
 		runArgs,
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:389", port),
-		"-e", "LDAP_ORGANISATION=Example",
+		// The org env var below is the image's own, spelled the vendor's way.
+		// Respelling it US-style would just stop configuring anything, so the
+		// misspell finding is suppressed rather than "fixed".
+		"-e", "LDAP_ORGANISATION=Example", //nolint:misspell // vendor env var name
 		"-e", "LDAP_DOMAIN=example.com",
 		"-e", "LDAP_ADMIN_PASSWORD="+ldapAdminPW,
 		ldapImage,
@@ -285,7 +288,7 @@ func (d *directory) configureMemberOf(t *testing.T) {
 	}
 
 	var dn string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "dn: "); ok {
 			dn = v
 			break
@@ -343,7 +346,7 @@ olcMemberOfMemberOfAD: memberOf
 //
 // alice → Farm Admins (maps to admin)
 // bob   → Artists     (maps to user)
-// carol → no group    (falls through to default_role)
+// carol → no group    (falls through to default_role).
 const seedLDIF = `
 dn: ou=people,dc=example,dc=com
 objectClass: organizationalUnit
@@ -579,7 +582,7 @@ func startLDAPServer(t *testing.T, ldapCfg config.LDAPConfig) *testServer {
 
 // loginResult is the subset of the login response these tests assert on.
 type loginResult struct {
-	Status      int
+	Status      int    `json:"-"` // filled from the HTTP status, never from the body
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	Role        string `json:"role"`
@@ -609,7 +612,7 @@ func login(t *testing.T, ts *testServer, username, password string) loginResult 
 	if err != nil {
 		t.Fatalf("POST /auth/login: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 
 	out := loginResult{Status: resp.StatusCode}
 	if resp.StatusCode == http.StatusOK {

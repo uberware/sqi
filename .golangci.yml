@@ -11,6 +11,14 @@ run:
   tests: true
   relative-path-mode: gomod
   modules-download-mode: readonly
+  # Without this the files under test/integration/ are behind the 'integration'
+  # build tag, so golangci-lint never compiles them and `make ci` reports clean
+  # on code it has not read. Setting it here rather than adding a second lint
+  # target keeps `make lint` the single entry point the Makefile and CI already
+  # call; the tag only widens what is compiled, it does not change any result
+  # for the untagged packages.
+  build-tags:
+    - integration
 
 # ── Linters ───────────────────────────────────────────────────────────────────
 linters:
