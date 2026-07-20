@@ -346,6 +346,22 @@ func TestSelfService_ChangePasswordRejectedForLDAPUser(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", rr.Code, rr.Body)
 	}
+	after, err := st.GetUser(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PasswordHash != "!ldap" {
+		t.Errorf("PasswordHash changed despite 409: %q", after.PasswordHash)
+	}
+	// No session side effects: the guard fires before SetUserPasswordAndEvict-
+	// Sessions or issueSession run, so no cookie should be set. There is no
+	// pre-existing session to check for eviction here (this test never logs
+	// in — the principal is constructed directly via principalFor), so a
+	// live-session check would be a no-op; the cookie check is the cheap
+	// signal that issueSession was never reached.
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("got %d cookies, want none set on a rejected password change", len(cookies))
+	}
 }
 
 // PATCH /auth/me stays available: the display name is seeded once from the

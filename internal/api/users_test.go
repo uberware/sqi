@@ -514,6 +514,45 @@ func TestUsers_DisableAllowedForLDAPUserInDirectoryMode(t *testing.T) {
 	}
 }
 
+// A PATCH that round-trips the account's existing role (unchanged) alongside
+// a field that IS changing must not be rejected: req.Role != orig.Role is
+// what distinguishes "the client echoed back a field it didn't touch" from
+// "the client is actually trying to change the role". If that inequality
+// check were dropped (or flipped), this would 409 instead of applying
+// display_name.
+func TestUsers_NoOpRolePatchAllowedForLDAPUserInDirectoryMode(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	target, err := st.CreateUser(ctx, store.User{
+		ID: uuid.NewString(), Username: "alice", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newLDAPServer(t, st, nil, ldap.Config{RoleSource: ldap.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+		map[string]any{"role": "user", "display_name": "Alice A."}, cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw := mustReadAll(t, resp)
+		t.Fatalf("got %d, want 200: %s", resp.StatusCode, raw)
+	}
+	after, err := st.GetUser(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Role != "user" {
+		t.Errorf("role: got %q, want unchanged \"user\"", after.Role)
+	}
+	if after.DisplayName != "Alice A." {
+		t.Errorf("display_name: got %q, want \"Alice A.\" applied", after.DisplayName)
+	}
+}
+
 func TestUsers_RoleEditAllowedForLDAPUserInLocalMode(t *testing.T) {
 	st := fake.New()
 	ctx := context.Background()
@@ -587,6 +626,13 @@ func TestUsers_SetPasswordRejectedForLDAPUser(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		raw := mustReadAll(t, resp)
 		t.Fatalf("got %d, want 409: %s", resp.StatusCode, raw)
+	}
+	after, err := st.GetUser(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PasswordHash != "!ldap" {
+		t.Errorf("PasswordHash changed despite 409: %q", after.PasswordHash)
 	}
 }
 
