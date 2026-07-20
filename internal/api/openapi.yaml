@@ -1641,6 +1641,44 @@ components:
             post_logout_redirect_uri only; it carries no id_token_hint, because
             sqi does not store ID tokens.
 
+    SSOProvider:
+      type: object
+      description: One single-sign-on option offered by this deployment.
+      required: [id, label, login_url]
+      properties:
+        id:
+          type: string
+          description: Stable identifier for this provider. Currently always `oidc`.
+        label:
+          type: string
+          description: >-
+            The button text, from auth.oidc.button_label, defaulting to
+            "Sign in with SSO".
+        login_url:
+          type: string
+          description: >-
+            Where the browser must NAVIGATE to start the flow. It is a link
+            target, not a fetch target: following it in the background would
+            land the provider's login page in a response body instead of in
+            front of the user.
+
+    AuthProviders:
+      type: object
+      description: The login methods this deployment offers.
+      required: [password, sso]
+      properties:
+        password:
+          type: boolean
+          description: >-
+            Whether username/password login is offered. Always true today;
+            reported explicitly so clients never have to infer it.
+        sso:
+          type: array
+          description: >-
+            Configured SSO options, empty when none are configured. Never null.
+          items:
+            $ref: "#/components/schemas/SSOProvider"
+
   responses:
     BadRequest:
       description: Bad request — missing or invalid parameters.
@@ -3495,6 +3533,32 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  /auth/providers:
+    get:
+      operationId: getAuthProviders
+      summary: List the login methods this deployment offers
+      description: |
+        What the login page needs to render itself: whether password login is
+        offered, and which SSO buttons to show.
+
+        **Public, by necessity.** The login page is unauthenticated by
+        definition, so an authenticated discovery endpoint would be circular —
+        the button that starts a login could never be drawn. What it discloses
+        is that SSO is configured and what its button says, both of which are
+        already visible to anyone who loads the page. It discloses neither the
+        issuer nor the client secret.
+
+        Mounted unconditionally, including when SSO is disabled: "no SSO
+        configured" is itself the answer the page needs.
+      tags: [auth]
+      responses:
+        "200":
+          description: The available login methods.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthProviders"
 
   /auth/oidc/login:
     get:

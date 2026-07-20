@@ -842,7 +842,7 @@ describe('useLogout', () => {
     // Data the signed-in user browsed before logging out.
     client.setQueryData(queryKeys.jobs.all, [{ id: 'job-from-user-a' }])
     client.setQueryData(queryKeys.users.all, [{ id: 'user-a' }])
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    fetchMock.mockResolvedValueOnce(makeOkResponse({}))
 
     const { result } = renderHook(() => useLogout(), { wrapper: wrapper(client) })
     await act(async () => {
@@ -851,6 +851,46 @@ describe('useLogout', () => {
 
     expect(client.getQueryData(queryKeys.jobs.all)).toBeUndefined()
     expect(client.getQueryData(queryKeys.users.all)).toBeUndefined()
+  })
+
+  it('navigates to the provider end-session URL when the server returns one', async () => {
+    // Under auth.oidc.logout_mode=provider the server hands back the identity
+    // provider's RP-initiated logout URL. Ignoring it would leave the person
+    // signed in at the provider — a logout that looks complete and is not, and
+    // one whose failure is invisible from inside the app.
+    const assign = vi.fn()
+    vi.spyOn(window, 'location', 'get').mockReturnValue({
+      ...window.location,
+      assign,
+    } as unknown as Location)
+    const client = makeClient()
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({ redirect_url: 'https://idp.example.com/logout?client_id=sqi' }),
+    )
+
+    const { result } = renderHook(() => useLogout(), { wrapper: wrapper(client) })
+    await act(async () => {
+      await result.current.mutateAsync()
+    })
+
+    expect(assign).toHaveBeenCalledWith('https://idp.example.com/logout?client_id=sqi')
+  })
+
+  it('does not navigate for a purely local logout', async () => {
+    const assign = vi.fn()
+    vi.spyOn(window, 'location', 'get').mockReturnValue({
+      ...window.location,
+      assign,
+    } as unknown as Location)
+    const client = makeClient()
+    fetchMock.mockResolvedValueOnce(makeOkResponse({}))
+
+    const { result } = renderHook(() => useLogout(), { wrapper: wrapper(client) })
+    await act(async () => {
+      await result.current.mutateAsync()
+    })
+
+    expect(assign).not.toHaveBeenCalled()
   })
 })
 

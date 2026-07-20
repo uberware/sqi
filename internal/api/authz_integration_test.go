@@ -102,6 +102,10 @@ type routeExpectation struct {
 var expectedRoutes = []routeExpectation{
 	// Unauthenticated (no session required at all).
 	{method: http.MethodPost, pattern: "/api/v1/auth/login", public: true},
+	// Login-page discovery: unauthenticated by necessity, since it is what
+	// tells the login page which login methods exist. Gating it would be
+	// circular. See authproviders.go for what it does and does not disclose.
+	{method: http.MethodGet, pattern: "/api/v1/auth/providers", public: true},
 	{method: http.MethodGet, pattern: "/api/v1/openapi.yaml", public: true},
 	// WebSocket upgrade: gated by its own hook (wsH.ServeHTTP), not
 	// az.require — deliberately excluded from the request-driving loop

@@ -168,6 +168,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthBootstrapUsername: cfg.Auth.Bootstrap.Username,
 		AuthBootstrapPassword: cfg.Auth.Bootstrap.Password,
 		AuthLDAP:              cfg.Auth.LDAP,
+		AuthOIDC:              cfg.Auth.OIDC,
 		Scheduler:             schedCfg,
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.

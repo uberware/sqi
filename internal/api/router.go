@@ -405,6 +405,14 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// so it cannot be gated by middleware.Auth).
 		api.Post("/auth/login", authH.login)
 
+		// Also public, and unconditionally mounted: the login page asks this
+		// which login methods exist before the user has any credential, so
+		// gating it on authentication would be circular. It is mounted even
+		// when SSO is off because "no SSO configured" is itself the answer the
+		// page needs; see authproviders.go for what it does and does not
+		// disclose.
+		api.Get("/auth/providers", authH.authProviders)
+
 		// Also public, for the same reason, and only mounted when SSO is
 		// configured: an unconfigured deployment should 404 rather than
 		// advertise a route that cannot work. Both are browser navigations

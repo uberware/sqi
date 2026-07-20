@@ -25,6 +25,8 @@ import (
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/apikey"
 	"github.com/uberware/sqi/internal/auth/ldap"
+	"github.com/uberware/sqi/internal/auth/oidc"
+	"github.com/uberware/sqi/internal/auth/rolemap"
 	"github.com/uberware/sqi/internal/auth/session"
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/config"
@@ -155,6 +157,10 @@ type Config struct {
 	// has seventeen fields, and flattening them would bury the rest of this
 	// struct. Only consulted when AuthEnabled is true.
 	AuthLDAP config.LDAPConfig
+
+	// AuthOIDC mirrors config.AuthConfig.OIDC, carried whole for the same
+	// reason as AuthLDAP above. Only consulted when AuthEnabled is true.
+	AuthOIDC config.OIDCConfig
 
 	// SeedDefaults, when true, creates a "default" farm and queue on first
 	// startup if the store has no farms yet. No-op once any farm exists.
@@ -517,6 +523,14 @@ func (s *Server) wireAuthDeps(ctx context.Context, deps *api.Deps) error {
 	}
 	deps.LDAPVerifier = v
 	deps.LDAPConfig = toLDAPConfig(s.cfg.AuthLDAP, s.logger)
+
+	p, key, err := s.buildOIDCProvider(ctx)
+	if err != nil {
+		return fmt.Errorf("auth oidc: %w", err)
+	}
+	deps.OIDCProvider = p
+	deps.OIDCStateKey = key
+	deps.OIDCConfig = toOIDCConfig(s.cfg.AuthOIDC, s.logger)
 	return nil
 }
 
@@ -600,6 +614,78 @@ func toLDAPConfig(c config.LDAPConfig, logger *slog.Logger) ldap.Config {
 	out.RoleMap = make([]ldap.RoleMapping, 0, len(c.RoleMap))
 	for _, m := range c.RoleMap {
 		out.RoleMap = append(out.RoleMap, ldap.RoleMapping{Group: m.Group, Role: m.Role})
+	}
+	return out
+}
+
+// buildOIDCProvider constructs the SSO provider, or nil when SSO is disabled.
+//
+// Unlike buildLDAPVerifier this cannot fail on a network fault, because it
+// performs no network I/O: discovery is lazy. That is deliberate. Discovery is
+// an HTTP call to an external service, and a render farm's scheduler must not
+// fail to start because the identity provider is briefly unreachable — that
+// would make an external service a hard dependency of the whole system rather
+// than of SSO alone. Configuration faults still abort boot, in Validate.
+//
+// The same line C1 draws: ldap.New assembles TLS at boot (so a bad ca_file
+// aborts) but does not dial, so a downed domain controller does not stop
+// startup.
+//
+// The returned key signs the per-login state cookie and is generated fresh on
+// every boot, so a restart invalidates any login already in flight — an
+// acceptable trade for never persisting it. It is returned alongside the
+// provider rather than derived later because the router refuses to register
+// the SSO routes without it: dropping it here produces a 404 on a deployment
+// that believes it configured SSO.
+func (s *Server) buildOIDCProvider(ctx context.Context) (oidc.Provider, []byte, error) {
+	c := s.cfg.AuthOIDC
+	if !s.cfg.AuthEnabled || !c.Enabled {
+		return nil, nil, nil
+	}
+	key, err := oidc.NewSigningKey()
+	if err != nil {
+		return nil, nil, fmt.Errorf("oidc state key: %w", err)
+	}
+	s.logger.InfoContext(
+		ctx, "auth: oidc enabled",
+		slog.String("issuer", c.Issuer),
+		// Logged for the same reason as LDAP's: flipping role_source to
+		// directory means every login overwrites the account's role, and the
+		// reauth/logout modes change what a logout actually guarantees. An
+		// operator deserves a record of which modes were live.
+		slog.String("role_source", c.RoleSource),
+		slog.String("reauth_mode", c.ReauthMode),
+		slog.String("logout_mode", c.LogoutMode),
+		slog.Int("role_mappings", len(c.RoleMap)),
+	)
+	return oidc.New(toOIDCConfig(c, s.logger)), key, nil
+}
+
+// toOIDCConfig converts the loader's config shape into the oidc package's,
+// which is deliberately independent of internal/config. As with toLDAPConfig,
+// c.Enabled is not carried across: oidc.Config has no such field because the
+// gate is applied here, before oidc.New is ever called.
+func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
+	out := oidc.Config{
+		Issuer:                c.Issuer,
+		ClientID:              c.ClientID,
+		ClientSecret:          c.ClientSecret,
+		RedirectURL:           c.RedirectURL,
+		Scopes:                c.Scopes,
+		UsernameClaim:         c.UsernameClaim,
+		DisplayNameClaim:      c.DisplayNameClaim,
+		GroupsClaim:           c.GroupsClaim,
+		RoleSource:            c.RoleSource,
+		DefaultRole:           c.DefaultRole,
+		ReauthMode:            c.ReauthMode,
+		LogoutMode:            c.LogoutMode,
+		PostLogoutRedirectURL: c.PostLogoutRedirectURL,
+		ButtonLabel:           c.ButtonLabel,
+		Logger:                logger,
+	}
+	out.RoleMap = make([]rolemap.Mapping, 0, len(c.RoleMap))
+	for _, m := range c.RoleMap {
+		out.RoleMap = append(out.RoleMap, rolemap.Mapping{Group: m.Group, Role: m.Role})
 	}
 	return out
 }

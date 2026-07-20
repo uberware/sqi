@@ -511,8 +511,38 @@ export interface UpdateMeInput {
   display_name: string
 }
 
+/**
+ * One single-sign-on option advertised by `GET /auth/providers`.
+ *
+ * `login_url` is a NAVIGATION target, not a fetch target: the whole point of
+ * the flow is to leave this page for the identity provider. Fetching it would
+ * follow the redirect in the background and land the provider's login HTML in
+ * a response body, where nobody can see or interact with it.
+ */
+export interface SSOProvider {
+  id: string
+  label: string
+  login_url: string
+}
+
+/** Response of `GET /auth/providers` — the login methods this server offers. */
+export interface AuthProviders {
+  password: boolean
+  sso: SSOProvider[]
+}
+
+/**
+ * Response of `POST /auth/logout`. `redirect_url` is present only when the
+ * server is configured for provider-side logout (`auth.oidc.logout_mode:
+ * provider`) and the provider advertises an end-session endpoint; the client
+ * must navigate to it, or the provider-side half of the logout never happens.
+ */
+export interface LogoutResult {
+  redirect_url?: string
+}
+
 /** Credential backend for a user account (mirrors store.AuthSource). */
-export type AuthSource = 'local' | 'ldap'
+export type AuthSource = 'local' | 'ldap' | 'oidc'
 
 /** A user account (secrets are never included in the wire format). */
 export interface User {
