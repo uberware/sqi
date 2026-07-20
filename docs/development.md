@@ -130,6 +130,19 @@ SQI_TEST_LDAP_URL=ldap://dc01.example.com:389 make test-ldap
 
 That directory must already hold the fixture tree — see the `seedLDIF` constant
 in `test/integration/ldap_test.go` for the exact users, groups, and passwords.
+
+**Reproducing a CI-only failure.** The container image is multi-arch, and its
+variants are not identical — most visibly, the memberof module registers its
+schema several seconds later on x86 than on arm64. A fixture that works on an
+Apple Silicon laptop can therefore fail on an x86 CI runner. Force the other
+architecture rather than guessing:
+
+```sh
+SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
+```
+
+It runs under emulation, so expect it to be several times slower than native —
+worth it when CI is red and your machine is green.
 Two fixture properties are load-bearing and easy to get wrong:
 
 - **`memberOf` must be populated.** AD does this natively; OpenLDAP needs the

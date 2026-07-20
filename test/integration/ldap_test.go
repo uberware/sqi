@@ -64,11 +64,6 @@ const (
 	ldapAdminDN = "cn=admin,dc=example,dc=com"
 	ldapAdminPW = "adminpass"
 
-	// Separate credential for the cn=config tree, needed to widen the default
-	// ACL — see aclLDIF.
-	ldapConfigDN = "cn=admin,cn=config"
-	ldapConfigPW = "configpass"
-
 	// Service account for search-then-bind. A plain inetOrgPerson: it needs
 	// only to bind and read, which the container's default ACL already allows.
 	ldapSvcDN = "cn=sqi-svc,dc=example,dc=com"
@@ -118,21 +113,39 @@ func startDirectory(t *testing.T) *directory {
 	port := freePort(t)
 	name := fmt.Sprintf("sqi-ldap-it-%d", port)
 
+	// SQI_TEST_LDAP_PLATFORM forces a docker --platform, so a CI-only failure
+	// can be reproduced on a developer machine of a different architecture:
+	//
+	//	SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
+	//
+	// This exists because it was needed. ldapImage is multi-arch, and its two
+	// variants are not equivalent — they differ in both cn=config credentials
+	// and which overlays are instantiated — so a fixture verified on Apple
+	// Silicon failed on an x86 runner. Running native by default keeps the common case fast; this
+	// makes the other architecture one variable away instead of a guess.
+	var platformArgs []string
+	if p := os.Getenv("SQI_TEST_LDAP_PLATFORM"); p != "" {
+		t.Logf("forcing container platform %s (SQI_TEST_LDAP_PLATFORM)", p)
+		platformArgs = []string{"--platform", p}
+	}
+
 	// --rm so an aborted run (SIGINT, panic) does not leak a container; the
 	// explicit remove in Cleanup then becomes a no-op rather than the only
 	// thing standing between this test and a pile of orphans.
 	runCtx, runCancel := context.WithTimeout(context.Background(), ldapReadyTimeout)
 	defer runCancel()
-	out, err := exec.CommandContext(
-		runCtx, "docker", "run", "-d", "--rm",
+	runArgs := []string{"run", "-d", "--rm"}
+	runArgs = append(runArgs, platformArgs...)
+	runArgs = append(
+		runArgs,
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:389", port),
 		"-e", "LDAP_ORGANISATION=Example",
 		"-e", "LDAP_DOMAIN=example.com",
 		"-e", "LDAP_ADMIN_PASSWORD="+ldapAdminPW,
-		"-e", "LDAP_CONFIG_PASSWORD="+ldapConfigPW,
 		ldapImage,
-	).CombinedOutput()
+	)
+	out, err := exec.CommandContext(runCtx, "docker", runArgs...).CombinedOutput()
 	if err != nil {
 		t.Skipf("skipping LDAP integration test: cannot start %s: %v\n%s", ldapImage, err, out)
 	}
@@ -149,25 +162,39 @@ func startDirectory(t *testing.T) *directory {
 	return d
 }
 
-// waitReady polls until the directory answers a bind, or fails the test.
-// Polling beats a fixed sleep: the container is ready in ~5s locally but can
-// take far longer on a cold CI runner, and a sleep tuned for one is either
-// flaky or wasteful on the other.
+// waitReady polls until the directory can serve the fixture, or fails the test.
+//
+// "Ready" deliberately means two things, not one. Answering a bind is not
+// enough: the image finishes registering the memberof module's schema a few
+// seconds AFTER the admin becomes bindable (measured at 5s vs 8s on an x86
+// runner). Returning on the bind alone lands in that window, and
+// configureMemberOf then fails with "objectClass: value #1 invalid per syntax"
+// — a message that reads like a malformed LDIF rather than a race, which is
+// exactly how much time it costs to debug.
+//
+// Polling beats a fixed sleep in both directions: a sleep long enough for a
+// cold CI runner is wasted on every local run, and one tuned for local is
+// flaky on CI.
 func (d *directory) waitReady(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(ldapReadyTimeout)
-	var last []byte
+	var last string
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		out, err := exec.CommandContext(
-			ctx, "docker", "exec", d.container,
-			"ldapwhoami", "-x", "-H", "ldap://localhost", "-D", ldapAdminDN, "-w", ldapAdminPW,
-		).CombinedOutput()
-		cancel()
-		if err == nil {
+		out, err := d.tryLDAPExec(t, "", "ldapwhoami", "-x", "-H", "ldap://localhost",
+			"-D", ldapAdminDN, "-w", ldapAdminPW)
+		if err != nil {
+			last = "bind not answering yet: " + out
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		// The schema the overlay config depends on. Present only once the
+		// memberof module has finished loading.
+		out, err = d.tryLDAPExec(t, "", "ldapsearch", "-Q", "-Y", "EXTERNAL", "-H", "ldapi:///",
+			"-LLL", "-b", "cn=schema,cn=config", "(olcObjectClasses=*olcMemberOf*)", "dn")
+		if err == nil && strings.Contains(out, "dn:") {
 			return
 		}
-		last = out
+		last = "memberof schema not registered yet: " + out
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("directory did not become ready within %s: %s", ldapReadyTimeout, last)
@@ -181,6 +208,16 @@ func (d *directory) waitReady(t *testing.T) {
 // them inside the image makes the fixture identical everywhere.
 func (d *directory) ldapExec(t *testing.T, stdin string, args ...string) {
 	t.Helper()
+	out, err := d.tryLDAPExec(t, stdin, args...)
+	if err != nil {
+		t.Fatalf("%v failed: %v\n%s", args, err, out)
+	}
+}
+
+// tryLDAPExec is ldapExec without the assertion, for commands whose failure is
+// an expected outcome rather than a fault.
+func (d *directory) tryLDAPExec(t *testing.T, stdin string, args ...string) (string, error) {
+	t.Helper()
 	if d.container == "" {
 		t.Skip("skipping: fixture mutation requires the managed container (unset SQI_TEST_LDAP_URL)")
 	}
@@ -189,19 +226,90 @@ func (d *directory) ldapExec(t *testing.T, stdin string, args ...string) {
 	full := append([]string{"exec", "-i", d.container}, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
 	cmd.Stdin = strings.NewReader(stdin)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%v failed: %v\n%s", args, err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
+
+// configureMemberOf points the memberof overlay at groupOfNames/member rather
+// than inheriting whatever the image happens to key it on.
+//
+// The image ships it keyed on groupOfUniqueNames/uniqueMember. Rather than
+// bend seedLDIF to that, the fixture states what it wants: groupOfNames/member
+// is the conventional OpenLDAP setup and the one docs/auth.md shows, so the
+// test doubles as a worked example of the configuration operators are told to
+// use. It also means a future image changing its default cannot silently
+// change what this test exercises.
+//
+// Rewritten in place rather than replaced: OpenLDAP refuses to remove an
+// overlay from a live database (error 53, "unwilling to perform"), so
+// delete-then-add does not work at runtime.
+func (d *directory) configureMemberOf(t *testing.T) {
+	t.Helper()
+
+	// The RDN carries an index the image assigns ({0}, {1}, …), so discover it
+	// rather than hardcoding a position a future image could shift.
+	out, err := d.tryLDAPExec(t, "", "ldapsearch", "-Q", "-Y", "EXTERNAL", "-H", "ldapi:///",
+		"-LLL", "-b", "cn=config", "(objectClass=olcMemberOf)", "dn")
+	if err != nil {
+		t.Fatalf("could not locate the memberof overlay: %v\n%s", err, out)
+	}
+
+	var dn string
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "dn: "); ok {
+			dn = v
+			break
+		}
+	}
+	if dn == "" {
+		// No overlay at all. waitReady already blocked until the memberof
+		// schema registered, so this means the image stopped instantiating it
+		// — not a race. Adding one is the right recovery and keeps this
+		// working if a future image ships the module without the overlay.
+		d.ldapExec(t, memberOfAddLDIF, "ldapadd", "-Q", "-Y", "EXTERNAL", "-H", "ldapi:///")
+		return
+	}
+
+	d.ldapExec(t, fmt.Sprintf(memberOfModifyLDIF, dn),
+		"ldapmodify", "-Q", "-Y", "EXTERNAL", "-H", "ldapi:///")
+}
+
+// memberOfModifyLDIF retargets an existing overlay. %s is its DN.
+const memberOfModifyLDIF = `
+dn: %s
+changetype: modify
+replace: olcMemberOfGroupOC
+olcMemberOfGroupOC: groupOfNames
+-
+replace: olcMemberOfMemberAD
+olcMemberOfMemberAD: member
+-
+replace: olcMemberOfMemberOfAD
+olcMemberOfMemberOfAD: memberOf
+`
+
+// memberOfAddLDIF instantiates the overlay when the image ships none.
+const memberOfAddLDIF = `
+dn: olcOverlay=memberof,olcDatabase={1}mdb,cn=config
+objectClass: olcOverlayConfig
+objectClass: olcMemberOf
+olcOverlay: memberof
+olcMemberOfDangling: ignore
+olcMemberOfRefInt: TRUE
+olcMemberOfGroupOC: groupOfNames
+olcMemberOfMemberAD: member
+olcMemberOfMemberOfAD: memberOf
+`
 
 // seedLDIF is the fixture tree.
 //
-// Groups are groupOfUniqueNames/uniqueMember, NOT groupOfNames/member, because
-// that is what this image configures its memberof overlay for
-// (olcMemberOfGroupOC). Seeding groupOfNames here would leave memberOf empty on
-// every entry — every user would silently authenticate and land on
-// default_role, which is exactly the misconfiguration docs/auth.md warns about.
-// sqi itself is indifferent: it reads whatever DNs memberOf holds.
+// Groups are groupOfNames/member, matching the overlay configureMemberOf
+// installs (olcMemberOfGroupOC) and the conventional setup shown in
+// docs/auth.md. The two must agree: a group whose objectClass the overlay is
+// not keyed on leaves memberOf empty, so every user authenticates fine and
+// silently lands on default_role — exactly the misconfiguration docs/auth.md
+// warns operators about. sqi itself is indifferent; it reads whatever DNs
+// memberOf holds.
 //
 // alice → Farm Admins (maps to admin)
 // bob   → Artists     (maps to user)
@@ -246,14 +354,14 @@ displayName: Carol Clark
 userPassword: carolpass
 
 dn: cn=Farm Admins,ou=groups,dc=example,dc=com
-objectClass: groupOfUniqueNames
+objectClass: groupOfNames
 cn: Farm Admins
-uniqueMember: uid=alice,ou=people,dc=example,dc=com
+member: uid=alice,ou=people,dc=example,dc=com
 
 dn: cn=Artists,ou=groups,dc=example,dc=com
-objectClass: groupOfUniqueNames
+objectClass: groupOfNames
 cn: Artists
-uniqueMember: uid=bob,ou=people,dc=example,dc=com
+member: uid=bob,ou=people,dc=example,dc=com
 `
 
 // aclLDIF widens the image's default ACL so search-then-bind can work.
@@ -270,9 +378,19 @@ uniqueMember: uid=bob,ou=people,dc=example,dc=com
 // rule — `by anonymous auth` permits binding against it and nothing else, so
 // no ACL here ever exposes a credential.
 //
-// The peercred rule is carried over verbatim: it is how the container's own
-// tooling administers the database over the local socket, and dropping it
-// would break the image in ways unrelated to what is under test.
+// The peercred rule is carried over verbatim: it is how root administers the
+// database over the local ldapi socket — including the very ldapmodify that
+// applies this LDIF — so dropping it would lock the fixture out of its own
+// configuration.
+//
+// Applied over ldapi:/// as root (SASL EXTERNAL), NOT by binding to
+// cn=config with a password. That is not a stylistic choice: LDAP_CONFIG_PASSWORD
+// is honored by this image's arm64 variant and ignored by its amd64 variant, so
+// a password bind to cn=config succeeds on an Apple Silicon dev machine and
+// fails with "invalid credentials" on an x86 CI runner — the same tag behaving
+// differently per architecture. docker exec runs as root, the {0} rule below
+// grants root-over-ldapi `manage`, and no password is involved on any
+// architecture.
 const aclLDIF = `
 dn: olcDatabase={1}mdb,cn=config
 changetype: modify
@@ -284,7 +402,10 @@ olcAccess: {2}to * by self read by dn="cn=admin,dc=example,dc=com" write by dn.e
 
 func (d *directory) seed(t *testing.T) {
 	t.Helper()
-	d.ldapExec(t, aclLDIF, "ldapmodify", "-x", "-H", "ldap://localhost", "-D", ldapConfigDN, "-w", ldapConfigPW)
+	d.ldapExec(t, aclLDIF, "ldapmodify", "-Q", "-Y", "EXTERNAL", "-H", "ldapi:///")
+	// Must precede the data: memberOf is maintained on write, so entries added
+	// before the overlay exists would never gain the attribute.
+	d.configureMemberOf(t)
 	d.ldapExec(t, seedLDIF, "ldapadd", "-x", "-H", "ldap://localhost", "-D", ldapAdminDN, "-w", ldapAdminPW)
 
 	// Assert the fixture is usable before any sqi code runs, and assert it as
@@ -629,25 +750,25 @@ func TestLDAP_RoleResyncFromDirectory(t *testing.T) {
 
 	assertLogin(t, ts, "alice", "alicepass", "admin")
 
-	// Farm Admins would be left with no uniqueMember, which the schema
-	// forbids, so park the service account there first.
+	// Farm Admins would be left with no member, which groupOfNames forbids,
+	// so park the service account there first.
 	d.ldapExec(t, `
 dn: cn=Farm Admins,ou=groups,dc=example,dc=com
 changetype: modify
-add: uniqueMember
-uniqueMember: cn=sqi-svc,dc=example,dc=com
+add: member
+member: cn=sqi-svc,dc=example,dc=com
 `, "ldapmodify", "-x", "-H", "ldap://localhost", "-D", ldapAdminDN, "-w", ldapAdminPW)
 
 	d.ldapExec(t, `
 dn: cn=Farm Admins,ou=groups,dc=example,dc=com
 changetype: modify
-delete: uniqueMember
-uniqueMember: uid=alice,ou=people,dc=example,dc=com
+delete: member
+member: uid=alice,ou=people,dc=example,dc=com
 
 dn: cn=Artists,ou=groups,dc=example,dc=com
 changetype: modify
-add: uniqueMember
-uniqueMember: uid=alice,ou=people,dc=example,dc=com
+add: member
+member: uid=alice,ou=people,dc=example,dc=com
 `, "ldapmodify", "-x", "-H", "ldap://localhost", "-D", ldapAdminDN, "-w", ldapAdminPW)
 
 	got := login(t, ts, "alice", "alicepass")
