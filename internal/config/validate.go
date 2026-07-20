@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/uberware/sqi/internal/auth/policy"
 )
 
 // ValidationError describes a single configuration error with the field path
@@ -285,6 +287,12 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 func validateAuth(cfg AuthConfig) []ValidationError {
 	var errs []ValidationError
 	if !cfg.Enabled {
+		if cfg.LDAP.Enabled {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.enabled",
+				Message: "requires auth.enabled=true; LDAP without the auth gate authenticates nobody",
+			})
+		}
 		return errs
 	}
 	if cfg.Session.TTL <= 0 {
@@ -318,6 +326,7 @@ func validateAuth(cfg AuthConfig) []ValidationError {
 		})
 	}
 	errs = append(errs, validateAuthBootstrap(cfg.Bootstrap)...)
+	errs = append(errs, validateAuthLDAP(cfg.LDAP)...)
 	return errs
 }
 
@@ -337,6 +346,135 @@ func validateAuthBootstrap(cfg BootstrapConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field:   "auth.bootstrap.username",
 			Message: "must be set when auth.bootstrap.password is set; set SQI_AUTH_BOOTSTRAP_USERNAME or auth.bootstrap.username",
+		})
+	}
+	return errs
+}
+
+// validateAuthLDAP checks the auth.ldap block. It assumes auth.enabled is
+// true (validateAuth returns early otherwise). Everything here fails closed:
+// a misconfigured directory must abort boot rather than leave a server that
+// silently cannot authenticate anyone.
+func validateAuthLDAP(cfg LDAPConfig) []ValidationError {
+	var errs []ValidationError
+	if !cfg.Enabled {
+		return errs
+	}
+	errs = append(errs, validateLDAPTransport(cfg)...)
+	errs = append(errs, validateLDAPBindMode(cfg)...)
+	errs = append(errs, validateLDAPRoles(cfg)...)
+	return errs
+}
+
+func validateLDAPTransport(cfg LDAPConfig) []ValidationError {
+	var errs []ValidationError
+	switch cfg.URL {
+	case "":
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.url",
+			Message: "must be set when auth.ldap.enabled; set SQI_AUTH_LDAP_URL or auth.ldap.url",
+		})
+	default:
+		u, err := url.Parse(cfg.URL)
+		if err != nil || (u.Scheme != "ldap" && u.Scheme != "ldaps") {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.url",
+				Message: fmt.Sprintf("must be an ldap:// or ldaps:// URL, got %q", cfg.URL),
+			})
+		} else if cfg.StartTLS && u.Scheme == "ldaps" {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.start_tls",
+				Message: "cannot be used with an ldaps:// URL, which is already TLS",
+			})
+		}
+	}
+	if cfg.Timeout <= 0 {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.timeout",
+			Message: "must be > 0; set SQI_AUTH_LDAP_TIMEOUT or auth.ldap.timeout",
+		})
+	}
+	return errs
+}
+
+func validateLDAPBindMode(cfg LDAPConfig) []ValidationError {
+	var errs []ValidationError
+	searchMode := cfg.BindDN != "" || cfg.BaseDN != ""
+	templateMode := cfg.UserDNTemplate != ""
+	switch {
+	case searchMode && templateMode:
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.user_dn_template",
+			Message: "cannot be combined with auth.ldap.bind_dn/base_dn — choose template bind or search-then-bind, not both",
+		})
+	case !searchMode && !templateMode:
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.base_dn",
+			Message: "set auth.ldap.bind_dn+base_dn (search-then-bind) or auth.ldap.user_dn_template (template bind)",
+		})
+	case searchMode:
+		if cfg.BaseDN == "" {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.base_dn",
+				Message: "must be set for search-then-bind; set SQI_AUTH_LDAP_BASE_DN or auth.ldap.base_dn",
+			})
+		}
+		if cfg.UserFilter == "" || !strings.Contains(cfg.UserFilter, "%s") {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.user_filter",
+				Message: `must contain %s, the placeholder for the escaped username (e.g. "(sAMAccountName=%s)")`,
+			})
+		}
+	case templateMode:
+		if !strings.Contains(cfg.UserDNTemplate, "%s") {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.user_dn_template",
+				Message: `must contain %s, the placeholder for the escaped username (e.g. "uid=%s,ou=people,dc=example,dc=com")`,
+			})
+		}
+		if cfg.NestedGroups {
+			errs = append(errs, ValidationError{
+				Field:   "auth.ldap.nested_groups",
+				Message: "requires search-then-bind; template bind reads the flat memberOf attribute and cannot expand nested groups",
+			})
+		}
+	}
+	return errs
+}
+
+func validateLDAPRoles(cfg LDAPConfig) []ValidationError {
+	var errs []ValidationError
+	switch cfg.RoleSource {
+	case "directory", "local":
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.role_source",
+			Message: fmt.Sprintf(`must be "directory" or "local", got %q`, cfg.RoleSource),
+		})
+	}
+	for i, m := range cfg.RoleMap {
+		if m.Group == "" {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("auth.ldap.role_map[%d].group", i),
+				Message: "must not be empty",
+			})
+		}
+		// A typo'd role must abort boot, not silently fall through to
+		// default_role — that would hand everyone the wrong privileges with
+		// no error to explain why.
+		if !policy.IsRole(m.Role) {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("auth.ldap.role_map[%d].role", i),
+				Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only", m.Role),
+			})
+		}
+	}
+	// Empty is meaningful: reject logins that match no group.
+	if cfg.DefaultRole != "" && !policy.IsRole(cfg.DefaultRole) {
+		errs = append(errs, ValidationError{
+			Field:   "auth.ldap.default_role",
+			Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only, or empty to reject unmapped logins", cfg.DefaultRole),
 		})
 	}
 	return errs

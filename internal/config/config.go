@@ -201,6 +201,11 @@ type AuthConfig struct {
 	// Bootstrap seeds the first admin account when auth is enabled and the
 	// users table is empty.
 	Bootstrap BootstrapConfig `yaml:"bootstrap"`
+
+	// LDAP configures directory authentication. Disabled by default; when
+	// enabled it requires Auth.Enabled — LDAP without the auth gate would
+	// authenticate nobody.
+	LDAP LDAPConfig `yaml:"ldap"`
 }
 
 // SessionConfig controls server-side session cookies.
@@ -252,6 +257,103 @@ func (b BootstrapConfig) MarshalYAML() (any, error) {
 		out.Password = redactedPassword
 	}
 	return out, nil
+}
+
+// LDAPConfig configures LDAP/Active Directory authentication (Phase 3, C1).
+//
+// LDAP is a login-time credential verifier, not a per-request authenticator:
+// an account whose users.auth_source is "ldap" has its password checked
+// against the directory by POST /auth/login, which then mints the same
+// server-side session every local account gets.
+//
+// Two bind modes are mutually exclusive. Setting UserDNTemplate selects
+// template mode (bind directly as the user, read their own memberOf); leaving
+// it empty and setting BindDN/BaseDN selects search-then-bind.
+type LDAPConfig struct {
+	// Enabled turns on directory authentication.
+	// Env: SQI_AUTH_LDAP_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// URL is the directory endpoint: ldap://host:389 or ldaps://host:636.
+	// Env: SQI_AUTH_LDAP_URL
+	URL string `yaml:"url"`
+
+	// StartTLS upgrades a plain ldap:// connection to TLS. Invalid with
+	// ldaps://, which is already TLS.
+	// Env: SQI_AUTH_LDAP_START_TLS
+	StartTLS bool `yaml:"start_tls"`
+
+	// TLSSkipVerify disables certificate verification. Logged as a warning at
+	// boot; never silently accepted.
+	// Env: SQI_AUTH_LDAP_TLS_SKIP_VERIFY
+	TLSSkipVerify bool `yaml:"tls_skip_verify"`
+
+	// CAFile is a PEM bundle used to verify the directory's certificate.
+	// Env: SQI_AUTH_LDAP_CA_FILE
+	CAFile string `yaml:"ca_file"`
+
+	// Timeout bounds a single dial/bind/search cycle.
+	// Env: SQI_AUTH_LDAP_TIMEOUT
+	Timeout time.Duration `yaml:"timeout"`
+
+	// BindDN is the service account used to search for users (search mode).
+	// Env: SQI_AUTH_LDAP_BIND_DN
+	BindDN string `yaml:"bind_dn"`
+
+	// BindPassword is the service account's password. Never logged.
+	// Env: SQI_AUTH_LDAP_BIND_PASSWORD
+	BindPassword string `yaml:"bind_password"`
+
+	// BaseDN is the subtree searched for user entries (search mode).
+	// Env: SQI_AUTH_LDAP_BASE_DN
+	BaseDN string `yaml:"base_dn"`
+
+	// UserFilter is the search filter; %s is replaced with the escaped
+	// username. Env: SQI_AUTH_LDAP_USER_FILTER
+	UserFilter string `yaml:"user_filter"`
+
+	// NestedGroups expands nested group membership via the AD matching-rule
+	// OID. Search mode only — template mode reads memberOf, which is flat.
+	// Env: SQI_AUTH_LDAP_NESTED_GROUPS
+	NestedGroups bool `yaml:"nested_groups"`
+
+	// UserDNTemplate builds the user's DN directly; %s is the escaped
+	// username. Selects template mode. Env: SQI_AUTH_LDAP_USER_DN_TEMPLATE
+	UserDNTemplate string `yaml:"user_dn_template"`
+
+	// UsernameAttr is the attribute holding the login name.
+	// Env: SQI_AUTH_LDAP_USERNAME_ATTR
+	UsernameAttr string `yaml:"username_attr"`
+
+	// DisplayNameAttr is the attribute holding the human-facing name. Read
+	// only at JIT-create; never overwritten afterwards.
+	// Env: SQI_AUTH_LDAP_DISPLAY_NAME_ATTR
+	DisplayNameAttr string `yaml:"display_name_attr"`
+
+	// RoleSource decides who owns an LDAP user's role:
+	//   - "directory" (default): recomputed from groups on every login, and
+	//     the users API rejects role edits on LDAP accounts.
+	//   - "local": groups seed the role at JIT-create only; admins own it
+	//     afterwards and the API allows edits.
+	// Both halves are driven by this one value — never configure them apart,
+	// or a role edit will appear to succeed and silently revert at next login.
+	// Env: SQI_AUTH_LDAP_ROLE_SOURCE
+	RoleSource string `yaml:"role_source"`
+
+	// RoleMap maps group DNs to roles, first match wins. Order is
+	// significant: it is how an operator expresses precedence.
+	RoleMap []RoleMappingConfig `yaml:"role_map"`
+
+	// DefaultRole applies when no group matches. Empty means reject the
+	// login, so a deployment can require group membership to sign in at all.
+	// Env: SQI_AUTH_LDAP_DEFAULT_ROLE
+	DefaultRole string `yaml:"default_role"`
+}
+
+// RoleMappingConfig is one group-DN → role rule.
+type RoleMappingConfig struct {
+	Group string `yaml:"group"`
+	Role  string `yaml:"role"`
 }
 
 // DiagnosticsConfig controls the in-memory diagnostic-log ring buffer surfaced
@@ -337,6 +439,15 @@ func DefaultConfig() Config {
 				TTL:          168 * time.Hour,
 				CookieName:   "sqi_session",
 				CookieSecure: "auto",
+			},
+			LDAP: LDAPConfig{
+				Enabled:         false,
+				Timeout:         10 * time.Second,
+				UserFilter:      "(sAMAccountName=%s)",
+				UsernameAttr:    "sAMAccountName",
+				DisplayNameAttr: "displayName",
+				RoleSource:      "directory",
+				DefaultRole:     "read-only",
 			},
 		},
 	}
