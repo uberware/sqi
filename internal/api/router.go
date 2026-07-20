@@ -410,7 +410,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// advertise a route that cannot work. Both are browser navigations
 		// that redirect; see oidclogin.go for why they are GETs that
 		// middleware.CSRF does not (and cannot) cover.
-		if deps.OIDCProvider != nil {
+		// The state key is part of "configured", not an optional extra: the
+		// signed state cookie is the ONLY CSRF defense these public routes
+		// have, and an empty key produces a MAC anyone can compute. Registering
+		// on the provider alone would fail open silently — a working-looking
+		// login that accepts a forged callback.
+		if deps.OIDCProvider != nil && len(deps.OIDCStateKey) > 0 {
 			api.Get("/auth/oidc/login", authH.oidcLogin)
 			api.Get("/auth/oidc/callback", authH.oidcCallback)
 		}

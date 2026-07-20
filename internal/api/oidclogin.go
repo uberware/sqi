@@ -33,7 +33,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/store"
@@ -48,9 +47,6 @@ const (
 	// oidcCookiePath scopes both cookies above to the only routes that read
 	// them, so they are not attached to every API call and every UI asset.
 	oidcCookiePath = "/api/v1/auth/oidc"
-	// oidcStateTTL bounds a login attempt. Generous enough for a slow human at
-	// an MFA prompt, short enough that a stolen cookie is near-worthless.
-	oidcStateTTL = 10 * time.Minute
 	// oidcAppRoot is the only place a callback ever sends a browser.
 	oidcAppRoot = "/"
 	// oidcErrorRedirect is the login page with a generic failure marker. It
@@ -88,7 +84,10 @@ func (h *authHandler) oidcLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Both cookies must be written before http.Redirect, which commits the
 	// response header.
-	h.setOIDCCookie(w, r, oidcStateCookie, sealed, int(oidcStateTTL.Seconds()))
+	// The cookie's own expiry is only what a cooperating browser honors; the
+	// authoritative bound is the issued-at inside the sealed payload, which
+	// oidc.OpenState checks against the same oidc.StateTTL.
+	h.setOIDCCookie(w, r, oidcStateCookie, sealed, int(oidc.StateTTL.Seconds()))
 	// The marker has done its job for this login; leaving it set would re-prompt
 	// on every subsequent login, not just the one after a logout.
 	h.setOIDCCookie(w, r, oidcReauthCookie, "", -1)

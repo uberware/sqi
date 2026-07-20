@@ -24,17 +24,39 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
-// ErrStateInvalid means the state cookie was missing, malformed, or not signed
-// by this server. Callers must not distinguish these in what they show a user.
+// ErrStateInvalid means the state cookie was missing, malformed, expired, or
+// not signed by this server. Callers must not distinguish these in what they
+// show a user: an expired state and a forged one are the same answer.
 var ErrStateInvalid = errors.New("oidc: state cookie invalid or expired")
+
+// ErrNoSigningKey means SealState/OpenState were handed no key. An HMAC keyed
+// with nothing is one an attacker can compute, so this is refused outright
+// rather than producing a signature that only looks like a defense.
+var ErrNoSigningKey = errors.New("oidc: state signing key is empty")
+
+// StateTTL bounds a login attempt, and lives here — beside OpenState, which is
+// what actually enforces it — so there is exactly one of it. internal/api reads
+// it for the state cookie's MaxAge; a second copy there could drift and leave
+// the browser-side bound and the server-side bound disagreeing.
+//
+// Generous enough for a slow human at an MFA prompt, short enough that a stolen
+// cookie is near-worthless.
+const StateTTL = 10 * time.Minute
 
 // FlowState is the set of one-time values bound to a single login attempt.
 type FlowState struct {
 	State    string `json:"s"`
 	Nonce    string `json:"n"`
 	Verifier string `json:"v"`
+	// IssuedAt is Unix seconds. It is inside the signed payload, so a holder of
+	// a captured cookie cannot extend its life without the key; OpenState
+	// rejects anything older than StateTTL. Without it the TTL would be only
+	// the browser's cookie expiry, which an attacker replaying a captured
+	// value simply ignores.
+	IssuedAt int64 `json:"t"`
 }
 
 // NewFlowState mints independently-random values for one login attempt.
@@ -49,6 +71,7 @@ func NewFlowState() (FlowState, error) {
 		// minimum verifier length, and URL-safe without escaping.
 		*dst = base64.RawURLEncoding.EncodeToString(b)
 	}
+	out.IssuedAt = time.Now().Unix()
 	return out, nil
 }
 
@@ -69,6 +92,9 @@ func NewSigningKey() ([]byte, error) {
 
 // SealState encodes s as "<payload>.<mac>" for use as a cookie value.
 func SealState(key []byte, s FlowState) (string, error) {
+	if len(key) == 0 {
+		return "", ErrNoSigningKey
+	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return "", err
@@ -79,6 +105,12 @@ func SealState(key []byte, s FlowState) (string, error) {
 
 // OpenState verifies and decodes a cookie produced by SealState.
 func OpenState(key []byte, cookie string) (FlowState, error) {
+	// An empty key would verify a MAC anyone could compute, turning the sole
+	// CSRF defense on the callback into a formality. Refuse rather than
+	// "succeed".
+	if len(key) == 0 {
+		return FlowState{}, ErrStateInvalid
+	}
 	payload, sig, ok := strings.Cut(cookie, ".")
 	if !ok || payload == "" {
 		return FlowState{}, ErrStateInvalid
@@ -97,6 +129,12 @@ func OpenState(key []byte, cookie string) (FlowState, error) {
 		return FlowState{}, ErrStateInvalid
 	}
 	if out.State == "" || out.Nonce == "" || out.Verifier == "" {
+		return FlowState{}, ErrStateInvalid
+	}
+	// Same bare ErrStateInvalid as every other rejection above: an expired
+	// state must be indistinguishable from a forged one, or the callback
+	// becomes an oracle for "this cookie was once real".
+	if out.IssuedAt <= 0 || time.Since(time.Unix(out.IssuedAt, 0)) > StateTTL {
 		return FlowState{}, ErrStateInvalid
 	}
 	return out, nil

@@ -281,8 +281,10 @@ func TestOIDCLogin_RedirectsToProviderAndSealsState(t *testing.T) {
 	if c.Path != oidcCookiePath {
 		t.Errorf("state cookie Path = %q, want %q", c.Path, oidcCookiePath)
 	}
-	if c.MaxAge != int(oidcStateTTL.Seconds()) {
-		t.Errorf("state cookie MaxAge = %d, want %d", c.MaxAge, int(oidcStateTTL.Seconds()))
+	// The same bound the server enforces on the sealed issued-at, so a
+	// cooperating browser and the server agree on when a flow is dead.
+	if c.MaxAge != int(oidc.StateTTL.Seconds()) {
+		t.Errorf("state cookie MaxAge = %d, want %d", c.MaxAge, int(oidc.StateTTL.Seconds()))
 	}
 
 	// The state in the URL must be the state that was sealed into the cookie —
@@ -317,6 +319,42 @@ func TestOIDCRoutes_NotRegisteredWhenSSODisabled(t *testing.T) {
 			if resp.status != http.StatusNotFound {
 				t.Errorf("status = %d, want 404 — an unconfigured deployment must not advertise the route",
 					resp.status)
+			}
+		})
+	}
+}
+
+// TestOIDCRoutes_NotRegisteredWhenStateKeyEmpty pins that a provider is not on
+// its own enough to mount these routes. They are public, so middleware.CSRF
+// cannot cover them and the HMAC-signed state cookie is their only defense
+// against a forged callback — and an HMAC keyed with nothing is one any
+// attacker can compute. A provider wired up without a key must 404, not serve a
+// login whose callback anyone can forge.
+func TestOIDCRoutes_NotRegisteredWhenStateKeyEmpty(t *testing.T) {
+	keys := []struct {
+		name string
+		key  []byte
+	}{
+		{name: "nil key", key: nil},
+		{name: "zero-length key", key: []byte{}},
+	}
+	for _, k := range keys {
+		t.Run(k.name, func(t *testing.T) {
+			p := &fakeOIDCProvider{identity: aliceOIDCIdentity()}
+			srv := httptest.NewServer(authRouterOIDC(fake.New(), p, oidcTestCfg(), k.key))
+			t.Cleanup(srv.Close)
+
+			for _, path := range []string{"/api/v1/auth/oidc/login", "/api/v1/auth/oidc/callback"} {
+				t.Run(path, func(t *testing.T) {
+					resp := getNoRedirect(t, srv.URL+path)
+					if resp.status != http.StatusNotFound {
+						t.Errorf("status = %d, want 404 — without a signing key the state cookie is forgeable",
+							resp.status)
+					}
+					if resp.sessionIssued() {
+						t.Error("a keyless SSO route issued a session cookie")
+					}
+				})
 			}
 		})
 	}
@@ -598,10 +636,20 @@ func assertNoLeakedDetail(t *testing.T, resp ssoResponse) {
 	}
 }
 
-// TestOIDCCallback_ReplayIsRefused pins that the state cookie is single-use:
-// the callback clears it, so replaying the same URL cannot mint a second
-// session even though the code and state are unchanged.
-func TestOIDCCallback_ReplayIsRefused(t *testing.T) {
+// TestOIDCCallback_ClearsStateCookieSoABrowserReplayFindsNothing pins exactly
+// what it says and no more: the callback clears the state cookie, so a browser
+// that honored the clearing Set-Cookie sends none on a second navigation to the
+// same URL and is refused.
+//
+// It is NOT a server-side replay defense, and must not be read as one. An
+// attacker holding both the callback URL and the captured cookie VALUE can
+// present them again and, within oidc.StateTTL, sqi will accept the state — the
+// server keeps no record of a state having been spent. What actually stops that
+// replay is the identity provider refusing to redeem an authorization code a
+// second time (OAuth 2.1 §4.1.3 requires single-use codes), which is outside
+// this process. The server-side bound sqi does enforce is the TTL; see
+// TestOIDCCallback_ExpiredStateIsRefused.
+func TestOIDCCallback_ClearsStateCookieSoABrowserReplayFindsNothing(t *testing.T) {
 	st := fake.New()
 	p := &fakeOIDCProvider{identity: aliceOIDCIdentity()}
 	ts := newOIDCServer(t, st, p, oidcTestCfg())
@@ -621,6 +669,57 @@ func TestOIDCCallback_ReplayIsRefused(t *testing.T) {
 	// the replay.
 	replay := callback(t, ts, q)
 	assertGenericSSOFailure(t, replay)
+}
+
+// TestOIDCCallback_ExpiredStateIsRefused is the refusal the server really does
+// make on its own: a state cookie older than oidc.StateTTL is rejected even
+// when the client presents it verbatim alongside a matching state parameter.
+// This is the case a captured-cookie replay eventually runs into, and the one
+// the cookie's MaxAge alone could never enforce — MaxAge binds a cooperating
+// browser, not an attacker holding the cookie's value.
+func TestOIDCCallback_ExpiredStateIsRefused(t *testing.T) {
+	tests := []struct {
+		name     string
+		age      time.Duration
+		wantFail bool
+	}{
+		{name: "within the TTL", age: oidc.StateTTL - time.Minute},
+		{name: "past the TTL", age: oidc.StateTTL + time.Minute, wantFail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &fakeOIDCProvider{identity: aliceOIDCIdentity()}
+			ts := newOIDCServer(t, fake.New(), p, oidcTestCfg())
+
+			// Seal a genuinely-signed state with a backdated issued-at: this is
+			// the exact cookie the server itself minted `age` ago.
+			fs, err := oidc.NewFlowState()
+			if err != nil {
+				t.Fatalf("NewFlowState: %v", err)
+			}
+			fs.IssuedAt = time.Now().Add(-tt.age).Unix()
+			sealed, err := oidc.SealState(ts.key, fs)
+			if err != nil {
+				t.Fatalf("SealState: %v", err)
+			}
+
+			resp := callback(t, ts,
+				url.Values{"code": {"auth-code-1"}, "state": {fs.State}},
+				&http.Cookie{Name: oidcStateCookie, Value: sealed})
+
+			if !tt.wantFail {
+				if resp.location != oidcAppRoot || !resp.sessionIssued() {
+					t.Fatalf("a state inside the TTL was refused: Location = %q", resp.location)
+				}
+				return
+			}
+			assertGenericSSOFailure(t, resp)
+			assertNoLeakedDetail(t, resp)
+			if n := p.exchangeCount(); n != 0 {
+				t.Errorf("exchanges = %d, want 0 — an expired state must be refused before the code is redeemed", n)
+			}
+		})
+	}
 }
 
 // TestOIDCCallback_IgnoresCallerSuppliedRedirect is the open-redirect guard:
