@@ -1102,7 +1102,7 @@ the provider*.
 | Value | Behavior |
 |---|---|
 | `local` (default) | Clear the sqi session only. |
-| `provider` | Also return the provider's RP-initiated logout URL, which the web navigates to. Requires `post_logout_redirect_url`. |
+| `provider` | Also return the provider's RP-initiated logout URL, which the web navigates to. The sqi session ends immediately either way; the provider leg is where the browser goes next. Requires `post_logout_redirect_url`. |
 
 `local` is the default because a provider logout signs the user out of every
 company tool that trusts that provider — heavy-handed for someone mid-task
@@ -1115,10 +1115,25 @@ advertised endpoint does not parse, sqi **degrades to a local logout and logs
 at `ERROR`** — never silently.
 
 **sqi does not store ID tokens**, so the end-session request uses `client_id` +
-`post_logout_redirect_uri` and never `id_token_hint`. That is deliberate:
-storing the token would put the first plaintext bearer secret into a schema
-that otherwise holds only hashes, and the realistic leak path is a debug log
-line or a future session-listing endpoint, not theft. The cost is stated under
+`post_logout_redirect_uri` and never `id_token_hint`. That is deliberate, and
+measurement strengthened the case rather than weakening it:
+
+- The token would be the **first recoverable secret in the schema**. Session
+  tokens are stored as hashes, passwords as argon2id hashes. "Nothing in this
+  database can be read back out and used" is an invariant worth more than a
+  logout convenience.
+- **Keycloak accepts an expired ID token as a hint** — verified well past
+  `exp`, and the session still died silently. A stored token is therefore a
+  session-termination capability that **does not decay**; "it expires in
+  minutes" is not a mitigation.
+- **The hint works from a client holding no provider cookies.** A leaked token
+  can end that user's provider session from anywhere, by anyone holding it.
+- **The realistic leak path is accident, not theft** — a debug log line
+  dumping a session row, or a future session-listing endpoint. Avoiding it
+  would require a redaction rule every future contributor remembers, which is
+  where this class of leak actually originates.
+
+The cost is stated under
 [Provider logout is weaker than it looks](#provider-logout-is-weaker-than-it-looks).
 
 ### Limits, stated plainly
@@ -1159,9 +1174,24 @@ provider logout.** Measured against Keycloak 26.0.7 by `make test-oidc`:
 
 This is not a security hole — sqi's own session is genuinely revoked either
 way, and it is revoked before the redirect is ever handed to the browser — but
-it is weaker than an operator would infer from the option's name. If someone
-abandons the browser at the confirmation page, they are out of sqi and still
-signed in to the provider.
+it is weaker than an operator would infer from the option's name. In practice
+`logout_mode: provider` ends the sqi session immediately and then takes the
+user to the provider to confirm signing out everywhere. If someone abandons the
+browser at that page, they are out of sqi and still signed in to every other
+tool.
+
+**The confirmation page is a security control, not a Keycloak quirk.** An
+end-session request carrying only a client identifier could have been
+constructed by anyone, so Keycloak asks the human before acting on it.
+`id_token_hint` is the proof that the caller was party to the session, and
+supplying it is exactly what buys the skip: with the hint, Keycloak answers
+`302` straight to the post-logout URI and the session is dead with no
+interaction at all (`client_id` is not even required alongside it). sqi does
+not hold that proof, by choice — see the reasons under
+[Re-authentication and logout are two different things](#re-authentication-and-logout-are-two-different-things).
+The confirmation click is the price of not keeping a non-decaying,
+exfiltratable logout capability at rest. It is a deliberate trade, not an
+oversight.
 
 **Entra ID and Okta have not been measured.** Whether either completes an
 end-session request without an `id_token_hint` is **unverified here**; Okta has
