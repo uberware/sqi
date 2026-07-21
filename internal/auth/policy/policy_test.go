@@ -35,7 +35,7 @@ var want = map[string]map[policy.Permission]bool{
 		policy.WorkersManage: true, policy.InfraRead: true, policy.InfraManage: true,
 		policy.ProductsRead: true, policy.ProductsManage: true,
 		policy.DiagnosticsRead: true, policy.UsersRead: true, policy.UsersManage: true,
-		policy.APIKeysSelf: true, policy.APIKeysAdmin: true,
+		policy.APIKeysSelf: true, policy.APIKeysAdmin: true, policy.IsolationManage: true,
 	},
 }
 
@@ -44,7 +44,7 @@ var allPerms = []policy.Permission{
 	policy.WorkersRead, policy.WorkersManage,
 	policy.InfraRead, policy.InfraManage, policy.ProductsRead, policy.ProductsManage,
 	policy.DiagnosticsRead, policy.UsersRead, policy.UsersManage,
-	policy.APIKeysSelf, policy.APIKeysAdmin,
+	policy.APIKeysSelf, policy.APIKeysAdmin, policy.IsolationManage,
 }
 
 func TestCan_MatrixExact(t *testing.T) {
@@ -187,5 +187,24 @@ func TestB2PermissionsSuperuserBypass(t *testing.T) {
 		if !policy.Can(su, perm) {
 			t.Errorf("superuser denied %q — auth-off regression", perm)
 		}
+	}
+}
+
+func TestIsolationManageIsAdminOnly(t *testing.T) {
+	tests := []struct {
+		role string
+		want bool
+	}{
+		{"read-only", false},
+		{"user", false},
+		{"operator", false},
+		{"admin", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.role, func(t *testing.T) {
+			if got := policy.Can(auth.Principal{Roles: []string{tt.role}}, policy.IsolationManage); got != tt.want {
+				t.Errorf("role %q IsolationManage = %v, want %v", tt.role, got, tt.want)
+			}
+		})
 	}
 }

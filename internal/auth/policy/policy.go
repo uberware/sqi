@@ -57,6 +57,11 @@ const (
 	APIKeysSelf Permission = "apikeys.self"
 	// APIKeysAdmin grants access to manage all API keys.
 	APIKeysAdmin Permission = "apikeys.admin"
+	// IsolationManage grants setting a queue's run-as-user, i.e. choosing the OS
+	// identity that arbitrary job code executes under. Deliberately separate
+	// from InfraManage — which operator holds — because it is an escalation
+	// surface, not ordinary queue configuration.
+	IsolationManage Permission = "isolation.manage"
 )
 
 // grants maps each built-in role to the set of permissions it holds. A role
@@ -81,7 +86,7 @@ var grants = map[string]map[Permission]bool{
 		WorkersRead: true, WorkersManage: true,
 		InfraRead: true, InfraManage: true, ProductsRead: true, ProductsManage: true,
 		DiagnosticsRead: true, UsersRead: true, UsersManage: true,
-		APIKeysSelf: true, APIKeysAdmin: true,
+		APIKeysSelf: true, APIKeysAdmin: true, IsolationManage: true,
 	},
 }
 
@@ -92,7 +97,7 @@ var All = []Permission{
 	JobsRead, JobsReadAll, JobsWrite, JobsSubmitAs, WorkersRead, WorkersManage,
 	InfraRead, InfraManage, ProductsRead, ProductsManage,
 	DiagnosticsRead, UsersRead, UsersManage,
-	APIKeysSelf, APIKeysAdmin,
+	APIKeysSelf, APIKeysAdmin, IsolationManage,
 }
 
 // Roles returns a read-only snapshot of the role → permission grants matrix,
