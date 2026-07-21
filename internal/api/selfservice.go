@@ -62,7 +62,7 @@ func (h *authHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "failed to change password")
 		return
 	}
-	if u.AuthSource != store.AuthSourceLocal {
+	if !passwordEditable(u) {
 		// Falling through would compare the caller's password against the
 		// external placeholder hash and answer "current password is incorrect"
 		// — accurate but misleading, since no password would ever work here.

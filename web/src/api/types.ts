@@ -566,6 +566,15 @@ export interface User {
    * a client to check.
    */
   role_editable: boolean
+  /**
+   * Whether `PUT /users/{id}/password` accepts a new password for this
+   * account. Computed by the server from the same predicate that guards that
+   * endpoint (and the self-service `PUT /auth/password`): true only for
+   * `auth_source: local`, since an `ldap` or `oidc` account has no local
+   * password and either endpoint answers `409`. Read it rather than testing
+   * `auth_source` yourself, so the control and the guard cannot drift apart.
+   */
+  password_editable: boolean
   disabled: boolean
   created_at: string
   updated_at: string

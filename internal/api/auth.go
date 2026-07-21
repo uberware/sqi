@@ -140,10 +140,18 @@ type userResponse struct {
 	// reconstruct the two-condition rule (auth_source AND role_source) — the
 	// role_source half is not otherwise exposed by any endpoint, so a client
 	// inferring from auth_source alone gets role_source=local wrong.
-	RoleEditable bool      `json:"role_editable"`
-	Disabled     bool      `json:"disabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	RoleEditable bool `json:"role_editable"`
+	// PasswordEditable tells the client whether PUT /users/{id}/password (and,
+	// for the caller's own account, PUT /auth/password) will accept a new
+	// password for this account. It is computed server-side, from the same
+	// predicate that guards both of those endpoints, so the control a client
+	// offers and the request the server accepts can never disagree — without
+	// it the UI rendered a set-password form for LDAP and OIDC accounts and
+	// turned every submission into a 409.
+	PasswordEditable bool      `json:"password_editable"`
+	Disabled         bool      `json:"disabled"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // toUserResponse renders u for the wire. ldapRoleSource and oidcRoleSource are
@@ -152,15 +160,16 @@ type userResponse struct {
 // that owns the request.
 func toUserResponse(u store.User, ldapRoleSource, oidcRoleSource string) userResponse {
 	return userResponse{
-		ID:           u.ID,
-		Username:     u.Username,
-		DisplayName:  u.DisplayName,
-		Role:         u.Role,
-		AuthSource:   u.AuthSource,
-		RoleEditable: !directoryOwnsRole(u, ldapRoleSource, oidcRoleSource),
-		Disabled:     u.Disabled,
-		CreatedAt:    u.CreatedAt,
-		UpdatedAt:    u.UpdatedAt,
+		ID:               u.ID,
+		Username:         u.Username,
+		DisplayName:      u.DisplayName,
+		Role:             u.Role,
+		AuthSource:       u.AuthSource,
+		RoleEditable:     !directoryOwnsRole(u, ldapRoleSource, oidcRoleSource),
+		PasswordEditable: passwordEditable(u),
+		Disabled:         u.Disabled,
+		CreatedAt:        u.CreatedAt,
+		UpdatedAt:        u.UpdatedAt,
 	}
 }
 

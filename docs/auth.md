@@ -851,7 +851,11 @@ password routes refuse rather than pretend:
 | `PATCH /api/v1/auth/me` (display name) | **Works** |
 
 Both password routes key on "not a local account", so an
-[SSO account](#oidc--sso) behaves identically.
+[SSO account](#oidc--sso) behaves identically. That single rule is also what
+the users API reports as `password_editable` — the companion to
+`role_editable` — so a client can hide its set-password control instead of
+letting someone type a password and discover the 409. Field and guard are
+computed from one server-side predicate and cannot drift apart.
 
 The admin-side 409 also closes a real hole: without it, an admin could write
 a genuine argon2id hash onto a directory account. Login routes on

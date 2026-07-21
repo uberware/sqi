@@ -1454,7 +1454,8 @@ components:
 
     User:
       type: object
-      required: [id, username, role, auth_source, role_editable, disabled, created_at, updated_at]
+      required:
+        [id, username, role, auth_source, role_editable, password_editable, disabled, created_at, updated_at]
       properties:
         id:
           type: string
@@ -1488,6 +1489,18 @@ components:
             cannot derive this from `auth_source` alone, and one that tries
             will wrongly lock the control for LDAP or OIDC accounts
             under `role_source: local`, where role edits are permitted.
+        password_editable:
+          type: boolean
+          description: >
+            Whether `PUT /users/{id}/password` will accept a new password for
+            this account — and, when the account is the caller's own, whether
+            `PUT /auth/password` will. True only when `auth_source` is
+            `local`; an `ldap` or `oidc` account keeps its credentials with
+            the provider and has no local password, so either endpoint
+            returns `409`. Unlike `role_editable` this depends on
+            `auth_source` alone, but it is still computed server-side, from
+            the same predicate that guards both endpoints, so a client never
+            offers a password control the server will reject.
         disabled:
           type: boolean
         created_at:
@@ -3766,6 +3779,9 @@ paths:
         Returns `409` when auth is disabled, and `409` when the account's
         `auth_source` is not `local` (that is, `ldap` or `oidc`) — an
         externally-authenticated account has no local password to change.
+        That second case is exactly `password_editable: false` on the `User`
+        schema; both are computed from one server-side predicate, so a client
+        can hide this form instead of discovering the `409`.
       tags: [auth]
       requestBody:
         required: true
@@ -3936,7 +3952,9 @@ paths:
       description: |
         Returns `409` when the account's `auth_source` is not `local` (that
         is, `ldap` or `oidc`) — an externally-authenticated account has no
-        local password to set.
+        local password to set. This is exactly `password_editable: false` on
+        the `User` schema; both are computed from one server-side predicate,
+        so a client can hide the control instead of discovering the `409`.
       tags: [users]
       requestBody:
         required: true

@@ -205,7 +205,7 @@ func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOr500(w, r, err, "retrieve")
 		return
 	}
-	if target.AuthSource != store.AuthSourceLocal {
+	if !passwordEditable(target) {
 		writeProblem(w, r, http.StatusConflict, externalPasswordSetConflictDetail(target))
 		return
 	}
@@ -287,6 +287,26 @@ func directoryOwnsRole(u store.User, ldapRoleSource, oidcRoleSource string) bool
 	default:
 		return false
 	}
+}
+
+// passwordEditable reports whether this account has a local password to set at
+// all. Only local accounts do: an LDAP or OIDC account's credentials live with
+// the provider, and its stored hash is an unusable placeholder that no password
+// would ever match.
+//
+// Like directoryOwnsRole above, this is deliberately a package-level function
+// and the single source of truth for the rule. Its three consumers — the admin
+// guard in setPassword, the self-service guard in changePassword, and the
+// password_editable field on the wire format (see toUserResponse) — must never
+// be able to disagree, because a client that is told a password is settable and
+// then gets a 409 is exactly the bug the field exists to prevent.
+//
+// Unlike directoryOwnsRole this needs no role-source arguments: the rule turns
+// on auth_source alone. It stays a named predicate anyway so the wire field and
+// the two guards share one definition rather than three copies of the same
+// comparison.
+func passwordEditable(u store.User) bool {
+	return u.AuthSource == store.AuthSourceLocal
 }
 
 // externalAuthority names the system that owns an externally-authenticated

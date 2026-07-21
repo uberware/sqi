@@ -1020,6 +1020,120 @@ func TestUsers_RoleEditableIsPerSource(t *testing.T) {
 	}
 }
 
+// password_editable is the symmetric companion to role_editable: the server
+// telling the client what its own set-password guard will do. Unlike the role
+// rule this one turns on auth_source alone, but it is still computed
+// server-side so the advertised control and the enforced guard share a single
+// definition. Note that it does NOT vary with either role_source — the two
+// rules are independent, and coupling them would freeze a local account's
+// password the moment a directory was put in directory mode.
+func TestUsers_ResponsePasswordEditable(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		want       bool
+	}{
+		{"local account", store.AuthSourceLocal, true},
+		{"ldap account", store.AuthSourceLDAP, false},
+		{"oidc account", store.AuthSourceOIDC, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: tt.authSource, PasswordHash: "!external",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			srv := newAuthTestServer(t, st)
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			resp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("got %d, want 200: %s", resp.StatusCode, mustReadAll(t, resp))
+			}
+			var got struct {
+				PasswordEditable bool `json:"password_editable"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.PasswordEditable != tt.want {
+				t.Errorf("password_editable: got %v, want %v", got.PasswordEditable, tt.want)
+			}
+		})
+	}
+}
+
+// The advertised value and the enforced behavior must agree: whatever
+// password_editable says, PUT /users/{id}/password must succeed exactly when
+// it is true. This is the test that fails if only one of the two is changed —
+// it asserts them against each other, not against a hardcoded expectation, so
+// moving either off the shared predicate breaks it.
+func TestUsers_PasswordEditableMatchesSetPasswordOutcome(t *testing.T) {
+	for _, authSource := range []string{store.AuthSourceLocal, store.AuthSourceLDAP, store.AuthSourceOIDC} {
+		t.Run(authSource, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: authSource, PasswordHash: "!external",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			srv := newAuthTestServer(t, st)
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			getResp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			var advertised struct {
+				PasswordEditable bool `json:"password_editable"`
+			}
+			if err := json.NewDecoder(getResp.Body).Decode(&advertised); err != nil {
+				getResp.Body.Close()
+				t.Fatalf("decode: %v", err)
+			}
+			getResp.Body.Close()
+
+			putResp := doRequest(t, http.MethodPut, srv.URL+"/api/v1/users/"+target.ID+"/password",
+				map[string]string{"password": "newpassword123"}, cookie)
+			defer putResp.Body.Close()
+
+			accepted := putResp.StatusCode == http.StatusNoContent
+			if accepted != advertised.PasswordEditable {
+				t.Errorf("password_editable=%v but PUT returned %d — the advertised value and the guard disagree",
+					advertised.PasswordEditable, putResp.StatusCode)
+			}
+		})
+	}
+}
+
+// passwordEditable is the single predicate behind the admin set-password
+// guard, the self-service change-password guard, and the password_editable
+// wire field. Asserting it directly pins the rule itself: only a local account
+// has a password this server can set.
+func TestPasswordEditable(t *testing.T) {
+	tests := []struct {
+		authSource string
+		want       bool
+	}{
+		{store.AuthSourceLocal, true},
+		{store.AuthSourceLDAP, false},
+		{store.AuthSourceOIDC, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.authSource, func(t *testing.T) {
+			if got := passwordEditable(store.User{AuthSource: tt.authSource}); got != tt.want {
+				t.Errorf("passwordEditable(%q) = %v, want %v", tt.authSource, got, tt.want)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // newOIDCUsersServer builds an auth-enabled router carrying BOTH role-source
