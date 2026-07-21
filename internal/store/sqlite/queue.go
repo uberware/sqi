@@ -12,14 +12,16 @@ import (
 
 const queueCols = `
 	id, farm_id, name, description, priority, max_concurrent_tasks, paused,
-	max_attempts, retry_delay_seconds, failure_limit, created_at, updated_at`
+	max_attempts, retry_delay_seconds, failure_limit, run_as_user, run_as_group,
+	created_at, updated_at`
 
 const (
 	sqlInsertQueue = `
 INSERT INTO queues (
 	id, farm_id, name, description, priority, max_concurrent_tasks, paused,
-	max_attempts, retry_delay_seconds, failure_limit, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	max_attempts, retry_delay_seconds, failure_limit, run_as_user, run_as_group,
+	created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + queueCols
 
 	sqlGetQueue = `SELECT ` + queueCols + ` FROM queues WHERE id = ?`
@@ -27,7 +29,8 @@ RETURNING ` + queueCols
 	sqlUpdateQueue = `
 UPDATE queues
 SET farm_id = ?, name = ?, description = ?, priority = ?, max_concurrent_tasks = ?, paused = ?,
-	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?, updated_at = ?
+	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?, run_as_user = ?, run_as_group = ?,
+	updated_at = ?
 WHERE id = ?
 RETURNING ` + queueCols
 
@@ -46,16 +49,18 @@ func scanQueue(row scanner) (store.Queue, error) {
 	var paused int
 	var createdAt, updatedAt string
 	var maxAtt, delay, failLim sql.NullInt64
+	var runAsUser, runAsGroup sql.NullString
 	if err := row.Scan(
 		&q.ID, &q.FarmID, &q.Name, &q.Description,
 		&q.Priority, &q.MaxConcurrentTasks, &paused,
-		&maxAtt, &delay, &failLim,
+		&maxAtt, &delay, &failLim, &runAsUser, &runAsGroup,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return store.Queue{}, err
 	}
 	q.Paused = paused != 0
 	q.MaxAttempts, q.RetryDelaySeconds, q.FailureLimit = intPtr(maxAtt), intPtr(delay), intPtr(failLim)
+	q.RunAsUser, q.RunAsGroup = strPtr(runAsUser), strPtr(runAsGroup)
 	q.CreatedAt = mustTime(createdAt)
 	q.UpdatedAt = mustTime(updatedAt)
 	return q, nil
@@ -68,6 +73,7 @@ func (s *Store) CreateQueue(ctx context.Context, queue store.Queue) (store.Queue
 		queue.ID, queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
+		nullStrPtr(queue.RunAsUser), nullStrPtr(queue.RunAsGroup),
 		now, now)
 	out, err := scanQueue(row)
 	return out, mapErr(err)
@@ -146,6 +152,7 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 		queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
+		nullStrPtr(queue.RunAsUser), nullStrPtr(queue.RunAsGroup),
 		now, queue.ID)
 	out, err := scanQueue(row)
 	return out, mapErr(err)

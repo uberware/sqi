@@ -3,10 +3,13 @@
 package migrations_test
 
 import (
+	"database/sql"
 	"errors"
 	"io/fs"
 	"strings"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
@@ -78,4 +81,79 @@ func TestMigration00024_ExternalIDRoundTrip(t *testing.T) {
 	if u.ExternalID != "guid-1" {
 		t.Fatalf("ExternalID = %q, want %q", u.ExternalID, "guid-1")
 	}
+}
+
+// TestMigrations_00025_QueueRunAsUserDownUp pins that 00025_queue_run_as_user
+// applies cleanly, that its Down migration actually drops both new columns
+// (the tricky direction: SQLite's ALTER TABLE DROP COLUMN is refused when a
+// CHECK constraint references the column, which is exactly why this
+// migration deliberately carries none), and that re-applying Up restores
+// them.
+func TestMigrations_00025_QueueRunAsUserDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasColumn(t, db, "queues", "run_as_user") {
+		t.Fatal("run_as_user column missing after Up")
+	}
+	if !hasColumn(t, db, "queues", "run_as_group") {
+		t.Fatal("run_as_group column missing after Up")
+	}
+
+	if err := goose.DownTo(db, ".", 24); err != nil {
+		t.Fatalf("goose.DownTo(24): %v", err)
+	}
+	if hasColumn(t, db, "queues", "run_as_user") {
+		t.Fatal("run_as_user column still present after Down")
+	}
+	if hasColumn(t, db, "queues", "run_as_group") {
+		t.Fatal("run_as_group column still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasColumn(t, db, "queues", "run_as_user") {
+		t.Fatal("run_as_user column missing after re-Up")
+	}
+	if !hasColumn(t, db, "queues", "run_as_group") {
+		t.Fatal("run_as_group column missing after re-Up")
+	}
+}
+
+// hasColumn reports whether table has a column named column.
+func hasColumn(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan table_info row: %v", err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows: %v", err)
+	}
+	return false
 }

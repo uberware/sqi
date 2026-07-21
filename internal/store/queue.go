@@ -23,8 +23,18 @@ type Queue struct {
 	MaxAttempts       *int
 	RetryDelaySeconds *int
 	FailureLimit      *int
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// RunAsUser and RunAsGroup are the OS identity that tasks in this queue
+	// execute as. Nil RunAsUser means no isolation: tasks run as the worker's
+	// own user, which is the pre-isolation behavior. Nil RunAsGroup means the
+	// target user's primary group.
+	//
+	// Deliberately NOT part of the Queue -> Farm -> server-default cascade used
+	// by the retry-policy fields above: a farm-wide default would silently
+	// apply an OS identity to queues whose owner never asked for one.
+	RunAsUser  *string
+	RunAsGroup *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // QueueSortField is a column by which [QueueStore.ListQueues] results can be

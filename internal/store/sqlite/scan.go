@@ -154,6 +154,26 @@ func nullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
+// nullStrPtr converts a nullable Go string pointer to a value usable as a
+// SQLite bind argument: nil becomes SQL NULL, otherwise the dereferenced
+// string.
+func nullStrPtr(p *string) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// strPtr converts a sql.NullString read from a nullable TEXT column back to
+// a Go *string; NULL becomes nil.
+func strPtr(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	v := n.String
+	return &v
+}
+
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
 // mapErr translates driver-level errors to the sentinel errors defined in
