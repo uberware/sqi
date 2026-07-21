@@ -44,7 +44,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -53,12 +52,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/config"
-	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 )
 
@@ -75,7 +75,11 @@ const (
 	kcAdminUser = "admin"
 	kcAdminPass = "admin"
 
-	kcRealm        = "sqi"
+	// kcRealm is the realm name an EXTERNALLY supplied provider is expected to
+	// hold the fixture in (SQI_TEST_OIDC_ISSUER). The managed container gets a
+	// fresh realm per test instead — see startKeycloak.
+	kcRealm = "sqi"
+
 	kcClientID     = "sqi-server"
 	kcClientSecret = "test-client-secret"
 
@@ -92,10 +96,13 @@ const (
 	kcAdminTokenAttempts = 4
 )
 
-// keycloak is a running identity provider under test.
+// keycloak is a seeded realm on a running identity provider under test.
 type keycloak struct {
 	// BaseURL is the provider's root, e.g. http://127.0.0.1:34567.
 	BaseURL string
+	// realm is the realm this test's fixture lives in. It is per-test, not a
+	// constant — see startKeycloak.
+	realm string
 	// container is the docker container name, empty when the provider was
 	// supplied externally via SQI_TEST_OIDC_ISSUER.
 	container string
@@ -107,42 +114,87 @@ type keycloak struct {
 
 // Issuer is the realm's OIDC issuer, which is what sqi is configured with.
 func (k *keycloak) Issuer() string {
-	return k.BaseURL + "/realms/" + kcRealm
+	return k.BaseURL + "/realms/" + k.realm
 }
 
-// startKeycloak returns a provider to test against, seeded for redirectURI.
+var (
+	sharedKCOnce sync.Once
+	// sharedKC is the one container every test in this file shares; nil when
+	// the boot failed, with the reason in sharedKCErr.
+	sharedKC    *keycloak
+	sharedKCErr string
+	// kcRealmSeq names each test's realm apart from every other test's.
+	kcRealmSeq atomic.Int64
+)
+
+// startKeycloak returns a freshly seeded realm to test against.
 //
 // SQI_TEST_OIDC_ISSUER takes precedence: point it at a realm that already holds
-// the fixture below and no container is started. Otherwise a throwaway Keycloak
-// container is started, seeded, and removed via t.Cleanup. The test skips — it
-// does not fail — when Docker is unavailable, so a developer without Docker is
-// never blocked.
+// the fixture below and no container is started. Otherwise the package's single
+// shared Keycloak is used, and this test gets a brand new realm on it.
+//
+// One container, many realms — rather than a container per test — because
+// Keycloak takes about thirteen seconds to boot and about a tenth of a second
+// to create a realm, and a realm is a full isolation boundary for everything
+// these tests touch: users, groups, clients, sessions, and the "sub" values
+// they hang identity off. Even TestOIDC_RenameAtProviderKeepsAccount, which
+// mutates a user, is contained by it exactly as well as a private container
+// would contain it.
+//
+// The test skips — it does not fail — when Docker is unavailable, so a
+// developer without Docker is never blocked.
 func startKeycloak(t *testing.T, redirectURI, postLogoutURI string) *keycloak {
 	t.Helper()
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	if issuer := os.Getenv("SQI_TEST_OIDC_ISSUER"); issuer != "" {
 		t.Logf("using externally provided issuer at %s (SQI_TEST_OIDC_ISSUER)", issuer)
 		base := strings.TrimSuffix(issuer, "/realms/"+kcRealm)
-		return &keycloak{BaseURL: base, client: httpClient}
+		return &keycloak{
+			BaseURL: base,
+			realm:   kcRealm,
+			client:  &http.Client{Timeout: 30 * time.Second},
+		}
 	}
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("skipping OIDC integration test: docker not found on PATH " +
-			"(install Docker/colima/podman, or set SQI_TEST_OIDC_ISSUER to an existing realm)")
-	}
-	infoCtx, infoCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer infoCancel()
-	if out, err := exec.CommandContext(infoCtx, "docker", "info").CombinedOutput(); err != nil {
-		t.Skipf("skipping OIDC integration test: docker daemon not responding: %v\n%s", err, out)
+	requireDocker(t, "OIDC", "set SQI_TEST_OIDC_ISSUER to an existing realm")
+
+	// The probe above is per-test, so a skip reaches every test; the boot below
+	// happens once and its failure has to be replayed to the tests that did not
+	// run it.
+	sharedKCOnce.Do(func() {
+		k, err := bootKeycloak(freePort(t))
+		if err != nil {
+			sharedKCErr = err.Error()
+			return
+		}
+		sharedKC = k
+		// Not t.Cleanup: the container outlives the test that happened to boot
+		// it. TestMain is the only hook that runs after the last one.
+		packageCleanups = append(packageCleanups, func() { removeContainer(k.container) })
+	})
+	if sharedKC == nil {
+		t.Skipf("skipping OIDC integration test: cannot start %s: %s", keycloakImage, sharedKCErr)
 	}
 
-	port := freePort(t)
+	k := &keycloak{
+		BaseURL:   sharedKC.BaseURL,
+		realm:     fmt.Sprintf("sqi-%d", kcRealmSeq.Add(1)),
+		container: sharedKC.container,
+		client:    sharedKC.client,
+	}
+	k.seed(t, redirectURI, postLogoutURI)
+	return k
+}
+
+// bootKeycloak starts the container and waits for it to answer. It returns an
+// error rather than taking a *testing.T because it runs under a sync.Once, on
+// whichever test got there first — reporting through that test's T would make
+// the outcome invisible to the others.
+func bootKeycloak(port int) (*keycloak, error) {
 	name := fmt.Sprintf("sqi-oidc-it-%d", port)
 
 	// --rm so an aborted run (SIGINT, panic) does not leak a container; the
-	// explicit remove in Cleanup then becomes a no-op rather than the only
+	// explicit remove in TestMain then becomes a no-op rather than the only
 	// thing standing between this test and a pile of orphans.
 	//
 	// start-dev rather than start: it skips the production hostname/HTTPS
@@ -160,31 +212,26 @@ func startKeycloak(t *testing.T, redirectURI, postLogoutURI string) *keycloak {
 		keycloakImage, "start-dev",
 	).CombinedOutput()
 	if err != nil {
-		t.Skipf("skipping OIDC integration test: cannot start %s: %v\n%s", keycloakImage, err, out)
+		return nil, fmt.Errorf("%w\n%s", err, out)
 	}
 
 	k := &keycloak{
 		BaseURL:   fmt.Sprintf("http://127.0.0.1:%d", port),
 		container: name,
-		client:    httpClient,
+		client:    &http.Client{Timeout: 30 * time.Second},
 	}
-	t.Cleanup(func() {
-		rmCtx, rmCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer rmCancel()
-		_ = exec.CommandContext(rmCtx, "docker", "rm", "-f", name).Run() //nolint:errcheck // best-effort teardown
-	})
-
-	k.waitReady(t)
-	k.seed(t, redirectURI, postLogoutURI)
-	return k
+	if err := k.waitReady(); err != nil {
+		removeContainer(name)
+		return nil, err
+	}
+	return k, nil
 }
 
 // waitReady blocks until the provider answers a discovery request for the realm
 // it ships with. Polling beats a fixed sleep in both directions: a sleep long
 // enough for a cold CI runner is wasted on every local run, and one tuned for
 // local is flaky on CI.
-func (k *keycloak) waitReady(t *testing.T) {
-	t.Helper()
+func (k *keycloak) waitReady() error {
 	deadline := time.Now().Add(kcReadyTimeout)
 	var last string
 	for time.Now().Before(deadline) {
@@ -193,7 +240,7 @@ func (k *keycloak) waitReady(t *testing.T) {
 			k.BaseURL+"/realms/master/.well-known/openid-configuration", nil)
 		if err != nil {
 			cancel()
-			t.Fatalf("build discovery probe: %v", err)
+			return fmt.Errorf("build discovery probe: %w", err)
 		}
 		resp, err := k.client.Do(req)
 		if err == nil {
@@ -201,7 +248,7 @@ func (k *keycloak) waitReady(t *testing.T) {
 			_ = resp.Body.Close()
 			cancel()
 			if code == http.StatusOK {
-				return
+				return nil
 			}
 			last = fmt.Sprintf("discovery answered HTTP %d", code)
 		} else {
@@ -210,7 +257,7 @@ func (k *keycloak) waitReady(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("keycloak did not become ready within %s: %s", kcReadyTimeout, last)
+	return fmt.Errorf("keycloak did not become ready within %s: %s", kcReadyTimeout, last)
 }
 
 // ── Admin API ─────────────────────────────────────────────────────────────────
@@ -336,7 +383,7 @@ func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 	t.Helper()
 
 	k.admin(t, http.MethodPost, "", map[string]any{
-		"realm":   kcRealm,
+		"realm":   k.realm,
 		"enabled": true,
 		// Keycloak treats username as read-only unless a realm opts into
 		// renames, rejecting the change with error-user-attribute-read-only.
@@ -347,10 +394,10 @@ func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 	}, http.StatusCreated)
 
 	for _, g := range []string{kcGroupAdmins, kcGroupArtists} {
-		k.admin(t, http.MethodPost, "/"+kcRealm+"/groups", map[string]any{"name": g}, http.StatusCreated)
+		k.admin(t, http.MethodPost, "/"+k.realm+"/groups", map[string]any{"name": g}, http.StatusCreated)
 	}
 
-	k.admin(t, http.MethodPost, "/"+kcRealm+"/clients", map[string]any{
+	k.admin(t, http.MethodPost, "/"+k.realm+"/clients", map[string]any{
 		"clientId":                  kcClientID,
 		"enabled":                   true,
 		"protocol":                  "openid-connect",
@@ -407,14 +454,14 @@ func (k *keycloak) createUser(t *testing.T, username, pass, displayName, group s
 	if group != "" {
 		payload["groups"] = []string{"/" + group}
 	}
-	k.admin(t, http.MethodPost, "/"+kcRealm+"/users", payload, http.StatusCreated)
+	k.admin(t, http.MethodPost, "/"+k.realm+"/users", payload, http.StatusCreated)
 }
 
 // userID looks up a user's Keycloak id, which is also the "sub" claim.
 func (k *keycloak) userID(t *testing.T, username string) string {
 	t.Helper()
 	raw := k.admin(t, http.MethodGet,
-		"/"+kcRealm+"/users?exact=true&username="+url.QueryEscape(username), nil, http.StatusOK)
+		"/"+k.realm+"/users?exact=true&username="+url.QueryEscape(username), nil, http.StatusOK)
 	var users []struct {
 		ID string `json:"id"`
 	}
@@ -495,71 +542,9 @@ func newOIDCFixture(t *testing.T, mutate func(*config.OIDCConfig)) *oidcFixture 
 func (f *oidcFixture) sqiURL(path string) string { return "http://" + f.sqiAddr + path }
 
 // startOIDCServer boots a full sqi-server with auth and the given OIDC config.
-//
-// Self-contained rather than an option on startServer, following the
-// startLDAPServer precedent: this file is behind a build tag and the shared
-// harness is not, so keeping the variant local avoids changing a helper that
-// every untagged test depends on.
 func startOIDCServer(t *testing.T, httpAddr string, oidcCfg config.OIDCConfig) *testServer {
 	t.Helper()
-
-	natsAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	tmpDir := t.TempDir()
-
-	cfg := server.Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
-		SQLitePath:         tmpDir + "/sqi-oidc.db",
-		CheckpointInterval: time.Minute,
-		Scheduler: scheduler.Config{
-			AssignInterval:         100 * time.Millisecond,
-			AssignBatchSize:        10,
-			AssignWorkers:          2,
-			WorkerTimeout:          30 * time.Second,
-			HeartbeatSweepInterval: 15 * time.Second,
-		},
-		DiscoveryEnabled: false,
-
-		AuthEnabled:      true,
-		AuthSessionTTL:   time.Hour,
-		AuthCookieName:   "sqi_session",
-		AuthCookieSecure: "false",
-		AuthOIDC:         oidcCfg,
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	srv := server.New(cfg, logger, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- srv.Run(ctx) }()
-
-	select {
-	case err := <-done:
-		cancel()
-		t.Fatalf("server exited during startup: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, cancel: cancel, done: done}
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-		}
-	})
-
-	if !waitForTCP(t, httpAddr, 20*time.Second) {
-		t.Fatal("HTTP server did not start listening")
-	}
-	if !waitForReadyz(t, httpAddr, 30*time.Second) {
-		t.Fatal("server did not become ready")
-	}
-	return ts
+	return startAuthServer(t, httpAddr, "sqi-oidc.db", func(c *server.Config) { c.AuthOIDC = oidcCfg })
 }
 
 // ── Browser ───────────────────────────────────────────────────────────────────
@@ -835,22 +820,20 @@ func (f *oidcFixture) me(b *browser) principal {
 	return out
 }
 
-// account reads a stored user row. /auth/me describes the authenticated
-// principal and deliberately says nothing about which backend vouched for it,
-// so auth_source can only be observed here. Requires an admin browser.
-func (f *oidcFixture) account(b *browser, id string) struct {
+// storedAccount is the subset of a GET /users/{id} row these tests assert on.
+type storedAccount struct {
 	ID         string `json:"id"`
 	Username   string `json:"username"`
 	Role       string `json:"role"`
 	AuthSource string `json:"auth_source"`
-} {
+}
+
+// account reads a stored user row. /auth/me describes the authenticated
+// principal and deliberately says nothing about which backend vouched for it,
+// so auth_source can only be observed here. Requires an admin browser.
+func (f *oidcFixture) account(b *browser, id string) storedAccount {
 	b.t.Helper()
-	var out struct {
-		ID         string `json:"id"`
-		Username   string `json:"username"`
-		Role       string `json:"role"`
-		AuthSource string `json:"auth_source"`
-	}
+	var out storedAccount
 	status, _, body := b.request(http.MethodGet, f.sqiURL("/api/v1/users/"+id), nil)
 	if status != http.StatusOK {
 		b.t.Fatalf("GET /users/%s: HTTP %d\n%s", id, status, body)
@@ -1039,7 +1022,7 @@ func TestOIDC_RenameAtProviderKeepsAccount(t *testing.T) {
 	// Rename at the provider. Keycloak's "sub" is the user's immutable id, not
 	// the username, so this is the same identity wearing a new name.
 	sub := f.kc.userID(t, "alice")
-	f.kc.admin(t, http.MethodPut, "/"+kcRealm+"/users/"+sub,
+	f.kc.admin(t, http.MethodPut, "/"+f.kc.realm+"/users/"+sub,
 		map[string]any{"username": "alice.smith"}, http.StatusNoContent)
 	if got := f.kc.userID(t, "alice.smith"); got != sub {
 		t.Fatalf("the rename changed the subject (%s -> %s); the fixture no longer tests what it claims to", sub, got)

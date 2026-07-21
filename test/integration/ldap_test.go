@@ -39,7 +39,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,7 +47,6 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/config"
-	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 )
 
@@ -100,15 +98,7 @@ func startDirectory(t *testing.T) *directory {
 		return &directory{URL: url}
 	}
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("skipping LDAP integration test: docker not found on PATH " +
-			"(install Docker/colima/podman, or set SQI_TEST_LDAP_URL to an existing directory)")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if out, err := exec.CommandContext(ctx, "docker", "info").CombinedOutput(); err != nil {
-		t.Skipf("skipping LDAP integration test: docker daemon not responding: %v\n%s", err, out)
-	}
+	requireDocker(t, "LDAP", "set SQI_TEST_LDAP_URL to an existing directory")
 
 	port := freePort(t)
 	name := fmt.Sprintf("sqi-ldap-it-%d", port)
@@ -154,11 +144,7 @@ func startDirectory(t *testing.T) *directory {
 	}
 
 	d := &directory{URL: fmt.Sprintf("ldap://127.0.0.1:%d", port), container: name}
-	t.Cleanup(func() {
-		rmCtx, rmCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer rmCancel()
-		_ = exec.CommandContext(rmCtx, "docker", "rm", "-f", name).Run() //nolint:errcheck // best-effort teardown
-	})
+	removeContainerOnCleanup(t, name)
 
 	d.waitReady(t)
 	d.seed(t)
@@ -510,72 +496,10 @@ func templateBindConfig(url string) config.LDAPConfig {
 }
 
 // startLDAPServer boots a full sqi-server with auth and the given LDAP config.
-//
-// Self-contained rather than an option on startServer, following the
-// startLoadServer precedent: this file is behind a build tag and the shared
-// harness is not, so keeping the variant local avoids changing a helper that
-// every untagged test depends on.
 func startLDAPServer(t *testing.T, ldapCfg config.LDAPConfig) *testServer {
 	t.Helper()
-
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	natsAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	tmpDir := t.TempDir()
-
-	cfg := server.Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
-		SQLitePath:         tmpDir + "/sqi-ldap.db",
-		CheckpointInterval: time.Minute,
-		Scheduler: scheduler.Config{
-			AssignInterval:         100 * time.Millisecond,
-			AssignBatchSize:        10,
-			AssignWorkers:          2,
-			WorkerTimeout:          30 * time.Second,
-			HeartbeatSweepInterval: 15 * time.Second,
-		},
-		DiscoveryEnabled: false,
-
-		AuthEnabled:      true,
-		AuthSessionTTL:   time.Hour,
-		AuthCookieName:   "sqi_session",
-		AuthCookieSecure: "false",
-		AuthLDAP:         ldapCfg,
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	srv := server.New(cfg, logger, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- srv.Run(ctx) }()
-
-	select {
-	case err := <-done:
-		cancel()
-		t.Fatalf("server exited during startup: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, cancel: cancel, done: done}
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-		}
-	})
-
-	if !waitForTCP(t, httpAddr, 20*time.Second) {
-		t.Fatal("HTTP server did not start listening")
-	}
-	if !waitForReadyz(t, httpAddr, 30*time.Second) {
-		t.Fatal("server did not become ready")
-	}
-	return ts
+	return startAuthServer(t, httpAddr, "sqi-ldap.db", func(c *server.Config) { c.AuthLDAP = ldapCfg })
 }
 
 // ── Login helper ──────────────────────────────────────────────────────────────

@@ -40,14 +40,23 @@ var (
 	errWorkerBinary  error
 )
 
-// TestMain runs all tests in the integration package and removes the worker
-// binary directory afterwards.  The directory cannot be cleaned up via
-// t.TempDir() because the binary is cached across multiple tests via
-// sync.Once; TestMain is the only reliable cleanup hook.
+// packageCleanups holds teardown for resources that are shared across tests and
+// therefore cannot be released by any one test's t.Cleanup — the tagged OIDC
+// suite's single Keycloak container is the one caller today. Appended to under
+// the same sync.Once that creates the resource, and drained by TestMain.
+var packageCleanups []func()
+
+// TestMain runs all tests in the integration package and releases what outlives
+// them: the worker binary directory (cached across tests via sync.Once, so
+// t.TempDir() cannot own it) and anything registered in packageCleanups.
+// TestMain is the only reliable hook for both.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if workerBinaryDir != "" {
 		_ = os.RemoveAll(workerBinaryDir)
+	}
+	for _, fn := range packageCleanups {
+		fn()
 	}
 	os.Exit(code)
 }
