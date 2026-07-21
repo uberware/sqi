@@ -192,8 +192,37 @@ func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 
 // reassignAndReportFailed simulates a worker re-leasing the retried task: it
 // opens a new attempt on workerID, then reports that attempt failed.
+// reassignAndReportFailed models a genuine second attempt: a task sitting in
+// ready after a retry is assigned to a worker and starts running before it
+// fails again. The assigned/running steps are not decoration — UpdateTaskStatus
+// enforces the state machine, and ready → failed is not an arrow. Skipping them
+// would have this helper exercise a transition the store rejects (and rightly:
+// a "failed" landing on a ready task means a stale attempt's message was
+// redelivered after a retry already revived the task, which must not re-fail
+// it).
 func (h *failureHarness) reassignAndReportFailed(taskID, workerID string) {
 	h.t.Helper()
+	ctx := h.t.Context()
+	task, err := h.st.GetTask(ctx, taskID)
+	if err != nil {
+		h.t.Fatalf("reassignAndReportFailed: GetTask: %v", err)
+	}
+	var path []store.TaskStatus
+	switch task.Status {
+	case store.TaskStatusReady:
+		path = []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusRunning}
+	case store.TaskStatusAssigned:
+		path = []store.TaskStatus{store.TaskStatusRunning}
+	case store.TaskStatusRunning:
+		// already executing; the caller is driving a repeat failure
+	default:
+		h.t.Fatalf("reassignAndReportFailed: cannot reassign from %q", task.Status)
+	}
+	for _, st := range path {
+		if err := h.st.UpdateTaskStatus(ctx, taskID, st); err != nil {
+			h.t.Fatalf("reassignAndReportFailed: UpdateTaskStatus(%q): %v", st, err)
+		}
+	}
 	h.newAttempt(taskID, workerID)
 	h.reportFailed(taskID)
 }

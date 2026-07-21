@@ -131,6 +131,38 @@ func insertTask(t *testing.T, s *sqlite.Store, id, jobID, stepID string) store.T
 	return task
 }
 
+// walkTaskTo drives a freshly-inserted (pending) task to the wanted status
+// along legal arrows only, so the fixture itself never depends on the
+// enforcement being absent.
+func walkTaskTo(t *testing.T, s *sqlite.Store, taskID string, want store.TaskStatus) {
+	t.Helper()
+	ctx := context.Background()
+
+	var path []store.TaskStatus
+	switch want {
+	case store.TaskStatusPending:
+		return
+	case store.TaskStatusReady:
+		path = []store.TaskStatus{store.TaskStatusReady}
+	case store.TaskStatusAssigned:
+		path = []store.TaskStatus{store.TaskStatusReady, store.TaskStatusAssigned}
+	case store.TaskStatusRunning:
+		path = []store.TaskStatus{store.TaskStatusReady, store.TaskStatusAssigned, store.TaskStatusRunning}
+	case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
+		path = []store.TaskStatus{
+			store.TaskStatusReady, store.TaskStatusAssigned, store.TaskStatusRunning, want,
+		}
+	default:
+		t.Fatalf("walkTaskTo: unsupported target status %q", want)
+	}
+
+	for _, st := range path {
+		if err := s.UpdateTaskStatus(ctx, taskID, st); err != nil {
+			t.Fatalf("walkTaskTo(%q): UpdateTaskStatus(%q): %v", want, st, err)
+		}
+	}
+}
+
 // ── Farm CRUD ─────────────────────────────────────────────────────────────────
 
 func TestFarm_CreateAndGet(t *testing.T) {
@@ -1098,9 +1130,7 @@ func TestTask_UpdateStatus(t *testing.T) {
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
 
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusRunning)
 	task, err := s.GetTask(ctx, "t1")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
@@ -1733,9 +1763,7 @@ func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus running: %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusRunning)
 
 	got, err := s.GetTask(ctx, "t1")
 	if err != nil {

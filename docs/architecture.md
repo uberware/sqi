@@ -393,13 +393,40 @@ heartbeat-sweep tick that handles offline-worker cleanup, controlled by
                └──────────┘ └──────────┘  └──────────────┘
 ```
 
-Transitions are validated — only the arrows above are permitted. Any other
-transition returns an error from `store.TransitionTask`. The auto-retry
-re-queue described below (`running` → `ready` on a transient failure) is a
-**separate, policy-driven store call** (`RequeueTaskForRetry`), not a
-`TransitionTask` arrow — the diagram above still reflects every state a task
-can be validated *into* via `TransitionTask`; auto-retry sends a task back to
-`ready` directly instead of landing it on `failed` at all.
+Transitions are validated by `store.ValidateTaskTransition`
+(`internal/store/statemachine.go`) and enforced by `UpdateTaskStatus` in both
+store implementations: the SQLite store reads the current status and writes the
+new one inside a single transaction, so the check cannot race a concurrent
+writer, and the in-memory fake does the same under its mutex. A transition
+outside the permitted set returns `store.ErrInvalidTransition` and leaves the
+row unchanged.
+
+Two rules keep enforcement safe given that task status arrives over JetStream
+(at-least-once delivery):
+
+- **Writing a task's current status is a no-op, not an error** — a redelivered
+  message must not fail.
+- **The consumer acks an invalid transition instead of Nak'ing it.** A message
+  describing a state the task has already left cannot become legal on
+  redelivery, so Nak'ing would loop forever. It is discarded with a warning,
+  the same treatment a malformed payload gets.
+
+Cancellation follows the same principle. `CancelTask` checks for a terminal
+status before writing, but the check and the write are separate operations, so
+a task can finish in between and the state machine then rejects the cancel.
+That is treated as the no-op it would have been had the check seen the newer
+value — canceling a completed task is not an error, regardless of which side
+of the race the caller landed on. Other store failures still propagate.
+
+Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
+though it appears to skip `running`: the worker publishes `running` first, but
+that publish is best-effort and gives up after `MaxRetries`, so it can be lost
+while the task still runs to completion. Rejecting the terminal message would
+strand finished work. Separately, the auto-retry re-queue described below
+(`running` → `ready` on a transient failure) is a **policy-driven store call**
+(`RequeueTaskForRetry`) with its own guarded SQL, as are the other bulk paths
+(`RetryTasks`, `TransitionStepPendingTasks`, `CancelJobTasks`, and the reclaim
+sweeps); none of them route through `UpdateTaskStatus`.
 
 ### Auto-retry on worker-reported failure
 
