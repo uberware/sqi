@@ -28,8 +28,9 @@ info:
     ## Authorization
 
     Every route under `/api/v1` except `POST /auth/login`, `POST
-    /auth/logout`, `GET /auth/me`, `GET /version`, and `GET /openapi.yaml` is
-    gated on the caller's role holding a specific permission (`jobs.read`,
+    /auth/logout`, `GET /auth/me`, `GET /auth/providers`, `GET
+    /auth/oidc/login`, `GET /auth/oidc/callback`, `GET /version`, and `GET
+    /openapi.yaml` is gated on the caller's role holding a specific permission (`jobs.read`,
     `jobs.write`, `workers.read`, `workers.manage`, `infra.read`,
     `infra.manage`, `products.read`, `products.manage`, `diagnostics.read`,
     `users.read`, `users.manage`, `apikeys.self`, `apikeys.admin`) — see the
@@ -1453,7 +1454,8 @@ components:
 
     User:
       type: object
-      required: [id, username, role, auth_source, role_editable, disabled, created_at, updated_at]
+      required:
+        [id, username, role, auth_source, role_editable, password_editable, disabled, created_at, updated_at]
       properties:
         id:
           type: string
@@ -1466,24 +1468,39 @@ components:
           enum: [admin, operator, user, read-only]
         auth_source:
           type: string
-          enum: [local, ldap]
+          enum: [local, ldap, oidc]
           description: >
             Credential backend for this account. `local` verifies the stored
-            password hash; `ldap` verifies against the configured directory.
-            Set at creation and immutable. Accounts created through
-            `POST /users` are always `local`; `ldap` accounts are provisioned
-            just-in-time on first successful directory login.
+            password hash; `ldap` verifies against the configured directory;
+            `oidc` verifies against the configured OIDC provider. Set at
+            creation and immutable. Accounts created through `POST /users` are
+            always `local`; `ldap` and `oidc` accounts are provisioned
+            just-in-time on first successful login against that source.
         role_editable:
           type: boolean
           description: >
             Whether `PATCH /users/{id}` will accept a `role` change for this
-            account. False only when `auth_source` is `ldap` **and**
-            `auth.ldap.role_source` is `directory`, in which case the group
-            mapping owns the role and a role edit returns `409`. Computed
-            server-side because `auth.ldap.role_source` is not otherwise
-            exposed: a client cannot derive this from `auth_source` alone, and
-            one that tries will wrongly lock the control for LDAP accounts
+            account. False when `auth_source` is `ldap` **and**
+            `auth.ldap.role_source` is `directory`, or when `auth_source` is
+            `oidc` **and** `auth.oidc.role_source` is `directory`; in either
+            case the group/claim mapping owns the role and a role edit
+            returns `409`. Computed server-side because `auth.ldap.role_source`
+            and `auth.oidc.role_source` are not otherwise exposed: a client
+            cannot derive this from `auth_source` alone, and one that tries
+            will wrongly lock the control for LDAP or OIDC accounts
             under `role_source: local`, where role edits are permitted.
+        password_editable:
+          type: boolean
+          description: >
+            Whether `PUT /users/{id}/password` will accept a new password for
+            this account — and, when the account is the caller's own, whether
+            `PUT /auth/password` will. True only when `auth_source` is
+            `local`; an `ldap` or `oidc` account keeps its credentials with
+            the provider and has no local password, so either endpoint
+            returns `409`. Unlike `role_editable` this depends on
+            `auth_source` alone, but it is still computed server-side, from
+            the same predicate that guards both endpoints, so a client never
+            offers a password control the server will reject.
         disabled:
           type: boolean
         created_at:
@@ -1621,6 +1638,61 @@ components:
             (auth disabled) reports the full set.
         kind:
           type: string
+
+    LogoutResult:
+      type: object
+      description: >-
+        The result of POST /auth/logout. Empty (`{}`) for a purely local
+        logout, which is the default and the only outcome when SSO is not
+        configured.
+      properties:
+        redirect_url:
+          type: string
+          format: uri
+          description: >-
+            The identity provider's RP-initiated logout URL, present only under
+            auth.oidc.logout_mode=provider when the provider advertises an
+            end-session endpoint. Built from client_id and
+            post_logout_redirect_uri only; it carries no id_token_hint, because
+            sqi does not store ID tokens.
+
+    SSOProvider:
+      type: object
+      description: One single-sign-on option offered by this deployment.
+      required: [id, label, login_url]
+      properties:
+        id:
+          type: string
+          description: Stable identifier for this provider. Currently always `oidc`.
+        label:
+          type: string
+          description: >-
+            The button text, from auth.oidc.button_label, defaulting to
+            "Sign in with SSO".
+        login_url:
+          type: string
+          description: >-
+            Where the browser must NAVIGATE to start the flow. It is a link
+            target, not a fetch target: following it in the background would
+            land the provider's login page in a response body instead of in
+            front of the user.
+
+    AuthProviders:
+      type: object
+      description: The login methods this deployment offers.
+      required: [password, sso]
+      properties:
+        password:
+          type: boolean
+          description: >-
+            Whether username/password login is offered. Always true today;
+            reported explicitly so clients never have to infer it.
+        sso:
+          type: array
+          description: >-
+            Configured SSO options, empty when none are configured. Never null.
+          items:
+            $ref: "#/components/schemas/SSOProvider"
 
   responses:
     BadRequest:
@@ -3477,6 +3549,142 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /auth/providers:
+    get:
+      operationId: getAuthProviders
+      summary: List the login methods this deployment offers
+      description: |
+        What the login page needs to render itself: whether password login is
+        offered, and which SSO buttons to show.
+
+        **Public, by necessity.** The login page is unauthenticated by
+        definition, so an authenticated discovery endpoint would be circular —
+        the button that starts a login could never be drawn. What it discloses
+        is that SSO is configured and what its button says, both of which are
+        already visible to anyone who loads the page. It discloses neither the
+        issuer nor the client secret.
+
+        Mounted unconditionally, including when SSO is disabled: "no SSO
+        configured" is itself the answer the page needs.
+      tags: [auth]
+      responses:
+        "200":
+          description: The available login methods.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthProviders"
+
+  /auth/oidc/login:
+    get:
+      operationId: startOIDCLogin
+      summary: Start an OIDC/SSO login
+      description: |
+        Begins the OAuth2 authorization-code flow with PKCE and redirects the
+        browser to the configured identity provider.
+
+        This is a **browser navigation endpoint, not a JSON API call** — it is
+        meant to be reached by pointing a browser at it (an SSO button that is
+        a plain link), and it always answers with a `302`. It is public: no
+        session is required, since its purpose is to create one.
+
+        Registered **only when SSO is configured**. When
+        `auth.oidc.enabled` is false the route does not exist and returns 404,
+        so a client can use `GET /auth/oidc/login` returning 404 as a signal
+        that SSO is unavailable.
+
+        The response sets a short-lived, `HttpOnly`, `SameSite=Lax` state
+        cookie scoped to `/api/v1/auth/oidc`. It carries the signed CSRF state,
+        the ID-token nonce, and the PKCE verifier for this one login attempt,
+        and the callback rejects any request that does not present it. It
+        expires in 10 minutes and is single-use.
+
+        On an internal failure (an unreachable provider, for instance) the
+        response is still a `302`, to the same generic error destination the
+        callback uses. The reason is written to the server log only.
+      tags: [auth]
+      responses:
+        "302":
+          description: |
+            Redirect. `Location` is the provider's authorization URL on
+            success, or `/?sso_error=1` if the login could not be started.
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              description: The per-login state cookie (`sqi_oidc_state`).
+              schema: { type: string }
+
+  /auth/oidc/callback:
+    get:
+      operationId: completeOIDCLogin
+      summary: Complete an OIDC/SSO login
+      description: |
+        The redirect target registered with the identity provider. The browser
+        arrives here from the provider carrying `code` and `state` (or `error`
+        and `error_description` if the provider refused).
+
+        Like `/auth/oidc/login` this is a **browser navigation endpoint** that
+        always answers with a `302`, it is public, and it exists only when SSO
+        is configured. It is not intended to be called directly by an API
+        client: without the state cookie set by `/auth/oidc/login` it always
+        fails.
+
+        On success it mints a server-side session, returns it as an `HttpOnly`
+        `Set-Cookie` exactly as `POST /auth/login` does, and redirects to `/`.
+        The account is provisioned on first login with `auth_source: oidc`, and
+        its role is recomputed from the provider's group claims on every login
+        when `auth.oidc.role_source` is `directory`.
+
+        **Every failure is identical**: a `302` to `/?sso_error=1` with no
+        session cookie and no detail whatsoever. A missing or invalid state
+        cookie, a mismatched `state`, a provider-reported error, a rejected ID
+        token, an identity that maps to no role, a disabled account, and a
+        username that collides with an existing account are indistinguishable
+        to the browser — anything else would make this endpoint a user
+        enumeration oracle. The reason is written to the server log.
+
+        The redirect destination is a constant in both cases. No query
+        parameter can influence where the browser is sent.
+      tags: [auth]
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: The authorization code issued by the provider.
+          schema: { type: string }
+        - name: state
+          in: query
+          required: false
+          description: |
+            The opaque state value issued at login. Must match the value in the
+            state cookie or the login is refused.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            An OAuth2 error code, when the provider refused the login (for
+            example `access_denied`).
+          schema: { type: string }
+        - name: error_description
+          in: query
+          required: false
+          description: The provider's human-readable error text, if any.
+          schema: { type: string }
+      responses:
+        "302":
+          description: |
+            Redirect. `Location` is `/` on success, with the session cookie set
+            via `Set-Cookie`; on any failure it is `/?sso_error=1` and no
+            session cookie is set. The state cookie is cleared either way.
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              description: The session cookie, on success only.
+              schema: { type: string }
+
   /auth/logout:
     post:
       operationId: logout
@@ -3484,10 +3692,29 @@ paths:
       description: |
         Deletes the caller's session server-side and clears the session
         cookie. Requires an authenticated request.
+
+        When SSO is configured with `auth.oidc.reauth_mode=after_logout`
+        (the default), this also sets a marker cookie so the next
+        `GET /auth/oidc/login` asks the provider to re-prompt for
+        credentials, rather than silently signing in whoever the provider
+        still considers logged in — the shared-workstation case.
+
+        When `auth.oidc.logout_mode=provider`, the response body carries
+        `redirect_url`, the provider's RP-initiated logout endpoint; the
+        client should navigate to it to end the session at the identity
+        provider as well. The URL never carries an `id_token_hint` — sqi
+        does not store ID tokens. If the provider advertises no end-session
+        endpoint, logout still succeeds, `redirect_url` is omitted, and the
+        server logs the degradation at ERROR.
       tags: [auth]
       responses:
-        "204":
-          description: Logged out; the session was revoked and the cookie cleared.
+        "200":
+          description: |
+            Logged out; the session was revoked and the cookie cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoutResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -3550,8 +3777,11 @@ paths:
         fresh one is issued for this caller, so other devices are logged out
         while this one stays signed in. API keys are not revoked.
         Returns `409` when auth is disabled, and `409` when the account's
-        `auth_source` is `ldap` — a directory account has no local password
-        to change.
+        `auth_source` is not `local` (that is, `ldap` or `oidc`) — an
+        externally-authenticated account has no local password to change.
+        That second case is exactly `password_editable: false` on the `User`
+        schema; both are computed from one server-side predicate, so a client
+        can hide this form instead of discovering the `409`.
       tags: [auth]
       requestBody:
         required: true
@@ -3663,8 +3893,10 @@ paths:
         Password is not updatable here — see
         `PUT /users/{id}/password`. Returns `409` for a `role` change on an
         account whose `auth_source` is `ldap` when `auth.ldap.role_source` is
-        `directory`: the group mapping owns that account's role, so a local
-        edit would silently revert at the user's next login. Non-role fields
+        `directory`, or whose `auth_source` is `oidc` when
+        `auth.oidc.role_source` is `directory`: the group/claim mapping owns
+        that account's role, so a local edit would silently revert at the
+        user's next login. Non-role fields
         (`display_name`, `disabled`) remain editable on such accounts.
       tags: [users]
       requestBody:
@@ -3718,8 +3950,11 @@ paths:
       operationId: setUserPassword
       summary: Set a local account's password
       description: |
-        Returns `409` when the account's `auth_source` is `ldap` — a
-        directory account has no local password to set.
+        Returns `409` when the account's `auth_source` is not `local` (that
+        is, `ldap` or `oidc`) — an externally-authenticated account has no
+        local password to set. This is exactly `password_editable: false` on
+        the `User` schema; both are computed from one server-side predicate,
+        so a client can hide the control instead of discovering the `409`.
       tags: [users]
       requestBody:
         required: true

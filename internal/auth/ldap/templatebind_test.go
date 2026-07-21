@@ -5,6 +5,7 @@ package ldap
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -194,5 +195,78 @@ func TestTemplateBind_NoEntryAfterBind(t *testing.T) {
 	}
 	if id.Username != "bob" {
 		t.Errorf("Username: got %q, want the supplied name as fallback", id.Username)
+	}
+}
+
+// The template-bind mirror of TestSearchBind_RequestsAndReadsUniqueIDAttr.
+// readSelf is a second, independent search request, so naming the operational
+// attribute in one bind mode says nothing about the other.
+func TestTemplateBind_RequestsAndReadsUniqueIDAttr(t *testing.T) {
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{
+		entry("uid=bob,ou=people,dc=example,dc=com", map[string][]string{
+			"uid":         {"bob"},
+			"displayName": {"Bob Brown"},
+			"entryUUID":   {"uuid-bob"},
+		}),
+	}}}
+	cfg := templateCfg()
+	cfg.UniqueIDAttr = "entryUUID"
+	v := newTemplateBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "bob", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.ExternalID != "uuid-bob" {
+		t.Fatalf("ExternalID = %q, want %q", id.ExternalID, "uuid-bob")
+	}
+	if len(fc.searchAttrs) == 0 {
+		t.Fatal("readSelf issued no search")
+	}
+	if !slices.Contains(fc.searchAttrs[0], "entryUUID") {
+		t.Fatalf("readSelf requested %v, want it to include entryUUID", fc.searchAttrs[0])
+	}
+}
+
+// Template bind against Active Directory hits the same raw-bytes case as
+// search bind, and must encode it identically — the two modes stamp the same
+// column and an operator may switch between them.
+func TestTemplateBind_HexEncodesBinaryUniqueID(t *testing.T) {
+	raw := []byte{
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03,
+		0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0xff,
+	}
+	e := withRawAttr(entry("uid=bob,ou=people,dc=example,dc=com", map[string][]string{
+		"uid": {"bob"},
+	}), "objectGUID", raw)
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{e}}}
+	cfg := templateCfg()
+	cfg.UniqueIDAttr = "objectGUID"
+	v := newTemplateBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "bob", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.ExternalID != "deadbeef000102030405060708090aff" {
+		t.Fatalf("ExternalID = %q, want the hex encoding of the raw GUID", id.ExternalID)
+	}
+}
+
+// A directory that hides the user's own entry yields no entry at all. The bind
+// still proved the credentials, so this is not a Verify error — but ExternalID
+// is empty, and the login path is what refuses.
+func TestTemplateBind_NoEntryYieldsEmptyExternalID(t *testing.T) {
+	fc := &fakeConn{searchResult: &ldapv3.SearchResult{}}
+	cfg := templateCfg()
+	cfg.UniqueIDAttr = "entryUUID"
+	v := newTemplateBind(cfg, dialTo(fc))
+
+	id, err := v.Verify(context.Background(), "bob", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if id.ExternalID != "" {
+		t.Fatalf("ExternalID = %q, want empty", id.ExternalID)
 	}
 }

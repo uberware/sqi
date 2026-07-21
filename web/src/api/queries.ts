@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import type {
   ApiKey,
+  AuthProviders,
   ComputeLocation,
   Farm,
   Job,
@@ -152,6 +153,7 @@ export const queryKeys = {
   },
   auth: {
     me: ['auth', 'me'] as const,
+    providers: ['auth', 'providers'] as const,
   },
   users: {
     all: ['users'] as const,
@@ -333,6 +335,11 @@ export function fetchPreset(name: string): Promise<PresetDetail> {
 /** Fetch the current authenticated principal from `GET /auth/me`. */
 export function fetchAuthMe(): Promise<Principal> {
   return apiFetch('/auth/me')
+}
+
+/** Fetch the login methods this deployment offers from `GET /auth/providers`. */
+export function fetchAuthProviders(): Promise<AuthProviders> {
+  return apiFetch<AuthProviders>('/auth/providers')
 }
 
 /** Fetch all local user accounts from `GET /users` (server returns them username-sorted). */
@@ -585,6 +592,26 @@ export function useVersion() {
  */
 export function useAuthMe() {
   return useQuery({ queryKey: queryKeys.auth.me, queryFn: fetchAuthMe, retry: false })
+}
+
+/**
+ * Login methods this deployment offers. Queried by the login page before the
+ * user has any credential, so it must never be gated on authentication — the
+ * server mounts `/auth/providers` outside the authenticated route group for
+ * exactly this reason.
+ *
+ * `retry: false` because a failure here is not worth retrying: the page still
+ * renders the password form, which is the only universally-available method.
+ * `staleTime: Infinity` because the answer changes only when the server is
+ * reconfigured and restarted.
+ */
+export function useAuthProviders() {
+  return useQuery({
+    queryKey: queryKeys.auth.providers,
+    queryFn: fetchAuthProviders,
+    retry: false,
+    staleTime: Infinity,
+  })
 }
 
 /** List all local user accounts (username-sorted by the server, no pagination). */

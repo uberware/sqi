@@ -39,7 +39,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,7 +47,6 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/config"
-	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 )
 
@@ -100,15 +98,7 @@ func startDirectory(t *testing.T) *directory {
 		return &directory{URL: url}
 	}
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("skipping LDAP integration test: docker not found on PATH " +
-			"(install Docker/colima/podman, or set SQI_TEST_LDAP_URL to an existing directory)")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if out, err := exec.CommandContext(ctx, "docker", "info").CombinedOutput(); err != nil {
-		t.Skipf("skipping LDAP integration test: docker daemon not responding: %v\n%s", err, out)
-	}
+	requireDocker(t, "LDAP", "set SQI_TEST_LDAP_URL to an existing directory")
 
 	port := freePort(t)
 	name := fmt.Sprintf("sqi-ldap-it-%d", port)
@@ -140,7 +130,10 @@ func startDirectory(t *testing.T) *directory {
 		runArgs,
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:389", port),
-		"-e", "LDAP_ORGANISATION=Example",
+		// The org env var below is the image's own, spelled the vendor's way.
+		// Respelling it US-style would just stop configuring anything, so the
+		// misspell finding is suppressed rather than "fixed".
+		"-e", "LDAP_ORGANISATION=Example", //nolint:misspell // vendor env var name
 		"-e", "LDAP_DOMAIN=example.com",
 		"-e", "LDAP_ADMIN_PASSWORD="+ldapAdminPW,
 		ldapImage,
@@ -151,11 +144,7 @@ func startDirectory(t *testing.T) *directory {
 	}
 
 	d := &directory{URL: fmt.Sprintf("ldap://127.0.0.1:%d", port), container: name}
-	t.Cleanup(func() {
-		rmCtx, rmCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer rmCancel()
-		_ = exec.CommandContext(rmCtx, "docker", "rm", "-f", name).Run() //nolint:errcheck // best-effort teardown
-	})
+	removeContainerOnCleanup(t, name)
 
 	d.waitReady(t)
 	d.seed(t)
@@ -285,7 +274,7 @@ func (d *directory) configureMemberOf(t *testing.T) {
 	}
 
 	var dn string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "dn: "); ok {
 			dn = v
 			break
@@ -343,7 +332,7 @@ olcMemberOfMemberOfAD: memberOf
 //
 // alice → Farm Admins (maps to admin)
 // bob   → Artists     (maps to user)
-// carol → no group    (falls through to default_role)
+// carol → no group    (falls through to default_role).
 const seedLDIF = `
 dn: ou=people,dc=example,dc=com
 objectClass: organizationalUnit
@@ -475,8 +464,12 @@ func baseLDAPConfig(url string) config.LDAPConfig {
 		Timeout:         10 * time.Second,
 		UsernameAttr:    "uid",
 		DisplayNameAttr: "displayName",
-		RoleSource:      "directory",
-		DefaultRole:     "read-only",
+		// entryUUID is OpenLDAP's RFC 4530 stable identifier. On Active
+		// Directory this would be objectGUID; there is no value correct on
+		// both, which is why the setting has no default.
+		UniqueIDAttr: "entryUUID",
+		RoleSource:   "directory",
+		DefaultRole:  "read-only",
 		RoleMap: []config.RoleMappingConfig{
 			{Group: ldapGroupAdmins, Role: "admin"},
 			{Group: ldapGroupArtists, Role: "user"},
@@ -503,79 +496,18 @@ func templateBindConfig(url string) config.LDAPConfig {
 }
 
 // startLDAPServer boots a full sqi-server with auth and the given LDAP config.
-//
-// Self-contained rather than an option on startServer, following the
-// startLoadServer precedent: this file is behind a build tag and the shared
-// harness is not, so keeping the variant local avoids changing a helper that
-// every untagged test depends on.
 func startLDAPServer(t *testing.T, ldapCfg config.LDAPConfig) *testServer {
 	t.Helper()
-
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	natsAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	tmpDir := t.TempDir()
-
-	cfg := server.Config{
-		HTTPAddr:           httpAddr,
-		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
-		SQLitePath:         tmpDir + "/sqi-ldap.db",
-		CheckpointInterval: time.Minute,
-		Scheduler: scheduler.Config{
-			AssignInterval:         100 * time.Millisecond,
-			AssignBatchSize:        10,
-			AssignWorkers:          2,
-			WorkerTimeout:          30 * time.Second,
-			HeartbeatSweepInterval: 15 * time.Second,
-		},
-		DiscoveryEnabled: false,
-
-		AuthEnabled:      true,
-		AuthSessionTTL:   time.Hour,
-		AuthCookieName:   "sqi_session",
-		AuthCookieSecure: "false",
-		AuthLDAP:         ldapCfg,
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	srv := server.New(cfg, logger, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- srv.Run(ctx) }()
-
-	select {
-	case err := <-done:
-		cancel()
-		t.Fatalf("server exited during startup: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, cancel: cancel, done: done}
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-		}
-	})
-
-	if !waitForTCP(t, httpAddr, 20*time.Second) {
-		t.Fatal("HTTP server did not start listening")
-	}
-	if !waitForReadyz(t, httpAddr, 30*time.Second) {
-		t.Fatal("server did not become ready")
-	}
-	return ts
+	return startAuthServer(t, httpAddr, "sqi-ldap.db", func(c *server.Config) { c.AuthLDAP = ldapCfg })
 }
 
 // ── Login helper ──────────────────────────────────────────────────────────────
 
 // loginResult is the subset of the login response these tests assert on.
 type loginResult struct {
-	Status      int
+	Status      int    `json:"-"` // filled from the HTTP status, never from the body
+	ID          string `json:"id"`
 	Username    string `json:"username"`
 	Role        string `json:"role"`
 	AuthSource  string `json:"auth_source"`
@@ -604,7 +536,7 @@ func login(t *testing.T, ts *testServer, username, password string) loginResult 
 	if err != nil {
 		t.Fatalf("POST /auth/login: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = resp.Body.Close() }()
 
 	out := loginResult{Status: resp.StatusCode}
 	if resp.StatusCode == http.StatusOK {
@@ -807,5 +739,103 @@ member: uid=alice,ou=people,dc=example,dc=com
 	}
 	if got.Role != "user" {
 		t.Errorf("role = %q, want user: role_source=directory must recompute from live group membership", got.Role)
+	}
+}
+
+// renameEntry changes the RDN of an entry, leaving the entry — and therefore
+// its entryUUID — otherwise intact.
+//
+// -r drops the old RDN attribute value, so the old login name genuinely stops
+// resolving; without it the entry would keep both uid values and the "renamed"
+// user would still be findable under the old name, which would make the test
+// below pass for the wrong reason.
+func renameEntry(t *testing.T, d *directory, dn, newRDN string) {
+	t.Helper()
+	d.ldapExec(t, "", "ldapmodrdn", "-r", "-x", "-H", "ldap://localhost",
+		"-D", ldapAdminDN, "-w", ldapAdminPW, dn, newRDN)
+}
+
+// TestLDAP_StableIdentifierSurvivesRename is the guard for the entryUUID
+// operational-attribute trap.
+//
+// entryUUID is an operational attribute: a real directory omits it from a
+// search response unless the request names it explicitly. A fake conn returns
+// whatever the test scripts, so it cannot show that omission. Drop the name
+// from the attribute list and every login arrives carrying an empty
+// identifier, which looks exactly like a person who has never logged in
+// before — so accounts silently multiply, one per login, with no error
+// anywhere.
+//
+// Renaming the entry is what makes the assertion meaningful: after the rename
+// the username no longer matches the stored row, so ONLY identifier matching
+// can reach the original account. Under username matching this test provisions
+// a second row and fails.
+func TestLDAP_StableIdentifierSurvivesRename(t *testing.T) {
+	d := startDirectory(t)
+	ts := startLDAPServer(t, searchBindConfig(d.URL))
+
+	first := login(t, ts, "alice", "alicepass")
+	if first.Status != http.StatusOK {
+		t.Fatalf("first login: got HTTP %d, want 200", first.Status)
+	}
+	if first.AuthSource != "ldap" {
+		t.Fatalf("auth_source = %q, want ldap", first.AuthSource)
+	}
+	if first.ID == "" {
+		t.Fatal("login response carried no account id; the comparison below would be vacuous")
+	}
+
+	renameEntry(t, d, "uid=alice,ou=people,dc=example,dc=com", "uid=alice.smith")
+
+	second := login(t, ts, "alice.smith", "alicepass")
+	if second.Status != http.StatusOK {
+		t.Fatalf("login after rename: got HTTP %d, want 200", second.Status)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("the rename created a NEW account (%s -> %s): the directory entry is the same "+
+			"person with the same entryUUID, so identifier matching is not in effect. The usual "+
+			"cause is the user search not naming the operational attribute, which makes the "+
+			"directory omit it and every login look like a first login.",
+			first.ID, second.ID)
+	}
+}
+
+// The mirror of the rename case: a NEW directory entry that reuses a departed
+// user's login name must NOT inherit their account.
+//
+// This is the hazard the whole change exists to remove. Under username
+// matching, recreating "carol" hands the newcomer the old carol's row —
+// her role, her owned jobs — with no error anywhere. Under identifier
+// matching the new entry has a new entryUUID, so provisioning runs and
+// collides on the taken username, and the login is refused until an operator
+// intervenes. Refusal is the correct outcome; silent inheritance is not.
+func TestLDAP_RecycledUsernameDoesNotInheritAccount(t *testing.T) {
+	d := startDirectory(t)
+	ts := startLDAPServer(t, searchBindConfig(d.URL))
+
+	assertLogin(t, ts, "carol", "carolpass", "read-only")
+
+	// Delete and recreate: a new entry, hence a new entryUUID, wearing the
+	// same uid.
+	d.ldapExec(t, "", "ldapdelete", "-x", "-H", "ldap://localhost",
+		"-D", ldapAdminDN, "-w", ldapAdminPW, "uid=carol,ou=people,dc=example,dc=com")
+	d.ldapExec(t, `
+dn: uid=carol,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Newcomer
+sn: Newcomer
+displayName: Carol Newcomer
+userPassword: newcarolpw
+`, "ldapadd", "-x", "-H", "ldap://localhost", "-D", ldapAdminDN, "-w", ldapAdminPW)
+
+	got := login(t, ts, "carol", "newcarolpw")
+	if got.Status == http.StatusOK {
+		t.Fatalf("a NEW directory entry reusing the username %q logged straight into the "+
+			"existing account (id=%s). This is the recycled-identity takeover that matching on "+
+			"the stable identifier is meant to prevent.", "carol", got.ID)
+	}
+	if got.Status != http.StatusUnauthorized {
+		t.Errorf("got HTTP %d, want 401 (the username is taken by another identity)", got.Status)
 	}
 }

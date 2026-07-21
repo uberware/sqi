@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
+	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 func TestFS_ListsRealMigrationsOnly(t *testing.T) {
@@ -52,4 +54,28 @@ func TestFS_OpenRealMigrationSucceeds(t *testing.T) {
 		t.Fatalf("Open(%s): %v", entries[0].Name(), err)
 	}
 	_ = f.Close()
+}
+
+// TestMigration00024_ExternalIDRoundTrip pins that 00024_users_external_id
+// applies cleanly against a fresh database and that the new column round-trips
+// through CreateUser.
+func TestMigration00024_ExternalIDRoundTrip(t *testing.T) {
+	db := t.TempDir() + "/test.db"
+	st, err := sqlite.Open(t.Context(), db, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := t.Context()
+	u, err := st.CreateUser(ctx, store.User{
+		ID: "u1", Username: "alice", PasswordHash: "!ldap",
+		Role: "user", AuthSource: store.AuthSourceLDAP, ExternalID: "guid-1",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if u.ExternalID != "guid-1" {
+		t.Fatalf("ExternalID = %q, want %q", u.ExternalID, "guid-1")
+	}
 }

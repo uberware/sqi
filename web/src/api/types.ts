@@ -511,8 +511,38 @@ export interface UpdateMeInput {
   display_name: string
 }
 
+/**
+ * One single-sign-on option advertised by `GET /auth/providers`.
+ *
+ * `login_url` is a NAVIGATION target, not a fetch target: the whole point of
+ * the flow is to leave this page for the identity provider. Fetching it would
+ * follow the redirect in the background and land the provider's login HTML in
+ * a response body, where nobody can see or interact with it.
+ */
+export interface SSOProvider {
+  id: string
+  label: string
+  login_url: string
+}
+
+/** Response of `GET /auth/providers` — the login methods this server offers. */
+export interface AuthProviders {
+  password: boolean
+  sso: SSOProvider[]
+}
+
+/**
+ * Response of `POST /auth/logout`. `redirect_url` is present only when the
+ * server is configured for provider-side logout (`auth.oidc.logout_mode:
+ * provider`) and the provider advertises an end-session endpoint; the client
+ * must navigate to it, or the provider-side half of the logout never happens.
+ */
+export interface LogoutResult {
+  redirect_url?: string
+}
+
 /** Credential backend for a user account (mirrors store.AuthSource). */
-export type AuthSource = 'local' | 'ldap'
+export type AuthSource = 'local' | 'ldap' | 'oidc'
 
 /** A user account (secrets are never included in the wire format). */
 export interface User {
@@ -521,19 +551,30 @@ export interface User {
   display_name?: string
   role: string
   /**
-   * Which backend verifies this account. `ldap` accounts are provisioned on
-   * first directory login; their role may be directory-managed, in which case
-   * the server rejects a role edit with 409.
+   * Which backend verifies this account. `ldap` and `oidc` accounts are
+   * provisioned on first directory/SSO login; their role may be
+   * directory-managed, in which case the server rejects a role edit with 409.
    */
   auth_source: AuthSource
   /**
    * Whether `PATCH /users/{id}` accepts a `role` change for this account.
-   * Computed by the server from both halves of its guard (`auth_source` AND
-   * `auth.ldap.role_source`). Do not re-derive it from `auth_source`:
-   * `role_source: local` leaves an LDAP account's role editable, and the
-   * server never exposes `role_source` for a client to check.
+   * Computed by the server from both halves of its guard: `auth_source` AND
+   * that source's own `role_source` setting (`auth.ldap.role_source` for
+   * `ldap`, `auth.oidc.role_source` for `oidc`). Do not re-derive it from
+   * `auth_source` alone: `role_source: local` leaves an LDAP or OIDC
+   * account's role editable, and the server never exposes `role_source` for
+   * a client to check.
    */
   role_editable: boolean
+  /**
+   * Whether `PUT /users/{id}/password` accepts a new password for this
+   * account. Computed by the server from the same predicate that guards that
+   * endpoint (and the self-service `PUT /auth/password`): true only for
+   * `auth_source: local`, since an `ldap` or `oidc` account has no local
+   * password and either endpoint answers `409`. Read it rather than testing
+   * `auth_source` yourself, so the control and the guard cannot drift apart.
+   */
+  password_editable: boolean
   disabled: boolean
   created_at: string
   updated_at: string

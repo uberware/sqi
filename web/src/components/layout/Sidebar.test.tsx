@@ -280,7 +280,10 @@ describe('Sidebar', () => {
     it('calls POST /auth/logout and flips auth state to anonymous when clicked', async () => {
       renderSidebarAs(AUTHED_PRINCIPAL)
       const logoutBtn = await screen.findByRole('button', { name: /log ?out/i })
-      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      // 200 with a JSON body, not 204: since C2 the server answers logout with
+      // a LogoutResult, which carries the provider's end-session URL under
+      // logout_mode=provider and is `{}` otherwise.
+      fetchMock.mockResolvedValueOnce(jsonResponse(200, {}, 'application/json'))
       // After logout, /auth/me is re-queried and must resolve to unauthenticated.
       fetchMock.mockResolvedValueOnce(
         jsonResponse(

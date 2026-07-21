@@ -54,7 +54,12 @@ type fakeConn struct {
 	// searchFilters records the filter of every Search call, so escaping can
 	// be asserted at the point it actually matters.
 	searchFilters []string
-	closed        bool
+	// searchAttrs records the requested attribute list of every Search call.
+	// entryUUID is an OPERATIONAL attribute that most directories omit unless
+	// it is named explicitly, so "did the request ask for it?" is a distinct
+	// question from "did the parse read it?" and needs its own surface.
+	searchAttrs [][]string
+	closed      bool
 }
 
 func (f *fakeConn) Bind(dn, pw string) error {
@@ -68,6 +73,7 @@ func (f *fakeConn) Bind(dn, pw string) error {
 
 func (f *fakeConn) Search(req *ldapv3.SearchRequest) (*ldapv3.SearchResult, error) {
 	f.searchFilters = append(f.searchFilters, req.Filter)
+	f.searchAttrs = append(f.searchAttrs, req.Attributes)
 	f.ops = append(f.ops, "search:"+req.Filter)
 	if f.searchErr != nil && len(f.searchFilters) >= f.searchErrFrom {
 		return nil, f.searchErr
@@ -98,10 +104,27 @@ func dialFail() dialFunc {
 }
 
 // entry builds a search-result entry with the given DN and attributes.
+//
+// Built through ldapv3.NewEntryAttribute so both Values and ByteValues are
+// populated, which is what go-ldap does when it decodes a real response.
+// Setting only Values would make every raw-value read return nothing here and
+// something on the wire — precisely the class of fake/real divergence this
+// package's tests are supposed to rule out.
 func entry(dn string, attrs map[string][]string) *ldapv3.Entry {
 	e := &ldapv3.Entry{DN: dn}
 	for name, vals := range attrs {
-		e.Attributes = append(e.Attributes, &ldapv3.EntryAttribute{Name: name, Values: vals})
+		e.Attributes = append(e.Attributes, ldapv3.NewEntryAttribute(name, vals))
 	}
+	return e
+}
+
+// withRawAttr appends an attribute whose value is raw bytes rather than text,
+// modeling Active Directory's objectGUID: a 16-byte octet string that is not
+// valid UTF-8 and therefore cannot be carried in Values at all.
+func withRawAttr(e *ldapv3.Entry, name string, raw []byte) *ldapv3.Entry {
+	e.Attributes = append(e.Attributes, &ldapv3.EntryAttribute{
+		Name:       name,
+		ByteValues: [][]byte{raw},
+	})
 	return e
 }

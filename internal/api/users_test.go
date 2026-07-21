@@ -15,10 +15,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth/ldap"
+	"github.com/uberware/sqi/internal/auth/oidc"
+	"github.com/uberware/sqi/internal/auth/session"
+	"github.com/uberware/sqi/internal/health"
+	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -780,7 +786,378 @@ func TestUsers_RoleEditableMatchesPatchOutcome(t *testing.T) {
 	}
 }
 
+// directoryOwnsRole is the single predicate behind both the PATCH guard and the
+// role_editable field. It takes the two role sources SEPARATELY because LDAP
+// and OIDC are configured independently — an operator may trust one provider's
+// groups and not the other's — so a cross-source row (LDAP account, OIDC in
+// directory mode) must come back editable.
+func TestDirectoryOwnsRole(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		ldapSource string
+		oidcSource string
+		want       bool
+	}{
+		{"ldap under directory", store.AuthSourceLDAP, ldap.RoleSourceDirectory, oidc.RoleSourceLocal, true},
+		{"ldap under local", store.AuthSourceLDAP, ldap.RoleSourceLocal, oidc.RoleSourceDirectory, false},
+		{"oidc under directory", store.AuthSourceOIDC, ldap.RoleSourceLocal, oidc.RoleSourceDirectory, true},
+		{"oidc under local", store.AuthSourceOIDC, ldap.RoleSourceDirectory, oidc.RoleSourceLocal, false},
+		{"local account is always editable", store.AuthSourceLocal, ldap.RoleSourceDirectory, oidc.RoleSourceDirectory, false},
+		{"legacy empty auth_source is local", "", ldap.RoleSourceDirectory, oidc.RoleSourceDirectory, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := directoryOwnsRole(store.User{AuthSource: tt.authSource}, tt.ldapSource, tt.oidcSource)
+			if got != tt.want {
+				t.Errorf("directoryOwnsRole(%q, ldap=%q, oidc=%q) = %v, want %v",
+					tt.authSource, tt.ldapSource, tt.oidcSource, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDirectoryRoleConflictDetail pins the 409 detail text to the account's
+// own AuthSource: collapsing both branches to the LDAP wording would send an
+// OIDC operator looking at an auth.ldap.* block they never configured.
+func TestDirectoryRoleConflictDetail(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		wantSubstr string
+	}{
+		{"ldap account names auth.ldap.role_source", store.AuthSourceLDAP, "auth.ldap.role_source=directory"},
+		{"oidc account names auth.oidc.role_source", store.AuthSourceOIDC, "auth.oidc.role_source=directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := directoryRoleConflictDetail(store.User{AuthSource: tt.authSource})
+			if !strings.Contains(got, tt.wantSubstr) {
+				t.Errorf("directoryRoleConflictDetail(%q) = %q, want it to contain %q",
+					tt.authSource, got, tt.wantSubstr)
+			}
+		})
+	}
+	// The two details must actually differ, or a test asserting each contains
+	// its own substring could pass against a single hardcoded string in the
+	// rare case both substrings were (wrongly) present in it.
+	ldapDetail := directoryRoleConflictDetail(store.User{AuthSource: store.AuthSourceLDAP})
+	oidcDetail := directoryRoleConflictDetail(store.User{AuthSource: store.AuthSourceOIDC})
+	if ldapDetail == oidcDetail {
+		t.Errorf("directoryRoleConflictDetail returned the same text for ldap and oidc: %q", ldapDetail)
+	}
+}
+
+// TestExternalPasswordConflictDetails pins the password-change 409 wording to
+// the account's own AuthSource, the same way TestDirectoryRoleConflictDetail
+// does for the role conflict. Telling an SSO user to change their password
+// "against the directory" points them at a system their deployment may not
+// have at all.
+func TestExternalPasswordConflictDetails(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(store.User) string
+	}{
+		{"admin sets another account's password", externalPasswordSetConflictDetail},
+		{"user changes their own password", externalPasswordConflictDetail},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ldapDetail := tt.fn(store.User{AuthSource: store.AuthSourceLDAP})
+			oidcDetail := tt.fn(store.User{AuthSource: store.AuthSourceOIDC})
+			if !strings.Contains(ldapDetail, "directory") {
+				t.Errorf("ldap detail = %q, want it to name the directory", ldapDetail)
+			}
+			if !strings.Contains(oidcDetail, "identity provider") {
+				t.Errorf("oidc detail = %q, want it to name the identity provider", oidcDetail)
+			}
+			// Guards against both branches collapsing to one string that
+			// happens to contain both substrings.
+			if ldapDetail == oidcDetail {
+				t.Errorf("same text returned for ldap and oidc: %q", ldapDetail)
+			}
+		})
+	}
+}
+
+// TestSetPassword_OIDCAccountConflictNamesProvider drives the wording through
+// the real handler, so a helper that is correct but unwired still fails.
+func TestSetPassword_OIDCAccountConflictNamesProvider(t *testing.T) {
+	st := fake.New()
+	target, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "ssouser", Role: "user",
+		AuthSource: store.AuthSourceOIDC, PasswordHash: "!external",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newOIDCUsersServer(t, st,
+		ldap.Config{RoleSource: ldap.RoleSourceLocal},
+		oidc.Config{RoleSource: oidc.RoleSourceLocal})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPut, srv.URL+"/api/v1/users/"+target.ID+"/password",
+		map[string]string{"password": "newpassword123"}, cookie)
+	defer resp.Body.Close()
+	body := string(mustReadAll(t, resp))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("got %d, want 409: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "identity provider") {
+		t.Errorf("409 body = %s, want it to name the identity provider", body)
+	}
+}
+
+// TestPatchUserRole_RejectedForOIDCUnderDirectory pins the two consumers of
+// directoryOwnsRole together for an OIDC account. They must never disagree: an
+// admin who sees an editable field, edits it, and gets a 200 would watch the
+// change revert silently at the user's next login. Updating the guard without
+// the wire field (or the reverse) fails here.
+func TestPatchUserRole_RejectedForOIDCUnderDirectory(t *testing.T) {
+	modes := []struct {
+		roleSource string
+		wantStatus int
+		wantEdit   bool
+	}{
+		{oidc.RoleSourceDirectory, http.StatusConflict, false},
+		{oidc.RoleSourceLocal, http.StatusOK, true},
+	}
+	for _, m := range modes {
+		t.Run(m.roleSource, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: store.AuthSourceOIDC, PasswordHash: "!oidc",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			// LDAP is deliberately in directory mode throughout: it must have no
+			// bearing on an OIDC account.
+			srv := newOIDCUsersServer(t, st,
+				ldap.Config{RoleSource: ldap.RoleSourceDirectory},
+				oidc.Config{RoleSource: m.roleSource})
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			getResp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			var advertised struct {
+				RoleEditable bool `json:"role_editable"`
+			}
+			if err := json.NewDecoder(getResp.Body).Decode(&advertised); err != nil {
+				getResp.Body.Close()
+				t.Fatalf("decode: %v", err)
+			}
+			getResp.Body.Close()
+			if advertised.RoleEditable != m.wantEdit {
+				t.Errorf("role_editable = %v, want %v", advertised.RoleEditable, m.wantEdit)
+			}
+
+			patchResp := doRequest(t, http.MethodPatch, srv.URL+"/api/v1/users/"+target.ID,
+				map[string]any{"role": "admin"}, cookie)
+			defer patchResp.Body.Close()
+			if patchResp.StatusCode != m.wantStatus {
+				t.Errorf("PATCH status = %d, want %d: %s",
+					patchResp.StatusCode, m.wantStatus, mustReadAll(t, patchResp))
+			}
+			if (patchResp.StatusCode == http.StatusOK) != advertised.RoleEditable {
+				t.Errorf("role_editable=%v but PATCH returned %d — the advertised value and the guard disagree",
+					advertised.RoleEditable, patchResp.StatusCode)
+			}
+		})
+	}
+}
+
+// An LDAP account must not be frozen by the OIDC role source, nor the reverse:
+// the two sources are independent parameters, and collapsing them into one
+// would make configuring either provider in directory mode lock down every
+// external account.
+func TestUsers_RoleEditableIsPerSource(t *testing.T) {
+	st := fake.New()
+	ldapUser, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "lisa", Role: "user",
+		AuthSource: store.AuthSourceLDAP, PasswordHash: "!ldap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oidcUser, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "olive", Role: "user",
+		AuthSource: store.AuthSourceOIDC, PasswordHash: "!oidc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	// Only OIDC is in directory mode.
+	srv := newOIDCUsersServer(t, st,
+		ldap.Config{RoleSource: ldap.RoleSourceLocal},
+		oidc.Config{RoleSource: oidc.RoleSourceDirectory})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	for _, tc := range []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{"ldap account stays editable", ldapUser.ID, true},
+		{"oidc account is frozen", oidcUser.ID, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+tc.id, nil, cookie)
+			defer resp.Body.Close()
+			var got struct {
+				RoleEditable bool `json:"role_editable"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.RoleEditable != tc.want {
+				t.Errorf("role_editable = %v, want %v", got.RoleEditable, tc.want)
+			}
+		})
+	}
+}
+
+// password_editable is the symmetric companion to role_editable: the server
+// telling the client what its own set-password guard will do. Unlike the role
+// rule this one turns on auth_source alone, but it is still computed
+// server-side so the advertised control and the enforced guard share a single
+// definition. Note that it does NOT vary with either role_source — the two
+// rules are independent, and coupling them would freeze a local account's
+// password the moment a directory was put in directory mode.
+func TestUsers_ResponsePasswordEditable(t *testing.T) {
+	tests := []struct {
+		name       string
+		authSource string
+		want       bool
+	}{
+		{"local account", store.AuthSourceLocal, true},
+		{"ldap account", store.AuthSourceLDAP, false},
+		{"oidc account", store.AuthSourceOIDC, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: tt.authSource, PasswordHash: "!external",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			srv := newAuthTestServer(t, st)
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			resp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("got %d, want 200: %s", resp.StatusCode, mustReadAll(t, resp))
+			}
+			var got struct {
+				PasswordEditable bool `json:"password_editable"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.PasswordEditable != tt.want {
+				t.Errorf("password_editable: got %v, want %v", got.PasswordEditable, tt.want)
+			}
+		})
+	}
+}
+
+// The advertised value and the enforced behavior must agree: whatever
+// password_editable says, PUT /users/{id}/password must succeed exactly when
+// it is true. This is the test that fails if only one of the two is changed —
+// it asserts them against each other, not against a hardcoded expectation, so
+// moving either off the shared predicate breaks it.
+func TestUsers_PasswordEditableMatchesSetPasswordOutcome(t *testing.T) {
+	for _, authSource := range []string{store.AuthSourceLocal, store.AuthSourceLDAP, store.AuthSourceOIDC} {
+		t.Run(authSource, func(t *testing.T) {
+			st := fake.New()
+			target, err := st.CreateUser(context.Background(), store.User{
+				ID: uuid.NewString(), Username: "alice", Role: "user",
+				AuthSource: authSource, PasswordHash: "!external",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedAuthUser(t, st, "root", "hunter2!", "admin")
+			srv := newAuthTestServer(t, st)
+			cookie := loginCookie(t, srv, "root", "hunter2!")
+
+			getResp := doRequest(t, http.MethodGet, srv.URL+"/api/v1/users/"+target.ID, nil, cookie)
+			var advertised struct {
+				PasswordEditable bool `json:"password_editable"`
+			}
+			if err := json.NewDecoder(getResp.Body).Decode(&advertised); err != nil {
+				getResp.Body.Close()
+				t.Fatalf("decode: %v", err)
+			}
+			getResp.Body.Close()
+
+			putResp := doRequest(t, http.MethodPut, srv.URL+"/api/v1/users/"+target.ID+"/password",
+				map[string]string{"password": "newpassword123"}, cookie)
+			defer putResp.Body.Close()
+
+			accepted := putResp.StatusCode == http.StatusNoContent
+			if accepted != advertised.PasswordEditable {
+				t.Errorf("password_editable=%v but PUT returned %d — the advertised value and the guard disagree",
+					advertised.PasswordEditable, putResp.StatusCode)
+			}
+		})
+	}
+}
+
+// passwordEditable is the single predicate behind the admin set-password
+// guard, the self-service change-password guard, and the password_editable
+// wire field. Asserting it directly pins the rule itself: only a local account
+// has a password this server can set.
+func TestPasswordEditable(t *testing.T) {
+	tests := []struct {
+		authSource string
+		want       bool
+	}{
+		{store.AuthSourceLocal, true},
+		{store.AuthSourceLDAP, false},
+		{store.AuthSourceOIDC, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.authSource, func(t *testing.T) {
+			if got := passwordEditable(store.User{AuthSource: tt.authSource}); got != tt.want {
+				t.Errorf("passwordEditable(%q) = %v, want %v", tt.authSource, got, tt.want)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// newOIDCUsersServer builds an auth-enabled router carrying BOTH role-source
+// settings. No OIDC provider is wired: the users routes read only the config,
+// so this exercises the role-source plumbing without an SSO round trip.
+func newOIDCUsersServer(t *testing.T, st store.Store, lcfg ldap.Config, ocfg oidc.Config) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(NewRouter(
+		Config{DisableRateLimit: true, AuthEnabled: true},
+		Deps{
+			Store:        st,
+			Products:     product.NewCatalog(st),
+			Auth:         session.New(st, "sqi_session", nil),
+			SessionTTL:   time.Hour,
+			CookieName:   "sqi_session",
+			CookieSecure: "false",
+			LDAPConfig:   lcfg,
+			OIDCConfig:   ocfg,
+		},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	))
+	t.Cleanup(srv.Close)
+	return srv
+}
 
 // loginCookie logs username/pw in against srv and returns the resulting
 // session cookie, failing the test if login does not succeed.

@@ -292,6 +292,7 @@ func TestToLDAPConfig_MapsEveryField(t *testing.T) {
 		UserDNTemplate:  "CN=%s,OU=field-user-dn-template,DC=example,DC=com",
 		UsernameAttr:    "fieldUsernameAttr",
 		DisplayNameAttr: "fieldDisplayNameAttr",
+		UniqueIDAttr:    "fieldUniqueIDAttr",
 		RoleSource:      "field-role-source",
 		RoleMap: []config.RoleMappingConfig{
 			{Group: "CN=field-group-one,DC=example,DC=com", Role: "field-role-one"},
@@ -340,6 +341,12 @@ func TestToLDAPConfig_MapsEveryField(t *testing.T) {
 	}
 	if got.DisplayNameAttr != cfg.DisplayNameAttr {
 		t.Errorf("DisplayNameAttr: got %q, want %q", got.DisplayNameAttr, cfg.DisplayNameAttr)
+	}
+	// UniqueIDAttr not carried across means every login presents an empty
+	// identifier, which resolveExternalUser refuses — a total LDAP outage that
+	// no other test in this package would localize to this function.
+	if got.UniqueIDAttr != cfg.UniqueIDAttr {
+		t.Errorf("UniqueIDAttr: got %q, want %q", got.UniqueIDAttr, cfg.UniqueIDAttr)
 	}
 	if got.RoleSource != cfg.RoleSource {
 		t.Errorf("RoleSource: got %q, want %q", got.RoleSource, cfg.RoleSource)

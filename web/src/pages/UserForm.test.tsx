@@ -31,6 +31,7 @@ function user(overrides: Record<string, unknown> = {}) {
     disabled: false,
     auth_source: 'local',
     role_editable: true,
+    password_editable: true,
     created_at: '2026-06-28T00:00:00Z',
     updated_at: '2026-06-28T00:00:00Z',
     ...overrides,
@@ -192,6 +193,31 @@ describe('UserForm (edit)', () => {
     expect(patchCalls.length).toBe(0)
   })
 
+  // The symmetric case to the role tests below. The set-password form used to
+  // render unconditionally, so an admin could type a password for an SSO
+  // account and get a 409 toast; password_editable is the server saying up
+  // front that it will refuse.
+  it('disables the set-password control when the server says the password is not editable', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok(user({ id: 'u4', username: 'dave', auth_source: 'oidc', password_editable: false })),
+    )
+    renderEdit('u4')
+    // The reason lives in the accessible NAME, not in aria-describedby: a
+    // disabled input never takes focus, so a description alone would never be
+    // announced. Same treatment as the role control.
+    const field = await screen.findByLabelText('New Password (managed externally)')
+    expect(field).toBeDisabled()
+    expect(screen.getByRole('button', { name: /set password/i })).toBeDisabled()
+    expect(screen.getByText(/has no local password/i)).toBeInTheDocument()
+  })
+
+  it('leaves the set-password control enabled for a local account', async () => {
+    fetchMock.mockResolvedValueOnce(ok(user({ password_editable: true })))
+    renderEdit()
+    expect(await screen.findByLabelText('New Password')).toBeEnabled()
+    expect(screen.queryByText(/has no local password/i)).toBeNull()
+  })
+
   it('disables the role control when the server says the role is not editable', async () => {
     fetchMock.mockResolvedValueOnce(
       ok({
@@ -202,6 +228,7 @@ describe('UserForm (edit)', () => {
         auth_source: 'ldap',
         // role_source=directory server-side: the group mapping owns the role.
         role_editable: false,
+        password_editable: false,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -226,6 +253,7 @@ describe('UserForm (edit)', () => {
         role: 'user',
         auth_source: 'local',
         role_editable: true,
+        password_editable: true,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -249,6 +277,7 @@ describe('UserForm (edit)', () => {
         auth_source: 'ldap',
         // role_source=local server-side: the local column owns the role.
         role_editable: true,
+        password_editable: false,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -268,6 +297,7 @@ describe('UserForm (edit)', () => {
         role: 'user',
         auth_source: 'ldap',
         role_editable: true,
+        password_editable: false,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
@@ -298,6 +328,7 @@ describe('UserForm (edit)', () => {
         role: 'user',
         auth_source: 'ldap',
         role_editable: false,
+        password_editable: false,
         disabled: false,
         created_at: '2026-07-19T00:00:00Z',
         updated_at: '2026-07-19T00:00:00Z',
