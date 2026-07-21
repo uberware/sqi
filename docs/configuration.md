@@ -894,10 +894,21 @@ auth:
     default_role: "read-only"
 ```
 
+**`unique_id_attr` is a breaking change for an existing enabled-LDAP
+deployment.** It has no default anywhere — not in the defaults struct, not in
+the loader, not in the environment — because no single value is correct on both
+Active Directory (`objectGUID`) and RFC 4530 servers (`entryUUID`), and
+guessing on a server exposing both would silently pick the wrong one. A config
+with `auth.ldap.enabled: true` and no `unique_id_attr` **fails validation and
+the server does not boot**. Accounts provisioned before this key existed carry
+an empty identifier and must be recreated — see
+[Upgrading from an earlier sqi](auth.md#upgrading-from-an-earlier-sqi).
+
 See [`docs/auth.md`](auth.md#ldap--active-directory) for the model behind
 these keys: why LDAP attaches at login rather than per request, how
-just-in-time provisioning works, why a local admin account is required in
-`directory` mode, and the revocation-lag and timing caveats.
+just-in-time provisioning works, why accounts match on a stable identifier
+rather than a username, why a local admin account is required in `directory`
+mode, and the revocation-lag and timing caveats.
 
 ---
 
@@ -1001,6 +1012,12 @@ The mode constants (`ReauthAfterLogout`/`ReauthAlways`/`ReauthNever`,
 in `internal/auth/oidc`, not `internal/config` — `internal/api` reads them
 directly and must not import the config loader, the same boundary that
 `toLDAPConfig` exists to keep for LDAP.
+
+See [`docs/auth.md`](auth.md#oidc--sso) for the model behind these keys: the
+login flow and its defenses, why accounts match on the `sub` claim, how
+`reauth_mode` and `logout_mode` differ, and the limits — revocation lag, roles
+applying at next login only, what `logout_mode: provider` actually does on
+Keycloak, and which providers CI does and does not cover.
 
 ---
 
