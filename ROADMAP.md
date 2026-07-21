@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** v0.2.0 (Phase 2) released. Every component planned for Phase 3 (auth and multi-user) is merged on `main` and unreleased; further work is planned before the v0.3 release. Details may change with requests, feedback, and discoveries as development progresses.
+> **Status:** v0.2.0 (Phase 2) released. Phase 3 (auth and multi-user) identity plane is merged on `main` and unreleased; task isolation is in progress before the v0.3 release. Details may change with requests, feedback, and discoveries as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](README.md).
 
@@ -230,11 +230,16 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Cross-job dependencies — a submission may declare `depends_on` upstream jobs (same farm, across queues); dependents are held `blocked` until every upstream completes, then released (or canceled if an upstream fails)
 - Testing job presets — ready-to-run `test-render`/`test-steps` presets (bash and PowerShell) published to the preset library for smoke-testing a farm
 
-### Phase 3: Auth and Multi-User (v0.3) — merged, unreleased
+### Phase 3: Auth and Multi-User (v0.3) — identity plane merged, unreleased; isolation plane outstanding
 
 Authentication is **opt-in and off by default** — an unconfigured server behaves exactly as it did
 before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 
+- **Task isolation (run-as-user)** — in progress. Phase 3 shipped the identity
+  plane (accounts, RBAC, job owner binding) but not the isolation plane: tasks
+  still execute as the worker's own OS user with the worker's environment. Until
+  this lands, a principal holding `jobs.write` can execute arbitrary code as the
+  worker service account.
 - Local account auth (username/password, API keys)
 - LDAP/AD integration
 - Role-based access control (admin, operator, user, read-only)
