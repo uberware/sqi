@@ -549,6 +549,11 @@ The mDNS service instance name advertised on the network. Each `sqi-server` on
 the same subnet should use a distinct name to avoid collisions when running
 multiple farms on the same local network.
 
+Must not be empty, and this is checked **regardless of `discovery.enabled`** —
+explicitly setting it to `""` fails config validation and the server will not
+start, even with discovery switched off. Leave the default in place rather than
+blanking it to disable advertisement; use `discovery.enabled: false` for that.
+
 ```yaml
 discovery:
   instance_name: "studio-farm-primary"
@@ -684,9 +689,10 @@ auth:
 
 Rejects a job submission whose `owner` (set via a `jobs.submit_as` override)
 names no known user, with `400`. Default `true` — it keeps `Job.Owner` a
-trustworthy key, which per-user concurrency caps depend on; a typo'd owner
-would otherwise get its own silently uncapped bucket. Disable it when owners
-come from a directory that has not yet provisioned local records.
+trustworthy key for owner-scoped visibility: the `user` role's job listings are
+filtered by owner, so a typo'd owner yields a job invisible to the person who
+actually owns it and missed by an admin filtering on them. Disable it when
+owners come from a directory that has not yet provisioned local records.
 
 ```yaml
 auth:
@@ -727,6 +733,12 @@ auth:
 Name of the session cookie set by login and cleared by logout. Change this
 only if `sqi_session` collides with another cookie on the same domain (e.g.
 sqi served under a shared reverse-proxy host alongside another app).
+
+Must not be empty when `auth.enabled` is true — the server fails to start
+otherwise. The name is deliberately required rather than defaulted at the point
+of use: the CSRF middleware reads the cookie by name, and an empty name would
+make every mutating request take the "no session cookie" exempt path, silently
+disabling CSRF protection.
 
 ```yaml
 auth:
@@ -803,10 +815,19 @@ file- or environment-configured only. `role_map` is additionally **file-only:
 it has no environment form**, because a list of group→role pairs has no
 sensible flat encoding.
 
-The whole block is inert unless **both** `auth.enabled` and
-`auth.ldap.enabled` are true; an auth-off server never builds a verifier and
-never contacts a directory, whatever else is set here. Validation of the keys
-below only runs when `auth.ldap.enabled` is true.
+The whole block is inert while `auth.ldap.enabled` is false: the server never
+builds a verifier and never contacts a directory, whatever else is set here.
+Validation of the keys below only runs when `auth.ldap.enabled` is true.
+
+Setting `auth.ldap.enabled: true` while `auth.enabled` is false is **not** a
+silent no-op — it is a configuration error, and the server refuses to start:
+
+```
+auth.ldap.enabled: requires auth.enabled=true; LDAP without the auth gate authenticates nobody
+```
+
+Enable both together, or neither. You cannot stage an LDAP block behind a
+closed auth gate.
 
 | Key | Type | Default | Env var |
 |---|---|---|---|
@@ -920,10 +941,18 @@ environment-configured only. `role_map` is additionally **file-only: it has
 no environment form**, for the same reason as `auth.ldap.role_map` — a list of
 group→role pairs has no sensible flat encoding.
 
-The whole block is inert unless **both** `auth.enabled` and
-`auth.oidc.enabled` are true; an auth-off server never builds the SSO route,
-whatever else is set here. Validation of the keys below only runs when
-`auth.oidc.enabled` is true. Unlike LDAP, `issuer` discovery happens lazily on
+The whole block is inert while `auth.oidc.enabled` is false: the server never
+builds the SSO route, whatever else is set here. Validation of the keys below
+only runs when `auth.oidc.enabled` is true.
+
+Setting `auth.oidc.enabled: true` while `auth.enabled` is false is **not** a
+silent no-op — it is a configuration error, and the server refuses to start:
+
+```
+auth.oidc.enabled: requires auth.enabled=true; SSO without the auth gate authenticates nobody
+```
+
+Enable both together, or neither. Unlike LDAP, `issuer` discovery happens lazily on
 first use, not at boot — a briefly unreachable provider must not stop the
 scheduler from starting.
 

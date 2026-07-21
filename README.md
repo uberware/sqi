@@ -4,7 +4,7 @@
 
 📖 **[Documentation](https://uberware.github.io/sqi/)** — quickstart, architecture, configuration, and full reference.
 
-> **Status:** v0.2.0 (Phase 2) released. Builds on the Phase 1 core with products and presets as an authoring layer over OpenJD, a community preset-library integration, product-driven submission, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Contributions, feedback, and discussion welcome.
+> **Status:** v0.2.0 (Phase 2) released. Builds on the Phase 1 core with products and presets as an authoring layer over OpenJD, a community preset-library integration, product-driven submission, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Phase 3 (opt-in authentication and multi-user support — local accounts, API keys, RBAC, LDAP/AD, and OAuth2/OIDC SSO) is merged on `main` and in development toward release. Contributions, feedback, and discussion welcome.
 
 ---
 
@@ -46,7 +46,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 - **Pull-based workers** register with the farm and pull assigned tasks rather than receiving pushed assignments. Workers can be added, removed, and scaled without the scheduler needing to manage their lifecycle. This makes auto-scaling and ephemeral cloud workers straightforward.
 
-- **Layered authentication** — from no auth at all (local network trust, appropriate for small private farms) through local accounts, LDAP/Active Directory, and OAuth2/OIDC for SSO. Designed so simple deployments stay simple and enterprise deployments get what they need.
+- **Layered authentication** — from no auth at all (local network trust, appropriate for small private farms) through local accounts, API keys, role-based access control, LDAP/Active Directory, and OAuth2/OIDC for SSO. Designed so simple deployments stay simple and enterprise deployments get what they need. Auth is **off by default**: set `auth.enabled: true` to turn it on, and see [docs/auth.md](docs/auth.md) for the model, roles, and identity-provider setup.
 
 - **Web UI** is the primary interface. No required desktop application. Real-time job and worker status, log streaming, preset management, product configuration, and farm administration — all in a browser.
 
@@ -67,6 +67,8 @@ sqi-worker          # run on each render node — finds the server automatically
 
 On a local network, workers discover the server via mDNS and connect without any configuration. Open a browser, start submitting. That's it.
 
+There is no authentication in this mode — the server trusts the local network, by design. To require logins, set `auth.enabled: true` and see [docs/auth.md](docs/auth.md), which covers the first-admin bootstrap, roles, API keys, and connecting a directory or SSO provider.
+
 See the [Quickstart](docs/quickstart.md) for a full walkthrough (binary or Docker Compose), including creating a farm and queue and submitting your first job.
 
 **Distributed (production mode)**
@@ -79,7 +81,7 @@ Both modes run the same software. The difference is configuration.
 
 ## Status and roadmap
 
-`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Authentication and multi-user support (Phase 3) and production-hardening features follow in later phases.
+`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Phase 3 — opt-in authentication and multi-user support: local accounts and API keys, role-based access control, an authenticated owner/submitter identity on jobs, LDAP/Active Directory, and OAuth2/OIDC SSO — is merged on `main` and unreleased; it is off by default, so an existing deployment is unaffected until enabled. Production-hardening features (Phase 4) follow.
 
 This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose).
 

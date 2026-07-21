@@ -231,9 +231,9 @@ func TestBindSubmitIdentitySelfOwnerSkipsLookup(t *testing.T) {
 // does. ownerLookup discarding the looked-up User and returning only nil/err
 // let a case variant (e.g. "ALICE" for a user stored as "alice") through
 // verbatim, which internal/config/config.go's ValidateJobOwner doc says must
-// not happen: Job.Owner is meant to be a trustworthy per-user concurrency-cap
-// key, and a case variant is exactly the "own silently uncapped bucket" a
-// typo would create.
+// not happen: Job.Owner is meant to be a trustworthy key for owner-scoped
+// visibility, and a case variant splits one user across two owner buckets —
+// hiding the job from its real owner on any owner-filtered listing.
 func TestBindSubmitIdentityCanonicalizesOwnerCasing(t *testing.T) {
 	lookup := func(_ context.Context, username string) (string, error) {
 		if strings.EqualFold(username, "alice") {

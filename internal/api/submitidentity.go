@@ -54,8 +54,9 @@ func newOwnerLookup(st store.Store, validate bool) ownerLookup {
 //     known user, else 400 — this keeps Job.Owner a trustworthy key — and the
 //     canonical casing lookup returns is what gets stored, not the client's,
 //     matching the self path: a case variant of a known username must not get
-//     its own silently uncapped concurrency-cap bucket (see
-//     internal/config/config.go's ValidateJobOwner doc).
+//     its own separate owner bucket, or owner-scoped listing hides the job
+//     from its real owner (see internal/config/config.go's ValidateJobOwner
+//     doc).
 //
 // When auth is disabled the principal is the anonymous superuser: it holds
 // every permission and carries no username, so both client values pass through

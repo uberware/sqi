@@ -192,10 +192,13 @@ type AuthConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// ValidateJobOwner rejects a submission whose Owner names no known user.
-	// Default true — it keeps Job.Owner a trustworthy key, which per-user
-	// concurrency caps depend on; a typo'd owner would otherwise get its own
-	// silently uncapped bucket. Disable it when owners come from a directory
-	// that has not yet provisioned local records.
+	// Default true — it keeps Job.Owner a trustworthy key for owner-scoped
+	// visibility: the user role's job listings are filtered by owner, so a
+	// typo'd owner yields a job invisible to the person who actually owns it
+	// and missed by an admin filtering on them. It would likewise be the key
+	// for any future per-user concurrency cap (deferred, see Wave D of the
+	// Phase 3 tracker). Disable it when owners come from a directory that has
+	// not yet provisioned local records.
 	// Env: SQI_AUTH_VALIDATE_JOB_OWNER
 	ValidateJobOwner bool `yaml:"validate_job_owner"`
 
