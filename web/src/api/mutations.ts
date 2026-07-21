@@ -748,7 +748,7 @@ export function useLogout() {
     mutationFn: fetchLogout,
     onSuccess: (result) => {
       evictAllExceptAuthMe(qc)
-      if (result?.redirect_url !== undefined && result.redirect_url !== '') {
+      if (result.redirect_url) {
         window.location.assign(result.redirect_url)
       }
     },

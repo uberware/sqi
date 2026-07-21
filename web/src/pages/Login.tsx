@@ -20,28 +20,15 @@ import styles from './Login.module.css'
 const SSO_ERROR_MESSAGE = 'Sign-in failed. Please try again or contact your administrator.'
 
 /**
- * Reads the SSO failure marker the callback redirects with.
+ * Reads and clears the SSO failure marker the callback redirects with.
  *
- * Deliberately `window.location.search` and not a router hook: this component
- * is mounted inside a router whose location, under MemoryRouter (and in
- * principle any non-browser history), is not the real address bar the callback
- * navigated to. The marker arrives via a full-page redirect from the server, so
- * the document's own URL is the only place it reliably exists.
- *
- * Read once, via a `useState` lazy initializer, so it reflects only the
- * marker present on the component's first render and is not re-evaluated on
- * every subsequent one. That is not the same guarantee module scope would
- * give: it does not survive unmount/remount (a session expiring later and
- * `Login` mounting again re-reads the URL from scratch), which is why the
- * call site also clears the marker once it has been read.
- *
- * Clearing it here, rather than leaving it in the address bar, matters
- * because this is an SPA: without a page load to reset it, the marker would
- * otherwise persist across a subsequent successful login for the rest of the
- * session, and reappear as a false "sign-in failed" if `Login` ever
- * remounts (e.g. the session later expires).
+ * The marker must be cleared here, once read, so that a later `Login` mount
+ * (e.g. a session expiring) doesn't re-show a stale failure. Reads
+ * `window.location.search` rather than a router hook because the marker
+ * arrives via a full-page redirect from the server, not client-side
+ * navigation, so the document's own URL is the only place it reliably exists.
  */
-function hasSSOError(): boolean {
+function consumeSSOError(): boolean {
   const present = new URLSearchParams(window.location.search).get('sso_error') !== null
   if (present) {
     window.history.replaceState({}, '', window.location.pathname)
@@ -66,7 +53,7 @@ export default function Login() {
   const { refresh } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [ssoError] = useState(hasSSOError)
+  const [ssoError] = useState(consumeSSOError)
 
   // Derived from the mutation rather than mirrored into local state:
   // mutateAsync already clears the previous error when a new attempt starts.
