@@ -208,29 +208,42 @@ var expectedRoutes = []routeExpectation{
 // chi.Walk reports (e.g. {"GET", "/api/v1/users/{id}"}).
 type routeKey struct{ method, pattern string }
 
-// authRouter builds the same auth-enabled router newAuthTestServer wraps in
+// authRouterWith builds the same auth-enabled router newAuthTestServer wraps in
 // an httptest.Server (auth_test.go: same store, 1-hour session TTL, cookie
 // name), but returns the chi.Router directly so callers can both walk its
 // route table with chi.Walk and serve it themselves.
+//
+// mutate, when non-nil, gets the fully-populated Deps before the router is
+// built, which is how the provider-specific variants (authRouterLDAP,
+// authRouterOIDC) add their two or three fields. Keeping the base literal in
+// one place means a newly required Deps field is added once rather than
+// silently omitted from two of three near-identical copies.
 //
 // Products is wired to a real catalog (not left nil) so the products/presets
 // routes the sweep drives — GetByName/Delete/etc. all deref the catalog's
 // store field unconditionally — return an ordinary 404/503 for the "zzz"
 // placeholder instead of panicking on a nil receiver.
-func authRouter(st store.Store) chi.Router {
+func authRouterWith(st store.Store, mutate func(*Deps)) chi.Router {
+	deps := Deps{
+		Store:        st,
+		Products:     product.NewCatalog(st),
+		Auth:         session.New(st, "sqi_session", nil),
+		SessionTTL:   time.Hour,
+		CookieName:   "sqi_session",
+		CookieSecure: "false",
+	}
+	if mutate != nil {
+		mutate(&deps)
+	}
 	return NewRouter(
 		Config{DisableRateLimit: true, AuthEnabled: true},
-		Deps{
-			Store:        st,
-			Products:     product.NewCatalog(st),
-			Auth:         session.New(st, "sqi_session", nil),
-			SessionTTL:   time.Hour,
-			CookieName:   "sqi_session",
-			CookieSecure: "false",
-		},
+		deps,
 		newTestLogger(), metrics.New(), health.NewRegistry(),
 	)
 }
+
+// authRouter is authRouterWith and no provider: local accounts only.
+func authRouter(st store.Store) chi.Router { return authRouterWith(st, nil) }
 
 // liveRoutes walks r and returns every (method, pattern) chi actually
 // registered under /api/v1. Routes outside that prefix (health, metrics, the

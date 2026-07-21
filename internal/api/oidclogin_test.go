@@ -31,10 +31,6 @@ import (
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/rolemap"
-	"github.com/uberware/sqi/internal/auth/session"
-	"github.com/uberware/sqi/internal/health"
-	"github.com/uberware/sqi/internal/metrics"
-	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -151,21 +147,11 @@ func oidcTestCfg() oidc.Config {
 // provider models auth.oidc.enabled=false, in which case the routes must not
 // be registered at all.
 func authRouterOIDC(st store.Store, p oidc.Provider, cfg oidc.Config, key []byte) chi.Router {
-	return NewRouter(
-		Config{DisableRateLimit: true, AuthEnabled: true},
-		Deps{
-			Store:        st,
-			Products:     product.NewCatalog(st),
-			Auth:         session.New(st, "sqi_session", nil),
-			SessionTTL:   time.Hour,
-			CookieName:   "sqi_session",
-			CookieSecure: "false",
-			OIDCProvider: p,
-			OIDCConfig:   cfg,
-			OIDCStateKey: key,
-		},
-		newTestLogger(), metrics.New(), health.NewRegistry(),
-	)
+	return authRouterWith(st, func(d *Deps) {
+		d.OIDCProvider = p
+		d.OIDCConfig = cfg
+		d.OIDCStateKey = key
+	})
 }
 
 // oidcTestServer is an SSO-enabled test server plus the state-signing key the

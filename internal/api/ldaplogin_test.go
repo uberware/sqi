@@ -90,20 +90,10 @@ func ldapCfg() ldap.Config {
 // authRouterLDAP mirrors authRouter with a directory verifier wired in.
 // A nil verifier models auth.ldap.enabled=false.
 func authRouterLDAP(st store.Store, v ldap.Verifier, lcfg ldap.Config) chi.Router {
-	return NewRouter(
-		Config{DisableRateLimit: true, AuthEnabled: true},
-		Deps{
-			Store:        st,
-			Products:     product.NewCatalog(st),
-			Auth:         session.New(st, "sqi_session", nil),
-			SessionTTL:   time.Hour,
-			CookieName:   "sqi_session",
-			CookieSecure: "false",
-			LDAPVerifier: v,
-			LDAPConfig:   lcfg,
-		},
-		newTestLogger(), metrics.New(), health.NewRegistry(),
-	)
+	return authRouterWith(st, func(d *Deps) {
+		d.LDAPVerifier = v
+		d.LDAPConfig = lcfg
+	})
 }
 
 // newLDAPServer starts an auth-enabled test server with LDAP wired to v,
