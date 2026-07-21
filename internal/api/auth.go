@@ -345,7 +345,7 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 
 	var out logoutResponse
 	if h.oidcProvider != nil && h.oidcCfg.LogoutMode == oidc.LogoutProvider {
-		if u, ok := h.oidcProvider.EndSessionURL(ctx, h.oidcCfg.PostLogoutRedirectURL); ok {
+		if u, ok := h.oidcProvider.EndSessionURL(ctx); ok {
 			out.RedirectURL = u
 		} else {
 			// Loud, not silent: an operator who configured provider logout and

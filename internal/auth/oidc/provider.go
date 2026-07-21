@@ -57,9 +57,10 @@ type Provider interface {
 	Exchange(ctx context.Context, code, codeVerifier, nonce string) (Identity, error)
 	// EndSessionURL returns the provider's RP-initiated logout URL, or false
 	// when discovery advertised no end_session_endpoint so the caller degrades
-	// to local logout rather than emitting a broken URL. ctx bounds discovery,
-	// as in AuthCodeURL.
-	EndSessionURL(ctx context.Context, postLogoutRedirect string) (string, bool)
+	// to local logout rather than emitting a broken URL. The post-logout
+	// redirect comes from the Config this Provider was built with. ctx bounds
+	// discovery, as in AuthCodeURL.
+	EndSessionURL(ctx context.Context) (string, bool)
 }
 
 // provider implements Provider against a real identity provider.
@@ -77,6 +78,12 @@ type Provider interface {
 // own full discoveryTimeout attempt, each pinning an HTTP handler goroutine.
 type provider struct {
 	cfg Config
+	// scopes is cfg.Scopes with "openid" guaranteed present, computed once in
+	// New. Without "openid" the provider returns no ID token at all and every
+	// downstream check would have nothing to verify — but the list is fixed at
+	// boot, so re-deriving it on each AuthCodeURL and Exchange was work with a
+	// constant answer.
+	scopes []string
 
 	mu       sync.Mutex
 	discover *coreoidc.Provider
@@ -85,7 +92,9 @@ type provider struct {
 	inflight *discoveryCall
 	// failedAt/failErr remember the most recent failure for
 	// failureBackoff, so a herd arriving behind a dead provider costs one
-	// attempt rather than one per caller.
+	// attempt rather than one per caller. They are only ever consulted while
+	// discover is nil — a success is checked first — so a successful attempt
+	// leaves them stale rather than clearing them.
 	failedAt time.Time
 	failErr  error
 	// failureBackoff is discoveryFailureBackoff except in tests, which
@@ -93,8 +102,10 @@ type provider struct {
 	failureBackoff time.Duration
 }
 
-// discoveryCall is one in-progress discovery attempt. Waiters block on done and
-// then read d/err, which the electee writes before closing it.
+// discoveryCall is one discovery attempt's result slot. When done is non-nil
+// the attempt is in progress: waiters block on it and then read d/err, which
+// the electee writes before closing it. A nil done means the call was built to
+// carry an answer that was already known, so d/err are readable immediately.
 type discoveryCall struct {
 	done chan struct{}
 	d    *coreoidc.Provider
@@ -110,21 +121,41 @@ type providerMetadata struct {
 // New builds a Provider. It performs no network I/O — the identity provider is
 // not contacted until the first login.
 func New(cfg Config) Provider {
-	return &provider{cfg: cfg, failureBackoff: discoveryFailureBackoff}
+	scopes := slices.Clone(cfg.Scopes)
+	if !slices.Contains(scopes, coreoidc.ScopeOpenID) {
+		scopes = append([]string{coreoidc.ScopeOpenID}, scopes...)
+	}
+	return &provider{cfg: cfg, scopes: scopes, failureBackoff: discoveryFailureBackoff}
 }
 
 // resolve returns the discovered provider, fetching it on first use and after
-// any previous failure. Concurrent callers share a single attempt.
+// any previous failure. Concurrent callers share a single attempt: exactly one
+// of a batch is elected to fetch, and the rest await its result.
 func (p *provider) resolve(ctx context.Context) (*coreoidc.Provider, error) {
-	call, wait := p.claimDiscovery()
-	if wait != nil {
-		return wait.d, wait.err
+	call, elected := p.claimDiscovery()
+	if elected {
+		return p.runDiscovery(ctx, call)
 	}
-	if call == nil {
-		// A batch is already in flight; join it rather than starting another.
-		return p.joinDiscovery(ctx)
+	if call.done == nil {
+		// Already settled — a cached success, or a failure still inside the
+		// backoff window. Nothing to wait for.
+		return call.d, call.err
 	}
+	select {
+	case <-call.done:
+		// The electee wrote d/err before closing done, so this read is
+		// ordered after those writes. The call stays valid even though
+		// p.inflight has by now been cleared: this is the pointer read under
+		// the lock at claim time, not a re-read of the field.
+		return call.d, call.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", ErrDiscovery, ctx.Err())
+	}
+}
 
+// runDiscovery performs the elected attempt and publishes its result. The
+// fetch itself runs with the mutex released; only the bookkeeping takes it.
+func (p *provider) runDiscovery(ctx context.Context, call *discoveryCall) (*coreoidc.Provider, error) {
 	defer close(call.done)
 	defer func() {
 		p.mu.Lock()
@@ -149,47 +180,35 @@ func (p *provider) resolve(ctx context.Context) (*coreoidc.Provider, error) {
 	} else {
 		p.discover = d
 		p.metadata = md
-		p.failErr = nil
 		call.d = d
 	}
 	p.mu.Unlock()
 	return d, err
 }
 
-// claimDiscovery decides this caller's role under the lock. It returns a
-// non-nil call when this caller must perform the fetch, a non-nil wait when the
-// answer is already known, and (nil, nil) when a fetch is in flight to join.
-func (p *provider) claimDiscovery() (call, settled *discoveryCall) {
+// claimDiscovery decides this caller's role under the lock, and always returns
+// a call to act on.
+//
+// elected means this caller must perform the fetch; the returned call is the
+// one it publishes into. Otherwise the call is either already settled (a nil
+// done channel: a cached success, or a failure inside the backoff window) or
+// the in-flight attempt to wait on. Returning the in-flight pointer directly —
+// rather than making the caller re-read p.inflight — is what keeps resolve a
+// straight elect-or-await with no second lock and no retry.
+func (p *provider) claimDiscovery() (call *discoveryCall, elected bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.discover != nil {
-		return nil, &discoveryCall{d: p.discover}
+		return &discoveryCall{d: p.discover}, false
 	}
 	if p.failErr != nil && time.Since(p.failedAt) < p.failureBackoff {
-		return nil, &discoveryCall{err: p.failErr}
+		return &discoveryCall{err: p.failErr}, false
 	}
 	if p.inflight != nil {
-		return nil, nil
+		return p.inflight, false
 	}
 	p.inflight = &discoveryCall{done: make(chan struct{})}
-	return p.inflight, nil
-}
-
-// joinDiscovery waits for the in-flight attempt claimed by another caller.
-func (p *provider) joinDiscovery(ctx context.Context) (*coreoidc.Provider, error) {
-	p.mu.Lock()
-	call := p.inflight
-	p.mu.Unlock()
-	if call == nil {
-		// It finished between claimDiscovery and here; re-read the result.
-		return p.resolve(ctx)
-	}
-	select {
-	case <-call.done:
-		return call.d, call.err
-	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %w", ErrDiscovery, ctx.Err())
-	}
+	return p.inflight, true
 }
 
 // fetch performs the discovery request. It touches no provider state, so it is
@@ -216,18 +235,12 @@ func (p *provider) fetch(ctx context.Context) (*coreoidc.Provider, providerMetad
 
 // oauth2Config builds the OAuth2 client config against a discovered provider.
 func (p *provider) oauth2Config(d *coreoidc.Provider) oauth2.Config {
-	scopes := slices.Clone(p.cfg.Scopes)
-	if !slices.Contains(scopes, coreoidc.ScopeOpenID) {
-		// Without "openid" the provider returns no ID token at all, and every
-		// downstream check would have nothing to verify.
-		scopes = append([]string{coreoidc.ScopeOpenID}, scopes...)
-	}
 	return oauth2.Config{
 		ClientID:     p.cfg.ClientID,
 		ClientSecret: p.cfg.ClientSecret,
 		Endpoint:     d.Endpoint(),
 		RedirectURL:  p.cfg.RedirectURL,
-		Scopes:       scopes,
+		Scopes:       p.scopes,
 	}
 }
 
@@ -332,7 +345,7 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 // would put the first plaintext bearer secret into a schema that otherwise
 // holds only hashes, to save a redirect. Providers that require the hint will
 // simply re-prompt, which is the correct outcome for a logout.
-func (p *provider) EndSessionURL(ctx context.Context, postLogoutRedirect string) (string, bool) {
+func (p *provider) EndSessionURL(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
@@ -355,11 +368,8 @@ func (p *provider) EndSessionURL(ctx context.Context, postLogoutRedirect string)
 	}
 	q := u.Query()
 	q.Set("client_id", p.cfg.ClientID)
-	if postLogoutRedirect == "" {
-		postLogoutRedirect = p.cfg.PostLogoutRedirectURL
-	}
-	if postLogoutRedirect != "" {
-		q.Set("post_logout_redirect_uri", postLogoutRedirect)
+	if p.cfg.PostLogoutRedirectURL != "" {
+		q.Set("post_logout_redirect_uri", p.cfg.PostLogoutRedirectURL)
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), true

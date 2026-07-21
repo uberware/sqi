@@ -386,8 +386,8 @@ func TestLogout_ProviderModeReturnsEndSessionURL(t *testing.T) {
 	if out.RedirectURL != endSession {
 		t.Errorf("redirect_url = %q, want %q", out.RedirectURL, endSession)
 	}
-	if got := p.postLogoutRedirectSeen(); got != cfg.PostLogoutRedirectURL {
-		t.Errorf("EndSessionURL got post-logout redirect %q, want the configured %q", got, cfg.PostLogoutRedirectURL)
+	if n := p.endSessionCallCount(); n != 1 {
+		t.Errorf("EndSessionURL called %d times, want exactly 1", n)
 	}
 	// No token of any kind may appear: not an id_token_hint, not the session
 	// token, not an access token.
@@ -447,7 +447,7 @@ func TestLogout_LocalModeReturnsNoRedirect(t *testing.T) {
 	if out.RedirectURL != "" {
 		t.Errorf("redirect_url = %q, want none under logout_mode=local", out.RedirectURL)
 	}
-	if seen := p.postLogoutRedirectSeen(); seen != "" {
+	if n := p.endSessionCallCount(); n != 0 {
 		t.Error("EndSessionURL was called under logout_mode=local")
 	}
 }

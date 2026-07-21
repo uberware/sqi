@@ -401,14 +401,19 @@ func TestProvider_EndSessionURL(t *testing.T) {
 	tests := []struct {
 		name         string
 		mutate       func(*fakeIDP)
-		redirect     string
+		mutateCfg    func(*Config)
 		wantOK       bool
 		wantRedirect string
 	}{
-		{name: "advertised", mutate: func(*fakeIDP) {}, redirect: "https://sqi.example.com/bye", wantOK: true, wantRedirect: "https://sqi.example.com/bye"},
 		{
-			name: "falls back to the configured post-logout redirect", mutate: func(*fakeIDP) {},
-			redirect: "", wantOK: true, wantRedirect: "https://sqi.example.com/login",
+			name:   "advertised, carrying the configured post-logout redirect",
+			mutate: func(*fakeIDP) {}, mutateCfg: func(*Config) {},
+			wantOK: true, wantRedirect: "https://sqi.example.com/login",
+		},
+		{
+			name:   "no configured redirect omits the parameter",
+			mutate: func(*fakeIDP) {}, mutateCfg: func(c *Config) { c.PostLogoutRedirectURL = "" },
+			wantOK: true, wantRedirect: "",
 		},
 		{name: "not advertised", mutate: func(f *fakeIDP) { f.noEndSessionSupport = true }, wantOK: false},
 		{name: "discovery unreachable", mutate: func(f *fakeIDP) { f.discoveryFails = true }, wantOK: false},
@@ -417,9 +422,13 @@ func TestProvider_EndSessionURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			idp := newFakeIDP(t)
 			tt.mutate(idp)
-			p := New(testConfig(idp.URL()))
+			cfg := testConfig(idp.URL())
+			if tt.mutateCfg != nil {
+				tt.mutateCfg(&cfg)
+			}
+			p := New(cfg)
 
-			raw, ok := p.EndSessionURL(t.Context(), tt.redirect)
+			raw, ok := p.EndSessionURL(t.Context())
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v (url %q)", ok, tt.wantOK, raw)
 			}
