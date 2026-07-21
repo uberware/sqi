@@ -115,7 +115,7 @@ jobs:
       # Node is required by the goreleaser before hooks that build the web UI
       # bundle (npm ci / npm run build in web/) ahead of the Go builds.
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
