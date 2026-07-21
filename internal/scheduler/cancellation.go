@@ -114,7 +114,10 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 // task.cancel.<taskID> signal to the assigned worker.
 //
 // If the task is already in a terminal state (succeeded, failed, canceled),
-// CancelTask returns nil without modifying any state.
+// CancelTask returns nil without modifying any state. That holds whether the
+// terminal state was visible up front or the task reached it mid-cancel: the
+// guard below and the status write are separate operations, and losing that
+// race is reported the same way as never having had it.
 func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	now := time.Now().UTC()
 
@@ -148,6 +151,24 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	}
 
 	if err = s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusCanceled); err != nil {
+		// Losing a race to completion is a no-op, not a failure. The terminal
+		// guard above is a separate read, so the task can finish between that
+		// read and this write; the state machine then rejects it. Canceling an
+		// already-terminal task is documented to return nil, and which side of
+		// the race the caller landed on must not change that.
+		//
+		// Narrow by construction: every non-terminal status has a legal arrow
+		// to canceled, so ErrInvalidTransition on *this* write can only mean
+		// the task is already terminal. Any other store failure still
+		// propagates.
+		if errors.Is(err, store.ErrInvalidTransition) {
+			s.logger.DebugContext(
+				ctx, "scheduler: cancel task — reached terminal state first",
+				slog.String("task_id", taskID),
+				slog.Any("error", err),
+			)
+			return nil
+		}
 		return fmt.Errorf("scheduler: transition task %s to canceled: %w", taskID, err)
 	}
 

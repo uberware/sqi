@@ -5,6 +5,7 @@ package fake
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -63,6 +64,13 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 // unschedulable_reason is only meaningful while a task is ready (set by the
 // scheduler sweep), so it is cleared here regardless of the destination
 // status — harmless when it was already empty.
+//
+// Enforces the task state machine ([store.ValidateTaskTransition]) under the
+// same lock that performs the write, matching the SQLite store's transaction.
+// Writing the status a task already holds is a no-op, not an error, so
+// at-least-once redelivery stays idempotent. Keeping the two implementations in
+// step matters: tests inject this fake, and a permissive fake would green-light
+// transitions production rejects.
 func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.TaskStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,6 +78,13 @@ func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.Task
 	task, ok := s.tasks[id]
 	if !ok {
 		return store.ErrNotFound
+	}
+
+	if task.Status == status {
+		return nil // idempotent redelivery; nothing to write
+	}
+	if err := store.ValidateTaskTransition(task.Status, status); err != nil {
+		return fmt.Errorf("fake: task %s: %w", id, err)
 	}
 
 	task.Status = status

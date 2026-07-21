@@ -14,68 +14,6 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// ── Task transitions ──────────────────────────────────────────────────────────
-
-func TestValidateTaskTransition(t *testing.T) {
-	legal := []struct {
-		from store.TaskStatus
-		to   store.TaskStatus
-	}{
-		{store.TaskStatusPending, store.TaskStatusReady},
-		{store.TaskStatusPending, store.TaskStatusCanceled},
-		{store.TaskStatusReady, store.TaskStatusAssigned},
-		{store.TaskStatusReady, store.TaskStatusCanceled},
-		{store.TaskStatusAssigned, store.TaskStatusRunning},
-		{store.TaskStatusAssigned, store.TaskStatusReady},
-		{store.TaskStatusAssigned, store.TaskStatusCanceled},
-		{store.TaskStatusRunning, store.TaskStatusSucceeded},
-		{store.TaskStatusRunning, store.TaskStatusFailed},
-		{store.TaskStatusRunning, store.TaskStatusReady},
-		{store.TaskStatusRunning, store.TaskStatusCanceled},
-	}
-	for _, tc := range legal {
-		if err := openjd.ValidateTaskTransition(tc.from, tc.to); err != nil {
-			t.Errorf("expected legal transition %q→%q, got error: %v", tc.from, tc.to, err)
-		}
-	}
-
-	illegal := []struct {
-		from store.TaskStatus
-		to   store.TaskStatus
-	}{
-		{store.TaskStatusPending, store.TaskStatusRunning},
-		{store.TaskStatusPending, store.TaskStatusSucceeded},
-		{store.TaskStatusReady, store.TaskStatusRunning},
-		{store.TaskStatusReady, store.TaskStatusSucceeded},
-		{store.TaskStatusSucceeded, store.TaskStatusRunning},
-		{store.TaskStatusSucceeded, store.TaskStatusFailed},
-		{store.TaskStatusFailed, store.TaskStatusRunning},
-		{store.TaskStatusFailed, store.TaskStatusSucceeded},
-		{store.TaskStatusCanceled, store.TaskStatusRunning},
-		{store.TaskStatusCanceled, store.TaskStatusSucceeded},
-	}
-	for _, tc := range illegal {
-		err := openjd.ValidateTaskTransition(tc.from, tc.to)
-		if err == nil {
-			t.Errorf("expected error for illegal transition %q→%q, got nil", tc.from, tc.to)
-			continue
-		}
-		if !errors.Is(err, openjd.ErrInvalidTransition) {
-			t.Errorf("transition %q→%q: error %v should wrap ErrInvalidTransition", tc.from, tc.to, err)
-		}
-	}
-}
-
-func TestValidateTaskTransition_UnknownStatus(t *testing.T) {
-	err := openjd.ValidateTaskTransition("bogus", store.TaskStatusReady)
-	if err == nil {
-		t.Fatal("expected error for unknown status, got nil")
-	}
-	if !errors.Is(err, openjd.ErrInvalidTransition) {
-		t.Errorf("expected ErrInvalidTransition, got %v", err)
-	}
-}
-
 // ── Step transitions ──────────────────────────────────────────────────────────
 
 func TestValidateStepTransition(t *testing.T) {

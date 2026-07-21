@@ -53,7 +53,25 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 		if status == "" {
 			status = store.TaskStatusReady
 		}
-		return f.retryStore.UpdateTaskStatus(ctx, id, status)
+		// Revive through RetryTasks, the same store call the real scheduler
+		// makes. UpdateTaskStatus would be wrong here: it enforces the task
+		// state machine, and failed → ready is not an arrow — production
+		// revives failed → pending inside RetryTasks and then promotes to ready
+		// via dependency resolution. Using UpdateTaskStatus made this double
+		// exercise a transition the real store rejects.
+		task, err := f.retryStore.GetTask(ctx, id)
+		if err != nil {
+			return err
+		}
+		if _, err := f.retryStore.RetryTasks(ctx, task.JobID, []string{id}, time.Now()); err != nil {
+			return err
+		}
+		if status != store.TaskStatusPending {
+			// RetryTasks lands on pending; walk the legal pending → ready arrow
+			// when the test wants the post-resolution status.
+			return f.retryStore.UpdateTaskStatus(ctx, id, status)
+		}
+		return nil
 	}
 	return nil
 }

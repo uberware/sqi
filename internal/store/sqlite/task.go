@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +34,11 @@ RETURNING ` + taskCols
 	// annotation once it leaves ready for any reason.
 	sqlUpdateTaskStatus = `
 UPDATE tasks SET status = ?, updated_at = ?, unschedulable_reason = '' WHERE id = ?`
+
+	// sqlSelectTaskStatus reads the current status inside UpdateTaskStatus's
+	// transaction so the state-machine check and the write are indivisible.
+	sqlSelectTaskStatus = `
+SELECT status FROM tasks WHERE id = ?`
 
 	sqlSetTaskUnschedulableReason = `
 UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
@@ -428,12 +434,55 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 }
 
 // UpdateTaskStatus implements [store.TaskStore].
+//
+// The write is gated by the task state machine
+// ([store.ValidateTaskTransition]): a transition the machine does not permit is
+// rejected with [store.ErrInvalidTransition] and leaves the row untouched.
+//
+// Writing the status a task already holds is a no-op, not an error. Task status
+// arrives over JetStream, which is at-least-once, so a redelivered message must
+// not fail — the consumer would Nak it and redeliver forever.
+//
+// The read and the write share a transaction, serialized by the
+// single-connection pool (SetMaxOpenConns(1)), so no other goroutine can move
+// the task between the check and the update. Mirrors [Store.TryClaimSlots].
 func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
-	res, err := s.stmtUpdateTaskStatus.ExecContext(ctx, string(status), timeToText(time.Now().UTC()), id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: begin tx for update task status: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+
+	var current string
+	if err = tx.QueryRowContext(ctx, sqlSelectTaskStatus, id).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("sqlite: select task status: %w", mapErr(err))
+	}
+
+	if store.TaskStatus(current) == status {
+		return nil // idempotent redelivery; nothing to write
+	}
+	if err = store.ValidateTaskTransition(store.TaskStatus(current), status); err != nil {
+		return fmt.Errorf("sqlite: task %s: %w", id, err)
+	}
+
+	// Raw SQL rather than the prepared s.stmtUpdateTaskStatus: a statement
+	// bound into a transaction with tx.StmtContext must itself be closed, and
+	// the other transactional writers here use tx.ExecContext for the same
+	// reason.
+	res, err := tx.ExecContext(ctx, sqlUpdateTaskStatus, string(status), timeToText(time.Now().UTC()), id)
 	if err != nil {
 		return mapErr(err)
 	}
-	return checkRowsAffected(res)
+	if err := checkRowsAffected(res); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: commit update task status: %w", err)
+	}
+	return nil
 }
 
 // SetTaskUnschedulableReason implements [store.TaskStore].

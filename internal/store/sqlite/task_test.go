@@ -27,17 +27,11 @@ func TestRetryTasks_SQLite(t *testing.T) {
 		t.Fatalf("UpdateStepStatus failed: %v", err)
 	}
 	insertTask(t, s, "t-failed", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t-failed", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus t-failed: %v", err)
-	}
+	walkTaskTo(t, s, "t-failed", store.TaskStatusFailed)
 	insertTask(t, s, "t-canceled", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t-canceled", store.TaskStatusCanceled); err != nil {
-		t.Fatalf("UpdateTaskStatus t-canceled: %v", err)
-	}
+	walkTaskTo(t, s, "t-canceled", store.TaskStatusCanceled)
 	insertTask(t, s, "t-ok", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t-ok", store.TaskStatusSucceeded); err != nil {
-		t.Fatalf("UpdateTaskStatus t-ok: %v", err)
-	}
+	walkTaskTo(t, s, "t-ok", store.TaskStatusSucceeded)
 
 	revived, err := s.RetryTasks(ctx, "j1", nil, time.Now().UTC())
 	if err != nil {
@@ -110,9 +104,7 @@ func TestRetryTasks_EmptySliceRevivesNothing(t *testing.T) {
 		t.Fatalf("UpdateStepStatus: %v", err)
 	}
 	insertTask(t, s, "t-failed", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t-failed", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus t-failed: %v", err)
-	}
+	walkTaskTo(t, s, "t-failed", store.TaskStatusFailed)
 
 	// Non-nil but empty slice: "filter to exactly these (zero) IDs" → revive nothing.
 	revived, err := s.RetryTasks(ctx, "j1", []string{}, time.Now().UTC())
@@ -152,13 +144,9 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 		t.Fatalf("UpdateStepStatus: %v", err)
 	}
 	insertTask(t, s, "ta", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "ta", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus ta: %v", err)
-	}
+	walkTaskTo(t, s, "ta", store.TaskStatusFailed)
 	insertTask(t, s, "tb", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "tb", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus tb: %v", err)
-	}
+	walkTaskTo(t, s, "tb", store.TaskStatusFailed)
 
 	// Retry only "ta" from the subset.
 	revived, err := s.RetryTasks(ctx, "j1", []string{"ta"}, time.Now().UTC())
@@ -217,9 +205,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	}
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusRunning)
 
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff; enough failures park the job with a reason.
@@ -237,9 +223,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	// Drive the task and job to the terminal states RetryTasks operates on
 	// (park leaves the job paused, not terminal — so move both to failed
 	// directly, as the production failure sweep would eventually do).
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus(failed): %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
 	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
 		t.Fatalf("UpdateJobStatus(failed): %v", err)
 	}
@@ -291,9 +275,7 @@ func TestRetryTasks_ClearsFailureReason(t *testing.T) {
 	}
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
 	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
 		t.Fatalf("SetTaskFailureReason: %v", err)
 	}
@@ -538,9 +520,7 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 		t.Run(string(tc.status), func(t *testing.T) {
 			id := "t" + string(rune('1'+i))
 			insertTask(t, s, id, "j1", "s1")
-			if err := s.UpdateTaskStatus(ctx, id, tc.status); err != nil {
-				t.Fatalf("UpdateTaskStatus: %v", err)
-			}
+			walkTaskTo(t, s, id, tc.status)
 			if tc.reason != "" {
 				if err := s.SetTaskFailureReason(ctx, id, tc.reason); err != nil {
 					t.Fatalf("SetTaskFailureReason: %v", err)
@@ -730,9 +710,7 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
 	// The tripping task went terminal-failed and the job parked.
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus(failed): %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -760,9 +738,7 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus(failed): %v", err)
-	}
+	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
 	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusPaused); err != nil {
 		t.Fatalf("UpdateJobStatus(paused): %v", err)
 	}
@@ -918,9 +894,7 @@ func failedTaskWithReason(t *testing.T, s *sqlite.Store, id, jobID, stepID, reas
 	t.Helper()
 	insertTask(t, s, id, jobID, stepID)
 	ctx := context.Background()
-	if err := s.UpdateTaskStatus(ctx, id, store.TaskStatusFailed); err != nil {
-		t.Fatalf("UpdateTaskStatus(%q): %v", id, err)
-	}
+	walkTaskTo(t, s, id, store.TaskStatusFailed)
 	if err := s.SetTaskFailureReason(ctx, id, reason); err != nil {
 		t.Fatalf("SetTaskFailureReason(%q): %v", id, err)
 	}
@@ -985,9 +959,7 @@ func TestFailureReasonSummary_Empty(t *testing.T) {
 	insertJob(t, s, "j1", "f1", "q1")
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t0", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t0", store.TaskStatusSucceeded); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
+	walkTaskTo(t, s, "t0", store.TaskStatusSucceeded)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {

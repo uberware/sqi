@@ -308,7 +308,9 @@ func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if err := s.UpdateTaskStatus(ctx(), "t1", store.TaskStatusRunning); err != nil {
+	// ready → assigned is the legal arrow out of ready; the point of the test is
+	// that any status change clears the reason, not which status it lands on.
+	if err := s.UpdateTaskStatus(ctx(), "t1", store.TaskStatusAssigned); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
 

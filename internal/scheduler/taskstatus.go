@@ -79,6 +79,21 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 	}
 
 	if err := s.processTaskStatus(ctx, m); err != nil {
+		// An illegal transition is permanent: the task has moved on (retried,
+		// canceled, already terminal) and this message describes a past state.
+		// Redelivering cannot make it legal, so discard it rather than Nak into
+		// an infinite loop — the same reasoning as a malformed payload above.
+		if errors.Is(err, store.ErrInvalidTransition) {
+			s.logger.WarnContext(
+				ctx, "scheduler: task status rejected by state machine — discarding",
+				slog.String("task_id", m.TaskID),
+				slog.String("attempt_id", m.AttemptID),
+				slog.String("status", m.Status),
+				slog.Any("error", err),
+			)
+			s.ackMsg(ctx, msg)
+			return
+		}
 		s.logger.WarnContext(
 			ctx, "scheduler: process task status failed — will redeliver",
 			slog.String("task_id", m.TaskID),
