@@ -85,6 +85,17 @@ func (s *Store) UpdateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 
 	queue.CreatedAt = existing.CreatedAt
 	queue.UpdatedAt = time.Now()
+	// Mirror the SQLite CASE WHEN: a preserved column keeps its stored value
+	// regardless of what queue.RunAsUser/RunAsGroup carries, and the preserve
+	// flags themselves are write-only instructions, not stored state.
+	if queue.PreserveRunAsUser {
+		queue.RunAsUser = existing.RunAsUser
+	}
+	if queue.PreserveRunAsGroup {
+		queue.RunAsGroup = existing.RunAsGroup
+	}
+	queue.PreserveRunAsUser = false
+	queue.PreserveRunAsGroup = false
 	s.queues[queue.ID] = queue
 	return queue, nil
 }

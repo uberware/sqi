@@ -35,6 +35,22 @@ type Queue struct {
 	RunAsGroup *string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	// PreserveRunAsUser and PreserveRunAsGroup are read only by
+	// [QueueStore.UpdateQueue] (ignored by CreateQueue and never populated by a
+	// read). When true, the update leaves the corresponding column untouched —
+	// RunAsUser/RunAsGroup on this struct is ignored for that column — instead
+	// of overwriting it with the given (possibly zero) value.
+	//
+	// This exists so the API layer's "key omitted from the PUT body means
+	// preserve the stored identity" rule can be expressed as a single atomic
+	// UPDATE statement instead of a read-then-write: a prior GetQueue to fetch
+	// the existing value followed by a separate UpdateQueue left a window in
+	// which a concurrent admin write setting the identity could be silently
+	// undone by an unrelated operator write that started before it (lost
+	// update). Preferring "leave this column alone" inside the same statement
+	// closes that race outright rather than narrowing it.
+	PreserveRunAsUser  bool
+	PreserveRunAsGroup bool
 }
 
 // QueueSortField is a column by which [QueueStore.ListQueues] results can be
@@ -66,7 +82,12 @@ type QueueStore interface {
 	ListQueues(ctx context.Context, opts ListQueuesOptions) (Page[Queue], error)
 
 	// UpdateQueue replaces the mutable fields of an existing queue and updates
-	// UpdatedAt. Returns [ErrNotFound] or [ErrConflict] as appropriate.
+	// UpdatedAt, in a single atomic write. RunAsUser/RunAsGroup are the
+	// exception: when queue.PreserveRunAsUser (resp. PreserveRunAsGroup) is
+	// true, that column is left at its stored value instead of being
+	// overwritten by queue.RunAsUser (resp. queue.RunAsGroup) — see the
+	// [Queue.PreserveRunAsUser] doc for why this exists. Returns [ErrNotFound]
+	// or [ErrConflict] as appropriate.
 	UpdateQueue(ctx context.Context, queue Queue) (Queue, error)
 
 	// DeleteQueue removes a queue by ID. Returns [ErrNotFound] if it does not

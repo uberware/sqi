@@ -1004,6 +1004,19 @@ components:
           description: >-
             Queue-level override for the number of task failures that
             auto-parks a job. Null means inherit (farm -> server default).
+        run_as_user:
+          type: string
+          nullable: true
+          description: >-
+            OS user that tasks in this queue execute as. Null means no isolation:
+            tasks run as the worker's own user. Setting this requires the
+            isolation.manage permission (admin only).
+        run_as_group:
+          type: string
+          nullable: true
+          description: >-
+            OS group for the task process. Null means the target user's primary
+            group.
 
     CreateQueueRequest:
       type: object
@@ -1044,6 +1057,21 @@ components:
           description: >-
             Queue-level failure-limit retry-policy override. Null means
             inherit.
+        run_as_user:
+          type: string
+          nullable: true
+          description: >-
+            OS user that tasks in this queue execute as. Null means no
+            isolation: tasks run as the worker's own user. Present in the
+            request body (any value, including explicit null) requires the
+            isolation.manage permission (admin only); omitting the key
+            requires no permission.
+        run_as_group:
+          type: string
+          nullable: true
+          description: >-
+            OS group for the task process. Null means the target user's primary
+            group. Gated the same as run_as_user — see that field's description.
 
     UpdateQueueRequest:
       type: object
@@ -1084,6 +1112,26 @@ components:
           description: >-
             Queue-level failure-limit retry-policy override. Null means
             inherit.
+        run_as_user:
+          type: string
+          nullable: true
+          description: >-
+            OS user that tasks in this queue execute as. This field
+            deliberately deviates from PUT's usual full-replace semantics:
+            omitting the key from the request body preserves the queue's
+            currently stored value and requires no permission (so an ordinary
+            edit, e.g. changing priority, cannot silently clear it); including
+            the key — any value, including explicit null — replaces the
+            stored value and requires the isolation.manage permission (admin
+            only). Null (whether stored or set) means no isolation: tasks run
+            as the worker's own user.
+        run_as_group:
+          type: string
+          nullable: true
+          description: >-
+            OS group for the task process. Null means the target user's
+            primary group. Gated and omit/preserve-semantics are the same as
+            run_as_user — see that field's description.
 
     QueueList:
       type: object

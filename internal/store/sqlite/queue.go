@@ -26,10 +26,19 @@ RETURNING ` + queueCols
 
 	sqlGetQueue = `SELECT ` + queueCols + ` FROM queues WHERE id = ?`
 
+	// run_as_user and run_as_group are written with a self-referential CASE so
+	// a "preserve this column" update stays inside the same atomic statement
+	// as every other field, rather than requiring a prior read of the current
+	// value (which would open a lost-update race against a concurrent write
+	// to that column — see [store.Queue.PreserveRunAsUser]). The two extra
+	// placeholders ahead of each value (?) are the preserve flags, bound as 0
+	// or 1: SQLite's CASE WHEN treats any nonzero integer as true.
 	sqlUpdateQueue = `
 UPDATE queues
 SET farm_id = ?, name = ?, description = ?, priority = ?, max_concurrent_tasks = ?, paused = ?,
-	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?, run_as_user = ?, run_as_group = ?,
+	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?,
+	run_as_user = CASE WHEN ? THEN run_as_user ELSE ? END,
+	run_as_group = CASE WHEN ? THEN run_as_group ELSE ? END,
 	updated_at = ?
 WHERE id = ?
 RETURNING ` + queueCols
@@ -145,14 +154,16 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	}, nil
 }
 
-// UpdateQueue implements [store.QueueStore].
+// UpdateQueue implements [store.QueueStore]. See the type's doc comment for
+// PreserveRunAsUser/PreserveRunAsGroup semantics.
 func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateQueue.QueryRowContext(ctx,
 		queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
-		nullStrPtr(queue.RunAsUser), nullStrPtr(queue.RunAsGroup),
+		boolToInt(queue.PreserveRunAsUser), nullStrPtr(queue.RunAsUser),
+		boolToInt(queue.PreserveRunAsGroup), nullStrPtr(queue.RunAsGroup),
 		now, queue.ID)
 	out, err := scanQueue(row)
 	return out, mapErr(err)
