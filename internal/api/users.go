@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -26,10 +27,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/uberware/sqi/internal/auth/ldap"
-	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/password"
 	"github.com/uberware/sqi/internal/auth/policy"
+	"github.com/uberware/sqi/internal/auth/rolemap"
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -281,42 +281,49 @@ func (h *usersHandler) wouldRemoveLastAdmin(ctx context.Context, target store.Us
 func directoryOwnsRole(u store.User, ldapRoleSource, oidcRoleSource string) bool {
 	switch u.AuthSource {
 	case store.AuthSourceLDAP:
-		return ldapRoleSource == ldap.RoleSourceDirectory
+		return ldapRoleSource == rolemap.SourceDirectory
 	case store.AuthSourceOIDC:
-		return oidcRoleSource == oidc.RoleSourceDirectory
+		return oidcRoleSource == rolemap.SourceDirectory
 	default:
 		return false
 	}
 }
 
-// directoryRoleConflictDetail names the setting an operator has to change,
-// which differs per source — pointing an OIDC deployment at auth.ldap.* would
-// send them looking at a block they never configured.
+// externalAuthority names the system that owns an externally-authenticated
+// account, and the config block an operator would go to in order to change its
+// behavior. Both differ per source — pointing an SSO deployment at "the
+// directory" and auth.ldap.* sends them looking for a system they may not even
+// have — and the messages below are the only reason the distinction exists, so
+// it is made once here rather than re-branched in each of them.
+func externalAuthority(u store.User) (noun, configPrefix string) {
+	if u.AuthSource == store.AuthSourceOIDC {
+		return "the identity provider", "auth.oidc"
+	}
+	return "the directory", "auth.ldap"
+}
+
+// directoryRoleConflictDetail explains a rejected role edit on an account whose
+// role the provider recomputes at every login.
 func directoryRoleConflictDetail(u store.User) string {
-	if u.AuthSource == store.AuthSourceOIDC {
-		return "this account's role is managed by the identity provider (auth.oidc.role_source=directory); change the user's group membership instead"
-	}
-	return "this account's role is managed by the directory (auth.ldap.role_source=directory); change the user's group membership instead"
+	noun, prefix := externalAuthority(u)
+	return fmt.Sprintf(
+		"this account's role is managed by %s (%s.role_source=directory); change the user's group membership instead",
+		noun, prefix,
+	)
 }
 
-// externalPasswordSetConflictDetail is the directoryRoleConflictDetail
-// counterpart for an admin setting a password on an externally-authenticated
-// account: telling an SSO user's admin to go to "the directory" points them at
-// a system this deployment may not even have.
+// externalPasswordSetConflictDetail is the counterpart for an admin setting a
+// password on an externally-authenticated account.
 func externalPasswordSetConflictDetail(u store.User) string {
-	if u.AuthSource == store.AuthSourceOIDC {
-		return "this account authenticates against the identity provider and has no local password"
-	}
-	return "this account authenticates against the directory and has no local password"
+	noun, _ := externalAuthority(u)
+	return fmt.Sprintf("this account authenticates against %s and has no local password", noun)
 }
 
-// externalPasswordConflictDetail is the same wording split for a user changing
-// their own password.
+// externalPasswordConflictDetail is the same wording for a user changing their
+// own password.
 func externalPasswordConflictDetail(u store.User) string {
-	if u.AuthSource == store.AuthSourceOIDC {
-		return "your account authenticates against the identity provider; change your password there"
-	}
-	return "your account authenticates against the directory; change your password there"
+	noun, _ := externalAuthority(u)
+	return fmt.Sprintf("your account authenticates against %s; change your password there", noun)
 }
 
 func (h *usersHandler) notFoundOr500(w http.ResponseWriter, r *http.Request, err error, verb string) {

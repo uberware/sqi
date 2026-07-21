@@ -610,11 +610,19 @@ func toLDAPConfig(c config.LDAPConfig, logger *slog.Logger) ldap.Config {
 		UniqueIDAttr:    c.UniqueIDAttr,
 		RoleSource:      c.RoleSource,
 		DefaultRole:     c.DefaultRole,
+		RoleMap:         toRoleMap(c.RoleMap),
 		Logger:          logger,
 	}
-	out.RoleMap = make([]ldap.RoleMapping, 0, len(c.RoleMap))
-	for _, m := range c.RoleMap {
-		out.RoleMap = append(out.RoleMap, ldap.RoleMapping{Group: m.Group, Role: m.Role})
+	return out
+}
+
+// toRoleMap converts the loader's role-mapping list into the shared
+// [rolemap.Mapping] form both auth providers consume. The two config blocks
+// stay deliberately parallel, so this bridges both of them.
+func toRoleMap(in []config.RoleMappingConfig) []rolemap.Mapping {
+	out := make([]rolemap.Mapping, 0, len(in))
+	for _, m := range in {
+		out = append(out, rolemap.Mapping{Group: m.Group, Role: m.Role})
 	}
 	return out
 }
@@ -682,11 +690,8 @@ func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
 		LogoutMode:            c.LogoutMode,
 		PostLogoutRedirectURL: c.PostLogoutRedirectURL,
 		ButtonLabel:           c.ButtonLabel,
+		RoleMap:               toRoleMap(c.RoleMap),
 		Logger:                logger,
-	}
-	out.RoleMap = make([]rolemap.Mapping, 0, len(c.RoleMap))
-	for _, m := range c.RoleMap {
-		out.RoleMap = append(out.RoleMap, rolemap.Mapping{Group: m.Group, Role: m.Role})
 	}
 	return out
 }

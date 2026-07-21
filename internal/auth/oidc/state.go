@@ -32,9 +32,13 @@ import (
 // show a user: an expired state and a forged one are the same answer.
 var ErrStateInvalid = errors.New("oidc: state cookie invalid or expired")
 
-// ErrNoSigningKey means SealState/OpenState were handed no key. An HMAC keyed
-// with nothing is one an attacker can compute, so this is refused outright
-// rather than producing a signature that only looks like a defense.
+// ErrNoSigningKey means SealState was handed no key. An HMAC keyed with
+// nothing is one an attacker can compute, so this is refused outright rather
+// than producing a signature that only looks like a defense.
+//
+// Only SealState returns it. OpenState answers ErrStateInvalid for the same
+// condition on purpose — see the comment there: every rejection on the verify
+// side must be indistinguishable.
 var ErrNoSigningKey = errors.New("oidc: state signing key is empty")
 
 // StateTTL bounds a login attempt, and lives here — beside OpenState, which is

@@ -16,6 +16,19 @@ type Mapping struct {
 	Role  string
 }
 
+// Role sources decide who owns an externally-authenticated user's role after
+// the account exists. They live here, beside Map, because LDAP and OIDC must
+// spell them identically: the users API compares an account's provider mode
+// against these values, and two copies of the enum could drift apart.
+const (
+	// SourceDirectory recomputes the role from the provider's groups on every
+	// login; the users API rejects role edits on such accounts.
+	SourceDirectory = "directory"
+	// SourceLocal seeds the role from groups when the account is first
+	// provisioned only; admins own it afterwards and the API allows edits.
+	SourceLocal = "local"
+)
+
 // Map returns the role for groups, or defaultRole when nothing matches.
 //
 // Iteration is over mappings, not over groups: config order IS the precedence

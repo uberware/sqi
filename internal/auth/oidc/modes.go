@@ -25,6 +25,8 @@
 // loader — the same reason toLDAPConfig exists in the LDAP integration.
 package oidc
 
+import "github.com/uberware/sqi/internal/auth/rolemap"
+
 // Reauth modes control when the provider is asked to re-prompt for
 // credentials (prompt=login) on login.
 const (
@@ -51,12 +53,14 @@ const (
 	LogoutProvider = "provider"
 )
 
-// Role sources decide who owns an SSO user's role after provisioning.
+// Role sources decide who owns an SSO user's role after provisioning. They are
+// the shared [internal/auth/rolemap] values under OIDC-facing names; the enum
+// has exactly one definition so OIDC and LDAP cannot drift.
 const (
 	// RoleSourceDirectory recomputes the role from claims on every login;
 	// the users API rejects role edits on an SSO account.
-	RoleSourceDirectory = "directory"
+	RoleSourceDirectory = rolemap.SourceDirectory
 	// RoleSourceLocal has claims seed the role at provisioning only;
 	// admins own it afterwards and the API allows edits.
-	RoleSourceLocal = "local"
+	RoleSourceLocal = rolemap.SourceLocal
 )

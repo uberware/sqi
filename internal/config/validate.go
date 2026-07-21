@@ -13,6 +13,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/policy"
+	"github.com/uberware/sqi/internal/auth/rolemap"
 )
 
 // ValidationError describes a single configuration error with the field path
@@ -372,7 +373,7 @@ func validateAuthLDAP(cfg LDAPConfig) []ValidationError {
 	errs = append(errs, validateLDAPTransport(cfg)...)
 	errs = append(errs, validateLDAPBindMode(cfg)...)
 	errs = append(errs, validateLDAPAttrs(cfg)...)
-	errs = append(errs, validateLDAPRoles(cfg)...)
+	errs = append(errs, validateRoleMapping("auth.ldap", cfg.RoleSource, cfg.RoleMap, cfg.DefaultRole)...)
 	return errs
 }
 
@@ -509,21 +510,28 @@ func validateSearchBind(cfg LDAPConfig) []ValidationError {
 	return errs
 }
 
-func validateLDAPRoles(cfg LDAPConfig) []ValidationError {
+// validateRoleMapping checks role_source, role_map, and default_role for one
+// auth provider block, named by prefix ("auth.ldap" or "auth.oidc").
+//
+// The two blocks are deliberately parallel in the config file — an operator
+// configuring OIDC should not have to learn a different spelling — so the rules
+// and the wording are identical and live here once. Only the field prefix
+// differs.
+func validateRoleMapping(prefix, roleSource string, roleMap []RoleMappingConfig, defaultRole string) []ValidationError {
 	var errs []ValidationError
-	switch cfg.RoleSource {
-	case "directory", "local":
+	switch roleSource {
+	case rolemap.SourceDirectory, rolemap.SourceLocal:
 		// valid
 	default:
 		errs = append(errs, ValidationError{
-			Field:   "auth.ldap.role_source",
-			Message: fmt.Sprintf(`must be "directory" or "local", got %q`, cfg.RoleSource),
+			Field:   prefix + ".role_source",
+			Message: fmt.Sprintf("must be %q or %q, got %q", rolemap.SourceDirectory, rolemap.SourceLocal, roleSource),
 		})
 	}
-	for i, m := range cfg.RoleMap {
+	for i, m := range roleMap {
 		if m.Group == "" {
 			errs = append(errs, ValidationError{
-				Field:   fmt.Sprintf("auth.ldap.role_map[%d].group", i),
+				Field:   fmt.Sprintf("%s.role_map[%d].group", prefix, i),
 				Message: "must not be empty",
 			})
 		}
@@ -532,16 +540,16 @@ func validateLDAPRoles(cfg LDAPConfig) []ValidationError {
 		// no error to explain why.
 		if !policy.IsRole(m.Role) {
 			errs = append(errs, ValidationError{
-				Field:   fmt.Sprintf("auth.ldap.role_map[%d].role", i),
+				Field:   fmt.Sprintf("%s.role_map[%d].role", prefix, i),
 				Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only", m.Role),
 			})
 		}
 	}
 	// Empty is meaningful: reject logins that match no group.
-	if cfg.DefaultRole != "" && !policy.IsRole(cfg.DefaultRole) {
+	if defaultRole != "" && !policy.IsRole(defaultRole) {
 		errs = append(errs, ValidationError{
-			Field:   "auth.ldap.default_role",
-			Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only, or empty to reject unmapped logins", cfg.DefaultRole),
+			Field:   prefix + ".default_role",
+			Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only, or empty to reject unmapped logins", defaultRole),
 		})
 	}
 	return errs
@@ -558,7 +566,7 @@ func validateAuthOIDC(cfg OIDCConfig) []ValidationError {
 	}
 	errs = append(errs, validateOIDCEndpoint(cfg)...)
 	errs = append(errs, validateOIDCClaims(cfg)...)
-	errs = append(errs, validateOIDCRoles(cfg)...)
+	errs = append(errs, validateRoleMapping("auth.oidc", cfg.RoleSource, cfg.RoleMap, cfg.DefaultRole)...)
 	errs = append(errs, validateOIDCModes(cfg)...)
 	return errs
 }
@@ -567,47 +575,38 @@ func validateAuthOIDC(cfg OIDCConfig) []ValidationError {
 // None has a safe empty meaning when SSO is enabled.
 func validateOIDCEndpoint(cfg OIDCConfig) []ValidationError {
 	var errs []ValidationError
-	switch cfg.Issuer {
-	case "":
-		errs = append(errs, ValidationError{
-			Field:   "auth.oidc.issuer",
-			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_ISSUER or auth.oidc.issuer",
-		})
-	default:
-		if u, err := url.Parse(cfg.Issuer); err != nil || u.Scheme == "" || u.Host == "" {
-			errs = append(errs, ValidationError{
-				Field:   "auth.oidc.issuer",
-				Message: fmt.Sprintf("must be an absolute URL, got %q", cfg.Issuer),
-			})
-		}
-	}
-	if cfg.ClientID == "" {
-		errs = append(errs, ValidationError{
-			Field:   "auth.oidc.client_id",
-			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_CLIENT_ID or auth.oidc.client_id",
-		})
-	}
-	if cfg.ClientSecret == "" {
-		errs = append(errs, ValidationError{
-			Field:   "auth.oidc.client_secret",
-			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_CLIENT_SECRET or auth.oidc.client_secret",
-		})
-	}
-	switch cfg.RedirectURL {
-	case "":
-		errs = append(errs, ValidationError{
-			Field:   "auth.oidc.redirect_url",
-			Message: "must be set when auth.oidc.enabled; set SQI_AUTH_OIDC_REDIRECT_URL or auth.oidc.redirect_url",
-		})
-	default:
-		if u, err := url.Parse(cfg.RedirectURL); err != nil || u.Scheme == "" || u.Host == "" {
-			errs = append(errs, ValidationError{
-				Field:   "auth.oidc.redirect_url",
-				Message: fmt.Sprintf("must be an absolute URL, got %q", cfg.RedirectURL),
-			})
-		}
-	}
+	errs = append(errs, requireAbsoluteURL("auth.oidc.issuer", "SQI_AUTH_OIDC_ISSUER", cfg.Issuer)...)
+	errs = append(errs, requireSet("auth.oidc.client_id", "SQI_AUTH_OIDC_CLIENT_ID", cfg.ClientID)...)
+	errs = append(errs, requireSet("auth.oidc.client_secret", "SQI_AUTH_OIDC_CLIENT_SECRET", cfg.ClientSecret)...)
+	errs = append(errs, requireAbsoluteURL("auth.oidc.redirect_url", "SQI_AUTH_OIDC_REDIRECT_URL", cfg.RedirectURL)...)
 	return errs
+}
+
+// requireSet reports the "you must configure this" error for an empty value,
+// naming both the env var and the config key so the operator can use either.
+func requireSet(field, envKey, value string) []ValidationError {
+	if value != "" {
+		return nil
+	}
+	return []ValidationError{{
+		Field:   field,
+		Message: fmt.Sprintf("must be set when auth.oidc.enabled; set %s or %s", envKey, field),
+	}}
+}
+
+// requireAbsoluteURL is requireSet plus a scheme-and-host check: a relative or
+// malformed URL here would fail at the first login rather than at boot.
+func requireAbsoluteURL(field, envKey, value string) []ValidationError {
+	if errs := requireSet(field, envKey, value); errs != nil {
+		return errs
+	}
+	if u, err := url.Parse(value); err != nil || u.Scheme == "" || u.Host == "" {
+		return []ValidationError{{
+			Field:   field,
+			Message: fmt.Sprintf("must be an absolute URL, got %q", value),
+		}}
+	}
+	return nil
 }
 
 // validateOIDCClaims checks the scope list and claim-name fields.
@@ -642,44 +641,6 @@ func validateOIDCClaims(cfg OIDCConfig) []ValidationError {
 		errs = append(errs, ValidationError{
 			Field:   "auth.oidc.groups_claim",
 			Message: `must not be empty; set SQI_AUTH_OIDC_GROUPS_CLAIM or auth.oidc.groups_claim (e.g. "groups")`,
-		})
-	}
-	return errs
-}
-
-// validateOIDCRoles checks role_source, role_map, and default_role. A
-// typo'd role must abort boot, not silently fall through to default_role —
-// mirrors validateLDAPRoles exactly.
-func validateOIDCRoles(cfg OIDCConfig) []ValidationError {
-	var errs []ValidationError
-	switch cfg.RoleSource {
-	case oidc.RoleSourceDirectory, oidc.RoleSourceLocal:
-		// valid
-	default:
-		errs = append(errs, ValidationError{
-			Field:   "auth.oidc.role_source",
-			Message: fmt.Sprintf("must be %q or %q, got %q", oidc.RoleSourceDirectory, oidc.RoleSourceLocal, cfg.RoleSource),
-		})
-	}
-	for i, m := range cfg.RoleMap {
-		if m.Group == "" {
-			errs = append(errs, ValidationError{
-				Field:   fmt.Sprintf("auth.oidc.role_map[%d].group", i),
-				Message: "must not be empty",
-			})
-		}
-		if !policy.IsRole(m.Role) {
-			errs = append(errs, ValidationError{
-				Field:   fmt.Sprintf("auth.oidc.role_map[%d].role", i),
-				Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only", m.Role),
-			})
-		}
-	}
-	// Empty is meaningful: reject logins that match no group.
-	if cfg.DefaultRole != "" && !policy.IsRole(cfg.DefaultRole) {
-		errs = append(errs, ValidationError{
-			Field:   "auth.oidc.default_role",
-			Message: fmt.Sprintf("unknown role %q; must be one of admin, operator, user, read-only, or empty to reject unmapped logins", cfg.DefaultRole),
 		})
 	}
 	return errs

@@ -101,6 +101,13 @@ func Load(filePath string, flags FlagOverrides) (Config, error) {
 
 // ── File layer ────────────────────────────────────────────────────────────────
 
+// roleMappingFile is one auth.*.role_map entry as it appears in the file. Both
+// provider blocks use it, so the shape is stated once.
+type roleMappingFile struct {
+	Group string `yaml:"group"`
+	Role  string `yaml:"role"`
+}
+
 // fileConfig is the partial YAML/JSON shape used when unmarshaling a config
 // file. Every field uses a pointer so we can distinguish "not set" from a
 // zero value, applying only the fields that are present in the file.
@@ -170,48 +177,42 @@ type fileConfig struct {
 			Password *string `yaml:"password"`
 		} `yaml:"bootstrap"`
 		LDAP *struct {
-			Enabled         *bool   `yaml:"enabled"`
-			URL             *string `yaml:"url"`
-			StartTLS        *bool   `yaml:"start_tls"`
-			TLSSkipVerify   *bool   `yaml:"tls_skip_verify"`
-			CAFile          *string `yaml:"ca_file"`
-			Timeout         *string `yaml:"timeout"`
-			BindDN          *string `yaml:"bind_dn"`
-			BindPassword    *string `yaml:"bind_password"`
-			BaseDN          *string `yaml:"base_dn"`
-			UserFilter      *string `yaml:"user_filter"`
-			NestedGroups    *bool   `yaml:"nested_groups"`
-			UserDNTemplate  *string `yaml:"user_dn_template"`
-			UsernameAttr    *string `yaml:"username_attr"`
-			DisplayNameAttr *string `yaml:"display_name_attr"`
-			UniqueIDAttr    *string `yaml:"unique_id_attr"`
-			RoleSource      *string `yaml:"role_source"`
-			RoleMap         *[]struct {
-				Group string `yaml:"group"`
-				Role  string `yaml:"role"`
-			} `yaml:"role_map"`
-			DefaultRole *string `yaml:"default_role"`
+			Enabled         *bool              `yaml:"enabled"`
+			URL             *string            `yaml:"url"`
+			StartTLS        *bool              `yaml:"start_tls"`
+			TLSSkipVerify   *bool              `yaml:"tls_skip_verify"`
+			CAFile          *string            `yaml:"ca_file"`
+			Timeout         *string            `yaml:"timeout"`
+			BindDN          *string            `yaml:"bind_dn"`
+			BindPassword    *string            `yaml:"bind_password"`
+			BaseDN          *string            `yaml:"base_dn"`
+			UserFilter      *string            `yaml:"user_filter"`
+			NestedGroups    *bool              `yaml:"nested_groups"`
+			UserDNTemplate  *string            `yaml:"user_dn_template"`
+			UsernameAttr    *string            `yaml:"username_attr"`
+			DisplayNameAttr *string            `yaml:"display_name_attr"`
+			UniqueIDAttr    *string            `yaml:"unique_id_attr"`
+			RoleSource      *string            `yaml:"role_source"`
+			RoleMap         *[]roleMappingFile `yaml:"role_map"`
+			DefaultRole     *string            `yaml:"default_role"`
 		} `yaml:"ldap"`
 		OIDC *struct {
-			Enabled          *bool     `yaml:"enabled"`
-			Issuer           *string   `yaml:"issuer"`
-			ClientID         *string   `yaml:"client_id"`
-			ClientSecret     *string   `yaml:"client_secret"`
-			RedirectURL      *string   `yaml:"redirect_url"`
-			Scopes           *[]string `yaml:"scopes"`
-			UsernameClaim    *string   `yaml:"username_claim"`
-			DisplayNameClaim *string   `yaml:"display_name_claim"`
-			GroupsClaim      *string   `yaml:"groups_claim"`
-			RoleSource       *string   `yaml:"role_source"`
-			RoleMap          *[]struct {
-				Group string `yaml:"group"`
-				Role  string `yaml:"role"`
-			} `yaml:"role_map"`
-			DefaultRole           *string `yaml:"default_role"`
-			ReauthMode            *string `yaml:"reauth_mode"`
-			LogoutMode            *string `yaml:"logout_mode"`
-			PostLogoutRedirectURL *string `yaml:"post_logout_redirect_url"`
-			ButtonLabel           *string `yaml:"button_label"`
+			Enabled               *bool              `yaml:"enabled"`
+			Issuer                *string            `yaml:"issuer"`
+			ClientID              *string            `yaml:"client_id"`
+			ClientSecret          *string            `yaml:"client_secret"`
+			RedirectURL           *string            `yaml:"redirect_url"`
+			Scopes                *[]string          `yaml:"scopes"`
+			UsernameClaim         *string            `yaml:"username_claim"`
+			DisplayNameClaim      *string            `yaml:"display_name_claim"`
+			GroupsClaim           *string            `yaml:"groups_claim"`
+			RoleSource            *string            `yaml:"role_source"`
+			RoleMap               *[]roleMappingFile `yaml:"role_map"`
+			DefaultRole           *string            `yaml:"default_role"`
+			ReauthMode            *string            `yaml:"reauth_mode"`
+			LogoutMode            *string            `yaml:"logout_mode"`
+			PostLogoutRedirectURL *string            `yaml:"post_logout_redirect_url"`
+			ButtonLabel           *string            `yaml:"button_label"`
 		} `yaml:"oidc"`
 	} `yaml:"auth"`
 }
@@ -518,13 +519,24 @@ func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 	setIfNotNilString(&d.UniqueIDAttr, l.UniqueIDAttr)
 	setIfNotNilString(&d.RoleSource, l.RoleSource)
 	setIfNotNilString(&d.DefaultRole, l.DefaultRole)
-	if l.RoleMap != nil {
-		out := make([]RoleMappingConfig, 0, len(*l.RoleMap))
-		for _, m := range *l.RoleMap {
-			out = append(out, RoleMappingConfig{Group: m.Group, Role: m.Role})
-		}
-		d.RoleMap = out
+	mergeRoleMap(&d.RoleMap, l.RoleMap)
+}
+
+// mergeRoleMap overlays a file's role_map onto dst.
+//
+// The pointer discriminates nil from empty, and both cases are meaningful: a
+// nil src (the key is absent from the file) leaves the default list untouched,
+// while an explicit empty list ("role_map: []") clears it. Collapsing the two
+// would make it impossible to turn off a role map that a lower layer set.
+func mergeRoleMap(dst *[]RoleMappingConfig, src *[]roleMappingFile) {
+	if src == nil {
+		return
 	}
+	out := make([]RoleMappingConfig, 0, len(*src))
+	for _, m := range *src {
+		out = append(out, RoleMappingConfig(m))
+	}
+	*dst = out
 }
 
 // mergeAuthOIDCFile overlays the auth.oidc sub-fields from fc onto cfg. Split
@@ -532,11 +544,6 @@ func mergeAuthLDAPFile(cfg *Config, fc fileConfig) {
 // [mergeAuthLDAPFile]. Unlike the sibling helpers it takes the whole
 // fileConfig: its shadow struct has too many fields to restate as a parameter
 // type.
-//
-// role_map uses the same pointer-nil-vs-empty discrimination as
-// auth.ldap.role_map: a nil field (key absent from the file) leaves the
-// default list untouched, while an explicit empty list ("role_map: []")
-// clears it.
 func mergeAuthOIDCFile(cfg *Config, fc fileConfig) {
 	if fc.Auth == nil || fc.Auth.OIDC == nil {
 		return
@@ -560,13 +567,7 @@ func mergeAuthOIDCFile(cfg *Config, fc fileConfig) {
 	setIfNotNilString(&d.LogoutMode, o.LogoutMode)
 	setIfNotNilString(&d.PostLogoutRedirectURL, o.PostLogoutRedirectURL)
 	setIfNotNilString(&d.ButtonLabel, o.ButtonLabel)
-	if o.RoleMap != nil {
-		out := make([]RoleMappingConfig, 0, len(*o.RoleMap))
-		for _, m := range *o.RoleMap {
-			out = append(out, RoleMappingConfig{Group: m.Group, Role: m.Role})
-		}
-		d.RoleMap = out
-	}
+	mergeRoleMap(&d.RoleMap, o.RoleMap)
 }
 
 // setIfNotNilString assigns *src to *dst when src is non-nil.
@@ -680,14 +681,11 @@ func applyLDAPEnv(cfg *LDAPConfig) error {
 // keep its cyclomatic complexity under the lint threshold. role_map has no
 // env form — a list of pairs has no sane flat encoding, so it is file-only,
 // exactly as auth.ldap.role_map is.
+//
+// Unlike [applyLDAPEnv] this block has exactly one fallible setter — every
+// other field is a string or a string list — so the error is returned directly
+// rather than collected.
 func applyOIDCEnv(cfg *OIDCConfig) error {
-	var errs []error
-	collect := func(err error) {
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	collect(setBool(&cfg.Enabled, "SQI_AUTH_OIDC_ENABLED"))
 	setString(&cfg.Issuer, "SQI_AUTH_OIDC_ISSUER")
 	setString(&cfg.ClientID, "SQI_AUTH_OIDC_CLIENT_ID")
 	setString(&cfg.ClientSecret, "SQI_AUTH_OIDC_CLIENT_SECRET")
@@ -702,7 +700,7 @@ func applyOIDCEnv(cfg *OIDCConfig) error {
 	setString(&cfg.LogoutMode, "SQI_AUTH_OIDC_LOGOUT_MODE")
 	setString(&cfg.PostLogoutRedirectURL, "SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL")
 	setString(&cfg.ButtonLabel, "SQI_AUTH_OIDC_BUTTON_LABEL")
-	return errors.Join(errs...)
+	return setBool(&cfg.Enabled, "SQI_AUTH_OIDC_ENABLED")
 }
 
 func setString(dst *string, key string) {
