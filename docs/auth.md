@@ -1266,6 +1266,10 @@ See [Testing against a real directory or identity
 provider](development.md#testing-against-a-real-directory-or-identity-provider) for the
 `SQI_TEST_OIDC_ISSUER` escape hatch and why a skip verifies nothing.
 
-## Coming next
+## Not planned
 
-- D1 — per-user concurrent task caps.
+- **Per-user concurrent task caps.** A hard per-owner ceiling on running tasks was scoped for
+  Phase 3 and deferred (2026-07-20) with no driver behind it. Nothing bounds a single user's
+  farm consumption today: `max_concurrent_tasks` on farms and queues caps the container, not the
+  person, so one user can still fill a queue's whole allowance. If that becomes a real problem,
+  it is worth deciding between a hard cap and fair-share scheduling before building either.

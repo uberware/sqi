@@ -54,7 +54,9 @@ through scheduling, worker execution, and final state.
 
 | Package | Path | Role |
 |---|---|---|
-| REST + WebSocket | `internal/server`, `internal/ws` | HTTP router, middleware, WebSocket upgrade and subscription hub |
+| REST + WebSocket | `internal/api`, `internal/ws` | chi router, REST handlers, OpenAPI spec, WebSocket upgrade and subscription hub |
+| Boot orchestration | `internal/server` | Process startup and graceful shutdown; wires the store, bus, scheduler, auth, and router together |
+| Auth | `internal/auth` | Opt-in authentication and authorization: `password` (argon2id local login), `session` (server-side cookie sessions), `apikey`, `policy` (RBAC), `rolemap`, `ldap`, `oidc`, plus the `Authenticator` interface and `chain` that select among them (see [`docs/auth.md`](auth.md)) |
 | Scheduler | `internal/scheduler` | Assignment loop, worker registry, heartbeat sweep, usage pool gating |
 | NATS bus | `internal/bus` | Typed JetStream client wrapper; stream, subject, and consumer definitions |
 | Store | `internal/store` | `Store` interface + SQLite implementation; migrations |
@@ -84,12 +86,19 @@ main()
        6. Create Store (internal/store/sqlite)
        7. Create Scheduler (internal/scheduler) — starts goroutine pool
        8. Create WebSocket hub (internal/ws)
-       9. Build chi router, mount middleware and route handlers
-      10. Register NATS consumers (worker registration, heartbeat, status, logs)
-      11. Start mDNS responder (if discovery.enabled)
-      12. Start HTTP server
-      13. Block on SIGINT / SIGTERM
-      14. Graceful shutdown:
+       9. Wire auth (internal/server wireAuthDeps) — skipped to the anonymous
+          superuser when auth.enabled is false, so auth-off boot is unchanged:
+            a. Bootstrap the first admin account (no-op once any user exists)
+            b. Select the authenticator chain (API key → session cookie)
+            c. Build the LDAP verifier    (if auth.ldap.enabled)
+            d. Build the OIDC provider    (if auth.oidc.enabled; issuer
+               discovery is lazy — a brief provider outage must not block boot)
+      10. Build chi router, mount middleware and route handlers
+      11. Register NATS consumers (worker registration, heartbeat, status, logs)
+      12. Start mDNS responder (if discovery.enabled)
+      13. Start HTTP server
+      14. Block on SIGINT / SIGTERM
+      15. Graceful shutdown:
             a. Stop accepting new HTTP connections
             b. Drain in-flight HTTP requests
             c. Stop Scheduler
@@ -535,15 +544,25 @@ Full DDL lives in `internal/store/migrations/`. The primary tables are:
 | `farms` | Top-level organizational unit; holds default scheduling policy |
 | `queues` | Belongs to a farm; jobs are submitted to a queue |
 | `jobs` | One row per submitted job; holds verbatim OpenJD template |
+| `job_dependencies` | Cross-job `depends_on` edges; gates dependents in `blocked` |
 | `steps` | One row per step in a job; tracks dependency graph |
 | `tasks` | Atomic work unit; one per expanded parameter combination |
 | `task_attempts` | One row per execution attempt; holds exit code, timing, session_id |
+| `task_logs` | Persisted task process output |
 | `workers` | Registered workers with capabilities and status |
+| `products` | Product/preset catalog above OpenJD (built-in, installed, custom) |
 | `compute_locations` | Named compute-location registry (curated catalog; auto-populated from worker registrations) |
 | `storage_locations` | Named storage locations with per-compute-location root mappings |
 | `usage_pools` | Named concurrency limits (usage pools) with `max_concurrent` cap |
 | `usage_claims` | Active usage claims tied to task attempts |
 | `audit_log` | Append-only log of state-changing API operations |
+| `users` | Local and external accounts: role, `auth_source`, `external_id` (opt-in auth only) |
+| `sessions` | Server-side browser sessions backing the session cookie |
+| `api_keys` | Hashed API-key credentials with owner and revocation state |
+
+The last three exist regardless of whether auth is enabled — the migrations
+always run — but stay empty and unread until `auth.enabled` is true. See
+[`docs/auth.md`](auth.md).
 
 WAL mode is always enabled (`PRAGMA journal_mode=WAL`). Foreign keys are
 enforced (`PRAGMA foreign_keys=ON`). A busy timeout of 5 s prevents immediate

@@ -65,6 +65,9 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-cover` | Run tests and print coverage; fails below 70% (the `COVERAGE_MIN` default in the Makefile) |
 | `make test-cover-html` | Open an HTML coverage report in the browser |
 | `make test-integration` | Run integration tests (build tag `integration`) |
+| `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
+| `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
+| `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
 | `make bench` | Run benchmarks |
 | `make lint` | Run `golangci-lint` |
 | `make lint-fix` | Run `golangci-lint --fix` |
