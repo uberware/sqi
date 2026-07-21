@@ -58,6 +58,7 @@ func (v *templateBindVerifier) Verify(ctx context.Context, username, pw string) 
 			id.Username = name
 		}
 		id.DisplayName = firstAttr(e, v.cfg.DisplayNameAttr)
+		id.ExternalID = uniqueID(e, v.cfg.UniqueIDAttr)
 		id.Groups = e.GetEqualFoldAttributeValues("memberOf")
 	}
 	return id, nil
@@ -70,7 +71,9 @@ func (v *templateBindVerifier) readSelf(c conn, dn string) *ldapv3.Entry {
 		ldapv3.ScopeBaseObject, ldapv3.NeverDerefAliases,
 		1, searchTimeLimit(v.cfg.Timeout), false,
 		"(objectClass=*)",
-		[]string{v.cfg.UsernameAttr, v.cfg.DisplayNameAttr, "memberOf"},
+		// See findUser: UniqueIDAttr must be named, or an operational
+		// attribute like entryUUID never comes back.
+		[]string{v.cfg.UsernameAttr, v.cfg.DisplayNameAttr, v.cfg.UniqueIDAttr, "memberOf"},
 		nil,
 	)
 	res, err := c.Search(req)

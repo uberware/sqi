@@ -86,6 +86,7 @@ func (v *searchBindVerifier) Verify(ctx context.Context, username, pw string) (I
 		DN:          e.DN,
 		Username:    name,
 		DisplayName: firstAttr(e, v.cfg.DisplayNameAttr),
+		ExternalID:  uniqueID(e, v.cfg.UniqueIDAttr),
 		Groups:      groups,
 	}, nil
 }
@@ -148,7 +149,12 @@ func (v *searchBindVerifier) findUser(c conn, username string) (*ldapv3.Entry, e
 		searchTimeLimit(v.cfg.Timeout),
 		false,
 		filter,
-		[]string{v.cfg.UsernameAttr, v.cfg.DisplayNameAttr, "memberOf"},
+		// UniqueIDAttr is named explicitly and must stay that way: entryUUID
+		// is an operational attribute (RFC 4530), which directories omit from
+		// a response unless asked for by name. Dropping it here does not
+		// error — it makes every login present an empty identifier, which
+		// looks exactly like a first-ever login.
+		[]string{v.cfg.UsernameAttr, v.cfg.DisplayNameAttr, v.cfg.UniqueIDAttr, "memberOf"},
 		nil,
 	)
 	res, err := c.Search(req)

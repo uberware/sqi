@@ -11,8 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -61,11 +63,18 @@ func (f *fakeVerifier) callCount() int {
 	return f.calls
 }
 
+// ldapExternalID is the stable directory identifier a fixture uses for
+// username. Tests derive it rather than hardcoding one per case so a seeded
+// row and the identity the verifier returns for the same person always agree —
+// matching is by this value, not by name.
+func ldapExternalID(username string) string { return "ldap-uid-" + username }
+
 func aliceIdentity() ldap.Identity {
 	return ldap.Identity{
 		DN:          "CN=Alice,DC=example,DC=com",
 		Username:    "alice",
 		DisplayName: "Alice Anderson",
+		ExternalID:  ldapExternalID("alice"),
 		Groups:      []string{"CN=Admins,DC=example,DC=com"},
 	}
 }
@@ -81,20 +90,10 @@ func ldapCfg() ldap.Config {
 // authRouterLDAP mirrors authRouter with a directory verifier wired in.
 // A nil verifier models auth.ldap.enabled=false.
 func authRouterLDAP(st store.Store, v ldap.Verifier, lcfg ldap.Config) chi.Router {
-	return NewRouter(
-		Config{DisableRateLimit: true, AuthEnabled: true},
-		Deps{
-			Store:        st,
-			Products:     product.NewCatalog(st),
-			Auth:         session.New(st, "sqi_session", nil),
-			SessionTTL:   time.Hour,
-			CookieName:   "sqi_session",
-			CookieSecure: "false",
-			LDAPVerifier: v,
-			LDAPConfig:   lcfg,
-		},
-		newTestLogger(), metrics.New(), health.NewRegistry(),
-	)
+	return authRouterWith(st, func(d *Deps) {
+		d.LDAPVerifier = v
+		d.LDAPConfig = lcfg
+	})
 }
 
 // newLDAPServer starts an auth-enabled test server with LDAP wired to v,
@@ -127,7 +126,10 @@ func seedLDAPUser(t *testing.T, st store.Store, u store.User) store.User {
 	u.ID = uuid.NewString()
 	u.AuthSource = store.AuthSourceLDAP
 	if u.PasswordHash == "" {
-		u.PasswordHash = ldapPlaceholderHash
+		u.PasswordHash = externalPlaceholderHash
+	}
+	if u.ExternalID == "" {
+		u.ExternalID = ldapExternalID(u.Username)
 	}
 	out, err := st.CreateUser(t.Context(), u)
 	if err != nil {
@@ -248,7 +250,7 @@ func TestLogin_LocalModeDoesNotResyncRole(t *testing.T) {
 // PATCH /auth/me edit survives the next login.
 //
 // The seeded role is deliberately NOT the role the directory maps to. If it
-// matched, resolveLDAPUser would short-circuit before UpdateUser and this test
+// matched, syncExternalRole would short-circuit before UpdateUser and this test
 // would pass without ever reaching the write it exists to guard. The role
 // assertion below is what proves the update path actually ran.
 func TestLogin_DisplayNameNotResynced(t *testing.T) {
@@ -309,7 +311,15 @@ func TestLogin_CollisionWithLocalAccountRejected(t *testing.T) {
 func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 	st := fake.New()
 	v := &fakeVerifier{identity: aliceIdentity()}
-	h := newAuthHandler(st, newTestLogger(), time.Hour, "sqi_session", "false", v, ldapCfg())
+	h := newAuthHandler(authHandlerDeps{
+		Store:        st,
+		Logger:       newTestLogger(),
+		TTL:          time.Hour,
+		CookieName:   "sqi_session",
+		CookieSecure: "false",
+		LDAPVerifier: v,
+		LDAPConfig:   ldapCfg(),
+	})
 
 	seedAuthUser(t, st, "alice", "localpass", "admin")
 
@@ -318,8 +328,13 @@ func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	if _, err := h.provisionLDAPUser(req, aliceIdentity(), "admin"); err == nil {
-		t.Fatal("provisionLDAPUser adopted an existing local account, want an error")
+	id := aliceIdentity()
+	if _, err := h.provisionExternalUser(req, store.AuthSourceLDAP, externalIdentity{
+		ExternalID:  id.ExternalID,
+		Username:    id.Username,
+		DisplayName: id.DisplayName,
+	}, "admin"); err == nil {
+		t.Fatal("provisionExternalUser adopted an existing local account, want an error")
 	}
 	u, err := st.GetUserByUsername(t.Context(), "alice")
 	if err != nil {
@@ -336,9 +351,16 @@ func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 // A directory account that logs in under an alias — user_filter matches
 // userPrincipalName while username_attr is sAMAccountName, so the caller types
 // "alice@example.com" but the row is "alice" — must be recognized on every
-// login, not just the first. The lookup in login misses, provisioning collides,
-// and the ErrConflict branch has to resolve it to the existing directory row
-// rather than a permanent 401.
+// login, not just the first.
+//
+// Scope, stated honestly: this test does NOT pin the alias mechanism. Its
+// assertions — one row, the same row, role re-synced — hold under username
+// matching too, so it would survive a revert of C2 unnoticed. What it actually
+// proves is idempotence (a repeated login neither duplicates the row nor
+// disturbs it) and role re-sync. That is worth keeping, but it is not the
+// guard for identity matching; externallogin_test.go covers that, and
+// TestLDAP_StableIdentifierSurvivesRename in test/integration covers it
+// against a real directory.
 func TestLogin_AliasLoginRecognizesExistingLDAPAccount(t *testing.T) {
 	st := fake.New()
 	seeded := seedLDAPUser(t, st, store.User{Username: "alice", Role: "read-only"})
@@ -372,9 +394,15 @@ func TestLogin_AliasLoginRecognizesExistingLDAPAccount(t *testing.T) {
 	}
 }
 
-// The same ErrConflict branch must still refuse a LOCAL row. Recognizing an
-// account the directory itself provisioned is fine; taking over a local one is
-// the privilege-escalation this defense exists to stop.
+// The alias path must still refuse a LOCAL row. Recognizing an account the
+// directory itself provisioned is fine; taking over a local one is the
+// privilege-escalation this defense exists to stop.
+//
+// Under C2 the refusal comes from a different place — the local row has no
+// external_id, so the identity lookup cannot find it and provisioning is left
+// to collide on the username, which is refused outright rather than adopted.
+// The guarantee is the same and is stated the same way: 401, and the local row
+// untouched.
 func TestLogin_AliasLoginDoesNotAdoptLocalAccount(t *testing.T) {
 	st := fake.New()
 	seedAuthUser(t, st, "alice", "localpass", "admin")
@@ -443,7 +471,9 @@ func TestLogin_DirectoryUserWithoutVerifierRejected(t *testing.T) {
 	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"})
 	srv := newLDAPServer(t, st, nil, ldap.Config{})
 
-	for _, pw := range []string{"pw", ldapPlaceholderHash, ""} {
+	// "!ldap" is the placeholder C1 wrote and pre-C2 rows still carry; both it
+	// and the current one must be unusable as a password.
+	for _, pw := range []string{"pw", externalPlaceholderHash, "!ldap", ""} {
 		if code, body := postLogin(t, srv, "alice", pw); code != http.StatusUnauthorized {
 			t.Fatalf("password %q: got %d, want 401: %s", pw, code, body)
 		}
@@ -560,6 +590,33 @@ func TestLogin_UnknownAuthSourceFailsClosed(t *testing.T) {
 	}
 	if n := v.callCount(); n != 0 {
 		t.Errorf("verifier called %d times for an unknown auth_source, want 0", n)
+	}
+}
+
+// TestLogin_OIDCAccountPasswordLoginIsNotAnError pins the *severity* of the
+// SSO-account password login, not just its status code. The login page shows
+// the password form beside the SSO button, so this happens routinely; logging
+// it at Error would flood the diagnostics ring buffer with false corruption
+// alerts and bury the real one the default branch raises for an auth_source
+// this binary never writes.
+func TestLogin_OIDCAccountPasswordLoginIsNotAnError(t *testing.T) {
+	st := fake.New()
+	seedOIDCUser(t, st, store.User{Username: "ssouser", Role: "admin", ExternalID: "sub-ssouser"})
+	srv, logs := newLDAPServerLogging(t, st, &fakeVerifier{identity: aliceIdentity()}, ldapCfg())
+
+	if code, body := postLogin(t, srv, "ssouser", "anything"); code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401: %s", code, body)
+	}
+
+	out := logs.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Errorf("SSO password login logged at ERROR, want INFO:\n%s", out)
+	}
+	if strings.Contains(out, "unknown auth_source") {
+		t.Errorf("SSO password login diagnosed as an unknown auth_source:\n%s", out)
+	}
+	if !strings.Contains(out, "SSO account cannot use password login") {
+		t.Errorf("no log line explaining the refusal:\n%s", out)
 	}
 }
 
@@ -689,6 +746,19 @@ func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 			user: "mallory", pw: "localpass",
 		},
 		{
+			// An SSO account typing its password into the local login form.
+			// Refused in login's own AuthSourceOIDC arm, a third distinct exit.
+			name: "oidc account, password login",
+			setup: func(t *testing.T, st store.Store) *fakeVerifier {
+				t.Helper()
+				seedOIDCUser(t, st, store.User{
+					Username: "ssouser", Role: "admin", ExternalID: "sub-ssouser",
+				})
+				return &fakeVerifier{identity: aliceIdentity()}
+			},
+			user: "ssouser", pw: "anything",
+		},
+		{
 			// A directory account left behind after LDAP was switched off:
 			// rejected by loginLDAP's nil-verifier guard, another distinct exit.
 			name: "directory account, verifier switched off",
@@ -729,5 +799,219 @@ func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 			t.Errorf("failure bodies differ (%s), enabling account enumeration:\n%q\nvs\n%q",
 				cases[i].name, bodies[0], bodies[i])
 		}
+	}
+}
+
+// newLDAPServerLogging is newLDAPServer with the diagnostic log captured, for
+// the cases whose entire observable effect is what an operator reads in the
+// server log.
+func newLDAPServerLogging(
+	t *testing.T, st store.Store, v ldap.Verifier, lcfg ldap.Config,
+) (*httptest.Server, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv := httptest.NewServer(NewRouter(
+		Config{DisableRateLimit: true, AuthEnabled: true},
+		Deps{
+			Store:        st,
+			Products:     product.NewCatalog(st),
+			Auth:         session.New(st, "sqi_session", nil),
+			SessionTTL:   time.Hour,
+			CookieName:   "sqi_session",
+			CookieSecure: "false",
+			LDAPVerifier: v,
+			LDAPConfig:   lcfg,
+		},
+		logger, metrics.New(), health.NewRegistry(),
+	))
+	t.Cleanup(srv.Close)
+	return srv, &buf
+}
+
+// seedPreC2LDAPUser creates the shape C1 left behind: an LDAP account with no
+// external_id at all. seedLDAPUser cannot express it — it stamps an identifier
+// by design — and UpdateUser cannot clear one, since external_id is immutable
+// through it. Writing the row directly is the only way to reproduce what an
+// upgrading deployment actually has in its database.
+func seedPreC2LDAPUser(t *testing.T, st store.Store, username string) store.User {
+	t.Helper()
+	u, err := st.CreateUser(t.Context(), store.User{
+		ID:           uuid.NewString(),
+		Username:     username,
+		Role:         "admin",
+		PasswordHash: "!ldap", // the C1 placeholder, not C2's "!external"
+		AuthSource:   store.AuthSourceLDAP,
+	})
+	if err != nil {
+		t.Fatalf("seedPreC2LDAPUser: %v", err)
+	}
+	if u.ExternalID != "" {
+		t.Fatalf("fixture is not a pre-C2 row: external_id = %q", u.ExternalID)
+	}
+	return u
+}
+
+// A row provisioned by C1 carries an empty external_id. Once C2 matches on the
+// identifier, such a user can never log in again: the identity lookup misses
+// the empty stored value, provisioning then collides on the username, and the
+// result is a permanent 401.
+//
+// That outcome is INTENTIONAL and must not be "fixed". Adopting a row whose
+// stored identifier is empty is username matching under another name, and
+// would keep the recycled-identity hazard alive forever. The operator's
+// remedy is to recreate the account.
+//
+// What is not acceptable is failing silently. This pins the diagnostic: the
+// log must name the actual cause and the remedy, because nothing else in the
+// system distinguishes this from a wrong password.
+func TestLogin_PreC2LDAPRowIsRefusedLoudly(t *testing.T) {
+	st := fake.New()
+	seedPreC2LDAPUser(t, st, "alice")
+
+	v := &fakeVerifier{identity: aliceIdentity()}
+	srv, logs := newLDAPServerLogging(t, st, v, ldapCfg())
+
+	code, _ := postLogin(t, srv, "alice", "pw")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401 — a pre-C2 row must NOT be adopted", code)
+	}
+
+	got := logs.String()
+	// Not asserting exact wording, but the log has to carry the two things an
+	// operator cannot deduce from anywhere else: which account, and that the
+	// fix is to recreate it.
+	for _, want := range []string{"alice", "recreate"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("server log does not mention %q, so the failure is effectively "+
+				"silent:\n%s", want, got)
+		}
+	}
+}
+
+// The same pre-C2 row, but reached under an alias: the caller types the UPN
+// "alice@example.com" while the row (and the directory) spell the account
+// "alice". The typed-name lookup in login() misses it, so loginLDAP is called
+// with existing=nil — the shape that, before this fix, made the pre-C2
+// diagnostic silently not fire even though docs/auth.md promises the log is
+// "the only signal" for this failure, with no carve-out for aliases.
+func TestLogin_PreC2LDAPRowByAliasIsRefusedLoudly(t *testing.T) {
+	st := fake.New()
+	seedPreC2LDAPUser(t, st, "alice") // directory spelling; the alias is never stored
+
+	v := &fakeVerifier{identity: aliceIdentity()} // Verify returns Username "alice"
+	srv, logs := newLDAPServerLogging(t, st, v, ldapCfg())
+
+	code, _ := postLogin(t, srv, "alice@example.com", "pw")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401 — a pre-C2 row must NOT be adopted", code)
+	}
+
+	got := logs.String()
+	for _, want := range []string{"alice", "recreate"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("server log does not mention %q for an alias-reached pre-C2 row, so "+
+				"the failure is effectively silent:\n%s", want, got)
+		}
+	}
+}
+
+// The diagnostic is server-side only. The 401 an unauthenticated caller sees
+// must stay byte-identical to every other failure, or the pre-C2 state becomes
+// an oracle telling an attacker which usernames exist in the directory.
+func TestLogin_PreC2LDAPRowResponseIsIndistinguishable(t *testing.T) {
+	st := fake.New()
+	seedPreC2LDAPUser(t, st, "alice")
+	srv := newLDAPServer(t, st, &fakeVerifier{identity: aliceIdentity()}, ldapCfg())
+
+	preC2Code, preC2Body := postLogin(t, srv, "alice", "pw")
+
+	// A username the directory rejects outright: the baseline 401.
+	baselineSrv := newLDAPServer(t, fake.New(),
+		&fakeVerifier{err: ldap.ErrInvalidCredentials}, ldapCfg())
+	baseCode, baseBody := postLogin(t, baselineSrv, "nosuchuser", "pw")
+
+	if preC2Code != baseCode {
+		t.Fatalf("status: pre-C2 row got %d, plain rejection got %d", preC2Code, baseCode)
+	}
+	// "instance" is a per-request correlation id and differs by construction;
+	// every other field must match exactly.
+	if got, want := problemFields(t, preC2Body), problemFields(t, baseBody); got != want {
+		t.Fatalf("the pre-C2 refusal is distinguishable from a plain rejection, which "+
+			"makes login an enumeration oracle:\n pre-C2:   %s\n baseline: %s", got, want)
+	}
+}
+
+// problemFields renders a problem+json body with the per-request "instance"
+// correlation id removed, so two failures can be compared for the only thing
+// that matters: whether they tell the caller anything different.
+func problemFields(t *testing.T, body string) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatalf("decode problem body %q: %v", body, err)
+	}
+	delete(m, "instance")
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("re-marshal problem body: %v", err)
+	}
+	return string(out)
+}
+
+// The pre-C2 diagnostic must not fire for an unrelated collision. A directory
+// identity colliding with a LOCAL account is a different problem with a
+// different fix (rename one of them), and telling the operator to recreate the
+// local account would be actively wrong advice.
+func TestLogin_LocalCollisionDoesNotClaimPreC2(t *testing.T) {
+	st := fake.New()
+	hash, err := password.Hash("localpw")
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	if _, err := st.CreateUser(t.Context(), store.User{
+		ID: uuid.NewString(), Username: "alice", PasswordHash: hash,
+		Role: "admin", AuthSource: store.AuthSourceLocal,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// A directory user who happens to share the name, arriving via an alias so
+	// the login lookup does not find the local row first.
+	srv, logs := newLDAPServerLogging(t, st, &fakeVerifier{identity: aliceIdentity()}, ldapCfg())
+	if code, _ := postLogin(t, srv, "alice@example.com", "pw"); code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", code)
+	}
+	if strings.Contains(logs.String(), "recreate") {
+		t.Errorf("a local-account collision was misreported as a pre-C2 row:\n%s", logs.String())
+	}
+}
+
+// The pre-C2 diagnostic must also not fire for a POST-C2 row colliding on a
+// recycled username: a new hire is handed a departed employee's directory
+// name, so the directory issues a fresh external_id under the same username.
+// The existing row (the departed user's, still perfectly valid) has
+// AuthSource=ldap and a non-empty ExternalID — the shape the gate at
+// logPreC2Account's second check exists to exclude. Misreporting this as
+// pre-C2 would tell the operator to delete and recreate the WRONG account:
+// the departed user's still-live one, not the new hire's non-existent one.
+// The correct remedy is a rename, not a recreate.
+func TestLogin_RecycledUsernameDoesNotClaimPreC2(t *testing.T) {
+	st := fake.New()
+	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"}) // stable external_id stamped
+
+	// The directory now answers "alice" with a DIFFERENT external id: a new
+	// hire recycling the departed employee's username.
+	newHire := aliceIdentity()
+	newHire.ExternalID = ldapExternalID("alice") + "-new-hire"
+	srv, logs := newLDAPServerLogging(t, st, &fakeVerifier{identity: newHire}, ldapCfg())
+
+	if code, _ := postLogin(t, srv, "alice", "pw"); code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", code)
+	}
+	if strings.Contains(logs.String(), "recreate") {
+		t.Errorf("a recycled-username collision on a post-C2 row was misreported as pre-C2, "+
+			"which would tell the operator to delete and recreate the departed user's still-valid "+
+			"account instead of renaming one of the two:\n%s", logs.String())
 	}
 }

@@ -824,6 +824,7 @@ below only runs when `auth.ldap.enabled` is true.
 | `auth.ldap.user_dn_template` | string | `""` | `SQI_AUTH_LDAP_USER_DN_TEMPLATE` |
 | `auth.ldap.username_attr` | string | `sAMAccountName` | `SQI_AUTH_LDAP_USERNAME_ATTR` |
 | `auth.ldap.display_name_attr` | string | `displayName` | `SQI_AUTH_LDAP_DISPLAY_NAME_ATTR` |
+| `auth.ldap.unique_id_attr` | string | *(none — required)* | `SQI_AUTH_LDAP_UNIQUE_ID_ATTR` |
 | `auth.ldap.role_source` | string | `directory` | `SQI_AUTH_LDAP_ROLE_SOURCE` |
 | `auth.ldap.role_map` | list | `[]` | *(file only — no env form)* |
 | `auth.ldap.default_role` | string | `read-only` | `SQI_AUTH_LDAP_DEFAULT_ROLE` |
@@ -882,6 +883,7 @@ auth:
     user_filter: "(sAMAccountName=%s)"
     username_attr: "sAMAccountName"
     display_name_attr: "displayName"
+    unique_id_attr: "objectGUID"   # "entryUUID" on OpenLDAP; no default, always required
     nested_groups: true
     role_source: "directory"
     role_map:
@@ -892,10 +894,130 @@ auth:
     default_role: "read-only"
 ```
 
+**`unique_id_attr` is a breaking change for an existing enabled-LDAP
+deployment.** It has no default anywhere — not in the defaults struct, not in
+the loader, not in the environment — because no single value is correct on both
+Active Directory (`objectGUID`) and RFC 4530 servers (`entryUUID`), and
+guessing on a server exposing both would silently pick the wrong one. A config
+with `auth.ldap.enabled: true` and no `unique_id_attr` **fails validation and
+the server does not boot**. Accounts provisioned before this key existed carry
+an empty identifier and must be recreated — see
+[Upgrading from an earlier sqi](auth.md#upgrading-from-an-earlier-sqi).
+
 See [`docs/auth.md`](auth.md#ldap--active-directory) for the model behind
 these keys: why LDAP attaches at login rather than per request, how
-just-in-time provisioning works, why a local admin account is required in
-`directory` mode, and the revocation-lag and timing caveats.
+just-in-time provisioning works, why accounts match on a stable identifier
+rather than a username, why a local admin account is required in `directory`
+mode, and the revocation-lag and timing caveats.
+
+---
+
+### `auth.oidc.*`
+
+OAuth2/OIDC single sign-on, component C2. Every key below sits under
+`auth.oidc`. **No `oidc.*` key has a CLI flag** — these are file- or
+environment-configured only. `role_map` is additionally **file-only: it has
+no environment form**, for the same reason as `auth.ldap.role_map` — a list of
+group→role pairs has no sensible flat encoding.
+
+The whole block is inert unless **both** `auth.enabled` and
+`auth.oidc.enabled` are true; an auth-off server never builds the SSO route,
+whatever else is set here. Validation of the keys below only runs when
+`auth.oidc.enabled` is true. Unlike LDAP, `issuer` discovery happens lazily on
+first use, not at boot — a briefly unreachable provider must not stop the
+scheduler from starting.
+
+Deliberately a single provider block, not a list: almost every organization
+has one identity provider.
+
+| Key | Type | Default | Env var |
+|---|---|---|---|
+| `auth.oidc.enabled` | bool | `false` | `SQI_AUTH_OIDC_ENABLED` |
+| `auth.oidc.issuer` | string | `""` | `SQI_AUTH_OIDC_ISSUER` |
+| `auth.oidc.client_id` | string | `""` | `SQI_AUTH_OIDC_CLIENT_ID` |
+| `auth.oidc.client_secret` | string | `""` | `SQI_AUTH_OIDC_CLIENT_SECRET` |
+| `auth.oidc.redirect_url` | string | `""` | `SQI_AUTH_OIDC_REDIRECT_URL` |
+| `auth.oidc.scopes` | []string | `[openid, profile, email]` | `SQI_AUTH_OIDC_SCOPES` (comma-separated) |
+| `auth.oidc.username_claim` | string | `preferred_username` | `SQI_AUTH_OIDC_USERNAME_CLAIM` |
+| `auth.oidc.display_name_claim` | string | `name` | `SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM` |
+| `auth.oidc.groups_claim` | string | `groups` | `SQI_AUTH_OIDC_GROUPS_CLAIM` |
+| `auth.oidc.role_source` | string | `directory` | `SQI_AUTH_OIDC_ROLE_SOURCE` |
+| `auth.oidc.role_map` | list | `[]` | *(file only — no env form)* |
+| `auth.oidc.default_role` | string | `read-only` | `SQI_AUTH_OIDC_DEFAULT_ROLE` |
+| `auth.oidc.reauth_mode` | string | `after_logout` | `SQI_AUTH_OIDC_REAUTH_MODE` |
+| `auth.oidc.logout_mode` | string | `local` | `SQI_AUTH_OIDC_LOGOUT_MODE` |
+| `auth.oidc.post_logout_redirect_url` | string | `""` | `SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL` |
+| `auth.oidc.button_label` | string | `Sign in with SSO` | `SQI_AUTH_OIDC_BUTTON_LABEL` |
+
+**Endpoint.** `issuer`, `client_id`, `client_secret`, and `redirect_url` are
+all required when enabled — none has a safe empty meaning. `issuer` and
+`redirect_url` must each be an absolute URL. `redirect_url` must resolve to
+this server's `/api/v1/auth/oidc/callback`; `post_logout_redirect_url` is
+only read (and only required) when `logout_mode` is `"provider"`.
+
+**Claims.** `scopes` must be non-empty and include `"openid"`; note that
+`"groups"` is *not* standard OIDC — whether group membership needs a scope, a
+provider-side mapper, or both varies by provider. `username_claim` and
+`display_name_claim` carry defaults, so an empty value means the operator
+explicitly cleared it (same reasoning as `auth.ldap.username_attr` /
+`display_name_attr`); `groups_claim` feeds `role_map` the same way.
+
+**Roles.** `role_source` must be `directory` or `local`, mirroring
+`auth.ldap.role_source` but tracked separately — an operator may trust one
+provider's groups and not the other's. `role_map` is ordered and **first
+match wins**; each entry needs a non-empty `group` and a `role` that is one
+of `admin`, `operator`, `user`, `read-only` — an unknown role fails
+validation rather than falling through to `default_role`. `default_role`
+accepts those same four values **or empty**, where empty means reject any
+login that matched no group.
+
+**Reauth and logout.** `reauth_mode` is one of `after_logout` (re-prompt only
+on the login following an explicit logout), `always` (re-prompt every
+login), or `never` (silent re-login always permitted). `logout_mode` is
+`local` (end only the sqi session) or `provider` (also end the session at the
+identity provider, signing the user out of every tool that trusts it — off
+by default because of that blast radius).
+
+`client_secret` is **redacted** (`<redacted>`) in `sqi-server config print`,
+the same as `auth.ldap.bind_password`. Prefer `SQI_AUTH_OIDC_CLIENT_SECRET`
+over writing it into a config file regardless — a secret that never lands on
+disk cannot leak from one.
+
+```yaml
+auth:
+  enabled: true
+  oidc:
+    enabled: true
+    issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
+    client_id: "sqi"
+    # client_secret via SQI_AUTH_OIDC_CLIENT_SECRET
+    redirect_url: "https://sqi.example.com/api/v1/auth/oidc/callback"
+    scopes: ["openid", "profile", "email"]
+    username_claim: "preferred_username"
+    display_name_claim: "name"
+    groups_claim: "groups"
+    role_source: "directory"
+    role_map:
+      - group: "sqi-farm-admins"
+        role: admin
+      - group: "sqi-farm-operators"
+        role: operator
+    default_role: "read-only"
+    reauth_mode: "after_logout"
+    logout_mode: "local"
+```
+
+The mode constants (`ReauthAfterLogout`/`ReauthAlways`/`ReauthNever`,
+`LogoutLocal`/`LogoutProvider`, `RoleSourceDirectory`/`RoleSourceLocal`) live
+in `internal/auth/oidc`, not `internal/config` — `internal/api` reads them
+directly and must not import the config loader, the same boundary that
+`toLDAPConfig` exists to keep for LDAP.
+
+See [`docs/auth.md`](auth.md#oidc--sso) for the model behind these keys: the
+login flow and its defenses, why accounts match on the `sub` claim, how
+`reauth_mode` and `logout_mode` differ, and the limits — revocation lag, roles
+applying at next login only, what `logout_mode: provider` actually does on
+Keycloak, and which providers CI does and does not cover.
 
 ---
 
@@ -1044,9 +1166,26 @@ for the detector schema reference.
 | `auth.ldap.user_dn_template` | string | `""` | `SQI_AUTH_LDAP_USER_DN_TEMPLATE` | — |
 | `auth.ldap.username_attr` | string | `sAMAccountName` | `SQI_AUTH_LDAP_USERNAME_ATTR` | — |
 | `auth.ldap.display_name_attr` | string | `displayName` | `SQI_AUTH_LDAP_DISPLAY_NAME_ATTR` | — |
+| `auth.ldap.unique_id_attr` | string | *(none — required)* | `SQI_AUTH_LDAP_UNIQUE_ID_ATTR` | — |
 | `auth.ldap.role_source` | string | `directory` | `SQI_AUTH_LDAP_ROLE_SOURCE` | — |
 | `auth.ldap.role_map` | list | `[]` | — | — |
 | `auth.ldap.default_role` | string | `read-only` | `SQI_AUTH_LDAP_DEFAULT_ROLE` | — |
+| `auth.oidc.enabled` | bool | `false` | `SQI_AUTH_OIDC_ENABLED` | — |
+| `auth.oidc.issuer` | string | `""` | `SQI_AUTH_OIDC_ISSUER` | — |
+| `auth.oidc.client_id` | string | `""` | `SQI_AUTH_OIDC_CLIENT_ID` | — |
+| `auth.oidc.client_secret` | string | `""` | `SQI_AUTH_OIDC_CLIENT_SECRET` | — |
+| `auth.oidc.redirect_url` | string | `""` | `SQI_AUTH_OIDC_REDIRECT_URL` | — |
+| `auth.oidc.scopes` | []string | `[openid, profile, email]` | `SQI_AUTH_OIDC_SCOPES` | — |
+| `auth.oidc.username_claim` | string | `preferred_username` | `SQI_AUTH_OIDC_USERNAME_CLAIM` | — |
+| `auth.oidc.display_name_claim` | string | `name` | `SQI_AUTH_OIDC_DISPLAY_NAME_CLAIM` | — |
+| `auth.oidc.groups_claim` | string | `groups` | `SQI_AUTH_OIDC_GROUPS_CLAIM` | — |
+| `auth.oidc.role_source` | string | `directory` | `SQI_AUTH_OIDC_ROLE_SOURCE` | — |
+| `auth.oidc.role_map` | list | `[]` | — | — |
+| `auth.oidc.default_role` | string | `read-only` | `SQI_AUTH_OIDC_DEFAULT_ROLE` | — |
+| `auth.oidc.reauth_mode` | string | `after_logout` | `SQI_AUTH_OIDC_REAUTH_MODE` | — |
+| `auth.oidc.logout_mode` | string | `local` | `SQI_AUTH_OIDC_LOGOUT_MODE` | — |
+| `auth.oidc.post_logout_redirect_url` | string | `""` | `SQI_AUTH_OIDC_POST_LOGOUT_REDIRECT_URL` | — |
+| `auth.oidc.button_label` | string | `Sign in with SSO` | `SQI_AUTH_OIDC_BUTTON_LABEL` | — |
 
 ---
 

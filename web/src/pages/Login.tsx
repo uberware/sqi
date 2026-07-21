@@ -2,9 +2,39 @@
 
 import { useState, type FormEvent } from 'react'
 import { useLogin } from '@/api/mutations'
+import { useAuthProviders } from '@/api/queries'
 import { useAuth } from '@/auth/context'
 import { ApiError } from '@/api/client'
 import styles from './Login.module.css'
+
+/**
+ * The message shown after a failed SSO round trip.
+ *
+ * Generic on purpose, and it must stay that way. The callback deliberately
+ * redirects here with a bare `sso_error=1` and no reason: telling the browser
+ * whether the failure was "no such user" or "no role mapping" would turn a
+ * public, unauthenticated endpoint into an account-enumeration oracle. The
+ * detail goes to the server log, where an operator can read it and a stranger
+ * cannot.
+ */
+const SSO_ERROR_MESSAGE = 'Sign-in failed. Please try again or contact your administrator.'
+
+/**
+ * Reads and clears the SSO failure marker the callback redirects with.
+ *
+ * The marker must be cleared here, once read, so that a later `Login` mount
+ * (e.g. a session expiring) doesn't re-show a stale failure. Reads
+ * `window.location.search` rather than a router hook because the marker
+ * arrives via a full-page redirect from the server, not client-side
+ * navigation, so the document's own URL is the only place it reliably exists.
+ */
+function consumeSSOError(): boolean {
+  const present = new URLSearchParams(window.location.search).get('sso_error') !== null
+  if (present) {
+    window.history.replaceState({}, '', window.location.pathname)
+  }
+  return present
+}
 
 /**
  * Rendered by {@link App} in place of the app shell whenever `useAuth()`
@@ -12,19 +42,30 @@ import styles from './Login.module.css'
  * sets the HttpOnly session cookie and this component asks the AuthProvider
  * to re-resolve, which flips the app back to the shell. Nothing about the
  * session is stored here — no token, no localStorage.
+ *
+ * It also renders whatever SSO options `GET /auth/providers` advertises. That
+ * query is unauthenticated by necessity — it is what tells this page the SSO
+ * button exists, and the user has no credential yet.
  */
 export default function Login() {
   const login = useLogin()
+  const providers = useAuthProviders()
   const { refresh } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [ssoError] = useState(consumeSSOError)
 
   // Derived from the mutation rather than mirrored into local state:
   // mutateAsync already clears the previous error when a new attempt starts.
-  let error = ''
+  // A password-login error wins over the SSO marker: it describes the attempt
+  // the user just made, while the marker describes the one that brought them
+  // back to this page.
+  let error = ssoError ? SSO_ERROR_MESSAGE : ''
   if (login.isError) {
     error = login.error instanceof ApiError ? login.error.detail : 'Login failed'
   }
+
+  const ssoOptions = providers.data?.sso ?? []
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -77,6 +118,22 @@ export default function Login() {
             {login.isPending ? 'Signing in…' : 'Log in'}
           </button>
         </form>
+        {ssoOptions.length > 0 && (
+          <>
+            <div className={styles.divider} aria-hidden="true">
+              or
+            </div>
+            {ssoOptions.map((p) => (
+              // An anchor, not a button with an onClick: the browser must
+              // actually navigate to the provider. A fetch would follow the
+              // redirect in the background and land the HTML of a login page
+              // in a response body.
+              <a key={p.id} className={styles.ssoBtn} href={p.login_url}>
+                {p.label}
+              </a>
+            ))}
+          </>
+        )}
       </div>
     </div>
   )

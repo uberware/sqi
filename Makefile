@@ -186,6 +186,10 @@ test-integration: ## Run integration tests (tagged 'integration')
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestLDAP_' -v -timeout 15m ./test/integration/
 
+.PHONY: test-oidc
+test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Docker)
+	go test $(TEST_FLAGS) -tags integration -run 'TestOIDC_' -v -timeout 15m ./test/integration/
+
 .PHONY: bench
 bench: ## Run benchmarks
 	go test -bench=. -benchmem $(GO_PKGS)

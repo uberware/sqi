@@ -21,7 +21,7 @@ RETURNING id, token_hash, user_id, expires_at, created_at`
 	// list must stay in the order scanUser expects. Kept on one line so the
 	// gosec nolint lands on the declaration line, where the finding is
 	// attributed — see the note above the api_keys statements.
-	sqlGetSessionUserByTokenHash = `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.auth_source, u.disabled, u.created_at, u.updated_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?` //nolint:gosec // G101: SQL text, not a credential
+	sqlGetSessionUserByTokenHash = `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.auth_source, u.external_id, u.disabled, u.created_at, u.updated_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?` //nolint:gosec // G101: SQL text, not a credential
 
 	sqlDeleteSession         = `DELETE FROM sessions WHERE id = ?`
 	sqlDeleteSessionsForUser = `DELETE FROM sessions WHERE user_id = ?`

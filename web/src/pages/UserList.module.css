@@ -15,9 +15,10 @@
   color: var(--color-text-secondary);
 }
 
-/* local keeps the default grey; ldap gets an accent so directory-backed
-   accounts are scannable in a long list */
-.badge[data-source='ldap'] {
+/* local keeps the default grey; ldap and oidc get an accent so
+   externally-backed accounts are scannable in a long list */
+.badge[data-source='ldap'],
+.badge[data-source='oidc'] {
   color: var(--color-accent);
   border-color: var(--color-accent);
 }

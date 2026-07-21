@@ -16,6 +16,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/uberware/sqi/internal/auth/rolemap"
 )
 
 // Errors returned by a Verifier. Callers must not distinguish
@@ -33,11 +35,11 @@ var (
 	ErrUnavailable = errors.New("ldap: directory unavailable")
 )
 
-// RoleMapping is one group-DN → role rule.
-type RoleMapping struct {
-	Group string
-	Role  string
-}
+// RoleMapping is one group-DN → role rule. It is an alias for
+// [rolemap.Mapping], not a distinct type: the two were field-identical, and
+// keeping them separate meant converting the whole slice on every login purely
+// to change its name.
+type RoleMapping = rolemap.Mapping
 
 // Config configures directory authentication. It mirrors config.LDAPConfig;
 // the server converts between them so this package stays independent of the
@@ -56,9 +58,15 @@ type Config struct {
 	UserDNTemplate  string
 	UsernameAttr    string
 	DisplayNameAttr string
-	RoleSource      string
-	RoleMap         []RoleMapping
-	DefaultRole     string
+	// UniqueIDAttr names the attribute holding the entry's stable,
+	// non-reusable identifier: objectGUID on Active Directory, entryUUID on
+	// OpenLDAP and other RFC 4530 servers. Required — there is no value
+	// correct on both, and auto-detection would silently guess wrong on a
+	// server exposing both.
+	UniqueIDAttr string
+	RoleSource   string
+	RoleMap      []rolemap.Mapping
+	DefaultRole  string
 	// Logger receives the operational warnings this package cannot resolve on
 	// its own — currently only a failed nested-group expansion, which degrades
 	// silently to flat memberOf and would otherwise demote admins who hold
@@ -68,13 +76,15 @@ type Config struct {
 }
 
 // RoleSourceDirectory and RoleSourceLocal are the two role-authority modes.
+// They are the shared [internal/auth/rolemap] values under LDAP-facing names;
+// the enum has exactly one definition so LDAP and OIDC cannot drift.
 const (
 	// RoleSourceDirectory recomputes an LDAP user's role from their groups on
 	// every login; the users API rejects role edits on such accounts.
-	RoleSourceDirectory = "directory"
+	RoleSourceDirectory = rolemap.SourceDirectory
 	// RoleSourceLocal seeds the role from groups at JIT-create only; admins
 	// own it afterwards.
-	RoleSourceLocal = "local"
+	RoleSourceLocal = rolemap.SourceLocal
 )
 
 // TemplateMode reports whether this config selects template bind (bind
@@ -90,6 +100,11 @@ type Identity struct {
 	Username string
 	// DisplayName is the human-facing label. Consumed only at JIT-create.
 	DisplayName string
+	// ExternalID is the entry's stable, non-reusable identifier, read from the
+	// attribute named by Config.UniqueIDAttr. Empty means the directory did not
+	// return it, which the login path treats as a failure rather than falling
+	// back to name matching.
+	ExternalID string
 	// Groups are the group DNs the entry belongs to.
 	Groups []string
 }

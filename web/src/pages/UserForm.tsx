@@ -26,6 +26,7 @@ interface Defaults {
   role: string
   disabled: boolean
   roleEditable: boolean
+  passwordEditable: boolean
 }
 
 interface InnerProps {
@@ -55,6 +56,12 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
   // would disable the control for LDAP accounts under role_source=local,
   // where the server does accept a role change.
   const roleManagedExternally = !defaults.roleEditable
+
+  // Same contract, for the set-password control: straight from the server's
+  // `password_editable`, computed from the same predicate that guards PUT
+  // /users/{id}/password. Without it the form happily accepted a new password
+  // for an LDAP or OIDC account and turned every submit into a 409 toast.
+  const passwordManagedExternally = !defaults.passwordEditable
 
   const isPending = createUser.isPending || updateUser.isPending
   const canSubmit =
@@ -95,7 +102,7 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
 
   async function handleSetPassword(e: React.FormEvent) {
     e.preventDefault()
-    if (newPassword === '' || setUserPassword.isPending) return
+    if (passwordManagedExternally || newPassword === '' || setUserPassword.isPending) return
     try {
       await setUserPassword.mutateAsync({ id, password: newPassword })
       setNewPassword('')
@@ -219,20 +226,33 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
           <div className={styles.field}>
             <label htmlFor="user-new-password" className={styles.label}>
               New Password
+              {passwordManagedExternally && (
+                <span className={styles.labelQualifier}> (managed externally)</span>
+              )}
             </label>
             <input
               id="user-new-password"
               type="password"
               className={styles.input}
               value={newPassword}
+              disabled={passwordManagedExternally}
+              aria-describedby={passwordManagedExternally ? 'user-new-password-hint' : undefined}
               onChange={(e) => setNewPassword(e.target.value)}
             />
+            {passwordManagedExternally && (
+              <p id="user-new-password-hint" className={styles.hint}>
+                This account signs in against an external provider and has no local password —
+                change it there instead.
+              </p>
+            )}
           </div>
           <div className={styles.footer}>
             <button
               type="submit"
               className={styles.submitBtn}
-              disabled={newPassword === '' || setUserPassword.isPending}
+              disabled={
+                passwordManagedExternally || newPassword === '' || setUserPassword.isPending
+              }
             >
               Set Password
             </button>
@@ -265,6 +285,7 @@ export default function UserForm({ mode }: Props) {
           role: data.role,
           disabled: data.disabled,
           roleEditable: data.role_editable,
+          passwordEditable: data.password_editable,
         }}
       />
     )
@@ -280,8 +301,11 @@ export default function UserForm({ mode }: Props) {
         role: 'user',
         disabled: false,
         // POST /users always creates a local account, so its role is always
-        // editable — there is no server response to read this from yet.
+        // editable — there is no server response to read this from yet. The
+        // same is true of its password, though the set-password section only
+        // renders in edit mode, so this value is never read here.
         roleEditable: true,
+        passwordEditable: true,
       }}
     />
   )

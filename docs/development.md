@@ -13,11 +13,11 @@ guides for extending the worker.
 | Go ≥ 1.26 (the `go` directive in `go.mod` pins 1.26.3) | Build and test | [go.dev/dl](https://go.dev/dl/) |
 | Node.js ≥ 24 with npm ≥ 11 (see `.nvmrc` and `web/package.json` `engines`) | Build the web UI bundle embedded in `sqi-server` (`make build` runs it) | [nodejs.org](https://nodejs.org/) or `nvm use` |
 | `gofumpt` | Stricter formatter (superset of `gofmt`) | `go install mvdan.cc/gofumpt@latest` |
-| `goimports` | Import organiser | `go install golang.org/x/tools/cmd/goimports@latest` |
+| `goimports` | Import organizer | `go install golang.org/x/tools/cmd/goimports@latest` |
 | `golangci-lint` | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
-| Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
+| Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`) and the real-provider SSO tests (`make test-oidc`), which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
 pre-commit hooks. Install them before running `make hooks`.
@@ -103,12 +103,24 @@ make test-integration
 # LDAP tests against a real directory in a container (needs Docker)
 make test-ldap
 
+# SSO tests against a real Keycloak in a container (needs Docker)
+make test-oidc
+
 # Fuzz targets (run for 30 seconds each)
 go test -fuzz=FuzzParse         -fuzztime=30s ./internal/openjd/...
 go test -fuzz=FuzzRESTPayloads  -fuzztime=30s ./internal/api/...
 ```
 
-### Testing against a real LDAP directory
+### Testing against a real directory or identity provider
+
+Two suites in `test/integration/` talk to a real external identity source
+rather than a fake: `ldap_test.go` (`make test-ldap`) and `oidc_test.go`
+(`make test-oidc`). Both are behind the `integration` build tag, both boot a
+throwaway container, and **both skip rather than fail when Docker is
+unavailable** — which means a green run proves nothing until you have confirmed
+it actually executed. Check for `--- PASS` lines, not merely an exit code of
+zero; `GOFLAGS=-count=1` defeats a cached result that would otherwise replay a
+previous run.
 
 Most LDAP tests drive a fake connection, which covers sqi's own logic but
 cannot catch a mistake in how it uses go-ldap *on the wire* — a wrong search
@@ -156,6 +168,60 @@ Two fixture properties are load-bearing and easy to get wrong:
 
 The fixture asserts both up front, as the service account, and fails with a
 message naming the cause rather than letting them surface as wrong roles later.
+
+### Testing SSO against a real identity provider
+
+The SSO unit tests drive a fake provider. It signs real tokens, so a validation
+mistake surfaces — but a fake returns whatever the test asks for, so it cannot
+show what a *real* provider **omits**. Keycloak emits no group membership at all
+unless a protocol mapper is configured for it, and a token carrying no groups
+still validates: every user then lands on `default_role`, a silent privilege
+downgrade with no error anywhere. `make test-oidc` is what makes that class of
+bug fail before it merges.
+
+```sh
+make test-oidc
+```
+
+It boots a throwaway Keycloak container, seeds a realm, and drives the whole
+browser-shaped flow: the authorization-code round trip, group → role mapping, a
+rename at the provider keeping the same account, state-mismatch refusal,
+`prompt=login` forcing re-authentication, and the RP-initiated logout behavior
+documented in [`docs/auth.md`](auth.md#provider-logout-is-weaker-than-it-looks).
+It runs in CI on every change (the `oidc-integration` job) on **one**
+architecture, unlike `ldap-integration` — Keycloak is a JVM application and none
+of the HTTP or token behavior this job asserts on is architecture-dependent.
+
+It **skips**, rather than fails, when Docker is unavailable. **A skip verifies
+nothing**, so run it — and confirm it ran — before touching anything under
+`internal/auth/oidc/` or the SSO routes in `internal/api/`. Go's test cache will
+happily replay a previous result; `GOFLAGS=-count=1 make test-oidc` and a check
+for `--- PASS` on each `TestOIDC_` is the only honest confirmation.
+
+To point it at a realm you already have instead of starting a container, set
+`SQI_TEST_OIDC_ISSUER`:
+
+```sh
+SQI_TEST_OIDC_ISSUER=https://keycloak.example.com/realms/farm make test-oidc
+```
+
+That realm must already hold the fixture's client, users, groups, and the
+`groups` protocol mapper — see the seeding code in
+`test/integration/oidc_test.go` for exactly what. Any test that **mutates** the
+fixture through the admin API (the rename-at-the-provider case) skips under this
+variable rather than editing a realm you did not intend it to, so an external
+issuer covers strictly less than the container does.
+
+Use `https://` for a remote issuer. Keycloak marks its session cookies `Secure`
+unconditionally; Go's cookie jar exempts loopback from that rule, which is why
+the container fixture works over plain HTTP on `127.0.0.1`, but a **non**-loopback
+issuer over `http://` would hide the provider's session from the test client.
+
+The Keycloak image tag is **pinned, not floating on `:latest`**, and the pin is
+load-bearing: the test scrapes Keycloak's own login and logout-confirmation
+markup. It appears in two places that must stay in step — `keycloakImage` in
+`test/integration/oidc_test.go` and the `docker pull` in
+`.github/workflows/ci.yml`.
 
 ---
 
@@ -497,7 +563,7 @@ SQI_LOG_LEVEL=debug SQI_LOG_FORMAT=text SQI_STORE_SQLITE_PATH=/tmp/test.db \
 The hooks installed by `make hooks` run automatically on every `git commit`:
 
 1. **gofumpt** — formats staged Go files.
-2. **goimports** — organises imports (stdlib / external / internal groups).
+2. **goimports** — organizes imports (stdlib / external / internal groups).
 3. **go vet** — basic correctness checks.
 4. **golangci-lint** — full linter suite with auto-fix.
 

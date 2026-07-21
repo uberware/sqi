@@ -49,6 +49,7 @@ import (
 
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/auth/ldap"
+	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
@@ -165,6 +166,20 @@ type Deps struct {
 	// LDAPConfig supplies the role mapping and role-source mode. Only read
 	// when LDAPVerifier is non-nil.
 	LDAPConfig ldap.Config
+
+	// OIDCProvider authenticates SSO logins. Nil when SSO is disabled, in
+	// which case the /auth/oidc/* routes are not registered at all.
+	OIDCProvider oidc.Provider
+
+	// OIDCConfig supplies claim names, role mapping, and the reauth/logout
+	// modes. Only read when OIDCProvider is non-nil.
+	OIDCConfig oidc.Config
+
+	// OIDCStateKey signs the per-login state cookie. Generated per boot by
+	// the server, never persisted: a restart invalidating in-flight logins is
+	// cheaper than a key to configure, distribute, and rotate. Only read when
+	// OIDCProvider is non-nil.
+	OIDCStateKey []byte
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -337,14 +352,24 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
-	authH := newAuthHandler(deps.Store, logger, deps.SessionTTL, deps.CookieName, deps.CookieSecure,
-		deps.LDAPVerifier, deps.LDAPConfig)
+	authH := newAuthHandler(authHandlerDeps{
+		Store:        deps.Store,
+		Logger:       logger,
+		TTL:          deps.SessionTTL,
+		CookieName:   deps.CookieName,
+		CookieSecure: deps.CookieSecure,
+		LDAPVerifier: deps.LDAPVerifier,
+		LDAPConfig:   deps.LDAPConfig,
+		OIDCProvider: deps.OIDCProvider,
+		OIDCConfig:   deps.OIDCConfig,
+		OIDCStateKey: deps.OIDCStateKey,
+	})
 	if cfg.AuthEnabled {
 		// Pay the argon2id derivation here, not on the first login that misses
 		// a username — see dummyHash.
 		warmDummyHash()
 	}
-	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource)
+	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource, deps.OIDCConfig.RoleSource)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
 	az := newAuthz(deps.Store, logger)
 
@@ -379,6 +404,29 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// Public: login mints the session cookie (no principal required yet,
 		// so it cannot be gated by middleware.Auth).
 		api.Post("/auth/login", authH.login)
+
+		// Also public, and unconditionally mounted: the login page asks this
+		// which login methods exist before the user has any credential, so
+		// gating it on authentication would be circular. It is mounted even
+		// when SSO is off because "no SSO configured" is itself the answer the
+		// page needs; see authproviders.go for what it does and does not
+		// disclose.
+		api.Get("/auth/providers", authH.authProviders)
+
+		// Also public, for the same reason, and only mounted when SSO is
+		// configured: an unconfigured deployment should 404 rather than
+		// advertise a route that cannot work. Both are browser navigations
+		// that redirect; see oidclogin.go for why they are GETs that
+		// middleware.CSRF does not (and cannot) cover.
+		// The state key is part of "configured", not an optional extra: the
+		// signed state cookie is the ONLY CSRF defense these public routes
+		// have, and an empty key produces a MAC anyone can compute. Registering
+		// on the provider alone would fail open silently — a working-looking
+		// login that accepts a forged callback.
+		if deps.OIDCProvider != nil && len(deps.OIDCStateKey) > 0 {
+			api.Get("/auth/oidc/login", authH.oidcLogin)
+			api.Get("/auth/oidc/callback", authH.oidcCallback)
+		}
 
 		// REST resource routes — gated by the auth middleware.
 		api.Group(func(rest chi.Router) {

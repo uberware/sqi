@@ -2,7 +2,7 @@
 
 sqi ships with **authentication off by default** — on a trusted local network,
 every request is served as an anonymous superuser and nothing is gated. This is
-the pre-Phase-3 behaviour and remains the default.
+the pre-Phase-3 behavior and remains the default.
 
 ## The opt-in gate
 
@@ -26,11 +26,11 @@ authorization checks are bypassed. Authentication is pluggable: an
 only non-anonymous `Authenticator`s are the session-cookie and API-key ones
 described below.
 
-Directory-backed credentials do **not** implement that interface.
-[LDAP/AD](#ldap--active-directory) (C1), and OIDC (C2) after it, attach at
-`POST /auth/login` instead: they verify the credential once and then mint an
-ordinary session, so no request path binds against an external identity
-provider. See [It attaches at login, not at every
+Externally-verified credentials do **not** implement that interface.
+[LDAP/AD](#ldap--active-directory) (C1) attaches at `POST /auth/login`, and
+[OIDC/SSO](#oidc--sso) (C2) attaches at its own callback route; both verify the
+credential once and then mint an ordinary session, so no request path binds
+against an external identity provider. See [It attaches at login, not at every
 request](#it-attaches-at-login-not-at-every-request).
 
 `Principal` carries `Subject` (opaque user id), `Username` (login name — the
@@ -219,7 +219,10 @@ becomes invalid at exactly `created_at + ttl` regardless of activity; the
 user must log in again.
 
 `POST /api/v1/auth/logout` deletes the session server-side and clears the
-cookie; it always returns `204` (even if the cookie was already invalid).
+cookie; it always returns `200` with a JSON body (even if the cookie was
+already invalid). The body is `{}` for a local logout, and carries
+`redirect_url` — the identity provider's RP-initiated logout URL — when SSO is
+configured with `auth.oidc.logout_mode=provider`.
 `GET /api/v1/auth/me` returns the current `Principal` — `401` if
 unauthenticated, otherwise the resolved subject/display name/roles/kind. This
 is the single endpoint the web UI polls to decide shell-vs-login; see
@@ -444,7 +447,7 @@ authorization check rather than a separate ownership branch that could be
 forgotten. The web surfaces this at `/users/{id}/api-keys`, reachable from
 the per-row "API keys" action on Admin → Users.
 
-**Auth-off behaviour.** With `auth.enabled=false`, every request is the
+**Auth-off behavior.** With `auth.enabled=false`, every request is the
 anonymous superuser principal, which has no real user id to own a key
 against, so all three `/api-keys` endpoints reject with `409 Conflict`
 ("API keys require authentication to be enabled") rather than silently
@@ -485,10 +488,12 @@ The practical consequence is [revocation lag](#revocation-lag), below.
 
 ### Per-account routing
 
-Each account carries `users.auth_source`, either `local` or `ldap`. It is set
-when the account is created and is **immutable** — no route can change it.
-Login reads it and consults exactly one backend: the stored argon2id hash, or
-the directory. Never both, never in sequence.
+Each account carries `users.auth_source` — `local`, `ldap`, or (from C2)
+`oidc`. It is set when the account is created and is **immutable** — no route
+can change it. `POST /auth/login` reads it and consults exactly one backend:
+the stored argon2id hash, or the directory. Never both, never in sequence. An
+`oidc` account has no password path at all; it signs in through
+[the SSO routes](#oidc--sso).
 
 Not chaining the two is a security decision, not an optimization. If a failed
 local login fell through to a directory bind, every wrong password in sqi
@@ -520,6 +525,49 @@ overwritten at the next login. The trade is that a name changed in the
 directory (a marriage, a correction) does not propagate; an admin edits it,
 or the user does.
 
+### Accounts are matched on a stable identifier, not a username
+
+`unique_id_attr` is **required** whenever LDAP is enabled and has **no
+default**. Set it to `objectGUID` on Active Directory, or `entryUUID` on
+OpenLDAP and other RFC 4530 servers. No single value is correct on both, and
+guessing on a server that exposes both would silently pick the wrong one.
+
+sqi stores that value in `users.external_id` and matches every later login on
+it, never on the username. A username is not an identity: directories recycle
+login names and email addresses, so a new hire given a departed admin's name
+would otherwise log straight into that admin's account — same role, same owned
+jobs, no error anywhere. A rename at the directory is the mirror failure, and
+would orphan the account and provision a duplicate.
+
+Two consequences worth stating plainly:
+
+- **A directory rename is transparent.** The entry keeps its identifier, so
+  the same sqi account is reached under the new name.
+- **A recycled username is refused, not adopted.** A new directory entry
+  wearing an old name has a new identifier, so provisioning runs and collides
+  on the taken username. The login fails until an operator renames or removes
+  one of the two accounts. Refusal is the intended outcome.
+
+Active Directory returns `objectGUID` as raw binary, which sqi hex-encodes
+before storing. That encoding is permanent — changing it would orphan every
+account already stamped.
+
+#### Upgrading from an earlier sqi
+
+LDAP accounts provisioned before identifier matching shipped carry an empty
+`external_id`. They **cannot log in** once matching is in effect: the identity
+lookup misses, provisioning collides on the username, and the result is a
+permanent 401.
+
+This is deliberate. Adopting a row whose stored identifier is empty is
+username matching under another name and would preserve the recycling hazard
+indefinitely, for exactly the long-lived, often privileged accounts most
+likely to predate the upgrade. **Delete and recreate such accounts**; the next
+login re-provisions them with the directory's identifier. The server logs an
+`ERROR` naming the account and this remedy each time one is refused — the 401
+itself is identical to every other login failure by design, so the log is the
+only signal.
+
 ### Both bind modes
 
 The two modes are mutually exclusive; setting `user_dn_template` selects
@@ -541,6 +589,7 @@ auth:
     user_filter: "(sAMAccountName=%s)"
     username_attr: "sAMAccountName"
     display_name_attr: "displayName"
+    unique_id_attr: "objectGUID"
     nested_groups: true
     role_map:
       - group: "CN=Farm Admins,OU=Groups,DC=example,DC=com"
@@ -562,6 +611,7 @@ auth:
     user_dn_template: "uid=%s,ou=people,dc=example,dc=com"
     username_attr: "uid"
     display_name_attr: "cn"
+    unique_id_attr: "entryUUID"
     role_map:
       - group: "cn=farm-admins,ou=groups,dc=example,dc=com"
         role: admin
@@ -580,19 +630,21 @@ go out anonymously with nothing in the logs to say so.
 **Alias / UPN login works.** With `user_filter: "(userPrincipalName=%s)"` and
 `username_attr: "sAMAccountName"`, a user typing `alice@example.com` is
 provisioned as `alice` and is recognized as that same account on every
-subsequent login. The two spellings deliberately do not create two records.
+subsequent login. The two spellings deliberately do not create two records —
+and since accounts match on the identifier rather than the name, that holds
+across a directory rename too.
 
-**`username_attr` must name a directory-controlled, unique attribute.** It is
-the identity sqi keys a local row on, and the alias-recovery path re-reads
-whichever row already owns that username. Point it at something *users can
-edit themselves* — `mail` is the obvious trap — and a user who sets their own
-attribute to another person's value can steer that recovery onto the other
-person's row and inherit their sqi role. `sAMAccountName` and `uid` are the
-right kind of attribute; a self-service directory field is not. This is
-bounded — a **local** row is always refused, so the bootstrap admin and every
-locally-created account are out of reach, and only *directory* users can be
-impersonated — and it requires a misconfiguration to reach at all. Configure
-it correctly and the path does not exist.
+**`username_attr` should still name a directory-controlled, unique attribute.**
+It is no longer what sqi matches an account on — `unique_id_attr` is — but it
+is the value written to `users.username`, which is unique in sqi's own store,
+and it is what binds to `Job.Owner`/`Job.Submitter`. Point it at something
+*users can edit themselves* — `mail` is the obvious trap — and one user can
+claim the name another account already holds, which **blocks that account's
+next login** on a username collision until an operator renames one of the two
+rows. That is a denial of service, and a confusing one to diagnose; it is not a
+privilege escalation, because a collision is refused rather than adopted and no
+account is ever inherited. `sAMAccountName` and `uid` are the right kind of
+attribute; a self-service directory field is not.
 
 **Nested groups are search-mode only.** `nested_groups: true` expands
 transitive membership via the AD matching-rule OID; template bind reads the
@@ -798,6 +850,13 @@ password routes refuse rather than pretend:
 | `PUT /api/v1/auth/password` (self-service) | **409 Conflict** |
 | `PATCH /api/v1/auth/me` (display name) | **Works** |
 
+Both password routes key on "not a local account", so an
+[SSO account](#oidc--sso) behaves identically. That single rule is also what
+the users API reports as `password_editable` — the companion to
+`role_editable` — so a client can hide its set-password control instead of
+letting someone type a password and discover the 409. Field and guard are
+computed from one server-side predicate and cannot drift apart.
+
 The admin-side 409 also closes a real hole: without it, an admin could write
 a genuine argon2id hash onto a directory account. Login routes on
 `auth_source` and would not consult it today, but leaving a usable credential
@@ -866,7 +925,347 @@ it.** Directories differ in exactly the places this integration is sensitive
 to: whether `memberOf` is populated, what the service account is allowed to
 read, and how an unsupported matching rule is answered.
 
+## OIDC / SSO
+
+As of component C2, `sqi-server` can sign users into the **web UI** through an
+OAuth2/OpenID Connect identity provider — Keycloak, Microsoft Entra ID, Okta,
+or anything else that publishes a discovery document. Enable it with
+`auth.oidc.enabled` on top of `auth.enabled`; the block is inert unless both
+are true. Every field is catalogued in
+[`docs/configuration.md`](configuration.md#authoidc).
+
+**Scope: this is a browser login mechanism, and nothing else.** The callback
+mints the same server-side session cookie a password login mints, and
+`auth.Chain(apikey, session)` is untouched. sqi never accepts a provider's
+token as a per-request API credential, and there is no device-authorization
+grant. Headless clients — the SDK, submitters, CI — keep using
+[API keys](#api-keys); SSO does not reach them.
+
+### The flow
+
+Three routes, all public by necessity:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/v1/auth/providers` | What the login page renders: whether password login is offered, and the SSO button's label and login URL. Exposes neither the issuer nor the client secret. |
+| `GET /api/v1/auth/oidc/login` | Starts the authorization-code flow (PKCE) and redirects to the provider. |
+| `GET /api/v1/auth/oidc/callback` | Redeems the code, validates the ID token, resolves the account, mints the session, and redirects to `/`. |
+
+They cannot sit behind the auth middleware — their whole purpose is to produce
+the principal that middleware would demand. What stands in for it:
+
+- **The flow state lives in an HMAC-signed, `HttpOnly` cookie**, carrying the
+  `state` value, the nonce, and the PKCE verifier. There is no server-side
+  table and no cleanup job. The signing key is generated **per boot and never
+  persisted**, so a server restart invalidates logins that are in flight —
+  accepted, because the alternative is a persisted key.
+- **The state cookie is cleared unconditionally, before any early return**, so
+  a replayed callback finds nothing waiting for it. The signed payload also
+  carries its own issued-at, checked server-side, so an expired state is
+  refused whether or not the browser honored the cookie's expiry.
+- **The post-login destination is a constant.** No "return to" parameter is
+  honored — an attacker-chosen destination on a page that has just minted a
+  session is how open redirects become account takeovers.
+- **Every failure redirects to `/?sso_error=1`** and says nothing else. The
+  reason goes to the server log only; a reason on the wire would turn the
+  callback into an enumeration oracle. If SSO is failing, the server log is
+  where the answer is — `internal/auth/oidc` itself logs nothing on token
+  rejection, so the route logs every refusal.
+
+Discovery is **lazy**: the issuer's document is fetched on first use, not at
+boot, and is retried after a failure. A briefly unreachable provider must not
+stop a render farm's scheduler from starting. Configuration faults still abort
+boot — a missing `client_id` fails validation, an unreachable issuer does not.
+
+### A worked setup (Keycloak)
+
+Keycloak is the provider sqi's integration test actually drives, so it is the
+one worked here. Register a confidential client in your realm with the standard
+flow enabled, a redirect URI of `https://sqi.example.com/api/v1/auth/oidc/callback`,
+and — this part is easy to miss — **a protocol mapper that puts group
+membership into the `groups` claim**. Keycloak emits no groups at all without
+one, and a token with no groups still validates, so every user silently lands on
+`default_role`.
+
+```yaml
+auth:
+  enabled: true
+  oidc:
+    enabled: true
+    issuer: "https://keycloak.example.com/realms/farm"
+    client_id: "sqi"
+    # client_secret via SQI_AUTH_OIDC_CLIENT_SECRET
+    redirect_url: "https://sqi.example.com/api/v1/auth/oidc/callback"
+    scopes: ["openid", "profile", "email"]
+    username_claim: "preferred_username"
+    display_name_claim: "name"
+    groups_claim: "groups"
+    role_source: "directory"
+    role_map:
+      - group: "/farm-admins"
+        role: admin
+      - group: "/farm-operators"
+        role: operator
+    default_role: "read-only"
+    reauth_mode: "after_logout"
+    logout_mode: "local"
+```
+
+`redirect_url` must be the absolute URL of *this server's* callback route, and
+must be registered at the provider byte-for-byte. `client_secret` is redacted
+in `sqi-server config print`; prefer `SQI_AUTH_OIDC_CLIENT_SECRET` over writing
+it to disk.
+
+### Claim → role mapping
+
+`role_map` is an **ordered** list of group → role rules read from the claim
+named by `groups_claim`, and **the first match wins** — order is how you
+express precedence, so put `admin` above `operator`. This is the same mapper
+LDAP uses (`internal/auth/rolemap`), so the two cannot drift apart on
+precedence. A role naming anything other than `admin`, `operator`, `user`, or
+`read-only` fails config validation at boot.
+
+`default_role` applies when no rule matches; setting it **empty rejects the
+login entirely**, which is how a deployment requires group membership to sign
+in at all. The default is `read-only`.
+
+`"groups"` is **not** a standard OIDC claim. Whether membership needs a scope,
+a provider-side mapper, or both varies by provider, and there is no error when
+it is absent — the token validates and the user lands on `default_role`. If
+every SSO user is arriving with your `default_role`, check the claim before
+anything else. (This is the OIDC counterpart of LDAP's
+[`memberOf` trap](#your-directory-must-populate-memberof), and it fails the
+same silent way.)
+
+### Just-in-time provisioning and identity
+
+An unknown SSO identity is a provisioning event: sqi maps a role from the
+claims and creates a local record with `auth_source: oidc`, its stored
+`password_hash` an unusable placeholder. There is no import step.
+
+**Accounts are matched on the `sub` claim, never on the username** — the same
+rule and the same code path as
+[LDAP's stable identifier](#accounts-are-matched-on-a-stable-identifier-not-a-username).
+`sub` is the provider's stable, non-reusable subject identifier; it is stored
+in `users.external_id`. A username or email changed at the provider therefore
+reaches the same sqi account, and a recycled email address does *not* inherit
+the account it used to belong to. An identity whose `sub` is empty is refused
+outright, with an `ERROR` in the log, rather than falling back to name
+matching — the fallback is the hazard.
+
+Display name is read from `display_name_claim` **once, at creation, and never
+re-synced**, so a self-service `PATCH /api/v1/auth/me` edit persists. The trade
+is that a name changed at the provider does not propagate.
+
+### `role_source` — who owns an SSO user's role
+
+| Value | Role on login | `PATCH /users/{id}` role edit |
+|---|---|---|
+| `directory` (default) | Recomputed from claims on **every** login | **409 Conflict** |
+| `local` | Seeded from claims at provisioning only | Allowed |
+
+One value drives both halves, for the reason given under
+[LDAP's `role_source`](#role_source--who-owns-a-users-role): splitting them
+means an admin edits a role, gets a 200, and the next login silently reverts
+it.
+
+`auth.oidc.role_source` and `auth.ldap.role_source` are tracked **separately**
+— an operator may trust one provider's groups and not the other's — and the
+`role_editable` field the users API returns is computed per account from
+whichever source owns it.
+
+**Keep a local admin account.** Every word of
+[Keep a local admin account](#keep-a-local-admin-account) applies here: rename
+the admin group at the provider and, in `directory` mode, every SSO admin is
+demoted to `default_role` at their next login, with role edits on those
+accounts returning 409 and nobody left holding `users.manage`. A local account
+is the only thing unaffected by a provider-side change.
+
+### Re-authentication and logout are two different things
+
+They answer different problems and are configured independently. Conflating
+them is the usual mistake.
+
+**`reauth_mode`** decides whether the *next* SSO login is allowed to be silent
+— it sends `prompt=login` to the provider.
+
+| Value | Behavior |
+|---|---|
+| `after_logout` (default) | Re-prompt only on the login that follows an explicit logout. |
+| `always` | Re-prompt on every login. |
+| `never` | Never re-prompt; silent re-login is always permitted. |
+
+This — not `logout_mode` — is the answer to the shared-workstation problem.
+Without it, clearing sqi's session while the provider still considers the
+person signed in is precisely how the next person at that machine gets signed
+in as the last one.
+
+**`logout_mode`** decides whether logging out of sqi also ends the session *at
+the provider*.
+
+| Value | Behavior |
+|---|---|
+| `local` (default) | Clear the sqi session only. |
+| `provider` | Also return the provider's RP-initiated logout URL, which the web navigates to. The sqi session ends immediately either way; the provider leg is where the browser goes next. Requires `post_logout_redirect_url`. |
+
+`local` is the default because a provider logout signs the user out of every
+company tool that trusts that provider — heavy-handed for someone mid-task
+elsewhere.
+
+Under `provider`, `POST /api/v1/auth/logout` returns
+`{"redirect_url": "…"}`; every other logout returns `{}`. If the provider
+advertises no `end_session_endpoint`, or discovery is unreachable, or the
+advertised endpoint does not parse, sqi **degrades to a local logout and logs
+at `ERROR`** — never silently.
+
+**sqi does not store ID tokens**, so the end-session request uses `client_id` +
+`post_logout_redirect_uri` and never `id_token_hint`. That is deliberate, and
+measurement strengthened the case rather than weakening it:
+
+- The token would be the **first recoverable secret in the schema**. Session
+  tokens are stored as hashes, passwords as argon2id hashes. "Nothing in this
+  database can be read back out and used" is an invariant worth more than a
+  logout convenience.
+- **Keycloak accepts an expired ID token as a hint** — verified well past
+  `exp`, and the session still died silently. A stored token is therefore a
+  session-termination capability that **does not decay**; "it expires in
+  minutes" is not a mitigation.
+- **The hint works from a client holding no provider cookies.** A leaked token
+  can end that user's provider session from anywhere, by anyone holding it.
+- **The realistic leak path is accident, not theft** — a debug log line
+  dumping a session row, or a future session-listing endpoint. Avoiding it
+  would require a redaction rule every future contributor remembers, which is
+  where this class of leak actually originates.
+
+The cost is stated under
+[Provider logout is weaker than it looks](#provider-logout-is-weaker-than-it-looks).
+
+### Limits, stated plainly
+
+#### Revocation lag is the same as LDAP's
+
+For the same reason, too: login is the only moment sqi talks to the provider —
+see [Revocation lag](#revocation-lag). **A user disabled or deleted at the
+provider keeps their sqi session until it expires** — `auth.session.ttl`, 7
+days by default. They cannot get a *new* session; the one they hold keeps
+working.
+
+Shorten `auth.session.ttl` if that window matters. To cut someone off
+immediately, disable the account in sqi (`PATCH /api/v1/users/{id}` with
+`disabled: true`): the session authenticator re-checks the user record on every
+request, and the local `disabled` flag overrides the provider for both session
+checks and login.
+
+#### Role changes apply at next login only
+
+Under `role_source: directory` the role is recomputed from claims **at login**.
+A user moved out of the admin group at the provider keeps `admin` in sqi for
+the remaining life of their session. Disabling the account in sqi is again the
+immediate lever.
+
+#### Provider logout is weaker than it looks
+
+`logout_mode: provider` **on Keycloak is a confirmation prompt, not a silent
+provider logout.** Measured against Keycloak 26.0.7 by `make test-oidc`:
+
+- The end-session request carrying `client_id` and `post_logout_redirect_uri`
+  with no `id_token_hint` **is accepted** — HTTP 200, both parameters honored,
+  no error.
+- **But the logout does not complete.** Keycloak answers with an interactive
+  logout-confirmation page, and **the provider session stays live behind it**
+  (verified independently with a `prompt=none` probe that still returned a
+  code). The session ends only once a human posts that confirmation.
+
+This is not a security hole — sqi's own session is genuinely revoked either
+way, and it is revoked before the redirect is ever handed to the browser — but
+it is weaker than an operator would infer from the option's name. In practice
+`logout_mode: provider` ends the sqi session immediately and then takes the
+user to the provider to confirm signing out everywhere. If someone abandons the
+browser at that page, they are out of sqi and still signed in to every other
+tool.
+
+**The confirmation page is a security control, not a Keycloak quirk.** An
+end-session request carrying only a client identifier could have been
+constructed by anyone, so Keycloak asks the human before acting on it.
+`id_token_hint` is the proof that the caller was party to the session, and
+supplying it is exactly what buys the skip: with the hint, Keycloak answers
+`302` straight to the post-logout URI and the session is dead with no
+interaction at all (`client_id` is not even required alongside it). sqi does
+not hold that proof, by choice — see the reasons under
+[Re-authentication and logout are two different things](#re-authentication-and-logout-are-two-different-things).
+The confirmation click is the price of not keeping a non-decaying,
+exfiltratable logout capability at rest. It is a deliberate trade, not an
+oversight.
+
+**Entra ID and Okta have not been measured.** Whether either completes an
+end-session request without an `id_token_hint` is **unverified here**; Okta has
+historically been reported to require the hint, but that is recollection, not
+an observation, and it is not a claim this document is willing to make. Test
+your own provider before relying on `logout_mode: provider`, and treat
+`reauth_mode` as the control that actually protects a shared workstation.
+
+#### `reauth_mode: after_logout` is defeatable
+
+The "this browser logged out" marker is an ordinary cookie. Clearing browser
+storage removes it, and the next login is silent again. It is adequate against
+the next colleague to sit down at a shared workstation; it is useless against
+someone with developer tools open. **`reauth_mode: always` is the hard
+guarantee** — it re-prompts every login regardless of what the browser is
+carrying, at the cost of SSO's silent-login convenience.
+
+#### A username collision blocks the second user's login
+
+Two identities that map to the same `username_claim` value — or an SSO user
+whose name is already taken by a local or LDAP account — cannot both exist.
+The second one to log in is **refused with the usual 401**, and a `WARN` names
+the collision in the server log. An admin renames one of the accounts to
+resolve it.
+
+Refusal is the intended outcome, not a gap. Auto-disambiguating (`alice2`)
+would create accounts whose names no longer match the provider — and since the
+username is what binds to `Job.Owner`, that is a mismatch that quietly spreads
+into job ownership. Adopting the existing account is worse still: it is
+username matching, the thing identifier matching exists to remove. An error an
+operator can act on beats both.
+
+#### Only the open-source providers are covered by CI
+
+`make test-oidc` runs the whole SSO path against a **real Keycloak** in a
+throwaway container, and `make test-ldap` runs the LDAP path against a **real
+OpenLDAP**. Both run in CI on every change. That is the honest extent of it:
+
+- **Active Directory's `objectGUID` path is not proven by the OpenLDAP
+  container.** OpenLDAP is exercised with `entryUUID`; AD's binary `objectGUID`
+  and its hex encoding are covered by unit tests against a fake, not by a live
+  domain controller.
+- **Okta and Entra ID are not proven by the Keycloak container.** Nothing in CI
+  contacts either. Claim shapes, group-claim delivery, and end-session behavior
+  all differ between providers, and those are exactly the places this
+  integration is sensitive.
+
+Both are hosted or licensed products that cannot be provisioned in CI. **Test a
+new deployment against your own provider before relying on it.**
+
+### How this is tested
+
+The unit tests drive a fake identity provider. It signs real tokens, so a
+validation mistake surfaces — but a fake returns whatever the test asks for, so
+it cannot show what a *real* provider omits. That is the gap
+`test/integration/oidc_test.go` closes, driving a real browser-shaped flow
+against a real Keycloak: the authorization-code round trip and group → role
+mapping (including the silent `default_role` downgrade when the groups mapper
+is missing), a rename at the provider keeping the same account, state-mismatch
+refusal, `prompt=login` forcing re-authentication, and the end-session behavior
+recorded above.
+
+```sh
+make test-oidc        # needs Docker (or colima/podman); skips cleanly without it
+```
+
+See [Testing against a real directory or identity
+provider](development.md#testing-against-a-real-directory-or-identity-provider) for the
+`SQI_TEST_OIDC_ISSUER` escape hatch and why a skip verifies nothing.
+
 ## Coming next
 
-- C2 — OAuth2/OIDC (SSO).
 - D1 — per-user concurrent task caps.

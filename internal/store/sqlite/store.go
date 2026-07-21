@@ -179,16 +179,17 @@ type Store struct {
 	stmtInsertAudit *sql.Stmt
 
 	// ── users ────────────────────────────────────────────────────────────
-	stmtInsertUser         *sql.Stmt
-	stmtGetUser            *sql.Stmt
-	stmtGetUserByUsername  *sql.Stmt
-	stmtListUsers          *sql.Stmt
-	stmtUpdateUser         *sql.Stmt
-	stmtSetUserPassword    *sql.Stmt
-	stmtSetUserDisplayName *sql.Stmt
-	stmtDeleteUser         *sql.Stmt
-	stmtCountUsers         *sql.Stmt
-	stmtCountAdmins        *sql.Stmt
+	stmtInsertUser          *sql.Stmt
+	stmtGetUser             *sql.Stmt
+	stmtGetUserByUsername   *sql.Stmt
+	stmtGetUserByExternalID *sql.Stmt
+	stmtListUsers           *sql.Stmt
+	stmtUpdateUser          *sql.Stmt
+	stmtSetUserPassword     *sql.Stmt
+	stmtSetUserDisplayName  *sql.Stmt
+	stmtDeleteUser          *sql.Stmt
+	stmtCountUsers          *sql.Stmt
+	stmtCountAdmins         *sql.Stmt
 
 	// ── sessions ─────────────────────────────────────────────────────────
 	stmtInsertSession             *sql.Stmt
@@ -575,6 +576,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtGetUserByUsername, err = s.prepare(ctx, sqlGetUserByUsername); err != nil {
+		return err
+	}
+	if s.stmtGetUserByExternalID, err = s.prepare(ctx, sqlGetUserByExternalID); err != nil {
 		return err
 	}
 	if s.stmtListUsers, err = s.prepare(ctx, sqlListUsers); err != nil {

@@ -11,6 +11,7 @@ import type {
   Farm,
   Job,
   LoginRequest,
+  LogoutResult,
   Principal,
   UpdateMeInput,
   StorageLocation,
@@ -41,9 +42,17 @@ export function fetchLogin(body: LoginRequest): Promise<User> {
   })
 }
 
-/** Log out via `POST /auth/logout`. Revokes the session server-side and clears the cookie. */
-export async function fetchLogout(): Promise<void> {
-  await apiFetch('/auth/logout', { method: 'POST' })
+/**
+ * Log out via `POST /auth/logout`. Revokes the session server-side and clears
+ * the cookie.
+ *
+ * Returns the server's body rather than discarding it: under
+ * `auth.oidc.logout_mode: provider` it carries the identity provider's
+ * RP-initiated logout URL, and dropping it would leave the person still signed
+ * in at the provider — a logout that looks complete and is not.
+ */
+export function fetchLogout(): Promise<LogoutResult> {
+  return apiFetch<LogoutResult>('/auth/logout', { method: 'POST' })
 }
 
 /**
@@ -724,13 +733,24 @@ export function useLogin() {
  * principal, so anything the outgoing user browsed would otherwise stay
  * cached and be served — stale but visible — to whoever logs in next on the
  * same browser, whichever path ended the session.
+ *
+ * When the server answers with a `redirect_url` (only under
+ * `auth.oidc.logout_mode: provider`) the browser is then navigated there, so
+ * the provider ends its own session too. That has to be a real navigation:
+ * fetching the URL would run the provider's logout in a hidden request that
+ * cannot show its consent screen and whose cookies do not belong to this
+ * document. Eviction happens first, so the local cache is already clear even
+ * if the navigation is slow or the provider is down.
  */
 export function useLogout() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: fetchLogout,
-    onSuccess: () => {
+    onSuccess: (result) => {
       evictAllExceptAuthMe(qc)
+      if (result.redirect_url) {
+        window.location.assign(result.redirect_url)
+      }
     },
   })
 }

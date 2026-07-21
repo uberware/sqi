@@ -45,6 +45,16 @@ func (s *Store) CreateUser(_ context.Context, u store.User) (store.User, error) 
 			return store.User{}, store.ErrConflict
 		}
 	}
+	// Mirror idx_users_auth_source_external_id. Without this the fake accepts
+	// a duplicate external identity that SQLite rejects, and the login tests
+	// would prove nothing about real behavior.
+	if u.ExternalID != "" {
+		for _, ex := range s.users {
+			if ex.AuthSource == u.AuthSource && ex.ExternalID == u.ExternalID {
+				return store.User{}, store.ErrConflict
+			}
+		}
+	}
 	now := time.Now().UTC()
 	// Mirror the SQLite column DEFAULT. Without this the fake keeps "" while
 	// SQLite yields "local", and the login path branches on exactly this
@@ -81,6 +91,21 @@ func (s *Store) GetUserByUsername(_ context.Context, username string) (store.Use
 	return store.User{}, store.ErrNotFound
 }
 
+// GetUserByExternalID implements [store.UserStore].
+func (s *Store) GetUserByExternalID(_ context.Context, authSource, externalID string) (store.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if externalID == "" {
+		return store.User{}, store.ErrNotFound
+	}
+	for _, u := range s.users {
+		if u.AuthSource == authSource && u.ExternalID == externalID {
+			return u, nil
+		}
+	}
+	return store.User{}, store.ErrNotFound
+}
+
 // ListUsers implements [store.UserStore].
 func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 	s.mu.Lock()
@@ -109,6 +134,9 @@ func (s *Store) UpdateUser(_ context.Context, u store.User) (store.User, error) 
 	ex.DisplayName = u.DisplayName
 	ex.Role = u.Role
 	ex.Disabled = u.Disabled
+	// AuthSource and ExternalID are deliberately not taken from the argument:
+	// an account's credential backend and its provider-assigned identity are
+	// both fixed at creation, mirroring sqlUpdateUser's SET list.
 	ex.UpdatedAt = time.Now().UTC()
 	s.users[u.ID] = ex
 	return ex, nil
