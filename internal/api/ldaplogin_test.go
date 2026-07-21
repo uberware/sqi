@@ -603,6 +603,33 @@ func TestLogin_UnknownAuthSourceFailsClosed(t *testing.T) {
 	}
 }
 
+// TestLogin_OIDCAccountPasswordLoginIsNotAnError pins the *severity* of the
+// SSO-account password login, not just its status code. The login page shows
+// the password form beside the SSO button, so this happens routinely; logging
+// it at Error would flood the diagnostics ring buffer with false corruption
+// alerts and bury the real one the default branch raises for an auth_source
+// this binary never writes.
+func TestLogin_OIDCAccountPasswordLoginIsNotAnError(t *testing.T) {
+	st := fake.New()
+	seedOIDCUser(t, st, store.User{Username: "ssouser", Role: "admin", ExternalID: "sub-ssouser"})
+	srv, logs := newLDAPServerLogging(t, st, &fakeVerifier{identity: aliceIdentity()}, ldapCfg())
+
+	if code, body := postLogin(t, srv, "ssouser", "anything"); code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401: %s", code, body)
+	}
+
+	out := logs.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Errorf("SSO password login logged at ERROR, want INFO:\n%s", out)
+	}
+	if strings.Contains(out, "unknown auth_source") {
+		t.Errorf("SSO password login diagnosed as an unknown auth_source:\n%s", out)
+	}
+	if !strings.Contains(out, "SSO account cannot use password login") {
+		t.Errorf("no log line explaining the refusal:\n%s", out)
+	}
+}
+
 // postLoginFixedID posts a login with a caller-supplied X-Request-ID so the
 // problem document's "instance" field — a per-request correlation ID, the one
 // part of the body that legitimately varies — is pinned. That makes a
@@ -727,6 +754,19 @@ func TestLogin_FailureBodiesAreIdentical(t *testing.T) {
 				return &fakeVerifier{identity: aliceIdentity()}
 			},
 			user: "mallory", pw: "localpass",
+		},
+		{
+			// An SSO account typing its password into the local login form.
+			// Refused in login's own AuthSourceOIDC arm, a third distinct exit.
+			name: "oidc account, password login",
+			setup: func(t *testing.T, st store.Store) *fakeVerifier {
+				t.Helper()
+				seedOIDCUser(t, st, store.User{
+					Username: "ssouser", Role: "admin", ExternalID: "sub-ssouser",
+				})
+				return &fakeVerifier{identity: aliceIdentity()}
+			},
+			user: "ssouser", pw: "anything",
 		},
 		{
 			// A directory account left behind after LDAP was switched off:

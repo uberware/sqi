@@ -206,8 +206,7 @@ func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if target.AuthSource != store.AuthSourceLocal {
-		writeProblem(w, r, http.StatusConflict,
-			"this account authenticates against the directory and has no local password")
+		writeProblem(w, r, http.StatusConflict, externalPasswordSetConflictDetail(target))
 		return
 	}
 	hash, err := password.Hash(req.Password)
@@ -298,6 +297,26 @@ func directoryRoleConflictDetail(u store.User) string {
 		return "this account's role is managed by the identity provider (auth.oidc.role_source=directory); change the user's group membership instead"
 	}
 	return "this account's role is managed by the directory (auth.ldap.role_source=directory); change the user's group membership instead"
+}
+
+// externalPasswordSetConflictDetail is the directoryRoleConflictDetail
+// counterpart for an admin setting a password on an externally-authenticated
+// account: telling an SSO user's admin to go to "the directory" points them at
+// a system this deployment may not even have.
+func externalPasswordSetConflictDetail(u store.User) string {
+	if u.AuthSource == store.AuthSourceOIDC {
+		return "this account authenticates against the identity provider and has no local password"
+	}
+	return "this account authenticates against the directory and has no local password"
+}
+
+// externalPasswordConflictDetail is the same wording split for a user changing
+// their own password.
+func externalPasswordConflictDetail(u store.User) string {
+	if u.AuthSource == store.AuthSourceOIDC {
+		return "your account authenticates against the identity provider; change your password there"
+	}
+	return "your account authenticates against the directory; change your password there"
 }
 
 func (h *usersHandler) notFoundOr500(w http.ResponseWriter, r *http.Request, err error, verb string) {

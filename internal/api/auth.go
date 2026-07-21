@@ -176,6 +176,7 @@ const invalidLoginDetail = "invalid credentials"
 //
 // Credentials are verified by the backend named in the account's AuthSource:
 // the stored argon2id hash for local accounts, the directory for LDAP ones.
+// OIDC accounts have no password backend at all and are refused here.
 // A local account is never sent to the directory, not even on a wrong
 // password — every failed login would otherwise cost a network round trip,
 // and in Active Directory repeated bad binds against a real DN can lock the
@@ -210,6 +211,17 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		// switch as "", so the empty case is matched here rather than relied
 		// on to have been rewritten upstream.
 		h.loginLocal(w, r, req, u)
+
+	case store.AuthSourceOIDC:
+		// SSO accounts have no local password: their stored PasswordHash is a
+		// placeholder. The login page renders the password form beside the SSO
+		// button, so an SSO user typing a password here is routine, not a sign
+		// of a corrupted row — log it at Info so it cannot bury the Error the
+		// default branch below raises for a genuinely unknown auth_source. The
+		// 401 is the same equalized response as every other failure path.
+		h.logger.InfoContext(ctx, "auth: SSO account cannot use password login",
+			slog.String("username", u.Username), slog.String("auth_source", u.AuthSource))
+		writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 
 	default:
 		// Nothing validates auth_source in Go (the SQL CHECK was deliberately

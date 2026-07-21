@@ -28,8 +28,9 @@ info:
     ## Authorization
 
     Every route under `/api/v1` except `POST /auth/login`, `POST
-    /auth/logout`, `GET /auth/me`, `GET /version`, and `GET /openapi.yaml` is
-    gated on the caller's role holding a specific permission (`jobs.read`,
+    /auth/logout`, `GET /auth/me`, `GET /auth/providers`, `GET
+    /auth/oidc/login`, `GET /auth/oidc/callback`, `GET /version`, and `GET
+    /openapi.yaml` is gated on the caller's role holding a specific permission (`jobs.read`,
     `jobs.write`, `workers.read`, `workers.manage`, `infra.read`,
     `infra.manage`, `products.read`, `products.manage`, `diagnostics.read`,
     `users.read`, `users.manage`, `apikeys.self`, `apikeys.admin`) — see the
@@ -1466,13 +1467,14 @@ components:
           enum: [admin, operator, user, read-only]
         auth_source:
           type: string
-          enum: [local, ldap]
+          enum: [local, ldap, oidc]
           description: >
             Credential backend for this account. `local` verifies the stored
-            password hash; `ldap` verifies against the configured directory.
-            Set at creation and immutable. Accounts created through
-            `POST /users` are always `local`; `ldap` accounts are provisioned
-            just-in-time on first successful directory login.
+            password hash; `ldap` verifies against the configured directory;
+            `oidc` verifies against the configured OIDC provider. Set at
+            creation and immutable. Accounts created through `POST /users` are
+            always `local`; `ldap` and `oidc` accounts are provisioned
+            just-in-time on first successful login against that source.
         role_editable:
           type: boolean
           description: >
@@ -3762,8 +3764,8 @@ paths:
         fresh one is issued for this caller, so other devices are logged out
         while this one stays signed in. API keys are not revoked.
         Returns `409` when auth is disabled, and `409` when the account's
-        `auth_source` is `ldap` — a directory account has no local password
-        to change.
+        `auth_source` is not `local` (that is, `ldap` or `oidc`) — an
+        externally-authenticated account has no local password to change.
       tags: [auth]
       requestBody:
         required: true
@@ -3932,8 +3934,9 @@ paths:
       operationId: setUserPassword
       summary: Set a local account's password
       description: |
-        Returns `409` when the account's `auth_source` is `ldap` — a
-        directory account has no local password to set.
+        Returns `409` when the account's `auth_source` is not `local` (that
+        is, `ldap` or `oidc`) — an externally-authenticated account has no
+        local password to set.
       tags: [users]
       requestBody:
         required: true

@@ -848,6 +848,67 @@ func TestDirectoryRoleConflictDetail(t *testing.T) {
 	}
 }
 
+// TestExternalPasswordConflictDetails pins the password-change 409 wording to
+// the account's own AuthSource, the same way TestDirectoryRoleConflictDetail
+// does for the role conflict. Telling an SSO user to change their password
+// "against the directory" points them at a system their deployment may not
+// have at all.
+func TestExternalPasswordConflictDetails(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(store.User) string
+	}{
+		{"admin sets another account's password", externalPasswordSetConflictDetail},
+		{"user changes their own password", externalPasswordConflictDetail},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ldapDetail := tt.fn(store.User{AuthSource: store.AuthSourceLDAP})
+			oidcDetail := tt.fn(store.User{AuthSource: store.AuthSourceOIDC})
+			if !strings.Contains(ldapDetail, "directory") {
+				t.Errorf("ldap detail = %q, want it to name the directory", ldapDetail)
+			}
+			if !strings.Contains(oidcDetail, "identity provider") {
+				t.Errorf("oidc detail = %q, want it to name the identity provider", oidcDetail)
+			}
+			// Guards against both branches collapsing to one string that
+			// happens to contain both substrings.
+			if ldapDetail == oidcDetail {
+				t.Errorf("same text returned for ldap and oidc: %q", ldapDetail)
+			}
+		})
+	}
+}
+
+// TestSetPassword_OIDCAccountConflictNamesProvider drives the wording through
+// the real handler, so a helper that is correct but unwired still fails.
+func TestSetPassword_OIDCAccountConflictNamesProvider(t *testing.T) {
+	st := fake.New()
+	target, err := st.CreateUser(context.Background(), store.User{
+		ID: uuid.NewString(), Username: "ssouser", Role: "user",
+		AuthSource: store.AuthSourceOIDC, PasswordHash: "!external",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAuthUser(t, st, "root", "hunter2!", "admin")
+	srv := newOIDCUsersServer(t, st,
+		ldap.Config{RoleSource: ldap.RoleSourceLocal},
+		oidc.Config{RoleSource: oidc.RoleSourceLocal})
+	cookie := loginCookie(t, srv, "root", "hunter2!")
+
+	resp := doRequest(t, http.MethodPut, srv.URL+"/api/v1/users/"+target.ID+"/password",
+		map[string]string{"password": "newpassword123"}, cookie)
+	defer resp.Body.Close()
+	body := string(mustReadAll(t, resp))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("got %d, want 409: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "identity provider") {
+		t.Errorf("409 body = %s, want it to name the identity provider", body)
+	}
+}
+
 // TestPatchUserRole_RejectedForOIDCUnderDirectory pins the two consumers of
 // directoryOwnsRole together for an OIDC account. They must never disagree: an
 // admin who sees an editable field, edits it, and gets a 200 would watch the

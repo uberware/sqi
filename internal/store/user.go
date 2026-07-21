@@ -26,9 +26,10 @@ type User struct {
 	PasswordHash string
 	Role         string
 	// AuthSource names the credential backend that verifies this account:
-	// [AuthSourceLocal] (the stored password hash) or [AuthSourceLDAP] (the
-	// directory). It is set at creation and never changes — UpdateUser does
-	// not write it, so an account cannot drift between backends.
+	// [AuthSourceLocal] (the stored password hash), [AuthSourceLDAP] (the
+	// directory), or [AuthSourceOIDC] (the OIDC provider). It is set at
+	// creation and never changes — UpdateUser does not write it, so an account
+	// cannot drift between backends.
 	AuthSource string
 	// ExternalID is the identity-provider-assigned identifier that is stable
 	// across renames and is never reused: the OIDC "sub" claim, or the
