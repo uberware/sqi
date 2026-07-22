@@ -78,6 +78,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -530,6 +531,46 @@ func TestIsolation_SupplementaryGroupsPreserved(t *testing.T) {
 	}
 	if !strings.Contains(string(out), strconv.Itoa(renderShareGID)) {
 		t.Errorf("`id -G` output = %q, want it to contain %d (rendershare)", out, renderShareGID)
+	}
+}
+
+// TestIsolation_SupplementaryGroupsStripsGidZero is the real-OS counterpart
+// to stripGID0FromSupplementary's unit test against the fake provider
+// (internal/worker/isolation/isolation_unix_test.go): render-a is a member of
+// BOTH rendershare (gid 3000, an ordinary supplementary group that must be
+// preserved) and root (gid 0, via the Dockerfile's `usermod -aG root
+// render-a`) — the only account in this image ever placed in gid 0. Of the
+// four escalation doors closed in isolation.Provider (explicit group, NSS
+// primary gid, PRIMARY gid, and this one — the supplementary set), this was
+// the only one no real OS had ever exercised: the fake's GroupIds() is
+// canned, so a fake-only assertion proves the STRIPPING CODE runs, never
+// that a real OS's actual `id -G` output — which is what finalizeGroups
+// actually filters — no longer contains 0 afterward.
+func TestIsolation_SupplementaryGroupsStripsGidZero(t *testing.T) {
+	requireRoot(t)
+	provider := newRealProvider(t)
+	cred, err := provider.Resolve(context.Background(), isolation.Spec{User: renderAUser})
+	if err != nil {
+		t.Fatalf("resolve %s: %v", renderAUser, err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "id", "-G")
+	cmd.Dir = "/"
+	if err := isolation.Apply(cmd, cred); err != nil {
+		t.Fatalf("apply credential: %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run `id -G` as %s: %v (output: %q)", renderAUser, err, out)
+	}
+
+	groups := strings.Fields(string(out))
+	if !slices.Contains(groups, strconv.Itoa(renderShareGID)) {
+		t.Errorf("`id -G` output = %q, want it to still contain %d (rendershare) — the strip must be gid-0-only", out, renderShareGID)
+	}
+	if slices.Contains(groups, "0") {
+		t.Errorf("`id -G` output = %q, want it to NOT contain 0 (root) — render-a is a member of root in this "+
+			"image (see the Dockerfile) precisely so this assertion is meaningful", out)
 	}
 }
 

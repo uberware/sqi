@@ -16,6 +16,13 @@
 # rendershare is a THIRD shared supplementary group — proof that supplementary
 # group membership survives isolation.Apply, not just the primary gid.
 #
+# render-a is ALSO put in root's group (gid 0, via `usermod -aG root`) so
+# TestIsolation_SupplementaryGroupsStripsGidZero has something real to strip:
+# without this, no account in this image is ever in gid 0, and the gid-0
+# strip in internal/worker/isolation/provider_unix.go's supplementary-group
+# filtering is asserted only against isolation.NewFake — never exercised by a
+# real OS's actual `id -G` output.
+#
 # The source is COPYied into the image at build time (below) rather than
 # bind-mounted at `docker run` time. A bind mount (-v $(CURDIR):/src) only
 # works when the Docker daemon's host actually shares that path with the
@@ -37,7 +44,8 @@ RUN apt-get update \
 
 RUN groupadd -g 3000 rendershare \
  && useradd -u 1001 -m -G rendershare render-a \
- && useradd -u 1002 -m -G rendershare render-b
+ && useradd -u 1002 -m -G rendershare render-b \
+ && usermod -aG root render-a
 
 WORKDIR /src
 
