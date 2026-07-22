@@ -21,8 +21,9 @@ type BrokerConfig struct {
 	// Addr is the TCP address the embedded NATS server binds to, in
 	// "host:port" form.  Defaults to "0.0.0.0:4222" (all interfaces) so that
 	// workers which discover the server via mDNS can reach the broker at the
-	// advertised LAN host. Broker authentication is not yet in place; it
-	// arrives in phase 3.
+	// advertised LAN host. Broker authentication does not exist: any host
+	// that can reach this port can register as a worker and receive
+	// assignments. Deferred to Phase 4 hardening.
 	Addr string
 
 	// DataDir is the directory JetStream uses for file-backed stream storage.

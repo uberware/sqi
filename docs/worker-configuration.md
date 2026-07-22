@@ -485,6 +485,195 @@ worker:
 
 ---
 
+## `isolation` — Run-as-user task execution
+
+Runs job-supplied task and environment actions under a queue-configured OS
+user (`run_as_user`/`run_as_group` on the queue — see
+[`docs/configuration.md`](configuration.md#queue-identity-run_as_user--run_as_group-task-isolation)
+and [`docs/auth.md`](auth.md#task-isolation)) instead of the worker daemon's
+own account. POSIX (Linux/macOS) only today — see
+[Windows is not supported](#windows-is-not-supported) below. With no queue
+configured for isolation anywhere, a worker's behavior is byte-for-byte
+unchanged whether or not this section is present.
+
+> **Enabling this RAISES the worker daemon's own privilege.** The only
+> mechanism sqi has for a POSIX process to become another OS user
+> (`setuid`/`setgid`/`setgroups`) itself requires starting as root:
+> `isolation.Provider.Capable()` fails unless the worker's effective uid is 0.
+> If you run `sqi-worker` unprivileged today, turning isolation on is **not**
+> a pure reduction in privilege — it is a trade. The **daemon** gains root so
+> that individual **tasks** can lose it. Do not enable `isolation.required` or
+> point any queue's `run_as_user` at this worker expecting the daemon itself
+> to end up with less access than it has now; it ends up with more.
+
+### `isolation.required`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_ISOLATION_REQUIRED` |
+
+Exit at boot if this worker cannot assume another OS identity (POSIX: not
+running as root). Separate from a per-assignment credential-resolution
+failure, which fails only that one task: `required: true` says "this worker
+is misconfigured" — a problem the worker can only detect at boot, since it
+learns queue identities solely from each assignment, never from its own
+config. Default `false`, so a worker that never expects an isolated
+assignment keeps starting normally even if it happens to run as root.
+
+`isolation.required: true` is a contradiction with `worker.allow_root: false`
+(the default) on POSIX: the POSIX provider can only assume another identity
+from root, but `worker.allow_root: false` refuses to let the worker start as
+root at all. Config validation catches this combination explicitly at load
+time with a message naming both keys, rather than letting it surface as a
+confusing "cannot start as root" error that never mentions isolation. Set
+`worker.allow_root: true` together with `isolation.required: true`, or leave
+`isolation.required: false`. Windows is exempt from this check: its
+credential mechanism does not require the worker process itself to run
+privileged.
+
+```yaml
+isolation:
+  required: true
+worker:
+  allow_root: true
+```
+
+### `isolation.provider`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"logon_user"` |
+| **Accepted values** | `logon_user`, `s4u` |
+| **Env var** | `SQI_WORKER_ISOLATION_PROVIDER` |
+
+Selects the Windows credential mechanism. **Ignored on POSIX** — setting it
+on a Linux/macOS worker has no effect at all, since the POSIX provider has no
+concept of a selectable mechanism. Reserved for a future, still-incomplete
+Windows implementation (see [Windows is not supported](#windows-is-not-supported));
+setting it today does not make Windows isolation work.
+
+### `isolation.env_passthrough`
+
+| | |
+|---|---|
+| **Type** | `[]string` |
+| **Default** | `[]` (empty — only the minimal base is inherited) |
+| **Env var** | `SQI_WORKER_ISOLATION_ENV_PASSTHROUGH` (comma-separated) |
+
+Daemon environment variable **name** patterns (`filepath.Match` globs, e.g.
+`FLEXLM_*`) that an isolated task's environment inherits from the worker
+daemon's own process, in addition to a minimal base (`PATH`,
+`HOME`/`USERPROFILE`, `TMPDIR`, and a few others rewritten to the target
+user rather than left pointing at the daemon's). Each pattern is validated as
+a glob at config-load time; an invalid one (e.g. an unbalanced `[`) fails
+worker startup naming the exact field, `isolation.env_passthrough[N]`.
+
+**This governs only what an isolated task inherits from the daemon's own
+environment.** Anything the job itself supplies — an OpenJD
+`Environment.variables` block, an `openjd_env` export, a task template
+variable — always reaches the task unfiltered, regardless of this setting;
+those are the job's own data, not daemon leakage, and filtering them would
+silently break jobs whose variable names no operator allowlist could
+anticipate.
+
+A render farm's licensing model is the realistic reason this exists — most
+license managers are configured via environment variable on the render node,
+and that variable has to survive into the isolated task:
+
+```yaml
+isolation:
+  env_passthrough:
+    - "foundry_LICENSE"     # Nuke
+    - "ARNOLD_LICENSE"      # Arnold (Maya/Houdini)
+    - "solidangle_LICENSE"  # Arnold, older variable name
+```
+
+> **A broad glob defeats the allowlist entirely.** `env_passthrough: ["*"]`
+> re-opens the exact daemon-environment leak this filter exists to close, and
+> so does anything that reads narrower but matches broadly in practice, like
+> `"*KEY*"` — the daemon's own credentials, tokens, and internal service
+> addresses all match a wildcard just as easily as a license variable does.
+> Write the actual variable name. A task failing on a missing license
+> variable is the expected, correct symptom of an allowlist that is too
+> tight — the fix is to add that one name, not to widen the pattern.
+
+### Windows is not supported
+
+A Windows worker's `Capable()` always reports:
+
+```
+task isolation is not yet supported on Windows: session directory ACLs are not implemented
+```
+
+A real Windows logon token can be obtained (the `logon_user` provider calls
+the real `LogonUserW`), but nothing downstream can yet secure a session
+working directory for that token — that needs NTFS ACL work (granting the
+target user's SID an access-control entry, stripping inheritance) that has
+not been written. Consequently:
+
+- A Windows worker with `isolation.required: true` refuses to **start**,
+  reporting the message above.
+- A Windows worker that receives an assignment for an isolated queue anyway
+  fails **that task** with the same message, rather than silently running it
+  as the daemon's own account.
+
+Remaining work before Windows is supported: NTFS ACL-based
+`SecureWorkDir`/`ChownRecursive`, the `s4u` provider (which needs no stored
+secret but, unlike `logon_user`, yields no network credentials — no SMB
+access from the isolated process), and a Windows CI runner to verify any of
+it against a real host — none of the Windows-specific isolation code has run
+against one yet.
+
+### A target account's existing group memberships are not stripped
+
+Isolation strips gid 0 (`root`) from a target account's supplementary groups
+unconditionally. It does **not** strip any other, named group the account
+already belongs to — `docker`, `disk`, `shadow`, or an in-house group. This
+is deliberate: those memberships are the account's own pre-existing access,
+typically how a render-farm account reaches project storage, and stripping
+them "to be safe" would silently break exactly that access. The operator's
+responsibility, correspondingly: **do not point a queue's `run_as_user` at an
+account that belongs to `docker`** (a well-known one-step escalation to root)
+**or `disk`/`shadow`.** Check with `id <user>` before assigning an account to
+an isolated queue, the same as you would before granting it any other kind of
+OS-level access.
+
+### The NSS (directory-backed account) fallback, and its caveats
+
+`sqi-worker` ships with `CGO_ENABLED=0`, so Go's `os/user` package reads only
+`/etc/passwd` and `/etc/group` directly and never consults NSS — an account
+that only exists via a directory service (LDAP/AD, `sssd`, `winbind`) would
+not resolve at all. To make `run_as_user` usable against such an account, sqi
+falls back to shelling out to `id`/`getent` when the direct read fails, and
+parses their output.
+
+Two honest caveats, not resolved by testing that exists today:
+
+- **The `id`/`getent` output parsers have only ever been exercised against
+  canned, hand-written output.** They have never been run against a real
+  directory server. Verify a directory-backed `run_as_user` account resolves
+  correctly in your own environment before relying on it in production —
+  there is no equivalent of `make test-ldap`/`make test-oidc` for this path.
+- **A worker sandboxed by systemd (or similar) in a way that blocks `exec`
+  breaks this fallback outright.** If your unit file restricts syscalls or
+  denies executing external binaries, `id`/`getent` cannot run, and
+  directory-backed accounts fail to resolve even though the account itself is
+  valid.
+
+```yaml
+isolation:
+  required: false
+  env_passthrough:
+    - "foundry_LICENSE"
+    - "ARNOLD_LICENSE"
+    - "solidangle_LICENSE"
+```
+
+---
+
 ## `capabilities` — Software auto-detection
 
 Configures the built-in DCC detectors (Maya, Nuke, Houdini, Blender) that run
@@ -902,6 +1091,9 @@ log_streamer:
 | `worker.queue_ids` | []string | `[]` | `SQI_WORKER_QUEUE_IDS` | — |
 | `worker.pull_idle_backoff` | duration | `2s` | `SQI_WORKER_PULL_IDLE_BACKOFF` | — (deprecated, no effect) |
 | `worker.pull_nack_delay` | duration | `5s` | `SQI_WORKER_PULL_NACK_DELAY` | — (deprecated, no effect) |
+| `isolation.required` | bool | `false` | `SQI_WORKER_ISOLATION_REQUIRED` | — |
+| `isolation.provider` | string | `logon_user` | `SQI_WORKER_ISOLATION_PROVIDER` | — |
+| `isolation.env_passthrough` | []string | `[]` | `SQI_WORKER_ISOLATION_ENV_PASSTHROUGH` | — |
 | `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | — |
 | `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — |
 | `staging.scratch_dir` | string | `""` | — (config file only) | — |
@@ -1001,3 +1193,4 @@ done
 - [`docs/worker-capabilities.md`](worker-capabilities.md) — Auto-detected capability tags and how to override them.
 - [`docs/worker-deployment.md`](worker-deployment.md) — systemd, launchd, and Windows service installation.
 - [`docs/configuration.md`](configuration.md) — `sqi-server` configuration reference.
+- [`docs/auth.md`](auth.md#task-isolation) — the task-isolation model: `isolation.manage`, `run_as_user` update semantics, and why isolation trades daemon privilege for task privilege.

@@ -38,7 +38,8 @@ nats:
   # Defaults to all interfaces (0.0.0.0) so that workers which discover the
   # server via mDNS can connect to NATS at the advertised LAN host. Set this
   # to "127.0.0.1:4222" to restrict NATS to loopback (single-machine only).
-  # Note: the broker is currently unauthenticated; auth arrives in phase 3.
+  # Note: broker authentication does not exist. Any host that can reach this
+  # port can register as a worker and receive assignments. Deferred to Phase 4.
   # Type: string   Env: SQI_NATS_ADDR
   addr: "0.0.0.0:4222"
 
