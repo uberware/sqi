@@ -103,6 +103,7 @@ func marshalLeaseReply(batch [][]byte) []byte {
 type leaseGateData struct {
 	job          store.Job
 	step         store.Step
+	queue        store.Queue
 	pools        map[string]store.UsagePool
 	activeCounts map[string]int
 }
@@ -179,6 +180,8 @@ func (s *Scheduler) leaseGatesPass(
 	if err != nil {
 		return d, false, fmt.Errorf("lease: get queue %s: %w", job.QueueID, err)
 	}
+	d.queue = queue
+
 	farm, err := s.store.GetFarm(ctx, job.FarmID)
 	if err != nil {
 		return d, false, fmt.Errorf("lease: get farm %s: %w", job.FarmID, err)
@@ -259,7 +262,7 @@ func (s *Scheduler) tryLeaseTask(
 		return nil, 0, false, nil // task already reverted internally; skip, do not propagate
 	}
 
-	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, attempt.ID, s.store)
+	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
 	}

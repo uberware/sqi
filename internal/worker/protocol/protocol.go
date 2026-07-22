@@ -252,6 +252,15 @@ type AssignMsg struct {
 	// map was generated).
 	ComputeLocation string `json:"compute_location,omitempty"`
 
+	// Isolation is the OS identity this task must execute as, resolved from the
+	// task's queue. Nil means no isolation: the worker runs the task as its own
+	// user, which is the pre-isolation behavior.
+	//
+	// This carries a USERNAME ONLY and never a credential. Worker↔server
+	// transport authentication does not exist yet (deferred to Phase 4), so
+	// nothing secret may travel on this channel.
+	Isolation *IsolationSpec `json:"isolation,omitempty"`
+
 	// ── Parameter space ───────────────────────────────────────────────────
 
 	// Parameters are the resolved task parameter values for this specific task,
@@ -296,6 +305,16 @@ type AssignMsg struct {
 	// Staging is the manifest of job-level PATH parameters to stage locally,
 	// present only when the stage_locally delivery is enabled.
 	Staging []StageEntry `json:"staging,omitempty"`
+}
+
+// IsolationSpec names the OS identity a task must run as. It is resolved
+// server-side from the queue and contains no secret: on Windows the credential
+// is obtained worker-side from the local credential store or via S4U.
+type IsolationSpec struct {
+	// User is the OS username to run as. Required when IsolationSpec is present.
+	User string `json:"user"`
+	// Group is the OS group. Empty means the user's primary group.
+	Group string `json:"group,omitempty"`
 }
 
 // Action is an executable command included in an [AssignMsg].
