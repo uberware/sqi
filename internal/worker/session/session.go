@@ -26,7 +26,7 @@
 //
 // # Usage
 //
-//	mgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
+//	mgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, provider, cfg.Isolation, logger)
 //
 //	s, err := mgr.Create(ctx, assignMsg)
 //	if err != nil { ... }
@@ -61,12 +61,21 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
+
+// applyCredential attaches an isolation.Credential to a process before it
+// starts. Defaults to isolation.Apply; tests override it to record which
+// call sites attach a credential without needing a real OS identity switch
+// (see isolation.NewFake's own doc: a fake cannot verify real uid/gid
+// switching — that needs a real OS, exercised by make test-isolation).
+var applyCredential = isolation.Apply
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
@@ -136,6 +145,30 @@ type Session struct {
 	// redactedValues holds the cleartext values supplied via openjd_redacted_env
 	// so they can be scrubbed from any logged output. Guarded by mu.
 	redactedValues map[string]bool
+
+	// HARD INVARIANT — session reuse (deferred, see the package comment at the
+	// top of this file):
+	//
+	//   A SESSION MUST NOT BE REUSED ACROSS DIFFERENT RUN-AS-USER IDENTITIES.
+	//   ANY REUSE KEY MUST INCLUDE cred's IDENTITY.
+	//
+	// A session accumulates environment state — static Environment.variables and
+	// dynamic openjd_env exports — that persists for its lifetime. Reusing one
+	// across identities hands one user's exported secrets to another user's
+	// tasks, silently defeating isolation while every other control still looks
+	// correct.
+	cred *isolation.Credential
+
+	// baseEnv is the daemon environment already filtered by the worker's
+	// isolation.env_passthrough allowlist, computed ONCE here at session
+	// creation. Job-supplied variables (static Environment.variables, dynamic
+	// openjd_env exports, task template vars) are layered on top at action
+	// time via envutil.BuildFromBase and are NEVER filtered — only what is
+	// inherited from the daemon is subject to the allowlist. Equal to the full
+	// (unfiltered) daemon environment when the assignment carries no
+	// run_as_user isolation, so the no-isolation path is byte-for-byte
+	// unchanged from before this field existed.
+	baseEnv map[string]string
 }
 
 // PathMappingRulesFile returns the absolute path to the OpenJD path-mapping
@@ -249,8 +282,7 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 			slog.String("session_id", s.ID),
 			slog.String("env", env.Name),
 		)
-		envVars, unset := s.actionEnv(resolvedVars)
-		if err := runAction(ctx, resolvedExit, s.WorkDir, envVars, unset, logger, s.actionLineHandler(ctx, logger)); err != nil {
+		if err := runAction(ctx, resolvedExit, s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
 			logger.WarnContext(
 				ctx, "session: environment exit action failed — continuing teardown",
 				slog.String("session_id", s.ID),
@@ -278,18 +310,66 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 type Manager struct {
 	dataDir            string
 	keepFailedSessions bool
-	logger             *slog.Logger
+	// provider resolves run-as-user credentials for isolated assignments.
+	// Never invoked when an assignment's Isolation field is nil.
+	provider isolation.Provider
+	// isolationCfg.EnvPassthrough governs which daemon environment variables
+	// an isolated session may additionally inherit beyond the minimal base
+	// (see envutil.Policy). The other IsolationConfig fields (Required,
+	// Provider) govern worker boot behavior and provider selection, handled
+	// by the caller before NewManager is invoked.
+	isolationCfg workerconfig.IsolationConfig
+	logger       *slog.Logger
 }
 
 // NewManager returns a Manager that stores session working directories under
 // <dataDir>/sessions/. keepFailedSessions controls whether working directories
-// for failed sessions are retained for post-mortem inspection.
-func NewManager(dataDir string, keepFailedSessions bool, logger *slog.Logger) *Manager {
+// for failed sessions are retained for post-mortem inspection. provider
+// resolves run-as-user credentials for isolated assignments (see
+// Manager.Create); isolationCfg.EnvPassthrough is the additional daemon
+// environment allowlist for isolated sessions.
+func NewManager(dataDir string, keepFailedSessions bool, provider isolation.Provider, isolationCfg workerconfig.IsolationConfig, logger *slog.Logger) *Manager {
 	return &Manager{
 		dataDir:            dataDir,
 		keepFailedSessions: keepFailedSessions,
+		provider:           provider,
+		isolationCfg:       isolationCfg,
 		logger:             logger,
 	}
+}
+
+// resolveCredential resolves the run-as-user credential for an isolated
+// assignment and secures workDir for it (chown + chmod 0700 — see
+// isolation.SecureWorkDir). Returns (nil, nil) when the assignment carries no
+// isolation, which is the pre-isolation default.
+//
+// On failure it removes workDir itself, so Create can return a clean
+// (nil, err) without duplicating cleanup, and never falls back to the daemon
+// identity: that would run job code privileged while looking isolated.
+func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg, sessionID, workDir string) (*isolation.Credential, error) {
+	if msg.Isolation == nil {
+		return nil, nil
+	}
+	cred, err := m.provider.Resolve(ctx, isolation.Spec{
+		User:  msg.Isolation.User,
+		Group: msg.Isolation.Group,
+	})
+	if err != nil {
+		if rmErr := os.RemoveAll(workDir); rmErr != nil {
+			m.logger.WarnContext(ctx, "session: cleanup after credential failure",
+				slog.String("session_id", sessionID), slog.Any("error", rmErr))
+		}
+		return nil, fmt.Errorf("session %s: resolve run-as-user %q: %w",
+			sessionID, msg.Isolation.User, err)
+	}
+	if err := isolation.SecureWorkDir(workDir, cred); err != nil {
+		if rmErr := os.RemoveAll(workDir); rmErr != nil {
+			m.logger.WarnContext(ctx, "session: cleanup after secure-workdir failure",
+				slog.String("session_id", sessionID), slog.Any("error", rmErr))
+		}
+		return nil, fmt.Errorf("session %s: secure working directory: %w", sessionID, err)
+	}
+	return cred, nil
 }
 
 // Create allocates a new Session for the given assignment: generates a UUID
@@ -315,8 +395,41 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	if err != nil {
 		return nil, fmt.Errorf("session %s: resolve absolute working directory: %w", sessionID, err)
 	}
-	if err := os.MkdirAll(workDir, 0o750); err != nil {
+	// A workDir that will run job code under a different OS identity is
+	// created 0700 from the start (owner-only) rather than relying solely on
+	// the chown+chmod below to narrow it after the fact.
+	workDirMode := os.FileMode(0o750)
+	if msg.Isolation != nil {
+		workDirMode = 0o700
+	}
+	if err := os.MkdirAll(workDir, workDirMode); err != nil {
 		return nil, fmt.Errorf("session %s: create working directory %q: %w", sessionID, workDir, err)
+	}
+
+	// Resolve the OS identity before any job-supplied code runs. onEnter is
+	// job code (site 1 of the two launch sites that must carry a credential;
+	// the executor's task-process launch is site 2) — it must never run as
+	// the daemon while looking isolated.
+	cred, err := m.resolveCredential(ctx, msg, sessionID, workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the session's filtered base environment exactly once, here. See
+	// the baseEnv field doc: job-supplied variables are layered on top at
+	// action time and are never subject to this filter. Policy.Enabled is
+	// false when cred is nil, which makes BaseEnv return the full (unfiltered)
+	// daemon environment — the no-isolation path is byte-for-byte unchanged.
+	envPolicy := envutil.Policy{
+		Enabled:   cred != nil,
+		Allowlist: m.isolationCfg.EnvPassthrough,
+	}
+	baseEnv := envutil.BaseEnv(envPolicy)
+	if cred != nil && cred.Home != "" {
+		// Point HOME/USERPROFILE at the target user; the daemon's own is
+		// unwritable to them, and DCCs write configs wherever these point.
+		baseEnv["HOME"] = cred.Home
+		baseEnv["USERPROFILE"] = cred.Home
 	}
 
 	m.logger.InfoContext(
@@ -363,6 +476,8 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		dynamicEnv:     make(map[string]string),
 		dynamicUnset:   make(map[string]bool),
 		redactedValues: make(map[string]bool),
+		cred:           cred,
+		baseEnv:        baseEnv,
 	}
 
 	// Enter environments in declaration order.
@@ -520,8 +635,7 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 			slog.String("session_id", s.ID),
 			slog.String("env", env.Name),
 		)
-		envVars, unset := s.actionEnv(resolvedVars)
-		if err := runAction(ctx, resolvedEnter, s.WorkDir, envVars, unset, logger, s.actionLineHandler(ctx, logger)); err != nil {
+		if err := runAction(ctx, resolvedEnter, s.WorkDir, s.buildActionEnv(resolvedVars, nil), s.cred, logger, s.actionLineHandler(ctx, logger)); err != nil {
 			return fmt.Errorf("on_enter: %w", err)
 		}
 		logger.InfoContext(
@@ -610,8 +724,8 @@ func (s *Session) applyEnvOp(op openjd.EnvOp) {
 // actionEnv merges the session's accumulated dynamic environment on top of the
 // supplied static variables (dynamicEnv overrides static), and returns the
 // merged override map plus the set of variables to unset. The caller passes both
-// to envutil.BuildWithUnset so that unset variables are removed even when set by
-// the static map or the inherited worker environment.
+// to buildActionEnv (envutil.BuildFromBase) so that unset variables are removed
+// even when set by the static map or the session's filtered base environment.
 func (s *Session) actionEnv(staticVars map[string]string) (overrides map[string]string, unset map[string]bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -663,6 +777,39 @@ func (s *Session) EnvUnset() map[string]bool {
 		return nil
 	}
 	return maps.Clone(s.dynamicUnset)
+}
+
+// ── Isolation ─────────────────────────────────────────────────────────────────
+
+// Credential returns the OS identity every action in this session runs
+// under, or nil when the assignment carried no run_as_user isolation — the
+// pre-isolation default, in which every action runs as the worker daemon.
+func (s *Session) Credential() *isolation.Credential { return s.cred }
+
+// BaseEnv returns the daemon environment already filtered for this session by
+// the worker's isolation.env_passthrough policy (see the baseEnv field). It
+// governs only what is inherited from the daemon; callers layer job-supplied
+// variables on top via envutil.BuildFromBase, which never re-filters them.
+// The returned map must not be mutated by callers.
+func (s *Session) BaseEnv() map[string]string { return s.baseEnv }
+
+// buildActionEnv builds the final process environment for one action: the
+// session's filtered base (BaseEnv), staticOverrides applied on top, then the
+// session's accumulated dynamic environment (openjd_env directives) layered
+// over that, then every key in unset — merged with any dynamic unsets —
+// removed. This is the single place session actions (onEnter/onExit)
+// construct a command environment, so BaseEnv's filtering is applied exactly
+// once, at session creation, and every subsequent layer is job data that is
+// never re-filtered.
+func (s *Session) buildActionEnv(staticOverrides map[string]string, unset map[string]bool) []string {
+	overrides, dynUnset := s.actionEnv(staticOverrides)
+	if len(dynUnset) > 0 {
+		merged := make(map[string]bool, len(unset)+len(dynUnset))
+		maps.Copy(merged, unset)
+		maps.Copy(merged, dynUnset)
+		unset = merged
+	}
+	return envutil.BuildFromBase(s.baseEnv, overrides, unset)
 }
 
 // actionLineHandler returns a per-action stdout/stderr line handler that
@@ -722,9 +869,10 @@ func (s *Session) scrubRedacted(line string) string {
 
 // runAction starts action.Command as a child process and waits for it to exit.
 //
-// The process inherits the worker's environment with envVars merged on top
-// (environment variables set for all actions in the session).
-// workDir is the process working directory.
+// The process runs under cred (via isolation.Apply; a nil cred is the
+// pre-isolation no-op) with env as its complete process environment, already
+// built by the caller (see Session.buildActionEnv). workDir is the process
+// working directory.
 //
 // If action.TimeoutSeconds > 0, a deadline is applied via a derived context.
 // When ctx is canceled or the deadline elapses, exec.CommandContext sends
@@ -741,13 +889,11 @@ func (s *Session) scrubRedacted(line string) string {
 // Each output line is offered to lineHandler, which processes recognized OpenJD
 // environment directives (openjd_env / openjd_redacted_env / openjd_unset_env)
 // on the "stdout" stream and returns the text to log for the line — redacting
-// secret values so they never reach the logger. unset is passed through to
-// envutil.BuildWithUnset so openjd_unset_env removes variables even when set by
-// the static environment or the inherited worker environment. lineHandler may be
-// nil, in which case lines are logged verbatim.
+// secret values so they never reach the logger. lineHandler may be nil, in
+// which case lines are logged verbatim.
 //
 // A non-zero exit code is returned as an error that includes the exit code.
-func runAction(ctx context.Context, action *protocol.Action, workDir string, envVars map[string]string, unset map[string]bool, logger *slog.Logger, lineHandler func(stream, line string) string) error {
+func runAction(ctx context.Context, action *protocol.Action, workDir string, env []string, cred *isolation.Credential, logger *slog.Logger, lineHandler func(stream, line string) string) error {
 	if action == nil || action.Command == "" {
 		return nil
 	}
@@ -761,7 +907,14 @@ func runAction(ctx context.Context, action *protocol.Action, workDir string, env
 
 	cmd := exec.CommandContext(ctx, action.Command, action.Args...) //nolint:gosec // command comes from the server-signed assignment
 	cmd.Dir = workDir
-	cmd.Env = envutil.BuildWithUnset(envVars, unset)
+	// This is job-supplied code (an OpenJD environment onEnter/onExit action):
+	// it MUST run under the session's credential, not the daemon's. onEnter in
+	// particular runs before any task, so a missed credential here would run
+	// arbitrary job code privileged while every task around it looked isolated.
+	if err := applyCredential(cmd, cred); err != nil {
+		return fmt.Errorf("apply run-as-user credential: %w", err)
+	}
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

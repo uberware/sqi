@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/envutil"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -27,7 +29,7 @@ func nopLogger() *slog.Logger {
 
 func TestManagerCreate_CreatesWorkDir(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-1"}
 	s, err := mgr.Create(context.Background(), msg)
@@ -66,7 +68,7 @@ func TestManagerCreate_WorkDirIsAbsolute(t *testing.T) {
 	// Run from a temp dir so the relative data_dir resolves somewhere clean.
 	t.Chdir(t.TempDir())
 
-	mgr := NewManager(filepath.Join(".run", "workers", "worker-2"), false, nopLogger())
+	mgr := NewManager(filepath.Join(".run", "workers", "worker-2"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "job-1"})
 	if err != nil {
@@ -82,7 +84,7 @@ func TestManagerCreate_WorkDirIsAbsolute(t *testing.T) {
 
 func TestManagerCreate_UniqueSessionIDs(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-x"}
 	s1, err := mgr.Create(context.Background(), msg)
@@ -106,7 +108,7 @@ func TestManagerCreate_UniqueSessionIDs(t *testing.T) {
 
 func TestManagerCreate_NoEnvironments(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "j", Environments: nil}
 	s, err := mgr.Create(context.Background(), msg)
@@ -124,7 +126,7 @@ func TestManagerCreate_EnterEnvironment_Success(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// OnEnter writes a sentinel file to the working directory.
 	msg := &protocol.AssignMsg{
@@ -157,7 +159,7 @@ func TestManagerCreate_EnterEnvironment_RunsInDeclarationOrder(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// Each environment appends its name to a log file; we verify order.
 	msg := &protocol.AssignMsg{
@@ -206,7 +208,7 @@ func TestManagerCreate_EnterEnvironment_FailureTriggersTeardown(t *testing.T) {
 	// persists after the session working directory is deleted.
 	witnessDir := t.TempDir()
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// First env enters successfully. Second env fails.
 	// We assert that first env's OnExit was run (by writing to witnessDir).
@@ -270,7 +272,7 @@ func TestSession_ExitEnvironments_ReverseOrder(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -318,7 +320,7 @@ func TestSession_ExitEnvironments_Idempotent(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -362,7 +364,7 @@ func TestSession_ExitEnvironments_ContinuesTeardownOnFailure(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// First env's OnExit fails; second env's OnExit should still run.
 	msg := &protocol.AssignMsg{
@@ -406,7 +408,7 @@ func TestSession_ExitEnvironments_ContinuesTeardownOnFailure(t *testing.T) {
 
 func TestManagerCleanup_RemovesWorkDir(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, nopLogger())
+	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -423,7 +425,7 @@ func TestManagerCleanup_RemovesWorkDir(t *testing.T) {
 
 func TestManagerCleanup_KeepFailedSessions_Retained(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, true /* keepFailedSessions */, nopLogger())
+	mgr := NewManager(dataDir, true /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -441,7 +443,7 @@ func TestManagerCleanup_KeepFailedSessions_Retained(t *testing.T) {
 func TestManagerCleanup_KeepFailedSessions_SuccessStillRemoved(t *testing.T) {
 	dataDir := t.TempDir()
 	// keepFailedSessions=true but the session succeeded → still remove.
-	mgr := NewManager(dataDir, true /* keepFailedSessions */, nopLogger())
+	mgr := NewManager(dataDir, true /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -458,7 +460,7 @@ func TestManagerCleanup_KeepFailedSessions_SuccessStillRemoved(t *testing.T) {
 
 func TestManagerCleanup_NoKeepFailed_FailedRemoved(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false /* keepFailedSessions */, nopLogger())
+	mgr := NewManager(dataDir, false /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {

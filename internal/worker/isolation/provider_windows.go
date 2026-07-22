@@ -15,7 +15,13 @@ import (
 // package still must build on GOOS=windows since sqi ships a Windows worker
 // binary, and windowsProvider below refuses every request rather than
 // silently proceeding without isolation.
-type Credential struct{}
+type Credential struct {
+	// Home mirrors the POSIX Credential's field so cross-platform callers
+	// (internal/worker/session) can rewrite HOME/USERPROFILE without a
+	// build-tagged branch. Always empty in practice: Resolve below never
+	// returns a non-nil Credential.
+	Home string
+}
 
 // Close releases the credential. The placeholder holds no OS handle.
 func (*Credential) Close() error { return nil }

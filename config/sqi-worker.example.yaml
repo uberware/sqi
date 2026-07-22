@@ -304,3 +304,26 @@ diagnostics:
 #         from: "mytool(?P<v>[0-9.]+)"
 #   disable: [blender]      # turn off a built-in that misfires on this host
 #                           # (also: SQI_WORKER_CAPABILITIES_DISABLE=blender,nuke)
+
+# ── Run-as-user isolation ──────────────────────────────────────────────────────
+# Runs job-supplied task and environment actions as a queue-configured OS user
+# (protocol.AssignMsg.Isolation) instead of the worker daemon's own account.
+# Off by default: with no queue configured for isolation, behavior is
+# byte-for-byte unchanged from a worker with this section absent.
+# isolation:
+#   # Exit at boot if this worker cannot assume another OS identity (POSIX:
+#   # not running as root). Separate from a per-assignment resolution failure
+#   # — this is "this worker is misconfigured", not "this queue's account is
+#   # bad". Default false, so an unconfigured worker still starts.
+#   # Type: bool   Env: SQI_WORKER_ISOLATION_REQUIRED
+#   required: false
+#
+#   # Windows credential mechanism: "logon_user" or "s4u". Ignored on POSIX.
+#   # Type: string   Env: SQI_WORKER_ISOLATION_PROVIDER
+#   provider: logon_user
+#
+#   # Daemon environment variable NAME patterns (filepath.Match globs) inherited
+#   # by isolated tasks, in addition to the minimal base (PATH, HOME, TMPDIR,
+#   # etc). Render farms typically need to pass through licensing variables here.
+#   # Type: []string   Env: SQI_WORKER_ISOLATION_ENV_PASSTHROUGH (comma-separated)
+#   env_passthrough: ["FLEXLM_*", "ADSKFLEX_*"]

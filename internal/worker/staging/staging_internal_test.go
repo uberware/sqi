@@ -68,7 +68,7 @@ func TestStager_RoundTripBuiltin(t *testing.T) {
 		{Path: out, Direction: "OUT", ObjectType: "FILE"},
 	}
 
-	rules, scratch, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	rules, scratch, err := s.StageIn(context.Background(), "job1", "att1", entries, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}

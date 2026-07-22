@@ -62,6 +62,33 @@ type WorkerConfig struct {
 	// Capabilities configures software capability auto-detection (built-in DCC
 	// detectors plus custom detectors and a disable list).
 	Capabilities capabilities.CapabilitiesConfig `yaml:"capabilities"`
+
+	// Isolation controls running tasks as a queue-configured OS user
+	// (protocol.AssignMsg.Isolation). Auth/isolation is opt-in: a worker with
+	// a zero-value IsolationConfig behaves exactly as before this feature
+	// existed.
+	Isolation IsolationConfig `yaml:"isolation"`
+}
+
+// IsolationConfig controls running tasks as a queue-configured OS user.
+type IsolationConfig struct {
+	// Required makes the worker exit at boot when it cannot assume another
+	// identity. Default false, preserving pre-isolation behavior: a worker
+	// with no isolation capability keeps running ordinary queues.
+	// Env: SQI_WORKER_ISOLATION_REQUIRED
+	Required bool `yaml:"required"`
+
+	// Provider selects the Windows credential mechanism: "logon_user" or
+	// "s4u". Ignored on POSIX.
+	// Env: SQI_WORKER_ISOLATION_PROVIDER
+	Provider string `yaml:"provider"`
+
+	// EnvPassthrough lists daemon environment variable NAME patterns inherited
+	// by isolated tasks, in addition to the minimal base. filepath.Match
+	// globs. Render farms depend on inherited licensing variables, so a pure
+	// allowlist with no escape hatch would break real jobs on day one.
+	// Env: SQI_WORKER_ISOLATION_ENV_PASSTHROUGH (comma-separated)
+	EnvPassthrough []string `yaml:"env_passthrough"`
 }
 
 // StagingConfig is the operator-owned configuration for the stage_locally path
@@ -321,6 +348,9 @@ func Default() WorkerConfig {
 		Staging: StagingConfig{
 			Defaults: true,
 		},
+		Isolation: IsolationConfig{
+			Provider: "logon_user",
+		},
 	}
 }
 
@@ -432,6 +462,19 @@ func applyEnv(cfg *WorkerConfig) {
 	applyDiagnosticsEnv(&cfg.Diagnostics)
 	applyStagingEnv(&cfg.Staging)
 	applyCapabilitiesEnv(&cfg.Capabilities)
+	applyIsolationEnv(&cfg.Isolation)
+}
+
+func applyIsolationEnv(c *IsolationConfig) {
+	if v := os.Getenv("SQI_WORKER_ISOLATION_REQUIRED"); v != "" {
+		c.Required = parseBoolEnv(v)
+	}
+	if v := os.Getenv("SQI_WORKER_ISOLATION_PROVIDER"); v != "" {
+		c.Provider = v
+	}
+	if v := os.Getenv("SQI_WORKER_ISOLATION_ENV_PASSTHROUGH"); v != "" {
+		c.EnvPassthrough = splitTags(v)
+	}
 }
 
 func applyCapabilitiesEnv(c *capabilities.CapabilitiesConfig) {

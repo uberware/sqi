@@ -21,7 +21,9 @@ import (
 	"testing"
 	"time"
 
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/executor"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
@@ -251,7 +253,7 @@ func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, 
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(tmpDir, false, logger)
+	mgr := session.NewManager(tmpDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond, // short for fast tests
 	}
@@ -1470,7 +1472,7 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(t.TempDir(), false, logger)
+	mgr := session.NewManager(t.TempDir(), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		// Staging configured so the stager.Configured() check passes and
@@ -1538,7 +1540,7 @@ func TestExecutor_Dispatch_stageLocallyProceedsWithStagingDefaults(t *testing.T)
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(t.TempDir(), false, logger)
+	mgr := session.NewManager(t.TempDir(), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		StagingDefaults: true,
@@ -1572,7 +1574,7 @@ func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T)
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(t.TempDir(), false, logger)
+	mgr := session.NewManager(t.TempDir(), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		StagingDefaults: false,

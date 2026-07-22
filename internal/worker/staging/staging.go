@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -74,7 +75,17 @@ func (s *Stager) Configured() bool {
 // OUTPUT paths into scratch — without it the task writes to the real path and
 // copy-out fails on a missing scratch file. On any failure the partial scratch
 // directory is removed.
-func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry) ([]protocol.PathMapRule, string, error) {
+//
+// cred is the run-as-user credential for the task that will read/write these
+// paths, or nil when the assignment carries no isolation. Staging always runs
+// as the daemon (this is an operator-configured command, not job code — see
+// internal/worker/session and internal/worker/executor for the two launch
+// sites that DO carry a credential), so every path it writes is daemon-owned
+// by default. When cred is non-nil, StageIn chowns the scratch directory to
+// cred's uid/gid so the isolated task can read its staged inputs and write
+// into its staged output directories; without this the task would see
+// permission-denied on its own files.
+func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry, cred *isolation.Credential) ([]protocol.PathMapRule, string, error) {
 	scratchDir := filepath.Join(s.effectiveScratch(), jobID, attemptID)
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch dir %q: %w", scratchDir, err)
@@ -83,6 +94,10 @@ func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries [
 	if err != nil {
 		s.Cleanup(scratchDir)
 		return nil, "", err
+	}
+	if err := isolation.ChownRecursive(scratchDir, cred); err != nil {
+		s.Cleanup(scratchDir)
+		return nil, "", fmt.Errorf("staging: chown scratch dir %q to run-as-user: %w", scratchDir, err)
 	}
 	return rules, scratchDir, nil
 }

@@ -17,10 +17,18 @@ import (
 
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 )
+
+// applyCredential attaches an isolation.Credential to a process before it
+// starts. Defaults to isolation.Apply; tests override it to record that the
+// task-process launch site attaches a credential without needing a real OS
+// identity switch (see isolation.NewFake's own doc: a fake cannot verify real
+// uid/gid switching — that needs a real OS, exercised by make test-isolation).
+var applyCredential = isolation.Apply
 
 // ── processResult ─────────────────────────────────────────────────────────────
 
@@ -160,7 +168,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// ("Publish running status before Start so the server records the attempt").
 	// Every attempt must have a running→terminal transition for the server's
 	// state machine; the running status is not a claim that a process exists.
-	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, &failed)
+	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, sess.Credential(), &failed)
 	defer e.stager.Cleanup(scratchDir)
 	if !ok {
 		return
@@ -459,19 +467,29 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// exits on its own, defeating the per-task timeout.
 	configureProcessGroup(cmd)
 
+	// This is job-supplied code (the task's OnRun action) — site 2 of the two
+	// launch sites that must carry a credential (site 1 is the OpenJD
+	// environment onEnter/onExit action in session.go's runAction). Applied
+	// AFTER configureProcessGroup so Setpgid is already set: isolation.Apply
+	// preserves any SysProcAttr fields the caller configured rather than
+	// replacing the struct, but only if they were set first.
+	if err := applyCredential(cmd, sess.Credential()); err != nil {
+		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err)}
+	}
+
 	// Merge the session's dynamic environment (accumulated from openjd_env /
 	// openjd_redacted_env / openjd_unset_env directives emitted by environment
 	// actions) on top of the task's static environment variables. Precedence:
-	// worker os.Environ (lowest) < static env Variables < session dynamic env;
-	// openjd_unset_env removes a variable even if a static entry or the worker
-	// environment set it.
+	// session base env (lowest, already filtered once at session creation) <
+	// static env Variables < session dynamic env; openjd_unset_env removes a
+	// variable even if a static entry or the session base environment set it.
 	overrides := envVars
 	if dyn := sess.EnvOverrides(); len(dyn) > 0 {
 		overrides = make(map[string]string, len(envVars)+len(dyn))
 		maps.Copy(overrides, envVars)
 		maps.Copy(overrides, dyn)
 	}
-	cmd.Env = envutil.BuildWithUnset(overrides, sess.EnvUnset())
+	cmd.Env = envutil.BuildFromBase(sess.BaseEnv(), overrides, sess.EnvUnset())
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1019,6 +1037,7 @@ func (e *Executor) buildEffectiveLookup(
 	ctx context.Context,
 	msg *protocol.AssignMsg,
 	sessID, workDir string,
+	cred *isolation.Credential,
 	failed *bool,
 ) (*pathmap.Lookup, string, bool) {
 	var scratchDir string
@@ -1030,7 +1049,7 @@ func (e *Executor) buildEffectiveLookup(
 			return nil, "", false
 		}
 		var stErr error
-		stagingRules, scratchDir, stErr = e.stager.StageIn(ctx, msg.JobID, msg.AttemptID, msg.Staging)
+		stagingRules, scratchDir, stErr = e.stager.StageIn(ctx, msg.JobID, msg.AttemptID, msg.Staging, cred)
 		if stErr != nil {
 			e.failPreExec(msg, sessID, failed, stErr.Error())
 			return nil, "", false

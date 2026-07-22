@@ -49,7 +49,7 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 
 	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestStager_StageIn_FailsWhenSyncFails(t *testing.T) {
 	s := staging.New(scratch, "false {src} {dest}", false, discard()) // `false` exits non-zero
 	_, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: "/nope", Direction: "IN"},
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("want error from failing sync command")
 	}
@@ -115,7 +115,7 @@ func TestStager_StageIn_RulesHaveFormat(t *testing.T) {
 
 	rules, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestStager_StageIn_NoBasenameCollision(t *testing.T) {
 	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: src1, Direction: "IN", ObjectType: "FILE"},
 		{Path: src2, Direction: "IN", ObjectType: "FILE"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestStager_StageOut_ConsistentWithStageIn(t *testing.T) {
 		{Path: src2, Direction: "INOUT", ObjectType: "FILE"},
 	}
 
-	_, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	_, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestStager_StageIn_MapsOutputEntries(t *testing.T) {
 		{Path: inFile, Direction: "IN", ObjectType: "FILE"},
 		{Path: outOrig, Direction: "OUT", ObjectType: "DIRECTORY"},
 	}
-	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
