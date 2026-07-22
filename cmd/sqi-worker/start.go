@@ -255,7 +255,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// own doc. When this worker can actually assume another identity,
 	// resolveIsolation refuses to start rather than silently chmod'ing an
 	// ancestor that lacks the traversal bit isolated tasks need.
-	isolationProvider, sessionRoot, sessionRootMode, err := resolveIsolation(cfg, logger)
+	isolationProvider, sessionRoot, sessionRootMode, stagingIsolationCapable, err := resolveIsolation(cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -320,11 +320,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		m,
 		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
 		executor.Config{
-			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
-			AllowRoot:          cfg.Worker.AllowRoot,
-			StagingScratchDir:  cfg.Staging.ScratchDir,
-			StagingSyncCommand: cfg.Staging.SyncCommand,
-			StagingDefaults:    cfg.Staging.Defaults,
+			KillGracePeriod:         cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
+			AllowRoot:               cfg.Worker.AllowRoot,
+			StagingScratchDir:       cfg.Staging.ScratchDir,
+			StagingSyncCommand:      cfg.Staging.SyncCommand,
+			StagingDefaults:         cfg.Staging.Defaults,
+			StagingIsolationCapable: stagingIsolationCapable,
 		},
 		logger,
 	)

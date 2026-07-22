@@ -169,6 +169,18 @@ type Config struct {
 	// otherwise unconfigured (no StagingScratchDir/StagingSyncCommand). Passed
 	// to staging.New; when false an unconfigured stage_locally job fails hard.
 	StagingDefaults bool
+
+	// StagingIsolationCapable records, once per worker, whether this worker is
+	// capable of run-as-user isolation at all — the identical boolean
+	// cmd/sqi-worker's effectiveSessionRoot already uses to decide the
+	// session root's mode (there: isRoot(); the same value belongs here).
+	// Passed to staging.New via staging.WithIsolationCapable so the shared
+	// scratch base/job directory are created traversable-from-birth (0711)
+	// on a capable worker regardless of which job type's assignment happens
+	// to land first on a fresh scratch base, and stay at the narrower 0750 on
+	// a worker that can never isolate. See staging.WithIsolationCapable's doc
+	// for why this must be a per-worker, not per-assignment, decision.
+	StagingIsolationCapable bool
 }
 
 // ── CancelRegistrar ───────────────────────────────────────────────────────────
@@ -295,10 +307,11 @@ func New(
 		outputHandler: outputHandler,
 		logger:        logger,
 		cfg:           cfg,
-		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, cfg.StagingDefaults, logger),
-		activeTasks:   make(map[string]*taskRun),
-		execCtx:       execCtx,
-		execCancel:    execCancel,
+		stager: staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, cfg.StagingDefaults, logger,
+			staging.WithIsolationCapable(cfg.StagingIsolationCapable)),
+		activeTasks: make(map[string]*taskRun),
+		execCtx:     execCtx,
+		execCancel:  execCancel,
 	}
 }
 

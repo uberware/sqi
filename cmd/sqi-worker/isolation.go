@@ -110,17 +110,22 @@ func validateIsolationAncestors(required bool, sessionRoot, stagingScratchDir st
 // ancestors up front. This is the full boot-time isolation sequence,
 // extracted from runStart to keep that function's cyclomatic complexity
 // within the project limit. Returns the provider, sessionRoot, and
-// sessionRootMode ready to hand to session.NewManager.
-func resolveIsolation(cfg workerconfig.WorkerConfig, logger *slog.Logger) (provider isolation.Provider, sessionRoot string, sessionRootMode os.FileMode, err error) {
+// sessionRootMode ready to hand to session.NewManager, plus
+// isolationCapable — the same executor.IsRunningAsRoot() signal
+// effectiveSessionRoot's own root branch uses, threaded through to
+// executor.Config.StagingIsolationCapable so staging.Stager decides its
+// shared scratch-base ancestor mode once per worker instead of per
+// assignment (see staging.WithIsolationCapable's doc).
+func resolveIsolation(cfg workerconfig.WorkerConfig, logger *slog.Logger) (provider isolation.Provider, sessionRoot string, sessionRootMode os.FileMode, isolationCapable bool, err error) {
 	provider, err = buildIsolationProvider(cfg.Isolation, logger)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", 0, false, err
 	}
 	sessionRoot, sessionRootMode = effectiveSessionRoot(cfg.Worker)
 	if err := validateIsolationAncestors(cfg.Isolation.Required, sessionRoot, cfg.Staging.ScratchDir); err != nil {
-		return nil, "", 0, err
+		return nil, "", 0, false, err
 	}
-	return provider, sessionRoot, sessionRootMode, nil
+	return provider, sessionRoot, sessionRootMode, executor.IsRunningAsRoot(), nil
 }
 
 // buildIsolationProvider constructs the platform isolation.Provider and

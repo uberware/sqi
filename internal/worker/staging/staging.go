@@ -34,13 +34,60 @@ type Stager struct {
 	defaults    bool
 	logger      *slog.Logger
 	warnOnce    sync.Once
+
+	// ancestorMode is the mode StageIn creates the shared scratch base and
+	// job directory at — 0o750 unless [WithIsolationCapable] was passed at
+	// construction. Decided ONCE, for the whole lifetime of this Stager, not
+	// per-assignment: see WithIsolationCapable's doc for why.
+	ancestorMode os.FileMode
+}
+
+// Option configures a [Stager] at construction. See [WithIsolationCapable].
+type Option func(*Stager)
+
+// WithIsolationCapable records, once at worker boot, whether this worker is
+// capable of run-as-user isolation at all — the same predicate
+// cmd/sqi-worker's effectiveSessionRoot already decides the session root's
+// mode from (there: isRoot(); here: the caller passes the identical
+// boolean). It is NOT "did this particular assignment carry a credential":
+// scratchBase and scratchBase/jobID are shared by every attempt of every
+// job, including a mix of isolated and non-isolated queues on the same
+// worker, so a per-assignment decision would let whichever job type
+// happens to run first after a fresh scratch base decide that shared
+// directory's mode for every attempt after it — e.g. a non-isolated task
+// landing first creates the base at 0750, and every subsequent isolated
+// task then fails ValidateTraversable against a base it can never widen
+// itself. Deciding the mode once, from a per-worker capability signal,
+// makes it deterministic instead of a race against assignment order. A
+// worker that is never capable of isolating keeps the pre-isolation 0750
+// default (the zero value) whether or not this option is called.
+func WithIsolationCapable(capable bool) Option {
+	return func(s *Stager) {
+		if capable {
+			s.ancestorMode = 0o711
+		} else {
+			s.ancestorMode = 0o750
+		}
+	}
 }
 
 // New returns a Stager. scratchBase/syncCommand come from worker config;
 // defaults enables the built-in copy + TEMP scratch when staging is
-// otherwise unconfigured.
-func New(scratchBase, syncCommand string, defaults bool, logger *slog.Logger) *Stager {
-	return &Stager{scratchBase: scratchBase, syncCommand: syncCommand, defaults: defaults, logger: logger}
+// otherwise unconfigured. Pass [WithIsolationCapable] so a worker capable of
+// run-as-user isolation creates its shared scratch ancestors traversable
+// from birth; omitting it keeps the narrower 0750 default.
+func New(scratchBase, syncCommand string, defaults bool, logger *slog.Logger, opts ...Option) *Stager {
+	s := &Stager{
+		scratchBase:  scratchBase,
+		syncCommand:  syncCommand,
+		defaults:     defaults,
+		logger:       logger,
+		ancestorMode: 0o750,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 const builtinSentinel = "builtin"
@@ -98,28 +145,35 @@ func (s *Stager) Configured() bool {
 //
 // scratchBase (s.effectiveScratch()) and scratchBase/jobID are shared by every
 // attempt of every job — and, across jobs, by every different run-as-user
-// identity — so, ONLY when this call actually carries an isolated identity
-// (cred != nil), they are created traversable FROM BIRTH (0711) rather than
-// created narrow and widened after the fact: chowning either to any one
-// identity would grant that identity nothing extra (search doesn't require
-// ownership) while breaking every other attempt's/user's access, and
-// mutating an EXISTING directory's mode is exactly the anti-pattern this
-// codebase's isolation split eliminates elsewhere (see
-// workerconfig.LoadOrCreateWorkerID's doc). Creating fresh at 0711 is a
-// different, safe operation: os.MkdirAll never touches the mode of a
-// directory that already exists, so a pre-existing scratch_dir at a
-// narrower mode is caught by cmd/sqi-worker's boot-time
-// isolation.ValidateTraversable check instead of being silently widened
-// here. When cred is nil, base/jobDir are created at the narrower 0750
-// instead — the same widening this call would otherwise perform
-// unconditionally on every worker, isolated or not, which is exactly the
-// anti-pattern this codebase's other unconditional-widening fix (the session
-// root, see workerconfig.LoadOrCreateWorkerID's doc) already reverted once;
-// that reasoning had not yet reached this file. A worker that never engages
-// isolation on this scratch base keeps the pre-isolation 0750 mode instead of
-// gaining a needless traversable-by-anyone directory. Only the per-attempt
-// leaf (scratchDir itself, via ChownRecursive below) is chowned, since it
-// belongs to exactly this one attempt/identity. Go's forkAndExecInChild sets
+// identity, including a mix of isolated and non-isolated queues on the same
+// worker — so their mode (s.ancestorMode) is decided ONCE, at Stager
+// construction (see [WithIsolationCapable]), from whether this WORKER is
+// capable of isolating at all, never from whether THIS assignment's cred is
+// non-nil: a per-assignment decision would let whichever job type happens to
+// run first after a fresh scratch base decide that shared directory's mode
+// for every attempt after it, on a coin that re-flips every time the base is
+// recreated (e.g. after a reboot when it sits under /tmp). A capable worker
+// therefore creates base/jobDir traversable FROM BIRTH (0711) rather than
+// narrow and widened after the fact: chowning either to any one identity
+// would grant that identity nothing extra (search doesn't require ownership)
+// while breaking every other attempt's/user's access, and mutating an
+// EXISTING directory's mode is exactly the anti-pattern this codebase's
+// isolation split eliminates elsewhere (see workerconfig.LoadOrCreateWorkerID's
+// doc). Creating fresh at 0711 is a different, safe operation: os.MkdirAll
+// never touches the mode of a directory that already exists, so a
+// pre-existing scratch_dir at a narrower mode is caught by cmd/sqi-worker's
+// boot-time isolation.ValidateTraversable check (or, for a task that arrives
+// before that boot-time check would apply, the per-assignment check just
+// below) instead of being silently widened here. A worker that is never
+// capable of isolating keeps the pre-isolation 0750 mode instead of gaining a
+// needless traversable-by-anyone directory — the same reasoning this
+// codebase's other unconditional-widening fix (the session root, see
+// workerconfig.LoadOrCreateWorkerID's doc) already applied once, now
+// extended to this file. Only the per-attempt leaf (scratchDir itself, via
+// ChownRecursive below) is chowned per-assignment, since it belongs to
+// exactly this one attempt/identity — chowning is safe per-assignment
+// because it is a fresh directory this call alone owns, unlike base/jobDir
+// which persist across every other attempt. Go's forkAndExecInChild sets
 // process credentials BEFORE chdir, so without both ancestors being
 // traversable the isolated task cannot reach its own staged inputs even
 // though scratchDir itself is correctly chowned.
@@ -127,10 +181,6 @@ func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries [
 	base := s.effectiveScratch()
 	jobDir := filepath.Join(base, jobID)
 	scratchDir := filepath.Join(jobDir, attemptID)
-	ancestorMode := os.FileMode(0o750)
-	if cred != nil {
-		ancestorMode = 0o711
-	}
 
 	// Per-assignment ancestor validation — cred != nil is exactly the moment
 	// this attempt actually carries a run-as-user identity. cmd/sqi-worker's
@@ -146,10 +196,10 @@ func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries [
 		}
 	}
 
-	if err := os.MkdirAll(base, ancestorMode); err != nil {
+	if err := os.MkdirAll(base, s.ancestorMode); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch base %q: %w", base, err)
 	}
-	if err := os.MkdirAll(jobDir, ancestorMode); err != nil {
+	if err := os.MkdirAll(jobDir, s.ancestorMode); err != nil {
 		return nil, "", fmt.Errorf("staging: create job scratch dir %q: %w", jobDir, err)
 	}
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
