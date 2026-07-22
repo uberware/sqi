@@ -310,11 +310,30 @@ func New(
 // process.  Dispatch itself returns quickly; the task goroutine runs
 // independently.  The server gates concurrency by CPU cores; the worker
 // runs whatever it is leased.
+//
+// If session creation itself fails — e.g. run-as-user credential resolution,
+// ancestor validation, or working-directory setup, all of which happen
+// inside sessionMgr.Create before any taskRun exists — the failure is
+// published as a terminal task-status message (running→failed, carrying the
+// error text) rather than only logged and returned. Without this, the lease
+// loop's caller only logs the error and the task is left in "assigned" until
+// the server's heartbeat/lease sweep eventually reclaims and retries it,
+// surfacing as a bare timeout instead of the actual operator-actionable
+// reason. The returned error is preserved so the lease loop's own logging is
+// unchanged.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
 	// Create the session.
 	sess, err := e.sessionMgr.Create(ctx, msg)
 	if err != nil {
-		return fmt.Errorf("executor: create session: %w", err)
+		wrapped := fmt.Errorf("executor: create session: %w", err)
+		e.logger.ErrorContext(
+			ctx, "executor: dispatch failed before task execution — failing task",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.Any("error", wrapped),
+		)
+		e.publishPreExecFailure(msg, "", wrapped.Error())
+		return wrapped
 	}
 
 	run := &taskRun{

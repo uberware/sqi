@@ -407,6 +407,23 @@ func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protoco
 // context-specific message before calling.
 func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *bool, reason string) {
 	*failed = true
+	e.publishPreExecFailure(msg, sessID, reason)
+}
+
+// publishPreExecFailure publishes the running→failed transition for a
+// pre-execution failure (exit code -1) and records the failure metric. It is
+// the part of failPreExec that has nothing to do with an existing taskRun,
+// factored out so [Executor.Dispatch] can reuse it for a failure that occurs
+// before any session — and therefore any taskRun — exists (e.g. run-as-user
+// credential resolution, ancestor validation, or working-directory setup
+// failing inside session.Manager.Create). Unlike failPreExec it does not flag
+// a *bool: Dispatch's caller has no session to clean up on the
+// keepFailedSessions path, because session creation is exactly what failed.
+//
+// Publishing the failure itself never blocks or panics the caller: Running
+// and Terminal both retry transient publish failures internally and then log
+// a warning and return — status loss is preferred over wedging the lease loop.
+func (e *Executor) publishPreExecFailure(msg *protocol.AssignMsg, sessID, reason string) {
 	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
 	minusOne := -1
 	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, reason, nil, time.Now())
