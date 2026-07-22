@@ -190,6 +190,27 @@ test-ldap: ## Run the LDAP tests against a real directory in a container (needs 
 test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestOIDC_' -v -timeout 15m ./test/integration/
 
+# Unlike test-ldap/test-oidc (which run natively on the host and connect OUT to
+# a container), test-isolation must run the go test binary ITSELF as root
+# inside the container: the whole point is exercising real setuid/setgid
+# transitions, real directory permission bits, and a real symlink-preserving
+# rsync against real unprivileged accounts, none of which a fake Provider can
+# see (internal/worker/isolation/fake.go). The image build context is scoped
+# to test/integration/isolation (not the repo root) since the Dockerfile COPYs
+# nothing — the repo is bind-mounted at run time instead. --init runs a real
+# init (tini) as container PID 1: without it, the `go test` process itself is
+# PID 1, which never reaps re-parented grandchildren after a process-group
+# kill — a container-hygiene artifact of the TEST HARNESS, not of
+# isolation.Apply, but one that produces a false failure in
+# TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild without it.
+.PHONY: test-isolation
+test-isolation: ## Run run-as-user isolation tests as root against real OS accounts in a container (needs Docker)
+	@if ! docker info >/dev/null 2>&1; then \
+	  echo "docker unavailable — skipping isolation integration tests"; exit 0; fi
+	docker build -q -t sqi-isolation-test -f test/integration/isolation/Dockerfile test/integration/isolation
+	docker run --rm --init -v "$(CURDIR):/src" sqi-isolation-test \
+	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
+
 .PHONY: bench
 bench: ## Run benchmarks
 	go test -bench=. -benchmem $(GO_PKGS)
