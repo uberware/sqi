@@ -259,15 +259,34 @@ func (s *Stager) StageOut(ctx context.Context, scratchDir string, entries []prot
 //     component itself must NOT be resolved, since that is exactly the
 //     dereference the Lstat check above exists to refuse.
 //
-// This closes the READ primitive for both the built-in copy and an
-// operator's sync_command. It does NOT close the WRITE primitive when a
-// sync_command is configured: whether that command follows a symlink planted
-// at dest (e.Path, the real, operator/job-known destination) is a property
-// of the command sqi cannot inspect. builtinCopy/copyFile are separately
-// hardened with O_NOFOLLOW for the mechanism sqi does control — see their
-// docs — but an operator-configured sync_command remains the operator's
-// responsibility: it MUST NOT dereference symlinks (see
-// docs/worker-configuration.md's sync_command warning).
+// This check runs against a PATH, not a descriptor, so by itself it only
+// closes a one-shot swap — a task that plants the bad entry once, before
+// this Lstat ever runs. It does NOT by itself close a race: nothing kills a
+// task's process group on a SUCCESSFUL exit (see executor.runTask /
+// killAndWait), so a still-running background child that still owns a
+// scratch subdirectory can swap a hardlink in AFTER this check passes and
+// BEFORE the transfer actually reads the file.
+//
+//   - For the built-in copy, that race IS closed: copyFile re-validates
+//     regular-file-ness and link count on the DESCRIPTOR it opened
+//     (in.Stat(), not another path-based stat), which pins the inode
+//     actually read — see copyFile's own doc. This check and that one
+//     together close both the one-shot and the race variant for
+//     builtinCopy/copyFile, which is the mechanism sqi actually controls.
+//   - For an operator-configured sync_command, the race is NOT closed and
+//     cannot be: sqi hands the command path STRINGS ({src}/{dest}), never
+//     descriptors, so there is no fd for sqi to pin between this check and
+//     whatever the command does with those paths — the TOCTOU is
+//     structurally unclosable for that mechanism. Whether the command
+//     itself follows a symlink at either end (dest, e.Path, is the real,
+//     operator/job-known destination; src is the scratch path this check
+//     just validated) is entirely a property of the command sqi cannot
+//     inspect ("rsync -a" doesn't; "rsync -aL" or plain "cp" do). An
+//     operator-configured sync_command therefore remains the operator's
+//     responsibility on both counts — it MUST NOT dereference symlinks, and
+//     its residual TOCTOU exposure is inherent to handing it paths at all —
+//     see docs/worker-configuration.md's sync_command warning for the full,
+//     honest statement of what is and is not mitigated.
 func validateStageOutSource(scratchDir, src string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -394,7 +413,19 @@ func builtinCopy(ctx context.Context, src, dest string) error {
 // src is opened with O_NOFOLLOW (in addition to builtinCopy's own Lstat
 // check, closing the TOCTOU between that check and this open): a task that
 // swaps its declared output for a symlink between the two must not have root
-// read whatever it points to.
+// read whatever it points to. O_NOFOLLOW does NOT refuse a hardlink, though —
+// a hardlink IS a regular file, so it opens successfully — which matters for
+// the stage-out path specifically: validateStageOutSource's Nlink check runs
+// against the PATH before this call, and nothing kills a task's process
+// group on a SUCCESSFUL exit (see executor.runTask/killAndWait), so a
+// still-running background child owning the scratch entry can swap a
+// hardlink in between that path-based check and this open. in.Stat() below
+// re-validates on the OPENED DESCRIPTOR, which pins the inode this call
+// actually reads — a swap after this point cannot change what fd `in` names,
+// closing that window. This re-check is unconditional (stage-in has no
+// upstream path-based guard to race, but re-validating costs nothing and
+// keeps this function's safety self-contained rather than dependent on which
+// caller ran a check first).
 //
 // dest is written via the same remove-then-O_EXCL|O_NOFOLLOW pattern as
 // [isolation.WriteFileFchown] (see its doc for the full reasoning): any
@@ -415,6 +446,21 @@ func copyFile(src, dest string, mode os.FileMode) error {
 		return fmt.Errorf("open %q: %w", src, err)
 	}
 	defer in.Close()
+	// Re-validate on the descriptor we actually opened, not the path we
+	// opened it from — see this function's doc for why a path-based check
+	// upstream (validateStageOutSource) is not enough on its own.
+	fdInfo, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("fstat %q: %w", src, err)
+	}
+	if !fdInfo.Mode().IsRegular() {
+		return fmt.Errorf("copy refused: opened %q is not a regular file (mode %s)", src, fdInfo.Mode())
+	}
+	if linked, err := hasExtraHardlinks(fdInfo); err != nil {
+		return fmt.Errorf("fstat %q: %w", src, err)
+	} else if linked {
+		return fmt.Errorf("copy refused: opened %q has more than one hardlink; sqi will not copy a file that may alias content outside scratch", src)
+	}
 	if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove existing %q: %w", dest, err)
 	}

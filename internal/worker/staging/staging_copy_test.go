@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +140,51 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 	destContent, err := os.ReadFile(dest)
 	if err != nil || string(destContent) != "task-controlled-bytes" {
 		t.Fatalf("dest = %q, err=%v; want the copied content in the new inode", destContent, err)
+	}
+}
+
+// TestCopyFile_RefusesSourceWithExtraHardlink proves copyFile's own fd-based
+// re-check refuses a source with an extra hardlink ENTIRELY ON ITS OWN, with
+// no upstream path-based guard (validateStageOutSource) involved at all.
+// That is the point of the fix: O_NOFOLLOW closes the symlink half of the
+// stage-out TOCTOU (a symlink swapped in after an upstream Lstat cannot be
+// traversed), but a hardlink IS a regular file — O_NOFOLLOW opens it
+// successfully — so nothing before this test's fd-based in.Stat() call would
+// have refused it. A background child left running past its task's
+// successful exit (nothing kills the process group on success — see
+// executor.runTask/killAndWait) can link a second name onto a scratch entry's
+// inode between validateStageOutSource's Lstat and copyFile's open; calling
+// copyFile directly here, without going through StageOut/validateStageOutSource
+// first, simulates exactly that: the source path already shares its inode
+// with another entry by the time copyFile ever sees it.
+func TestCopyFile_RefusesSourceWithExtraHardlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hardlink-count check is unimplemented on Windows (see staging_windows.go); " +
+			"task isolation itself is not yet supported there")
+	}
+
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(outside, []byte("root-only-contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// src shares outside's inode — a hardlink is a regular file, so
+	// O_NOFOLLOW alone would open it without complaint.
+	src := filepath.Join(dir, "render.exr")
+	if err := os.Link(outside, src); err != nil {
+		t.Fatalf("create hardlink: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "render.exr")
+	err := copyFile(src, dest, 0o644)
+	if err == nil {
+		t.Fatal("want error refusing a source with an extra hardlink opened by copyFile")
+	}
+	if !strings.Contains(err.Error(), "hardlink") {
+		t.Errorf("err = %v, want it to mention the hardlink refusal", err)
+	}
+	if _, statErr := os.Stat(dest); statErr == nil {
+		t.Error("dest must not exist: the linked partner's contents must never reach it")
 	}
 }

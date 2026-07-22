@@ -845,6 +845,35 @@ per-worker opt-in, distinct from the automatic fallback described under
 > built-in copy above are both safe: they always copy bytes into a fresh
 > inode.
 
+> **`sync_command` MUST NOT dereference symlinks at either end**, on stage-in
+> or stage-out. sqi validates the scratch-side path before invoking the
+> command (regular file, single hardlink, contained in scratch), but that
+> check cannot see what the command itself does once invoked: `rsync -a`
+> preserves a symlink, `rsync -aL` or plain `cp` follow it. A command that
+> follows a symlink a task planted at its declared output path hands the
+> daemon's `sync_command` process — running as root — whatever that symlink
+> points to, on stage-out, or writes through a symlink planted at the real
+> destination path, on stage-in. This is entirely a property of the command
+> template an operator chooses and is outside anything sqi can inspect or
+> enforce.
+>
+> **Be aware this residue also includes a race, and it is structurally
+> unclosable for `sync_command` specifically.** sqi hands `sync_command` a
+> path string, not an open file descriptor, so there is nothing for sqi to
+> pin between validating the scratch-side path and the command actually
+> opening it — a task whose process group is still alive after its own
+> successful exit (nothing kills it on success; only the timeout/cancel
+> paths do) can still own a scratch subdirectory and swap a hardlink into it
+> after sqi's check passes and before the external command reads the file.
+> The built-in copy (`sync_command` unset or `builtin`) does not have this
+> gap: it re-validates the file on the descriptor it actually opened, which
+> pins the inode and cannot be swapped out from under it. That re-validation
+> has no equivalent for an external command sqi merely invokes with strings —
+> there is no descriptor to hand it and no way to make its own `open()` call
+> observe what sqi already checked. Treat a configured `sync_command` as
+> carrying this residual risk permanently when run-as-user isolation is in
+> use, not as a gap that a smarter check could close.
+
 ### `staging.defaults`
 
 | | |
