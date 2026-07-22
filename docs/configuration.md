@@ -1057,9 +1057,10 @@ Keycloak, and which providers CI does and does not cover.
 Unlike everything else in this reference, `run_as_user` and `run_as_group`
 are not `sqi-server` config-file keys — there is no server-wide or
 farm-wide default for either. They are set per queue, via the queue REST
-resource (`POST /api/v1/queues`, `PUT /api/v1/queues/{id}`) or the matching
-web UI / Python SDK fields, and are documented here because, like the retry
-overrides above, they are queue-level settings that change worker behavior.
+resource only (`POST /api/v1/queues`, `PUT /api/v1/queues/{id}`) — there is
+no web UI field or Python SDK field for either yet — and are documented here
+because, like the retry overrides above, they are queue-level settings that
+change worker behavior.
 
 | Field | Type | Default | Effect |
 |---|---|---|---|
@@ -1083,6 +1084,12 @@ an `admin`'s isolation configuration on the same request. See
 [Task isolation](auth.md#task-isolation) in the auth guide for the full
 reasoning, including why enabling isolation raises the *worker daemon's*
 privilege even though it lowers an individual *task's*.
+
+**Validation.** `run_as_group` requires `run_as_user` to also be set (in the
+same request, or already stored and preserved by an omitted key) — the
+scheduler only gates isolation on `run_as_user`, so a group with no user
+would select no OS identity at all and be silently ignored. Both `POST` and
+`PUT` reject that combination with `400 Bad Request`.
 
 The scheduler places only the resolved **username** in the task assignment
 sent to the worker over NATS — never a credential — because worker↔server

@@ -246,12 +246,37 @@ is a different risk shape (one root daemon, many unprivileged task processes)
 traded for another (one unprivileged daemon, all tasks running as that same
 account).
 
+### Privileged accounts and groups are refused outright
+
+Independent of, and in addition to, the supplementary-group stripping below,
+`isolation.Provider.Resolve` refuses several requests outright rather than
+silently narrowing them:
+
+- **`run_as_user` naming a known-privileged account** — `root`,
+  `Administrator`, `SYSTEM`, and similar — by name, and any account whose
+  **uid is 0**, regardless of name.
+- **`run_as_group` naming a known-privileged group** — `root`, `wheel`,
+  `admin`, `sudo`, `sudoers`, `adm`, `docker`, `disk`, `shadow`, `staff`,
+  `administrators` — by name. This is a check against the group **you
+  explicitly asked for**, not the target account's ambient memberships (see
+  the next section) — a queue cannot select `docker` or `wheel` as the
+  isolation group even if the target account happens to belong to it.
+- **A `run_as_user` account whose *primary* group is gid 0** — refused even
+  when `run_as_group` is not set at all, since the primary group is
+  determined by the account, not by queue config, and gid 0 is refused
+  unconditionally regardless of which name a platform gives it (`root` on
+  Linux, `wheel` on macOS/BSD).
+
+This is why `wheel` never appears as a group job code can reach on macOS/BSD:
+it **is** gid 0 there, so it is refused both as an explicit `run_as_group`
+target and, via the gid-0 check just above, as anyone's primary group.
+
 ### A target account's existing group memberships reach job code
 
 Isolation strips gid 0 (`root`) from a target account's supplementary group
 list unconditionally, wherever it appears. It does **not** strip any other,
-named group the account already belongs to — `docker`, `disk`, `shadow`,
-`wheel`, or any in-house privileged group. This is by design, not an
+named group the account already belongs to — `docker`, `disk`, `shadow`, or
+any in-house privileged group. This is by design, not an
 oversight: those memberships are the account's own, pre-existing access, and
 supplementary groups on a render-farm account typically exist specifically to
 grant project-storage access (an NFS-exported group, for example). Silently

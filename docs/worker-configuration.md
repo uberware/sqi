@@ -281,6 +281,33 @@ worker:
 > runs the moment an assignment that actually carries run-as-user isolation
 > arrives, failing that one task rather than the whole worker.
 
+> **Upgrade note: a root worker's sessions relocate automatically, with no
+> config change.** The root/non-root branch above is decided purely by the
+> worker's effective uid at startup, not by whether any queue actually
+> configures `run_as_user` — a worker that has always run as root (for
+> whatever reason, isolation-related or not) and never set `session_dir`
+> moves from the pre-split `<data_dir>/sessions` to
+> `/var/lib/sqi-worker-sessions` the moment it is upgraded to a version that
+> contains this split, with no config change and no explicit opt-in. This is
+> intentional, not a regression to work around by setting `session_dir` back
+> to the old path: keeping sessions under `data_dir` would eventually demand
+> `chmod o+x` on `data_dir` itself for the first isolated assignment, widening
+> the `0700` directory that holds the worker-id file — exactly what this
+> split exists to prevent. Two concrete consequences to plan for before
+> upgrading a root worker:
+>
+> - Any directories preserved under the old `<data_dir>/sessions` by
+>   `worker.keep_failed_sessions` are orphaned — they still exist on disk for
+>   post-mortem inspection, but the worker will never look there again after
+>   the upgrade. Copy out anything you still need before upgrading, or check
+>   both paths for a time.
+> - The new default, `/var/lib/sqi-worker-sessions`, sits on the root
+>   filesystem, not necessarily the volume `data_dir` points at. A
+>   deployment that intentionally placed `data_dir` on a large/fast dedicated
+>   volume (the `data_dir` doc above recommends "an absolute path on a fast
+>   local SSD") gets session scratch on `/var` instead unless `session_dir` is
+>   set explicitly to point back at that volume.
+
 ---
 
 ### `worker.compute_location`
@@ -626,6 +653,22 @@ secret but, unlike `logon_user`, yields no network credentials — no SMB
 access from the isolated process), and a Windows CI runner to verify any of
 it against a real host — none of the Windows-specific isolation code has run
 against one yet.
+
+### Privileged accounts and groups are refused outright
+
+Before any stripping or filtering happens, `isolation.Provider.Resolve`
+refuses several requests outright:
+
+- A `run_as_user` naming a known-privileged account (`root`, `Administrator`,
+  `SYSTEM`, ...) or resolving to **uid 0**, regardless of name.
+- An explicit `run_as_group` naming a known-privileged group (`root`,
+  `wheel`, `admin`, `sudo`, `sudoers`, `adm`, `docker`, `disk`, `shadow`,
+  `staff`, `administrators`) — a check on the group you asked FOR, distinct
+  from the target account's ambient memberships covered below.
+- A `run_as_user` account whose **primary** group is gid 0 — refused even
+  with no `run_as_group` set at all, since gid 0 is refused unconditionally
+  regardless of which name a platform gives it (`root` on Linux, `wheel` on
+  macOS/BSD).
 
 ### A target account's existing group memberships are not stripped
 
