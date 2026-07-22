@@ -1100,6 +1100,33 @@ real OS credential itself. This mechanism is POSIX (Linux/macOS) only; see
 for the full worker-side `isolation` config block, the environment allowlist,
 and the Windows status.
 
+### Important: Worker upgrade required
+
+**`run_as_user` is only enforced by workers that support task isolation.** A
+worker binary built before isolation support shipped will silently ignore the
+`isolation` field in its task assignments and run job code as the worker
+daemon's own OS user. The scheduler does not filter assignments by worker
+capability, so an admin who sets `run_as_user` on a queue while even one
+un-upgraded worker remains in the farm gets silent, partial enforcement —
+some tasks isolated, some not, with no indication which.
+
+This is the asymmetry worth understanding:
+
+- **A worker that *supports* isolation but is misconfigured fails closed and
+  loudly**: it refuses to start, or fails the individual task with an
+  actionable error message.
+- **An old worker fails open and silently**: it accepts the assignment,
+  executes the task unisolated, and reports success. There is no error
+  anywhere.
+
+**Guidance:** upgrade all workers to a binary that supports task isolation
+before enabling `run_as_user` on any queue. Do not mix binary versions.
+
+A proper solution would require workers to advertise isolation capability and
+the scheduler to refuse isolation-required tasks to workers lacking it — a
+protocol change deferred as a future improvement. For now, the only way to
+ensure consistent enforcement is to roll the farm forward in lockstep.
+
 ---
 
 ## Worker configuration

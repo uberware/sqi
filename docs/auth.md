@@ -206,6 +206,11 @@ This is POSIX only; see [`docs/worker-configuration.md`](worker-configuration.md
 for the `isolation` worker-config block, the Windows status, and the
 environment-allowlist mechanics.
 
+**Before enabling `run_as_user` on any queue, see the worker upgrade requirement
+documented in [`docs/configuration.md`](configuration.md#important-worker-upgrade-required):**
+old workers silently ignore isolation, creating partial and silent enforcement
+across a mixed-version farm.
+
 ### `isolation.manage` is a separate, admin-only permission
 
 Setting a queue's `run_as_user`/`run_as_group` — including sending an explicit
