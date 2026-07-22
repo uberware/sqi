@@ -4,6 +4,7 @@ package sqlite_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -88,6 +89,99 @@ func TestQueueRunAsUserDefaultsNil(t *testing.T) {
 	}
 	if created.RunAsUser != nil {
 		t.Errorf("RunAsUser = %v, want nil (no isolation)", *created.RunAsUser)
+	}
+}
+
+// TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected proves the real SQLite
+// store refuses to persist a queue whose run_as_group is set with no
+// run_as_user — that combination selects no OS identity at all (the
+// scheduler only gates isolation on RunAsUser), so it would otherwise be
+// stored and silently ignored.
+func TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
+	db := t.TempDir() + "/test.db"
+	s := newTestStore(t, db)
+	ctx := context.Background()
+	farm := createTestFarm(t, s)
+
+	group := "render"
+	_, err := s.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: farm.ID, Name: "q1", RunAsGroup: &group})
+	if !errors.Is(err, store.ErrRunAsGroupWithoutUser) {
+		t.Fatalf("err = %v, want store.ErrRunAsGroupWithoutUser", err)
+	}
+	if _, getErr := s.GetQueue(ctx, "q1"); !errors.Is(getErr, store.ErrNotFound) {
+		t.Errorf("rejected create must not have persisted a row: GetQueue err = %v", getErr)
+	}
+}
+
+// TestUpdateQueue_ClearingRunAsUserWhileGroupPreserved_Rejected proves the
+// invalid-combo check runs against the RESOLVED post-write values (after the
+// UPDATE statement's own CASE WHEN preserve substitution), not the raw
+// request: a PUT clearing run_as_user while omitting run_as_group (preserved
+// from an existing non-empty value) must be rejected, and the transaction
+// must roll back rather than leave a partially-applied row.
+func TestUpdateQueue_ClearingRunAsUserWhileGroupPreserved_Rejected(t *testing.T) {
+	db := t.TempDir() + "/test.db"
+	s := newTestStore(t, db)
+	ctx := context.Background()
+	farm := createTestFarm(t, s)
+
+	user, group := "render-svc", "render"
+	if _, err := s.CreateQueue(ctx, store.Queue{
+		ID: "q1", FarmID: farm.ID, Name: "q1", RunAsUser: &user, RunAsGroup: &group,
+	}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	_, err := s.UpdateQueue(ctx, store.Queue{
+		ID: "q1", FarmID: farm.ID, Name: "q1",
+		RunAsUser:          nil,
+		PreserveRunAsGroup: true,
+	})
+	if !errors.Is(err, store.ErrRunAsGroupWithoutUser) {
+		t.Fatalf("err = %v, want store.ErrRunAsGroupWithoutUser", err)
+	}
+
+	got, getErr := s.GetQueue(ctx, "q1")
+	if getErr != nil {
+		t.Fatalf("GetQueue: %v", getErr)
+	}
+	if got.RunAsUser == nil || *got.RunAsUser != "render-svc" {
+		t.Errorf("run_as_user = %v, want render-svc (rejected update must roll back)", got.RunAsUser)
+	}
+	if got.RunAsGroup == nil || *got.RunAsGroup != "render" {
+		t.Errorf("run_as_group = %v, want render (rejected update must roll back)", got.RunAsGroup)
+	}
+}
+
+// TestUpdateQueue_SettingRunAsGroupWhileUserPreservedEmpty_Rejected is the
+// mirror case: setting run_as_group on a queue whose run_as_user was never
+// set (and is preserved as nil) must be rejected too.
+func TestUpdateQueue_SettingRunAsGroupWhileUserPreservedEmpty_Rejected(t *testing.T) {
+	db := t.TempDir() + "/test.db"
+	s := newTestStore(t, db)
+	ctx := context.Background()
+	farm := createTestFarm(t, s)
+
+	if _, err := s.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: farm.ID, Name: "q1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	group := "render"
+	_, err := s.UpdateQueue(ctx, store.Queue{
+		ID: "q1", FarmID: farm.ID, Name: "q1",
+		RunAsGroup:        &group,
+		PreserveRunAsUser: true,
+	})
+	if !errors.Is(err, store.ErrRunAsGroupWithoutUser) {
+		t.Fatalf("err = %v, want store.ErrRunAsGroupWithoutUser", err)
+	}
+
+	got, getErr := s.GetQueue(ctx, "q1")
+	if getErr != nil {
+		t.Fatalf("GetQueue: %v", getErr)
+	}
+	if got.RunAsGroup != nil {
+		t.Errorf("run_as_group = %v, want nil (rejected update must roll back)", *got.RunAsGroup)
 	}
 }
 

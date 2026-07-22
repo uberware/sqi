@@ -141,6 +141,25 @@ func requireIsolationManage(w http.ResponseWriter, r *http.Request, userSet, gro
 	return true
 }
 
+// validateRunAsIdentity rejects a run_as_group set without a run_as_user:
+// the scheduler only gates isolation on RunAsUser (internal/scheduler/
+// assign.go), so a group with no user selects no OS identity at all and is
+// silently ignored — an operator could set a group, have the API accept and
+// echo it, and get no isolation and no warning. Only meaningful when both
+// values are the actual ones about to be written; on updateQueue that means
+// callers must pass this only when both run_as_user and run_as_group were
+// present in the request body (see decodeQueueBody) — when either is
+// omitted-and-preserved, the resolved value is unknown here, and
+// store.ErrRunAsGroupWithoutUser (checked against the RESOLVED values inside
+// UpdateQueue) is the backstop for that case instead. Returns the problem
+// detail for a 400, or "" when valid.
+func validateRunAsIdentity(runAsUser, runAsGroup *string) string {
+	if !store.RunAsComboValid(runAsUser, runAsGroup) {
+		return "run_as_group requires run_as_user to also be set"
+	}
+	return ""
+}
+
 // decodeQueueBody reads r.Body exactly once and decodes it both into req
 // (the typed request struct) and into a map of raw top-level keys, so a
 // handler can tell whether a field was present in the JSON body — including
@@ -193,6 +212,10 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
 	}
+	if problem := validateRunAsIdentity(req.RunAsUser, req.RunAsGroup); problem != "" {
+		writeProblem(w, r, http.StatusBadRequest, problem)
+		return
+	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
@@ -227,6 +250,10 @@ func (h *queueHandler) createQueue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeProblem(w, r, http.StatusConflict, "a queue with that name already exists in this farm")
+			return
+		}
+		if errors.Is(err, store.ErrRunAsGroupWithoutUser) {
+			writeProblem(w, r, http.StatusBadRequest, "run_as_group requires run_as_user to also be set")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: create failed", slog.Any("error", err))
@@ -346,6 +373,17 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, problem)
 		return
 	}
+	// Only checked here when BOTH keys were present in this request: an
+	// omitted key means "preserve the stored value" (see decodeQueueBody),
+	// whose resolved value is unknown at the handler — store.UpdateQueue
+	// checks the resolved combo after PreserveRunAsUser/PreserveRunAsGroup
+	// substitution and returns store.ErrRunAsGroupWithoutUser for those cases.
+	if userSet && groupSet {
+		if problem := validateRunAsIdentity(req.RunAsUser, req.RunAsGroup); problem != "" {
+			writeProblem(w, r, http.StatusBadRequest, problem)
+			return
+		}
+	}
 
 	// Validate farm exists.
 	if _, err := h.store.GetFarm(ctx, req.FarmID); err != nil {
@@ -394,6 +432,10 @@ func (h *queueHandler) updateQueue(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, store.ErrConflict) {
 			writeProblem(w, r, http.StatusConflict, "a queue with that name already exists in this farm")
+			return
+		}
+		if errors.Is(err, store.ErrRunAsGroupWithoutUser) {
+			writeProblem(w, r, http.StatusBadRequest, "run_as_group requires run_as_user to also be set")
 			return
 		}
 		h.logger.ErrorContext(ctx, "queues: update failed", slog.String("id", id), slog.Any("error", err))

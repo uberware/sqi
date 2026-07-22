@@ -647,6 +647,112 @@ func TestUpdateQueue_RunAsUserAllowedForAdmin(t *testing.T) {
 	}
 }
 
+// TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected proves an admin (who
+// holds isolation.manage and would otherwise sail past
+// requireIsolationManage) still gets a 400 when run_as_group is set with no
+// run_as_user: that combination selects no OS identity at all — the
+// scheduler only gates isolation on RunAsUser (internal/scheduler/
+// assign.go) — so accepting it would silently give the operator no isolation
+// and no warning.
+func TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         "group-only-queue",
+		"run_as_group": "render",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+	if !strings.Contains(rr.Body.String(), "run_as_group requires run_as_user") {
+		t.Errorf("body %q does not mention the run_as_group/run_as_user requirement", rr.Body.String())
+	}
+}
+
+// TestUpdateQueue_RunAsGroupWithoutRunAsUser_Rejected is the update-side
+// equivalent, submitting both keys explicitly in the same PUT.
+func TestUpdateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         q.Name,
+		"run_as_user":  nil,
+		"run_as_group": "render",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+	if !strings.Contains(rr.Body.String(), "run_as_group requires run_as_user") {
+		t.Errorf("body %q does not mention the run_as_group/run_as_user requirement", rr.Body.String())
+	}
+}
+
+// TestUpdateQueue_ClearingRunAsUserWhileGroupOmitted_Rejected covers what
+// the handler's own request-only check cannot see: run_as_user is cleared
+// explicitly, run_as_group is omitted (preserved) from an already-non-empty
+// value. The resolved post-write state would be group-without-user, caught
+// by the store-layer check (store.ErrRunAsGroupWithoutUser, mapped to 400)
+// rather than the handler's early one.
+func TestUpdateQueue_ClearingRunAsUserWhileGroupOmitted_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndIsolatedQueue(t, st) // run_as_user = "render-svc", no group yet
+	admin := auth.Principal{Username: "root", Roles: []string{"admin"}}
+	r := newQueueRouter(st)
+
+	// First, an admin sets run_as_group so the queue carries both fields.
+	setGroupReq := withPrincipal(newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         q.Name,
+		"run_as_group": "render",
+	})), admin)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, setGroupReq)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup: status = %d, want 200 — body: %s", rr.Code, rr.Body)
+	}
+
+	// Now clear run_as_user while omitting run_as_group (preserved).
+	req := withPrincipal(newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        q.Name,
+		"run_as_user": nil,
+	})), admin)
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("run_as_user = %v, want render-svc (rejected update must not partially apply)", stored.RunAsUser)
+	}
+	if stored.RunAsGroup == nil || *stored.RunAsGroup != "render" {
+		t.Errorf("run_as_group = %v, want render (rejected update must not partially apply)", stored.RunAsGroup)
+	}
+}
+
 // ── listQueues ────────────────────────────────────────────────────────────────
 
 func TestListQueues_Success(t *testing.T) {

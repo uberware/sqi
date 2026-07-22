@@ -17,6 +17,10 @@ func (s *Store) CreateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if !store.RunAsComboValid(queue.RunAsUser, queue.RunAsGroup) {
+		return store.Queue{}, store.ErrRunAsGroupWithoutUser
+	}
+
 	for _, existing := range s.queues {
 		if existing.FarmID == queue.FarmID && existing.Name == queue.Name {
 			return store.Queue{}, store.ErrConflict
@@ -96,6 +100,16 @@ func (s *Store) UpdateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 	}
 	queue.PreserveRunAsUser = false
 	queue.PreserveRunAsGroup = false
+
+	// Checked AFTER preserve substitution, on the resolved values, so a PUT
+	// that clears run_as_user while a non-empty run_as_group is preserved (or
+	// vice versa) is rejected exactly like setting both explicitly — mirrors
+	// the SQLite implementation's RETURNING-then-rollback check. Rejected
+	// before s.queues is mutated, so an invalid update has no effect.
+	if !store.RunAsComboValid(queue.RunAsUser, queue.RunAsGroup) {
+		return store.Queue{}, store.ErrRunAsGroupWithoutUser
+	}
+
 	s.queues[queue.ID] = queue
 	return queue, nil
 }

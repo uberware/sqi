@@ -77,6 +77,9 @@ func scanQueue(row scanner) (store.Queue, error) {
 
 // CreateQueue implements [store.QueueStore].
 func (s *Store) CreateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
+	if !store.RunAsComboValid(queue.RunAsUser, queue.RunAsGroup) {
+		return store.Queue{}, store.ErrRunAsGroupWithoutUser
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertQueue.QueryRowContext(ctx,
 		queue.ID, queue.FarmID, queue.Name, queue.Description,
@@ -156,9 +159,31 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 
 // UpdateQueue implements [store.QueueStore]. See the type's doc comment for
 // PreserveRunAsUser/PreserveRunAsGroup semantics.
+//
+// Wrapped in an explicit transaction (rather than the single QueryRowContext
+// every other Update* uses) because [store.ErrRunAsGroupWithoutUser] must be
+// checked against the RESOLVED run_as_user/run_as_group — i.e. after the
+// statement's own CASE WHEN preserve substitution — not the raw request
+// fields: a PUT that omits run_as_user/run_as_group cannot tell from the
+// request alone whether the preserved column will end up empty. RETURNING
+// gives us those resolved values from the very statement that would commit
+// them, so the invalid-combo check and the write see identical data with no
+// separate read and therefore no read-then-write race. An invalid combo
+// rolls the transaction back so the update has no effect at all, rather than
+// committing a queue update while reporting an error.
 func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	now := timeToText(time.Now().UTC())
-	row := s.stmtUpdateQueue.QueryRowContext(ctx,
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.Queue{}, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	txStmt := tx.StmtContext(ctx, s.stmtUpdateQueue)
+	defer txStmt.Close()
+
+	row := txStmt.QueryRowContext(ctx,
 		queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
@@ -166,7 +191,16 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 		boolToInt(queue.PreserveRunAsGroup), nullStrPtr(queue.RunAsGroup),
 		now, queue.ID)
 	out, err := scanQueue(row)
-	return out, mapErr(err)
+	if err != nil {
+		return store.Queue{}, mapErr(err)
+	}
+	if !store.RunAsComboValid(out.RunAsUser, out.RunAsGroup) {
+		return store.Queue{}, store.ErrRunAsGroupWithoutUser
+	}
+	if err := tx.Commit(); err != nil {
+		return store.Queue{}, err
+	}
+	return out, nil
 }
 
 // DeleteQueue implements [store.QueueStore].

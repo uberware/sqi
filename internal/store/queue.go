@@ -4,8 +4,33 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrRunAsGroupWithoutUser is returned by [QueueStore.CreateQueue] and
+// [QueueStore.UpdateQueue] when the RESOLVED run_as_group (after any
+// PreserveRunAsGroup substitution) would be non-empty while the resolved
+// run_as_user (after any PreserveRunAsUser substitution) is nil or empty.
+// The scheduler only gates isolation on RunAsUser (internal/scheduler/
+// assign.go builds protocol.IsolationSpec only when queue.RunAsUser is set,
+// folding RunAsGroup in only as a supplement) — so a group with no user
+// selects no OS identity at all and is silently ignored, giving an operator
+// no isolation and no warning that their configuration did nothing. Checking
+// the resolved values (not the raw request) matters for UpdateQueue: a PUT
+// that clears run_as_user while an existing run_as_group is preserved, or
+// that sets run_as_group while run_as_user is preserved at nil, must be
+// rejected exactly like setting both in the same request.
+var ErrRunAsGroupWithoutUser = errors.New("store: run_as_group requires run_as_user")
+
+// RunAsComboValid reports whether a resolved run_as_user/run_as_group pair is
+// a valid queue isolation identity: nil/empty is always valid (no isolation
+// configured); a non-empty group additionally requires a non-empty user.
+func RunAsComboValid(user, group *string) bool {
+	hasGroup := group != nil && *group != ""
+	hasUser := user != nil && *user != ""
+	return !hasGroup || hasUser
+}
 
 // Queue belongs to a [Farm] and is the container into which jobs are submitted.
 // Scheduling policy (priority, concurrency limits, paused state) is configured
