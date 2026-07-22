@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 
@@ -81,37 +80,32 @@ func testGID() uint32 {
 	return uint32(os.Getgid())
 }
 
-// makeDataDirAncestorsTraversableForTest and
-// skipIfEnvironmentBlocksSessionTraversal are this package's copies of the
-// identically-named helpers in internal/worker/session's own isolation_test.go
-// — see that file's doc for why they exist: since Finding 4,
-// session.Manager.Create validates every ancestor of the session root for an
-// isolated assignment, so a test dataDir built on plain t.TempDir() needs the
-// same traversal-fixture treatment a real, operator-provisioned location
-// gets in production.
-func makeDataDirAncestorsTraversableForTest(t *testing.T, dir string) {
+// newTraversableSessionDataDir returns a fresh directory rooted directly
+// under the OS-standard, universally 1777 /tmp — not t.TempDir(), which
+// sits under several testing/OS-owned layers hardcoded 0700 that some
+// sandboxed dev environments refuse to widen regardless of Unix ownership.
+// This is the same fix as internal/worker/executor_test's own (external test
+// package) newCredentialFailureSessionRoot and
+// internal/worker/session's own newTraversableSessionDataDir — duplicated
+// here rather than shared because this file lives in the internal
+// `executor` test package (white-box, for the applyCredential seam), a
+// different Go package from executor_test.go's `executor_test` despite
+// sharing a directory. Since Finding 4, session.Manager.Create validates
+// every ancestor of the session root for an isolated assignment; rooting
+// directly under /tmp means that validation always succeeds here, because
+// every ancestor above the one directory this helper creates (/tmp itself,
+// and above that /) is already traversable by design on every POSIX system.
+func newTraversableSessionDataDir(t *testing.T) string {
 	t.Helper()
-	const maxLevels = 4
-	for range maxLevels {
-		if err := os.Chmod(dir, 0o711); err != nil {
-			return // reached a directory this test process does not own; stop climbing
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return // reached the filesystem root
-		}
-		dir = parent
+	dir, err := os.MkdirTemp("/tmp", "sqi-executor-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
 	}
-}
-
-func skipIfEnvironmentBlocksSessionTraversal(t *testing.T, err error, ownedDir string) {
-	t.Helper()
-	if err == nil || strings.Contains(err.Error(), ownedDir) {
-		return
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatalf("chmod %q: %v", dir, err)
 	}
-	t.Skipf("environment appears to block making a temp-dir ancestor traversable "+
-		"(chmod likely restricted by a sandbox regardless of Unix ownership), "+
-		"which this fixture cannot work around: %v", err)
+	return dir
 }
 
 // discardNATS is a minimal natsPublisher that drops every message; the
@@ -140,8 +134,7 @@ func TestTaskActionsCarryCredential(t *testing.T) {
 	defer func() { applyCredential = orig }()
 
 	logger := slog.New(slog.DiscardHandler)
-	dataDir := t.TempDir()
-	makeDataDirAncestorsTraversableForTest(t, dataDir)
+	dataDir := newTraversableSessionDataDir(t)
 	// A fake account resolved to a uid/gid session creation can actually
 	// chown to without a real privilege escalation: the current process's own
 	// (see isolation.SecureWorkDir), unless that current process IS root (uid
@@ -160,7 +153,6 @@ func TestTaskActionsCarryCredential(t *testing.T) {
 		Isolation: &protocol.IsolationSpec{User: "render"},
 	}
 	sess, err := mgr.Create(context.Background(), msg)
-	skipIfEnvironmentBlocksSessionTraversal(t, err, dataDir)
 	if err != nil {
 		t.Fatalf("session Create: %v", err)
 	}

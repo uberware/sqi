@@ -102,8 +102,7 @@ func newTestSessionWithCredential(t *testing.T, applied *recordingApplier) *Sess
 	}
 	t.Cleanup(func() { applyCredential = orig })
 
-	dataDir := t.TempDir()
-	makeDataDirAncestorsTraversableForTest(t, dataDir)
+	dataDir := newTraversableSessionDataDir(t)
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
@@ -113,58 +112,40 @@ func newTestSessionWithCredential(t *testing.T, applied *recordingApplier) *Sess
 		Isolation: &protocol.IsolationSpec{User: "render"},
 	}
 	s, err := mgr.Create(context.Background(), msg)
-	skipIfEnvironmentBlocksSessionTraversal(t, err, dataDir)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return s
 }
 
-// makeDataDirAncestorsTraversableForTest is this package's analog of
-// internal/worker/isolation/workdir_unix_test.go's own
-// makeAncestorsTraversableForTest: since Finding 4, Manager.Create validates
-// every ancestor of the session root for an isolated assignment (the
-// per-assignment counterpart of cmd/sqi-worker's boot-time check), so a test
-// dataDir built on plain t.TempDir() now needs the same traversal-fixture
-// treatment production callers get from a real, operator-provisioned
-// location. t.TempDir()'s own return value sits under a testing-package-owned
-// parent (created via os.MkdirTemp, hardcoded 0700 regardless of umask) that
-// this test process DOES own and can chmod, itself typically sitting under
-// the OS's own per-user private temp root (e.g. macOS's
-// /var/folders/<x>/<y>/T), which some sandboxed dev environments refuse to
-// chmod regardless of Unix ownership — see
-// skipIfEnvironmentBlocksSessionTraversal for how that residual case is
-// handled. Capped at a handful of levels for the same reason as the
-// isolation package's own analog.
-func makeDataDirAncestorsTraversableForTest(t *testing.T, dir string) {
+// newTraversableSessionDataDir returns a fresh directory rooted directly
+// under the OS-standard, universally 1777 /tmp — not t.TempDir(), which
+// nests its return value under a testing-package-owned parent (created via
+// os.MkdirTemp, hardcoded 0700 regardless of umask), itself typically
+// sitting under the OS's own per-user private temp root (e.g. macOS's
+// /var/folders/<x>/<y>/T). Some sandboxed dev environments refuse to chmod
+// either regardless of Unix ownership, which made every test built on this
+// helper skip via t.Skipf, proving nothing on such machines (see
+// internal/worker/executor's newCredentialFailureSessionRoot for the same
+// fix applied there first, in this branch's precedent commit). Since
+// Finding 4, Manager.Create validates every ancestor of the session root for
+// an isolated assignment (the per-assignment counterpart of
+// cmd/sqi-worker's boot-time check); rooting directly under /tmp means that
+// validation always succeeds here, because every ancestor above the one
+// directory this helper creates (/tmp itself, and above that /) is already
+// traversable by design on every POSIX system — a real, operator-provisioned
+// session root gets the identical guarantee in production.
+func newTraversableSessionDataDir(t *testing.T) string {
 	t.Helper()
-	const maxLevels = 4
-	for range maxLevels {
-		if err := os.Chmod(dir, 0o711); err != nil {
-			return // reached a directory this test process does not own; stop climbing
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return // reached the filesystem root
-		}
-		dir = parent
+	dir, err := os.MkdirTemp("/tmp", "sqi-session-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
 	}
-}
-
-// skipIfEnvironmentBlocksSessionTraversal is this package's analog of
-// isolation's own skipIfEnvironmentBlocksTraversalFixture: it reports (via
-// t.Skip) only when err names a directory OUTSIDE ownedDir's own tree — an
-// OS-imposed ancestor makeDataDirAncestorsTraversableForTest could not fix
-// regardless of ownership — leaving a failure INSIDE ownedDir (a real defect
-// in the code under test) to the caller's own error handling untouched.
-func skipIfEnvironmentBlocksSessionTraversal(t *testing.T, err error, ownedDir string) {
-	t.Helper()
-	if err == nil || strings.Contains(err.Error(), ownedDir) {
-		return
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatalf("chmod %q: %v", dir, err)
 	}
-	t.Skipf("environment appears to block making a temp-dir ancestor traversable "+
-		"(chmod likely restricted by a sandbox regardless of Unix ownership), "+
-		"which this fixture cannot work around: %v", err)
+	return dir
 }
 
 // newTestSessionWithoutCredential builds a Session for an assignment that

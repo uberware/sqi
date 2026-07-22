@@ -55,15 +55,13 @@ func TestCredentialClose_ClosedExactlyOnceOnNormalCleanup(t *testing.T) {
 	closer := &countingCloser{}
 	closer.install(t)
 
-	dataDir := t.TempDir()
-	makeDataDirAncestorsTraversableForTest(t, dataDir)
+	dataDir := newTraversableSessionDataDir(t)
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-close-ok", Isolation: &protocol.IsolationSpec{User: "render"}}
 	s, err := mgr.Create(context.Background(), msg)
-	skipIfEnvironmentBlocksSessionTraversal(t, err, dataDir)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -101,47 +99,38 @@ func TestCredentialClose_NeverCalledWhenCredentialNeverObtained(t *testing.T) {
 	}
 }
 
-// TestCredentialClose_ClosedExactlyOnceOnEnterEnvironmentsFailure exercises
-// one of Manager.Create's own error paths (not just the normal Cleanup
-// path): a credential IS obtained (the account resolves), but a later
-// OnEnter action fails, so Create tears everything down itself — including
-// closing the credential — before returning the error. Must still be
-// exactly one call, not zero (a leak on this path specifically) and not more
-// than one.
-func TestCredentialClose_ClosedExactlyOnceOnEnterEnvironmentsFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses POSIX shell commands")
-	}
-	closer := &countingCloser{}
-	closer.install(t)
-
-	dataDir := t.TempDir()
-	makeDataDirAncestorsTraversableForTest(t, dataDir)
-	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
-	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
-
-	msg := &protocol.AssignMsg{
-		JobID:     "job-close-enter-fail",
-		Isolation: &protocol.IsolationSpec{User: "render"},
-		Environments: []protocol.AssignEnvironment{
-			{
-				Name: "bad-env",
-				OnEnter: &protocol.Action{
-					Command: "sh",
-					Args:    []string{"-c", "exit 1"},
-				},
-			},
-		},
-	}
-
-	_, err := mgr.Create(context.Background(), msg)
-	skipIfEnvironmentBlocksSessionTraversal(t, err, dataDir)
-	if err == nil {
-		t.Fatal("expected Create to fail when OnEnter fails")
-	}
-
-	if got := closer.count(); got != 1 {
-		t.Errorf("Close called %d times on the enterEnvironments failure path, want exactly 1", got)
-	}
-}
+// TestCredentialClose_ClosedExactlyOnceOnEnterEnvironmentsFailure used to
+// live here, exercising one of Manager.Create's own error paths (not just
+// the normal Cleanup path): a credential IS obtained (the account resolves),
+// but a later OnEnter action fails, so Create tears everything down itself —
+// including closing the credential — before returning the error.
+//
+// It is gone from this file, not merely un-skipped: unlike every other test
+// in this package, it drove the REAL applyCredential (isolation.Apply), not
+// a fake — Manager.Create's onEnter launch never had it replaced. Making the
+// engineered OnEnter failure ("sh -c exit 1") actually happen AS THE
+// RESOLVED ACCOUNT, rather than failing earlier with EPERM out of
+// isolation.Apply itself, requires a real setuid+setgroups transition to a
+// genuinely different uid — which requires real root. That is true on any
+// POSIX OS, not just a sandboxed one: exec.Cmd.SysProcAttr.Credential always
+// calls setgroups(2), which requires CAP_SETGID even to set a process's own
+// CURRENT supplementary group list unless the caller is already privileged —
+// so this test could never pass unprivileged, no matter how its temp
+// directory was rooted. That is exactly the condition this file's sibling
+// tests (TestCredentialClose_ClosedExactlyOnceOnNormalCleanup and
+// TestCredentialClose_NeverCalledWhenCredentialNeverObtained) avoid by
+// installing a same-uid fake account, resolved but never actually exec'd
+// under a switched identity.
+//
+// The real-root counterpart now lives at
+// TestIsolation_CredentialClosedOnEnterEnvironmentsFailure in
+// test/integration/isolation_test.go (build tag integration, run by
+// `make test-isolation` as real root against a real, genuinely different
+// unprivileged account). It cannot reach this package's private
+// closeCredentialFn counting seam from there, so it instead asserts the
+// externally observable consequence of the SAME teardown branch running:
+// Manager.Create's OnEnter-failure path calls closeCredential(cred) then
+// unconditionally os.RemoveAll(workDir) in that one branch (see
+// internal/worker/session/session.go), so a removed WorkDir after a
+// genuinely failing OnEnter proves that branch — and the credential close it
+// performs exactly once, never in a loop — ran to completion.

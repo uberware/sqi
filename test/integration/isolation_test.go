@@ -690,3 +690,89 @@ func TestIsolation_NoRunAsUserBehaviorUnchanged(t *testing.T) {
 		t.Error("full daemon environment must still be inherited when isolation is off")
 	}
 }
+
+// TestIsolation_CredentialClosedOnEnterEnvironmentsFailure is the real-root
+// counterpart to internal/worker/session's own (unit-level, fake-credential)
+// TestCredentialClose_ClosedExactlyOnceOnNormalCleanup and
+// TestCredentialClose_NeverCalledWhenCredentialNeverObtained. A THIRD sibling
+// test used to live there — TestCredentialClose_ClosedExactlyOnceOnEnterEnvironmentsFailure
+// — covering Manager.Create's OnEnter-failure teardown path: a credential IS
+// obtained (the account resolves), but a later OnEnter action fails, so
+// Create tears everything down itself, including closing the credential,
+// before returning the error.
+//
+// That test could never pass unprivileged, on any POSIX OS, sandboxed or
+// not: unlike this package's other tests (which fake applyCredential and so
+// never actually exec anything under a switched identity), it drove the REAL
+// isolation.Apply for its engineered OnEnter failure ("sh -c exit 1").
+// exec.Cmd.SysProcAttr.Credential always calls setgroups(2), which requires
+// CAP_SETGID even to set a process's own CURRENT supplementary group list
+// unless the caller is already privileged — so the intended "exit 1"
+// failure was always preempted by an earlier, unintended EPERM out of
+// isolation.Apply itself when run unprivileged. Real root — guaranteed here
+// by requireRoot and make test-isolation's container — has that privilege,
+// so the OnEnter action fails for the reason the test actually engineers
+// (`exit 1`, run as render-a) rather than for lack of permission to even
+// attempt the identity switch.
+//
+// session.closeCredentialFn — the call-counting seam the original unit test
+// swapped to prove Close was invoked exactly once — is unexported and
+// unreachable from this package. This test proves the same teardown branch
+// ran by its externally observable consequence instead: Manager.Create's
+// OnEnter-failure path calls closeCredential(cred) and then unconditionally
+// os.RemoveAll(workDir) in that one branch (see
+// internal/worker/session/session.go, Create's env-setup-failure branch),
+// never in a loop and never on any other return path — so a session
+// directory that is gone after a genuinely failing OnEnter proves that
+// branch, and the single credential-close call it performs, executed to
+// completion.
+func TestIsolation_CredentialClosedOnEnterEnvironmentsFailure(t *testing.T) {
+	requireRoot(t)
+	dataDir := isolatedDataDir(t)
+	provider := newRealProvider(t)
+	sessionRoot := filepath.Join(dataDir, "sessions")
+	mgr := session.NewManager(sessionRoot, false, provider, workerconfig.IsolationConfig{}, testLogger())
+
+	msg := &protocol.AssignMsg{
+		JobID:     "job-" + t.Name(),
+		TaskID:    "task-1",
+		AttemptID: "attempt-1",
+		Isolation: &protocol.IsolationSpec{User: renderAUser},
+		Environments: []protocol.AssignEnvironment{
+			{
+				Name: "bad-env",
+				OnEnter: &protocol.Action{
+					Command: "sh",
+					Args:    []string{"-c", "exit 1"},
+				},
+			},
+		},
+	}
+
+	sess, err := mgr.Create(context.Background(), msg)
+	if sess != nil {
+		// Create's contract is "session and nil error, or nil and non-nil
+		// error — never both" (see its own doc); clean up defensively so a
+		// contract violation here doesn't also leak a session directory.
+		mgr.Cleanup(context.Background(), sess, true)
+		t.Fatalf("Create must return nil session alongside a non-nil error; got %+v", sess)
+	}
+	if err == nil {
+		t.Fatal("expected Create to fail when OnEnter fails")
+	}
+
+	// Create generates the session ID internally, so its workDir path is not
+	// known to this test directly — but this test's own sessionRoot holds
+	// nothing else, so confirming it is empty proves the ONE workDir Create
+	// created for this failed attempt was removed by the OnEnter-failure
+	// teardown branch.
+	entries, rdErr := os.ReadDir(sessionRoot)
+	if rdErr != nil {
+		t.Fatalf("read session root %q: %v", sessionRoot, rdErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("session root has %d leftover entries after a failed Create, want 0 — "+
+			"the OnEnter-failure teardown branch (which closes the credential before removing "+
+			"the working directory) must run to completion", len(entries))
+	}
+}

@@ -25,67 +25,36 @@ func statPerm(t *testing.T, path string) os.FileMode {
 	return info.Mode().Perm()
 }
 
-// makeAncestorsTraversableForTest climbs from dir up through every ancestor,
-// best-effort chmod'ing +x for others, stopping at the first one this test
-// process does not own (a Chmod error there is expected, not a failure: an
-// ancestor outside this process's control is either already traversable —
-// true of every real filesystem root above a per-user temp directory — or
-// this test cannot fix it anyway, which is exactly the situation
-// ValidateTraversable itself is designed for in production).
-//
-// This exists because t.TempDir() sits under MULTIPLE testing-owned and
-// OS-owned layers that are 0700 by construction and have nothing to do with
-// the behavior under test: the per-package scratch root Go's testing package
-// creates via os.MkdirTemp (0700), and — on macOS specifically — the
-// per-user private $TMPDIR itself (e.g. /var/folders/<x>/<y>/T, also 0700 by
-// OS design). Neither is something session.Manager or staging.Stager would
-// ever be asked to create in production (a real deployment's session root
-// sits under /var/lib or an operator-chosen path — see
-// cmd/sqi-worker's effectiveSessionRoot), so climbing and fixing them up here
-// is a test-fixture-only accommodation, not something ValidateTraversable
-// itself should ever do (see its own doc: it NEVER modifies anything).
-func makeAncestorsTraversableForTest(t *testing.T, dir string) {
+// newTraversableTestRoot returns a fresh directory rooted directly under the
+// OS-standard, universally 1777 /tmp — not t.TempDir(), which nests it under
+// MULTIPLE testing-owned and OS-owned layers that are 0700 by construction
+// and have nothing to do with the behavior under test: the per-package
+// scratch root Go's testing package creates via os.MkdirTemp (0700), and —
+// on macOS specifically — the per-user private $TMPDIR itself (e.g.
+// /var/folders/<x>/<y>/T, also 0700 by OS design). Some sandboxed dev
+// environments refuse to widen either regardless of Unix ownership, which
+// made tests built on t.TempDir() here skip via t.Skipf, proving nothing on
+// such machines (see internal/worker/executor's
+// newCredentialFailureSessionRoot for the same fix applied there first, in
+// this branch's precedent commit). Rooting directly under /tmp sidesteps the
+// problem: only the ONE directory MkdirTemp creates here needs widening (it
+// is always created 0700 regardless of requested mode), because every
+// ancestor above it (/tmp itself, and above that /) is already traversable
+// by design on every POSIX system — neither is something session.Manager or
+// staging.Stager would ever be asked to create in production anyway (a real
+// deployment's session root sits under /var/lib or an operator-chosen path —
+// see cmd/sqi-worker's effectiveSessionRoot).
+func newTraversableTestRoot(t *testing.T) string {
 	t.Helper()
-	// Capped at a handful of levels — enough to clear every testing/OS-owned
-	// layer under a temp directory (see doc above) without ever climbing
-	// arbitrarily far up the real filesystem, even if this test process
-	// happens to run privileged enough that os.Chmod would otherwise keep
-	// succeeding all the way to "/".
-	const maxLevels = 6
-	for range maxLevels {
-		if err := os.Chmod(dir, 0o711); err != nil {
-			return // reached a directory this test process does not own; stop climbing
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return // reached the filesystem root
-		}
-		dir = parent
+	dir, err := os.MkdirTemp("/tmp", "sqi-traversable-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
 	}
-}
-
-// skipIfEnvironmentBlocksTraversalFixture reports (via t.Skip) when err came
-// from an ancestor OUTSIDE the self-contained chain this test built
-// (self is the set of directories the test itself created and owns). Some
-// sandboxed environments restrict chmod on OS-managed temp-directory
-// ancestors regardless of Unix ownership, which no test-fixture workaround
-// can reliably clear — that is an environment restriction, not evidence
-// ValidateTraversable's own logic (exercised fully by
-// TestValidateTraversable_FailsOnNarrowAncestor, which only ever needs a
-// SELF-created narrow ancestor) is wrong.
-func skipIfEnvironmentBlocksTraversalFixture(t *testing.T, err error, self map[string]bool) {
-	t.Helper()
-	if err == nil {
-		return
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatalf("chmod %q: %v", dir, err)
 	}
-	for path := range self {
-		if strings.Contains(err.Error(), path) {
-			return // failure is about a directory THIS test created; a real failure
-		}
-	}
-	t.Skipf("environment appears to block making a temp-dir ancestor traversable "+
-		"(chmod likely restricted by a sandbox regardless of Unix ownership), "+
-		"which this fixture cannot work around: %v", err)
+	return dir
 }
 
 // TestValidateTraversable_TraversableChainPasses is the "happy path": every
@@ -93,18 +62,17 @@ func skipIfEnvironmentBlocksTraversalFixture(t *testing.T, err error, self map[s
 // and — critically — nothing is chmod'd, which this test verifies directly
 // by re-checking every mode afterward.
 func TestValidateTraversable_TraversableChainPasses(t *testing.T) {
-	root := t.TempDir()
+	root := newTraversableTestRoot(t)
 	mid := filepath.Join(root, "mid")
 	leaf := filepath.Join(mid, "leaf")
 	if err := os.MkdirAll(leaf, 0o711); err != nil {
 		t.Fatalf("set up traversable chain: %v", err)
 	}
-	// See makeAncestorsTraversableForTest's doc: t.TempDir() sits under
-	// multiple testing/OS-owned 0700 layers that have nothing to do with the
-	// behavior under test, so this is a genuinely end-to-end traversable
-	// chain, not just a self-contained assertion about the "mid"/"leaf"
-	// levels this test itself created.
-	makeAncestorsTraversableForTest(t, root)
+	// See newTraversableTestRoot's doc: rooting under /tmp instead of
+	// t.TempDir() means every ancestor above root is already traversable by
+	// design, so this is a genuinely end-to-end traversable chain, not just
+	// a self-contained assertion about the "mid"/"leaf" levels this test
+	// itself created.
 
 	before := map[string]os.FileMode{
 		root: statPerm(t, root),
@@ -113,7 +81,6 @@ func TestValidateTraversable_TraversableChainPasses(t *testing.T) {
 	}
 
 	err := ValidateTraversable(leaf)
-	skipIfEnvironmentBlocksTraversalFixture(t, err, map[string]bool{root: true, mid: true, leaf: true})
 	if err != nil {
 		t.Errorf("ValidateTraversable(%q) = %v, want nil for an already-traversable chain", leaf, err)
 	}
@@ -159,12 +126,10 @@ func TestValidateTraversable_FailsOnNarrowAncestor(t *testing.T) {
 // and everything below it, the first time it is actually used) is not
 // treated as a validation failure.
 func TestValidateTraversable_MissingAncestorIsNotAnError(t *testing.T) {
-	root := t.TempDir()
-	makeAncestorsTraversableForTest(t, root)
+	root := newTraversableTestRoot(t)
 	neverCreated := filepath.Join(root, "does", "not", "exist", "yet")
 
 	err := ValidateTraversable(neverCreated)
-	skipIfEnvironmentBlocksTraversalFixture(t, err, map[string]bool{root: true})
 	if err != nil {
 		t.Errorf("ValidateTraversable(%q) = %v, want nil — missing ancestors are not a failure", neverCreated, err)
 	}
