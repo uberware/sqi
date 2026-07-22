@@ -61,4 +61,82 @@ func TestBuiltinCopy(t *testing.T) {
 			t.Fatal("want error for missing src")
 		}
 	})
+	t.Run("refuses symlink src", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "real.txt")
+		if err := os.WriteFile(target, []byte("secret"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "link.txt")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(dir, "out.txt")
+		err := builtinCopy(ctx, link, dest)
+		if err == nil {
+			t.Fatal("want error refusing a symlinked source")
+		}
+		if _, statErr := os.Stat(dest); statErr == nil {
+			t.Error("dest must not have been created from a symlinked source")
+		}
+	})
+	t.Run("overwrites an existing dest", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "in.txt")
+		if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(dir, "out.txt")
+		if err := os.WriteFile(dest, []byte("stale-longer-content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := builtinCopy(ctx, src, dest); err != nil {
+			t.Fatalf("copy: %v", err)
+		}
+		got, err := os.ReadFile(dest)
+		if err != nil || string(got) != "new" {
+			t.Fatalf("dest = %q, err=%v; want %q (full overwrite, not a truncate-in-place leaving stale bytes)", got, err, "new")
+		}
+	})
+}
+
+// TestCopyFile_RefusesSymlinkDest proves copyFile never writes THROUGH a
+// symlink planted at dest — the write half of the stage-out boundary that
+// sqi's own code path can close (an operator-configured sync_command remains
+// the operator's responsibility; see docs/worker-configuration.md). Per
+// copyFile's doc (mirroring isolation.WriteFileFchown), the planted symlink
+// entry is removed and a fresh regular file created in its place — root
+// writes the new bytes to a brand-new inode at dest, never through the
+// symlink to whatever it pointed at, so "elsewhere" must be completely
+// untouched and dest must end up an ordinary file, not a dangling symlink.
+func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "in.txt")
+	if err := os.WriteFile(src, []byte("task-controlled-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(dir, "elsewhere.txt")
+	if err := os.WriteFile(elsewhere, []byte("must-not-be-overwritten"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "out.txt")
+	if err := os.Symlink(elsewhere, dest); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyFile(src, dest, 0o644); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+
+	got, err := os.ReadFile(elsewhere)
+	if err != nil || string(got) != "must-not-be-overwritten" {
+		t.Fatalf("elsewhere = %q, err=%v; must be untouched, not written through", got, err)
+	}
+	if fi, err := os.Lstat(dest); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("dest should be a fresh regular file (symlink entry replaced), got mode %v err=%v", fi.Mode(), err)
+	}
+	destContent, err := os.ReadFile(dest)
+	if err != nil || string(destContent) != "task-controlled-bytes" {
+		t.Fatalf("dest = %q, err=%v; want the copied content in the new inode", destContent, err)
+	}
 }

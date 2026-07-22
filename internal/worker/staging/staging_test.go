@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -46,6 +47,30 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// newTraversableTestRoot returns a directory rooted directly under /tmp,
+// chmod'd 0711, for tests that need isolation's ancestor-traversability
+// check to actually PASS (not just fail on a deliberately narrow directory).
+// t.TempDir() cannot be used here: it is 0700 by construction, and on macOS
+// $TMPDIR itself is also 0700 by OS design, so anything built on it fails
+// ValidateTraversable regardless of what this test does — proving nothing
+// about the behavior under test. /tmp sidesteps both layers: only the one
+// directory MkdirTemp creates here needs widening; every ancestor above it
+// is already traversable by design on every POSIX system. Mirrors
+// internal/worker/isolation's own newTraversableTestRoot test helper (same
+// fix, same reasoning, unexported so not reusable across packages).
+func newTraversableTestRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sqi-staging-traversable-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatalf("chmod %q: %v", dir, err)
+	}
+	return dir
+}
 
 // fakeSync writes a shell script that records its args and copies src->dest with cp -R.
 func fakeSync(t *testing.T) string {
@@ -362,4 +387,70 @@ func TestStager_Configured(t *testing.T) {
 	if !staging.New("/s", "rsync {src} {dest}", false, discard()).Configured() {
 		t.Error("full config should be Configured")
 	}
+}
+
+// TestStager_StageIn_ScratchAncestorMode proves the scratch base and job
+// directory are created at the narrower 0750 when this call carries no
+// isolated identity (cred == nil), and only widened to the traversable-from-
+// birth 0711 when it does (cred != nil) — the identical widening that was
+// deliberately reverted for the session root in an earlier fix round: a
+// worker that never engages isolation on this scratch base must not gain a
+// needless traversable-by-anyone directory.
+func TestStager_StageIn_ScratchAncestorMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on Windows")
+	}
+
+	assertMode := func(t *testing.T, path string, want os.FileMode) {
+		t.Helper()
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %q: %v", path, err)
+		}
+		if got := fi.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %04o, want %04o", path, got, want)
+		}
+	}
+
+	t.Run("nil credential stays 0750", func(t *testing.T) {
+		scratch := t.TempDir()
+		base := filepath.Join(scratch, "base")
+		s := staging.New(base, fakeSync(t), false, discard())
+
+		srcFile := filepath.Join(t.TempDir(), "in.txt")
+		writeFile(t, srcFile, "x")
+
+		_, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+			{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("StageIn: %v", err)
+		}
+		assertMode(t, base, 0o750)
+		assertMode(t, filepath.Join(base, "job1"), 0o750)
+	})
+
+	t.Run("non-nil credential widens to 0711", func(t *testing.T) {
+		scratch := newTraversableTestRoot(t)
+		base := filepath.Join(scratch, "base")
+		s := staging.New(base, fakeSync(t), false, discard())
+
+		srcFile := filepath.Join(t.TempDir(), "in.txt")
+		writeFile(t, srcFile, "x")
+
+		provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": {UID: testUID(), GID: testGID()}})
+		cred, err := provider.Resolve(context.Background(), isolation.Spec{User: "render"})
+		if err != nil {
+			t.Fatalf("resolve credential: %v", err)
+		}
+
+		_, _, err = s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+			{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+		}, cred)
+		if err != nil {
+			t.Fatalf("StageIn: %v", err)
+		}
+		assertMode(t, base, 0o711)
+		assertMode(t, filepath.Join(base, "job1"), 0o711)
+	})
 }

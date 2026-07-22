@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -97,7 +98,8 @@ func (s *Stager) Configured() bool {
 //
 // scratchBase (s.effectiveScratch()) and scratchBase/jobID are shared by every
 // attempt of every job — and, across jobs, by every different run-as-user
-// identity — so they are created traversable FROM BIRTH (0711) rather than
+// identity — so, ONLY when this call actually carries an isolated identity
+// (cred != nil), they are created traversable FROM BIRTH (0711) rather than
 // created narrow and widened after the fact: chowning either to any one
 // identity would grant that identity nothing extra (search doesn't require
 // ownership) while breaking every other attempt's/user's access, and
@@ -108,15 +110,27 @@ func (s *Stager) Configured() bool {
 // directory that already exists, so a pre-existing scratch_dir at a
 // narrower mode is caught by cmd/sqi-worker's boot-time
 // isolation.ValidateTraversable check instead of being silently widened
-// here. Only the per-attempt leaf (scratchDir itself, via ChownRecursive
-// below) is chowned, since it belongs to exactly this one attempt/identity.
-// Go's forkAndExecInChild sets process credentials BEFORE chdir, so without
-// both ancestors being traversable the isolated task cannot reach its own
-// staged inputs even though scratchDir itself is correctly chowned.
+// here. When cred is nil, base/jobDir are created at the narrower 0750
+// instead — the same widening this call would otherwise perform
+// unconditionally on every worker, isolated or not, which is exactly the
+// anti-pattern this codebase's other unconditional-widening fix (the session
+// root, see workerconfig.LoadOrCreateWorkerID's doc) already reverted once;
+// that reasoning had not yet reached this file. A worker that never engages
+// isolation on this scratch base keeps the pre-isolation 0750 mode instead of
+// gaining a needless traversable-by-anyone directory. Only the per-attempt
+// leaf (scratchDir itself, via ChownRecursive below) is chowned, since it
+// belongs to exactly this one attempt/identity. Go's forkAndExecInChild sets
+// process credentials BEFORE chdir, so without both ancestors being
+// traversable the isolated task cannot reach its own staged inputs even
+// though scratchDir itself is correctly chowned.
 func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry, cred *isolation.Credential) ([]protocol.PathMapRule, string, error) {
 	base := s.effectiveScratch()
 	jobDir := filepath.Join(base, jobID)
 	scratchDir := filepath.Join(jobDir, attemptID)
+	ancestorMode := os.FileMode(0o750)
+	if cred != nil {
+		ancestorMode = 0o711
+	}
 
 	// Per-assignment ancestor validation — cred != nil is exactly the moment
 	// this attempt actually carries a run-as-user identity. cmd/sqi-worker's
@@ -132,10 +146,10 @@ func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries [
 		}
 	}
 
-	if err := os.MkdirAll(base, 0o711); err != nil { //nolint:gosec // G301: 0711 (search-only for group/other) is the intentional traversable-from-birth mode; see the doc comment above
+	if err := os.MkdirAll(base, ancestorMode); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch base %q: %w", base, err)
 	}
-	if err := os.MkdirAll(jobDir, 0o711); err != nil { //nolint:gosec // G301: same as above
+	if err := os.MkdirAll(jobDir, ancestorMode); err != nil {
 		return nil, "", fmt.Errorf("staging: create job scratch dir %q: %w", jobDir, err)
 	}
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
@@ -190,15 +204,102 @@ func (s *Stager) prepareEntries(ctx context.Context, scratchDir string, entries 
 // StageOut copies every OUT/INOUT entry from scratch back to its original path.
 // It iterates the full entries slice with its original index so the per-index
 // subdirectory (<scratchDir>/<i>/<basename>) matches what copyInEntries created.
+//
+// validateStageOutSource runs BEFORE transfer() for every entry — upstream of
+// BOTH the built-in copy and an operator-configured sync_command, which is the
+// only place a check can cover both identically. sqi cannot audit an
+// arbitrary sync_command template: whether it dereferences symlinks is a
+// property of that command ("rsync -a" preserves them; "rsync -aL" or plain
+// "cp" follow them). See the function's own doc for the full threat model.
 func (s *Stager) StageOut(ctx context.Context, scratchDir string, entries []protocol.StageEntry) error {
 	for i, e := range entries {
 		if e.Direction != "OUT" && e.Direction != "INOUT" {
 			continue
 		}
 		src := filepath.Join(scratchDir, strconv.Itoa(i), filepath.Base(e.Path))
+		if err := validateStageOutSource(scratchDir, src); err != nil {
+			return fmt.Errorf("staging: copy-out %q: %w", e.Path, err)
+		}
 		if err := s.transfer(ctx, src, e.Path, e.ObjectType); err != nil {
 			return fmt.Errorf("staging: copy-out %q: %w", e.Path, err)
 		}
+	}
+	return nil
+}
+
+// validateStageOutSource refuses to copy a stage-out source that is not an
+// ordinary, scratch-contained regular file — the boundary check for a task
+// that plants something other than its declared output at the deterministic
+// scratch path StageOut reads from. Root (the daemon) always performs this
+// transfer, whether via the built-in copy or an operator's sync_command, so
+// anything this check misses is a root-level primitive under task control:
+//
+//   - os.Lstat, never Stat/os.Stat: a Stat-based check FOLLOWS a final
+//     symlink. A task that replaces its declared output path with a symlink
+//     to, say, /etc/shadow would have root read THAT file's bytes and copy
+//     them to e.Path — arbitrary file disclosure as root, gated only by
+//     whatever e.Path happens to be readable by afterward.
+//   - regular-file-only: refuses symlinks (caught above already, but kept as
+//     an explicit, self-documenting branch) as well as device nodes, FIFOs,
+//     and sockets — none of these is a legitimate task output.
+//   - link count > 1 refused: a hardlink planted inside scratch passes the
+//     regular-file check above (a hardlink IS a regular file — it shares one
+//     inode with whatever it is linked to) yet leaks its link partner
+//     identically to a symlink once copied. fs.protected_hardlinks (Linux)
+//     narrows creating a hardlink to a file the creator cannot already read,
+//     but it is a HOST kernel setting sqi does not control and must not
+//     assume is enabled.
+//   - scratch containment: src's REAL (symlink-resolved) parent directory
+//     must sit inside scratchDir. A task that deletes one of the per-entry
+//     scratch subdirectories it owns (chowned by StageIn's ChownRecursive)
+//     and replaces it with a symlink to an arbitrary directory would
+//     otherwise let a same-named regular file elsewhere satisfy every check
+//     above while sitting entirely outside scratch. Only the parent
+//     directory is resolved via filepath.EvalSymlinks — the final path
+//     component itself must NOT be resolved, since that is exactly the
+//     dereference the Lstat check above exists to refuse.
+//
+// This closes the READ primitive for both the built-in copy and an
+// operator's sync_command. It does NOT close the WRITE primitive when a
+// sync_command is configured: whether that command follows a symlink planted
+// at dest (e.Path, the real, operator/job-known destination) is a property
+// of the command sqi cannot inspect. builtinCopy/copyFile are separately
+// hardened with O_NOFOLLOW for the mechanism sqi does control — see their
+// docs — but an operator-configured sync_command remains the operator's
+// responsibility: it MUST NOT dereference symlinks (see
+// docs/worker-configuration.md's sync_command warning).
+func validateStageOutSource(scratchDir, src string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("lstat %q: %w", src, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("stage-out refused: %q is a symlink; sqi will not follow it to copy the file it points to", src)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("stage-out refused: %q is not a regular file (mode %s)", src, info.Mode())
+	}
+	if linked, err := hasExtraHardlinks(info); err != nil {
+		return fmt.Errorf("stat %q: %w", src, err)
+	} else if linked {
+		return fmt.Errorf("stage-out refused: %q has more than one hardlink; sqi will not copy a file that may alias content outside scratch", src)
+	}
+
+	absScratch, err := filepath.Abs(scratchDir)
+	if err != nil {
+		return fmt.Errorf("resolve scratch dir %q: %w", scratchDir, err)
+	}
+	resolvedScratch, err := filepath.EvalSymlinks(absScratch)
+	if err != nil {
+		return fmt.Errorf("resolve scratch dir %q: %w", scratchDir, err)
+	}
+	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(src))
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", filepath.Dir(src), err)
+	}
+	rel, err := filepath.Rel(resolvedScratch, resolvedParent)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("stage-out refused: %q resolves outside scratch dir %q", src, scratchDir)
 	}
 	return nil
 }
@@ -258,32 +359,66 @@ func (s *Stager) runSync(ctx context.Context, src, dest, objectType string) erro
 }
 
 // builtinCopy copies src to dest without an external command — the default /
-// `builtin` transfer used when no shell sync_command is configured. What src
-// actually is on disk decides the mode (a declared ObjectType cannot override
-// it): a directory is copied as a whole tree, anything else as a single file.
-// Destination parents are created and the source file mode is preserved
-// (ownership and xattrs are not — adequate for worker-local scratch).
+// `builtin` transfer used when no shell sync_command is configured. Used for
+// both directions (stage-in and stage-out), so it never follows a symlink at
+// src: os.Lstat, not os.Stat, decides the mode (a declared ObjectType cannot
+// override it) — a real directory is copied as a whole tree, a real regular
+// file as a single file, anything else (symlink, device node, FIFO, socket)
+// is refused outright. For stage-out specifically this is defense in depth
+// behind [validateStageOutSource]'s upstream boundary check — that check
+// covers an operator's sync_command too, which this function is never
+// involved in, but keeping builtinCopy itself symlink-safe closes the same
+// TOCTOU window the boundary check leaves between its own Lstat and this
+// call. Destination parents are created and the source file mode is
+// preserved (ownership and xattrs are not — adequate for worker-local
+// scratch).
 func builtinCopy(ctx context.Context, src, dest string) error {
-	info, err := os.Stat(src)
+	info, err := os.Lstat(src)
 	if err != nil {
-		return fmt.Errorf("stat %q: %w", src, err)
+		return fmt.Errorf("lstat %q: %w", src, err)
 	}
-	if info.IsDir() {
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("copy refused: %q is a symlink; sqi will not follow it", src)
+	case info.IsDir():
 		return copyTree(ctx, src, dest)
+	case info.Mode().IsRegular():
+		return copyFile(src, dest, info.Mode())
+	default:
+		return fmt.Errorf("copy refused: %q is not a regular file or directory (mode %s)", src, info.Mode())
 	}
-	return copyFile(src, dest, info.Mode())
 }
 
+// copyFile copies src to dest, refusing to follow a symlink at either end.
+//
+// src is opened with O_NOFOLLOW (in addition to builtinCopy's own Lstat
+// check, closing the TOCTOU between that check and this open): a task that
+// swaps its declared output for a symlink between the two must not have root
+// read whatever it points to.
+//
+// dest is written via the same remove-then-O_EXCL|O_NOFOLLOW pattern as
+// [isolation.WriteFileFchown] (see its doc for the full reasoning): any
+// existing entry at dest is unlinked (never followed) before a fresh file is
+// created, so a task-planted symlink at dest is removed, not written
+// through, and a hardlink there loses a link rather than having its target
+// inode truncated and overwritten with task-controlled bytes. A legitimate
+// re-run overwriting a prior real output still succeeds (the old inode is
+// simply replaced by a new one carrying src's mode) — only an attacker-swap
+// or a lost race against a concurrent writer (EEXIST, failing closed) behaves
+// differently from the previous O_TRUNC-based overwrite.
 func copyFile(src, dest string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return fmt.Errorf("mkdir %q: %w", filepath.Dir(dest), err)
 	}
-	in, err := os.Open(src)
+	in, err := os.OpenFile(src, os.O_RDONLY|noFollowFlag, 0)
 	if err != nil {
 		return fmt.Errorf("open %q: %w", src, err)
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
+	if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove existing %q: %w", dest, err)
+	}
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL|noFollowFlag, mode.Perm())
 	if err != nil {
 		return fmt.Errorf("create %q: %w", dest, err)
 	}
