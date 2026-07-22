@@ -15,6 +15,20 @@
 # accounts" (render-a's session directory must be unreadable to render-b).
 # rendershare is a THIRD shared supplementary group — proof that supplementary
 # group membership survives isolation.Apply, not just the primary gid.
+#
+# The source is COPYied into the image at build time (below) rather than
+# bind-mounted at `docker run` time. A bind mount (-v $(CURDIR):/src) only
+# works when the Docker daemon's host actually shares that path with the
+# container runtime; on Colima (common on macOS) only $HOME is virtiofs-shared
+# by default, so a repo living anywhere else (e.g. /Volumes/...) resolves to
+# an EMPTY mount and `go test` fails with "go.mod file not found" before a
+# single test runs. COPY has no such dependency: `docker build` always reads
+# its context from wherever the CLI itself runs and streams it to the daemon,
+# regardless of what the daemon's host filesystem shares with it. See the
+# test-isolation Makefile target for how the build context is assembled (a
+# staged copy of the repo, filtered by this directory's .dockerignore, NOT the
+# repo-root .dockerignore — that one excludes test/ entirely, which this image
+# needs).
 FROM golang:1-bookworm
 
 RUN apt-get update \
@@ -26,3 +40,15 @@ RUN groupadd -g 3000 rendershare \
  && useradd -u 1002 -m -G rendershare render-b
 
 WORKDIR /src
+
+# Copy dependency manifests first so Docker can cache the download layer
+# separately from the source (unchanged unless go.mod/go.sum themselves
+# change).
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the full repository source needed to build and run the suite:
+# go.mod's own module tree (internal/, cmd/) plus test/integration itself.
+# See this directory's .dockerignore for what's excluded from the build
+# context that this COPY draws from.
+COPY . .

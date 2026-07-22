@@ -123,6 +123,41 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 100}))
 }
 
+// isolatedDataDir returns a fresh temporary directory usable as an isolated
+// session's dataDir — plain t.TempDir() is not enough here.
+//
+// Go's testing package creates t.TempDir() itself at a hardcoded,
+// non-configurable 0700, and nests it under a per-test scratch root of its
+// OWN making (e.g. /tmp/TestFoo<random>/001) that is ALSO 0700 — both
+// root-owned in this container, since the suite itself runs as root.
+//
+// Production code deliberately does not widen either of these anymore (see
+// workerconfig.LoadOrCreateWorkerID's doc and session.Manager's
+// prepareSessionsDir): the run-as-user split creates its session root
+// traversable FROM BIRTH at a location the operator controls
+// (/var/lib/sqi-worker-sessions by default, whose ancestors are already
+// 0755) rather than ever chmod'ing an existing directory to get there. This
+// fixture stands in for that operator-provisioned location, so it must
+// arrange the SAME starting condition itself: both the directory this
+// helper returns (which callers join with "sessions" to build the Manager's
+// session root, mirroring cmd/sqi-worker's own fallback shape) and its
+// go-test-internal parent — an ancestor entirely outside any path production
+// code is ever given a handle to, so no production fix could reach it
+// regardless of design — must already be traversable before the code under
+// test runs. Mirrors the same execute-only-for-others permission style
+// isolation.ValidateTraversable uses in production.
+func isolatedDataDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatalf("make t.TempDir() traversable (test-fixture-only accommodation — see isolatedDataDir's doc): %v", err)
+	}
+	if err := os.Chmod(filepath.Dir(dir), 0o711); err != nil {
+		t.Fatalf("make t.TempDir() parent traversable (test-fixture-only accommodation — see isolatedDataDir's doc): %v", err)
+	}
+	return dir
+}
+
 // newRealProvider returns the real POSIX isolation.Provider — never
 // isolation.NewFake, which cannot see any of the three defects this suite
 // demonstrates.
@@ -145,7 +180,7 @@ func newRealProvider(t *testing.T) isolation.Provider {
 func newIsolatedSession(t *testing.T, dataDir, user, group string, isolationCfg workerconfig.IsolationConfig) *session.Session {
 	t.Helper()
 	provider := newRealProvider(t)
-	mgr := session.NewManager(dataDir, false, provider, isolationCfg, testLogger())
+	mgr := session.NewManager(filepath.Join(dataDir, "sessions"), false, provider, isolationCfg, testLogger())
 	msg := &protocol.AssignMsg{
 		JobID:     "job-" + t.Name(),
 		TaskID:    "task-1",
@@ -162,11 +197,20 @@ func newIsolatedSession(t *testing.T, dataDir, user, group string, isolationCfg 
 
 // newUnisolatedSession creates a real session.Session for an assignment that
 // carries no Isolation at all — the pre-isolation default every component
-// must leave byte-for-byte unchanged.
+// must leave byte-for-byte unchanged. WithSessionRootMode(0o750) mirrors
+// cmd/sqi-worker's effectiveSessionRoot non-root DataDir-fallback branch (the
+// shape this dataDir/"sessions" construction stands in for — see
+// isolatedDataDir's own doc): a deployment with no run_as_user configured
+// anywhere gains nothing from the wider, isolation-only 0711, so the session
+// root must come out at the pre-split 0750 exactly as it did before this
+// branch's split existed.
 func newUnisolatedSession(t *testing.T, dataDir string) *session.Session {
 	t.Helper()
 	provider := newRealProvider(t)
-	mgr := session.NewManager(dataDir, false, provider, workerconfig.IsolationConfig{}, testLogger())
+	mgr := session.NewManager(
+		filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, testLogger(),
+		session.WithSessionRootMode(0o750),
+	)
 	msg := &protocol.AssignMsg{JobID: "job-" + t.Name(), TaskID: "task-1", AttemptID: "attempt-1"}
 	sess, err := mgr.Create(context.Background(), msg)
 	if err != nil {
@@ -320,7 +364,7 @@ func anyProcessInGroup(t *testing.T, pgid int) bool {
 // error before the task ever produces output.
 func TestIsolation_ProcessRunsAsTargetUID(t *testing.T) {
 	requireRoot(t)
-	sess := newIsolatedSession(t, t.TempDir(), renderAUser, "", workerconfig.IsolationConfig{})
+	sess := newIsolatedSession(t, isolatedDataDir(t), renderAUser, "", workerconfig.IsolationConfig{})
 
 	out, err := runInSession(sess, &protocol.Action{Command: "id", Args: []string{"-u"}}, nil)
 	if err != nil {
@@ -346,7 +390,7 @@ func TestIsolation_ProcessRunsAsTargetUID(t *testing.T) {
 // only becomes independently observable once C2 is fixed.
 func TestIsolation_RunnableEmbeddedFileIsExecutable(t *testing.T) {
 	requireRoot(t)
-	sess := newIsolatedSession(t, t.TempDir(), renderAUser, "", workerconfig.IsolationConfig{})
+	sess := newIsolatedSession(t, isolatedDataDir(t), renderAUser, "", workerconfig.IsolationConfig{})
 
 	files := []protocol.EmbeddedFile{{
 		Name:     "run",
@@ -375,7 +419,7 @@ func TestIsolation_RunnableEmbeddedFileIsExecutable(t *testing.T) {
 // the 0640 root-owned file's own permission bits can matter.
 func TestIsolation_NonRunnableEmbeddedFileIsReadable(t *testing.T) {
 	requireRoot(t)
-	sess := newIsolatedSession(t, t.TempDir(), renderAUser, "", workerconfig.IsolationConfig{})
+	sess := newIsolatedSession(t, isolatedDataDir(t), renderAUser, "", workerconfig.IsolationConfig{})
 
 	const marker = "embedded-data-file-contents-xyz"
 	files := []protocol.EmbeddedFile{{Name: "data", Data: marker}}
@@ -433,7 +477,15 @@ func TestIsolation_StagedSymlinkDoesNotChownTargetOutsideScratch(t *testing.T) {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	stager := staging.New(t.TempDir(), "rsync -a {src} {dest}", false, testLogger())
+	// isolatedDataDir (not a bare t.TempDir()) for the scratch base
+	// specifically: StageIn now validates the scratch base's own ancestors
+	// per-assignment (Finding 4's staging.Stager.StageIn check) whenever cred
+	// is non-nil, exactly as it validates in production — a bare t.TempDir()
+	// sits under Go testing's own per-test MkdirTemp parent, hardcoded 0700
+	// regardless of umask, which is a test-fixture artifact production never
+	// hits (a real scratch base is an operator-provisioned location, not
+	// nested under a throwaway inherently-0700 ancestor).
+	stager := staging.New(isolatedDataDir(t), "rsync -a {src} {dest}", false, testLogger())
 	if !stager.Configured() {
 		t.Fatal("stager not configured")
 	}
@@ -488,7 +540,7 @@ func TestIsolation_SupplementaryGroupsPreserved(t *testing.T) {
 // tasks, not just between the daemon and one task.
 func TestIsolation_SessionDirIsPrivateToTargetUser(t *testing.T) {
 	requireRoot(t)
-	dataDir := t.TempDir()
+	dataDir := isolatedDataDir(t)
 	sessA := newIsolatedSession(t, dataDir, renderAUser, "", workerconfig.IsolationConfig{})
 
 	if got := statMode(t, sessA.WorkDir); got != 0o700 {
@@ -521,7 +573,7 @@ func TestIsolation_DaemonSecretAbsentAllowlistedLicensePresent(t *testing.T) {
 	t.Setenv("foundry_LICENSE", "4101@licsrv")
 
 	isolationCfg := workerconfig.IsolationConfig{EnvPassthrough: []string{"foundry_*"}}
-	sess := newIsolatedSession(t, t.TempDir(), renderAUser, "", isolationCfg)
+	sess := newIsolatedSession(t, isolatedDataDir(t), renderAUser, "", isolationCfg)
 
 	cmd := exec.CommandContext(context.Background(), "env")
 	cmd.Dir = "/"
@@ -590,18 +642,44 @@ func TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild(t *testing.T)
 // invariant every Phase 3 component carries: with no run_as_user configured
 // anywhere, behavior must be byte-for-byte identical to before isolation
 // existed — full daemon environment inherited, workdir mode 0750, no
-// credential resolved.
+// credential resolved. It also guards the run-as-user split itself (Fix 1):
+// a directory that plays the role of the worker's data_dir (holding only
+// worker.id in production) must come out of session creation at exactly the
+// mode it went in at — session.Manager must never widen it, regardless of
+// whether isolation is configured — since data_dir now holds nothing but the
+// worker's persistent, server-correlated identity and must stay private.
 func TestIsolation_NoRunAsUserBehaviorUnchanged(t *testing.T) {
 	requireRoot(t)
 	t.Setenv("ARBITRARY_DAEMON_VAR", "inherited-value")
 
-	sess := newUnisolatedSession(t, t.TempDir())
+	// A real data_dir (as workerconfig.LoadOrCreateWorkerID actually
+	// produces it) is 0700; t.TempDir() itself is created via
+	// os.Mkdir(dir, 0777) internally by the testing package (masked by
+	// umask, NOT 0700), so this test sets up the exact precondition
+	// LoadOrCreateWorkerID would have left behind rather than relying on
+	// t.TempDir()'s own incidental default.
+	dataDir := t.TempDir()
+	if err := os.Chmod(dataDir, 0o700); err != nil {
+		t.Fatalf("set up data_dir precondition: %v", err)
+	}
+
+	sess := newUnisolatedSession(t, dataDir)
 
 	if sess.Credential() != nil {
 		t.Fatal("no credential should be resolved when the assignment carries no isolation")
 	}
 	if got := statMode(t, sess.WorkDir); got != 0o750 {
 		t.Errorf("workdir mode = %o, want 0750 (unchanged, no-isolation default)", got)
+	}
+	if got := statMode(t, dataDir); got != 0o700 {
+		t.Errorf("data_dir mode = %o after session creation, want 0700 unchanged — "+
+			"data_dir must NEVER be widened for session traversal (see workerconfig.LoadOrCreateWorkerID's doc)", got)
+	}
+	sessionRoot := filepath.Join(dataDir, "sessions")
+	if got := statMode(t, sessionRoot); got != 0o750 {
+		t.Errorf("session root mode = %o, want 0750 (pre-Task-8 this directory was created 0750 as a "+
+			"byproduct of a single MkdirAll call; a deployment with no run_as_user configured anywhere "+
+			"gains nothing from the wider, isolation-only 0711)", got)
 	}
 
 	out, err := runInSession(sess, &protocol.Action{Command: "env"}, nil)

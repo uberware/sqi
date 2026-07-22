@@ -195,20 +195,49 @@ test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Do
 # inside the container: the whole point is exercising real setuid/setgid
 # transitions, real directory permission bits, and a real symlink-preserving
 # rsync against real unprivileged accounts, none of which a fake Provider can
-# see (internal/worker/isolation/fake.go). The image build context is scoped
-# to test/integration/isolation (not the repo root) since the Dockerfile COPYs
-# nothing — the repo is bind-mounted at run time instead. --init runs a real
-# init (tini) as container PID 1: without it, the `go test` process itself is
-# PID 1, which never reaps re-parented grandchildren after a process-group
-# kill — a container-hygiene artifact of the TEST HARNESS, not of
-# isolation.Apply, but one that produces a false failure in
+# see (internal/worker/isolation/fake.go).
+#
+# The image is built from a STAGED COPY of the repo (rsync'd into a scratch
+# directory, filtered by test/integration/isolation/.dockerignore, then passed
+# to `docker build` as the context) rather than either (a) bind-mounting the
+# repo at `docker run` time, or (b) using the repo root directly as the build
+# context. (a) broke outright on this project's own dev machines: Colima
+# (common on macOS) only virtiofs-shares $HOME by default, so a repo living
+# elsewhere (e.g. /Volumes/...) resolves to an EMPTY bind mount and `go test`
+# fails with "go.mod file not found" before a single test runs — `docker
+# build`, by contrast, has no such dependency, since the CLI reads its context
+# from wherever it runs and streams it to the daemon regardless of what the
+# daemon's host shares. (b) doesn't work either: the repo-root .dockerignore
+# (shared with deploy/docker/Dockerfile's production build) excludes test/
+# entirely, and this image needs test/integration/**; the classic
+# (non-BuildKit) builder this project's Docker install runs has no per-
+# Dockerfile ignore-file override to give this build its own rules on that
+# same context. A staged copy sidesteps both problems at once — PROVIDED the
+# repo-root .dockerignore is not itself staged into the copy: rsync -a copies
+# dotfiles, so a naive staged copy carries the repo-root .dockerignore along
+# to $ctx/.dockerignore, and Docker auto-discovers a context-root
+# .dockerignore from a directory the same way regardless of which Dockerfile
+# is building it — silently re-excluding test/ from the staged copy exactly as
+# it would from the repo root directly. The recipe below excludes every
+# .dockerignore from the rsync and then places
+# test/integration/isolation/.dockerignore at the staged root explicitly, so
+# Docker's own (real, no-trick) context-root ignore-file discovery sees only
+# this image's small, correct exclusion list.
+#
+# --init runs a real init (tini) as container PID 1: without it, the `go
+# test` process itself is PID 1, which never reaps re-parented grandchildren
+# after a process-group kill — a container-hygiene artifact of the TEST
+# HARNESS, not of isolation.Apply, but one that produces a false failure in
 # TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild without it.
 .PHONY: test-isolation
 test-isolation: ## Run run-as-user isolation tests as root against real OS accounts in a container (needs Docker)
 	@if ! docker info >/dev/null 2>&1; then \
 	  echo "docker unavailable — skipping isolation integration tests"; exit 0; fi
-	docker build -q -t sqi-isolation-test -f test/integration/isolation/Dockerfile test/integration/isolation
-	docker run --rm --init -v "$(CURDIR):/src" sqi-isolation-test \
+	@ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
+	rsync -a --exclude-from=test/integration/isolation/.dockerignore --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
+	cp test/integration/isolation/.dockerignore "$$ctx/.dockerignore" && \
+	docker build -q -t sqi-isolation-test -f test/integration/isolation/Dockerfile "$$ctx" && \
+	docker run --rm --init sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
 .PHONY: bench

@@ -4,7 +4,7 @@
 //
 // A Session is the ephemeral execution context within which one or more
 // tasks from the same job step run. It provides:
-//   - An isolated working directory under <data_dir>/sessions/<session_id>/
+//   - An isolated working directory under <session_root>/<session_id>/
 //   - Ordered environment entry (OnEnter actions run in declaration order)
 //   - Ordered environment exit (OnExit actions run in reverse order)
 //   - Safe concurrent task tracking via AddTask / RemoveTask
@@ -26,7 +26,9 @@
 //
 // # Usage
 //
-//	mgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, provider, cfg.Isolation, logger)
+//	mgr := session.NewManager(sessionRoot, cfg.Worker.KeepFailedSessions, provider, cfg.Isolation, logger)
+//	// sessionRoot is resolved by cmd/sqi-worker's effectiveSessionRoot — see
+//	// its doc for why it is deliberately NOT cfg.Worker.DataDir.
 //
 //	s, err := mgr.Create(ctx, assignMsg)
 //	if err != nil { ... }
@@ -190,7 +192,7 @@ func (s *Session) HasPathMappingRules() bool { return s.hasPathMap }
 // first file that could not be written, which the caller should use to fail
 // the task via the established pre-execution failure path.
 func (s *Session) WriteEmbeddedFiles(files []protocol.EmbeddedFile) error {
-	return writeEmbeddedFiles(s.WorkDir, files)
+	return writeEmbeddedFiles(s.WorkDir, files, s.cred)
 }
 
 // ActiveTaskCount returns the number of tasks currently executing within this
@@ -308,7 +310,22 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 // Manager creates and cleans up sessions. A single Manager is constructed
 // once at worker startup and shared by the executor for the process lifetime.
 type Manager struct {
-	dataDir            string
+	// sessionRoot is the directory under which <sessionID> working
+	// directories are created DIRECTLY (no further nesting). Deliberately NOT
+	// the worker's data_dir: see workerconfig.LoadOrCreateWorkerID's doc and
+	// cmd/sqi-worker's effectiveSessionRoot for why the two must never be the
+	// same directory again.
+	sessionRoot string
+	// sessionRootMode is the mode sessionRoot is created at when it does not
+	// already exist (os.MkdirAll never touches an existing directory's mode —
+	// see prepareSessionsDir). Defaults to 0711 (traversable-from-birth,
+	// matching every call site that predates this field) unless overridden via
+	// WithSessionRootMode — see cmd/sqi-worker's effectiveSessionRoot for why
+	// production chooses 0750 instead for the non-root DataDir fallback (the
+	// pre-split mode, restored for byte-for-byte backward compatibility: real
+	// isolation cannot function without root regardless of directory
+	// permissions, so that location gains nothing from the wider 0711).
+	sessionRootMode    os.FileMode
 	keepFailedSessions bool
 	// provider resolves run-as-user credentials for isolated assignments.
 	// Never invoked when an assignment's Isolation field is nil.
@@ -322,20 +339,41 @@ type Manager struct {
 	logger       *slog.Logger
 }
 
-// NewManager returns a Manager that stores session working directories under
-// <dataDir>/sessions/. keepFailedSessions controls whether working directories
-// for failed sessions are retained for post-mortem inspection. provider
-// resolves run-as-user credentials for isolated assignments (see
-// Manager.Create); isolationCfg.EnvPassthrough is the additional daemon
-// environment allowlist for isolated sessions.
-func NewManager(dataDir string, keepFailedSessions bool, provider isolation.Provider, isolationCfg workerconfig.IsolationConfig, logger *slog.Logger) *Manager {
-	return &Manager{
-		dataDir:            dataDir,
+// ManagerOption customizes a Manager constructed by NewManager. See
+// WithSessionRootMode for the option currently defined.
+type ManagerOption func(*Manager)
+
+// WithSessionRootMode overrides the mode sessionRoot is created at (see the
+// Manager.sessionRootMode field doc). Only takes effect the first time
+// sessionRoot is created — os.MkdirAll never touches an existing directory's
+// mode — so it has no effect on a session root that already exists.
+func WithSessionRootMode(mode os.FileMode) ManagerOption {
+	return func(m *Manager) { m.sessionRootMode = mode }
+}
+
+// NewManager returns a Manager that stores session working directories
+// directly under sessionRoot (<sessionRoot>/<sessionID>/) — the caller (in
+// production, cmd/sqi-worker's effectiveSessionRoot) has already resolved
+// this to the right location, separate from the worker's data_dir.
+// keepFailedSessions controls whether working directories for failed
+// sessions are retained for post-mortem inspection. provider resolves
+// run-as-user credentials for isolated assignments (see Manager.Create);
+// isolationCfg.EnvPassthrough is the additional daemon environment allowlist
+// for isolated sessions. opts may include WithSessionRootMode to override the
+// default 0711 creation mode.
+func NewManager(sessionRoot string, keepFailedSessions bool, provider isolation.Provider, isolationCfg workerconfig.IsolationConfig, logger *slog.Logger, opts ...ManagerOption) *Manager {
+	m := &Manager{
+		sessionRoot:        sessionRoot,
+		sessionRootMode:    0o711,
 		keepFailedSessions: keepFailedSessions,
 		provider:           provider,
 		isolationCfg:       isolationCfg,
 		logger:             logger,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // resolveCredential resolves the run-as-user credential for an isolated
@@ -363,6 +401,12 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 			sessionID, msg.Isolation.User, err)
 	}
 	if err := isolation.SecureWorkDir(workDir, cred); err != nil {
+		// cred was already obtained above; this function is returning an
+		// error instead of the credential, so it owns closing it here — the
+		// caller never sees it to close it itself (Task 8's Credential
+		// lifecycle: every path that obtains one either returns it for the
+		// session to own and close, or closes it itself before erroring out).
+		closeCredential(ctx, cred, sessionID, m.logger)
 		if rmErr := os.RemoveAll(workDir); rmErr != nil {
 			m.logger.WarnContext(ctx, "session: cleanup after secure-workdir failure",
 				slog.String("session_id", sessionID), slog.Any("error", rmErr))
@@ -372,9 +416,88 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 	return cred, nil
 }
 
+// closeCredentialFn is the seam for cred.Close(), swappable in tests so a
+// counting wrapper can assert Close is invoked exactly once per session
+// across every path that owns a credential — including every error path in
+// Manager.Create, not just the normal Manager.Cleanup path — mirroring the
+// applyCredential-style seam already used for isolation.Apply in this
+// package and internal/worker/executor. Without this seam nothing could
+// distinguish a dropped Close() call from a correct one: both implementations
+// of Credential.Close are currently no-ops, so a missing call is invisible
+// until the Windows LogonUser provider starts holding a real token handle.
+var closeCredentialFn = func(cred *isolation.Credential) error { return cred.Close() }
+
+// closeCredential closes cred if non-nil, logging (not returning) any error —
+// mirroring the other best-effort cleanup helpers in this file. A nil cred
+// (no run_as_user isolation) is a safe no-op, matching every other credential
+// helper's convention in this package.
+//
+// POSIX and the current Windows placeholder both implement Close as a no-op,
+// so this has no observable effect today; it exists so the credential has a
+// single, clear lifecycle owner before the real Windows LogonUser provider
+// lands and starts holding an actual token handle that DOES need releasing.
+func closeCredential(ctx context.Context, cred *isolation.Credential, sessionID string, logger *slog.Logger) {
+	if cred == nil {
+		return
+	}
+	if err := closeCredentialFn(cred); err != nil {
+		logger.WarnContext(ctx, "session: failed to close run-as-user credential",
+			slog.String("session_id", sessionID), slog.Any("error", err))
+	}
+}
+
+// prepareSessionsDir ensures m.sessionRoot (and any missing parent) exists,
+// then — only for an isolated assignment — validates its ancestors, before
+// returning it unchanged for Create to build <sessionID> under. Extracted
+// from Create to keep that function's cyclomatic complexity within the
+// project limit.
+//
+// Created directly at m.sessionRootMode (0711 by default — search for
+// everyone, nothing readable/writable beyond the owner; see
+// WithSessionRootMode for how production picks 0750 instead for the
+// non-root DataDir fallback) rather than created narrow and widened
+// afterward: os.MkdirAll never touches the mode of a directory that already
+// exists, so this only ever affects a directory this call itself creates for
+// the first time. That distinction is the whole point of this package's
+// isolation split — creating traversable FROM BIRTH and mutating an
+// EXISTING directory's mode to become traversable are different operations,
+// and only the latter (what an earlier version of this function did to
+// m.dataDir and dataDir/"sessions" unconditionally, isolated session or not)
+// is the anti-pattern being eliminated. m.sessionRoot is never the worker's
+// data_dir or an ancestor shared with the persistent worker-id file — see
+// cmd/sqi-worker's effectiveSessionRoot and workerconfig.LoadOrCreateWorkerID's
+// own doc for the split this depends on.
+//
+// Ownership is deliberately left as the daemon's (root): many different
+// run-as-user identities share this one root directory, so chowning it to
+// any single one would grant that user nothing (search doesn't require
+// ownership) while breaking every other user's sessions.
+//
+// isolated is true exactly when msg.Isolation != nil — the moment the
+// worker first learns an identity is in play. cmd/sqi-worker's boot-time
+// validateIsolationAncestors only runs when isolation.required is set
+// (being root and actually receiving an isolated assignment are not the
+// same predicate), so every OTHER isolated assignment is validated HERE
+// instead — the IDENTICAL check with the IDENTICAL actionable message — so
+// a non-traversable ancestor (e.g. an operator-chosen worker.session_dir
+// that is narrower than expected) fails only THIS task, not the whole
+// worker. A non-isolated assignment skips this: no other identity will ever
+// need to chdir through sessionsDir, so there is nothing to validate.
+func (m *Manager) prepareSessionsDir(sessionID string, isolated bool) (string, error) {
+	if err := os.MkdirAll(m.sessionRoot, m.sessionRootMode); err != nil {
+		return "", fmt.Errorf("session %s: create session root %q: %w", sessionID, m.sessionRoot, err)
+	}
+	if isolated {
+		if err := isolation.ValidateTraversable(m.sessionRoot); err != nil {
+			return "", fmt.Errorf("session %s: %w", sessionID, err)
+		}
+	}
+	return m.sessionRoot, nil
+}
+
 // Create allocates a new Session for the given assignment: generates a UUID
 // as the session ID, creates the working directory under
-// <data_dir>/sessions/<session_id>/, and enters each environment in
+// <session_root>/<session_id>/, and enters each environment in
 // declaration order.
 //
 // If any OnEnter action fails, already-entered environments are exited in
@@ -386,18 +509,26 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session, error) {
 	sessionID := uuid.New().String()
 
+	sessionsDir, err := m.prepareSessionsDir(sessionID, msg.Isolation != nil)
+	if err != nil {
+		return nil, err
+	}
+
 	// WorkDir must be absolute: it becomes cmd.Dir for every action and the base
 	// for Task.File.* / Env.File.* paths. A relative data_dir (e.g. the Makefile's
 	// ./.run/workers/worker-N) would otherwise yield a relative command path that,
 	// combined with cmd.Dir, the forked child resolves against the session dir
 	// itself — doubling the path and failing with "no such file or directory".
-	workDir, err := filepath.Abs(filepath.Join(m.dataDir, "sessions", sessionID))
+	workDir, err := filepath.Abs(filepath.Join(sessionsDir, sessionID))
 	if err != nil {
 		return nil, fmt.Errorf("session %s: resolve absolute working directory: %w", sessionID, err)
 	}
 	// A workDir that will run job code under a different OS identity is
 	// created 0700 from the start (owner-only) rather than relying solely on
-	// the chown+chmod below to narrow it after the fact.
+	// the chown+chmod below to narrow it after the fact. Unlike sessionsDir
+	// above, this leaf directory belongs to exactly one session/one target
+	// user and MUST stay private — SecureWorkDir (called via
+	// resolveCredential below) narrows it further to cred's own uid/gid.
 	workDirMode := os.FileMode(0o750)
 	if msg.Isolation != nil {
 		workDirMode = 0o700
@@ -425,11 +556,26 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		Allowlist: m.isolationCfg.EnvPassthrough,
 	}
 	baseEnv := envutil.BaseEnv(envPolicy)
-	if cred != nil && cred.Home != "" {
+	if cred != nil {
 		// Point HOME/USERPROFILE at the target user; the daemon's own is
 		// unwritable to them, and DCCs write configs wherever these point.
-		baseEnv["HOME"] = cred.Home
-		baseEnv["USERPROFILE"] = cred.Home
+		// When the resolved identity has no discoverable home directory
+		// (envutil's own doc on minimalBase flags this as a MUST-rewrite: NSS
+		// resolution can legitimately come back empty — see
+		// isolation.unixProvider.resolveIdentityViaNSS), falling through to
+		// envutil.BaseEnv's inherited HOME would silently hand the task the
+		// DAEMON's home (typically /root) — writable by the daemon, not by
+		// this task's identity, i.e. exactly the failure this rewrite exists
+		// to prevent. Fall back to the session's own working directory
+		// instead: it is always workDir-owned by cred (via SecureWorkDir,
+		// called just above by resolveCredential) and therefore always
+		// writable by the identity that needs a HOME.
+		home := cred.Home
+		if home == "" {
+			home = workDir
+		}
+		baseEnv["HOME"] = home
+		baseEnv["USERPROFILE"] = home
 	}
 
 	m.logger.InfoContext(
@@ -453,6 +599,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	if hasPathMap {
 		pathMapFile = filepath.Join(workDir, pathmap.PathMappingFileName)
 		if err := pathmap.WritePathMappingFile(workDir, msg.PathMap); err != nil {
+			closeCredential(ctx, cred, sessionID, m.logger)
 			if rmErr := os.RemoveAll(workDir); rmErr != nil {
 				m.logger.WarnContext(
 					ctx, "session: failed to remove working directory after path-map write failure",
@@ -484,7 +631,11 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	if err := s.enterEnvironments(ctx, msg.Environments, m.logger); err != nil {
 		// enterEnvironments already ran reverse teardown on already-entered
 		// environments. Remove the working directory so the caller gets a clean
-		// nil, err return and does not need to call Cleanup on failure.
+		// nil, err return and does not need to call Cleanup on failure. The
+		// session (and its s.cred) is discarded along with it — this is the
+		// last error path in Create that already obtained a credential, so
+		// close it here before returning.
+		closeCredential(ctx, cred, sessionID, m.logger)
 		if rmErr := os.RemoveAll(workDir); rmErr != nil {
 			m.logger.WarnContext(
 				ctx, "session: failed to remove working directory after setup failure",
@@ -517,6 +668,15 @@ func (m *Manager) Cleanup(ctx context.Context, s *Session, failed bool) {
 			slog.Any("error", err),
 		)
 	}
+
+	// The session's run-as-user credential (if any) is done being used the
+	// moment the session ends — this is the credential's normal-path lifecycle
+	// owner, mirroring the error-path closeCredential calls in Manager.Create.
+	// Closed unconditionally here (even when keepFailedSessions retains the
+	// WORKING DIRECTORY below) since retaining files on disk for inspection
+	// has nothing to do with whether the in-memory/OS credential handle is
+	// still needed.
+	closeCredential(ctx, s.cred, s.ID, m.logger)
 
 	// Retain the working directory on failure when the debug flag is set.
 	if failed && m.keepFailedSessions {
@@ -625,7 +785,7 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 
 	// Write embedded files before OnEnter runs (environment files may be
 	// consumed by the setup action, e.g., an activation script).
-	if err := writeEmbeddedFiles(s.WorkDir, resolvedFiles); err != nil {
+	if err := writeEmbeddedFiles(s.WorkDir, resolvedFiles, s.cred); err != nil {
 		return fmt.Errorf("write embedded files: %w", err)
 	}
 
@@ -1041,10 +1201,13 @@ func scanActionStream(r io.Reader, stream string, lineHandler func(stream, line 
 
 // ── Embedded file writer ──────────────────────────────────────────────────────
 
-// writeEmbeddedFiles materializes each file in files into workDir.
-func writeEmbeddedFiles(workDir string, files []protocol.EmbeddedFile) error {
+// writeEmbeddedFiles materializes each file in files into workDir. cred is the
+// session's run-as-user credential (nil when the assignment carries no
+// isolation), passed through to writeEmbeddedFile so each file ends up owned
+// by the identity that must read or execute it.
+func writeEmbeddedFiles(workDir string, files []protocol.EmbeddedFile, cred *isolation.Credential) error {
 	for _, f := range files {
-		if err := writeEmbeddedFile(workDir, f); err != nil {
+		if err := writeEmbeddedFile(workDir, f, cred); err != nil {
 			return fmt.Errorf("embedded file %q: %w", f.Name, err)
 		}
 	}
@@ -1056,7 +1219,33 @@ func writeEmbeddedFiles(workDir string, files []protocol.EmbeddedFile) error {
 // helper that builds the Task.File.* / Env.File.* path variables — so the file
 // is written exactly where those variables point. Filenames that contain path
 // separators or null bytes are rejected to prevent directory traversal.
-func writeEmbeddedFile(workDir string, f protocol.EmbeddedFile) error {
+//
+// When cred is non-nil the file is chowned to cred's identity as part of the
+// write. Without this, an isolated task is neither the file's owner nor a
+// member of its group and there are no "other" bits (0640, or 0750 when
+// Runnable) — it can read neither a data file nor execute a runnable one, no
+// matter how the surrounding directories are secured. The permission bits
+// themselves are deliberately left narrow (never widened to world-readable):
+// these files can carry job data, and chowning to the target identity is
+// enough to make them readable/executable by exactly the one identity that
+// needs them.
+//
+// Step embedded files are written AFTER job code has already run as the
+// target uid (the environment onEnter action runs before any task's embedded
+// files are written), at a deterministic name — exactly the shape a
+// hardlink/symlink swap at this path could exploit between a naive write and
+// a later path-based chown. isolation.WriteFileFchown closes that: it removes
+// any existing entry (never following it) and recreates fresh with
+// O_EXCL|O_NOFOLLOW, then chowns via fchown on the open descriptor, which
+// acts on the inode rather than the path and so cannot be raced. This also
+// means a SECOND embedded file legitimately sharing the same name — two
+// environments (or an environment and the step) each declaring one named
+// "run" — overwrites the first (last-wins, matching fmtres.AddFileVars's
+// documented scope semantics) rather than hard-failing the task; only an
+// attacker-planted entry is ever defeated, never a legitimate duplicate
+// name. See WriteFileFchown's own doc for the full threat model. It is
+// itself a no-op chown when cred is nil.
+func writeEmbeddedFile(workDir string, f protocol.EmbeddedFile, cred *isolation.Credential) error {
 	name, err := fmtres.EmbeddedFileName(f)
 	if err != nil {
 		return err
@@ -1070,7 +1259,7 @@ func writeEmbeddedFile(workDir string, f protocol.EmbeddedFile) error {
 	}
 
 	path := filepath.Join(workDir, name)
-	if err := os.WriteFile(path, data, perm); err != nil {
+	if err := isolation.WriteFileFchown(path, data, perm, cred); err != nil {
 		return fmt.Errorf("write %q: %w", path, err)
 	}
 	return nil

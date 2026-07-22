@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Exclusions for the `make test-isolation` build context (see the Makefile
+# target's own comment and this directory's Dockerfile). NOT the same file as
+# the repo-root .dockerignore: that one excludes test/ entirely (fine for the
+# production sqi-server image, fatal here — this image needs
+# test/integration/**). The Makefile stages a filtered copy of the repo using
+# these patterns rather than relying on Docker's own per-context .dockerignore
+# discovery, since two different Dockerfiles sharing the repo root as context
+# cannot each have their own automatically-selected ignore file with the
+# classic (non-BuildKit) builder this project's Docker install runs.
+#
+# Patterns follow rsync --exclude-from syntax (used by the Makefile target),
+# not Docker's own .dockerignore glob dialect.
+.git/
+web/node_modules/
+bin/
+.superpowers/

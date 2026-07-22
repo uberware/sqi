@@ -6,11 +6,11 @@ package executor
 
 import "log/slog"
 
-// isRunningAsRoot always returns false on Windows.  Administrator privilege
+// IsRunningAsRoot always returns false on Windows.  Administrator privilege
 // detection on Windows requires checking group membership via the Windows
 // security APIs, which is out of scope for Phase 1.  The root-user check is
 // a Linux/macOS concern (see docs/worker-configuration.md, "worker.allow_root").
-func isRunningAsRoot() bool {
+func IsRunningAsRoot() bool {
 	return false
 }
 

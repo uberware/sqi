@@ -241,15 +241,21 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("worker registration: %w", err)
 	}
 
-	// ── Isolation provider ───────────────────────────────────────
+	// ── Isolation provider + session root ────────────────────────
 	//
-	// Built once at boot: POSIX credential switching via setuid/setgid, or —
-	// until a later task lands the LogonUser-based implementation — a Windows
-	// provider that refuses every request rather than silently running
-	// unisolated. isolation.required makes the worker refuse to start at all
-	// when it cannot actually isolate, rather than silently accepting
-	// isolated queues it cannot honor.
-	isolationProvider, err := buildIsolationProvider(cfg.Isolation, logger)
+	// Provider built once at boot: POSIX credential switching via
+	// setuid/setgid, or — until a later task lands the LogonUser-based
+	// implementation — a Windows provider that refuses every request rather
+	// than silently running unisolated. isolation.required makes the worker
+	// refuse to start at all when it cannot actually isolate, rather than
+	// silently accepting isolated queues it cannot honor.
+	//
+	// sessionRoot is deliberately separate from cfg.Worker.DataDir (which
+	// holds only the persistent worker-id file) — see effectiveSessionRoot's
+	// own doc. When this worker can actually assume another identity,
+	// resolveIsolation refuses to start rather than silently chmod'ing an
+	// ancestor that lacks the traversal bit isolated tasks need.
+	isolationProvider, sessionRoot, sessionRootMode, err := resolveIsolation(cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -264,7 +270,13 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// isolationProvider resolves run-as-user credentials for assignments that
 	// carry Isolation; cfg.Isolation.EnvPassthrough governs the additional
 	// daemon environment variables an isolated session may inherit.
-	sessionMgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation, logger)
+	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
+	// resolved to a location that must be traversable by another identity, or
+	// 0750 (the pre-split mode) for the non-root fallback under DataDir.
+	sessionMgr := session.NewManager(
+		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation, logger,
+		session.WithSessionRootMode(sessionRootMode),
+	)
 
 	// ── Log chunk publisher ────────────────────────────────────
 	//
@@ -370,6 +382,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.String("worker_id", workerID),
 		slog.String("worker_name", cfg.Worker.Name),
 		slog.String("data_dir", cfg.Worker.DataDir),
+		slog.String("session_root", sessionRoot),
 		slog.String("metrics_addr", cfg.Metrics.Addr),
 		slog.String("nats_url", nc.ConnectedUrl()),
 		slog.String("os", caps.OS),

@@ -52,8 +52,17 @@ func (s *Stager) useBuiltin() bool {
 
 // effectiveScratch returns the configured scratch base, or the TEMP default.
 func (s *Stager) effectiveScratch() string {
-	if s.scratchBase != "" {
-		return s.scratchBase
+	return EffectiveScratchBase(s.scratchBase)
+}
+
+// EffectiveScratchBase returns the scratch directory staging uses:
+// scratchDir verbatim if set, otherwise the platform TEMP-based default.
+// Exported so cmd/sqi-worker's boot-time isolation ancestor check (see
+// isolation.ValidateTraversable) validates the EXACT path StageIn will
+// actually use, rather than duplicating this default and risking drift.
+func EffectiveScratchBase(scratchDir string) string {
+	if scratchDir != "" {
+		return scratchDir
 	}
 	return filepath.Join(os.TempDir(), "sqi-staging")
 }
@@ -85,8 +94,50 @@ func (s *Stager) Configured() bool {
 // cred's uid/gid so the isolated task can read its staged inputs and write
 // into its staged output directories; without this the task would see
 // permission-denied on its own files.
+//
+// scratchBase (s.effectiveScratch()) and scratchBase/jobID are shared by every
+// attempt of every job — and, across jobs, by every different run-as-user
+// identity — so they are created traversable FROM BIRTH (0711) rather than
+// created narrow and widened after the fact: chowning either to any one
+// identity would grant that identity nothing extra (search doesn't require
+// ownership) while breaking every other attempt's/user's access, and
+// mutating an EXISTING directory's mode is exactly the anti-pattern this
+// codebase's isolation split eliminates elsewhere (see
+// workerconfig.LoadOrCreateWorkerID's doc). Creating fresh at 0711 is a
+// different, safe operation: os.MkdirAll never touches the mode of a
+// directory that already exists, so a pre-existing scratch_dir at a
+// narrower mode is caught by cmd/sqi-worker's boot-time
+// isolation.ValidateTraversable check instead of being silently widened
+// here. Only the per-attempt leaf (scratchDir itself, via ChownRecursive
+// below) is chowned, since it belongs to exactly this one attempt/identity.
+// Go's forkAndExecInChild sets process credentials BEFORE chdir, so without
+// both ancestors being traversable the isolated task cannot reach its own
+// staged inputs even though scratchDir itself is correctly chowned.
 func (s *Stager) StageIn(ctx context.Context, jobID, attemptID string, entries []protocol.StageEntry, cred *isolation.Credential) ([]protocol.PathMapRule, string, error) {
-	scratchDir := filepath.Join(s.effectiveScratch(), jobID, attemptID)
+	base := s.effectiveScratch()
+	jobDir := filepath.Join(base, jobID)
+	scratchDir := filepath.Join(jobDir, attemptID)
+
+	// Per-assignment ancestor validation — cred != nil is exactly the moment
+	// this attempt actually carries a run-as-user identity. cmd/sqi-worker's
+	// boot-time validateIsolationAncestors only runs when isolation.required
+	// is set (see its own doc: root and will-actually-isolate are not the same
+	// predicate), so every OTHER isolated attempt is validated here instead —
+	// the IDENTICAL check with the IDENTICAL actionable message, against the
+	// EXACT base this call is about to create — failing only THIS task rather
+	// than the whole worker.
+	if cred != nil {
+		if err := isolation.ValidateTraversable(base); err != nil {
+			return nil, "", fmt.Errorf("staging: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(base, 0o711); err != nil { //nolint:gosec // G301: 0711 (search-only for group/other) is the intentional traversable-from-birth mode; see the doc comment above
+		return nil, "", fmt.Errorf("staging: create scratch base %q: %w", base, err)
+	}
+	if err := os.MkdirAll(jobDir, 0o711); err != nil { //nolint:gosec // G301: same as above
+		return nil, "", fmt.Errorf("staging: create job scratch dir %q: %w", jobDir, err)
+	}
 	if err := os.MkdirAll(scratchDir, 0o750); err != nil {
 		return nil, "", fmt.Errorf("staging: create scratch dir %q: %w", scratchDir, err)
 	}

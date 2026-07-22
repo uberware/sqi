@@ -10,9 +10,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/staging"
 )
+
+// testUID and testGID return a uid/gid a fake account can be given that this
+// test can actually chown a scratch dir to without real privilege: normally
+// the current process's own uid/gid (a permitted no-op — see
+// isolation.ChownRecursive), but a fixed non-zero synthetic pair when the
+// current process IS root, since isolation.CheckNotPrivileged unconditionally
+// refuses a uid-0 account regardless of caller privilege (mirrors the same
+// helper in internal/worker/session's own tests).
+func testUID() uint32 {
+	if os.Getuid() == 0 {
+		return 65534
+	}
+	return uint32(os.Getuid())
+}
+
+func testGID() uint32 {
+	if os.Getuid() == 0 {
+		return 65534
+	}
+	return uint32(os.Getgid())
+}
 
 // writeFile is a test helper that creates a file with content, failing the test
 // on error.
@@ -61,6 +83,64 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 	}
 	if _, err := os.Stat(rules[0].DestinationPath); err != nil {
 		t.Fatalf("staged file missing: %v", err)
+	}
+}
+
+// TestStager_StageIn_IsolatedFailsOnNonTraversableScratchBase is Finding 4's
+// per-assignment guard for staging: cred != nil is exactly the moment this
+// attempt actually carries a run-as-user identity, so StageIn validates the
+// scratch base's ancestors — the IDENTICAL check (same actionable message)
+// cmd/sqi-worker runs at boot only when isolation.required is set — and
+// fails just THIS attempt rather than the whole worker.
+func TestStager_StageIn_IsolatedFailsOnNonTraversableScratchBase(t *testing.T) {
+	dir := t.TempDir()
+	narrow := filepath.Join(dir, "narrow")
+	if err := os.Mkdir(narrow, 0o700); err != nil {
+		t.Fatalf("create narrow ancestor: %v", err)
+	}
+	scratchBase := filepath.Join(narrow, "scratch")
+
+	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": {UID: testUID(), GID: testGID()}})
+	cred, err := provider.Resolve(context.Background(), isolation.Spec{User: "render"})
+	if err != nil {
+		t.Fatalf("resolve credential: %v", err)
+	}
+
+	s := staging.New(scratchBase, fakeSync(t), false, discard())
+	_, _, err = s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+		{Path: "/nope", Direction: "IN"},
+	}, cred)
+
+	if err == nil {
+		t.Fatal("expected an error naming the non-traversable ancestor; got nil")
+	}
+	if !strings.Contains(err.Error(), narrow) {
+		t.Errorf("err = %v, want it to name the offending ancestor %q", err, narrow)
+	}
+}
+
+// TestStager_StageIn_NonIsolatedSkipsAncestorValidation proves the
+// per-assignment check is scoped to isolated attempts only: the exact same
+// narrow ancestor that fails an isolated StageIn above must not stop a
+// nil-credential one — no other identity will ever need to chdir through it.
+func TestStager_StageIn_NonIsolatedSkipsAncestorValidation(t *testing.T) {
+	dir := t.TempDir()
+	narrow := filepath.Join(dir, "narrow")
+	if err := os.Mkdir(narrow, 0o700); err != nil {
+		t.Fatalf("create narrow ancestor: %v", err)
+	}
+	scratchBase := filepath.Join(narrow, "scratch")
+
+	srcRoot := t.TempDir()
+	srcFile := filepath.Join(srcRoot, "shot.ma")
+	writeFile(t, srcFile, "scene")
+
+	s := staging.New(scratchBase, fakeSync(t), false, discard())
+	_, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("StageIn (nil credential) under a narrow-but-self-owned ancestor: %v", err)
 	}
 }
 

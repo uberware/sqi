@@ -63,6 +63,11 @@ type Config struct {
 	// Ignored on POSIX, where the worker must already run as root.
 	CredentialStore CredentialStore
 
+	// Provider selects the Windows credential mechanism: "logon_user" or
+	// "s4u" (workerconfig.IsolationConfig.Provider). Ignored on POSIX, where
+	// the worker must already run as root and there is only one mechanism.
+	Provider string
+
 	// Logger records which identity-resolution path produced a Credential —
 	// notably when the POSIX provider falls back from pure-Go os/user to
 	// shelling out to NSS-aware tools (id(1)/getent(1)). Nil is replaced with

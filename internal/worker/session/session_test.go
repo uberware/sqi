@@ -29,7 +29,7 @@ func nopLogger() *slog.Logger {
 
 func TestManagerCreate_CreatesWorkDir(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-1"}
 	s, err := mgr.Create(context.Background(), msg)
@@ -68,7 +68,7 @@ func TestManagerCreate_WorkDirIsAbsolute(t *testing.T) {
 	// Run from a temp dir so the relative data_dir resolves somewhere clean.
 	t.Chdir(t.TempDir())
 
-	mgr := NewManager(filepath.Join(".run", "workers", "worker-2"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(".run", "workers", "worker-2", "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "job-1"})
 	if err != nil {
@@ -84,7 +84,7 @@ func TestManagerCreate_WorkDirIsAbsolute(t *testing.T) {
 
 func TestManagerCreate_UniqueSessionIDs(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-x"}
 	s1, err := mgr.Create(context.Background(), msg)
@@ -108,7 +108,7 @@ func TestManagerCreate_UniqueSessionIDs(t *testing.T) {
 
 func TestManagerCreate_NoEnvironments(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "j", Environments: nil}
 	s, err := mgr.Create(context.Background(), msg)
@@ -126,7 +126,7 @@ func TestManagerCreate_EnterEnvironment_Success(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// OnEnter writes a sentinel file to the working directory.
 	msg := &protocol.AssignMsg{
@@ -159,7 +159,7 @@ func TestManagerCreate_EnterEnvironment_RunsInDeclarationOrder(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// Each environment appends its name to a log file; we verify order.
 	msg := &protocol.AssignMsg{
@@ -208,7 +208,7 @@ func TestManagerCreate_EnterEnvironment_FailureTriggersTeardown(t *testing.T) {
 	// persists after the session working directory is deleted.
 	witnessDir := t.TempDir()
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// First env enters successfully. Second env fails.
 	// We assert that first env's OnExit was run (by writing to witnessDir).
@@ -272,7 +272,7 @@ func TestSession_ExitEnvironments_ReverseOrder(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -320,7 +320,7 @@ func TestSession_ExitEnvironments_Idempotent(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -364,7 +364,7 @@ func TestSession_ExitEnvironments_ContinuesTeardownOnFailure(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// First env's OnExit fails; second env's OnExit should still run.
 	msg := &protocol.AssignMsg{
@@ -408,7 +408,7 @@ func TestSession_ExitEnvironments_ContinuesTeardownOnFailure(t *testing.T) {
 
 func TestManagerCleanup_RemovesWorkDir(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -425,7 +425,7 @@ func TestManagerCleanup_RemovesWorkDir(t *testing.T) {
 
 func TestManagerCleanup_KeepFailedSessions_Retained(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, true /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), true /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -443,7 +443,7 @@ func TestManagerCleanup_KeepFailedSessions_Retained(t *testing.T) {
 func TestManagerCleanup_KeepFailedSessions_SuccessStillRemoved(t *testing.T) {
 	dataDir := t.TempDir()
 	// keepFailedSessions=true but the session succeeded → still remove.
-	mgr := NewManager(dataDir, true /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), true /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -460,7 +460,7 @@ func TestManagerCleanup_KeepFailedSessions_SuccessStillRemoved(t *testing.T) {
 
 func TestManagerCleanup_NoKeepFailed_FailedRemoved(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false /* keepFailedSessions */, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "j"})
 	if err != nil {
@@ -538,7 +538,7 @@ func TestWriteEmbeddedFiles_Basic(t *testing.T) {
 	files := []protocol.EmbeddedFile{
 		{Name: "hello.txt", Data: "hello world\n"},
 	}
-	if err := writeEmbeddedFiles(dir, files); err != nil {
+	if err := writeEmbeddedFiles(dir, files, nil); err != nil {
 		t.Fatalf("writeEmbeddedFiles: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "hello.txt"))
@@ -558,7 +558,7 @@ func TestWriteEmbeddedFiles_RunnableBit(t *testing.T) {
 	files := []protocol.EmbeddedFile{
 		{Name: "run.sh", Data: "#!/bin/sh\necho hi\n", Runnable: true},
 	}
-	if err := writeEmbeddedFiles(dir, files); err != nil {
+	if err := writeEmbeddedFiles(dir, files, nil); err != nil {
 		t.Fatalf("writeEmbeddedFiles: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "run.sh"))
@@ -575,7 +575,7 @@ func TestWriteEmbeddedFiles_PathTraversalRejected(t *testing.T) {
 	files := []protocol.EmbeddedFile{
 		{Name: "evil", Filename: "../escape.txt", Data: "oops"},
 	}
-	if err := writeEmbeddedFiles(dir, files); err == nil {
+	if err := writeEmbeddedFiles(dir, files, nil); err == nil {
 		t.Error("expected error for path traversal filename; got nil")
 	}
 }
@@ -586,11 +586,71 @@ func TestWriteEmbeddedFiles_FallbackToName(t *testing.T) {
 	files := []protocol.EmbeddedFile{
 		{Name: "by-name.txt", Filename: "", Data: "content"},
 	}
-	if err := writeEmbeddedFiles(dir, files); err != nil {
+	if err := writeEmbeddedFiles(dir, files, nil); err != nil {
 		t.Fatalf("writeEmbeddedFiles: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "by-name.txt")); err != nil {
 		t.Errorf("expected file by-name.txt; got: %v", err)
+	}
+}
+
+// TestWriteEmbeddedFiles_DuplicateNameLastWins is the regression guard for a
+// hardlink-TOCTOU fix (isolation.WriteFileFchown's O_EXCL-only predecessor)
+// that had turned a shape the codebase explicitly documents as legal into a
+// hard task failure: two embedded files sharing the same Name — two
+// environments each declaring one named "run", or an environment and the
+// step both declaring "run" — must overwrite in declaration order
+// (last-wins, matching fmtres.AddFileVars's own doc: "If two files share the
+// same Name, the later entry overwrites the earlier in the scope"), not
+// fail the write. This is the no-isolation path (nil credential); see
+// TestWriteEmbeddedFiles_DuplicateNameLastWins_Isolated for the isolated one.
+func TestWriteEmbeddedFiles_DuplicateNameLastWins(t *testing.T) {
+	dir := t.TempDir()
+	files := []protocol.EmbeddedFile{
+		{Name: "run", Data: "first-entry"},
+		{Name: "run", Data: "second-and-final"},
+	}
+	if err := writeEmbeddedFiles(dir, files, nil); err != nil {
+		t.Fatalf("writeEmbeddedFiles (nil credential): %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "run"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(got) != "second-and-final" {
+		t.Errorf("content = %q, want %q (last-wins)", got, "second-and-final")
+	}
+}
+
+// TestWriteEmbeddedFiles_DuplicateNameLastWins_Isolated is the isolated
+// counterpart of TestWriteEmbeddedFiles_DuplicateNameLastWins: the same
+// last-wins overwrite must hold when a non-nil credential is carried, so the
+// fix is not accidentally scoped to only the no-isolation call shape.
+func TestWriteEmbeddedFiles_DuplicateNameLastWins_Isolated(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chown semantics are POSIX-specific")
+	}
+	dir := t.TempDir()
+	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
+	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
+	cred, err := provider.Resolve(context.Background(), isolation.Spec{User: "render"})
+	if err != nil {
+		t.Fatalf("resolve credential: %v", err)
+	}
+
+	files := []protocol.EmbeddedFile{
+		{Name: "run", Data: "first-entry"},
+		{Name: "run", Data: "second-and-final"},
+	}
+	if err := writeEmbeddedFiles(dir, files, cred); err != nil {
+		t.Fatalf("writeEmbeddedFiles (non-nil credential): %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "run"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(got) != "second-and-final" {
+		t.Errorf("content = %q, want %q (last-wins) on the isolated path", got, "second-and-final")
 	}
 }
 

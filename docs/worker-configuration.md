@@ -209,8 +209,9 @@ worker:
 | **Default** | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) |
 | **Env var** | `SQI_WORKER_DATA_DIR` |
 
-Directory used to persist the worker ID file (`worker.id`) and session
-working directories. Created automatically on first start.
+Directory used to persist the worker ID file (`worker.id`) ONLY. Created
+automatically on first start, and never widened for run-as-user traversal —
+it stays private (0700) for as long as the worker exists.
 
 The worker ID file ensures the server can correlate this worker across
 restarts. Do not delete `worker.id` unless you intend to re-register as a new
@@ -220,10 +221,65 @@ Each worker instance needs its own `data_dir`: two workers sharing one would
 load the same `worker.id` and collide on the server. This is the key setting
 when [running multiple workers on one host](#running-multiple-workers-on-one-host).
 
+Session working directories are a SEPARATE location — see
+[`worker.session_dir`](#workersession_dir) below — not a child of `data_dir`
+as they were before run-as-user isolation existed.
+
 ```yaml
 worker:
   data_dir: "/var/lib/sqi-worker"
 ```
+
+---
+
+### `worker.session_dir`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` → resolved at startup (see below) |
+| **Env var** | `SQI_WORKER_SESSION_DIR` |
+
+Directory under which session working directories are created
+(`<session_dir>/<sessionID>/`). Deliberately separate from `data_dir`: this
+is ephemeral scratch that, when run-as-user isolation (`isolation:` in the
+config file — see `config/sqi-worker.example.yaml`) is in use, must be
+traversable by whichever run-as-user identity a session resolves to, while
+`data_dir` holds the persistent worker-id and must stay private.
+
+Left unset, the effective value is resolved at startup:
+
+- **Running as root** — `/var/lib/sqi-worker-sessions`, created traversable
+  (`0711`) from birth. Deliberately a SIBLING of, never a descendant of,
+  `data_dir`'s own HOME-unset fallback (`/var/lib/sqi-worker`): nesting the
+  two would make `LoadOrCreateWorkerID`'s own `0700` `data_dir` an ancestor
+  of the session root, and the boot-time traversal check below would then
+  refuse to start over a directory sqi itself just created. Its ancestors
+  (`/var`, `/var/lib`) are `0755` on every real Linux/macOS installation, so
+  nothing needs to be created or widened specifically for this.
+- **Otherwise** — `<data_dir>/sessions`, created at `0750` (the location and
+  mode used before this split existed). Real run-as-user isolation cannot
+  function without root regardless of directory permissions, so there is
+  nothing to protect by moving it, or widening it, for a worker that can
+  never use it anyway.
+
+```yaml
+worker:
+  session_dir: "/var/lib/sqi-worker-sessions"
+```
+
+> **Never silently widened.** Unlike an earlier implementation, sqi will not
+> `chmod` an existing directory to make it traversable — a directory is
+> either created fresh at the correct mode, or the worker refuses to start
+> with an actionable error naming the exact ancestor that needs
+> `chmod o+x` and why (see `internal/worker/isolation.ValidateTraversable`).
+> At **boot**, this check runs only when `isolation.required: true` — an
+> operator who never sets that on a worker that happens to run as root (but
+> was never actually going to receive an isolated assignment) must still be
+> able to start with a deliberately restricted `staging.scratch_dir` or
+> `session_dir`. Otherwise, the identical check (same actionable message)
+> runs the moment an assignment that actually carries run-as-user isolation
+> arrives, failing that one task rather than the whole worker.
 
 ---
 
@@ -548,6 +604,15 @@ per-worker opt-in, distinct from the automatic fallback described under
 > `sync_command` (`rsync`, `aws s3 cp`, etc.) to move data between them —
 > configure one explicitly rather than relying on the built-in copy.
 
+> **`sync_command` MUST NOT create hardlinks into scratch** when run-as-user
+> isolation is in use — e.g. `cp -al`, or `rsync --link-dest`. A hardlink IS
+> the file: it shares one inode with whatever it links to, so chowning the
+> scratch copy to the target run-as-user identity chowns the ORIGINAL file
+> too, and no permission fix-up sqi applies afterward can separate the two —
+> there is nothing left to distinguish. `rsync -a` (no `--link-dest`) and the
+> built-in copy above are both safe: they always copy bytes into a fresh
+> inode.
+
 ### `staging.defaults`
 
 | | |
@@ -827,6 +892,7 @@ log_streamer:
 | `worker.name` | string | hostname | `SQI_WORKER_NAME` | — |
 | `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
 | `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) | `SQI_WORKER_DATA_DIR` | — |
+| `worker.session_dir` | string | `""` → resolved at startup | `SQI_WORKER_SESSION_DIR` | — |
 | `worker.compute_location` | string | `""` | `SQI_WORKER_COMPUTE_LOCATION` | — |
 | `worker.capability_tags` | []string | `[]` | `SQI_WORKER_CAPABILITY_TAGS` | — |
 | `worker.heartbeat_interval` | duration | `15s` | `SQI_WORKER_HEARTBEAT_INTERVAL` | — |

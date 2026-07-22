@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,14 @@ func TestDefault_SanityValues(t *testing.T) {
 	// nats.url should be empty by default — server address must be supplied.
 	if cfg.NATS.URL != "" {
 		t.Errorf("nats.url default should be empty, got %q", cfg.NATS.URL)
+	}
+	// worker.session_dir must default to empty: the effective session root is
+	// resolved at worker startup (cmd/sqi-worker's effectiveSessionRoot), not
+	// baked into this package's Default() — an empty value here is what lets
+	// that resolution depend on the FINAL data_dir/root-ness once every config
+	// layer (file, env, flags) has been applied.
+	if cfg.Worker.SessionDir != "" {
+		t.Errorf("worker.session_dir default should be empty, got %q", cfg.Worker.SessionDir)
 	}
 }
 
@@ -117,12 +126,14 @@ func TestLoad_EnvOverridesDefaults(t *testing.T) {
 	t.Setenv("SQI_WORKER_DISCOVERY_ENABLE_MDNS", "false")
 	t.Setenv("SQI_WORKER_DISCOVERY_MDNS_TIMEOUT", "10s")
 	t.Setenv("SQI_WORKER_ALLOW_ROOT", "true")
+	t.Setenv("SQI_WORKER_SESSION_DIR", "/custom/sessions")
 
 	cfg, err := Load("", FlagOverrides{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
+	assertStr(t, "worker.session_dir", cfg.Worker.SessionDir, "/custom/sessions")
 	assertStr(t, "nats.url", cfg.NATS.URL, "nats://env-only:4222")
 	assertStr(t, "log.level", cfg.Log.Level, "warn")
 	assertStr(t, "log.format", cfg.Log.Format, "text")
@@ -347,6 +358,87 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	errs := Validate(cfg)
 	if len(errs) < 3 {
 		t.Errorf("expected at least 3 errors for broken config, got %d: %v", len(errs), errs)
+	}
+}
+
+// ── Validate — isolation.required / worker.allow_root contradiction ──────────
+
+// TestValidate_IsolationRequiredWithoutAllowRootIsRejected is the guard for
+// the Minor fix: isolation.required demands the worker be able to assume
+// another OS identity, but on POSIX the only mechanism today (setuid/setgid)
+// requires the worker itself to run as root, and worker.allow_root=false
+// makes the worker refuse to even start as root. Configuring both together is
+// a contradiction that would otherwise surface only as a confusing
+// root-user-refusal error that never mentions isolation at all.
+func TestValidate_IsolationRequiredWithoutAllowRootIsRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contradiction is POSIX-specific: Windows isolation does not require the worker itself to run privileged")
+	}
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Isolation.Required = true
+	cfg.Worker.AllowRoot = false
+
+	errs := Validate(cfg)
+	if !containsField(errs, "isolation.required") {
+		t.Errorf("expected isolation.required error for the required+!allow_root contradiction, got %v", errs)
+	}
+}
+
+func TestValidate_IsolationRequiredWithAllowRootIsFine(t *testing.T) {
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Isolation.Required = true
+	cfg.Worker.AllowRoot = true
+
+	errs := Validate(cfg)
+	if containsField(errs, "isolation.required") {
+		t.Errorf("expected no isolation.required error when allow_root is true, got %v", errs)
+	}
+}
+
+func TestValidate_IsolationNotRequiredWithoutAllowRootIsFine(t *testing.T) {
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Isolation.Required = false
+	cfg.Worker.AllowRoot = false
+
+	errs := Validate(cfg)
+	if containsField(errs, "isolation.required") {
+		t.Errorf("expected no isolation.required error when isolation is not required, got %v", errs)
+	}
+}
+
+// ── Validate — env_passthrough glob syntax ────────────────────────────────────
+
+// TestValidate_MalformedEnvPassthroughGlobIsRejected is the guard for the
+// Minor fix: envutil.allowedName's `filepath.Match(...); err == nil && ok`
+// silently treats a malformed glob (e.g. an unterminated character class) as
+// "does not match" forever, rather than surfacing the operator's typo. That
+// swallowing happens deep in the hot path (every inherited env var, every
+// isolated task); the config-load-time check here is the only place an
+// operator would ever see the mistake.
+func TestValidate_MalformedEnvPassthroughGlobIsRejected(t *testing.T) {
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Isolation.EnvPassthrough = []string{"FLEXLM_*", "["}
+
+	errs := Validate(cfg)
+	if !containsField(errs, "isolation.env_passthrough[1]") {
+		t.Errorf("expected isolation.env_passthrough[1] error for the malformed glob, got %v", errs)
+	}
+}
+
+func TestValidate_ValidEnvPassthroughGlobsAreFine(t *testing.T) {
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Isolation.EnvPassthrough = []string{"FLEXLM_*", "ADSKFLEX_*", "?_LICENSE"}
+
+	errs := Validate(cfg)
+	for _, e := range errs {
+		if e.Field == "isolation.env_passthrough[0]" || e.Field == "isolation.env_passthrough[1]" || e.Field == "isolation.env_passthrough[2]" {
+			t.Errorf("expected no env_passthrough error for valid globs, got %v", errs)
+		}
 	}
 }
 

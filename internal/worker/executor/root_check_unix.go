@@ -11,9 +11,15 @@ import (
 	"os"
 )
 
-// isRunningAsRoot returns true when the effective user ID of the worker
+// IsRunningAsRoot returns true when the effective user ID of the worker
 // process is 0 (root) on Linux or macOS.
-func isRunningAsRoot() bool {
+//
+// Exported (not just an internal CheckRootUser detail) because
+// cmd/sqi-worker also needs it to decide the default run-as-user session
+// root: /var/lib/sqi-worker-sessions when root (its ancestors are already
+// traversable), falling back to the pre-split location under
+// worker.data_dir otherwise. See cmd/sqi-worker's effectiveSessionRoot.
+func IsRunningAsRoot() bool {
 	return os.Geteuid() == 0
 }
 
@@ -25,7 +31,7 @@ func isRunningAsRoot() bool {
 // function returns a non-nil error the caller should treat it as fatal and
 // exit with a non-zero code.
 func CheckRootUser(allowRoot bool, logger *slog.Logger) error {
-	if !isRunningAsRoot() {
+	if !IsRunningAsRoot() {
 		return nil
 	}
 	if allowRoot {

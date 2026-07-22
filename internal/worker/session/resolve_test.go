@@ -23,7 +23,7 @@ func TestEnterEnvironment_ResolvesParamInOnEnter(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:         "j",
@@ -62,7 +62,7 @@ func TestEnterEnvironment_ResolvesVariableValue(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:         "j",
@@ -101,7 +101,7 @@ func TestEnterEnvironment_ResolvesSessionWorkingDirectory(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -135,7 +135,7 @@ func TestEnterEnvironment_ResolvesSessionWorkingDirectory(t *testing.T) {
 // environment (and therefore session creation) with a clear, naming error.
 func TestEnterEnvironment_TaskParamInOnEnterFails(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -166,7 +166,7 @@ func TestEnterEnvironment_TaskParamInOnEnterFails(t *testing.T) {
 // variable VALUE referencing Task.Param.* fails the environment cleanly.
 func TestEnterEnvironment_TaskParamInVariableFails(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:      "j",
@@ -200,7 +200,7 @@ func TestEnterEnvironment_TaskParamInVariableFails(t *testing.T) {
 // scope) before the file is materialized.
 func TestEnterEnvironment_ResolvesEmbeddedFileData(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:         "j",
@@ -238,7 +238,7 @@ func TestEnterEnvironment_EnvFileVarInOnEnter(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -276,7 +276,7 @@ func TestEnterEnvironment_EnvFileVarInOnEnter(t *testing.T) {
 // the environment scope — fails the environment (and session creation) cleanly.
 func TestEnterEnvironment_TaskParamInEmbeddedFileDataFails(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -311,7 +311,7 @@ func TestExitEnvironment_EnvFileVarInOnExit(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -357,7 +357,7 @@ func TestExitEnvironment_ResolvesParamInOnExit(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:         "j",
@@ -402,7 +402,7 @@ func TestExitEnvironment_TaskParamInOnExitContinuesTeardown(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// Entered in order: good, bad.  ExitEnvironments runs in reverse: bad
 	// (fails to resolve), good (must still run and write the sentinel file).

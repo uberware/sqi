@@ -26,7 +26,7 @@ func TestDynamicEnv_SetVisibleToSubsequentEnv(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -68,7 +68,7 @@ func TestDynamicEnv_UnsetRemovesStaticVariable(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -112,7 +112,7 @@ func TestDynamicEnv_UnsetRemovesEarlierDirective(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -157,7 +157,7 @@ func TestDynamicEnv_RedactedValueNotLoggedButApplied(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -217,7 +217,7 @@ func TestDynamicEnv_LongLineDoesNotFailAction(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	// The onEnter script:
 	//   1. Emits an openjd_env directive (must be applied to the session).
@@ -268,7 +268,7 @@ func TestDynamicEnv_LongLineDoesNotFailAction(t *testing.T) {
 // env vars against a merged all-environments scope.
 func TestStaticEnv_MergedResolvedAndCloned(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:         "j",

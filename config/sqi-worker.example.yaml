@@ -79,13 +79,31 @@ worker:
   # Type: string   Env: SQI_WORKER_FARM_ID
   farm_id: ""
 
-  # Directory used to persist the worker ID file (worker.id) and session
-  # working directories. Created automatically on first start.
-  # The worker ID file ensures the server can correlate this worker across
-  # restarts. Do not delete worker.id unless you intend to re-register as a
-  # new worker.
+  # Directory used to persist the worker ID file (worker.id) ONLY. Created
+  # automatically on first start, and never widened for run-as-user
+  # traversal — it stays private (0700). The worker ID file ensures the
+  # server can correlate this worker across restarts. Do not delete
+  # worker.id unless you intend to re-register as a new worker.
   # Type: string   Env: SQI_WORKER_DATA_DIR
   data_dir: "~/.sqi/worker"  # Linux/macOS default; %APPDATA%\sqi\worker on Windows
+
+  # Directory under which session working directories are created
+  # (<session_dir>/<sessionID>/). Deliberately separate from data_dir: this
+  # is ephemeral scratch that, when isolation (see below) is in use, must be
+  # traversable by whichever run-as-user identity a session resolves to,
+  # while data_dir holds the persistent worker-id and must stay private.
+  # Left unset (the default), resolved at startup:
+  #   - running as root: /var/lib/sqi-worker-sessions — a SIBLING of, never a
+  #     descendant of, data_dir's own HOME-unset fallback (/var/lib/sqi-worker),
+  #     so a 0700 data_dir can never end up an ancestor of the session root.
+  #     Its ancestors are 0755 on every real distribution, so nothing needs
+  #     widening.
+  #   - otherwise: <data_dir>/sessions (0750), the pre-split location and
+  #     mode — real run-as-user isolation cannot function without root
+  #     regardless of directory permissions, so there is nothing to protect
+  #     here.
+  # Type: string   Env: SQI_WORKER_SESSION_DIR
+  session_dir: ""
 
   # Named compute location (storage location name as configured in sqi-server)
   # where this worker's filesystem lives. Used for resolved-mode path mapping:
@@ -279,6 +297,12 @@ diagnostics:
 #   # set to the sentinel "builtin", sqi copies the bytes itself instead of
 #   # shelling out (local/dev convenience — not a substitute for a real
 #   # sync_command on a farm spanning multiple compute locations).
+#   # MUST NOT create hardlinks into scratch (e.g. "cp -al", "rsync
+#   # --link-dest") when isolation (run-as-user) is in use: a hardlink IS the
+#   # file, sharing one inode with whatever it links to — no chown or
+#   # permission fix-up sqi applies to scratch can separate the two ever
+#   # again. "rsync -a" and the builtin copy above are both safe (they copy
+#   # bytes into a new inode).
 #   # Type: string   Env: — (config file only)
 #   sync_command: "rsync -a {src} {dest}"
 #

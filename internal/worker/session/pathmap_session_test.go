@@ -29,7 +29,7 @@ func TestCreate_WritesPathMappingFileAndExposesSessionVars(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -120,7 +120,7 @@ func TestCreate_NoPathMapExposesFalseAndNoFile(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",
@@ -168,7 +168,7 @@ func TestCreate_NoPathMapExposesFalseAndNoFile(t *testing.T) {
 func TestCreate_NoTranslationFileWhenDeliveryDisabled(t *testing.T) {
 	// PathMap present, but deliveries omit translation_file -> no file written.
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 	msg := &protocol.AssignMsg{
 		JobID:  "job1",
 		TaskID: "task1",
@@ -196,7 +196,7 @@ func TestCreate_NoTranslationFileWhenDeliveryDisabled(t *testing.T) {
 // reference does not silently resolve to an empty path).
 func TestCreate_PathMappingRulesFileReferenceFailsWithoutRules(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID: "j",

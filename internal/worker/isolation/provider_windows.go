@@ -26,21 +26,40 @@ type Credential struct {
 // Close releases the credential. The placeholder holds no OS handle.
 func (*Credential) Close() error { return nil }
 
-type windowsProvider struct{}
+// windowsProvider carries the configured credential mechanism (Config.Provider,
+// "logon_user" or "s4u") purely so error messages name it accurately. Neither
+// mechanism is implemented yet — every request is refused regardless of which
+// was selected — but wiring the value through (rather than discarding
+// Config.Provider entirely) means the eventual LogonUser/S4U implementation
+// has a place to dispatch on, and an operator's misconfigured value is
+// visible in the error rather than silently ignored.
+type windowsProvider struct {
+	mechanism string
+}
 
 // newProvider returns the Windows provider. Until a later task implements
-// LogonUser-based switching, it refuses every request rather than silently
-// running unisolated.
-func newProvider(_ Config) (Provider, error) {
-	return windowsProvider{}, nil
+// LogonUser/S4U-based switching, it refuses every request rather than
+// silently running unisolated.
+func newProvider(cfg Config) (Provider, error) {
+	return windowsProvider{mechanism: cfg.Provider}, nil
 }
 
-func (windowsProvider) Resolve(_ context.Context, spec Spec) (*Credential, error) {
-	return nil, fmt.Errorf("isolation: windows run-as-user is not yet implemented (user %q): %w", spec.User, ErrNotCapable)
+// label returns the configured mechanism name, defaulting to "logon_user"
+// (workerconfig's own default) when unset so an unconfigured worker's error
+// message still names a concrete mechanism.
+func (p windowsProvider) label() string {
+	if p.mechanism == "" {
+		return "logon_user"
+	}
+	return p.mechanism
 }
 
-func (windowsProvider) Capable() error {
-	return fmt.Errorf("%w: windows run-as-user is not yet implemented", ErrNotCapable)
+func (p windowsProvider) Resolve(_ context.Context, spec Spec) (*Credential, error) {
+	return nil, fmt.Errorf("isolation: windows run-as-user (%s) is not yet implemented (user %q): %w", p.label(), spec.User, ErrNotCapable)
+}
+
+func (p windowsProvider) Capable() error {
+	return fmt.Errorf("%w: windows run-as-user (%s) is not yet implemented", ErrNotCapable, p.label())
 }
 
 // newFakeCredential builds a Credential from a fake account for tests. It

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,69 +21,150 @@ import (
 // ── Test scaffolding ──────────────────────────────────────────────────────────
 
 // recordingApplier records whether applyCredential (the isolation.Apply seam)
-// was invoked while it was installed. Tests scope each installation to a
-// single call site (onEnter here; the task-process launch is covered
-// separately in internal/worker/executor/run_test.go), so a simple "was it
-// called" is enough to prove that site attaches a credential — the isolation
-// package's own fakes cannot verify the actual OS identity switch (that needs
-// a real OS; see make test-isolation), only that the call happened at all.
+// was invoked while it was installed, and captures both arguments it was
+// called with. Tests scope each installation to a single call site (onEnter
+// here; the task-process launch is covered separately in
+// internal/worker/executor/run_test.go). Capturing cmd and cred (rather than
+// just a called bool) matters: a guard that only recorded "was it called"
+// would still pass unchanged if the call site started passing a nil
+// credential — the isolation package's own fakes cannot verify the actual OS
+// identity switch (that needs a real OS; see make test-isolation), but they
+// CAN verify that a real, non-nil, session-owned credential reached the seam.
 type recordingApplier struct {
 	mu     sync.Mutex
 	called bool
+	cmd    *exec.Cmd
+	cred   *isolation.Credential
 }
 
-func (r *recordingApplier) record() {
+func (r *recordingApplier) record(cmd *exec.Cmd, cred *isolation.Credential) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.called = true
+	r.cmd = cmd
+	r.cred = cred
 }
 
-// calledFor reports whether Apply was invoked. name documents which call site
-// the test expects to have triggered it; it is not itself matched against
-// anything, since each test installs the seam around exactly one call site.
-func (r *recordingApplier) calledFor(_ string) bool {
+// snapshot returns whether Apply was invoked and the cmd/cred it was invoked
+// with.
+func (r *recordingApplier) snapshot() (called bool, cmd *exec.Cmd, cred *isolation.Credential) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.called
+	return r.called, r.cmd, r.cred
+}
+
+// testUID and testGID return a uid/gid a fake account can be given that
+// session creation can actually chown its workdir to without real privilege:
+// normally the current process's own uid/gid (chowning a file to the uid it
+// already has needs no privilege — see isolation.SecureWorkDir), but a fixed
+// non-zero synthetic pair when the current process IS root. Two reasons the
+// root case needs its own value: isolation.CheckNotPrivileged unconditionally
+// refuses a uid-0 account (so os.Getuid() itself cannot be used as a fake
+// account's UID when tests run as root, e.g. inside a container in CI — a
+// routine setup, not a hypothetical one), and root can chown to ANY uid
+// regardless, so there is no privilege reason to prefer the process's own.
+// 65534 is the conventional "nobody" uid/gid on Linux — any fixed non-zero
+// value would do.
+func testUID() uint32 {
+	if os.Getuid() == 0 {
+		return 65534
+	}
+	return uint32(os.Getuid())
+}
+
+func testGID() uint32 {
+	if os.Getuid() == 0 {
+		return 65534
+	}
+	return uint32(os.Getgid())
 }
 
 // newTestSessionWithCredential builds a Session whose assignment carries
-// run_as_user isolation, resolved against a fake account with the CURRENT
-// process's own uid/gid — chowning a file to the uid it already has is
-// permitted without root (see isolation.SecureWorkDir), which is what lets
-// this test run without privilege.
+// run_as_user isolation, resolved against a fake account whose uid/gid
+// session creation can actually chown its workdir to without real privilege
+// (see testUID/testGID) — which is what lets this test run without privilege.
 //
-// applied's applyCredential wrapper records the call and returns nil WITHOUT
-// delegating to the real isolation.Apply: actually switching the OS identity
-// of a launched process is exactly what a fake cannot verify (real uid/gid
-// switching needs a real OS — see make test-isolation and isolation.NewFake's
-// own doc). This test proves the call site invokes Apply at all, which is
-// the class of bug ("onEnter forgot to carry the credential") this guard
-// exists to catch.
+// applied's applyCredential wrapper records the call (both arguments) and
+// returns nil WITHOUT delegating to the real isolation.Apply: actually
+// switching the OS identity of a launched process is exactly what a fake
+// cannot verify (real uid/gid switching needs a real OS — see
+// make test-isolation and isolation.NewFake's own doc). This test proves the
+// call site invokes Apply with a real, non-nil credential, which is the class
+// of bug ("onEnter forgot to carry the credential", or carried a nil one)
+// this guard exists to catch.
 func newTestSessionWithCredential(t *testing.T, applied *recordingApplier) *Session {
 	t.Helper()
 
 	orig := applyCredential
-	applyCredential = func(_ *exec.Cmd, _ *isolation.Credential) error {
-		applied.record()
+	applyCredential = func(cmd *exec.Cmd, cred *isolation.Credential) error {
+		applied.record(cmd, cred)
 		return nil
 	}
 	t.Cleanup(func() { applyCredential = orig })
 
 	dataDir := t.TempDir()
-	account := isolation.FakeAccount{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
+	makeDataDirAncestorsTraversableForTest(t, dataDir)
+	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
-	mgr := NewManager(dataDir, false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-iso",
 		Isolation: &protocol.IsolationSpec{User: "render"},
 	}
 	s, err := mgr.Create(context.Background(), msg)
+	skipIfEnvironmentBlocksSessionTraversal(t, err, dataDir)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return s
+}
+
+// makeDataDirAncestorsTraversableForTest is this package's analog of
+// internal/worker/isolation/workdir_unix_test.go's own
+// makeAncestorsTraversableForTest: since Finding 4, Manager.Create validates
+// every ancestor of the session root for an isolated assignment (the
+// per-assignment counterpart of cmd/sqi-worker's boot-time check), so a test
+// dataDir built on plain t.TempDir() now needs the same traversal-fixture
+// treatment production callers get from a real, operator-provisioned
+// location. t.TempDir()'s own return value sits under a testing-package-owned
+// parent (created via os.MkdirTemp, hardcoded 0700 regardless of umask) that
+// this test process DOES own and can chmod, itself typically sitting under
+// the OS's own per-user private temp root (e.g. macOS's
+// /var/folders/<x>/<y>/T), which some sandboxed dev environments refuse to
+// chmod regardless of Unix ownership — see
+// skipIfEnvironmentBlocksSessionTraversal for how that residual case is
+// handled. Capped at a handful of levels for the same reason as the
+// isolation package's own analog.
+func makeDataDirAncestorsTraversableForTest(t *testing.T, dir string) {
+	t.Helper()
+	const maxLevels = 4
+	for range maxLevels {
+		if err := os.Chmod(dir, 0o711); err != nil {
+			return // reached a directory this test process does not own; stop climbing
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return // reached the filesystem root
+		}
+		dir = parent
+	}
+}
+
+// skipIfEnvironmentBlocksSessionTraversal is this package's analog of
+// isolation's own skipIfEnvironmentBlocksTraversalFixture: it reports (via
+// t.Skip) only when err names a directory OUTSIDE ownedDir's own tree — an
+// OS-imposed ancestor makeDataDirAncestorsTraversableForTest could not fix
+// regardless of ownership — leaving a failure INSIDE ownedDir (a real defect
+// in the code under test) to the caller's own error handling untouched.
+func skipIfEnvironmentBlocksSessionTraversal(t *testing.T, err error, ownedDir string) {
+	t.Helper()
+	if err == nil || strings.Contains(err.Error(), ownedDir) {
+		return
+	}
+	t.Skipf("environment appears to block making a temp-dir ancestor traversable "+
+		"(chmod likely restricted by a sandbox regardless of Unix ownership), "+
+		"which this fixture cannot work around: %v", err)
 }
 
 // newTestSessionWithoutCredential builds a Session for an assignment that
@@ -91,7 +173,7 @@ func newTestSessionWithoutCredential(t *testing.T) *Session {
 	t.Helper()
 
 	dataDir := t.TempDir()
-	mgr := NewManager(dataDir, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "job-plain"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -144,8 +226,18 @@ func TestEnvironmentActionsCarryCredential(t *testing.T) {
 		t.Fatalf("runEnvironmentAction: %v", err)
 	}
 
-	if !applied.calledFor("onEnter") {
+	called, cmd, cred := applied.snapshot()
+	if !called {
 		t.Fatal("onEnter must run under the session credential, not the daemon")
+	}
+	if cmd == nil {
+		t.Fatal("applyCredential was called with a nil *exec.Cmd")
+	}
+	if cred == nil {
+		t.Fatal("applyCredential was called with a nil credential — a guard that discarded both arguments would not catch onEnter passing nil")
+	}
+	if cred != sess.Credential() {
+		t.Error("applyCredential was called with a credential other than the session's own")
 	}
 }
 
@@ -221,6 +313,125 @@ func TestManagerCreate_NonIsolatedWorkDirUnchanged(t *testing.T) {
 	}
 }
 
+// TestManagerCreate_SessionRootModeDefaultsTo0711 proves NewManager's default
+// (no WithSessionRootMode option given) still creates a fresh session root at
+// 0711 — the mode every call site predating WithSessionRootMode relies on, so
+// this option's addition must not silently change behavior for any of them.
+func TestManagerCreate_SessionRootModeDefaultsTo0711(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chown/chmod semantics are POSIX-specific")
+	}
+
+	dataDir := t.TempDir()
+	sessionRoot := filepath.Join(dataDir, "sessions")
+	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	msg := &protocol.AssignMsg{JobID: "job-default-mode"}
+	sess, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Cleanup(context.Background(), sess, false) })
+
+	if got := statMode(t, sessionRoot); got != 0o711 {
+		t.Errorf("session root mode = %o, want 0711 (the default, unchanged by adding WithSessionRootMode)", got)
+	}
+}
+
+// TestManagerCreate_SessionRootModeHonorsOption proves WithSessionRootMode
+// overrides the default: cmd/sqi-worker's effectiveSessionRoot picks 0750 for
+// the non-root DataDir fallback (the pre-split mode, restored for
+// byte-for-byte backward compatibility — see its own doc), and this is the
+// mechanism that lets it do so without touching every other NewManager call
+// site in this codebase.
+func TestManagerCreate_SessionRootModeHonorsOption(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chown/chmod semantics are POSIX-specific")
+	}
+
+	dataDir := t.TempDir()
+	sessionRoot := filepath.Join(dataDir, "sessions")
+	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger(), WithSessionRootMode(0o750))
+	msg := &protocol.AssignMsg{JobID: "job-explicit-mode"}
+	sess, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Cleanup(context.Background(), sess, false) })
+
+	if got := statMode(t, sessionRoot); got != 0o750 {
+		t.Errorf("session root mode = %o, want 0750 (WithSessionRootMode override)", got)
+	}
+}
+
+// statMode returns path's permission bits.
+func statMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %q: %v", path, err)
+	}
+	return info.Mode().Perm()
+}
+
+// ── Per-assignment ancestor validation (Finding 4) ────────────────────────────
+
+// TestManagerCreate_IsolatedAssignmentFailsOnNonTraversableSessionRoot is the
+// per-assignment guard: when an assignment actually carries run_as_user
+// isolation, Create validates the session root's ancestors — the IDENTICAL
+// check (same actionable message) cmd/sqi-worker runs at boot only when
+// isolation.required is set — and fails just THIS task (a plain error
+// return, never a worker crash) rather than letting the target uid fail a
+// chdir it cannot make.
+func TestManagerCreate_IsolatedAssignmentFailsOnNonTraversableSessionRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits only")
+	}
+	dir := t.TempDir()
+	narrow := filepath.Join(dir, "narrow")
+	if err := os.Mkdir(narrow, 0o700); err != nil {
+		t.Fatalf("create narrow ancestor: %v", err)
+	}
+	sessionRoot := filepath.Join(narrow, "sessions")
+
+	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
+	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
+	mgr := NewManager(sessionRoot, false, provider, workerconfig.IsolationConfig{}, nopLogger())
+
+	msg := &protocol.AssignMsg{JobID: "job-narrow", Isolation: &protocol.IsolationSpec{User: "render"}}
+	_, err := mgr.Create(context.Background(), msg)
+
+	if err == nil {
+		t.Fatal("expected an error naming the non-traversable ancestor; got nil")
+	}
+	if !strings.Contains(err.Error(), narrow) {
+		t.Errorf("err = %v, want it to name the offending ancestor %q", err, narrow)
+	}
+}
+
+// TestManagerCreate_NonIsolatedAssignmentSkipsAncestorValidation proves the
+// per-assignment check is scoped to isolated assignments only: the exact
+// same narrow ancestor that fails an isolated Create above must not stop a
+// non-isolated one — no other identity will ever need to chdir through it.
+func TestManagerCreate_NonIsolatedAssignmentSkipsAncestorValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits only")
+	}
+	dir := t.TempDir()
+	narrow := filepath.Join(dir, "narrow")
+	if err := os.Mkdir(narrow, 0o700); err != nil {
+		t.Fatalf("create narrow ancestor: %v", err)
+	}
+	sessionRoot := filepath.Join(narrow, "sessions")
+
+	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	msg := &protocol.AssignMsg{JobID: "job-narrow-noiso"}
+	sess, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create (no isolation) under a narrow-but-self-owned ancestor: %v", err)
+	}
+	t.Cleanup(func() { mgr.Cleanup(context.Background(), sess, false) })
+}
+
 // ── Credential resolution failure ─────────────────────────────────────────────
 
 // TestManagerCreate_CredentialResolutionFailureNeverFallsBackToDaemon proves
@@ -230,7 +441,7 @@ func TestManagerCreate_NonIsolatedWorkDirUnchanged(t *testing.T) {
 func TestManagerCreate_CredentialResolutionFailureNeverFallsBackToDaemon(t *testing.T) {
 	dataDir := t.TempDir()
 	provider := isolation.NewFake(nil) // no accounts configured
-	mgr := NewManager(dataDir, false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-bad-account",
