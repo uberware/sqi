@@ -4,6 +4,7 @@ package envutil_test
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,5 +138,111 @@ func TestBuildWithUnset_NilUnset_MatchesBuild(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected SQI_BWU_X=1 in built environment")
+	}
+}
+
+// ── Policy / BaseEnv / BuildFromBase ────────────────────────────────────────
+
+func TestBaseEnvDisabledInheritsEverything(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "secret")
+
+	base := envutil.BaseEnv(envutil.Policy{Enabled: false})
+
+	if base["AWS_ACCESS_KEY_ID"] != "secret" {
+		t.Error("with policy disabled the daemon environment must pass through unchanged")
+	}
+}
+
+func TestBaseEnvFiltersDaemonSecrets(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "secret")
+	t.Setenv("PATH", "/usr/bin")
+
+	base := envutil.BaseEnv(envutil.Policy{Enabled: true})
+
+	if _, ok := base["AWS_ACCESS_KEY_ID"]; ok {
+		t.Error("AWS_ACCESS_KEY_ID must not survive the allowlist")
+	}
+	if base["PATH"] != "/usr/bin" {
+		t.Error("PATH is in the minimal base and must survive")
+	}
+}
+
+func TestBaseEnvHonoursPassthroughGlobs(t *testing.T) {
+	t.Setenv("foundry_LICENSE", "4101@licsrv")
+	t.Setenv("ARNOLD_LICENSE_FILE", "/etc/arnold.lic")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+
+	base := envutil.BaseEnv(envutil.Policy{
+		Enabled:   true,
+		Allowlist: []string{"foundry_LICENSE", "*_LICENSE_FILE"},
+	})
+
+	if base["foundry_LICENSE"] != "4101@licsrv" {
+		t.Error("exact-name passthrough must survive")
+	}
+	if base["ARNOLD_LICENSE_FILE"] != "/etc/arnold.lic" {
+		t.Error("glob passthrough must survive")
+	}
+	if _, ok := base["AWS_SECRET_ACCESS_KEY"]; ok {
+		t.Error("non-allowlisted secret must not survive")
+	}
+}
+
+// POSIX environment names are case-sensitive: a lowercase "home" is a different
+// variable from HOME and must not ride through the minimal base.
+func TestBaseEnvMinimalBaseIsCaseSensitiveOnPOSIX(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows environment names are case-insensitive by design")
+	}
+	t.Setenv("home", "/tmp/impostor")
+
+	base := envutil.BaseEnv(envutil.Policy{Enabled: true})
+
+	if _, ok := base["home"]; ok {
+		t.Error(`lowercase "home" must not be allowlisted as if it were HOME`)
+	}
+}
+
+// The critical test: job-supplied variables must NEVER be filtered. The
+// allowlist governs only what is inherited from the daemon. A job's own
+// openjd_env exports have names no operator allowlist would contain, and eating
+// them would silently break jobs.
+func TestBuildFromBaseNeverFiltersJobData(t *testing.T) {
+	base := map[string]string{"PATH": "/usr/bin"}
+	overrides := map[string]string{
+		"MY_JOB_EXPORT": "from-openjd-env",
+		"RENDER_SCENE":  "/shot/010.ma",
+	}
+
+	got := envutil.BuildFromBase(base, overrides, nil)
+
+	want := map[string]string{
+		"PATH":          "/usr/bin",
+		"MY_JOB_EXPORT": "from-openjd-env",
+		"RENDER_SCENE":  "/shot/010.ma",
+	}
+	gotMap := envSliceToMap(got)
+	if len(gotMap) != len(want) {
+		t.Errorf("job data must pass through untouched: got %d entries, want %d (got=%v, want=%v)", len(gotMap), len(want), gotMap, want)
+	}
+	for k, wantV := range want {
+		if gotV, ok := gotMap[k]; !ok || gotV != wantV {
+			t.Errorf("job data must pass through untouched: [%q] = (%q, %v); want (%q, true)", k, gotV, ok, wantV)
+		}
+	}
+}
+
+func TestBuildFromBaseUnsetRemovesFromBaseAndOverrides(t *testing.T) {
+	base := map[string]string{"PATH": "/usr/bin", "DROP_ME": "x"}
+	overrides := map[string]string{"ALSO_DROP": "y"}
+	unset := map[string]bool{"DROP_ME": true, "ALSO_DROP": true}
+
+	got := envSliceToMap(envutil.BuildFromBase(base, overrides, unset))
+
+	if _, ok := got["DROP_ME"]; ok {
+		t.Error("openjd_unset_env must remove a base variable")
+	}
+	if _, ok := got["ALSO_DROP"]; ok {
+		t.Error("openjd_unset_env must remove an override variable")
 	}
 }

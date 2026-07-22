@@ -10,6 +10,8 @@ package envutil
 import (
 	"maps"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -72,4 +74,90 @@ func flattenEnv(merged map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+// minimalBase is the set of variables always inherited from the daemon when a
+// Policy is enabled, because a process cannot reasonably run without them.
+// HOME/USERPROFILE are inherited here but MUST be rewritten by the caller to the
+// target user's home when a credential is in effect — otherwise DCCs write
+// their configs into a directory the task cannot access.
+var minimalBase = map[string]bool{
+	"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "SHELL": true,
+	"USERPROFILE": true, "TEMP": true, "TMP": true, "SYSTEMROOT": true,
+}
+
+// Policy controls how much of the worker daemon's own environment is inherited
+// by job-supplied processes.
+//
+// Enabled is false in the pre-isolation configuration, where the entire daemon
+// environment is inherited — the historical behavior. When true, only
+// minimalBase plus Allowlist survive, which is what stops daemon credentials
+// (AWS keys, mount secrets, license tokens) reaching arbitrary job code.
+type Policy struct {
+	// Allowlist holds variable NAME patterns inherited in addition to
+	// minimalBase, matched with filepath.Match semantics. Matching is
+	// case-insensitive on Windows, mirroring that platform's own rules.
+	Allowlist []string
+	// Enabled reports whether filtering applies at all.
+	Enabled bool
+}
+
+// BaseEnv returns the portion of the daemon environment a job-supplied process
+// may inherit. It governs ONLY inherited variables; variables the job itself
+// supplies are never filtered — see BuildFromBase.
+func BaseEnv(p Policy) map[string]string {
+	raw := os.Environ()
+	out := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		k, v, _ := strings.Cut(kv, "=")
+		if !p.Enabled || allowedName(k, p.Allowlist) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// allowedName reports whether an inherited variable name survives filtering.
+//
+// Case handling follows each platform's real rules rather than a convenient
+// uniform fold: POSIX environment names are case-sensitive, so uppercasing here
+// would allowlist a variable literally named "home" or "path" as though it were
+// HOME or PATH — a filter that does not do what it claims.
+func allowedName(name string, allowlist []string) bool {
+	if minimalBase[foldEnvName(name)] {
+		return true
+	}
+	for _, pat := range allowlist {
+		if ok, err := filepath.Match(foldEnvName(pat), foldEnvName(name)); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+// foldEnvName normalises an environment variable name for comparison: Windows
+// treats them case-insensitively, POSIX does not.
+func foldEnvName(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
+}
+
+// BuildFromBase renders a process environment from an already-filtered base,
+// applying job-supplied overrides on top and then removing every key in unset.
+//
+// Filtering happens exactly once, when base is built by BaseEnv at session
+// creation. Everything in overrides is job data — static Environment.variables,
+// dynamic openjd_env exports, task template variables — and passes through
+// UNTOUCHED. Re-filtering here would eat a job's own exports, whose names no
+// operator allowlist would contain.
+func BuildFromBase(base, overrides map[string]string, unset map[string]bool) []string {
+	merged := make(map[string]string, len(base)+len(overrides))
+	maps.Copy(merged, base)
+	maps.Copy(merged, overrides)
+	for k := range unset {
+		delete(merged, k)
+	}
+	return flattenEnv(merged)
 }
