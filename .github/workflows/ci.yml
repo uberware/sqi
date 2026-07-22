@@ -698,6 +698,85 @@ jobs:
       - name: Run OIDC integration tests
         run: make test-oidc
 
+  # ── Task isolation: run-as-user integration ──────────────────────────────────
+  # Runs the run-as-user isolation suite as REAL root against REAL unprivileged
+  # OS accounts inside a container — the only thing that exercises uid/gid
+  # switching, session-directory ownership, environment filtering, and
+  # process-group kill. internal/worker/isolation's fake Provider is
+  # structurally blind to all of it; three Critical defects on this branch were
+  # caught only because this suite runs against a real container. This job is
+  # what makes that class of bug fail before it merges.
+  #
+  # Both architectures, matching ldap-integration above and for the same
+  # reason: this exercises syscall-level behavior (setuid/setgid/setgroups,
+  # SysProcAttr.Credential), which is exactly where arch divergence could hide.
+  # oidc-integration's single-arch choice does not transfer here — its
+  # justification is "no arch divergence is known for a JVM app", and this is
+  # the opposite of that: raw kernel syscalls, not a JVM's HTTP/token behavior.
+  # Native runners rather than QEMU, same reasoning as ldap-integration:
+  # emulation is several times slower and would test the emulator's timing
+  # rather than the runner's.
+  #
+  # `make test-isolation` builds its own image from a staged copy of the repo
+  # (see the Makefile comment above the target), so unlike ldap-integration/
+  # oidc-integration it needs no image pre-pulled here.
+  #
+  # IMPORTANT: `make test-isolation` exits 0 with a message when Docker is
+  # unavailable — correct on a developer machine that may not have Docker, but
+  # on a CI runner (where Docker is always preinstalled) a skip here would be a
+  # silent false-green with nothing verified. So this job does not trust the
+  # target's own exit code: it captures the output and fails unless (1) no
+  # Docker-unavailable skip message appears and (2) all 10 TestIsolation_ tests
+  # are confirmed PASS by name. A silent skip, a build failure, or a partial
+  # run all fail the job instead of passing quietly.
+  isolation-integration:
+    name: Isolation integration (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Does not trust a bare exit-0 from `make test-isolation`: asserts the
+      # suite actually executed (no Docker-unavailable skip) and that every one
+      # of the 10 TestIsolation_ tests is confirmed PASS by name, so a silent
+      # skip or a partial run fails the job instead of passing quietly.
+      - name: Run isolation integration tests
+        run: |
+          set +e
+          make test-isolation 2>&1 | tee isolation-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if grep -q "docker unavailable" isolation-output.log; then
+            echo "::error::Docker was unavailable — the isolation suite did not run. A skip here proves nothing, so this is a hard failure."
+            exit 1
+          fi
+
+          pass_count=$(grep -c '^--- PASS: TestIsolation_' isolation-output.log || true)
+          expected=10
+          if [ "$status" -ne 0 ] || [ "$pass_count" -ne "$expected" ]; then
+            echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count). Failing so a partial or failed run cannot look green."
+            exit 1
+          fi
+
+          echo "Confirmed $pass_count/$expected TestIsolation_ tests passed."
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run
