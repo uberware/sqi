@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from 'vitest'
-import { can, type Permission } from './policy'
+import { ALL_PERMISSIONS, can, type Permission } from './policy'
 import type { Principal } from '@/api/types'
 
 function principal(permissions: Permission[], overrides: Partial<Principal> = {}): Principal {
@@ -52,6 +52,46 @@ describe('server-supplied permissions are the only input', () => {
   it('honours permissions that do not match the role name', () => {
     const oddball = principal(['users.manage'], { roles: ['read-only'] })
     expect(can(oddball, 'users.manage')).toBe(true)
+  })
+})
+
+describe('permission union stays in lockstep with the server', () => {
+  // internal/auth/policy/policy.go's module doc declares a three-way lockstep:
+  // the Go Permission constants, this file's union, and docs/auth.md must all
+  // agree. isolation.manage shipped server-side (0fe53ec) and was omitted from
+  // this file's union for several commits with nothing to catch it — no
+  // compile error, since an unrelated permission set still typechecks, and no
+  // runtime effect today (nothing in the web app currently gates on
+  // isolation.manage), so the gap was invisible until a future admin UI tried
+  // to use it. This list is a hand-mirrored copy of every `Permission =
+  // "..."` constant in policy.go — keep it in sync by hand whenever that file
+  // changes; a permission added to one side and not the other fails this
+  // test rather than silently working with no client-side gate (or, for a
+  // Permission-union addition specifically, PERMISSION_SET's
+  // Record<Permission, true> in policy.ts already forces the union and
+  // ALL_PERMISSIONS to agree with EACH OTHER at compile time — this test is
+  // what additionally pins that pair against the actual server list).
+  const serverPermissions: Permission[] = [
+    'jobs.read',
+    'jobs.read.all',
+    'jobs.write',
+    'jobs.submit_as',
+    'workers.read',
+    'workers.manage',
+    'infra.read',
+    'infra.manage',
+    'products.read',
+    'products.manage',
+    'diagnostics.read',
+    'users.read',
+    'users.manage',
+    'apikeys.self',
+    'apikeys.admin',
+    'isolation.manage',
+  ]
+
+  it('ALL_PERMISSIONS matches the server-declared permission set exactly', () => {
+    expect([...ALL_PERMISSIONS].sort()).toEqual([...serverPermissions].sort())
   })
 })
 
