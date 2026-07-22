@@ -354,6 +354,17 @@ jobs:
   # Runs only after the test job passes (needs: test).
   # fail-fast: false means a failure on one platform does not cancel the others,
   # giving a complete picture of which targets are broken.
+  #
+  # `go build ./cmd/sqi-server/... ./cmd/sqi-worker/...` below proves the two
+  # binaries link, but `go build` never compiles _test.go files at all, so it
+  # cannot catch a Windows-only break in test code — which is exactly what
+  # happened on the task-isolation branch: internal/worker/isolation's
+  # POSIX-only isolation_test.go referenced SysProcAttr.Credential, silently
+  # breaking `GOOS=windows go vet` with nothing in CI to notice. The extra
+  # windows/amd64-only step compiles every internal package (not just cmd/,
+  # unlike the matrix build above) and vets internal/worker/... — vet, like
+  # test compilation, type-checks _test.go files too — so the same class of
+  # break fails a PR instead of surviving until someone runs it by hand.
   cross-compile:
     name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
@@ -377,6 +388,16 @@ jobs:
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-worker/...
+
+      # See the job's own comment above for why this exists and why plain
+      # `go build` (above) cannot substitute for it. amd64-only: GOARCH does
+      # not affect what go vet's type-checking can see, so running this a
+      # second time on arm64 would only cost CI minutes for no new coverage.
+      - name: Windows internal packages build + vet
+        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
+          GOOS=windows GOARCH=amd64 go vet ./internal/worker/...
 
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
   # cross-compile (above) proves the binaries *build* for every target; this job
@@ -726,7 +747,7 @@ jobs:
   # on a CI runner (where Docker is always preinstalled) a skip here would be a
   # silent false-green with nothing verified. So this job does not trust the
   # target's own exit code: it captures the output and fails unless (1) no
-  # Docker-unavailable skip message appears and (2) all 10 TestIsolation_ tests
+  # Docker-unavailable skip message appears and (2) all 11 TestIsolation_ tests
   # are confirmed PASS by name. A silent skip, a build failure, or a partial
   # run all fail the job instead of passing quietly.
   isolation-integration:
@@ -754,7 +775,7 @@ jobs:
 
       # Does not trust a bare exit-0 from `make test-isolation`: asserts the
       # suite actually executed (no Docker-unavailable skip) and that every one
-      # of the 10 TestIsolation_ tests is confirmed PASS by name, so a silent
+      # of the 11 TestIsolation_ tests is confirmed PASS by name, so a silent
       # skip or a partial run fails the job instead of passing quietly.
       - name: Run isolation integration tests
         run: |
@@ -769,7 +790,7 @@ jobs:
           fi
 
           pass_count=$(grep -c '^--- PASS: TestIsolation_' isolation-output.log || true)
-          expected=10
+          expected=11
           if [ "$status" -ne 0 ] || [ "$pass_count" -ne "$expected" ]; then
             echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count). Failing so a partial or failed run cannot look green."
             exit 1
