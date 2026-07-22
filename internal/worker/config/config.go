@@ -80,7 +80,10 @@ type IsolationConfig struct {
 	Required bool `yaml:"required"`
 
 	// Provider selects the Windows credential mechanism: "logon_user" or
-	// "s4u". Ignored on POSIX.
+	// "s4u". Ignored on POSIX. Reserved for a future Windows implementation
+	// — isolation is POSIX-only today; a Windows worker's Capable() always
+	// reports ErrNotCapable regardless of this value (see
+	// internal/worker/isolation's package doc).
 	// Env: SQI_WORKER_ISOLATION_PROVIDER
 	Provider string `yaml:"provider"`
 

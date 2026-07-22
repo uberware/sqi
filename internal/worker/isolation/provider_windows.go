@@ -124,13 +124,24 @@ func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 // primary token to a new process, and SeIncreaseQuotaPrivilege, which
 // CreateProcessAsUser also requires in order to set the new process's quota
 // limits under the target account's job/session.
+//
+// hasRequiredPrivileges (and therefore this check) is real, working code —
+// not a stub — but it is no longer capableOS's own gate below: holding every
+// privilege here is necessary for CreateProcessAsUser but not sufficient for
+// isolation as a whole, since securing a session working directory for the
+// target identity needs NTFS ACL work (see windowsIsolationUnsupportedMsg,
+// workdir_windows.go) that does not exist yet. It stays wired into capableOS
+// so it is exercised on every real Windows run (surfacing a missing
+// privilege as extra detail) rather than sitting dead until a future
+// revision reintroduces it, once ACL support lands and privilege really is
+// the remaining gate.
 var requiredPrivileges = []string{"SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege"}
 
-// capableOS reports whether this worker's process token holds every
-// privilege in requiredPrivileges. Fails closed: any lookup error, or any
-// missing privilege, is reported as ErrNotCapable rather than silently
+// hasRequiredPrivileges reports whether this worker's process token holds
+// every privilege in requiredPrivileges. Fails closed: any lookup error, or
+// any missing privilege, is reported as ErrNotCapable rather than silently
 // proceeding as if capable.
-func capableOS() error {
+func hasRequiredPrivileges() error {
 	tok := windows.GetCurrentProcessToken()
 	for _, name := range requiredPrivileges {
 		held, err := tokenHasPrivilege(tok, name)
@@ -142,6 +153,26 @@ func capableOS() error {
 		}
 	}
 	return nil
+}
+
+// capableOS is the seam wired into newLogonUserProvider's Capable() on
+// Windows (see logonuser.go). It ALWAYS reports not-capable: even a process
+// token holding every privilege hasRequiredPrivileges checks for cannot make
+// isolation usable while SecureWorkDir/ChownRecursive (workdir_windows.go)
+// have no NTFS ACL implementation. Reporting anything else here would let a
+// Windows worker with isolation.required: true start successfully
+// (verifyIsolationCapability, cmd/sqi-worker/isolation.go) and only fail,
+// confusingly, the moment a real isolated assignment tried to secure its
+// working directory — the exact half-working state this function exists to
+// prevent. hasRequiredPrivileges still runs (see its own doc) so a missing
+// privilege is named alongside the ACL gap when relevant, but its result
+// never changes the bottom line: not capable, in the ErrNotCapable family,
+// with the shared operator-facing message every entry point uses.
+func capableOS() error {
+	if err := hasRequiredPrivileges(); err != nil {
+		return fmt.Errorf("%w: %s (additionally, %v)", ErrNotCapable, windowsIsolationUnsupportedMsg, err)
+	}
+	return fmt.Errorf("%w: %s", ErrNotCapable, windowsIsolationUnsupportedMsg)
 }
 
 // tokenHasPrivilege reports whether t's privilege set includes name,

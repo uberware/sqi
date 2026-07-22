@@ -9,6 +9,27 @@
 //
 // The platform-specific pieces are confined to this package. Callers deal only
 // in Spec (a username) and Credential (an opaque handle).
+//
+// # Platform support
+//
+// POSIX is complete and verified against a real container (make
+// test-isolation): setuid/setgid/supplementary groups, workdir chown/chmod,
+// and the ancestor-traversability boot check.
+//
+// Windows is NOT YET SUPPORTED, on purpose and explicitly — not half-working.
+// The logon_user credential provider (logonuser.go, provider_windows.go) is
+// real: it calls LogonUserW and returns a genuine primary token. What is
+// missing is everything that needs that token: SecureWorkDir/ChownRecursive
+// (workdir_windows.go) require NTFS ACL work (grant the target user's SID an
+// ACE, strip inheritance) that has not been written, so Provider.Capable()
+// on Windows always returns ErrNotCapable — see
+// workdir_windows.go's windowsIsolationUnsupportedMsg for the exact,
+// operator-facing message every entry point (boot-time
+// verifyIsolationCapability and a per-assignment session.Manager.Create)
+// surfaces. Remaining work: NTFS ACL-based SecureWorkDir/ChownRecursive, the
+// s4u provider (refused explicitly today), and a Windows CI runner to verify
+// any of it — none of this package's Windows code has ever run against a
+// real Windows host.
 package isolation
 
 import (
@@ -66,6 +87,10 @@ type Config struct {
 	// Provider selects the Windows credential mechanism: "logon_user" or
 	// "s4u" (workerconfig.IsolationConfig.Provider). Ignored on POSIX, where
 	// the worker must already run as root and there is only one mechanism.
+	// Reserved for a future Windows implementation: Windows isolation is not
+	// yet supported regardless of this value — see this package's doc
+	// ("Platform support") for why, and provider_windows.go's capableOS for
+	// where that is enforced.
 	Provider string
 
 	// Logger records which identity-resolution path produced a Credential —

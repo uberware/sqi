@@ -5,6 +5,8 @@
 package isolation
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -73,5 +75,33 @@ func TestNewProvider_S4URefusedNotYetImplemented(t *testing.T) {
 func TestNewProvider_UnknownProviderRejected(t *testing.T) {
 	if _, err := newProvider(Config{Provider: "bogus"}); err == nil {
 		t.Error("newProvider(bogus) = nil error, want a rejection")
+	}
+}
+
+// TestCapableOS_AlwaysReportsACLNotImplemented proves the REAL production
+// Capable() seam (not a test-injected fake — see newProvider above, which is
+// how a real worker actually constructs its Provider) always reports the
+// shared, operator-facing windowsIsolationUnsupportedMsg, regardless of
+// whether this test process's own token happens to hold every privilege
+// hasRequiredPrivileges checks for. That determinism is the whole point: a
+// Windows worker must never look capable just because CreateProcessAsUser's
+// prerequisites are satisfied — NTFS ACL support (workdir_windows.go) is
+// still missing, so isolation as a whole cannot work either way, and
+// Capable() must say so plainly rather than reporting ready and failing
+// later, confusingly, inside Manager.Create (see that message's own doc for
+// the full rationale).
+func TestCapableOS_AlwaysReportsACLNotImplemented(t *testing.T) {
+	p, err := newProvider(Config{Provider: "logon_user", CredentialStore: fakeStore{}})
+	if err != nil {
+		t.Fatalf("newProvider: %v", err)
+	}
+
+	err = p.Capable()
+	if !errors.Is(err, ErrNotCapable) {
+		t.Fatalf("Capable() = %v, want ErrNotCapable", err)
+	}
+	if !strings.Contains(err.Error(), windowsIsolationUnsupportedMsg) {
+		t.Errorf("Capable() = %q, want it to contain the shared operator-facing message %q",
+			err.Error(), windowsIsolationUnsupportedMsg)
 	}
 }

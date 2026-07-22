@@ -334,6 +334,18 @@ diagnostics:
 # (protocol.AssignMsg.Isolation) instead of the worker daemon's own account.
 # Off by default: with no queue configured for isolation, behavior is
 # byte-for-byte unchanged from a worker with this section absent.
+#
+# POSIX-only today. Verified against a real container (make test-isolation):
+# setuid/setgid/supplementary groups, workdir chown/chmod, and the
+# ancestor-traversability boot check. Windows is NOT YET SUPPORTED — a
+# Windows worker's Capable() always reports not-capable ("task isolation is
+# not yet supported on Windows: session directory ACLs are not implemented"),
+# so a Windows worker with `required: true` refuses to start, and a Windows
+# worker that receives an isolated assignment anyway fails that one task with
+# the same message. See internal/worker/isolation's package doc for what
+# already works (a real Windows logon token can be obtained) versus what is
+# still missing (NTFS ACL support to secure the session working directory for
+# that token, and the s4u provider).
 # isolation:
 #   # Exit at boot if this worker cannot assume another OS identity (POSIX:
 #   # not running as root). Separate from a per-assignment resolution failure
@@ -343,6 +355,8 @@ diagnostics:
 #   required: false
 #
 #   # Windows credential mechanism: "logon_user" or "s4u". Ignored on POSIX.
+#   # RESERVED for a future Windows implementation — setting this today does
+#   # not make Windows isolation work; see the note above.
 #   # Type: string   Env: SQI_WORKER_ISOLATION_PROVIDER
 #   provider: logon_user
 #
