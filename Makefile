@@ -240,6 +240,10 @@ test-isolation: ## Run run-as-user isolation tests as root against real OS accou
 	docker run --rm --init sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
+.PHONY: test-isolation-windows
+test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM against real local accounts (needs an elevated shell)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-isolation-windows.ps1
+
 .PHONY: bench
 bench: ## Run benchmarks
 	go test -bench=. -benchmem $(GO_PKGS)
