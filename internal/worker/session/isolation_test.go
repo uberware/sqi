@@ -135,9 +135,20 @@ func newTestSessionWithCredential(t *testing.T, applied *recordingApplier) *Sess
 // directory this helper creates (/tmp itself, and above that /) is already
 // traversable by design on every POSIX system — a real, operator-provisioned
 // session root gets the identical guarantee in production.
+//
+// On Windows there is no hardcoded /tmp, and none of the above applies
+// anyway: isolation.ValidateTraversable is a deliberate no-op there (NTFS
+// access control is ACL-based, not POSIX permission-bit-based — see its own
+// doc), so the ancestor-traversability check this helper exists to satisfy
+// always passes regardless of where the directory lives. t.TempDir() is
+// therefore both safe and portable on Windows; it stays unused on POSIX so
+// behavior there is byte-for-byte unchanged.
 func newTraversableSessionDataDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "sqi-session-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if runtime.GOOS == "windows" {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp("/tmp", "sqi-session-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use on POSIX — see doc above
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -225,6 +236,10 @@ func TestEnvironmentActionsCarryCredential(t *testing.T) {
 // ── Environment filtering ─────────────────────────────────────────────────────
 
 func TestSessionBaseEnvFilteredOnceAtCreate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("session.Manager.Create refuses every non-nil run-as-user credential on Windows until isolation.SecureWorkDir gains NTFS ACL support; this test asserts environment layering through the real Create path, so it runs on POSIX only until then")
+	}
+
 	t.Setenv("AWS_ACCESS_KEY_ID", "secret")
 
 	sess := newTestSessionWithCredential(t, &recordingApplier{})
@@ -239,6 +254,10 @@ func TestSessionBaseEnvFilteredOnceAtCreate(t *testing.T) {
 // is inherited from the daemon. A job's own dynamic openjd_env export must
 // never be filtered, no matter how narrow isolation.env_passthrough is.
 func TestJobSuppliedEnvSurvivesFiltering(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("session.Manager.Create refuses every non-nil run-as-user credential on Windows until isolation.SecureWorkDir gains NTFS ACL support; this test asserts environment layering through the real Create path, so it runs on POSIX only until then")
+	}
+
 	sess := newTestSessionWithCredential(t, &recordingApplier{})
 	sess.applyEnvOp(openjd.EnvOp{Kind: openjd.EnvOpSet, Name: "MY_EXPORT", Value: "v"})
 

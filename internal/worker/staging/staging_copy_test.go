@@ -31,7 +31,10 @@ func TestBuiltinCopy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fi.Mode().Perm() != 0o640 {
+		// POSIX permission bits are meaningless on Windows, which does not
+		// implement them (see staging_windows.go); the copy itself (content
+		// and destination) is still fully verified above.
+		if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 			t.Fatalf("mode: %v", fi.Mode().Perm())
 		}
 	})
@@ -64,6 +67,12 @@ func TestBuiltinCopy(t *testing.T) {
 		}
 	})
 	t.Run("refuses symlink src", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
+				"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
+				"symlink-source refusal and cannot be exercised without first creating one")
+		}
+
 		dir := t.TempDir()
 		target := filepath.Join(dir, "real.txt")
 		if err := os.WriteFile(target, []byte("secret"), 0o640); err != nil {
@@ -112,6 +121,12 @@ func TestBuiltinCopy(t *testing.T) {
 // symlink to whatever it pointed at, so "elsewhere" must be completely
 // untouched and dest must end up an ordinary file, not a dangling symlink.
 func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
+			"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
+			"symlink-dest refusal and cannot be exercised without first creating one")
+	}
+
 	dir := t.TempDir()
 	src := filepath.Join(dir, "in.txt")
 	if err := os.WriteFile(src, []byte("task-controlled-bytes"), 0o644); err != nil {

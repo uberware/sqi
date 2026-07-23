@@ -30,6 +30,12 @@ import (
 // cannot have root read whatever it points to and copy those bytes to the
 // job's real output location — arbitrary file disclosure as root.
 func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
+			"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
+			"symlink-source refusal and cannot be exercised without first creating one")
+	}
+
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), false, discard())
 	scratchDir := filepath.Join(scratch, "job1", "att1")
@@ -113,6 +119,12 @@ func TestStager_StageOut_RefusesHardlinkedSource(t *testing.T) {
 // arbitrary directory. Every check but containment would pass here, since
 // the file itself is entirely ordinary.
 func TestStager_StageOut_RefusesSourceOutsideScratch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a directory symlink on Windows requires SeCreateSymbolicLinkPrivilege " +
+			"or Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
+			"scratch-containment refusal and cannot be exercised without first creating one")
+	}
+
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), false, discard())
 	scratchDir := filepath.Join(scratch, "job1", "att1")

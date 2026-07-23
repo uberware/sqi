@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -147,6 +148,13 @@ func TestValidateIsolationAncestors_SkippedWhenNotRequired(t *testing.T) {
 }
 
 func TestValidateIsolationAncestors_FailsOnNonTraversableAncestorWhenRequired(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("isolation.ValidateTraversable is a deliberate no-op on Windows (see its own " +
+			"doc): NTFS access control is ACL-based, not POSIX permission-bit-based, so there " +
+			"is no ancestor \"traversable bit\" for this test's narrow, 0700 ancestor to defeat — " +
+			"validateIsolationAncestors proceeds past the check this test exists to prove fails")
+	}
+
 	dir := t.TempDir()
 	narrow := filepath.Join(dir, "narrow")
 	sessionRoot := filepath.Join(narrow, "sessions")

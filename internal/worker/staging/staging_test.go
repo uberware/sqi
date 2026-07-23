@@ -73,8 +73,27 @@ func newTraversableTestRoot(t *testing.T) string {
 }
 
 // fakeSync writes a shell script that records its args and copies src->dest with cp -R.
+//
+// Stager.runSync execs the configured command's first field directly (no
+// shell) — see staging.go's own doc — so this only works where a "#!/bin/sh"
+// shebang script is itself directly executable, which is a POSIX kernel
+// feature (binfmt_script) Windows has no equivalent of: exec.Command there
+// can run only a genuinely native executable (.exe/.bat/.cmd), so handing it
+// this .sh file fails with "%1 is not a valid Win32 application" before
+// Stager's own (platform-portable) copy logic is ever reached. Every test
+// that calls this is therefore exercising the shell-command sync_command
+// mechanism specifically, not something particular to sqi's own code — an
+// operator-configured sync_command in production would face the identical
+// constraint on a real Windows worker. Skipping here, in the one shared
+// helper, keeps that reason in one place instead of repeated at every call
+// site.
 func fakeSync(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fakeSync's fixture is a POSIX \"#!/bin/sh\" shebang script; Windows cannot " +
+			"execute it directly (no binfmt_script equivalent — exec.Command needs a native " +
+			".exe/.bat/.cmd), so this sync_command test fixture does not work there")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sync.sh")
 	body := "#!/bin/sh\ncp -R \"$1\" \"$2\"\n"
@@ -118,6 +137,13 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 // cmd/sqi-worker runs at boot only when isolation.required is set — and
 // fails just THIS attempt rather than the whole worker.
 func TestStager_StageIn_IsolatedFailsOnNonTraversableScratchBase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("isolation.ValidateTraversable is a deliberate no-op on Windows (see its own " +
+			"doc): NTFS access control is ACL-based, not POSIX permission-bit-based, so there " +
+			"is no ancestor \"traversable bit\" for this test's narrow, 0700 ancestor to defeat — " +
+			"StageIn proceeds past the check this test exists to prove fails")
+	}
+
 	dir := t.TempDir()
 	narrow := filepath.Join(dir, "narrow")
 	if err := os.Mkdir(narrow, 0o700); err != nil {
