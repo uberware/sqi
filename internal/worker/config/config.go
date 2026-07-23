@@ -79,11 +79,16 @@ type IsolationConfig struct {
 	// Env: SQI_WORKER_ISOLATION_REQUIRED
 	Required bool `yaml:"required"`
 
-	// Provider selects the Windows credential mechanism: "logon_user" or
-	// "s4u". Ignored on POSIX. Reserved for a future Windows implementation
-	// — isolation is POSIX-only today; a Windows worker's Capable() always
-	// reports ErrNotCapable regardless of this value (see
-	// internal/worker/isolation's package doc).
+	// Provider selects the Windows credential mechanism. "logon_user" (the
+	// default) is the only supported value.
+	//
+	// "s4u" is refused. An S4U logon needs no password, but the token it
+	// produces carries no NETWORK credentials: any UNC path, mapped drive, or
+	// authenticated license server fails as ANONYMOUS from inside the task.
+	// On a render farm, where scene files and outputs live on a share, that
+	// disqualifies it as a general-purpose provider, and no driver exists for
+	// a worker whose jobs touch local scratch exclusively. Adding it later is
+	// additive.
 	// Env: SQI_WORKER_ISOLATION_PROVIDER
 	Provider string `yaml:"provider"`
 

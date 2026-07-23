@@ -226,11 +226,11 @@ func tokenPrivileges(t windows.Token) (*windows.Tokenprivileges, error) {
 }
 
 // newProvider returns the Windows Provider selected by cfg.Provider:
-// "logon_user" (the default, matching workerconfig's own default) or "s4u".
-// S4U is Task 10's work and not yet implemented, so it is refused explicitly
-// here rather than silently aliased to logon_user — that would run tasks
-// under a different credential-acquisition mechanism than the operator
-// configured without telling anyone.
+// "logon_user" (the default, matching workerconfig's own default). "s4u" is
+// refused explicitly rather than silently aliased to logon_user — that would
+// run tasks under a different credential-acquisition mechanism than the
+// operator configured without telling anyone. See
+// workerconfig.IsolationConfig.Provider for why s4u is not implemented.
 func newProvider(cfg Config) (Provider, error) {
 	switch cfg.Provider {
 	case "", "logon_user":

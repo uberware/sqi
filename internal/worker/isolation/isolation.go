@@ -84,13 +84,11 @@ type Config struct {
 	// Ignored on POSIX, where the worker must already run as root.
 	CredentialStore CredentialStore
 
-	// Provider selects the Windows credential mechanism: "logon_user" or
-	// "s4u" (workerconfig.IsolationConfig.Provider). Ignored on POSIX, where
-	// the worker must already run as root and there is only one mechanism.
-	// Reserved for a future Windows implementation: Windows isolation is not
-	// yet supported regardless of this value — see this package's doc
-	// ("Platform support") for why, and provider_windows.go's capableOS for
-	// where that is enforced.
+	// Provider selects the Windows credential mechanism
+	// (workerconfig.IsolationConfig.Provider). Ignored on POSIX, where the
+	// worker must already run as root and there is only one mechanism.
+	// "logon_user" is the only supported value; "s4u" is refused — see that
+	// field's doc in internal/worker/config for why.
 	Provider string
 
 	// Logger records which identity-resolution path produced a Credential —
