@@ -29,22 +29,33 @@ type logonFunc func(ctx context.Context, user, secret string) (*Credential, erro
 // real-vs-placeholder split exists.
 type capableFunc func() error
 
+// traverseFunc reports whether cred's token carries SeChangeNotifyPrivilege
+// ("Bypass traverse checking"). See logonuser_other.go / profile_windows.go
+// for the real-vs-placeholder split, and Resolve below for why it matters.
+type traverseFunc func(cred *Credential) (bool, error)
+
 // logonUserProvider implements Provider via LOGON32_LOGON_BATCH-style
 // credential switching. Its refusal, validation, secret-lookup and
 // error-wrapping logic lives here — in a platform-neutral file — so it is
 // exercised by tests on every OS; only the logon and capable seams below are
 // platform-specific.
 type logonUserProvider struct {
-	store   CredentialStore
-	logon   logonFunc
-	capable capableFunc
+	store       CredentialStore
+	logon       logonFunc
+	capable     capableFunc
+	canTraverse traverseFunc
 }
 
 // newLogonUserProvider returns the logon_user Windows Provider, wired to the
 // real platform seams (logonUserOS, capableOS — one pair per platform, see
 // provider_windows.go and logonuser_other.go).
 func newLogonUserProvider(store CredentialStore) Provider {
-	return &logonUserProvider{store: store, logon: logonUserOS, capable: capableOS}
+	return &logonUserProvider{
+		store:       store,
+		logon:       logonUserOS,
+		capable:     capableOS,
+		canTraverse: canTraverseOS,
+	}
 }
 
 // Resolve validates spec, refuses a privileged account, retrieves its secret
@@ -81,6 +92,22 @@ func (p *logonUserProvider) Resolve(ctx context.Context, spec Spec) (*Credential
 	if cred == nil {
 		return nil, fmt.Errorf("isolation: logon %q: logon seam returned no credential and no error", spec.User)
 	}
+
+	ok, err := p.canTraverse(cred)
+	if err != nil {
+		closeCred(cred)
+		return nil, fmt.Errorf("isolation: check traverse privilege for %q: %w", spec.User, err)
+	}
+	if !ok {
+		closeCred(cred)
+		return nil, fmt.Errorf(
+			"isolation: account %q does not hold SeChangeNotifyPrivilege (\"Bypass traverse checking\"); "+
+				"an isolated task cannot reach its own session working directory without it, and sqi will "+
+				"not widen the directories above it for you — grant the privilege to Everyone, or to this "+
+				"account, in the local security policy",
+			spec.User,
+		)
+	}
 	return cred, nil
 }
 
@@ -88,4 +115,15 @@ func (p *logonUserProvider) Resolve(ctx context.Context, spec Spec) (*Credential
 // logon_user. Checked once at boot; fails closed.
 func (p *logonUserProvider) Capable() error {
 	return p.capable()
+}
+
+// closeCred releases a credential Resolve obtained but is not going to
+// return. Resolve owns every credential it creates until it hands one back:
+// a path that errors after a successful logon must not leak the token (and,
+// on Windows, the loaded profile).
+func closeCred(cred *Credential) {
+	if cred == nil {
+		return
+	}
+	_ = cred.Close() // best-effort release on an error path that is already returning a more useful error
 }

@@ -27,3 +27,9 @@ var logonUserOS logonFunc = func(context.Context, string, string) (*Credential, 
 var capableOS capableFunc = func() error {
 	return fmt.Errorf("%w: logon_user is only implemented on windows", ErrNotCapable)
 }
+
+// canTraverseOS backs the traverse check on every platform except Windows.
+// Production never reaches it (newProvider returns the POSIX unixProvider);
+// it reports true so a test constructing a logonUserProvider through the real
+// constructor is not blocked by a check that has no meaning here.
+var canTraverseOS traverseFunc = func(*Credential) (bool, error) { return true, nil }

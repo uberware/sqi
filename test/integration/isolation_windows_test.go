@@ -554,3 +554,36 @@ func TestIsolationWindows_CapableRejectsPlainAdmin(t *testing.T) {
 		t.Error("Capable() = nil as a plain administrator, want ErrNotCapable — administrators do not hold SeAssignPrimaryTokenPrivilege")
 	}
 }
+
+// TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser proves the loaded
+// profile is real: the child's USERPROFILE resolves under the target
+// account's own directory, not the daemon's. Without LoadUserProfile this
+// would be SYSTEM's profile under System32\config\systemprofile, and every
+// DCC would write its preferences there.
+func TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+
+	p, err := isolation.NewProvider(isolation.Config{
+		Provider:        "logon_user",
+		CredentialStore: harnessStore(t),
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	cred, err := p.Resolve(context.Background(), isolation.Spec{User: user})
+	if err != nil {
+		t.Fatalf("Resolve(%s): %v", user, err)
+	}
+	defer cred.Close() // test cleanup
+
+	if cred.Home == "" {
+		t.Fatal("Credential.Home is empty after LoadUserProfile; the profile was not created")
+	}
+	if !strings.Contains(strings.ToLower(cred.Home), strings.ToLower(user)) {
+		t.Errorf("Credential.Home = %q, want a path under %s's own profile", cred.Home, user)
+	}
+	if _, err := os.Stat(cred.Home); err != nil {
+		t.Errorf("profile directory %q does not exist: %v", cred.Home, err)
+	}
+}

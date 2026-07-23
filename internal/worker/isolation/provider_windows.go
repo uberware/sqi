@@ -29,6 +29,9 @@ type Credential struct {
 	// Empty is tolerated: the session layer (internal/worker/session) falls
 	// back to the session working directory for HOME/USERPROFILE in that case.
 	Home string
+	// profile is the handle returned by LoadUserProfileW, unloaded by Close
+	// before the token is released. Zero when no profile was loaded.
+	profile windows.Handle
 }
 
 // Close releases the token handle. Idempotent and safe to call more than
@@ -44,8 +47,16 @@ func (c *Credential) Close() error {
 	if c.token == 0 {
 		return nil
 	}
+	// Unload the hive BEFORE closing the token: UnloadUserProfileW needs the
+	// same token that loaded it, so the reverse order would leak the mounted
+	// hive for the lifetime of the worker.
+	profErr := unloadProfile(c.token, c.profile)
+	c.profile = 0
 	err := c.token.Close()
 	c.token = 0
+	if profErr != nil {
+		return profErr
+	}
 	return err
 }
 
@@ -113,14 +124,20 @@ func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 		return nil, fmt.Errorf("LogonUserW: %w", err)
 	}
 
+	prof, err := loadProfile(tok, user)
+	if err != nil {
+		tok.Close() // already returning a more useful error
+		return nil, err
+	}
+
 	home, err := tok.GetUserProfileDirectory()
 	if err != nil {
-		// Best-effort: an account with no discoverable profile directory
-		// yet (e.g. never logged on interactively) is tolerated — the
-		// session layer falls back to its own working directory.
+		// Tolerated: the session layer falls back to its own working
+		// directory. Far less likely now that loadProfile has run, which
+		// creates the profile directory if it did not exist.
 		home = ""
 	}
-	return &Credential{token: tok, User: user, Home: home}, nil
+	return &Credential{token: tok, profile: prof, User: user, Home: home}, nil
 }
 
 // requiredPrivileges are the privileges CreateProcessAsUser needs present on

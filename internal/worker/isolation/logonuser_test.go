@@ -140,7 +140,8 @@ func TestLogonUserResolve_Success(t *testing.T) {
 			}
 			return want, nil
 		},
-		capable: func() error { return nil },
+		capable:     func() error { return nil },
+		canTraverse: func(*Credential) (bool, error) { return true, nil },
 	}
 
 	got, err := p.Resolve(context.Background(), Spec{User: "render-svc"})
@@ -209,3 +210,38 @@ func TestLogonUserCapable_Success(t *testing.T) {
 type storeFunc func(user string) (string, error)
 
 func (f storeFunc) Secret(user string) (string, error) { return f(user) }
+
+// TestLogonUserResolve_RefusesTargetWithoutBypassTraverse proves Resolve
+// refuses an account that cannot traverse to its own session directory.
+//
+// Windows grants "Bypass traverse checking" (SeChangeNotifyPrivilege) to
+// Everyone by default, which is why ValidateTraversable is a no-op on this
+// platform. Hardening guides do sometimes strip it, and when they have, an
+// isolated task fails with an opaque access-denied on a path whose ACL looks
+// correct. Refusing here, naming the policy, is the Windows equivalent of the
+// POSIX ancestor check — report, never silently widen.
+func TestLogonUserResolve_RefusesTargetWithoutBypassTraverse(t *testing.T) {
+	p := &logonUserProvider{
+		store: fakeStore{"render-svc": "hunter2"},
+		logon: func(context.Context, string, string) (*Credential, error) {
+			// Not Credential{User: "render-svc"}: this file carries no build
+			// tag, so it compiles on every platform, and only the
+			// Windows-only Credential (provider_windows.go) has a User
+			// field — the POSIX one (provider_unix.go, //go:build unix)
+			// does not. The test does not inspect User, so the zero value
+			// costs nothing.
+			return &Credential{}, nil
+		},
+		capable:     func() error { return nil },
+		canTraverse: func(*Credential) (bool, error) { return false, nil },
+	}
+
+	_, err := p.Resolve(context.Background(), Spec{User: "render-svc"})
+
+	if err == nil {
+		t.Fatal("Resolve = nil error for an account without bypass-traverse, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "SeChangeNotifyPrivilege") {
+		t.Errorf("Resolve error = %q, want it to name SeChangeNotifyPrivilege", err.Error())
+	}
+}
