@@ -798,6 +798,124 @@ jobs:
 
           echo "Confirmed $pass_count/$expected TestIsolation_ tests passed."
 
+  # ── Task isolation: run-as-user integration (Windows) ────────────────────────
+  # Runs the Windows run-as-user isolation suite against REAL local accounts,
+  # with its privileged tier running as SYSTEM — the Windows counterpart to
+  # isolation-integration above, which covers POSIX.
+  #
+  # Two tiers because they need different privileges. CreateProcessAsUser —
+  # which os/exec invokes whenever SysProcAttr.Token is set — requires
+  # SeAssignPrimaryTokenPrivilege, held by default only by LocalSystem and the
+  # LOCAL/NETWORK SERVICE accounts. The windows-latest runner user is an
+  # administrator and does NOT hold it, so scripts/test-isolation-windows.ps1
+  # registers a scheduled task with /ru SYSTEM for the tests that launch a
+  # process as the target account (TestIsolationWindowsSystem_*). Everything
+  # else — ACL shape, credential storage, impersonated access checks
+  # (TestIsolationWindows_*) — runs directly under the elevated admin shell.
+  #
+  # One arch, matching oidc-integration's rationale rather than
+  # ldap-integration's or isolation-integration's: the Win32 APIs this suite
+  # exercises (ACLs, LogonUserW, CreateProcessAsUser) are not architecture-
+  # dependent, and hosted windows-arm64 runners are not generally available.
+  #
+  # This job also runs the Windows-only UNIT tests, because nothing else in CI
+  # does. cross-platform-runtime is a runtime smoke job and is skipped on pull
+  # requests (if: github.event_name != 'pull_request'); the only other Windows
+  # coverage is the cross-compile job's `GOOS=windows go vet`, which
+  # type-checks test files but never executes them. Package list below is
+  # every package with genuine `GOOS`-conditional behavior (a `_windows.go`
+  # file, or a `runtime.GOOS == "windows"` branch in its tests) rather than
+  # every package that merely imports something isolation-related:
+  # internal/worker/isolation, internal/worker/executor, internal/worker/staging,
+  # and cmd/sqi-worker each carry dedicated _windows.go/_windows_test.go files;
+  # internal/worker/envutil and internal/worker/session have no such files but
+  # branch on runtime.GOOS in their test bodies (path separators, credential
+  # handling, profile-env resolution), so running them only on Linux would
+  # silently skip the Windows branch of every one of those tests.
+  #
+  # IMPORTANT: scripts/test-isolation-windows.ps1 exits 0 with a message when
+  # the shell is not elevated, mirroring how `make test-isolation` exits 0
+  # without Docker. A bare exit 0 therefore proves NOTHING, which is why the
+  # assertion step below checks for the not-elevated message and then counts
+  # named PASS lines instead of trusting the exit code — the same shape as
+  # isolation-integration's own assertion step above.
+  isolation-integration-windows:
+    name: Isolation integration (windows)
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Windows-only unit tests. See the job comment above for why these six
+      # packages and not others. -count=1 disables the test cache so a stale
+      # pass from an earlier step can't stand in for a real run.
+      - name: Windows unit tests
+        shell: bash
+        run: |
+          go test -count=1 \
+            ./internal/worker/isolation/... \
+            ./internal/worker/executor/... \
+            ./internal/worker/envutil/... \
+            ./internal/worker/session/... \
+            ./internal/worker/staging/... \
+            ./cmd/sqi-worker/...
+
+      - name: Run windows isolation integration tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File scripts/test-isolation-windows.ps1 2>&1 | Tee-Object -FilePath isolation-windows.log
+
+      # Does not trust a bare exit-0 from the script: asserts the suite
+      # actually executed (the runner was elevated) and that every one of the
+      # 16 named tests — 8 TestIsolationWindows_* (elevated admin) plus
+      # 8 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
+      # a silent skip, a build failure, or a partial run all fail the job
+      # instead of passing quietly.
+      - name: Assert the suite actually ran
+        shell: bash
+        run: |
+          if grep -q "not elevated" isolation-windows.log; then
+            echo "::error::The runner was not elevated — the isolation suite did not run. A skip here proves nothing, so this is a hard failure."
+            exit 1
+          fi
+          expected=(
+            TestIsolationWindows_CapableRejectsPlainAdmin
+            TestIsolationWindows_ChownRecursiveDoesNotFollowJunction
+            TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees
+            TestIsolationWindows_CredentialFileNotReadableByRunAsAccount
+            TestIsolationWindows_CredentialMissingIsActionable
+            TestIsolationWindows_CredentialRoundTrip
+            TestIsolationWindows_SecondAccountCannotOpenSessionDir
+            TestIsolationWindows_SessionDirACLIsProtected
+            TestIsolationWindowsSystem_Capable
+            TestIsolationWindowsSystem_ChildCanWriteSessionDir
+            TestIsolationWindowsSystem_ChildRunsAsTargetUser
+            TestIsolationWindowsSystem_CrossUserSessionDirDenied
+            TestIsolationWindowsSystem_DaemonEnvNotInherited
+            TestIsolationWindowsSystem_NoIsolationUnchanged
+            TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser
+            TestIsolationWindowsSystem_RunsAsSystem
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name" isolation-windows.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Confirmed all ${#expected[@]}/16 named isolation tests passed."
+          fi
+          exit $missing
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run
