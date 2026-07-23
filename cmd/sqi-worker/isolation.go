@@ -117,7 +117,7 @@ func validateIsolationAncestors(required bool, sessionRoot, stagingScratchDir st
 // shared scratch-base ancestor mode once per worker instead of per
 // assignment (see staging.WithIsolationCapable's doc).
 func resolveIsolation(cfg workerconfig.WorkerConfig, logger *slog.Logger) (provider isolation.Provider, sessionRoot string, sessionRootMode os.FileMode, isolationCapable bool, err error) {
-	provider, err = buildIsolationProvider(cfg.Isolation, logger)
+	provider, err = buildIsolationProvider(cfg.Isolation, cfg.Worker.DataDir, logger)
 	if err != nil {
 		return nil, "", 0, false, err
 	}
@@ -132,8 +132,12 @@ func resolveIsolation(cfg workerconfig.WorkerConfig, logger *slog.Logger) (provi
 // enforces isolation.required at boot (see verifyIsolationCapability).
 // Extracted from runStart to keep that function's cyclomatic complexity
 // within the project limit.
-func buildIsolationProvider(cfg workerconfig.IsolationConfig, logger *slog.Logger) (isolation.Provider, error) {
-	provider, err := isolation.NewProvider(isolation.Config{Logger: logger, Provider: cfg.Provider})
+func buildIsolationProvider(cfg workerconfig.IsolationConfig, dataDir string, logger *slog.Logger) (isolation.Provider, error) {
+	provider, err := isolation.NewProvider(isolation.Config{
+		Logger:          logger,
+		Provider:        cfg.Provider,
+		CredentialStore: isolation.NewFileStore(isolation.CredentialDir(dataDir)),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("build isolation provider: %w", err)
 	}
