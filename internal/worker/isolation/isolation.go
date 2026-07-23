@@ -18,18 +18,20 @@
 //
 // Windows is NOT YET SUPPORTED, on purpose and explicitly — not half-working.
 // The logon_user credential provider (logonuser.go, provider_windows.go) is
-// real: it calls LogonUserW and returns a genuine primary token. What is
-// missing is everything that needs that token: SecureWorkDir/ChownRecursive
-// (workdir_windows.go) require NTFS ACL work (grant the target user's SID an
-// ACE, strip inheritance) that has not been written, so Provider.Capable()
-// on Windows always returns ErrNotCapable — see
-// workdir_windows.go's windowsIsolationUnsupportedMsg for the exact,
+// real: it calls LogonUserW and returns a genuine primary token, and
+// SecureWorkDir/ChownRecursive (workdir_windows.go) now apply real NTFS ACLs
+// to a session working directory (grant the target user's SID an ACE, strip
+// inheritance — see secureDACL, acl_windows.go). What is still missing is
+// loading the target user's profile, job-object-based process reaping, and
+// end-to-end verification against a real Windows host, so Provider.Capable()
+// on Windows still always returns ErrNotCapable — see
+// provider_windows.go's windowsIsolationUnsupportedMsg for the exact,
 // operator-facing message every entry point (boot-time
 // verifyIsolationCapability and a per-assignment session.Manager.Create)
-// surfaces. Remaining work: NTFS ACL-based SecureWorkDir/ChownRecursive, the
-// s4u provider (refused explicitly today), and a Windows CI runner to verify
-// any of it — none of this package's Windows code has ever run against a
-// real Windows host.
+// surfaces. Remaining work: user-profile loading, job-object process
+// reaping, the s4u provider (refused explicitly today), and a Windows CI
+// runner to verify any of it — none of this package's Windows code has ever
+// run against a real Windows host.
 package isolation
 
 import (

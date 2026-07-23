@@ -85,11 +85,12 @@ func TestNewProvider_UnknownProviderRejected(t *testing.T) {
 // whether this test process's own token happens to hold every privilege
 // hasRequiredPrivileges checks for. That determinism is the whole point: a
 // Windows worker must never look capable just because CreateProcessAsUser's
-// prerequisites are satisfied — NTFS ACL support (workdir_windows.go) is
-// still missing, so isolation as a whole cannot work either way, and
-// Capable() must say so plainly rather than reporting ready and failing
-// later, confusingly, inside Manager.Create (see that message's own doc for
-// the full rationale).
+// prerequisites are satisfied — session directories now get real NTFS ACLs
+// (workdir_windows.go), but profile loading, job-object process reaping, and
+// end-to-end verification are still missing, so isolation as a whole cannot
+// work either way, and Capable() must say so plainly rather than reporting
+// ready and failing later, confusingly, inside Manager.Create (see that
+// message's own doc for the full rationale).
 func TestCapableOS_AlwaysReportsACLNotImplemented(t *testing.T) {
 	p, err := newProvider(Config{Provider: "logon_user", CredentialStore: fakeStore{}})
 	if err != nil {

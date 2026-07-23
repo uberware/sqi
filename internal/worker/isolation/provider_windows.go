@@ -20,6 +20,10 @@ import (
 // child process actually run as cred's identity.
 type Credential struct {
 	token windows.Token
+	// User is the account name this credential was resolved for, kept so the
+	// workdir ACL functions can resolve its SID without a second lookup path
+	// that could disagree with the one Resolve used.
+	User string
 	// Home is the target user's profile directory (from
 	// Token.GetUserProfileDirectory), or "" when it could not be determined.
 	// Empty is tolerated: the session layer (internal/worker/session) falls
@@ -116,7 +120,7 @@ func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 		// session layer falls back to its own working directory.
 		home = ""
 	}
-	return &Credential{token: tok, Home: home}, nil
+	return &Credential{token: tok, User: user, Home: home}, nil
 }
 
 // requiredPrivileges are the privileges CreateProcessAsUser needs present on
@@ -128,14 +132,38 @@ func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 // hasRequiredPrivileges (and therefore this check) is real, working code —
 // not a stub — but it is no longer capableOS's own gate below: holding every
 // privilege here is necessary for CreateProcessAsUser but not sufficient for
-// isolation as a whole, since securing a session working directory for the
-// target identity needs NTFS ACL work (see windowsIsolationUnsupportedMsg,
-// workdir_windows.go) that does not exist yet. It stays wired into capableOS
-// so it is exercised on every real Windows run (surfacing a missing
-// privilege as extra detail) rather than sitting dead until a future
-// revision reintroduces it, once ACL support lands and privilege really is
-// the remaining gate.
+// isolation as a whole. Session working directories now get real NTFS ACLs
+// (workdir_windows.go), but the rest of what isolation.go's package doc
+// still lists as outstanding — loading the target user's profile,
+// job-object-based process reaping, and end-to-end verification against a
+// real Windows host — has not landed yet. It stays wired into capableOS so
+// it is exercised on every real Windows run (surfacing a missing privilege
+// as extra detail) rather than sitting dead until a future revision
+// reintroduces it, once the remaining gaps close and privilege really is the
+// last gate.
 var requiredPrivileges = []string{"SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege"}
+
+// windowsIsolationUnsupportedMsg is the single operator-facing explanation
+// for why capableOS still refuses every request, shared by every entry point
+// that can observe the gap through Capable(): the boot-time refusal
+// (verifyIsolationCapability, cmd/sqi-worker/isolation.go) and a
+// per-assignment task failure (session.Manager.resolveCredential,
+// internal/worker/session/session.go) always read the same way to an
+// operator, rather than one clear message and one confusing one for what is,
+// underneath, the same set of missing pieces.
+//
+// This used to also be workdir_windows.go's own refusal message for
+// SecureWorkDir/ChownRecursive when called with a non-nil credential — that
+// changed the moment this package started applying real NTFS ACLs there (see
+// secureDACL, acl_windows.go). What is still missing, and is why capableOS
+// below has not been flipped to report success, is everything isolation.go's
+// package doc still lists as outstanding: loading the target user's profile,
+// job-object-based process reaping, and verifying the whole path end to end
+// on a real Windows host. Reporting "capable" before that lands would let a
+// Windows worker with isolation.required: true start successfully and only
+// fail, confusingly, partway through a real assignment — exactly the
+// half-working state this message exists to prevent.
+const windowsIsolationUnsupportedMsg = "task isolation is not yet fully supported on Windows: session directory ACLs are implemented, but profile loading, process reaping, and end-to-end verification are not"
 
 // hasRequiredPrivileges reports whether this worker's process token holds
 // every privilege in requiredPrivileges. Fails closed: any lookup error, or
@@ -158,16 +186,18 @@ func hasRequiredPrivileges() error {
 // capableOS is the seam wired into newLogonUserProvider's Capable() on
 // Windows (see logonuser.go). It ALWAYS reports not-capable: even a process
 // token holding every privilege hasRequiredPrivileges checks for cannot make
-// isolation usable while SecureWorkDir/ChownRecursive (workdir_windows.go)
-// have no NTFS ACL implementation. Reporting anything else here would let a
-// Windows worker with isolation.required: true start successfully
+// isolation usable while the remaining gaps requiredPrivileges' own doc names
+// — profile loading, job-object process reaping, end-to-end verification —
+// have not landed (session working directories themselves are now real NTFS
+// ACLs; see secureDACL, acl_windows.go). Reporting anything else here would
+// let a Windows worker with isolation.required: true start successfully
 // (verifyIsolationCapability, cmd/sqi-worker/isolation.go) and only fail,
-// confusingly, the moment a real isolated assignment tried to secure its
-// working directory — the exact half-working state this function exists to
-// prevent. hasRequiredPrivileges still runs (see its own doc) so a missing
-// privilege is named alongside the ACL gap when relevant, but its result
-// never changes the bottom line: not capable, in the ErrNotCapable family,
-// with the shared operator-facing message every entry point uses.
+// confusingly, partway through a real isolated assignment — the exact
+// half-working state this function exists to prevent. hasRequiredPrivileges
+// still runs (see its own doc) so a missing privilege is named alongside the
+// remaining gaps when relevant, but its result never changes the bottom
+// line: not capable, in the ErrNotCapable family, with the shared
+// operator-facing message every entry point uses.
 func capableOS() error {
 	if err := hasRequiredPrivileges(); err != nil {
 		// Both ErrNotCapable and err are wrapped (Go allows multiple %w verbs

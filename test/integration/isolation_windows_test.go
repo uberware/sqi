@@ -24,8 +24,12 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -260,4 +264,293 @@ func hasSID(t *testing.T, acl *windows.ACL, sid *windows.SID) bool {
 		}
 	}
 	return false
+}
+
+// harnessStore builds a CredentialStore seeded with whichever harness
+// accounts the environment provides (SQI_TEST_ISOLATION_USER_A/PASS_A and
+// the _B pair), so resolveHarnessCredential can resolve either one through
+// the real logon_user Provider. An account whose USER env var is unset is
+// simply not seeded — callers that only need one of the two accounts still
+// get a usable store.
+func harnessStore(t *testing.T) isolation.CredentialStore {
+	t.Helper()
+	store := isolation.NewFileStore(t.TempDir())
+	putter, ok := store.(interface {
+		Put(user, secret string) error
+	})
+	if !ok {
+		t.Fatal("windows file store must expose Put")
+	}
+	for _, pair := range [][2]string{
+		{"SQI_TEST_ISOLATION_USER_A", "SQI_TEST_ISOLATION_PASS_A"},
+		{"SQI_TEST_ISOLATION_USER_B", "SQI_TEST_ISOLATION_PASS_B"},
+	} {
+		user := os.Getenv(pair[0])
+		if user == "" {
+			continue
+		}
+		if err := putter.Put(user, os.Getenv(pair[1])); err != nil {
+			t.Fatalf("Put(%s): %v", user, err)
+		}
+	}
+	return store
+}
+
+// resolveHarnessCredential resolves a genuine *isolation.Credential for user
+// via the real logon_user Provider, backed by harnessStore. This is
+// deliberate — see the "No test-only exported API" note in this package's
+// history: it lets the strongest assertions below call the production
+// SecureWorkDir/ChownRecursive with a credential obtained exactly the way a
+// real worker would (through Resolve), rather than a hand-built value that
+// only Task 4's own code would ever construct.
+func resolveHarnessCredential(t *testing.T, user string) *isolation.Credential {
+	t.Helper()
+	store := harnessStore(t)
+	p, err := isolation.NewProvider(isolation.Config{Provider: "logon_user", CredentialStore: store})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	cred, err := p.Resolve(context.Background(), isolation.Spec{User: user})
+	if err != nil {
+		t.Fatalf("Resolve(%s): %v", user, err)
+	}
+	return cred
+}
+
+// advapi32.dll!LogonUserW has no wrapper in golang.org/x/sys/windows —
+// checked against the version this module depends on (v0.47.0), the same way
+// internal/worker/isolation/provider_windows.go already had to for the same
+// call: neither LogonUserW nor a `LogonUser` Go wrapper is exposed there.
+// This package cannot reach that package's unexported logonUserW seam (it is
+// a different package, and that seam is deliberately not exported — see "No
+// test-only exported API" above), so it is declared directly here instead,
+// the same way golang.org/x/sys/windows's own generated zsyscall_windows.go
+// declares every Win32 call it does wrap.
+// advapi32.dll!ImpersonateLoggedOnUser is likewise unwrapped by
+// golang.org/x/sys/windows v0.47.0 — that package wraps RevertToSelf and
+// ImpersonateSelf, but not this call — so it is declared alongside
+// LogonUserW below for the same reason.
+var (
+	modAdvapi32                 = windows.NewLazySystemDLL("advapi32.dll")
+	procLogonUserW              = modAdvapi32.NewProc("LogonUserW")
+	procImpersonateLoggedOnUser = modAdvapi32.NewProc("ImpersonateLoggedOnUser")
+)
+
+// impersonateLoggedOnUser wraps the raw ImpersonateLoggedOnUser syscall.
+func impersonateLoggedOnUser(tok windows.Token) error {
+	r1, _, e1 := procImpersonateLoggedOnUser.Call(uintptr(tok))
+	if r1 == 0 {
+		if e1 != nil {
+			return e1
+		}
+		return errors.New("ImpersonateLoggedOnUser: failed with no error code")
+	}
+	return nil
+}
+
+// logonUserW wraps the raw LogonUserW syscall. logonType/logonProvider match
+// the LOGON32_LOGON_BATCH / LOGON32_PROVIDER_DEFAULT values
+// internal/worker/isolation's own logonUserOS uses, so impersonate below
+// authenticates the harness accounts exactly the way a real worker would.
+func logonUserW(username, domain, password *uint16, logonType, logonProvider uint32) (windows.Token, error) {
+	var token windows.Token
+	r1, _, e1 := procLogonUserW.Call(
+		uintptr(unsafe.Pointer(username)),
+		uintptr(unsafe.Pointer(domain)),
+		uintptr(unsafe.Pointer(password)),
+		uintptr(logonType),
+		uintptr(logonProvider),
+		uintptr(unsafe.Pointer(&token)),
+	)
+	if r1 == 0 {
+		if e1 != nil {
+			return 0, e1
+		}
+		return 0, errors.New("LogonUserW: failed with no error code")
+	}
+	return token, nil
+}
+
+// impersonate logs on as user and runs fn under that identity. LogonUserW
+// needs no privilege for a local account with a password, and
+// ImpersonateLoggedOnUser needs only SeImpersonatePrivilege, which
+// administrators hold — which is what lets the strongest ACL assertions live
+// in the fast tier instead of behind the scheduled task.
+func impersonate(t *testing.T, user, pass string, fn func()) {
+	t.Helper()
+	u, err := windows.UTF16PtrFromString(user)
+	if err != nil {
+		t.Fatalf("encode user: %v", err)
+	}
+	p, err := windows.UTF16PtrFromString(pass)
+	if err != nil {
+		t.Fatalf("encode pass: %v", err)
+	}
+	// LOGON32_LOGON_BATCH = 4, LOGON32_PROVIDER_DEFAULT = 0.
+	tok, err := logonUserW(u, nil, p, 4, 0)
+	if err != nil {
+		t.Fatalf("LogonUser(%s): %v", user, err)
+	}
+	defer tok.Close()
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := impersonateLoggedOnUser(tok); err != nil {
+		t.Fatalf("ImpersonateLoggedOnUser: %v", err)
+	}
+	defer windows.RevertToSelf() //nolint:errcheck // test cleanup
+
+	fn()
+}
+
+// TestIsolationWindows_SessionDirACLIsProtected proves the ACL was not just
+// BUILT correctly but APPLIED correctly. secureDACL's unit test covers the
+// three entries; what it cannot show is that applyProtectedDACL actually
+// stripped inheritance on a real directory. Without the protected flag the
+// session would keep whatever its parent grants — typically BUILTIN\Users —
+// and the three explicit entries would be an addition rather than the whole
+// story, leaving every session readable farm-wide while every structural test
+// still passed.
+func TestIsolationWindows_SessionDirACLIsProtected(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+
+	dir := t.TempDir()
+	cred := resolveHarnessCredential(t, user)
+	defer cred.Close()
+	if err := isolation.SecureWorkDir(dir, cred); err != nil {
+		t.Fatalf("SecureWorkDir: %v", err)
+	}
+
+	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatalf("GetNamedSecurityInfo: %v", err)
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		t.Fatalf("Control: %v", err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		t.Error("session directory DACL is not PROTECTED; it still inherits ACEs from its parent")
+	}
+
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatalf("DACL: %v", err)
+	}
+	// golang.org/x/sys/windows v0.47.0 has no GetAclInformation wrapper (see
+	// aceCount's own doc, below in this file) — windows.ACL already exports
+	// AceCount as a plain struct field, so that is read directly instead.
+	if got := aceCount(t, dacl); got != 3 {
+		t.Errorf("applied DACL has %d ACEs, want exactly 3 (%s, SYSTEM, Administrators)", got, user)
+	}
+}
+
+// TestIsolationWindows_SecondAccountCannotOpenSessionDir is the real access
+// check the structural DACL test cannot make: account B, actually
+// impersonated, must be denied a session directory secured for account A.
+func TestIsolationWindows_SecondAccountCannotOpenSessionDir(t *testing.T) {
+	requireHarness(t)
+	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	userB := os.Getenv("SQI_TEST_ISOLATION_USER_B")
+	passB := os.Getenv("SQI_TEST_ISOLATION_PASS_B")
+
+	dir := t.TempDir()
+	credA := resolveHarnessCredential(t, userA)
+	defer credA.Close()
+	if err := isolation.SecureWorkDir(dir, credA); err != nil {
+		t.Fatalf("SecureWorkDir: %v", err)
+	}
+
+	impersonate(t, userB, passB, func() {
+		if _, err := os.ReadDir(dir); err == nil {
+			t.Errorf("account %s could read a session directory secured for %s", userB, userA)
+		}
+	})
+}
+
+// TestIsolationWindows_CredentialFileNotReadableByRunAsAccount proves the
+// claim the credential store's own doc makes: machine-scope DPAPI is
+// decryptable by anything on this host that can READ the file, so the file
+// ACL is the real boundary. A task must not be able to recover the password
+// of the account it runs as.
+func TestIsolationWindows_CredentialFileNotReadableByRunAsAccount(t *testing.T) {
+	requireHarness(t)
+	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	passA := os.Getenv("SQI_TEST_ISOLATION_PASS_A")
+
+	dir := t.TempDir()
+	store := isolation.NewFileStore(dir)
+	putter, ok := store.(interface {
+		Put(user, secret string) error
+	})
+	if !ok {
+		t.Fatal("windows file store must expose Put")
+	}
+	if err := putter.Put(userA, passA); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ReadDir(%q) = %v entries, %v; want exactly 1", dir, len(entries), err)
+	}
+	blob := filepath.Join(dir, entries[0].Name())
+
+	impersonate(t, userA, passA, func() {
+		if _, err := os.ReadFile(blob); err == nil {
+			t.Errorf("account %s could read its own stored credential at %s", userA, blob)
+		}
+	})
+}
+
+// TestIsolationWindows_ChownRecursiveDoesNotFollowJunction proves the
+// reparse-point guard. A task that plants a junction inside its session
+// directory pointing at a directory it does not own must not have sqi grant
+// its own account full control of the target.
+func TestIsolationWindows_ChownRecursiveDoesNotFollowJunction(t *testing.T) {
+	requireHarness(t)
+	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	passA := os.Getenv("SQI_TEST_ISOLATION_PASS_A")
+
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("not for the task"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	link := filepath.Join(root, "escape")
+	if out, err := exec.CommandContext(context.Background(), "cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J: %v: %s", err, out)
+	}
+
+	credA := resolveHarnessCredential(t, userA)
+	defer credA.Close()
+	if err := isolation.ChownRecursive(root, credA); err != nil {
+		t.Fatalf("ChownRecursive: %v", err)
+	}
+
+	impersonate(t, userA, passA, func() {
+		if _, err := os.ReadFile(secret); err == nil {
+			t.Errorf("ChownRecursive followed a junction and granted %s access to %s", userA, secret)
+		}
+	})
+}
+
+// TestIsolationWindows_CapableRejectsPlainAdmin proves the privilege check is
+// real rather than vacuous. An elevated Administrator does NOT hold
+// SeAssignPrimaryTokenPrivilege, so Capable() must refuse here — and the
+// System tier's counterpart test proves it accepts when the privilege IS
+// present. Without both halves, a Capable() that returned nil unconditionally
+// would look correct.
+func TestIsolationWindows_CapableRejectsPlainAdmin(t *testing.T) {
+	requireHarness(t)
+
+	p, err := isolation.NewProvider(isolation.Config{Provider: "logon_user"})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	if err := p.Capable(); err == nil {
+		t.Error("Capable() = nil as a plain administrator, want ErrNotCapable — administrators do not hold SeAssignPrimaryTokenPrivilege")
+	}
 }

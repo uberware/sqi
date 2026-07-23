@@ -68,3 +68,34 @@ func TestAdminOnlyDACL_ExcludesUnprivilegedTrustees(t *testing.T) {
 		t.Error("adminOnlyDACL must not grant an unprivileged trustee")
 	}
 }
+
+// TestSecureDACL_GrantsExactlyThreeTrustees proves a session directory's ACL
+// admits the target account, SYSTEM, and Administrators — and nobody else.
+// No Users, no Everyone, no CREATOR OWNER. This is the Windows equivalent of
+// POSIX chmod 0700, asserted structurally here so the expensive SYSTEM-tier
+// tests only have to confirm that the structure has the effect it claims.
+func TestSecureDACL_GrantsExactlyThreeTrustees(t *testing.T) {
+	target, err := windows.CreateWellKnownSid(windows.WinBuiltinGuestsSid)
+	if err != nil {
+		t.Fatalf("CreateWellKnownSid: %v", err)
+	}
+
+	acl, err := secureDACL(target)
+	if err != nil {
+		t.Fatalf("secureDACL: %v", err)
+	}
+
+	if got := aceCount(t, acl); got != 3 {
+		t.Errorf("secureDACL granted %d ACEs, want exactly 3 (target, SYSTEM, Administrators)", got)
+	}
+	if !hasSID(t, acl, target) {
+		t.Error("secureDACL must grant the target account, or its own tasks cannot use the directory")
+	}
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		t.Fatalf("CreateWellKnownSid(system): %v", err)
+	}
+	if !hasSID(t, acl, system) {
+		t.Error("secureDACL must grant SYSTEM, or the daemon cannot clean the session up")
+	}
+}

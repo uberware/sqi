@@ -6,6 +6,7 @@ package isolation
 
 import (
 	"fmt"
+	"os"
 
 	"golang.org/x/sys/windows"
 )
@@ -124,4 +125,91 @@ func applyProtectedDACL(h windows.Handle, acl *windows.ACL) error {
 		return fmt.Errorf("set protected DACL: %w", err)
 	}
 	return nil
+}
+
+// lookupUserSID resolves a local account name to its SID. An empty system
+// name asks Windows to search the local account database, matching how
+// logonUserOS passes a nil domain to LogonUserW.
+func lookupUserSID(user string) (*windows.SID, error) {
+	sid, _, _, err := windows.LookupSID("", user)
+	if err != nil {
+		return nil, fmt.Errorf("look up SID for %q: %w", user, err)
+	}
+	return sid, nil
+}
+
+// secureDACL builds the DACL for an isolated session working directory: full
+// control for the target account, SYSTEM, and Administrators, and nothing
+// else. This is the Windows counterpart of the POSIX chown + chmod 0700 in
+// workdir_unix.go.
+//
+// It grants the target an ACE but deliberately does NOT make it the OWNER,
+// which is where this departs from the POSIX behavior on purpose. A Windows
+// owner implicitly holds WRITE_DAC, so transferring ownership would let a
+// task rewrite its own session ACL and re-open the directory to other
+// accounts — something POSIX's chown genuinely does allow (the owner can
+// chmod 0777). Matching POSIX exactly would mean adopting its weaker position
+// for no benefit, so this is intentionally tighter.
+func secureDACL(target *windows.SID) (*windows.ACL, error) {
+	entries, err := privilegedTrustees()
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, explicitFullControl(target))
+	acl, err := windows.ACLFromEntries(entries, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build session DACL: %w", err)
+	}
+	return acl, nil
+}
+
+// createExclusiveFile creates path for writing, failing if anything already
+// occupies that name (CREATE_NEW — the Win32 equivalent of O_CREAT|O_EXCL),
+// with extraAccess folded into the SAME CreateFile call as GENERIC_WRITE.
+//
+// This mirrors exactly what os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+// perm) does on Windows under the hood (see syscall.Open in the standard
+// library's syscall_windows.go: GENERIC_WRITE access, FILE_SHARE_READ|
+// FILE_SHARE_WRITE sharing, CREATE_NEW disposition, FILE_FLAG_OPEN_REPARSE_POINT
+// so the create does not follow a reparse point already at path) — with one
+// addition: extraAccess is requested up front, on the create call itself.
+// Windows fixes a handle's access rights at the moment it is opened; there is
+// no way to widen them on an already-open handle. A caller that will need
+// WRITE_DAC on this handle later (WriteFileFchown, to apply an ACL before the
+// handle is closed) has to ask for it here, or it can never get it at all —
+// and asking via a SECOND, path-based open instead would reintroduce exactly
+// the swap-the-entry race this create-then-act shape exists to close.
+func createExclusiveFile(path string, perm os.FileMode, extraAccess uint32) (windows.Handle, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, fmt.Errorf("encode path %q: %w", path, err)
+	}
+	attrs := uint32(windows.FILE_ATTRIBUTE_NORMAL)
+	if perm&0o200 == 0 { // no owner-write bit: mirror os.OpenFile's syscallMode->S_IWRITE check
+		attrs = windows.FILE_ATTRIBUTE_READONLY
+	}
+	attrs |= windows.FILE_FLAG_OPEN_REPARSE_POINT
+	h, err := windows.CreateFile(
+		p,
+		windows.GENERIC_WRITE|extraAccess,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.CREATE_NEW,
+		attrs,
+		0,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return h, nil
+}
+
+// securePath applies acl to a single path, opening it reparse-point-safely.
+func securePath(path string, acl *windows.ACL) error {
+	h, err := openForACL(path)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+	return applyProtectedDACL(h, acl)
 }

@@ -9,70 +9,103 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+
+	"golang.org/x/sys/windows"
 )
 
-// windowsIsolationUnsupportedMsg is the single operator-facing explanation
-// for why Windows task isolation cannot be used yet, shared by every entry
-// point that can observe the gap: Capable() (provider_windows.go, via
-// capableOS) and the two functions below. Keeping one literal string means
-// the boot-time refusal (verifyIsolationCapability, cmd/sqi-worker/isolation.go)
-// and a per-assignment task failure (session.Manager.resolveCredential,
-// internal/worker/session/session.go) always read the same way to an
-// operator, rather than one clear message and one confusing one for what is,
-// underneath, the same missing feature.
+// SecureWorkDir restricts dir to cred's identity: a protected DACL granting
+// full control to the target account, SYSTEM, and Administrators, and nothing
+// else. Called once at session creation so a session's scratch directory is
+// unreadable to any account but the one its tasks run as. A nil cred is a
+// no-op, matching Apply's no-isolation behavior.
 //
-// What IS implemented on Windows (9bf054a): the logon_user credential
-// provider (logonuser.go/provider_windows.go) really calls LogonUserW and
-// returns a real, usable primary token — Resolve is not a stub. What is
-// MISSING, and is the entire reason this message exists, is everything below
-// that needs the token: securing a session working directory is POSIX
-// chown/chmod on unix (workdir_unix.go) but requires NTFS ACL work on
-// Windows — granting the target user's SID an ACE and stripping inheritance
-// — which has not been written. So a Windows worker can obtain a credential
-// but can never safely hand a task a working directory scoped to it, and
-// Capable() must say so before an operator gets any further, rather than
-// discovering it as an obscure failure the moment a real assignment arrives.
-//
-// Remaining work to make Windows isolation real: (1) NTFS ACL-based
-// SecureWorkDir/ChownRecursive to replace the unconditional failures below;
-// (2) the s4u provider (currently refused explicitly in provider_windows.go's
-// newProvider); (3) a Windows CI runner (make test-isolation today only
-// exercises POSIX against a real container) to verify any of it against a
-// real account, the way the POSIX path already is.
-const windowsIsolationUnsupportedMsg = "task isolation is not yet supported on Windows: session directory ACLs are not implemented"
-
-// SecureWorkDir refuses every isolated request: cred is non-nil exactly when
-// session.Manager.resolveCredential already obtained a real token via the
-// logon_user provider's Resolve (see windowsIsolationUnsupportedMsg above for
-// why Resolve succeeding is not the same as isolation being usable), so this
-// is the per-assignment path that fails the one task, plainly, rather than
-// producing an obscure error about a work directory.
-func SecureWorkDir(_ string, cred *Credential) error {
+// This is the Windows counterpart of workdir_unix.go's chown + chmod 0700.
+// See secureDACL for why ownership is deliberately NOT transferred to the
+// target, which is the one place this is intentionally stricter than POSIX.
+func SecureWorkDir(dir string, cred *Credential) error {
 	if cred == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %s", ErrNotCapable, windowsIsolationUnsupportedMsg)
+	sid, err := lookupUserSID(cred.User)
+	if err != nil {
+		return err
+	}
+	acl, err := secureDACL(sid)
+	if err != nil {
+		return err
+	}
+	return securePath(dir, acl)
 }
 
-// ChownRecursive refuses every isolated request for the same reason as
-// SecureWorkDir above.
-func ChownRecursive(_ string, cred *Credential) error {
+// ChownRecursive walks root and applies cred's protected DACL to every entry.
+//
+// The inheritable ACE SecureWorkDir sets covers everything created AFTERWARDS,
+// but not entries that already exist — staged content copied by an
+// ACL-preserving tool arrives carrying explicit ACLs of its own, exactly as
+// rsync -a preserves ownership on POSIX. A nil cred is a no-op.
+//
+// Every entry is opened with FILE_FLAG_OPEN_REPARSE_POINT (see openForACL),
+// never touched through a path-based call, so a junction planted inside the
+// tree has its own entry secured rather than whatever it points at.
+func ChownRecursive(root string, cred *Credential) error {
 	if cred == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %s", ErrNotCapable, windowsIsolationUnsupportedMsg)
+	sid, err := lookupUserSID(cred.User)
+	if err != nil {
+		return err
+	}
+	acl, err := secureDACL(sid)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		// No special-casing needed for a reparse point (symlink or
+		// junction): WalkDir only ever recurses INTO an entry that reports
+		// IsDir() true, and a reparse point never does (see
+		// os/types_windows.go's fileStat.mode — a "surrogate" reparse point
+		// deliberately does not carry the directory bit, precisely so
+		// callers like this one don't need to guard against walking through
+		// it). Descent is prevented structurally; there is nothing left for
+		// this callback to do beyond securing the entry itself, exactly like
+		// every other entry.
+		//
+		// An earlier revision returned filepath.SkipDir from a
+		// ModeSymlink-specific branch here, believing that was needed to
+		// stop descent. It was not, and it was actively wrong: SkipDir
+		// returned for an entry whose IsDir() is false does not mean "don't
+		// descend" to filepath.WalkDir — it means "stop visiting the REST OF
+		// THE CURRENT DIRECTORY'S entries" (see the `for _, d1 := range
+		// dirs { … if err == SkipDir { break } }` loop in
+		// path/filepath/path.go). Since a reparse point sorts wherever its
+		// name falls, that silently abandoned every sibling sorting after it
+		// — a directory could look fully secured (ChownRecursive returning
+		// nil) while part of the tree still carried whatever ACL it
+		// inherited.
+		return securePath(path, acl)
+	})
 }
 
-// ValidateTraversable is a no-op on Windows: NTFS access control is
-// ACL-based, not POSIX permission-bit-based, so there is no ancestor
-// "traversable bit" to check the way there is on POSIX. Boot-time ancestor
-// validation is gated on isolation.required (cmd/sqi-worker's
-// validateIsolationAncestors), and a Windows worker that sets that flag is
-// already refused earlier, by Capable() reporting
-// windowsIsolationUnsupportedMsg (see provider_windows.go's capableOS) —
-// this function existing as a no-op just lets the package compile on every
-// platform ahead of a real NTFS ACL implementation; it is never reached on a
-// path that matters.
+// ValidateTraversable is a no-op on Windows, and — unlike the previous
+// revision of this function — that is a property of the platform rather than
+// of an unfinished implementation.
+//
+// Windows grants "Bypass traverse checking" (SeChangeNotifyPrivilege) to
+// Everyone by default, which skips the access check on intermediate
+// directories entirely: only the final object's ACL is evaluated. There is no
+// POSIX-style ancestor "search bit" for a path-based check to inspect, so
+// there is nothing here to validate.
+//
+// The guarantee this stands for is still checked, just somewhere else and
+// against something real: logonUserProvider.Resolve inspects the TARGET'S OWN
+// TOKEN for SeChangeNotifyPrivilege, because hardening guides do sometimes
+// strip it, and refuses with a message naming the policy if it is absent.
+// That keeps the POSIX philosophy — report, never silently widen an
+// operator's directory — while checking the thing that is actually true here.
 func ValidateTraversable(_ ...string) error {
 	return nil
 }
@@ -82,34 +115,53 @@ func ValidateTraversable(_ ...string) error {
 // implementation's doc for the full threat model and why a plain O_EXCL-only
 // create, this function's own previous shape, incorrectly also refused a
 // legitimate duplicate embedded-file name instead of only an attacker-planted
-// entry). cred is accepted for cross-platform call-site parity with the
-// POSIX implementation but is unused: it is always nil in practice, though
-// NOT because Resolve can't produce one — the logon_user provider's Resolve
-// is real (see provider_windows.go) and can return a genuine token. Rather,
-// every caller reaches this function only after
-// session.Manager.resolveCredential has already secured the session working
-// directory via SecureWorkDir, which (see that function's doc, above)
-// unconditionally fails for a non-nil cred — so a session that carries an
-// isolated credential never survives to reach this call at all; only the
-// nil-cred, pre-isolation path ever does. There is never anything to chown
-// here today, but for the reason above, not the one an earlier revision of
-// this comment claimed.
+// entry), then — when cred is non-nil — applies cred's protected DACL to the
+// still-open descriptor.
+//
+// The create goes through createExclusiveFile rather than os.OpenFile: a
+// plain os.OpenFile(path, O_WRONLY|O_CREATE|O_EXCL, perm) only ever requests
+// GENERIC_WRITE on Windows, which carries READ_CONTROL but not WRITE_DAC —
+// and Windows fixes a handle's access rights at open time, so nothing done
+// to that handle afterward can widen them. applyProtectedDACL would then
+// fail ERROR_ACCESS_DENIED on every call. WRITE_DAC has to be requested on
+// the SAME CreateFile call that creates the file, which is also exactly why
+// this cannot be "create with os.OpenFile, then reopen by path with more
+// access": a second, path-based open reintroduces the swap window this
+// function exists to close (see the package doc's threat model above). The
+// handle the write happens through is the only one that ever touches this
+// inode, from create to ACL apply.
 //
 // O_NOFOLLOW has no Windows equivalent flag: NTFS symlinks/junctions require
 // an explicit reparse-point create call rather than being creatable via a
 // plain "create file" open the way POSIX symlinks are, so O_EXCL alone
 // already refuses to write through a pre-existing entry of any kind here.
-func WriteFileFchown(path string, data []byte, perm os.FileMode, _ *Credential) error {
+func WriteFileFchown(path string, data []byte, perm os.FileMode, cred *Credential) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove existing %q: %w", path, err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	var extraAccess uint32
+	if cred != nil {
+		extraAccess = windows.WRITE_DAC | windows.READ_CONTROL
+	}
+	h, err := createExclusiveFile(path, perm, extraAccess)
 	if err != nil {
 		return fmt.Errorf("create %q: %w", path, err)
 	}
+	f := os.NewFile(uintptr(h), path)
 	defer f.Close()
 	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("write %q: %w", path, err)
 	}
-	return nil
+	if cred == nil {
+		return nil
+	}
+	sid, err := lookupUserSID(cred.User)
+	if err != nil {
+		return err
+	}
+	acl, err := secureDACL(sid)
+	if err != nil {
+		return err
+	}
+	return applyProtectedDACL(windows.Handle(f.Fd()), acl)
 }
