@@ -536,6 +536,37 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 		}
 	}
 
+	// Place the process (and, on Windows, everything it spawns) under
+	// supervision immediately after Start so killAndWait can always reach the
+	// full tree — including a grandchild orphaned before a later kill call,
+	// which "taskkill /F /T" would miss. release() (deferred below) is the
+	// success-path teardown that does NOT kill survivors, keeping Windows
+	// behaviourally identical to POSIX; see procgroup_windows.go's doc.
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		// cmd.Start() above already succeeded, so a process is running, but
+		// nothing later in this function — run.pid, sess.AddTask, the
+		// output-reading goroutines — has registered it for cleanup yet, and
+		// there is no tree to call sendKILL on. Kill and reap it directly here
+		// so a superviseTree failure (resource exhaustion, restrictive policy,
+		// or a run-as-user permission edge case) never leaks a running,
+		// fully unmanaged process.
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
+		}
+		cmd.Wait() //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
+		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
+	}
+	defer func() {
+		if relErr := tree.release(); relErr != nil {
+			// context.Background(), not ctx: this defer can run after ctx is
+			// already canceled (task done, worker shutting down), and the
+			// warning should still be logged — same reasoning as
+			// flushTaskLogs above.
+			e.logger.WarnContext(context.Background(), "executor: release process tree", slog.Any("error", relErr))
+		}
+	}()
+
 	// Record PID.
 	pid := cmd.Process.Pid
 	run.pid = pid
@@ -579,9 +610,9 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// on timeout or cancellation (TERMINATE = immediate SIGKILL, the spec default;
 	// NOTIFY_THEN_TERMINATE = SIGTERM then SIGKILL after the notify period).
 	if taskTimeout > 0 {
-		return e.waitWithTimeout(ctx, cmd, run, waitDone, startedAt, pid, taskTimeout, action.Cancelation)
+		return e.waitWithTimeout(ctx, tree, run, waitDone, startedAt, pid, taskTimeout, action.Cancelation)
 	}
-	return e.waitForCompletion(ctx, cmd, run, waitDone, startedAt, pid, action.Cancelation)
+	return e.waitForCompletion(ctx, tree, run, waitDone, startedAt, pid, action.Cancelation)
 }
 
 // ── Wait helpers ──────────────────────────────────────────────────────────────
@@ -591,7 +622,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 // must be forcibly terminated.
 func (e *Executor) waitForCompletion(
 	ctx context.Context,
-	cmd *exec.Cmd,
+	tree *processTree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -602,7 +633,7 @@ func (e *Executor) waitForCompletion(
 	case waitErr := <-waitDone:
 		return makeResult(waitErr, pid, startedAt, false, false)
 	case <-ctx.Done():
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true, cancelation)
+		return e.killAndWait(ctx, tree, run, waitDone, startedAt, pid, false, true, cancelation)
 	}
 }
 
@@ -612,7 +643,7 @@ func (e *Executor) waitForCompletion(
 // terminated (on timeout or cancellation).
 func (e *Executor) waitWithTimeout(
 	ctx context.Context,
-	cmd *exec.Cmd,
+	tree *processTree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -627,9 +658,9 @@ func (e *Executor) waitWithTimeout(
 	case waitErr := <-waitDone:
 		return makeResult(waitErr, pid, startedAt, false, false)
 	case <-timer.C:
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, true, false, cancelation)
+		return e.killAndWait(ctx, tree, run, waitDone, startedAt, pid, true, false, cancelation)
 	case <-ctx.Done():
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true, cancelation)
+		return e.killAndWait(ctx, tree, run, waitDone, startedAt, pid, false, true, cancelation)
 	}
 }
 
@@ -703,7 +734,7 @@ func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod t
 // or short-window terminal status messages (first one wins, subsequent ignored).
 func (e *Executor) killAndWait(
 	ctx context.Context,
-	cmd *exec.Cmd,
+	tree *processTree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -745,7 +776,7 @@ func (e *Executor) killAndWait(
 
 	// TERMINATE (default): SIGKILL immediately — no SIGTERM, no grace period.
 	if !notify {
-		if killErr := sendKILL(cmd.Process); killErr != nil {
+		if killErr := tree.sendKILL(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -759,7 +790,7 @@ func (e *Executor) killAndWait(
 	}
 
 	// NOTIFY_THEN_TERMINATE (or worker shutdown): SIGTERM first.
-	if err := sendTERM(cmd.Process); err != nil {
+	if err := tree.sendTERM(); err != nil {
 		e.logger.WarnContext(
 			ctx, "executor: SIGTERM failed — escalating to SIGKILL immediately",
 			slog.String("task_id", run.taskID),
@@ -767,7 +798,7 @@ func (e *Executor) killAndWait(
 			slog.Int("pid", pid),
 			slog.Any("error", err),
 		)
-		if killErr := sendKILL(cmd.Process); killErr != nil {
+		if killErr := tree.sendKILL(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -796,7 +827,7 @@ func (e *Executor) killAndWait(
 			slog.Int("pid", pid),
 			slog.Duration("grace_period", gracePeriod),
 		)
-		if killErr := sendKILL(cmd.Process); killErr != nil {
+		if killErr := tree.sendKILL(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
