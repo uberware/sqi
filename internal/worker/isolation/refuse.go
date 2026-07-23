@@ -40,14 +40,26 @@ var privilegedGroupNames = map[string]bool{
 // normalizeAccountName folds an account or group name into a comparable
 // form: strip a leading ".\" / "HOST\" / "DOMAIN\" qualifier (Windows
 // principals are commonly written that way — ".\Administrator",
-// "BUILTIN\Administrators", "NT AUTHORITY\SYSTEM"), collapse runs of interior
-// whitespace to a single space (so "NETWORK  SERVICE" and "NETWORK SERVICE"
-// compare equal without losing the space that "NETWORKSERVICE" would), and
-// lowercase.
+// "BUILTIN\Administrators", "NT AUTHORITY\SYSTEM"), strip a trailing
+// "@domain" UPN suffix (LogonUserW requires this exact spelling when its
+// lpszDomain argument is NULL — see logonUserOS — so "Administrator@corp.
+// example.com" is not an obscure form to guard against, it is the form the
+// real logon path is called with), collapse runs of interior whitespace to a
+// single space (so "NETWORK  SERVICE" and "NETWORK SERVICE" compare equal
+// without losing the space that "NETWORKSERVICE" would), and lowercase.
+//
+// Only one of the two qualifier forms is stripped per name — a principal is
+// legitimately either "DOMAIN\user" or "user@domain", never both — so
+// stripping the "\" prefix first and then any "@" suffix on what remains
+// handles each correctly without a bare "administrator" happening to also
+// contain "@".
 func normalizeAccountName(name string) string {
 	name = strings.TrimSpace(name)
 	if i := strings.LastIndex(name, `\`); i != -1 {
 		name = name[i+1:]
+	}
+	if i := strings.IndexByte(name, '@'); i != -1 {
+		name = name[:i]
 	}
 	name = strings.Join(strings.Fields(name), " ")
 	return strings.ToLower(name)

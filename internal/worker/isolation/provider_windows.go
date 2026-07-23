@@ -84,9 +84,13 @@ var (
 
 // logonUserW wraps the raw LogonUserW syscall. domain may be nil, which asks
 // Windows to resolve username against the local account database — the right
-// behavior for the local accounts this provider targets (normalizeAccountName
-// already strips any ".\"/"DOMAIN\" qualifier before the privileged-name
-// check runs, so username here is always the bare account name).
+// behavior for the local accounts this provider targets. Callers MUST pass an
+// already-normalized username (normalizeAccountName): logonUserProvider.Resolve
+// does this before invoking the logon seam, stripping any ".\"/"DOMAIN\"
+// qualifier or trailing "@domain" UPN suffix, because a NULL domain does not
+// strip either of those from the username string itself — LogonUserW would
+// otherwise try to look up a literal account named e.g. ".\render-svc" and
+// fail.
 func logonUserW(username, domain, password *uint16, logonType, logonProvider uint32) (windows.Token, error) {
 	var token windows.Token
 	r1, _, e1 := procLogonUserW.Call(
@@ -108,8 +112,10 @@ func logonUserW(username, domain, password *uint16, logonType, logonProvider uin
 
 // logonUserOS is the real logon seam wired into newLogonUserProvider on
 // Windows. Called only after logonUserProvider.Resolve has already validated
-// spec.User and refused a privileged account, so this function's only job is
-// the OS call itself and translating its result into a Credential.
+// spec.User, refused a privileged account, and normalized user via
+// normalizeAccountName (see logonUserW's doc for why that normalization
+// matters here), so this function's only job is the OS call itself and
+// translating its result into a Credential.
 func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 	userPtr, err := windows.UTF16PtrFromString(user)
 	if err != nil {
@@ -256,6 +262,20 @@ func newProvider(cfg Config) (Provider, error) {
 	}
 }
 
+// fakeCredentialToken is a deliberately bogus, non-real HANDLE value given to
+// every fake Windows Credential (newFakeCredential below). It exists solely
+// so a fake credential can pass through apply's zero-token guard
+// (apply_windows.go): that guard exists to stop a genuinely token-less
+// Credential from producing a silently-unisolated process in PRODUCTION, not
+// to stop tests built on NewFake from exercising isolation.Apply's mechanical
+// SysProcAttr-handling at all (see TestApplyPreservesExistingSysProcAttr).
+// This value is never passed to a real Win32 call except CloseHandle, via
+// Credential.Close — an invalid handle there is a harmless, already-
+// established pattern in this package (see
+// TestCredentialClose_IdempotentAfterRealClose, which closes the equally
+// bogus windows.Token(0x1234) on purpose).
+const fakeCredentialToken = windows.Token(0x1)
+
 // newFakeCredential builds a Credential from a fake account for tests. It
 // keeps Credential opaque outside this package while letting fake.go (which
 // is platform-independent) hand back a real *Credential. The fake carries no
@@ -274,5 +294,5 @@ func newProvider(cfg Config) (Provider, error) {
 // on — typically the test process's own account, the same self-service
 // trick testUID/testGID play for uid/gid on POSIX.
 func newFakeCredential(name string, a FakeAccount) *Credential {
-	return &Credential{User: name, Home: a.Home}
+	return &Credential{User: name, Home: a.Home, token: fakeCredentialToken}
 }

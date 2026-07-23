@@ -156,6 +156,51 @@ func TestLogonUserResolve_Success(t *testing.T) {
 	}
 }
 
+// TestLogonUserResolve_NormalizesQualifiedUsernameBeforeLogon proves the
+// username reaching the OS logon seam is always the bare, normalized account
+// name, even when Spec.User carries a ".\"/"DOMAIN\" qualifier or a trailing
+// "@domain" UPN suffix. logonUserOS calls LogonUserW with a NULL domain (see
+// logonUserW's doc), which does not itself strip either form from the
+// username string — a qualified username reaching it verbatim fails to
+// resolve, surfacing as an opaque logon error a queue operator would
+// misdiagnose as a bad password rather than a qualifier the provider should
+// have stripped. The CredentialStore lookup still receives the RAW Spec.User
+// (see fileStore.Secret / credFileName, which normalize internally) —
+// matching production, only the OS call itself needs the pre-normalized
+// form.
+func TestLogonUserResolve_NormalizesQualifiedUsernameBeforeLogon(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec string
+		want string
+	}{
+		{"dot-qualified", `.\render-svc`, "render-svc"},
+		{"domain-qualified", `CORP\Render-Svc`, "render-svc"},
+		{"upn", "render-svc@corp.example.com", "render-svc"},
+		{"upn-mixed-case", "Render-Svc@CORP.EXAMPLE.COM", "render-svc"},
+		{"bare", "render-svc", "render-svc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotUser string
+			p := &logonUserProvider{
+				store: fakeStore{tc.spec: "s3cr3t"},
+				logon: func(_ context.Context, user, _ string) (*Credential, error) {
+					gotUser = user
+					return &Credential{}, nil
+				},
+				capable:     func() error { return nil },
+				canTraverse: func(*Credential) (bool, error) { return true, nil },
+			}
+			if _, err := p.Resolve(context.Background(), Spec{User: tc.spec}); err != nil {
+				t.Fatalf("Resolve(%q): %v", tc.spec, err)
+			}
+			if gotUser != tc.want {
+				t.Errorf("logon called with user %q, want %q", gotUser, tc.want)
+			}
+		})
+	}
+}
+
 // TestLogonUserResolve_ValidateAccountArgRejectsBadInput proves Resolve
 // applies validateAccountArg BEFORE anything else — the store is never
 // consulted for an argument-injection-shaped username.

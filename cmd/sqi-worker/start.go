@@ -244,11 +244,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Isolation provider + session root ────────────────────────
 	//
 	// Provider built once at boot: POSIX credential switching via
-	// setuid/setgid, or — until a later task lands the LogonUser-based
-	// implementation — a Windows provider that refuses every request rather
-	// than silently running unisolated. isolation.required makes the worker
-	// refuse to start at all when it cannot actually isolate, rather than
-	// silently accepting isolated queues it cannot honor.
+	// setuid/setgid, or the Windows LogonUserW-based provider (see
+	// internal/worker/isolation's package doc for its current verification
+	// status). isolation.required makes the worker refuse to start at all
+	// when it cannot actually isolate, rather than silently accepting
+	// isolated queues it cannot honor.
 	//
 	// sessionRoot is deliberately separate from cfg.Worker.DataDir (which
 	// holds only the persistent worker-id file) — see effectiveSessionRoot's

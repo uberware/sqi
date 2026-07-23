@@ -5,7 +5,6 @@ package session
 import (
 	"context"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 
@@ -18,9 +17,11 @@ import (
 // invoked, without needing a distinct fake Credential TYPE — Credential is a
 // concrete struct from another package (its Close is a plain method, not an
 // interface), so this seam is the only place a test can observe every call
-// to it. Both current implementations of Credential.Close (POSIX and the
-// Windows placeholder) are no-ops, which is exactly why a dropped call would
-// otherwise be invisible: nothing today notices whether it happened at all.
+// to it. On POSIX, Credential.Close is a no-op, which is exactly why a
+// dropped call would otherwise be invisible there; on Windows it unloads a
+// mounted profile hive and closes a real token handle, so this seam is what
+// proves the close actually happens exactly once on the one platform where
+// Close does real work.
 type countingCloser struct {
 	mu    sync.Mutex
 	calls int
@@ -49,18 +50,16 @@ func (c *countingCloser) count() int {
 // must have that credential closed exactly once — by Manager.Cleanup — never
 // zero times (a leak) and never more than once (a double-close).
 func TestCredentialClose_ClosedExactlyOnceOnNormalCleanup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test resolves a real POSIX fake credential")
-	}
 	closer := &countingCloser{}
 	closer.install(t)
 
 	dataDir := newTraversableSessionDataDir(t)
+	name := testAccountName()
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
-	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
+	provider := isolation.NewFake(map[string]isolation.FakeAccount{name: account})
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
 
-	msg := &protocol.AssignMsg{JobID: "job-close-ok", Isolation: &protocol.IsolationSpec{User: "render"}}
+	msg := &protocol.AssignMsg{JobID: "job-close-ok", Isolation: &protocol.IsolationSpec{User: name}}
 	s, err := mgr.Create(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("Create: %v", err)

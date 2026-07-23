@@ -85,7 +85,19 @@ func (p *logonUserProvider) Resolve(ctx context.Context, spec Spec) (*Credential
 		return nil, fmt.Errorf("isolation: empty secret for %q", spec.User)
 	}
 
-	cred, err := p.logon(ctx, spec.User, secret)
+	// logonUserOS calls LogonUserW with a NULL domain, which asks Windows to
+	// resolve the username against the LOCAL account database (see that
+	// function's doc). A NULL domain does not itself strip a ".\"/"DOMAIN\"
+	// qualifier or a trailing "@domain" UPN suffix from the username
+	// string — LogonUserW would try to look up a literal local account named
+	// e.g. ".\render-svc" and fail. normalizeAccountName is exactly the
+	// transform credFileName already applies when it maps spec.User to a
+	// credential file (see that function's doc), so applying it here too
+	// keeps "the account the secret was stored for" and "the account
+	// actually logged on as" the same local account, regardless of which
+	// qualified or bare spelling a queue's run_as_user used.
+	loginUser := normalizeAccountName(spec.User)
+	cred, err := p.logon(ctx, loginUser, secret)
 	if err != nil {
 		return nil, fmt.Errorf("isolation: logon %q: %w", spec.User, err)
 	}

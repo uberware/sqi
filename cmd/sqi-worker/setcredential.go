@@ -3,10 +3,8 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -47,11 +45,10 @@ Run from an elevated shell:
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Password for %s: ", user)
-		secret, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-		if err != nil && secret == "" {
+		secret, err := readSecretLine(cmd)
+		if err != nil {
 			return fmt.Errorf("read secret: %w", err)
 		}
-		secret = strings.TrimRight(secret, "\r\n")
 		if secret == "" {
 			return errors.New("secret must not be empty")
 		}

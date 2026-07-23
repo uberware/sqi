@@ -629,7 +629,13 @@ isolation:
 
 ### Windows
 
-Task isolation is supported on Windows via the `logon_user` provider.
+Task isolation is implemented on Windows via the `logon_user` provider, but
+**the Windows path has not run on a real elevated host yet.** It is compiled,
+vetted, and unit-tested where privilege allows, but `make test-isolation-windows`
+— the suite that exercises real accounts, real NTFS ACLs, and DPAPI under an
+elevated shell — had not yet had its first real run as of this writing. See
+[Known gaps](auth.md#known-gaps) in `docs/auth.md` for the full caveat before
+relying on this in production.
 
 **The worker must run as a service under LocalSystem**, or as an account
 granted `SeAssignPrimaryTokenPrivilege`. Windows requires that privilege to

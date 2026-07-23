@@ -13,9 +13,13 @@ import (
 )
 
 // TestCredentialClose_ZeroTokenNoOp proves closing a Credential that never
-// held a token (the shape newFakeCredential produces, and the shape a
-// zero-value Credential has) is a safe no-op, matching the contract every
-// other platform's Credential.Close already satisfies.
+// held a token (the shape a zero-value Credential has — e.g. one built by a
+// logon seam that failed before producing anything usable) is a safe no-op,
+// matching the contract every other platform's Credential.Close already
+// satisfies. newFakeCredential no longer produces this shape itself (it
+// carries fakeCredentialToken, precisely so a fake credential can still pass
+// through apply's zero-token guard in tests — see that constant's doc), but
+// the zero-token shape remains a real one Close must still handle.
 func TestCredentialClose_ZeroTokenNoOp(t *testing.T) {
 	c := &Credential{}
 	if err := c.Close(); err != nil {

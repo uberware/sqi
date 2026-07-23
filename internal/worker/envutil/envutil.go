@@ -98,6 +98,20 @@ var minimalBase = map[string]bool{
 	"PROGRAMDATA": true, "PROGRAMFILES": true, "PROGRAMFILES(X86)": true,
 	"COMMONPROGRAMFILES": true, "NUMBER_OF_PROCESSORS": true,
 	"PROCESSOR_ARCHITECTURE": true,
+	// USERNAME, USERDOMAIN, and COMPUTERNAME are DELIBERATELY absent, and not
+	// merely omitted by oversight. Inheriting them the way the rest of this
+	// list is inherited would be actively wrong, not just missing: unlike
+	// USERPROFILE (rewritten to the target's own profile by
+	// session.Manager.Create), nothing here derives these three from the
+	// resolved run-as-user identity, so an isolated task would see no
+	// %USERNAME% at all — and an operator who reaches for
+	// `env_passthrough: ["USERNAME"]` to "fix" that inherits the DAEMON's
+	// value (SYSTEM, or the service account) instead, which is worse than
+	// missing: a render script that branches or logs on %USERNAME% would
+	// silently see the wrong identity. Deriving them from the credential is
+	// left for a future change; until then this gap is a deliberate choice
+	// an operator should make knowingly, not one env_passthrough should paper
+	// over.
 }
 
 // Policy controls how much of the worker daemon's own environment is inherited

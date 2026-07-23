@@ -607,6 +607,21 @@ func TestIsolationWindowsSystem_Capable(t *testing.T) {
 
 // TestIsolationWindowsSystem_ChildRunsAsTargetUser is the assertion no fake
 // can make: the process really started under the target account's identity.
+//
+// This MUST read identity from the child's TOKEN (whoami), never from
+// `cmd /c echo %USERNAME%`. cmd.Env is nil here, so exec.Cmd supplies
+// os.Environ() as a non-NULL lpEnvironment to the underlying
+// CreateProcessAsUser call — and CreateProcessAsUser does NOT rewrite a
+// caller-supplied environment block (that is exactly why MSDN tells callers
+// to build one with CreateEnvironmentBlock instead). So cmd.exe would expand
+// %USERNAME% from the PARENT's block, not the child's actual identity:
+// empirically, `$env:USERNAME='spoofed'; cmd /c "echo %USERNAME%"` prints
+// "spoofed" while `whoami` still prints the real logged-on identity. whoami
+// gets its answer via GetTokenInformation on the process token, so it is the
+// one command here that actually proves the token switch took effect. Do not
+// "simplify" this back to %USERNAME% — under the SYSTEM-tier harness the
+// parent's USERNAME is `<COMPUTERNAME>$` or `SYSTEM`, so that version fails
+// outright, and even a passing result would prove nothing about the token.
 func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
 	requireHarness(t)
 	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
@@ -614,7 +629,7 @@ func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
 	cred := resolveHarnessCredential(t, user)
 	defer cred.Close() // test cleanup
 
-	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "echo %USERNAME%")
+	cmd := exec.CommandContext(context.Background(), "whoami")
 	if err := isolation.Apply(cmd, cred); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -623,8 +638,15 @@ func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
 		t.Fatalf("run as %s: %v", user, err)
 	}
 
-	if got := strings.TrimSpace(string(out)); !strings.EqualFold(got, user) {
-		t.Errorf("child reported USERNAME=%q, want %q", got, user)
+	// whoami prints "DOMAIN\user" (or "COMPUTERNAME\user" for a local
+	// account); keep only the account part so the comparison is robust to
+	// that qualifier — user, from SQI_TEST_ISOLATION_USER_A, is unqualified.
+	got := strings.TrimSpace(string(out))
+	if i := strings.LastIndex(got, `\`); i != -1 {
+		got = got[i+1:]
+	}
+	if !strings.EqualFold(got, user) {
+		t.Errorf("child reported identity %q, want %q", got, user)
 	}
 }
 

@@ -423,9 +423,10 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 // Manager.Create, not just the normal Manager.Cleanup path — mirroring the
 // applyCredential-style seam already used for isolation.Apply in this
 // package and internal/worker/executor. Without this seam nothing could
-// distinguish a dropped Close() call from a correct one: both implementations
-// of Credential.Close are currently no-ops, so a missing call is invisible
-// until the Windows LogonUser provider starts holding a real token handle.
+// distinguish a dropped Close() call from a correct one: POSIX's
+// Credential.Close is a no-op, so a missing call is invisible there, but on
+// Windows Close unloads a mounted profile hive and closes a real token
+// handle — a dropped call leaks both for the worker's lifetime.
 var closeCredentialFn = func(cred *isolation.Credential) error { return cred.Close() }
 
 // closeCredential closes cred if non-nil, logging (not returning) any error —
@@ -433,10 +434,11 @@ var closeCredentialFn = func(cred *isolation.Credential) error { return cred.Clo
 // (no run_as_user isolation) is a safe no-op, matching every other credential
 // helper's convention in this package.
 //
-// POSIX and the current Windows placeholder both implement Close as a no-op,
-// so this has no observable effect today; it exists so the credential has a
-// single, clear lifecycle owner before the real Windows LogonUser provider
-// lands and starts holding an actual token handle that DOES need releasing.
+// POSIX's Credential.Close is a no-op, so this has no observable effect
+// there; on Windows it releases a real token handle and unloads a mounted
+// profile hive, which is exactly why this function exists as the credential's
+// single, clear lifecycle owner rather than something each call site releases
+// ad hoc.
 func closeCredential(ctx context.Context, cred *isolation.Credential, sessionID string, logger *slog.Logger) {
 	if cred == nil {
 		return

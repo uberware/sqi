@@ -19,9 +19,11 @@
 // Windows: LogonUserW produces a primary token, LoadUserProfileW mounts the
 // target's registry hive and profile directory, session directories are
 // secured with a protected NTFS DACL, and task processes are contained in a
-// job object. Verified against real local accounts by make
-// test-isolation-windows, which runs its privileged tier as SYSTEM via a
-// scheduled task.
+// job object. Implemented, compiled, and unit-tested where privilege allows,
+// but make test-isolation-windows — which runs its privileged tier as SYSTEM
+// via a scheduled task, against real local accounts — has not yet had its
+// first real run. A skip verifies nothing; see that target's own output
+// before trusting a local pass.
 //
 // A Windows worker MUST run as a service under LocalSystem, or as an account
 // granted SeAssignPrimaryTokenPrivilege. CreateProcessAsUser — which os/exec
@@ -101,9 +103,9 @@ type Config struct {
 }
 
 // NewProvider returns the platform Provider: POSIX credential switching via
-// setuid/setgid/supplementary groups, or — until a later task lands the
-// LogonUser-based implementation — a Windows provider that refuses every
-// request rather than silently running unisolated.
+// setuid/setgid/supplementary groups, or the Windows LogonUserW-based
+// provider (see the package doc's Windows section for its current
+// verification status).
 func NewProvider(cfg Config) (Provider, error) {
 	return newProvider(cfg)
 }
