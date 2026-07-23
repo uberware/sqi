@@ -462,7 +462,14 @@ func (unixProvider) Capable() error {
 // fake proves something about supplementary-group handling (gid 0 stripped,
 // a privileged named group's gid left alone) instead of that behavior being
 // structurally invisible to every fake-based test.
-func newFakeCredential(a FakeAccount) *Credential {
+//
+// The account-name parameter is unused here (named _, per this project's
+// unused-parameter lint rule): the POSIX Credential switches purely on
+// uid/gid, never by name. It exists only so this function's signature
+// matches provider_windows.go's, which DOES need the name — fake.go, which
+// calls this function, has no build tag and must compile against whichever
+// platform's definition is active.
+func newFakeCredential(_ string, a FakeAccount) *Credential {
 	groups := ensureMember(stripGID0FromSupplementary(a.SupplementaryGIDs), a.GID)
 	return &Credential{
 		cred: &syscall.Credential{Uid: a.UID, Gid: a.GID, Groups: groups},

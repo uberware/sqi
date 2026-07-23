@@ -12,26 +12,26 @@
 //
 // # Platform support
 //
-// POSIX is complete and verified against a real container (make
-// test-isolation): setuid/setgid/supplementary groups, workdir chown/chmod,
-// and the ancestor-traversability boot check.
+// POSIX: setuid/setgid/supplementary groups, workdir chown/chmod, and the
+// ancestor-traversability boot check. Verified against real accounts in a
+// container (make test-isolation).
 //
-// Windows is NOT YET SUPPORTED, on purpose and explicitly — not half-working.
-// The logon_user credential provider (logonuser.go, provider_windows.go) is
-// real: it calls LogonUserW and returns a genuine primary token, and
-// SecureWorkDir/ChownRecursive (workdir_windows.go) now apply real NTFS ACLs
-// to a session working directory (grant the target user's SID an ACE, strip
-// inheritance — see secureDACL, acl_windows.go). What is still missing is
-// loading the target user's profile, job-object-based process reaping, and
-// end-to-end verification against a real Windows host, so Provider.Capable()
-// on Windows still always returns ErrNotCapable — see
-// provider_windows.go's windowsIsolationUnsupportedMsg for the exact,
-// operator-facing message every entry point (boot-time
-// verifyIsolationCapability and a per-assignment session.Manager.Create)
-// surfaces. Remaining work: user-profile loading, job-object process
-// reaping, the s4u provider (refused explicitly today), and a Windows CI
-// runner to verify any of it — none of this package's Windows code has ever
-// run against a real Windows host.
+// Windows: LogonUserW produces a primary token, LoadUserProfileW mounts the
+// target's registry hive and profile directory, session directories are
+// secured with a protected NTFS DACL, and task processes are contained in a
+// job object. Verified against real local accounts by make
+// test-isolation-windows, which runs its privileged tier as SYSTEM via a
+// scheduled task.
+//
+// A Windows worker MUST run as a service under LocalSystem, or as an account
+// granted SeAssignPrimaryTokenPrivilege. CreateProcessAsUser — which os/exec
+// invokes whenever SysProcAttr.Token is set — requires that privilege, and an
+// elevated Administrator does not hold it by default. Capable() reports this
+// at boot with a message naming the fix.
+//
+// The s4u credential provider is not implemented and is refused explicitly.
+// Its logon needs no password but yields a token with no network credentials,
+// so UNC and share access fail as ANONYMOUS inside the task.
 package isolation
 
 import (

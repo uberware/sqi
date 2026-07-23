@@ -768,8 +768,9 @@ func validateIsolation(cfg WorkerConfig) []ValidationError {
 	// (executor.CheckRootUser). Configuring both together is a contradiction
 	// an operator would only discover as a confusing root-user startup
 	// refusal that never mentions isolation at all — surface it explicitly
-	// instead. Windows is exempt: its (future) LogonUser/S4U mechanism does
-	// not need the worker process itself to run as a privileged account.
+	// instead. Windows is exempt: it resolves credentials through the
+	// logon_user provider, which does not need the worker process itself to
+	// run as a privileged account.
 	if cfg.Isolation.Required && !cfg.Worker.AllowRoot && runtime.GOOS != "windows" {
 		errs = append(errs, ValidationError{
 			Field: "isolation.required",

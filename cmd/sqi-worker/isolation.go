@@ -7,30 +7,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/staging"
 )
-
-// defaultRootSessionDir is the default session working-directory root when
-// the worker runs as root. /var/lib is 0755 on every real Linux/macOS
-// installation, so every ancestor of this path is already traversable by any
-// uid — nothing needs to be created or widened specifically to make
-// run-as-user isolation work.
-//
-// Deliberately a SIBLING of workerconfig.defaultDataDir's own
-// HOME-unset fallback (/var/lib/sqi-worker), never a descendant of it:
-// LoadOrCreateWorkerID creates that directory at 0700 by design, and this
-// package's boot-time isolation.ValidateTraversable walks up from
-// sessionRoot through every existing ancestor requiring the "other" execute
-// bit. Nesting this path under /var/lib/sqi-worker (an earlier revision used
-// /var/lib/sqi-worker/sessions) would have made a capable, isolation.required
-// worker refuse to start over a directory sqi itself had just created
-// seconds earlier at boot — the split's whole premise is that the two never
-// share an ancestor.
-const defaultRootSessionDir = "/var/lib/sqi-worker-sessions"
 
 // effectiveSessionRoot resolves the directory under which session working
 // directories are created, kept deliberately separate from
@@ -45,12 +28,16 @@ const defaultRootSessionDir = "/var/lib/sqi-worker-sessions"
 //   - worker.session_dir, if set, always wins (operator override) — created
 //     0711 (traversable), since an explicit override is exactly how an
 //     operator opts a non-default location INTO run-as-user isolation.
-//   - Running as root defaults to defaultRootSessionDir at 0711: its
-//     ancestors are already traversable with no changes to anything (see
-//     above), and a root worker is the only kind that can ever actually
-//     isolate, so the root it's about to create needs the search bit from
-//     birth.
-//   - Otherwise (not root) falls back to the pre-split location under
+//   - Running as root, or running on Windows at all, defaults to
+//     defaultSessionRoot() at 0711 (see that function's platform-specific
+//     doc). Windows is unconditional here — not gated on isRoot() — because
+//     executor.IsRunningAsRoot() is hardcoded false on Windows (that signal
+//     backs the unrelated POSIX "don't run as root" warning in
+//     executor.CheckRootUser and is deliberately not overloaded for this),
+//     so Windows isolation capability is a privilege check
+//     (isolation.Provider.Capable), not a uid check, and the session root
+//     must not depend on a signal that never fires there.
+//   - Otherwise (POSIX, not root) falls back to the pre-split location under
 //     worker.data_dir, at 0750 — the exact mode that location was created at
 //     before this split existed (a byproduct of the single MkdirAll call
 //     session.Manager used to make): real run-as-user isolation cannot
@@ -69,8 +56,8 @@ func effectiveSessionRootFor(cfg workerconfig.WorkerSettings, isRoot func() bool
 	if cfg.SessionDir != "" {
 		return cfg.SessionDir, 0o711
 	}
-	if isRoot() {
-		return defaultRootSessionDir, 0o711
+	if isRoot() || runtime.GOOS == "windows" {
+		return defaultSessionRoot()
 	}
 	return filepath.Join(cfg.DataDir, "sessions"), 0o750
 }

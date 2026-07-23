@@ -79,6 +79,31 @@ func testGID() uint32 {
 	return uint32(os.Getgid())
 }
 
+// testAccountName returns the account name newTestSessionWithCredential's
+// fake account is keyed under, and the name a resolved Credential carries.
+//
+// On POSIX this is an arbitrary label — the fake credential switches purely
+// on uid/gid (see testUID/testGID), and no POSIX code path resolves a name
+// to anything. On Windows, Manager.Create really does call
+// isolation.SecureWorkDir now (Task 7 flips capableOS and this is no longer
+// skipped there), and that function resolves a Credential's identity by NAME
+// via the real Win32 LookupSID — an arbitrary name like "render" does not
+// exist as a local account and would fail that lookup, with no way for an
+// unprivileged test process to grant an invented name any access anyway.
+// Using the CURRENT PROCESS's own account name (from the USERNAME
+// environment variable, always set on Windows) mirrors the same
+// no-real-privilege-needed trick testUID/testGID already play on POSIX:
+// granting an ACE to your own SID needs no special privilege.
+func testAccountName() string {
+	if runtime.GOOS != "windows" {
+		return "render"
+	}
+	if name := os.Getenv("USERNAME"); name != "" {
+		return name
+	}
+	return "render"
+}
+
 // newTestSessionWithCredential builds a Session whose assignment carries
 // run_as_user isolation, resolved against a fake account whose uid/gid
 // session creation can actually chown its workdir to without real privilege
@@ -103,13 +128,14 @@ func newTestSessionWithCredential(t *testing.T, applied *recordingApplier) *Sess
 	t.Cleanup(func() { applyCredential = orig })
 
 	dataDir := newTraversableSessionDataDir(t)
+	name := testAccountName()
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
-	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
+	provider := isolation.NewFake(map[string]isolation.FakeAccount{name: account})
 	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-iso",
-		Isolation: &protocol.IsolationSpec{User: "render"},
+		Isolation: &protocol.IsolationSpec{User: name},
 	}
 	s, err := mgr.Create(context.Background(), msg)
 	if err != nil {
@@ -236,10 +262,6 @@ func TestEnvironmentActionsCarryCredential(t *testing.T) {
 // ── Environment filtering ─────────────────────────────────────────────────────
 
 func TestSessionBaseEnvFilteredOnceAtCreate(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("session.Manager.Create refuses every non-nil run-as-user credential on Windows until isolation.SecureWorkDir gains NTFS ACL support; this test asserts environment layering through the real Create path, so it runs on POSIX only until then")
-	}
-
 	t.Setenv("AWS_ACCESS_KEY_ID", "secret")
 
 	sess := newTestSessionWithCredential(t, &recordingApplier{})
@@ -254,10 +276,6 @@ func TestSessionBaseEnvFilteredOnceAtCreate(t *testing.T) {
 // is inherited from the daemon. A job's own dynamic openjd_env export must
 // never be filtered, no matter how narrow isolation.env_passthrough is.
 func TestJobSuppliedEnvSurvivesFiltering(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("session.Manager.Create refuses every non-nil run-as-user credential on Windows until isolation.SecureWorkDir gains NTFS ACL support; this test asserts environment layering through the real Create path, so it runs on POSIX only until then")
-	}
-
 	sess := newTestSessionWithCredential(t, &recordingApplier{})
 	sess.applyEnvOp(openjd.EnvOp{Kind: openjd.EnvOpSet, Name: "MY_EXPORT", Value: "v"})
 

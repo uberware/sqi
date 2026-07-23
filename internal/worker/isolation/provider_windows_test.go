@@ -78,31 +78,24 @@ func TestNewProvider_UnknownProviderRejected(t *testing.T) {
 	}
 }
 
-// TestCapableOS_AlwaysReportsACLNotImplemented proves the REAL production
-// Capable() seam (not a test-injected fake — see newProvider above, which is
-// how a real worker actually constructs its Provider) always reports the
-// shared, operator-facing windowsIsolationUnsupportedMsg, regardless of
-// whether this test process's own token happens to hold every privilege
-// hasRequiredPrivileges checks for. That determinism is the whole point: a
-// Windows worker must never look capable just because CreateProcessAsUser's
-// prerequisites are satisfied — session directories now get real NTFS ACLs
-// (workdir_windows.go), but profile loading, job-object process reaping, and
-// end-to-end verification are still missing, so isolation as a whole cannot
-// work either way, and Capable() must say so plainly rather than reporting
-// ready and failing later, confusingly, inside Manager.Create (see that
-// message's own doc for the full rationale).
-func TestCapableOS_AlwaysReportsACLNotImplemented(t *testing.T) {
-	p, err := newProvider(Config{Provider: "logon_user", CredentialStore: fakeStore{}})
-	if err != nil {
-		t.Fatalf("newProvider: %v", err)
-	}
+// TestCapableOS_ReportsThePrivilegeCheck proves Capable() now reflects the
+// worker's ACTUAL privileges rather than refusing unconditionally.
+//
+// The two halves of this claim are asserted in different places on purpose:
+// here, that a process WITHOUT SeAssignPrimaryTokenPrivilege is refused (the
+// go test binary is not SYSTEM), and in the System tier
+// (TestIsolationWindowsSystem_Capable) that a process WITH it is accepted. A
+// Capable() that always returned nil would pass one and fail the other.
+func TestCapableOS_ReportsThePrivilegeCheck(t *testing.T) {
+	err := capableOS()
 
-	err = p.Capable()
-	if !errors.Is(err, ErrNotCapable) {
-		t.Fatalf("Capable() = %v, want ErrNotCapable", err)
+	if err == nil {
+		t.Skip("this process holds SeAssignPrimaryTokenPrivilege; the refusal path is covered by the admin tier of make test-isolation-windows")
 	}
-	if !strings.Contains(err.Error(), windowsIsolationUnsupportedMsg) {
-		t.Errorf("Capable() = %q, want it to contain the shared operator-facing message %q",
-			err.Error(), windowsIsolationUnsupportedMsg)
+	if !errors.Is(err, ErrNotCapable) {
+		t.Errorf("capableOS() = %v, want an ErrNotCapable-family error", err)
+	}
+	if !strings.Contains(err.Error(), "LocalSystem") {
+		t.Errorf("capableOS() = %q, want it to name the LocalSystem fix", err.Error())
 	}
 }

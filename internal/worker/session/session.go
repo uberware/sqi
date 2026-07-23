@@ -55,6 +55,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -576,6 +577,15 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		}
 		baseEnv["HOME"] = home
 		baseEnv["USERPROFILE"] = home
+
+		// APPDATA/LOCALAPPDATA are derived from the target's own profile, never
+		// inherited: minimalBase deliberately excludes them, because the
+		// daemon's values point into SYSTEM's profile and every DCC writes
+		// preferences, license caches, and crash dumps through them.
+		if runtime.GOOS == "windows" {
+			baseEnv["APPDATA"] = filepath.Join(home, "AppData", "Roaming")
+			baseEnv["LOCALAPPDATA"] = filepath.Join(home, "AppData", "Local")
+		}
 	}
 
 	m.logger.InfoContext(

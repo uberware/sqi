@@ -61,10 +61,11 @@ func (c *Credential) Close() error {
 }
 
 // LOGON32_LOGON_BATCH and LOGON32_PROVIDER_DEFAULT (Win32 winbase.h). Batch
-// logon is the right type for a service performing work on behalf of a user:
-// unlike interactive logon it does not require the "log on locally" right,
-// and unlike S4U (Task 10) it does grant network credentials, which render
-// jobs commonly need for UNC/share access.
+// logon is the right type for a service performing work on behalf of a
+// user: unlike interactive logon it does not require the "log on locally"
+// right, and unlike an S4U logon it does grant network credentials, which
+// render jobs commonly need for UNC/share access. (S4U is not implemented —
+// see newProvider.)
 const (
 	logon32LogonBatch      = 4
 	logon32ProviderDefault = 0
@@ -145,42 +146,7 @@ func logonUserOS(_ context.Context, user, secret string) (*Credential, error) {
 // primary token to a new process, and SeIncreaseQuotaPrivilege, which
 // CreateProcessAsUser also requires in order to set the new process's quota
 // limits under the target account's job/session.
-//
-// hasRequiredPrivileges (and therefore this check) is real, working code —
-// not a stub — but it is no longer capableOS's own gate below: holding every
-// privilege here is necessary for CreateProcessAsUser but not sufficient for
-// isolation as a whole. Session working directories now get real NTFS ACLs
-// (workdir_windows.go), but the rest of what isolation.go's package doc
-// still lists as outstanding — loading the target user's profile,
-// job-object-based process reaping, and end-to-end verification against a
-// real Windows host — has not landed yet. It stays wired into capableOS so
-// it is exercised on every real Windows run (surfacing a missing privilege
-// as extra detail) rather than sitting dead until a future revision
-// reintroduces it, once the remaining gaps close and privilege really is the
-// last gate.
 var requiredPrivileges = []string{"SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege"}
-
-// windowsIsolationUnsupportedMsg is the single operator-facing explanation
-// for why capableOS still refuses every request, shared by every entry point
-// that can observe the gap through Capable(): the boot-time refusal
-// (verifyIsolationCapability, cmd/sqi-worker/isolation.go) and a
-// per-assignment task failure (session.Manager.resolveCredential,
-// internal/worker/session/session.go) always read the same way to an
-// operator, rather than one clear message and one confusing one for what is,
-// underneath, the same set of missing pieces.
-//
-// This used to also be workdir_windows.go's own refusal message for
-// SecureWorkDir/ChownRecursive when called with a non-nil credential — that
-// changed the moment this package started applying real NTFS ACLs there (see
-// secureDACL, acl_windows.go). What is still missing, and is why capableOS
-// below has not been flipped to report success, is everything isolation.go's
-// package doc still lists as outstanding: loading the target user's profile,
-// job-object-based process reaping, and verifying the whole path end to end
-// on a real Windows host. Reporting "capable" before that lands would let a
-// Windows worker with isolation.required: true start successfully and only
-// fail, confusingly, partway through a real assignment — exactly the
-// half-working state this message exists to prevent.
-const windowsIsolationUnsupportedMsg = "task isolation is not yet fully supported on Windows: session directory ACLs are implemented, but profile loading, process reaping, and end-to-end verification are not"
 
 // hasRequiredPrivileges reports whether this worker's process token holds
 // every privilege in requiredPrivileges. Fails closed: any lookup error, or
@@ -200,29 +166,23 @@ func hasRequiredPrivileges() error {
 	return nil
 }
 
-// capableOS is the seam wired into newLogonUserProvider's Capable() on
-// Windows (see logonuser.go). It ALWAYS reports not-capable: even a process
-// token holding every privilege hasRequiredPrivileges checks for cannot make
-// isolation usable while the remaining gaps requiredPrivileges' own doc names
-// — profile loading, job-object process reaping, end-to-end verification —
-// have not landed (session working directories themselves are now real NTFS
-// ACLs; see secureDACL, acl_windows.go). Reporting anything else here would
-// let a Windows worker with isolation.required: true start successfully
-// (verifyIsolationCapability, cmd/sqi-worker/isolation.go) and only fail,
-// confusingly, partway through a real isolated assignment — the exact
-// half-working state this function exists to prevent. hasRequiredPrivileges
-// still runs (see its own doc) so a missing privilege is named alongside the
-// remaining gaps when relevant, but its result never changes the bottom
-// line: not capable, in the ErrNotCapable family, with the shared
-// operator-facing message every entry point uses.
+// capableOS reports whether this worker can attach a primary token to a child
+// process, which is what SysProcAttr.Token ultimately requires.
+//
+// The message names LocalSystem because the natural first attempt is an
+// elevated Administrator, and that does NOT work: SeAssignPrimaryTokenPrivilege
+// is held by default only by LocalSystem and the LOCAL/NETWORK SERVICE
+// accounts. Without saying so, an operator sees a refusal from a shell they
+// already ran "as administrator" and reasonably concludes sqi is broken.
 func capableOS() error {
 	if err := hasRequiredPrivileges(); err != nil {
-		// Both ErrNotCapable and err are wrapped (Go allows multiple %w verbs
-		// in one fmt.Errorf) so errors.Is(result, ErrNotCapable) keeps working
-		// while the underlying privilege-check failure stays inspectable too.
-		return fmt.Errorf("%w: %s (additionally, %w)", ErrNotCapable, windowsIsolationUnsupportedMsg, err)
+		return fmt.Errorf(
+			"%w: run the worker as a service under LocalSystem, or grant its account "+
+				"SeAssignPrimaryTokenPrivilege — an elevated Administrator does not hold it by default (%v)",
+			ErrNotCapable, err,
+		)
 	}
-	return fmt.Errorf("%w: %s", ErrNotCapable, windowsIsolationUnsupportedMsg)
+	return nil
 }
 
 // tokenHasPrivilege reports whether t's privilege set includes name,
@@ -290,7 +250,7 @@ func newProvider(cfg Config) (Provider, error) {
 	case "", "logon_user":
 		return newLogonUserProvider(cfg.CredentialStore), nil
 	case "s4u":
-		return nil, fmt.Errorf("%w: s4u provider not yet implemented", ErrNotCapable)
+		return nil, fmt.Errorf("%w: the s4u provider is not implemented; its logon carries no network credentials, so UNC and share access fail as ANONYMOUS inside the task — use logon_user", ErrNotCapable)
 	default:
 		return nil, fmt.Errorf("isolation: unknown windows isolation provider %q", cfg.Provider)
 	}
@@ -300,8 +260,19 @@ func newProvider(cfg Config) (Provider, error) {
 // keeps Credential opaque outside this package while letting fake.go (which
 // is platform-independent) hand back a real *Credential. The fake carries no
 // real token — NewFake's own doc already states a fake cannot verify real OS
-// identity switching; that needs make test-isolation (POSIX today) or a real
+// identity switching; that needs make test-isolation-windows or a real
 // Windows run.
-func newFakeCredential(a FakeAccount) *Credential {
-	return &Credential{Home: a.Home}
+//
+// User is set to name (the account-map key a real Resolve would have
+// received as spec.User), NOT left empty: SecureWorkDir/ChownRecursive
+// resolve a Credential's identity by NAME via lookupUserSID, so a fake
+// credential with no name cannot exercise those real, production ACL calls
+// at all — the fake would look isolated while SecureWorkDir failed on every
+// use. Callers building fake accounts for a test that reaches SecureWorkDir
+// must key the account (and the Isolation.User the assignment carries) with
+// a name that actually resolves via LookupSID on the machine the test runs
+// on — typically the test process's own account, the same self-service
+// trick testUID/testGID play for uid/gid on POSIX.
+func newFakeCredential(name string, a FakeAccount) *Credential {
+	return &Credential{User: name, Home: a.Home}
 }

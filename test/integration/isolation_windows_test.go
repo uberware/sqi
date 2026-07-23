@@ -36,6 +36,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/isolation"
 )
 
@@ -585,5 +586,153 @@ func TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser(t *testing.T) {
 	}
 	if _, err := os.Stat(cred.Home); err != nil {
 		t.Errorf("profile directory %q does not exist: %v", cred.Home, err)
+	}
+}
+
+// TestIsolationWindowsSystem_Capable is the other half of
+// TestCapableOS_ReportsThePrivilegeCheck: as SYSTEM, the worker holds
+// SeAssignPrimaryTokenPrivilege, so Capable() must accept.
+func TestIsolationWindowsSystem_Capable(t *testing.T) {
+	requireHarness(t)
+
+	p, err := isolation.NewProvider(isolation.Config{Provider: "logon_user"})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	if err := p.Capable(); err != nil {
+		t.Errorf("Capable() as SYSTEM = %v, want nil", err)
+	}
+}
+
+// TestIsolationWindowsSystem_ChildRunsAsTargetUser is the assertion no fake
+// can make: the process really started under the target account's identity.
+func TestIsolationWindowsSystem_ChildRunsAsTargetUser(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+
+	cred := resolveHarnessCredential(t, user)
+	defer cred.Close() // test cleanup
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "echo %USERNAME%")
+	if err := isolation.Apply(cmd, cred); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run as %s: %v", user, err)
+	}
+
+	if got := strings.TrimSpace(string(out)); !strings.EqualFold(got, user) {
+		t.Errorf("child reported USERNAME=%q, want %q", got, user)
+	}
+}
+
+// TestIsolationWindowsSystem_ChildCanWriteSessionDir catches the failure the
+// structural ACL test cannot: an ACL that is correct in shape but too tight
+// in practice, leaving the task unable to write its own scratch.
+func TestIsolationWindowsSystem_ChildCanWriteSessionDir(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+
+	dir := t.TempDir()
+	cred := resolveHarnessCredential(t, user)
+	defer cred.Close() // test cleanup
+	if err := isolation.SecureWorkDir(dir, cred); err != nil {
+		t.Fatalf("SecureWorkDir: %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "echo written > out.txt")
+	cmd.Dir = dir
+	if err := isolation.Apply(cmd, cred); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("task could not write its own session directory: %v: %s", err, out)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "out.txt")); err != nil {
+		t.Errorf("expected file was not written: %v", err)
+	}
+}
+
+// TestIsolationWindowsSystem_DaemonEnvNotInherited proves the environment
+// policy holds across a real process boundary: a daemon secret must not reach
+// job code, while an operator-allowlisted license variable must.
+func TestIsolationWindowsSystem_DaemonEnvNotInherited(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAsecretdaemonvalue")
+	t.Setenv("FOUNDRY_LICENSE", "4101@licserver")
+
+	base := envutil.BaseEnv(envutil.Policy{Enabled: true, Allowlist: []string{"*_LICENSE"}})
+
+	if _, leaked := base["AWS_ACCESS_KEY_ID"]; leaked {
+		t.Error("daemon AWS_ACCESS_KEY_ID reached the task environment")
+	}
+	if _, present := base["FOUNDRY_LICENSE"]; !present {
+		t.Error("allowlisted FOUNDRY_LICENSE did not reach the task environment")
+	}
+	cred := resolveHarnessCredential(t, user)
+	defer cred.Close() // test cleanup
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "echo [%AWS_ACCESS_KEY_ID%]")
+	cmd.Env = envutil.BuildFromBase(base, nil, nil)
+	if err := isolation.Apply(cmd, cred); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(string(out), "AKIAsecret") {
+		t.Errorf("child saw the daemon's AWS key: %s", out)
+	}
+}
+
+// TestIsolationWindowsSystem_CrossUserSessionDirDenied repeats the admin
+// tier's impersonated check as REAL PROCESSES, which is what actually ships.
+func TestIsolationWindowsSystem_CrossUserSessionDirDenied(t *testing.T) {
+	requireHarness(t)
+	userA := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+	userB := os.Getenv("SQI_TEST_ISOLATION_USER_B")
+
+	dir := t.TempDir()
+	credA := resolveHarnessCredential(t, userA)
+	defer credA.Close() // test cleanup
+	if err := isolation.SecureWorkDir(dir, credA); err != nil {
+		t.Fatalf("SecureWorkDir: %v", err)
+	}
+	credB := resolveHarnessCredential(t, userB)
+	defer credB.Close() // test cleanup
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "dir "+dir)
+	if err := isolation.Apply(cmd, credB); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if err := cmd.Run(); err == nil {
+		t.Errorf("a process running as %s listed a session directory secured for %s", userB, userA)
+	}
+}
+
+// TestIsolationWindowsSystem_NoIsolationUnchanged is the regression invariant:
+// with no credential, a task runs as the daemon with the full inherited
+// environment, exactly as before this feature existed.
+func TestIsolationWindowsSystem_NoIsolationUnchanged(t *testing.T) {
+	requireHarness(t)
+	t.Setenv("SQI_REGRESSION_MARKER", "inherited")
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "echo %SQI_REGRESSION_MARKER%")
+	if err := isolation.Apply(cmd, nil); err != nil {
+		t.Fatalf("Apply(nil): %v", err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if got := strings.TrimSpace(string(out)); got != "inherited" {
+		t.Errorf("unisolated task saw %q, want the daemon's full environment", got)
 	}
 }

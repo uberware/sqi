@@ -82,8 +82,22 @@ func flattenEnv(merged map[string]string) []string {
 // target user's home when a credential is in effect — otherwise DCCs write
 // their configs into a directory the task cannot access.
 var minimalBase = map[string]bool{
+	// POSIX
 	"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "SHELL": true,
+	// Windows. Keys are uppercase because allowedName looks them up through
+	// foldEnvName, which uppercases on Windows. COMSPEC and PATHEXT are not
+	// optional: without them nothing that resolves a command through a shell
+	// works, which is most of what a render task does. The rest are how
+	// installed software is located. All are machine-scoped; none carries a
+	// secret. APPDATA/LOCALAPPDATA are deliberately ABSENT — they must be
+	// derived from the target's token, not inherited from the daemon (see
+	// session.Manager.Create), or every DCC writes its preferences into
+	// SYSTEM's profile.
 	"USERPROFILE": true, "TEMP": true, "TMP": true, "SYSTEMROOT": true,
+	"COMSPEC": true, "PATHEXT": true, "WINDIR": true, "SYSTEMDRIVE": true,
+	"PROGRAMDATA": true, "PROGRAMFILES": true, "PROGRAMFILES(X86)": true,
+	"COMMONPROGRAMFILES": true, "NUMBER_OF_PROCESSORS": true,
+	"PROCESSOR_ARCHITECTURE": true,
 }
 
 // Policy controls how much of the worker daemon's own environment is inherited

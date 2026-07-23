@@ -96,7 +96,12 @@ func (f *fakeProvider) Resolve(_ context.Context, spec Spec) (*Credential, error
 		gid = g
 	}
 
-	return newFakeCredential(FakeAccount{UID: acct.UID, GID: gid, Home: acct.Home, SupplementaryGIDs: acct.SupplementaryGIDs}), nil
+	// spec.User is threaded through separately from FakeAccount: on Windows,
+	// SecureWorkDir/ChownRecursive resolve a Credential's identity by NAME
+	// (Credential.User), not by uid/gid, so newFakeCredential needs the
+	// account name a real Resolve would have carried even though FakeAccount
+	// itself (an entry in a name-keyed map) has no name field of its own.
+	return newFakeCredential(spec.User, FakeAccount{UID: acct.UID, GID: gid, Home: acct.Home, SupplementaryGIDs: acct.SupplementaryGIDs}), nil
 }
 
 func (f *fakeProvider) Capable() error {
