@@ -170,7 +170,10 @@ func hasRequiredPrivileges() error {
 // with the shared operator-facing message every entry point uses.
 func capableOS() error {
 	if err := hasRequiredPrivileges(); err != nil {
-		return fmt.Errorf("%w: %s (additionally, %v)", ErrNotCapable, windowsIsolationUnsupportedMsg, err)
+		// Both ErrNotCapable and err are wrapped (Go allows multiple %w verbs
+		// in one fmt.Errorf) so errors.Is(result, ErrNotCapable) keeps working
+		// while the underlying privilege-check failure stays inspectable too.
+		return fmt.Errorf("%w: %s (additionally, %w)", ErrNotCapable, windowsIsolationUnsupportedMsg, err)
 	}
 	return fmt.Errorf("%w: %s", ErrNotCapable, windowsIsolationUnsupportedMsg)
 }
@@ -212,14 +215,18 @@ func tokenPrivileges(t windows.Token) (*windows.Tokenprivileges, error) {
 	n := uint32(1024)
 	for {
 		buf := make([]byte, n)
-		err := windows.GetTokenInformation(t, windows.TokenPrivileges, &buf[0], uint32(len(buf)), &n)
+		// buf was allocated with make([]byte, n) immediately above, so
+		// len(buf) == int(n) exactly; converting it back to uint32 can never
+		// overflow — it is the same value n already held as a uint32.
+		bufLen := uint32(len(buf)) //nolint:gosec // len(buf) == n (a uint32) by construction; cannot overflow
+		err := windows.GetTokenInformation(t, windows.TokenPrivileges, &buf[0], bufLen, &n)
 		if err == nil {
 			return (*windows.Tokenprivileges)(unsafe.Pointer(&buf[0])), nil
 		}
 		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
 			return nil, err
 		}
-		if n <= uint32(len(buf)) {
+		if n <= bufLen {
 			return nil, err
 		}
 	}
