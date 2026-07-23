@@ -518,10 +518,11 @@ Runs job-supplied task and environment actions under a queue-configured OS
 user (`run_as_user`/`run_as_group` on the queue — see
 [`docs/configuration.md`](configuration.md#queue-identity-run_as_user--run_as_group-task-isolation)
 and [`docs/auth.md`](auth.md#task-isolation)) instead of the worker daemon's
-own account. POSIX (Linux/macOS) only today — see
-[Windows is not supported](#windows-is-not-supported) below. With no queue
-configured for isolation anywhere, a worker's behavior is byte-for-byte
-unchanged whether or not this section is present.
+own account. Supported on POSIX (Linux/macOS) and on Windows via the
+`logon_user` provider — see [Windows](#windows) below for the
+platform-specific setup and requirements. With no queue configured for
+isolation anywhere, a worker's behavior is byte-for-byte unchanged whether or
+not this section is present.
 
 > **Enabling this RAISES the worker daemon's own privilege.** The only
 > mechanism sqi has for a POSIX process to become another OS user
@@ -578,9 +579,8 @@ worker:
 
 Selects the Windows credential mechanism. **Ignored on POSIX** — setting it
 on a Linux/macOS worker has no effect at all, since the POSIX provider has no
-concept of a selectable mechanism. Reserved for a future, still-incomplete
-Windows implementation (see [Windows is not supported](#windows-is-not-supported));
-setting it today does not make Windows isolation work.
+concept of a selectable mechanism. `logon_user` is the only supported value;
+`s4u` is refused explicitly (see [Windows](#windows) below).
 
 ### `isolation.env_passthrough`
 
@@ -627,32 +627,66 @@ isolation:
 > variable is the expected, correct symptom of an allowlist that is too
 > tight — the fix is to add that one name, not to widen the pattern.
 
-### Windows is not supported
+### Windows
 
-A Windows worker's `Capable()` always reports:
+Task isolation is supported on Windows via the `logon_user` provider.
 
-```
-task isolation is not yet supported on Windows: session directory ACLs are not implemented
-```
+**The worker must run as a service under LocalSystem**, or as an account
+granted `SeAssignPrimaryTokenPrivilege`. Windows requires that privilege to
+start a process under another account's token, and an elevated Administrator
+does **not** hold it by default — this is the single most common cause of
+`isolation: worker cannot assume another OS identity` on Windows. `Capable()`
+reports it at boot with the fix named.
 
-A real Windows logon token can be obtained (the `logon_user` provider calls
-the real `LogonUserW`), but nothing downstream can yet secure a session
-working directory for that token — that needs NTFS ACL work (granting the
-target user's SID an access-control entry, stripping inheritance) that has
-not been written. Consequently:
+**Provisioning credentials.** Each run-as-user account needs its password
+stored on every worker that serves a queue configured for it. From an elevated
+shell:
 
-- A Windows worker with `isolation.required: true` refuses to **start**,
-  reporting the message above.
-- A Windows worker that receives an assignment for an isolated queue anyway
-  fails **that task** with the same message, rather than silently running it
-  as the daemon's own account.
+    sqi-worker isolation set-credential render-svc
 
-Remaining work before Windows is supported: NTFS ACL-based
-`SecureWorkDir`/`ChownRecursive`, the `s4u` provider (which needs no stored
-secret but, unlike `logon_user`, yields no network credentials — no SMB
-access from the isolated process), and a Windows CI runner to verify any of
-it against a real host — none of the Windows-specific isolation code has run
-against one yet.
+The secret is read from stdin — never pass it as an argument, where it is
+visible to every process on the host. It is encrypted with the machine DPAPI
+key and written under `<data_dir>\isolation\` with an ACL granting only SYSTEM
+and Administrators.
+
+> **Machine-scope encryption means the file ACL is the real boundary.**
+> Anything running on the host that can *read* the file can decrypt it. Do not
+> relax the ACL, and treat a backup that copies it elsewhere on the same
+> machine as a credential disclosure.
+
+**Session directories** are secured with a protected NTFS DACL granting the
+target account, SYSTEM, and Administrators — and nothing else. Inheritance is
+stripped, so a session directory does not carry whatever `BUILTIN\Users` grant
+its parent had. Ownership is deliberately *not* transferred to the target
+account: a Windows owner implicitly holds `WRITE_DAC` and could otherwise
+re-open its own session to other accounts.
+
+**Session root** defaults to `%ProgramData%\sqi\worker\sessions`, not the
+worker data directory — as LocalSystem, the data directory resolves under
+`System32\config\systemprofile`, which is the wrong place for render scratch.
+Override with `worker.session_dir`.
+
+**Bypass traverse checking.** Windows grants `SeChangeNotifyPrivilege` to
+`Everyone` by default, which is why sqi does not check ancestor permissions
+the way it does on POSIX. If your environment strips that privilege, isolation
+is refused at credential-resolution time with a message naming the policy —
+sqi will not widen the directories above a session root for you.
+
+**The `s4u` provider is not implemented** and is refused explicitly. An S4U
+logon needs no password, but its token carries no network credentials: any UNC
+path, mapped drive, or authenticated licence server fails as `ANONYMOUS`
+inside the task.
+
+**Process containment.** Windows task processes run inside a job object, so a
+grandchild orphaned before a cancel or timeout is still reaped. One
+consequence applies to *every* Windows worker, isolated or not: a running task
+is terminated when the worker process exits, including on a graceful service
+restart. Previously such processes were orphaned while the task was reclaimed
+and re-run elsewhere.
+
+> **Open gap: session-directory TOCTOU on Windows.** See [Known
+> gaps](auth.md#known-gaps) in `docs/auth.md` for the staging race this
+> enables.
 
 ### Privileged accounts and groups are refused outright
 

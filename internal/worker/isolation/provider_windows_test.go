@@ -61,9 +61,10 @@ func TestNewProvider_LogonUserIsDefault(t *testing.T) {
 	}
 }
 
-// TestNewProvider_S4URefusedNotYetImplemented proves selecting "s4u" (Task
-// 10's mechanism) fails closed rather than silently falling back to
-// logon_user.
+// TestNewProvider_S4URefusedNotYetImplemented proves selecting "s4u" — an
+// unimplemented credential mechanism whose token carries no network
+// credentials (see docs/worker-configuration.md, "Windows") — fails closed
+// rather than silently falling back to logon_user.
 func TestNewProvider_S4URefusedNotYetImplemented(t *testing.T) {
 	if _, err := newProvider(Config{Provider: "s4u"}); err == nil {
 		t.Error("newProvider(s4u) = nil error, want ErrNotCapable (not yet implemented)")

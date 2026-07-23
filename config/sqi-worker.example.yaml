@@ -335,33 +335,36 @@ diagnostics:
 # Off by default: with no queue configured for isolation, behavior is
 # byte-for-byte unchanged from a worker with this section absent.
 #
-# POSIX-only today. Verified against a real container (make test-isolation):
-# setuid/setgid/supplementary groups, workdir chown/chmod, and the
-# ancestor-traversability boot check. Windows is NOT YET SUPPORTED — a
-# Windows worker's Capable() always reports not-capable ("task isolation is
-# not yet supported on Windows: session directory ACLs are not implemented"),
-# so a Windows worker with `required: true` refuses to start, and a Windows
-# worker that receives an isolated assignment anyway fails that one task with
-# the same message. See internal/worker/isolation's package doc for what
-# already works (a real Windows logon token can be obtained) versus what is
-# still missing (NTFS ACL support to secure the session working directory for
-# that token, and the s4u provider).
+# Supported on POSIX (Linux/macOS) and Windows (via the logon_user provider).
+# POSIX is verified against a real container (make test-isolation): setuid/
+# setgid/supplementary groups, workdir chown/chmod, and the
+# ancestor-traversability boot check. Windows is implemented — DPAPI
+# credential storage, NTFS session-directory ACLs, job-object process
+# containment — but make test-isolation-windows (real accounts, real ACLs,
+# under an elevated shell) had not yet had its first run as of this writing.
+# See docs/worker-configuration.md for full Windows setup and docs/auth.md's
+# Known gaps for the open staging TOCTOU caveat.
 # isolation:
-#   # Exit at boot if this worker cannot assume another OS identity (POSIX:
-#   # not running as root). Separate from a per-assignment resolution failure
-#   # — this is "this worker is misconfigured", not "this queue's account is
-#   # bad". Default false, so an unconfigured worker still starts.
+#   # Exit at boot if this worker cannot assume another OS identity.
+#   # POSIX: requires running as root. Windows: requires running as a service
+#   # under LocalSystem (an elevated Administrator does NOT hold
+#   # SeAssignPrimaryTokenPrivilege). Separate from a per-assignment resolution
+#   # failure — this is "this worker is misconfigured", not "this queue's
+#   # account is bad". Default false, so an unconfigured worker still starts.
 #   # Type: bool   Env: SQI_WORKER_ISOLATION_REQUIRED
 #   required: false
 #
-#   # Windows credential mechanism: "logon_user" or "s4u". Ignored on POSIX.
-#   # RESERVED for a future Windows implementation — setting this today does
-#   # not make Windows isolation work; see the note above.
+#   # Windows credential mechanism. "logon_user" is the only supported value;
+#   # "s4u" is refused — its token carries no network credentials, so UNC and
+#   # share access fail as ANONYMOUS inside the task. Ignored on POSIX.
+#   # Provision each account's password with:
+#   #   sqi-worker isolation set-credential <user>
 #   # Type: string   Env: SQI_WORKER_ISOLATION_PROVIDER
 #   provider: logon_user
 #
 #   # Daemon environment variable NAME patterns (filepath.Match globs) inherited
 #   # by isolated tasks, in addition to the minimal base (PATH, HOME, TMPDIR,
 #   # etc). Render farms typically need to pass through licensing variables here.
+#   # Case-insensitive on Windows.
 #   # Type: []string   Env: SQI_WORKER_ISOLATION_ENV_PASSTHROUGH (comma-separated)
 #   env_passthrough: ["FLEXLM_*", "ADSKFLEX_*"]

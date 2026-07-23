@@ -1095,10 +1095,12 @@ The scheduler places only the resolved **username** in the task assignment
 sent to the worker over NATS — never a credential — because worker↔server
 transport carries no authentication at all (see
 [Known gaps](auth.md#known-gaps)). The worker resolves that username to a
-real OS credential itself. This mechanism is POSIX (Linux/macOS) only; see
+real OS credential itself. This mechanism runs on both POSIX (Linux/macOS)
+and Windows (the worker must run as a LocalSystem service, or hold
+`SeAssignPrimaryTokenPrivilege`, to assume another account's identity); see
 [`docs/worker-configuration.md`](worker-configuration.md#isolation--run-as-user-task-execution)
 for the full worker-side `isolation` config block, the environment allowlist,
-and the Windows status.
+and the per-platform requirements.
 
 ### Important: Worker upgrade required
 

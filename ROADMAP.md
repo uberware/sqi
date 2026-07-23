@@ -244,7 +244,9 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
   execute as an operator-configured OS account instead of the worker's own,
   closing the privilege-escalation gap the identity plane alone left open (a
   principal holding `jobs.write` could otherwise execute arbitrary code as the
-  worker service account). POSIX only — Windows is not yet supported. See
+  worker service account). Supported on POSIX and Windows — on Windows the
+  worker must run as a LocalSystem service (or hold
+  `SeAssignPrimaryTokenPrivilege`) to assume another account's identity. See
   [docs/auth.md](docs/auth.md) and
   [docs/worker-configuration.md](docs/worker-configuration.md) for the model,
   setup, and known gaps.

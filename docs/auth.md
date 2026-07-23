@@ -202,8 +202,12 @@ that channel. The worker resolves the username to a real OS credential
 locally and runs both job-code launch sites under it — an OpenJD
 environment's `onEnter`/`onExit` actions and a task's own actions — with a
 filtered environment and a session working directory private to that user.
-This is POSIX only; see [`docs/worker-configuration.md`](worker-configuration.md)
-for the `isolation` worker-config block, the Windows status, and the
+This runs on both POSIX (Linux/macOS) and Windows. On Windows the worker
+itself must run as a service under LocalSystem (or hold
+`SeAssignPrimaryTokenPrivilege` directly) — an elevated Administrator shell
+does not have that privilege by default. See
+[`docs/worker-configuration.md`](worker-configuration.md) for the `isolation`
+worker-config block, the per-platform requirements, and the
 environment-allowlist mechanics.
 
 **Before enabling `run_as_user` on any queue, see the worker upgrade requirement
@@ -1428,16 +1432,31 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   operator reading "I flipped `auth.enabled` to `true`, so the server is now
   locked down" should read that as "the HTTP/WebSocket surface is now locked
   down" — the worker-registration surface is unaffected either way.
-- **Task isolation is in progress, POSIX only.** See [Task
-  isolation](#task-isolation) above for the current state: a queue's
-  `run_as_user` runs job code as a distinct OS user on Linux/macOS workers.
-  Windows workers report task isolation as unsupported and refuse an isolated
-  assignment (or refuse to start, with `isolation.required: true`) rather than
-  running it under the daemon's own account. The NSS (LDAP/AD-backed account)
-  fallback path has only ever been exercised against canned command output,
-  never a real directory server — see
-  [`docs/worker-configuration.md`](worker-configuration.md) for the caveat in
-  full.
+- **Task isolation is implemented on both platforms but the Windows path has
+  not run on a real elevated host yet.** See [Task isolation](#task-isolation)
+  above for the current state: a queue's `run_as_user` runs job code as a
+  distinct OS user on Linux/macOS workers, and as a distinct logon session on
+  Windows workers via `LogonUserW`. The Windows implementation is compiled,
+  vetted, and unit-tested where privilege allows, but `make test-isolation-windows`
+  (the suite that exercises real accounts, real NTFS ACLs, and DPAPI under an
+  elevated shell) had not yet had its first real run as of this writing. The
+  NSS (LDAP/AD-backed account) fallback path on POSIX has only ever been
+  exercised against canned command output, never a real directory server —
+  see [`docs/worker-configuration.md`](worker-configuration.md) for the
+  caveat in full.
+- **Windows staging has no TOCTOU re-check on stage-out, and isolation is what
+  makes it reachable.** On POSIX, `internal/worker/staging`'s `builtinCopy`
+  re-checks for a symlink swap or a hardlink-count change (`O_NOFOLLOW`,
+  hardlink-count) between its own `Lstat` and the elevated daemon's subsequent
+  read of the same path. Windows has no equivalent re-check yet. Because a
+  session directory is now genuinely ACL-secured to the target account, a task
+  running under that account has write access to its own session directory
+  and can in principle race a symlink/junction swap into the window between
+  `builtinCopy`'s `Lstat` and the daemon's later read during stage-out. An
+  unisolated worker has nothing to gain from winning that race — its tasks
+  already run as the daemon's own account — so isolation being enabled on
+  Windows is precisely what makes this reachable. Not yet fixed; tracked for
+  a follow-up before this is considered hardened.
 - **Per-user concurrent task caps.** A hard per-owner ceiling on running tasks was scoped for
   Phase 3 and deferred (2026-07-20) with no driver behind it. Nothing bounds a single user's
   farm consumption today: `max_concurrent_tasks` on farms and queues caps the container, not the
