@@ -1435,6 +1435,7 @@ components:
             decimals: { type: integer, nullable: true }
             single_step_removal: { type: boolean, nullable: true }
         file_filters:
+          nullable: true
           type: array
           items:
             type: object

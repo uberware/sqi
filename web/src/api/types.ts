@@ -465,7 +465,7 @@ export interface ProductParameter {
   object_type: string
   data_flow: string
   user_interface: ParameterUserInterface | null
-  file_filters: PathFileFilter[]
+  file_filters: PathFileFilter[] | null
   file_filter_default: PathFileFilter | null
 }
 
