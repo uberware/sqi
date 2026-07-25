@@ -12,7 +12,9 @@ This document shows three progressively richer examples:
    shared parameters, and step-level environments.
 
 See [`docs/api.md`](api.md) for the HTTP mechanics (endpoint, query parameters,
-response shape, error handling).
+response shape, error handling). See
+[`docs/openjd-conformance.md`](openjd-conformance.md) for which spec version
+and extensions `sqi` implements, and what it deliberately does not.
 
 ---
 
@@ -40,8 +42,8 @@ steps:                          # at least one required
           type: INT | FLOAT | STRING | PATH
           range: <range-expression>
       combination: <expr>       # optional; default is Cartesian product of all params
-    dependsOn:                  # optional; list of step names that must complete first
-      - stepName: <Name>
+    dependencies:                # optional; list of step dependencies
+      - dependsOn: <Name>        # name of a step that must complete first
     stepEnvironments: [...]     # optional; per-step environment blocks
 jobEnvironments: [...]          # optional; applied to every step
 ```
@@ -128,11 +130,15 @@ steps:
           range: "{{Param.StartFrame}}-{{Param.EndFrame}}"
 ```
 
-Submit with explicit parameter values:
+Submit with explicit parameter values. Job-level parameters without a
+`default` (`SceneName` and `OutputDir` below) must be supplied on the query
+string as `param.<Name>=<value>`; omitting a required parameter is a
+**422**. See [`openapi.yaml`](../internal/api/openapi.yaml) for the full
+`param.*` rules (type checking, `allowedValues`, etc.):
 
 ```sh
 curl -s -X POST \
-  "http://localhost:8080/api/v1/jobs?farm_id=$FARM_ID&queue_id=$QUEUE_ID&owner=alice&priority=70" \
+  "http://localhost:8080/api/v1/jobs?farm_id=$FARM_ID&queue_id=$QUEUE_ID&owner=alice&priority=70&param.SceneName=hero_shot&param.OutputDir=/renders/hero_shot" \
   -H "Content-Type: application/x-yaml" \
   --data-binary '
 specificationVersion: "jobtemplate-2023-09"
@@ -283,8 +289,8 @@ steps:
   # ── Step 2: Composite ─────────────────────────────────────────────────────
   # Runs only after every Render task succeeds.
   - name: Composite
-    dependsOn:
-      - stepName: Render
+    dependencies:
+      - dependsOn: Render
     script:
       actions:
         onRun:
@@ -305,8 +311,8 @@ steps:
   # ── Step 3: Encode ────────────────────────────────────────────────────────
   # Runs after Composite completes. Single task — no parameter space.
   - name: Encode
-    dependsOn:
-      - stepName: Composite
+    dependencies:
+      - dependsOn: Composite
     script:
       actions:
         onRun:
@@ -428,8 +434,9 @@ do not declare CPU requirements never oversubscribe a host.
 Example — a 4-core worker running one undeclared task vs. four 1-core tasks:
 
 ```yaml
-# One task at a time (reserves whole machine):
-hostRequirements: {}   # or omit hostRequirements entirely
+# One task at a time (reserves whole machine): omit hostRequirements entirely.
+# An explicit-but-empty `hostRequirements: {}` is rejected — a present
+# hostRequirements block must declare at least one amount or attribute.
 
 # Four tasks in parallel on a 4-core worker:
 hostRequirements:
@@ -470,10 +477,15 @@ the offending field:
   "type": "about:blank",
   "title": "Unprocessable Entity",
   "status": 422,
-  "detail": "step 'Composite' dependsOn unknown step 'Rendur'",
+  "detail": "/steps/1/dependencies/0/dependsOn: references unknown step \"Rendur\"",
   "instance": "a1b2c3d4e5f60708"
 }
 ```
+
+(Captured from the real validator: a step named `Composite` at index 1 whose
+`dependencies[0].dependsOn` names a step `Rendur` that does not exist in the
+template. Multiple validation failures are joined with `; ` in a single
+`detail` string.)
 
 Common validation failures:
 
