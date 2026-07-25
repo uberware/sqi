@@ -208,6 +208,16 @@ var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // underscores, and digits, 3-128 characters. Must match [A-Z_0-9]{3,128}.
 var extensionNameRE = regexp.MustCompile(`^[A-Z_0-9]{3,128}$`)
 
+// fileFilterPatternRE matches the grammar of
+// <FileDialogFilterPatternStringValue> (§2.8): "*", "*.*", or "*." followed
+// by one or more legal extension characters. Legal extension characters are
+// any unicode character except the Cc category, path separators ("\" and
+// "/"), wildcard characters ("*", "?", "[", "]"), and characters commonly
+// disallowed in paths ("#", "%", "&", "{", "}", "<", ">", "$", "!", "'",
+// "\"", ":", "@", "`", "|", "="). This also subsumes the spec's 1-character
+// minimum length: an empty string does not match any alternative.
+var fileFilterPatternRE = regexp.MustCompile(`^(\*|\*\.\*|\*\.[^\p{Cc}\\/*?\[\]#%&{}<>$!'":@` + "`" + `|=]+)$`)
+
 // ─── ValidateOptions ──────────────────────────────────────────────────────────
 
 // ValidateOptions controls optional validation behavior passed to
@@ -413,6 +423,11 @@ const (
 	// maxFileFilters caps the number of entries in a PATH parameter's
 	// fileFilters list. Spec: "Maximum of 20 filters".
 	maxFileFilters = 20
+	// maxFileFilterPatternLen caps a single pattern string's length in
+	// characters (runes). The spec's <FileDialogFilterPatternStringValue> is
+	// 1-20 characters; the 1-character minimum is structural (subsumed by
+	// [fileFilterPatternRE]) so only the maximum is gated here.
+	maxFileFilterPatternLen = 20
 )
 
 // validateLimits runs every quantitative limit check. It is only invoked when
@@ -802,11 +817,13 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 }
 
 // validateFileFilterLimits checks the gated quantitative caps on a PATH
-// parameter's file filters: at most [maxFileFilters] entries, and each
-// entry's (including fileFilterDefault's) label at most
-// [maxFileFilterLabelLen] characters. Structural correctness (label
-// required, control pairing) lives in [validateFileFilters] instead and
-// always runs -- see the invariant documented on [ValidateOptions].
+// parameter's file filters: at most [maxFileFilters] entries, each entry's
+// (including fileFilterDefault's) label at most [maxFileFilterLabelLen]
+// characters, and each pattern (including fileFilterDefault's) at most
+// [maxFileFilterPatternLen] characters. Structural correctness (label
+// required, control pairing, pattern grammar) lives in [validateFileFilters]
+// instead and always runs -- see the invariant documented on
+// [ValidateOptions].
 func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	if len(p.FileFilters) > maxFileFilters {
@@ -816,18 +833,31 @@ func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
 		})
 	}
 	for i, f := range p.FileFilters {
-		if n := utf8.RuneCountInString(f.Label); n > maxFileFilterLabelLen {
-			errs = append(errs, ValidationError{
-				Pointer: fmt.Sprintf("%s/fileFilters/%d/label", ptr, i),
-				Message: fmt.Sprintf("label must be at most %d characters (got %d)", maxFileFilterLabelLen, n),
-			})
-		}
+		errs = append(errs, validatePathFileFilterLimits(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
 	}
 	if p.FileFilterDefault != nil {
-		if n := utf8.RuneCountInString(p.FileFilterDefault.Label); n > maxFileFilterLabelLen {
+		errs = append(errs, validatePathFileFilterLimits(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	}
+	return errs
+}
+
+// validatePathFileFilterLimits checks the gated quantitative caps on a
+// single [PathFileFilter]: label length and each pattern's length. Extracted
+// from [validateFileFilterLimits] to keep its complexity in bounds and
+// reused for both fileFilters entries and fileFilterDefault.
+func validatePathFileFilterLimits(f PathFileFilter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if n := utf8.RuneCountInString(f.Label); n > maxFileFilterLabelLen {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/label",
+			Message: fmt.Sprintf("label must be at most %d characters (got %d)", maxFileFilterLabelLen, n),
+		})
+	}
+	for i, pattern := range f.Patterns {
+		if n := utf8.RuneCountInString(pattern); n > maxFileFilterPatternLen {
 			errs = append(errs, ValidationError{
-				Pointer: ptr + "/fileFilterDefault/label",
-				Message: fmt.Sprintf("label must be at most %d characters (got %d)", maxFileFilterLabelLen, n),
+				Pointer: fmt.Sprintf("%s/patterns/%d", ptr, i),
+				Message: fmt.Sprintf("pattern must be at most %d characters (got %d)", maxFileFilterPatternLen, n),
 			})
 		}
 	}
@@ -1221,9 +1251,11 @@ func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 }
 
 // validatePathFileFilter checks the structural correctness of a single
-// [PathFileFilter]: label is required, and at least one pattern is required.
-// Extracted from [validateFileFilters] to keep its complexity in bounds and
-// reused for both fileFilters entries and fileFilterDefault.
+// [PathFileFilter]: label is required, at least one pattern is required, and
+// each pattern must match the <FileDialogFilterPatternStringValue> grammar
+// (§2.8): "*", "*.*", or "*." followed by one or more legal extension
+// characters. Extracted from [validateFileFilters] to keep its complexity in
+// bounds and reused for both fileFilters entries and fileFilterDefault.
 func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	if f.Label == "" {
@@ -1237,6 +1269,14 @@ func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
 			Pointer: ptr + "/patterns",
 			Message: "at least one pattern is required",
 		})
+	}
+	for i, pattern := range f.Patterns {
+		if !fileFilterPatternRE.MatchString(pattern) {
+			errs = append(errs, ValidationError{
+				Pointer: fmt.Sprintf("%s/patterns/%d", ptr, i),
+				Message: fmt.Sprintf("pattern %q is not a valid file filter pattern; must be \"*\", \"*.*\", or \"*.\" followed by one or more legal extension characters", pattern),
+			})
+		}
 	}
 	return errs
 }

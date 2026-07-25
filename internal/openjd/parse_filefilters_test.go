@@ -391,3 +391,98 @@ steps:
 		}
 	})
 }
+
+// ── Rule 5: pattern string format (grammar structural, length gated) ──────
+
+// patternFilterYAML builds a single-parameter template whose one fileFilters
+// entry carries the given pattern, and whose fileFilterDefault carries the
+// same pattern -- so both fields exercise the same check.
+func patternFilterYAML(pattern string) string {
+	return fmt.Sprintf(`
+specificationVersion: jobtemplate-2023-09
+name: PatternJob
+parameterDefinitions:
+  - name: ScenePath
+    type: PATH
+    userInterface: { control: CHOOSE_INPUT_FILE, label: Scene }
+    fileFilters:
+      - label: Filter
+        patterns: [%q]
+    fileFilterDefault:
+      label: Filter
+      patterns: [%q]
+steps:
+  - name: Step1
+    script:
+      actions:
+        onRun:
+          command: echo
+`, pattern, pattern)
+}
+
+func TestValidate_FileFilterPatternFormat(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		wantErr bool
+	}{
+		{"star accepted", "*", false},
+		{"star-dot-star accepted", "*.*", false},
+		{"png accepted", "*.png", false},
+		{"exr accepted", "*.exr", false},
+		{"multi-dot extension accepted", "*.tar.gz", false},
+		{"20-char pattern accepted", "*." + strings.Repeat("a", 18), false},
+		{"empty string rejected", "", true},
+		{"trailing dot empty extension rejected", "*.", true},
+		{"missing leading star rejected", "png", true},
+		{"wildcard star in extension rejected", "*.p*g", true},
+		{"forward slash in extension rejected", "*.a/b", true},
+		{"backslash in extension rejected", `*.a\b`, true},
+		{"question mark in extension rejected", "*.a?", true},
+		{"brackets in extension rejected", "*.a[b]", true},
+		{"colon in extension rejected", "*.a:b", true},
+		{"pipe in extension rejected", "*.a|b", true},
+		{"dollar sign in extension rejected", "*.a$b", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := patternFilterYAML(tc.pattern)
+			tmpl := mustParse(t, yaml)
+			errs := openjd.Validate(tmpl)
+			gotFilters := containsPointer(errs, "/parameterDefinitions/0/fileFilters/0/patterns/0")
+			gotDefault := containsPointer(errs, "/parameterDefinitions/0/fileFilterDefault/patterns/0")
+			if gotFilters != tc.wantErr {
+				t.Errorf("pattern %q (fileFilters): got error=%v, want error=%v; errs=%v", tc.pattern, gotFilters, tc.wantErr, errs)
+			}
+			if gotDefault != tc.wantErr {
+				t.Errorf("pattern %q (fileFilterDefault): got error=%v, want error=%v; errs=%v", tc.pattern, gotDefault, tc.wantErr, errs)
+			}
+		})
+	}
+}
+
+// ── Rule 6: pattern max length 20 characters (gated) ───────────────────────
+
+func TestValidateWithOptions_FileFilterPatternLength_GatedVsStructural(t *testing.T) {
+	longPattern := "*." + strings.Repeat("a", 19) // 21 characters total
+	yaml := patternFilterYAML(longPattern)
+	tmpl := mustParse(t, yaml)
+
+	withFalse := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: false})
+	if containsPointer(withFalse, "/parameterDefinitions/0/fileFilters/0/patterns/0") {
+		t.Errorf("EnforceLimits=false should not report the 20-char pattern cap; got %v", withFalse)
+	}
+
+	withTrue := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+	if !containsPointer(withTrue, "/parameterDefinitions/0/fileFilters/0/patterns/0") {
+		t.Errorf("EnforceLimits=true should report the 20-char pattern cap; got %v", withTrue)
+	}
+
+	// A grammar-invalid pattern must still error with EnforceLimits: false.
+	badYAML := patternFilterYAML("*.a:b")
+	badTmpl := mustParse(t, badYAML)
+	badErrs := openjd.ValidateWithOptions(badTmpl, openjd.ValidateOptions{EnforceLimits: false})
+	if !containsPointer(badErrs, "/parameterDefinitions/0/fileFilters/0/patterns/0") {
+		t.Errorf("EnforceLimits=false should still report a grammar-invalid pattern; got %v", badErrs)
+	}
+}
