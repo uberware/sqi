@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -792,19 +793,54 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 
 // ─── userInterface validation ─────────────────────────────────────────────────
 
-// validControls is the set of OpenJD base-spec userInterface control values.
-// Read-only after initialization.
-var validControls = map[ControlType]struct{}{
-	ControlLineEdit:         {},
-	ControlMultilineEdit:    {},
-	ControlDropdownList:     {},
-	ControlCheckBox:         {},
-	ControlChipInput:        {},
-	ControlHidden:           {},
-	ControlSpinBox:          {},
-	ControlChooseInputFile:  {},
-	ControlChooseOutputFile: {},
-	ControlChooseDirectory:  {},
+// controlsByType is the OpenJD base-spec userInterface control vocabulary,
+// scoped per parameter type as the spec defines it. The spec does NOT share one
+// vocabulary across types: LINE_EDIT is valid on STRING and invalid on PATH,
+// which needs a CHOOSE_* dialog instead. Read-only after initialization.
+//
+// The *_LIST control variants belong to the EXPR extension and are deliberately
+// absent -- sqi does not implement EXPR.
+var controlsByType = map[JobParamType]map[ControlType]struct{}{
+	JobParamTypeString: {
+		ControlLineEdit:      {},
+		ControlMultilineEdit: {},
+		ControlDropdownList:  {},
+		ControlCheckBox:      {},
+		ControlHidden:        {},
+	},
+	JobParamTypePath: {
+		ControlChooseInputFile:  {},
+		ControlChooseOutputFile: {},
+		ControlChooseDirectory:  {},
+		ControlDropdownList:     {},
+		ControlHidden:           {},
+	},
+	JobParamTypeInt: {
+		ControlSpinBox:      {},
+		ControlDropdownList: {},
+		ControlHidden:       {},
+	},
+	JobParamTypeFloat: {
+		ControlSpinBox:      {},
+		ControlDropdownList: {},
+		ControlHidden:       {},
+	},
+}
+
+// allowedControlsFor returns the sorted control names valid for a parameter
+// type, for use in error messages. A template author who writes LINE_EDIT on a
+// PATH needs to be told CHOOSE_INPUT_FILE exists, not merely that they are wrong.
+func allowedControlsFor(t JobParamType) string {
+	set, ok := controlsByType[t]
+	if !ok {
+		return ""
+	}
+	names := make([]string, 0, len(set))
+	for c := range set {
+		names = append(names, string(c))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // validateUserInterfaceControl checks control-specific constraints for a
@@ -819,10 +855,6 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 	case ControlCheckBox:
 		if len(p.AllowedValues) != 2 {
 			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"})
-		}
-	case ControlSpinBox:
-		if p.Type != JobParamTypeInt && p.Type != JobParamTypeFloat {
-			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "SPIN_BOX is valid only on INT or FLOAT parameters"})
 		}
 	}
 	return errs
@@ -844,10 +876,15 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 		errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "required"})
 		return errs
 	}
-	if _, ok := validControls[ui.Control]; !ok {
+	allowed, known := controlsByType[p.Type]
+	if !known {
+		return errs // unknown parameter type is reported by validateJobParams
+	}
+	if _, ok := allowed[ui.Control]; !ok {
 		errs = append(errs, ValidationError{
 			Pointer: ctrlPtr,
-			Message: fmt.Sprintf("unknown control %q", ui.Control),
+			Message: fmt.Sprintf("control %q is not valid on a %s parameter; allowed: %s",
+				ui.Control, p.Type, allowedControlsFor(p.Type)),
 		})
 		return errs
 	}
