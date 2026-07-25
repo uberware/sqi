@@ -1047,6 +1047,21 @@ func validatePathOnlyField[T ~string](value T, ptr, field string, isPath bool, v
 	return errs
 }
 
+// validateAction checks the spec-required fields on a single action. The spec
+// marks command required with a minimum length of 1 character. An action with
+// no command is accepted by parse, expands into tasks, and then runs nothing --
+// the step reports success having done no work -- so this is structural
+// correctness and always runs, never gated behind EnforceLimits.
+func validateAction(a Action, ptr string) ValidationErrors {
+	if a.Command == "" {
+		return ValidationErrors{{
+			Pointer: ptr + "/command",
+			Message: "required; must be at least 1 character",
+		}}
+	}
+	return nil
+}
+
 // ─── environment validation ───────────────────────────────────────────────────
 
 func validateEnvironments(envs []Environment, base string) ValidationErrors {
@@ -1070,6 +1085,12 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 					Pointer: ptr + "/script/actions",
 					Message: "at least one of onEnter or onExit must be defined",
 				})
+			}
+			if e.Script.Actions.OnEnter != nil {
+				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter")...)
+			}
+			if e.Script.Actions.OnExit != nil {
+				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit")...)
 			}
 			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, ptr+"/script/embeddedFiles")...)
 		}
@@ -1137,6 +1158,7 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 	// step script embedded files
 	if s.Script != nil {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, base+"/script/embeddedFiles")...)
+		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun")...)
 	}
 
 	// step environments
