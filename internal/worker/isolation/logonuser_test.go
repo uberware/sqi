@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -99,6 +100,66 @@ func TestLogonUserResolve_LogonErrorWrapped(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "render-svc") {
 		t.Errorf("err = %v, want it to name the account", err)
+	}
+}
+
+// TestLogonUserResolve_BatchLogonRightMissingIsActionable proves the specific
+// ERROR_LOGON_TYPE_NOT_GRANTED failure — the account lacks "Log on as a batch
+// job" — is translated into an operator-actionable message naming the right
+// and its fix, rather than surfacing the opaque Win32 "has not been granted
+// the requested logon type" text. The underlying errno must still be wrapped
+// so errors.Is keeps working. This is the exact failure a first real elevated
+// run hit against a freshly created standard account.
+func TestLogonUserResolve_BatchLogonRightMissingIsActionable(t *testing.T) {
+	// The real Windows seam wraps the raw errno exactly this way
+	// (logonUserOS: "LogonUserW: %w" over procLogonUserW.Call's syscall.Errno),
+	// so reproducing that shape here is what proves the errors.Is match holds
+	// through the seam's own wrapping.
+	seamErr := fmt.Errorf("LogonUserW: %w", errLogonTypeNotGranted)
+	p := &logonUserProvider{
+		store: fakeStore{"render-svc": "s3cr3t"},
+		logon: func(context.Context, string, string) (*Credential, error) {
+			return nil, seamErr
+		},
+		capable: func() error { return nil },
+	}
+
+	_, err := p.Resolve(context.Background(), Spec{User: "render-svc"})
+	if err == nil {
+		t.Fatal("Resolve = nil error for an account lacking the batch-logon right, want a refusal")
+	}
+	if !errors.Is(err, errLogonTypeNotGranted) {
+		t.Errorf("err = %v, want it to still wrap ERROR_LOGON_TYPE_NOT_GRANTED for errors.Is", err)
+	}
+	for _, want := range []string{"render-svc", "Log on as a batch job", "SeBatchLogonRight"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err.Error(), want)
+		}
+	}
+}
+
+// TestLogonUserResolve_OtherLogonErrorNotRewritten proves the batch-logon-right
+// translation is narrow: a different logon failure (a bad password, say) is
+// wrapped with the account name but NOT given the SeBatchLogonRight guidance,
+// which would misdirect an operator.
+func TestLogonUserResolve_OtherLogonErrorNotRewritten(t *testing.T) {
+	// ERROR_LOGON_FAILURE (1326): right to log on held, credentials wrong.
+	seamErr := fmt.Errorf("LogonUserW: %w", syscall.Errno(1326))
+	p := &logonUserProvider{
+		store:   fakeStore{"render-svc": "s3cr3t"},
+		logon:   func(context.Context, string, string) (*Credential, error) { return nil, seamErr },
+		capable: func() error { return nil },
+	}
+
+	_, err := p.Resolve(context.Background(), Spec{User: "render-svc"})
+	if err == nil {
+		t.Fatal("Resolve = nil error, want the logon failure surfaced")
+	}
+	if strings.Contains(err.Error(), "SeBatchLogonRight") {
+		t.Errorf("err = %q, must not attach batch-logon-right guidance to an unrelated logon failure", err.Error())
+	}
+	if !errors.Is(err, seamErr) {
+		t.Errorf("err = %v, want it to wrap the original logon error", err)
 	}
 }
 

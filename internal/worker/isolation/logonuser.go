@@ -4,8 +4,21 @@ package isolation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"syscall"
 )
+
+// errLogonTypeNotGranted is Win32 ERROR_LOGON_TYPE_NOT_GRANTED (1385), the
+// error LogonUserW returns when the account is real and the password correct
+// but it lacks the logon RIGHT the requested logon type needs — for this
+// provider's LOGON32_LOGON_BATCH, that is "Log on as a batch job"
+// (SeBatchLogonRight). It is declared as a plain syscall.Errno rather than
+// windows.ERROR_LOGON_TYPE_NOT_GRANTED so this file stays platform-neutral and
+// unit-testable on every OS: the real Windows logon seam returns exactly this
+// errno (procLogonUserW.Call yields a syscall.Errno), so errors.Is matches it
+// through the seam's wrapping, and a test can reproduce it without Windows.
+const errLogonTypeNotGranted = syscall.Errno(1385)
 
 // logonFunc performs the OS-level logon for an account that has already been
 // validated and confirmed non-privileged, using the secret already retrieved
@@ -99,6 +112,23 @@ func (p *logonUserProvider) Resolve(ctx context.Context, spec Spec) (*Credential
 	loginUser := normalizeAccountName(spec.User)
 	cred, err := p.logon(ctx, loginUser, secret)
 	if err != nil {
+		// The batch-logon-right failure is an operator misconfiguration with
+		// a specific fix, not a bad password — surface it the way the
+		// SeChangeNotifyPrivilege refusal below already does, naming the
+		// right and how to grant it, rather than passing through the opaque
+		// "the user has not been granted the requested logon type at this
+		// computer." The raw error is still wrapped (%w), so errors.Is and an
+		// operator reading the log both keep the underlying Win32 detail.
+		if errors.Is(err, errLogonTypeNotGranted) {
+			return nil, fmt.Errorf(
+				"isolation: account %q has not been granted the \"Log on as a batch job\" right "+
+					"(SeBatchLogonRight), which this provider's batch logon requires; grant it to the "+
+					"account under Local Security Policy → Local Policies → User Rights "+
+					"Assignment → \"Log on as a batch job\" (or, on an edition without secpol.msc, "+
+					"via LsaAddAccountRights) and retry — see docs/worker-configuration.md: %w",
+				spec.User, err,
+			)
+		}
 		return nil, fmt.Errorf("isolation: logon %q: %w", spec.User, err)
 	}
 	if cred == nil {
