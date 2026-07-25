@@ -11,7 +11,10 @@
 # LINT_PKGS: explicit directory patterns for golangci-lint (no ./... recursion).
 # FMT_DIRS: explicit paths for gofumpt/goimports (web/embed.go is listed
 #   individually so ./web does not accidentally recurse into node_modules/).
-GO_PKGS   := $(shell go list ./... | grep -v '/node_modules/')
+#
+# GO_PKGS shells out, so it is assigned with the deferred `=` described under
+# "Deferred shell-outs" below rather than `:=`.
+GO_PKGS    = $(eval GO_PKGS := $(shell go list ./... | grep -v '/node_modules/'))$(GO_PKGS)
 LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 FMT_DIRS  := ./cmd ./internal ./pkg ./test web/embed.go
 
@@ -22,13 +25,31 @@ WORKER_BINARY       := sqi-worker
 WORKER_CMD_DIR      := ./cmd/sqi-worker
 BUILD_DIR           := ./bin
 
+# ── Deferred shell-outs ───────────────────────────────────────────────────────
+# Every $(shell ...) below runs a POSIX one-liner, and make runs it through its
+# shell — cmd.exe on Windows, which understands none of them (no grep, no awk,
+# no /dev/null, and its internal DATE command prompts for a new system date).
+# With `:=` all of them run at parse time, on *every* make invocation, so
+# `make test-isolation-windows` — the one target meant to be run from a Windows
+# shell, and one that references none of these — printed four unrelated shell
+# errors before doing anything. `=` defers each value until a recipe actually
+# references it, which keeps the errors on the targets that genuinely need a
+# POSIX shell.
+#
+# The `$(eval X := ...)` wrapper caches the result on first reference so each
+# command still runs at most once per make run, as `:=` did. That is not just
+# an optimization: without it BUILD_DATE would be re-evaluated per reference
+# and sqi-server and sqi-worker could be stamped with different timestamps.
+#
 # Version embedding — use git tag if available, fall back to "dev"
-VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-COMMIT       := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_DATE   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-GO_VERSION   := $(shell go version | awk '{print $$3}')
+VERSION      = $(eval VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev"))$(VERSION)
+COMMIT       = $(eval COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown"))$(COMMIT)
+BUILD_DATE   = $(eval BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ))$(BUILD_DATE)
+GO_VERSION   = $(eval GO_VERSION := $(shell go version | awk '{print $$3}'))$(GO_VERSION)
 
-LDFLAGS := -s -w \
+# Deferred (`=`) so it does not force the four variables above to expand at
+# parse time, which would defeat the deferral described above.
+LDFLAGS = -s -w \
   -X $(MODULE)/internal/version.Version=$(VERSION) \
   -X $(MODULE)/internal/version.Commit=$(COMMIT) \
   -X $(MODULE)/internal/version.BuildDate=$(BUILD_DATE) \
