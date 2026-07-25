@@ -178,7 +178,7 @@ itself is empty.
 `sqi-server` exposes two Prometheus counters (subsystem `scheduler`, served at
 `GET /metrics`) for the auto-retry + failure-limit feature — see
 [`scheduler.default_max_attempts` / `retry_delay` / `default_failure_limit`
-and the Server → Farm → Queue → Job precedence](configuration.md#retry-failure-limits)
+and the Server → Farm → Queue → Job precedence](configuration.md#retry--failure-limits)
 for the policy that drives them, and
 [the task state machine](architecture.md#state-machine-task-status) for how
 retry, exhaustion, and auto-park interact.

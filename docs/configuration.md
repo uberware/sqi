@@ -408,7 +408,7 @@ scheduler:
 ```
 
 See
-[Why isn't my job running? — Unschedulable tasks](observability.md#why-isnt-my-job-running-unschedulable-tasks)
+[Why isn't my job running? — Unschedulable tasks](observability.md#why-isnt-my-job-running--unschedulable-tasks)
 for what the flag means, where it surfaces (task `unschedulable_reason`, job
 `task_counts.unschedulable`, the job-detail badge), and how it clears.
 
@@ -1169,7 +1169,7 @@ staging:
 
 Full detail, including the built-in copy's local/dev caveat and the
 `staging.defaults` behavior change, is in
-[Worker configuration → `staging`](worker-configuration.md#staging-local-path-staging-stage_locally-delivery).
+[Worker configuration → `staging`](worker-configuration.md#staging--local-path-staging-stage_locally-delivery).
 
 ### Diagnostics (`diagnostics.enabled`)
 

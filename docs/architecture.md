@@ -238,7 +238,7 @@ never changes scheduling, only an annotation. A task that has waited longer
 than `scheduler.unschedulable_grace` with no eligible online worker is flagged
 with a human-readable `unschedulable_reason`, cleared automatically once a
 matching worker appears or the task leaves `ready`. See
-[`docs/observability.md`](observability.md#why-isnt-my-job-running-unschedulable-tasks)
+[`docs/observability.md`](observability.md#why-isnt-my-job-running--unschedulable-tasks)
 for the operator-facing view and
 [`scheduler.unschedulable_grace`](configuration.md#schedulerunschedulable_grace)
 for the config knob.
@@ -442,7 +442,7 @@ sweeps); none of them route through `UpdateTaskStatus`.
 
 A worker-reported `failed` status no longer routes straight to a terminal
 state. The scheduler (`internal/scheduler/failure.go`) resolves the effective
-[retry policy](configuration.md#retry-failure-limits) (Job → Queue → Farm →
+[retry policy](configuration.md#retry--failure-limits) (Job → Queue → Farm →
 server default) and records the genuine failure via
 `store.RecordTaskFailure`, then picks one of three outcomes:
 
