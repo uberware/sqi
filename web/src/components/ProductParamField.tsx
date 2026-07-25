@@ -48,17 +48,6 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
         return (
           <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
         )
-      case 'chips':
-        // v1: comma-separated entry; server receives the raw string.
-        return (
-          <input
-            id={id}
-            type="text"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder="comma-separated"
-          />
-        )
       default:
         return (
           <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} />

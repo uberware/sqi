@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { ProductParameter } from '@/api/types'
 
-export type Widget = 'text' | 'textarea' | 'select' | 'checkbox' | 'chips' | 'number' | 'hidden'
+export type Widget = 'text' | 'textarea' | 'select' | 'checkbox' | 'number' | 'hidden'
 
 const CONTROL_WIDGET: Record<string, Widget> = {
   LINE_EDIT: 'text',

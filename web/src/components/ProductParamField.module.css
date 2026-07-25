@@ -22,7 +22,7 @@
 
 /*
  * Theme-aware control styling. Scoped to .field so the generated widgets
- * (text/number/select/textarea/chips) follow the palette in both light and
+ * (text/number/select/textarea) follow the palette in both light and
  * dark mode instead of falling back to UA defaults. Checkboxes are excluded —
  * the global stylesheet already themes them.
  */
