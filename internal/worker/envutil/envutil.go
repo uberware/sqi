@@ -10,6 +10,8 @@ package envutil
 import (
 	"maps"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -72,4 +74,118 @@ func flattenEnv(merged map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+// minimalBase is the set of variables always inherited from the daemon when a
+// Policy is enabled, because a process cannot reasonably run without them.
+// HOME/USERPROFILE are inherited here but MUST be rewritten by the caller to the
+// target user's home when a credential is in effect — otherwise DCCs write
+// their configs into a directory the task cannot access.
+var minimalBase = map[string]bool{
+	// POSIX
+	"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "SHELL": true,
+	// Windows. Keys are uppercase because allowedName looks them up through
+	// foldEnvName, which uppercases on Windows. COMSPEC and PATHEXT are not
+	// optional: without them nothing that resolves a command through a shell
+	// works, which is most of what a render task does. The rest are how
+	// installed software is located. All are machine-scoped; none carries a
+	// secret. APPDATA/LOCALAPPDATA are deliberately ABSENT — they must be
+	// derived from the target's token, not inherited from the daemon (see
+	// session.Manager.Create), or every DCC writes its preferences into
+	// SYSTEM's profile.
+	"USERPROFILE": true, "TEMP": true, "TMP": true, "SYSTEMROOT": true,
+	"COMSPEC": true, "PATHEXT": true, "WINDIR": true, "SYSTEMDRIVE": true,
+	"PROGRAMDATA": true, "PROGRAMFILES": true, "PROGRAMFILES(X86)": true,
+	"COMMONPROGRAMFILES": true, "NUMBER_OF_PROCESSORS": true,
+	"PROCESSOR_ARCHITECTURE": true,
+	// USERNAME, USERDOMAIN, and COMPUTERNAME are DELIBERATELY absent, and not
+	// merely omitted by oversight. Inheriting them the way the rest of this
+	// list is inherited would be actively wrong, not just missing: unlike
+	// USERPROFILE (rewritten to the target's own profile by
+	// session.Manager.Create), nothing here derives these three from the
+	// resolved run-as-user identity, so an isolated task would see no
+	// %USERNAME% at all — and an operator who reaches for
+	// `env_passthrough: ["USERNAME"]` to "fix" that inherits the DAEMON's
+	// value (SYSTEM, or the service account) instead, which is worse than
+	// missing: a render script that branches or logs on %USERNAME% would
+	// silently see the wrong identity. Deriving them from the credential is
+	// left for a future change; until then this gap is a deliberate choice
+	// an operator should make knowingly, not one env_passthrough should paper
+	// over.
+}
+
+// Policy controls how much of the worker daemon's own environment is inherited
+// by job-supplied processes.
+//
+// Enabled is false in the pre-isolation configuration, where the entire daemon
+// environment is inherited — the historical behavior. When true, only
+// minimalBase plus Allowlist survive, which is what stops daemon credentials
+// (AWS keys, mount secrets, license tokens) reaching arbitrary job code.
+type Policy struct {
+	// Allowlist holds variable NAME patterns inherited in addition to
+	// minimalBase, matched with filepath.Match semantics. Matching is
+	// case-insensitive on Windows, mirroring that platform's own rules.
+	Allowlist []string
+	// Enabled reports whether filtering applies at all.
+	Enabled bool
+}
+
+// BaseEnv returns the portion of the daemon environment a job-supplied process
+// may inherit. It governs ONLY inherited variables; variables the job itself
+// supplies are never filtered — see BuildFromBase.
+func BaseEnv(p Policy) map[string]string {
+	raw := os.Environ()
+	out := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		k, v, _ := strings.Cut(kv, "=")
+		if !p.Enabled || allowedName(k, p.Allowlist) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// allowedName reports whether an inherited variable name survives filtering.
+//
+// Case handling follows each platform's real rules rather than a convenient
+// uniform fold: POSIX environment names are case-sensitive, so uppercasing here
+// would allowlist a variable literally named "home" or "path" as though it were
+// HOME or PATH — a filter that does not do what it claims.
+func allowedName(name string, allowlist []string) bool {
+	if minimalBase[foldEnvName(name)] {
+		return true
+	}
+	for _, pat := range allowlist {
+		if ok, err := filepath.Match(foldEnvName(pat), foldEnvName(name)); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+// foldEnvName normalises an environment variable name for comparison: Windows
+// treats them case-insensitively, POSIX does not.
+func foldEnvName(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
+}
+
+// BuildFromBase renders a process environment from an already-filtered base,
+// applying job-supplied overrides on top and then removing every key in unset.
+//
+// Filtering happens exactly once, when base is built by BaseEnv at session
+// creation. Everything in overrides is job data — static Environment.variables,
+// dynamic openjd_env exports, task template variables — and passes through
+// UNTOUCHED. Re-filtering here would eat a job's own exports, whose names no
+// operator allowlist would contain.
+func BuildFromBase(base, overrides map[string]string, unset map[string]bool) []string {
+	merged := make(map[string]string, len(base)+len(overrides))
+	maps.Copy(merged, base)
+	maps.Copy(merged, overrides)
+	for k := range unset {
+		delete(merged, k)
+	}
+	return flattenEnv(merged)
 }

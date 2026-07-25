@@ -12,22 +12,34 @@ import (
 
 const queueCols = `
 	id, farm_id, name, description, priority, max_concurrent_tasks, paused,
-	max_attempts, retry_delay_seconds, failure_limit, created_at, updated_at`
+	max_attempts, retry_delay_seconds, failure_limit, run_as_user, run_as_group,
+	created_at, updated_at`
 
 const (
 	sqlInsertQueue = `
 INSERT INTO queues (
 	id, farm_id, name, description, priority, max_concurrent_tasks, paused,
-	max_attempts, retry_delay_seconds, failure_limit, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	max_attempts, retry_delay_seconds, failure_limit, run_as_user, run_as_group,
+	created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + queueCols
 
 	sqlGetQueue = `SELECT ` + queueCols + ` FROM queues WHERE id = ?`
 
+	// run_as_user and run_as_group are written with a self-referential CASE so
+	// a "preserve this column" update stays inside the same atomic statement
+	// as every other field, rather than requiring a prior read of the current
+	// value (which would open a lost-update race against a concurrent write
+	// to that column — see [store.Queue.PreserveRunAsUser]). The two extra
+	// placeholders ahead of each value (?) are the preserve flags, bound as 0
+	// or 1: SQLite's CASE WHEN treats any nonzero integer as true.
 	sqlUpdateQueue = `
 UPDATE queues
 SET farm_id = ?, name = ?, description = ?, priority = ?, max_concurrent_tasks = ?, paused = ?,
-	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?, updated_at = ?
+	max_attempts = ?, retry_delay_seconds = ?, failure_limit = ?,
+	run_as_user = CASE WHEN ? THEN run_as_user ELSE ? END,
+	run_as_group = CASE WHEN ? THEN run_as_group ELSE ? END,
+	updated_at = ?
 WHERE id = ?
 RETURNING ` + queueCols
 
@@ -46,16 +58,18 @@ func scanQueue(row scanner) (store.Queue, error) {
 	var paused int
 	var createdAt, updatedAt string
 	var maxAtt, delay, failLim sql.NullInt64
+	var runAsUser, runAsGroup sql.NullString
 	if err := row.Scan(
 		&q.ID, &q.FarmID, &q.Name, &q.Description,
 		&q.Priority, &q.MaxConcurrentTasks, &paused,
-		&maxAtt, &delay, &failLim,
+		&maxAtt, &delay, &failLim, &runAsUser, &runAsGroup,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return store.Queue{}, err
 	}
 	q.Paused = paused != 0
 	q.MaxAttempts, q.RetryDelaySeconds, q.FailureLimit = intPtr(maxAtt), intPtr(delay), intPtr(failLim)
+	q.RunAsUser, q.RunAsGroup = strPtr(runAsUser), strPtr(runAsGroup)
 	q.CreatedAt = mustTime(createdAt)
 	q.UpdatedAt = mustTime(updatedAt)
 	return q, nil
@@ -63,11 +77,15 @@ func scanQueue(row scanner) (store.Queue, error) {
 
 // CreateQueue implements [store.QueueStore].
 func (s *Store) CreateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
+	if !store.RunAsComboValid(queue.RunAsUser, queue.RunAsGroup) {
+		return store.Queue{}, store.ErrRunAsGroupWithoutUser
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertQueue.QueryRowContext(ctx,
 		queue.ID, queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
+		nullStrPtr(queue.RunAsUser), nullStrPtr(queue.RunAsGroup),
 		now, now)
 	out, err := scanQueue(row)
 	return out, mapErr(err)
@@ -139,16 +157,50 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	}, nil
 }
 
-// UpdateQueue implements [store.QueueStore].
+// UpdateQueue implements [store.QueueStore]. See the type's doc comment for
+// PreserveRunAsUser/PreserveRunAsGroup semantics.
+//
+// Wrapped in an explicit transaction (rather than the single QueryRowContext
+// every other Update* uses) because [store.ErrRunAsGroupWithoutUser] must be
+// checked against the RESOLVED run_as_user/run_as_group — i.e. after the
+// statement's own CASE WHEN preserve substitution — not the raw request
+// fields: a PUT that omits run_as_user/run_as_group cannot tell from the
+// request alone whether the preserved column will end up empty. RETURNING
+// gives us those resolved values from the very statement that would commit
+// them, so the invalid-combo check and the write see identical data with no
+// separate read and therefore no read-then-write race. An invalid combo
+// rolls the transaction back so the update has no effect at all, rather than
+// committing a queue update while reporting an error.
 func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	now := timeToText(time.Now().UTC())
-	row := s.stmtUpdateQueue.QueryRowContext(ctx,
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.Queue{}, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	txStmt := tx.StmtContext(ctx, s.stmtUpdateQueue)
+	defer txStmt.Close()
+
+	row := txStmt.QueryRowContext(ctx,
 		queue.FarmID, queue.Name, queue.Description,
 		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
+		boolToInt(queue.PreserveRunAsUser), nullStrPtr(queue.RunAsUser),
+		boolToInt(queue.PreserveRunAsGroup), nullStrPtr(queue.RunAsGroup),
 		now, queue.ID)
 	out, err := scanQueue(row)
-	return out, mapErr(err)
+	if err != nil {
+		return store.Queue{}, mapErr(err)
+	}
+	if !store.RunAsComboValid(out.RunAsUser, out.RunAsGroup) {
+		return store.Queue{}, store.ErrRunAsGroupWithoutUser
+	}
+	if err := tx.Commit(); err != nil {
+		return store.Queue{}, err
+	}
+	return out, nil
 }
 
 // DeleteQueue implements [store.QueueStore].

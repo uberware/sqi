@@ -354,6 +354,17 @@ jobs:
   # Runs only after the test job passes (needs: test).
   # fail-fast: false means a failure on one platform does not cancel the others,
   # giving a complete picture of which targets are broken.
+  #
+  # `go build ./cmd/sqi-server/... ./cmd/sqi-worker/...` below proves the two
+  # binaries link, but `go build` never compiles _test.go files at all, so it
+  # cannot catch a Windows-only break in test code — which is exactly what
+  # happened on the task-isolation branch: internal/worker/isolation's
+  # POSIX-only isolation_test.go referenced SysProcAttr.Credential, silently
+  # breaking `GOOS=windows go vet` with nothing in CI to notice. The extra
+  # windows/amd64-only step compiles every internal package (not just cmd/,
+  # unlike the matrix build above) and vets internal/worker/... — vet, like
+  # test compilation, type-checks _test.go files too — so the same class of
+  # break fails a PR instead of surviving until someone runs it by hand.
   cross-compile:
     name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
@@ -377,6 +388,16 @@ jobs:
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-server/...
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./cmd/sqi-worker/...
+
+      # See the job's own comment above for why this exists and why plain
+      # `go build` (above) cannot substitute for it. amd64-only: GOARCH does
+      # not affect what go vet's type-checking can see, so running this a
+      # second time on arm64 would only cost CI minutes for no new coverage.
+      - name: Windows internal packages build + vet
+        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
+          GOOS=windows GOARCH=amd64 go vet ./internal/worker/...
 
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
   # cross-compile (above) proves the binaries *build* for every target; this job
@@ -697,6 +718,203 @@ jobs:
 
       - name: Run OIDC integration tests
         run: make test-oidc
+
+  # ── Task isolation: run-as-user integration ──────────────────────────────────
+  # Runs the run-as-user isolation suite as REAL root against REAL unprivileged
+  # OS accounts inside a container — the only thing that exercises uid/gid
+  # switching, session-directory ownership, environment filtering, and
+  # process-group kill. internal/worker/isolation's fake Provider is
+  # structurally blind to all of it; three Critical defects on this branch were
+  # caught only because this suite runs against a real container. This job is
+  # what makes that class of bug fail before it merges.
+  #
+  # Both architectures, matching ldap-integration above and for the same
+  # reason: this exercises syscall-level behavior (setuid/setgid/setgroups,
+  # SysProcAttr.Credential), which is exactly where arch divergence could hide.
+  # oidc-integration's single-arch choice does not transfer here — its
+  # justification is "no arch divergence is known for a JVM app", and this is
+  # the opposite of that: raw kernel syscalls, not a JVM's HTTP/token behavior.
+  # Native runners rather than QEMU, same reasoning as ldap-integration:
+  # emulation is several times slower and would test the emulator's timing
+  # rather than the runner's.
+  #
+  # `make test-isolation` builds its own image from a staged copy of the repo
+  # (see the Makefile comment above the target), so unlike ldap-integration/
+  # oidc-integration it needs no image pre-pulled here.
+  #
+  # IMPORTANT: `make test-isolation` exits 0 with a message when Docker is
+  # unavailable — correct on a developer machine that may not have Docker, but
+  # on a CI runner (where Docker is always preinstalled) a skip here would be a
+  # silent false-green with nothing verified. So this job does not trust the
+  # target's own exit code: it captures the output and fails unless (1) no
+  # Docker-unavailable skip message appears and (2) all 11 TestIsolation_ tests
+  # are confirmed PASS by name. A silent skip, a build failure, or a partial
+  # run all fail the job instead of passing quietly.
+  isolation-integration:
+    name: Isolation integration (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Does not trust a bare exit-0 from `make test-isolation`: asserts the
+      # suite actually executed (no Docker-unavailable skip) and that every one
+      # of the 11 TestIsolation_ tests is confirmed PASS by name, so a silent
+      # skip or a partial run fails the job instead of passing quietly.
+      - name: Run isolation integration tests
+        run: |
+          set +e
+          make test-isolation 2>&1 | tee isolation-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if grep -q "docker unavailable" isolation-output.log; then
+            echo "::error::Docker was unavailable — the isolation suite did not run. A skip here proves nothing, so this is a hard failure."
+            exit 1
+          fi
+
+          pass_count=$(grep -c '^--- PASS: TestIsolation_' isolation-output.log || true)
+          expected=11
+          if [ "$status" -ne 0 ] || [ "$pass_count" -ne "$expected" ]; then
+            echo "::error::Expected $expected TestIsolation_ tests to pass (exit=$status, found=$pass_count). Failing so a partial or failed run cannot look green."
+            exit 1
+          fi
+
+          echo "Confirmed $pass_count/$expected TestIsolation_ tests passed."
+
+  # ── Task isolation: run-as-user integration (Windows) ────────────────────────
+  # Runs the Windows run-as-user isolation suite against REAL local accounts,
+  # with its privileged tier running as SYSTEM — the Windows counterpart to
+  # isolation-integration above, which covers POSIX.
+  #
+  # Two tiers because they need different privileges. CreateProcessAsUser —
+  # which os/exec invokes whenever SysProcAttr.Token is set — requires
+  # SeAssignPrimaryTokenPrivilege, held by default only by LocalSystem and the
+  # LOCAL/NETWORK SERVICE accounts. The windows-latest runner user is an
+  # administrator and does NOT hold it, so scripts/test-isolation-windows.ps1
+  # registers a scheduled task with /ru SYSTEM for the tests that launch a
+  # process as the target account (TestIsolationWindowsSystem_*). Everything
+  # else — ACL shape, credential storage, impersonated access checks
+  # (TestIsolationWindows_*) — runs directly under the elevated admin shell.
+  #
+  # One arch, matching oidc-integration's rationale rather than
+  # ldap-integration's or isolation-integration's: the Win32 APIs this suite
+  # exercises (ACLs, LogonUserW, CreateProcessAsUser) are not architecture-
+  # dependent, and hosted windows-arm64 runners are not generally available.
+  #
+  # This job also runs the Windows-only UNIT tests, because nothing else in CI
+  # does. cross-platform-runtime is a runtime smoke job and is skipped on pull
+  # requests (if: github.event_name != 'pull_request'); the only other Windows
+  # coverage is the cross-compile job's `GOOS=windows go vet`, which
+  # type-checks test files but never executes them. Package list below is
+  # every package with genuine `GOOS`-conditional behavior (a `_windows.go`
+  # file, or a `runtime.GOOS == "windows"` branch in its tests) rather than
+  # every package that merely imports something isolation-related:
+  # internal/worker/isolation, internal/worker/executor, internal/worker/staging,
+  # and cmd/sqi-worker each carry dedicated _windows.go/_windows_test.go files;
+  # internal/worker/envutil and internal/worker/session have no such files but
+  # branch on runtime.GOOS in their test bodies (path separators, credential
+  # handling, profile-env resolution), so running them only on Linux would
+  # silently skip the Windows branch of every one of those tests.
+  #
+  # IMPORTANT: scripts/test-isolation-windows.ps1 exits 0 with a message when
+  # the shell is not elevated, mirroring how `make test-isolation` exits 0
+  # without Docker. A bare exit 0 therefore proves NOTHING, which is why the
+  # assertion step below checks for the not-elevated message and then counts
+  # named PASS lines instead of trusting the exit code — the same shape as
+  # isolation-integration's own assertion step above.
+  isolation-integration-windows:
+    name: Isolation integration (windows)
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Windows-only unit tests. See the job comment above for why these six
+      # packages and not others. -count=1 disables the test cache so a stale
+      # pass from an earlier step can't stand in for a real run.
+      - name: Windows unit tests
+        shell: bash
+        run: |
+          go test -count=1 \
+            ./internal/worker/isolation/... \
+            ./internal/worker/executor/... \
+            ./internal/worker/envutil/... \
+            ./internal/worker/session/... \
+            ./internal/worker/staging/... \
+            ./cmd/sqi-worker/...
+
+      - name: Run windows isolation integration tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File scripts/test-isolation-windows.ps1 2>&1 | Tee-Object -FilePath isolation-windows.log
+
+      # Does not trust a bare exit-0 from the script: asserts the suite
+      # actually executed (the runner was elevated) and that every one of the
+      # 16 named tests — 8 TestIsolationWindows_* (elevated admin) plus
+      # 8 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
+      # a silent skip, a build failure, or a partial run all fail the job
+      # instead of passing quietly.
+      - name: Assert the suite actually ran
+        shell: bash
+        run: |
+          if grep -q "not elevated" isolation-windows.log; then
+            echo "::error::The runner was not elevated — the isolation suite did not run. A skip here proves nothing, so this is a hard failure."
+            exit 1
+          fi
+          expected=(
+            TestIsolationWindows_CapableRejectsPlainAdmin
+            TestIsolationWindows_ChownRecursiveDoesNotFollowJunction
+            TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees
+            TestIsolationWindows_CredentialFileNotReadableByRunAsAccount
+            TestIsolationWindows_CredentialMissingIsActionable
+            TestIsolationWindows_CredentialRoundTrip
+            TestIsolationWindows_SecondAccountCannotOpenSessionDir
+            TestIsolationWindows_SessionDirACLIsProtected
+            TestIsolationWindowsSystem_Capable
+            TestIsolationWindowsSystem_ChildCanWriteSessionDir
+            TestIsolationWindowsSystem_ChildRunsAsTargetUser
+            TestIsolationWindowsSystem_CrossUserSessionDirDenied
+            TestIsolationWindowsSystem_DaemonEnvNotInherited
+            TestIsolationWindowsSystem_NoIsolationUnchanged
+            TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser
+            TestIsolationWindowsSystem_RunsAsSystem
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name" isolation-windows.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Confirmed all ${#expected[@]}/16 named isolation tests passed."
+          fi
+          exit $missing
 
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9

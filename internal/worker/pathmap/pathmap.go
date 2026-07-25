@@ -241,8 +241,17 @@ type pathMappingDoc struct {
 // mapping information and applications should treat a missing file as
 // equivalent to an empty map).
 //
-// The file is written with mode 0644 (world-readable).  An existing file at
-// the path is overwritten (open with O_TRUNC semantics via os.WriteFile).
+// The file is written with mode 0644 (world-readable). An existing file at
+// the path (including one this same function wrote earlier in the session —
+// see internal/worker/executor's buildEffectiveLookup, which rewrites this
+// file once staging rules are known) is replaced via writeSecure rather than
+// a plain os.WriteFile: this file is written by the root daemon at points
+// that can run AFTER job code has already executed as the target uid (the
+// rewrite specifically runs after the environment onEnter action), at a
+// deterministic name, so a naive open-by-path is exactly the shape a
+// hardlink/symlink swap could exploit. writeSecure refuses to write through
+// any pre-existing entry that was not put there by this call, on every
+// platform — see its per-OS doc comment for the mechanism.
 func WritePathMappingFile(workDir string, rules []protocol.PathMapRule) error {
 	if len(rules) == 0 {
 		return nil
@@ -271,7 +280,7 @@ func WritePathMappingFile(workDir string, rules []protocol.PathMapRule) error {
 	path := filepath.Join(workDir, PathMappingFileName)
 	// 0o644: world-readable so task processes running as a different OS user
 	// than the worker can still read the file (common in hardened deployments).
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeSecure(path, data, 0o644); err != nil {
 		return fmt.Errorf("pathmap: write %q: %w", path, err)
 	}
 	return nil

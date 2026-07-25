@@ -23,19 +23,19 @@ func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-// sendTERM sends SIGTERM to proc's process group, requesting graceful
+// sendTERM sends SIGTERM to the task's process group, requesting graceful
 // termination of the task and every child it spawned. Returns nil on success
 // or an error if the signal could not be delivered (e.g., the process has
 // already exited).
-func sendTERM(proc *os.Process) error {
-	return signalGroup(proc, syscall.SIGTERM)
+func (t *processTree) sendTERM() error {
+	return signalGroup(t.proc.Process, syscall.SIGTERM)
 }
 
-// sendKILL sends SIGKILL to proc's process group, forcibly terminating the task
-// and every child it spawned. Returns nil on success or an error if the signal
-// could not be delivered.
-func sendKILL(proc *os.Process) error {
-	return signalGroup(proc, syscall.SIGKILL)
+// sendKILL sends SIGKILL to the task's process group, forcibly terminating the
+// task and every child it spawned. Returns nil on success or an error if the
+// signal could not be delivered.
+func (t *processTree) sendKILL() error {
+	return signalGroup(t.proc.Process, syscall.SIGKILL)
 }
 
 // signalGroup delivers sig to the process group led by proc. The task is

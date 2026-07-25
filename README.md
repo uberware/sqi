@@ -4,7 +4,7 @@
 
 📖 **[Documentation](https://uberware.github.io/sqi/)** — quickstart, architecture, configuration, and full reference.
 
-> **Status:** v0.2.0 (Phase 2) released. Builds on the Phase 1 core with products and presets as an authoring layer over OpenJD, a community preset-library integration, product-driven submission, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Phase 3 (opt-in authentication and multi-user support — local accounts, API keys, RBAC, LDAP/AD, and OAuth2/OIDC SSO) is merged on `main` and in development toward release. Contributions, feedback, and discussion welcome.
+> **Status:** v0.2.0 (Phase 2) released. Builds on the Phase 1 core with products and presets as an authoring layer over OpenJD, a community preset-library integration, product-driven submission, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. **Phase 3** (opt-in auth & multi-user) — identity complete, task isolation in progress. Contributions, feedback, and discussion welcome.
 
 ---
 
@@ -81,7 +81,7 @@ Both modes run the same software. The difference is configuration.
 
 ## Status and roadmap
 
-`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. Phase 3 — opt-in authentication and multi-user support: local accounts and API keys, role-based access control, an authenticated owner/submitter identity on jobs, LDAP/Active Directory, and OAuth2/OIDC SSO — is merged on `main` and unreleased; it is off by default, so an existing deployment is unaffected until enabled. Production-hardening features (Phase 4) follow.
+`sqi` v0.1.0 delivered the Phase 1 core: scheduler, pull-based workers, OpenJD job execution, and a basic web UI, with a Python client and single-binary or Docker Compose deployment. v0.2.0 completes Phase 2 — products and presets as an authoring layer over OpenJD, the community preset-library integration, a product-driven submission form, additional path-translation modes, S3-compatible storage, compute locations, and in-application DCC submitters for Maya, Houdini, Nuke, and Blender. **Phase 3** — opt-in authentication and multi-user support: local accounts and API keys, role-based access control, an authenticated owner/submitter identity on jobs, LDAP/Active Directory, OAuth2/OIDC SSO, and queue-scoped run-as-user task isolation (tasks execute as a distinct, unprivileged OS account instead of the worker's own, on POSIX and Windows) — is complete and merged on `main`, unreleased. Auth is off by default, so an existing deployment is unaffected until enabled. Production-hardening features (Phase 4) follow.
 
 This is a real project with a concrete development commitment, not a design document waiting for funding. Feedback on priorities is welcome — [open an issue](https://github.com/uberware/sqi/issues/new) or [start a discussion](https://github.com/uberware/sqi/discussions/new/choose).
 

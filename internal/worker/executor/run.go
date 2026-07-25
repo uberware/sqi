@@ -17,10 +17,18 @@ import (
 
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/pathmap"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
 )
+
+// applyCredential attaches an isolation.Credential to a process before it
+// starts. Defaults to isolation.Apply; tests override it to record that the
+// task-process launch site attaches a credential without needing a real OS
+// identity switch (see isolation.NewFake's own doc: a fake cannot verify real
+// uid/gid switching — that needs a real OS, exercised by make test-isolation).
+var applyCredential = isolation.Apply
 
 // ── processResult ─────────────────────────────────────────────────────────────
 
@@ -160,7 +168,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 	// ("Publish running status before Start so the server records the attempt").
 	// Every attempt must have a running→terminal transition for the server's
 	// state machine; the running status is not a claim that a process exists.
-	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, &failed)
+	lookup, scratchDir, ok := e.buildEffectiveLookup(ctx, msg, sess.ID, sess.WorkDir, sess.Credential(), &failed)
 	defer e.stager.Cleanup(scratchDir)
 	if !ok {
 		return
@@ -399,6 +407,23 @@ func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protoco
 // context-specific message before calling.
 func (e *Executor) failPreExec(msg *protocol.AssignMsg, sessID string, failed *bool, reason string) {
 	*failed = true
+	e.publishPreExecFailure(msg, sessID, reason)
+}
+
+// publishPreExecFailure publishes the running→failed transition for a
+// pre-execution failure (exit code -1) and records the failure metric. It is
+// the part of failPreExec that has nothing to do with an existing taskRun,
+// factored out so [Executor.Dispatch] can reuse it for a failure that occurs
+// before any session — and therefore any taskRun — exists (e.g. run-as-user
+// credential resolution, ancestor validation, or working-directory setup
+// failing inside session.Manager.Create). Unlike failPreExec it does not flag
+// a *bool: Dispatch's caller has no session to clean up on the
+// keepFailedSessions path, because session creation is exactly what failed.
+//
+// Publishing the failure itself never blocks or panics the caller: Running
+// and Terminal both retry transient publish failures internally and then log
+// a warning and return — status loss is preferred over wedging the lease loop.
+func (e *Executor) publishPreExecFailure(msg *protocol.AssignMsg, sessID, reason string) {
 	e.statusPub.Running(context.Background(), msg, sessID, nil, time.Now())
 	minusOne := -1
 	e.statusPub.Terminal(context.Background(), msg, sessID, "failed", &minusOne, reason, nil, time.Now())
@@ -459,19 +484,29 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// exits on its own, defeating the per-task timeout.
 	configureProcessGroup(cmd)
 
+	// This is job-supplied code (the task's OnRun action) — site 2 of the two
+	// launch sites that must carry a credential (site 1 is the OpenJD
+	// environment onEnter/onExit action in session.go's runAction). Applied
+	// AFTER configureProcessGroup so Setpgid is already set: isolation.Apply
+	// preserves any SysProcAttr fields the caller configured rather than
+	// replacing the struct, but only if they were set first.
+	if err := applyCredential(cmd, sess.Credential()); err != nil {
+		return processResult{Err: fmt.Errorf("apply run-as-user credential: %w", err)}
+	}
+
 	// Merge the session's dynamic environment (accumulated from openjd_env /
 	// openjd_redacted_env / openjd_unset_env directives emitted by environment
 	// actions) on top of the task's static environment variables. Precedence:
-	// worker os.Environ (lowest) < static env Variables < session dynamic env;
-	// openjd_unset_env removes a variable even if a static entry or the worker
-	// environment set it.
+	// session base env (lowest, already filtered once at session creation) <
+	// static env Variables < session dynamic env; openjd_unset_env removes a
+	// variable even if a static entry or the session base environment set it.
 	overrides := envVars
 	if dyn := sess.EnvOverrides(); len(dyn) > 0 {
 		overrides = make(map[string]string, len(envVars)+len(dyn))
 		maps.Copy(overrides, envVars)
 		maps.Copy(overrides, dyn)
 	}
-	cmd.Env = envutil.BuildWithUnset(overrides, sess.EnvUnset())
+	cmd.Env = envutil.BuildFromBase(sess.BaseEnv(), overrides, sess.EnvUnset())
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -500,6 +535,37 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 			EndedAt:   time.Now(),
 		}
 	}
+
+	// Place the process (and, on Windows, everything it spawns) under
+	// supervision immediately after Start so killAndWait can always reach the
+	// full tree — including a grandchild orphaned before a later kill call,
+	// which "taskkill /F /T" would miss. release() (deferred below) is the
+	// success-path teardown that does NOT kill survivors, keeping Windows
+	// behaviourally identical to POSIX; see procgroup_windows.go's doc.
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		// cmd.Start() above already succeeded, so a process is running, but
+		// nothing later in this function — run.pid, sess.AddTask, the
+		// output-reading goroutines — has registered it for cleanup yet, and
+		// there is no tree to call sendKILL on. Kill and reap it directly here
+		// so a superviseTree failure (resource exhaustion, restrictive policy,
+		// or a run-as-user permission edge case) never leaks a running,
+		// fully unmanaged process.
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			e.logger.WarnContext(context.Background(), "executor: kill process after supervise failure", slog.Any("error", killErr))
+		}
+		cmd.Wait() //nolint:errcheck // best-effort reap after a forced kill; the supervise error below is what the caller sees
+		return processResult{Err: fmt.Errorf("supervise task process tree: %w", err)}
+	}
+	defer func() {
+		if relErr := tree.release(); relErr != nil {
+			// context.Background(), not ctx: this defer can run after ctx is
+			// already canceled (task done, worker shutting down), and the
+			// warning should still be logged — same reasoning as
+			// flushTaskLogs above.
+			e.logger.WarnContext(context.Background(), "executor: release process tree", slog.Any("error", relErr))
+		}
+	}()
 
 	// Record PID.
 	pid := cmd.Process.Pid
@@ -544,9 +610,9 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 	// on timeout or cancellation (TERMINATE = immediate SIGKILL, the spec default;
 	// NOTIFY_THEN_TERMINATE = SIGTERM then SIGKILL after the notify period).
 	if taskTimeout > 0 {
-		return e.waitWithTimeout(ctx, cmd, run, waitDone, startedAt, pid, taskTimeout, action.Cancelation)
+		return e.waitWithTimeout(ctx, tree, run, waitDone, startedAt, pid, taskTimeout, action.Cancelation)
 	}
-	return e.waitForCompletion(ctx, cmd, run, waitDone, startedAt, pid, action.Cancelation)
+	return e.waitForCompletion(ctx, tree, run, waitDone, startedAt, pid, action.Cancelation)
 }
 
 // ── Wait helpers ──────────────────────────────────────────────────────────────
@@ -556,7 +622,7 @@ func (e *Executor) execProcess(ctx context.Context, msg *protocol.AssignMsg, ses
 // must be forcibly terminated.
 func (e *Executor) waitForCompletion(
 	ctx context.Context,
-	cmd *exec.Cmd,
+	tree *processTree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -567,7 +633,7 @@ func (e *Executor) waitForCompletion(
 	case waitErr := <-waitDone:
 		return makeResult(waitErr, pid, startedAt, false, false)
 	case <-ctx.Done():
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true, cancelation)
+		return e.killAndWait(ctx, tree, run, waitDone, startedAt, pid, false, true, cancelation)
 	}
 }
 
@@ -577,7 +643,7 @@ func (e *Executor) waitForCompletion(
 // terminated (on timeout or cancellation).
 func (e *Executor) waitWithTimeout(
 	ctx context.Context,
-	cmd *exec.Cmd,
+	tree *processTree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -592,9 +658,9 @@ func (e *Executor) waitWithTimeout(
 	case waitErr := <-waitDone:
 		return makeResult(waitErr, pid, startedAt, false, false)
 	case <-timer.C:
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, true, false, cancelation)
+		return e.killAndWait(ctx, tree, run, waitDone, startedAt, pid, true, false, cancelation)
 	case <-ctx.Done():
-		return e.killAndWait(ctx, cmd, run, waitDone, startedAt, pid, false, true, cancelation)
+		return e.killAndWait(ctx, tree, run, waitDone, startedAt, pid, false, true, cancelation)
 	}
 }
 
@@ -668,7 +734,7 @@ func terminationMode(c *protocol.CancelationMethod) (mode string, notifyPeriod t
 // or short-window terminal status messages (first one wins, subsequent ignored).
 func (e *Executor) killAndWait(
 	ctx context.Context,
-	cmd *exec.Cmd,
+	tree *processTree,
 	run *taskRun,
 	waitDone <-chan error,
 	startedAt time.Time,
@@ -710,7 +776,7 @@ func (e *Executor) killAndWait(
 
 	// TERMINATE (default): SIGKILL immediately — no SIGTERM, no grace period.
 	if !notify {
-		if killErr := sendKILL(cmd.Process); killErr != nil {
+		if killErr := tree.sendKILL(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -724,7 +790,7 @@ func (e *Executor) killAndWait(
 	}
 
 	// NOTIFY_THEN_TERMINATE (or worker shutdown): SIGTERM first.
-	if err := sendTERM(cmd.Process); err != nil {
+	if err := tree.sendTERM(); err != nil {
 		e.logger.WarnContext(
 			ctx, "executor: SIGTERM failed — escalating to SIGKILL immediately",
 			slog.String("task_id", run.taskID),
@@ -732,7 +798,7 @@ func (e *Executor) killAndWait(
 			slog.Int("pid", pid),
 			slog.Any("error", err),
 		)
-		if killErr := sendKILL(cmd.Process); killErr != nil {
+		if killErr := tree.sendKILL(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -761,7 +827,7 @@ func (e *Executor) killAndWait(
 			slog.Int("pid", pid),
 			slog.Duration("grace_period", gracePeriod),
 		)
-		if killErr := sendKILL(cmd.Process); killErr != nil {
+		if killErr := tree.sendKILL(); killErr != nil {
 			e.logger.WarnContext(
 				ctx, "executor: SIGKILL failed",
 				slog.String("task_id", run.taskID),
@@ -1019,6 +1085,7 @@ func (e *Executor) buildEffectiveLookup(
 	ctx context.Context,
 	msg *protocol.AssignMsg,
 	sessID, workDir string,
+	cred *isolation.Credential,
 	failed *bool,
 ) (*pathmap.Lookup, string, bool) {
 	var scratchDir string
@@ -1030,7 +1097,7 @@ func (e *Executor) buildEffectiveLookup(
 			return nil, "", false
 		}
 		var stErr error
-		stagingRules, scratchDir, stErr = e.stager.StageIn(ctx, msg.JobID, msg.AttemptID, msg.Staging)
+		stagingRules, scratchDir, stErr = e.stager.StageIn(ctx, msg.JobID, msg.AttemptID, msg.Staging, cred)
 		if stErr != nil {
 			e.failPreExec(msg, sessID, failed, stErr.Error())
 			return nil, "", false

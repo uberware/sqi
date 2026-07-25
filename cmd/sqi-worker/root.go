@@ -57,6 +57,7 @@ func init() {
 		versionCmd,
 		configCmd,
 		capabilitiesCmd,
+		isolationCmd,
 	)
 }
 

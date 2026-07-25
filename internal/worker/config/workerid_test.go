@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/google/uuid"
@@ -46,6 +47,32 @@ func TestLoadOrCreateWorkerID_ReusesExistingID(t *testing.T) {
 
 	if id1 != id2 {
 		t.Errorf("worker ID changed between restarts: %q vs %q", id1, id2)
+	}
+}
+
+func TestLoadOrCreateWorkerID_DataDirStaysPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	// A path that does NOT exist yet, so LoadOrCreateWorkerID's own
+	// os.MkdirAll(dataDir, 0o700) is what creates it — deliberately not
+	// t.TempDir() itself, which the testing package creates via
+	// os.Mkdir(dir, 0777) (masked by umask, typically 0755), an unrelated
+	// artifact of how `go test` lays out temp directories that would make
+	// this assertion depend on umask rather than on the function under test.
+	dir := filepath.Join(t.TempDir(), "workerdata")
+
+	if _, err := LoadOrCreateWorkerID(dir); err != nil {
+		t.Fatalf("LoadOrCreateWorkerID: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat data dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("data dir mode = %o, want 0700 — data_dir holds only worker.id and must never be "+
+			"widened for run-as-user traversal (see this function's own doc comment)", got)
 	}
 }
 

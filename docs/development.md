@@ -17,7 +17,7 @@ guides for extending the worker.
 | `golangci-lint` | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
-| Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`) and the real-provider SSO tests (`make test-oidc`), which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
+| Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), and the real-root run-as-user isolation tests (`make test-isolation`), all of which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
 pre-commit hooks. Install them before running `make hooks`.
@@ -67,6 +67,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-integration` | Run integration tests (build tag `integration`) |
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
+| `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
 | `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
 | `make bench` | Run benchmarks |
 | `make lint` | Run `golangci-lint` |
@@ -108,6 +109,10 @@ make test-ldap
 
 # SSO tests against a real Keycloak in a container (needs Docker)
 make test-oidc
+
+# Run-as-user task-isolation tests as real root against real OS accounts in a
+# container (needs Docker)
+make test-isolation
 
 # Fuzz targets (run for 30 seconds each)
 go test -fuzz=FuzzParse         -fuzztime=30s ./internal/openjd/...

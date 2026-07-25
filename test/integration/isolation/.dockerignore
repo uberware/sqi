@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Exclusions for the `make test-isolation` build context (see the Makefile
+# target's own comment and this directory's Dockerfile). NOT the same file as
+# the repo-root .dockerignore: that one excludes test/ entirely (fine for the
+# production sqi-server image, fatal here — this image needs
+# test/integration/**). The Makefile stages a filtered copy of the repo using
+# these patterns rather than relying on Docker's own per-context .dockerignore
+# discovery, since two different Dockerfiles sharing the repo root as context
+# cannot each have their own automatically-selected ignore file with the
+# classic (non-BuildKit) builder this project's Docker install runs.
+#
+# Patterns follow rsync --exclude-from syntax (used by the Makefile target),
+# not Docker's own .dockerignore glob dialect. Unlike .git/ and node_modules/
+# above, the entries below are untracked LOCAL dev artifacts — nothing here
+# affects CI or a fresh clone, since neither ever has them — but staging them
+# anyway wastes real time and disk on every `make test-isolation` run on a
+# machine that has run docs tooling or the Python clients' test suites: a
+# multi-gigabyte venv or mypy cache gets rsync'd into the build context and
+# then immediately excluded a second time (COPY . . in the Dockerfile only
+# needs go.mod's own module tree plus test/integration/), for no benefit.
+.git/
+web/node_modules/
+bin/
+.superpowers/
+.venv-docs/
+.venv/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+coverage/
+# Anchored (leading /, matching this file's own rsync --exclude-from
+# semantics — NOT a bare "dist/", which would also match web/dist/: that
+# directory is load-bearing, holding the git-tracked index.html placeholder
+# //go:embed dist (web/embed.go) requires to compile even before a web build
+# has run. These two are the actual local Python build-artifact dist dirs,
+# mirroring the repo-root .gitignore's own /clients/python/dist/ entry.
+/clients/python/dist/
+/clients/submitter/dist/

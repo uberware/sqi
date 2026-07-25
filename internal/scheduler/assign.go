@@ -40,10 +40,10 @@ import (
 // buildAssignPayload constructs a [protocol.AssignMsg] for the given task
 // assignment and marshals it to JSON.
 //
-// It receives the store-level task, worker, job, and step records.  It also
-// receives the attemptID so the worker can correlate status reports and log
-// chunks back to the correct attempt, and the storage location store used to
-// build the path map and resolve loc:// URIs.
+// It receives the store-level task, worker, job, step, and queue records.  It
+// also receives the attemptID so the worker can correlate status reports and
+// log chunks back to the correct attempt, and the storage location store used
+// to build the path map and resolve loc:// URIs.
 //
 // An error is returned if the raw OpenJD template cannot be re-parsed (which
 // should not happen in production since the template was validated at submission
@@ -55,6 +55,7 @@ func buildAssignPayload(
 	worker store.Worker,
 	job store.Job,
 	step store.Step,
+	queue store.Queue,
 	attemptID string,
 	locStore store.StorageLocationStore,
 ) ([]byte, error) {
@@ -97,6 +98,18 @@ func buildAssignPayload(
 		AssignedAt:    time.Now().UTC(),
 		Parameters:    task.Parameters,
 		JobParameters: buildJobParameters(tmpl, job),
+	}
+
+	// ── Isolation (queue run-as-user) ──────────────────────────────────────
+	// Nil RunAsUser means no isolation; msg.Isolation must stay nil in that
+	// case (never an empty struct with a blank username — see
+	// [protocol.IsolationSpec]).
+	if queue.RunAsUser != nil && *queue.RunAsUser != "" {
+		spec := &protocol.IsolationSpec{User: *queue.RunAsUser}
+		if queue.RunAsGroup != nil {
+			spec.Group = *queue.RunAsGroup
+		}
+		msg.Isolation = spec
 	}
 
 	// ── OnRun action and step-level embedded files ─────────────────────────

@@ -11,7 +11,10 @@
 # LINT_PKGS: explicit directory patterns for golangci-lint (no ./... recursion).
 # FMT_DIRS: explicit paths for gofumpt/goimports (web/embed.go is listed
 #   individually so ./web does not accidentally recurse into node_modules/).
-GO_PKGS   := $(shell go list ./... | grep -v '/node_modules/')
+#
+# GO_PKGS shells out, so it is assigned with the deferred `=` described under
+# "Deferred shell-outs" below rather than `:=`.
+GO_PKGS    = $(eval GO_PKGS := $(shell go list ./... | grep -v '/node_modules/'))$(GO_PKGS)
 LINT_PKGS := ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 FMT_DIRS  := ./cmd ./internal ./pkg ./test web/embed.go
 
@@ -22,13 +25,31 @@ WORKER_BINARY       := sqi-worker
 WORKER_CMD_DIR      := ./cmd/sqi-worker
 BUILD_DIR           := ./bin
 
+# ── Deferred shell-outs ───────────────────────────────────────────────────────
+# Every $(shell ...) below runs a POSIX one-liner, and make runs it through its
+# shell — cmd.exe on Windows, which understands none of them (no grep, no awk,
+# no /dev/null, and its internal DATE command prompts for a new system date).
+# With `:=` all of them run at parse time, on *every* make invocation, so
+# `make test-isolation-windows` — the one target meant to be run from a Windows
+# shell, and one that references none of these — printed four unrelated shell
+# errors before doing anything. `=` defers each value until a recipe actually
+# references it, which keeps the errors on the targets that genuinely need a
+# POSIX shell.
+#
+# The `$(eval X := ...)` wrapper caches the result on first reference so each
+# command still runs at most once per make run, as `:=` did. That is not just
+# an optimization: without it BUILD_DATE would be re-evaluated per reference
+# and sqi-server and sqi-worker could be stamped with different timestamps.
+#
 # Version embedding — use git tag if available, fall back to "dev"
-VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-COMMIT       := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_DATE   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-GO_VERSION   := $(shell go version | awk '{print $$3}')
+VERSION      = $(eval VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev"))$(VERSION)
+COMMIT       = $(eval COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown"))$(COMMIT)
+BUILD_DATE   = $(eval BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ))$(BUILD_DATE)
+GO_VERSION   = $(eval GO_VERSION := $(shell go version | awk '{print $$3}'))$(GO_VERSION)
 
-LDFLAGS := -s -w \
+# Deferred (`=`) so it does not force the four variables above to expand at
+# parse time, which would defeat the deferral described above.
+LDFLAGS = -s -w \
   -X $(MODULE)/internal/version.Version=$(VERSION) \
   -X $(MODULE)/internal/version.Commit=$(COMMIT) \
   -X $(MODULE)/internal/version.BuildDate=$(BUILD_DATE) \
@@ -189,6 +210,60 @@ test-ldap: ## Run the LDAP tests against a real directory in a container (needs 
 .PHONY: test-oidc
 test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestOIDC_' -v -timeout 15m ./test/integration/
+
+# Unlike test-ldap/test-oidc (which run natively on the host and connect OUT to
+# a container), test-isolation must run the go test binary ITSELF as root
+# inside the container: the whole point is exercising real setuid/setgid
+# transitions, real directory permission bits, and a real symlink-preserving
+# rsync against real unprivileged accounts, none of which a fake Provider can
+# see (internal/worker/isolation/fake.go).
+#
+# The image is built from a STAGED COPY of the repo (rsync'd into a scratch
+# directory, filtered by test/integration/isolation/.dockerignore, then passed
+# to `docker build` as the context) rather than either (a) bind-mounting the
+# repo at `docker run` time, or (b) using the repo root directly as the build
+# context. (a) broke outright on this project's own dev machines: Colima
+# (common on macOS) only virtiofs-shares $HOME by default, so a repo living
+# elsewhere (e.g. /Volumes/...) resolves to an EMPTY bind mount and `go test`
+# fails with "go.mod file not found" before a single test runs — `docker
+# build`, by contrast, has no such dependency, since the CLI reads its context
+# from wherever it runs and streams it to the daemon regardless of what the
+# daemon's host shares. (b) doesn't work either: the repo-root .dockerignore
+# (shared with deploy/docker/Dockerfile's production build) excludes test/
+# entirely, and this image needs test/integration/**; the classic
+# (non-BuildKit) builder this project's Docker install runs has no per-
+# Dockerfile ignore-file override to give this build its own rules on that
+# same context. A staged copy sidesteps both problems at once — PROVIDED the
+# repo-root .dockerignore is not itself staged into the copy: rsync -a copies
+# dotfiles, so a naive staged copy carries the repo-root .dockerignore along
+# to $ctx/.dockerignore, and Docker auto-discovers a context-root
+# .dockerignore from a directory the same way regardless of which Dockerfile
+# is building it — silently re-excluding test/ from the staged copy exactly as
+# it would from the repo root directly. The recipe below excludes every
+# .dockerignore from the rsync and then places
+# test/integration/isolation/.dockerignore at the staged root explicitly, so
+# Docker's own (real, no-trick) context-root ignore-file discovery sees only
+# this image's small, correct exclusion list.
+#
+# --init runs a real init (tini) as container PID 1: without it, the `go
+# test` process itself is PID 1, which never reaps re-parented grandchildren
+# after a process-group kill — a container-hygiene artifact of the TEST
+# HARNESS, not of isolation.Apply, but one that produces a false failure in
+# TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild without it.
+.PHONY: test-isolation
+test-isolation: ## Run run-as-user isolation tests as root against real OS accounts in a container (needs Docker)
+	@if ! docker info >/dev/null 2>&1; then \
+	  echo "docker unavailable — skipping isolation integration tests"; exit 0; fi
+	@ctx=$$(mktemp -d) && trap 'rm -rf "$$ctx"' EXIT && \
+	rsync -a --exclude-from=test/integration/isolation/.dockerignore --exclude='.dockerignore' "$(CURDIR)/" "$$ctx/" && \
+	cp test/integration/isolation/.dockerignore "$$ctx/.dockerignore" && \
+	docker build -q -t sqi-isolation-test -f test/integration/isolation/Dockerfile "$$ctx" && \
+	docker run --rm --init sqi-isolation-test \
+	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
+
+.PHONY: test-isolation-windows
+test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM against real local accounts (needs an elevated shell)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-isolation-windows.ps1
 
 .PHONY: bench
 bench: ## Run benchmarks

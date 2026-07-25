@@ -111,6 +111,7 @@ built-in roles (no custom-role builder — YAGNI):
 | users.manage | ❌ | ❌ | ❌ | ✅ |
 | apikeys.self (own keys) | ✅ | ✅ | ✅ | ✅ |
 | apikeys.admin (anyone's keys) | ❌ | ❌ | ❌ | ✅ |
+| `isolation.manage` — set a queue's `run_as_user`/`run_as_group` | ❌ | ❌ | ❌ | ✅ |
 
 `apikeys.admin` is enforced by `GET /users/{id}/api-keys` and
 `DELETE /users/{id}/api-keys/{keyId}` — see [API keys](#api-keys).
@@ -181,6 +182,160 @@ WebSocket delivery is scoped the same way as REST. Per-job subjects
 (`jobs/{id}/tasks`, `tasks/{id}/logs`) are authorized once at subscribe time;
 the global `jobs` subject is filtered per event. A client that cannot resolve a
 job's owner receives nothing for it rather than everything.
+
+## Task isolation
+
+`Job identity` (above) is an HTTP-layer concept: it records who owns a job in
+the database. Task isolation is the OS-layer counterpart: it controls which
+**OS account** a task's process actually runs as on the worker. The two are
+independent — a job's `Owner` does not have to match, and generally will not
+match, the `run_as_user` its queue configures.
+
+A queue may set `run_as_user` (and optionally `run_as_group`) via
+`POST /api/v1/queues` or `PUT /api/v1/queues/{id}`. When set, the scheduler
+attaches that **username only** — never a credential — to every task
+assignment for that queue's tasks (`AssignMsg.Isolation` /
+`protocol.IsolationSpec`, `internal/worker/protocol/protocol.go`). This is
+deliberate: worker↔server transport has no authentication at all today (see
+[Known gaps](#known-gaps)), so nothing secret can be allowed to travel on
+that channel. The worker resolves the username to a real OS credential
+locally and runs both job-code launch sites under it — an OpenJD
+environment's `onEnter`/`onExit` actions and a task's own actions — with a
+filtered environment and a session working directory private to that user.
+This runs on both POSIX (Linux/macOS) and Windows. On Windows the worker
+itself must run as a service under LocalSystem (or hold
+`SeAssignPrimaryTokenPrivilege` directly) — an elevated Administrator shell
+does not have that privilege by default. See
+[`docs/worker-configuration.md`](worker-configuration.md) for the `isolation`
+worker-config block, the per-platform requirements, and the
+environment-allowlist mechanics.
+
+**Before enabling `run_as_user` on any queue, see the worker upgrade requirement
+documented in [`docs/configuration.md`](configuration.md#important-worker-upgrade-required):**
+old workers silently ignore isolation, creating partial and silent enforcement
+across a mixed-version farm.
+
+### `isolation.manage` is a separate, admin-only permission
+
+Setting a queue's `run_as_user`/`run_as_group` — including sending an explicit
+`null` to clear a previously-set value — requires the `isolation.manage`
+permission. **`infra.manage`, which the operator role holds and which governs
+every other queue field, is deliberately not sufficient.** Choosing the OS
+identity that arbitrary, worker-supplied job code executes under is an
+escalation surface, not ordinary queue configuration, so it gets its own gate
+held only by `admin` (see the role matrix above).
+
+**Omitting `run_as_user`/`run_as_group` from a `PUT` body is not the same as
+sending them.** A `PUT` is normally full-replace, but these two fields are a
+deliberate exception: omitting the key preserves whatever is already stored
+and requires no permission at all, while a body that includes the key —
+even as `null` — is treated as an attempt to change it and requires
+`isolation.manage`. Without this exception, an operator with only
+`infra.manage` editing a queue's priority would silently strip out an admin's
+`run_as_user` on every save, since the operator's client has no reason to
+round-trip a field it cannot see the point of. (Server-side, this preserve
+semantics is implemented as a single atomic `UPDATE` rather than a
+read-modify-write, to close a lost-update race between a preserving write and
+a concurrent admin write.)
+
+### Enabling isolation raises the worker daemon's own privilege
+
+**This is the single most important fact about this feature, and it is
+counter-intuitive: turning isolation on makes the worker's own daemon process
+*more* privileged, not less.** On POSIX, dropping privileges to become another
+user (`setuid`/`setgid`/`setgroups`) is itself an operation that requires
+starting as root — `isolation.Provider.Capable()` returns an error unless the
+worker's effective uid is 0. An operator who runs `sqi-worker` unprivileged
+today and enables isolation expecting a pure reduction in the blast radius of
+job code has it backwards: the trade is that the **daemon** gains root so that
+individual **tasks** can lose it. Weigh that trade for your environment before
+enabling `isolation.required` or configuring any queue's `run_as_user` — it is
+not a strict security improvement over an unprivileged, unisolated worker; it
+is a different risk shape (one root daemon, many unprivileged task processes)
+traded for another (one unprivileged daemon, all tasks running as that same
+account).
+
+### Privileged accounts and groups are refused outright
+
+Independent of, and in addition to, the supplementary-group stripping below,
+`isolation.Provider.Resolve` refuses several requests outright rather than
+silently narrowing them:
+
+- **`run_as_user` naming a known-privileged account** — `root`,
+  `Administrator`, `SYSTEM`, and similar — by name, and any account whose
+  **uid is 0**, regardless of name.
+- **`run_as_group` naming a known-privileged group** — `root`, `wheel`,
+  `admin`, `sudo`, `sudoers`, `adm`, `docker`, `disk`, `shadow`, `staff`,
+  `administrators` — by name. This is a check against the group **you
+  explicitly asked for**, not the target account's ambient memberships (see
+  the next section) — a queue cannot select `docker` or `wheel` as the
+  isolation group even if the target account happens to belong to it.
+- **A `run_as_user` account whose *primary* group is gid 0** — refused even
+  when `run_as_group` is not set at all, since the primary group is
+  determined by the account, not by queue config, and gid 0 is refused
+  unconditionally regardless of which name a platform gives it (`root` on
+  Linux, `wheel` on macOS/BSD).
+
+This is why `wheel` never appears as a group job code can reach on macOS/BSD:
+it **is** gid 0 there, so it is refused both as an explicit `run_as_group`
+target and, via the gid-0 check just above, as anyone's primary group.
+
+### A target account's existing group memberships reach job code
+
+Isolation strips gid 0 (`root`) from a target account's supplementary group
+list unconditionally, wherever it appears. It does **not** strip any other,
+named group the account already belongs to — `docker`, `disk`, `shadow`, or
+any in-house privileged group. This is by design, not an
+oversight: those memberships are the account's own, pre-existing access, and
+supplementary groups on a render-farm account typically exist specifically to
+grant project-storage access (an NFS-exported group, for example). Silently
+stripping every named group to be "safe" would silently break exactly the
+access those groups exist to provide, on every job, with no way to tell
+whether a given group was load-bearing.
+
+The consequence is the operator's to manage, not sqi's: **do not point a
+queue's `run_as_user` at an OS account that belongs to `docker`** — group
+membership in `docker` is a well-known one-step escalation to root (a
+container can bind-mount the host root and chroot into it), so isolating into
+that account grants job code exactly the privilege isolation exists to deny.
+The same caution applies to `disk` and `shadow`. Audit the target account's
+group memberships (`id <user>`) before assigning it to a queue, the same way
+you would audit any account you grant OS-level access to.
+
+### Environment allowlist and `env_passthrough`
+
+An isolated task's environment is filtered when its session is created:
+starting from a minimal base (`PATH`, `HOME`/`USERPROFILE`, `TMPDIR`, and a
+handful of others rewritten to the target user rather than the daemon's own),
+only daemon-environment variables whose **name** matches a
+`isolation.env_passthrough` glob are added. This governs **only** what the
+isolated task inherits from the worker daemon's own environment — variables a
+job supplies itself (an OpenJD `Environment.variables` block, an
+`openjd_env` export, a task template variable) always pass through untouched,
+regardless of `env_passthrough`, because they are the job's own data, not
+daemon leakage.
+
+A render farm's licensing model almost always needs some of this escape
+hatch — worked example:
+
+```yaml
+isolation:
+  env_passthrough:
+    - "foundry_LICENSE"
+    - "ARNOLD_LICENSE"
+    - "solidangle_LICENSE"
+```
+
+**A broad glob defeats the allowlist entirely.** `env_passthrough: ["*"]` or
+even something that looks narrower, like `"*KEY*"`, re-opens exactly the
+daemon-environment leak the filter exists to close — every variable the
+daemon process happens to have (credentials, tokens, internal service
+addresses) now reaches job code again. Write globs as specific as the actual
+variable names in use; a missing license variable in a task's log is the
+expected, and correct, symptom of an allowlist that is too tight — widen it
+by name, not by wildcard. See
+[`docs/worker-configuration.md`](worker-configuration.md) for the full
+`isolation` config reference.
 
 ## Login & sessions
 
@@ -1266,8 +1421,41 @@ See [Testing against a real directory or identity
 provider](development.md#testing-against-a-real-directory-or-identity-provider) for the
 `SQI_TEST_OIDC_ISSUER` escape hatch and why a skip verifies nothing.
 
-## Not planned
+## Known gaps
 
+- **Broker authentication remains absent.** `auth.enabled` gates the HTTP REST
+  API and the WebSocket upgrade **only**. It does nothing to the worker
+  transport: any host that can reach the embedded NATS broker's port (`4222`
+  by default) can register as a worker and receive task assignments, exactly
+  as if auth were off. There is no plan to change this before Phase 4 — see
+  the comment on `bus.BrokerConfig.Addr` (`internal/bus/broker.go`). An
+  operator reading "I flipped `auth.enabled` to `true`, so the server is now
+  locked down" should read that as "the HTTP/WebSocket surface is now locked
+  down" — the worker-registration surface is unaffected either way.
+- **Task isolation is implemented and integration-tested on both platforms.**
+  See [Task isolation](#task-isolation) above for the current state: a queue's
+  `run_as_user` runs job code as a distinct OS user on Linux/macOS workers, and
+  as a distinct logon session on Windows workers via `LogonUserW`. Both suites
+  run against real OS accounts — `make test-isolation` as root in a container,
+  `make test-isolation-windows` against real local accounts with its privileged
+  tier as SYSTEM — and both pass. The POSIX NSS (LDAP/AD-backed account)
+  fallback path, however, has only ever been exercised against canned command
+  output, never a real directory server — see
+  [`docs/worker-configuration.md`](worker-configuration.md) for that caveat in
+  full.
+- **Windows staging has no TOCTOU re-check on stage-out, and isolation is what
+  makes it reachable.** On POSIX, `internal/worker/staging`'s `builtinCopy`
+  re-checks for a symlink swap or a hardlink-count change (`O_NOFOLLOW`,
+  hardlink-count) between its own `Lstat` and the elevated daemon's subsequent
+  read of the same path. Windows has no equivalent re-check yet. Because a
+  session directory is now genuinely ACL-secured to the target account, a task
+  running under that account has write access to its own session directory
+  and can in principle race a symlink/junction swap into the window between
+  `builtinCopy`'s `Lstat` and the daemon's later read during stage-out. An
+  unisolated worker has nothing to gain from winning that race — its tasks
+  already run as the daemon's own account — so isolation being enabled on
+  Windows is precisely what makes this reachable. Not yet fixed; tracked for
+  a follow-up before this is considered hardened.
 - **Per-user concurrent task caps.** A hard per-owner ceiling on running tasks was scoped for
   Phase 3 and deferred (2026-07-20) with no driver behind it. Nothing bounds a single user's
   farm consumption today: `max_concurrent_tasks` on farms and queues caps the container, not the

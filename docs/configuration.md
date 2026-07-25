@@ -119,8 +119,10 @@ sqi-server serve --http-cors-origins=https://ui.example.com
 TCP address the embedded NATS server binds to. Defaults to all interfaces so
 that workers which discover the server over mDNS can connect to NATS at the
 advertised LAN host. Set this to `"127.0.0.1:4222"` to restrict NATS to loopback
-(single-machine only). The broker is currently unauthenticated; authentication
-arrives in phase 3.
+(single-machine only). **Broker authentication does not exist**: any host
+that can reach this port can register as a worker and receive task
+assignments, regardless of `auth.enabled` — see
+[Known gaps](auth.md#known-gaps). Deferred to Phase 4 hardening.
 
 ```yaml
 nats:
@@ -1047,6 +1049,85 @@ login flow and its defenses, why accounts match on the `sub` claim, how
 `reauth_mode` and `logout_mode` differ, and the limits — revocation lag, roles
 applying at next login only, what `logout_mode: provider` actually does on
 Keycloak, and which providers CI does and does not cover.
+
+---
+
+## Queue identity: `run_as_user` / `run_as_group` (task isolation)
+
+Unlike everything else in this reference, `run_as_user` and `run_as_group`
+are not `sqi-server` config-file keys — there is no server-wide or
+farm-wide default for either. They are set per queue, via the queue REST
+resource only (`POST /api/v1/queues`, `PUT /api/v1/queues/{id}`) — there is
+no web UI field or Python SDK field for either yet — and are documented here
+because, like the retry overrides above, they are queue-level settings that
+change worker behavior.
+
+| Field | Type | Default | Effect |
+|---|---|---|---|
+| `run_as_user` | `string \| null` | `null` | OS username tasks (and OpenJD environment `onEnter`/`onExit` actions) in this queue execute as. `null` — the default — means no isolation: tasks run as the worker daemon's own account, identical to a worker with no isolation feature at all. |
+| `run_as_group` | `string \| null` | `null` | OS group for the same tasks. `null` means the target user's primary group. |
+
+Both fields are deliberately **excluded** from the Farm → server-default
+cascade that the retry-policy fields above use: a farm-wide default would
+silently apply an OS identity to a queue whose owner never configured one.
+Every queue's isolation setting is explicit or absent — never inherited.
+
+**Permission.** Setting either field — including sending an explicit `null`
+to clear a previously-set value — requires the `isolation.manage`
+permission, held only by the `admin` role; `infra.manage` (which `operator`
+holds, and which gates every other queue field) is not sufficient. **Omitting
+both keys from a `PUT` body** preserves whatever is currently stored and
+requires no permission — this is a deliberate exception to `PUT`'s normal
+full-replace semantics, so that an `operator` without `isolation.manage` can
+still edit a queue's priority or concurrency limit without silently clearing
+an `admin`'s isolation configuration on the same request. See
+[Task isolation](auth.md#task-isolation) in the auth guide for the full
+reasoning, including why enabling isolation raises the *worker daemon's*
+privilege even though it lowers an individual *task's*.
+
+**Validation.** `run_as_group` requires `run_as_user` to also be set (in the
+same request, or already stored and preserved by an omitted key) — the
+scheduler only gates isolation on `run_as_user`, so a group with no user
+would select no OS identity at all and be silently ignored. Both `POST` and
+`PUT` reject that combination with `400 Bad Request`.
+
+The scheduler places only the resolved **username** in the task assignment
+sent to the worker over NATS — never a credential — because worker↔server
+transport carries no authentication at all (see
+[Known gaps](auth.md#known-gaps)). The worker resolves that username to a
+real OS credential itself. This mechanism runs on both POSIX (Linux/macOS)
+and Windows (the worker must run as a LocalSystem service, or hold
+`SeAssignPrimaryTokenPrivilege`, to assume another account's identity); see
+[`docs/worker-configuration.md`](worker-configuration.md#isolation--run-as-user-task-execution)
+for the full worker-side `isolation` config block, the environment allowlist,
+and the per-platform requirements.
+
+### Important: Worker upgrade required
+
+**`run_as_user` is only enforced by workers that support task isolation.** A
+worker binary built before isolation support shipped will silently ignore the
+`isolation` field in its task assignments and run job code as the worker
+daemon's own OS user. The scheduler does not filter assignments by worker
+capability, so an admin who sets `run_as_user` on a queue while even one
+un-upgraded worker remains in the farm gets silent, partial enforcement —
+some tasks isolated, some not, with no indication which.
+
+This is the asymmetry worth understanding:
+
+- **A worker that *supports* isolation but is misconfigured fails closed and
+  loudly**: it refuses to start, or fails the individual task with an
+  actionable error message.
+- **An old worker fails open and silently**: it accepts the assignment,
+  executes the task unisolated, and reports success. There is no error
+  anywhere.
+
+**Guidance:** upgrade all workers to a binary that supports task isolation
+before enabling `run_as_user` on any queue. Do not mix binary versions.
+
+A proper solution would require workers to advertise isolation capability and
+the scheduler to refuse isolation-required tasks to workers lacking it — a
+protocol change deferred as a future improvement. For now, the only way to
+ensure consistent enforcement is to roll the farm forward in lockstep.
 
 ---
 

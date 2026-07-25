@@ -26,6 +26,41 @@ export type Permission =
   | 'users.manage'
   | 'apikeys.self'
   | 'apikeys.admin'
+  | 'isolation.manage'
+
+// PERMISSION_SET exists only for compile-time exhaustiveness and to give a
+// test something with a runtime representation to check: the Permission
+// union above has none. Record<Permission, true> requires an object literal
+// assigned to it to have EXACTLY one key per union member — add a member to
+// Permission without adding a matching key here (or vice versa) and this
+// file fails to typecheck, so the two cannot silently drift apart from each
+// other. policy.test.ts separately pins ALL_PERMISSIONS (derived from this)
+// against a hand-mirrored copy of internal/auth/policy/policy.go's grants, so
+// a permission added on the server without ever reaching this file also
+// fails a test, not just silently working with no client-side gate.
+const PERMISSION_SET: Record<Permission, true> = {
+  'jobs.read': true,
+  'jobs.read.all': true,
+  'jobs.write': true,
+  'jobs.submit_as': true,
+  'workers.read': true,
+  'workers.manage': true,
+  'infra.read': true,
+  'infra.manage': true,
+  'products.read': true,
+  'products.manage': true,
+  'diagnostics.read': true,
+  'users.read': true,
+  'users.manage': true,
+  'apikeys.self': true,
+  'apikeys.admin': true,
+  'isolation.manage': true,
+}
+
+/** Every permission the server can grant, sorted. See PERMISSION_SET. */
+export const ALL_PERMISSIONS: readonly Permission[] = (
+  Object.keys(PERMISSION_SET) as Permission[]
+).sort()
 
 /**
  * Reports whether principal may perform perm, per the effective permissions the

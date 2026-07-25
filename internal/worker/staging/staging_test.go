@@ -7,12 +7,35 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/staging"
 )
+
+// testUID and testGID return a uid/gid a fake account can be given that this
+// test can actually chown a scratch dir to without real privilege: normally
+// the current process's own uid/gid (a permitted no-op — see
+// isolation.ChownRecursive), but a fixed non-zero synthetic pair when the
+// current process IS root, since isolation.CheckNotPrivileged unconditionally
+// refuses a uid-0 account regardless of caller privilege (mirrors the same
+// helper in internal/worker/session's own tests).
+func testUID() uint32 {
+	if os.Getuid() == 0 {
+		return 65534
+	}
+	return uint32(os.Getuid())
+}
+
+func testGID() uint32 {
+	if os.Getuid() == 0 {
+		return 65534
+	}
+	return uint32(os.Getgid())
+}
 
 // writeFile is a test helper that creates a file with content, failing the test
 // on error.
@@ -25,9 +48,52 @@ func writeFile(t *testing.T, path, content string) {
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
+// newTraversableTestRoot returns a directory rooted directly under /tmp,
+// chmod'd 0711, for tests that need isolation's ancestor-traversability
+// check to actually PASS (not just fail on a deliberately narrow directory).
+// t.TempDir() cannot be used here: it is 0700 by construction, and on macOS
+// $TMPDIR itself is also 0700 by OS design, so anything built on it fails
+// ValidateTraversable regardless of what this test does — proving nothing
+// about the behavior under test. /tmp sidesteps both layers: only the one
+// directory MkdirTemp creates here needs widening; every ancestor above it
+// is already traversable by design on every POSIX system. Mirrors
+// internal/worker/isolation's own newTraversableTestRoot test helper (same
+// fix, same reasoning, unexported so not reusable across packages).
+func newTraversableTestRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sqi-staging-traversable-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatalf("chmod %q: %v", dir, err)
+	}
+	return dir
+}
+
 // fakeSync writes a shell script that records its args and copies src->dest with cp -R.
+//
+// Stager.runSync execs the configured command's first field directly (no
+// shell) — see staging.go's own doc — so this only works where a "#!/bin/sh"
+// shebang script is itself directly executable, which is a POSIX kernel
+// feature (binfmt_script) Windows has no equivalent of: exec.Command there
+// can run only a genuinely native executable (.exe/.bat/.cmd), so handing it
+// this .sh file fails with "%1 is not a valid Win32 application" before
+// Stager's own (platform-portable) copy logic is ever reached. Every test
+// that calls this is therefore exercising the shell-command sync_command
+// mechanism specifically, not something particular to sqi's own code — an
+// operator-configured sync_command in production would face the identical
+// constraint on a real Windows worker. Skipping here, in the one shared
+// helper, keeps that reason in one place instead of repeated at every call
+// site.
 func fakeSync(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fakeSync's fixture is a POSIX \"#!/bin/sh\" shebang script; Windows cannot " +
+			"execute it directly (no binfmt_script equivalent — exec.Command needs a native " +
+			".exe/.bat/.cmd), so this sync_command test fixture does not work there")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sync.sh")
 	body := "#!/bin/sh\ncp -R \"$1\" \"$2\"\n"
@@ -49,7 +115,7 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 
 	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -64,12 +130,77 @@ func TestStager_StageIn_CopiesAndMaps(t *testing.T) {
 	}
 }
 
+// TestStager_StageIn_IsolatedFailsOnNonTraversableScratchBase is Finding 4's
+// per-assignment guard for staging: cred != nil is exactly the moment this
+// attempt actually carries a run-as-user identity, so StageIn validates the
+// scratch base's ancestors — the IDENTICAL check (same actionable message)
+// cmd/sqi-worker runs at boot only when isolation.required is set — and
+// fails just THIS attempt rather than the whole worker.
+func TestStager_StageIn_IsolatedFailsOnNonTraversableScratchBase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("isolation.ValidateTraversable is a deliberate no-op on Windows (see its own " +
+			"doc): NTFS access control is ACL-based, not POSIX permission-bit-based, so there " +
+			"is no ancestor \"traversable bit\" for this test's narrow, 0700 ancestor to defeat — " +
+			"StageIn proceeds past the check this test exists to prove fails")
+	}
+
+	dir := t.TempDir()
+	narrow := filepath.Join(dir, "narrow")
+	if err := os.Mkdir(narrow, 0o700); err != nil {
+		t.Fatalf("create narrow ancestor: %v", err)
+	}
+	scratchBase := filepath.Join(narrow, "scratch")
+
+	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": {UID: testUID(), GID: testGID()}})
+	cred, err := provider.Resolve(context.Background(), isolation.Spec{User: "render"})
+	if err != nil {
+		t.Fatalf("resolve credential: %v", err)
+	}
+
+	s := staging.New(scratchBase, fakeSync(t), false, discard())
+	_, _, err = s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+		{Path: "/nope", Direction: "IN"},
+	}, cred)
+
+	if err == nil {
+		t.Fatal("expected an error naming the non-traversable ancestor; got nil")
+	}
+	if !strings.Contains(err.Error(), narrow) {
+		t.Errorf("err = %v, want it to name the offending ancestor %q", err, narrow)
+	}
+}
+
+// TestStager_StageIn_NonIsolatedSkipsAncestorValidation proves the
+// per-assignment check is scoped to isolated attempts only: the exact same
+// narrow ancestor that fails an isolated StageIn above must not stop a
+// nil-credential one — no other identity will ever need to chdir through it.
+func TestStager_StageIn_NonIsolatedSkipsAncestorValidation(t *testing.T) {
+	dir := t.TempDir()
+	narrow := filepath.Join(dir, "narrow")
+	if err := os.Mkdir(narrow, 0o700); err != nil {
+		t.Fatalf("create narrow ancestor: %v", err)
+	}
+	scratchBase := filepath.Join(narrow, "scratch")
+
+	srcRoot := t.TempDir()
+	srcFile := filepath.Join(srcRoot, "shot.ma")
+	writeFile(t, srcFile, "scene")
+
+	s := staging.New(scratchBase, fakeSync(t), false, discard())
+	_, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("StageIn (nil credential) under a narrow-but-self-owned ancestor: %v", err)
+	}
+}
+
 func TestStager_StageIn_FailsWhenSyncFails(t *testing.T) {
 	scratch := t.TempDir()
 	s := staging.New(scratch, "false {src} {dest}", false, discard()) // `false` exits non-zero
 	_, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: "/nope", Direction: "IN"},
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("want error from failing sync command")
 	}
@@ -115,7 +246,7 @@ func TestStager_StageIn_RulesHaveFormat(t *testing.T) {
 
 	rules, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -144,7 +275,7 @@ func TestStager_StageIn_NoBasenameCollision(t *testing.T) {
 	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
 		{Path: src1, Direction: "IN", ObjectType: "FILE"},
 		{Path: src2, Direction: "IN", ObjectType: "FILE"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -196,7 +327,7 @@ func TestStager_StageOut_ConsistentWithStageIn(t *testing.T) {
 		{Path: src2, Direction: "INOUT", ObjectType: "FILE"},
 	}
 
-	_, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	_, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -248,7 +379,7 @@ func TestStager_StageIn_MapsOutputEntries(t *testing.T) {
 		{Path: inFile, Direction: "IN", ObjectType: "FILE"},
 		{Path: outOrig, Direction: "OUT", ObjectType: "DIRECTORY"},
 	}
-	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries)
+	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries, nil)
 	if err != nil {
 		t.Fatalf("StageIn: %v", err)
 	}
@@ -282,4 +413,97 @@ func TestStager_Configured(t *testing.T) {
 	if !staging.New("/s", "rsync {src} {dest}", false, discard()).Configured() {
 		t.Error("full config should be Configured")
 	}
+}
+
+// TestStager_StageIn_AncestorModeDecidedPerWorker proves the scratch base and
+// job directory's mode is a per-WORKER decision made once at construction
+// ([staging.WithIsolationCapable]), not a per-assignment one keyed on this
+// particular call's cred — the fix for the shared-scratch-base ordering bug:
+// a worker capable of isolation must get the traversable-from-birth 0711
+// regardless of which job type happens to land FIRST on a fresh scratch base
+// (previously, a non-isolated attempt landing first pinned the base at 0750
+// forever, failing every isolated attempt after it). A worker never marked
+// capable keeps the narrower pre-isolation 0750 default even if an assignment
+// somehow carries a credential anyway — it can never actually isolate, so it
+// must not gain a needless traversable-by-anyone directory.
+func TestStager_StageIn_AncestorModeDecidedPerWorker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on Windows")
+	}
+
+	assertMode := func(t *testing.T, path string, want os.FileMode) {
+		t.Helper()
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %q: %v", path, err)
+		}
+		if got := fi.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %04o, want %04o", path, got, want)
+		}
+	}
+
+	newCred := func(t *testing.T) *isolation.Credential {
+		t.Helper()
+		provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": {UID: testUID(), GID: testGID()}})
+		cred, err := provider.Resolve(context.Background(), isolation.Spec{User: "render"})
+		if err != nil {
+			t.Fatalf("resolve credential: %v", err)
+		}
+		return cred
+	}
+
+	t.Run("capable worker: non-isolated assignment first still gets 0711", func(t *testing.T) {
+		scratch := t.TempDir()
+		base := filepath.Join(scratch, "base")
+		s := staging.New(base, fakeSync(t), false, discard(), staging.WithIsolationCapable(true))
+
+		srcFile := filepath.Join(t.TempDir(), "in.txt")
+		writeFile(t, srcFile, "x")
+
+		// A non-isolated (cred == nil) attempt lands FIRST on a fresh base —
+		// exactly the ordering the old per-assignment logic got wrong.
+		if _, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+			{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+		}, nil); err != nil {
+			t.Fatalf("StageIn (nil credential): %v", err)
+		}
+		assertMode(t, base, 0o711)
+		assertMode(t, filepath.Join(base, "job1"), 0o711)
+	})
+
+	t.Run("capable worker: isolated assignment first also gets 0711", func(t *testing.T) {
+		scratch := newTraversableTestRoot(t)
+		base := filepath.Join(scratch, "base")
+		s := staging.New(base, fakeSync(t), false, discard(), staging.WithIsolationCapable(true))
+
+		srcFile := filepath.Join(t.TempDir(), "in.txt")
+		writeFile(t, srcFile, "x")
+
+		if _, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+			{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+		}, newCred(t)); err != nil {
+			t.Fatalf("StageIn (isolated): %v", err)
+		}
+		assertMode(t, base, 0o711)
+		assertMode(t, filepath.Join(base, "job1"), 0o711)
+	})
+
+	t.Run("non-capable worker stays 0750 even for an isolated assignment", func(t *testing.T) {
+		scratch := newTraversableTestRoot(t)
+		base := filepath.Join(scratch, "base")
+		// No WithIsolationCapable: zero-value / non-capable, matching a
+		// worker that can never assume another identity.
+		s := staging.New(base, fakeSync(t), false, discard())
+
+		srcFile := filepath.Join(t.TempDir(), "in.txt")
+		writeFile(t, srcFile, "x")
+
+		if _, _, err := s.StageIn(context.Background(), "job1", "att1", []protocol.StageEntry{
+			{Path: srcFile, Direction: "IN", ObjectType: "FILE"},
+		}, newCred(t)); err != nil {
+			t.Fatalf("StageIn (isolated, non-capable worker): %v", err)
+		}
+		assertMode(t, base, 0o750)
+		assertMode(t, filepath.Join(base, "job1"), 0o750)
+	})
 }

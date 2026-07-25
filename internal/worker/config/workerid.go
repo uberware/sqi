@@ -27,9 +27,28 @@ const workerIDFilename = "worker.id"
 //
 // An error is returned if the directory cannot be created, the file cannot be
 // read or written, or the stored value is not a valid UUID.
+//
+// dataDir holds ONLY worker.id and is NEVER widened for run-as-user
+// traversal: it used to also be the shared ancestor of every session working
+// directory (<dataDir>/sessions/<sessionID>), which forced it to be chmod'd
+// traversable (0711) for isolated tasks to chdir into their own session — Go's
+// forkAndExecInChild sets the child's process credentials BEFORE chdir. That
+// coupling is exactly backwards: worker.id is the worker's persistent,
+// server-correlated identity and must stay private (0700) and byte-for-byte
+// stable, while session scratch is ephemeral and needs to be
+// world-traversable when isolation is in play. Session working directories
+// now live under a separate root (see cmd/sqi-worker's effectiveSessionRoot
+// and session.Manager), created traversable FROM BIRTH where that is needed —
+// never by mutating an existing directory's mode, which is the anti-pattern
+// this split eliminates. dataDir stays exactly 0700, created once and never
+// touched again by anything in this codebase.
 func LoadOrCreateWorkerID(dataDir string) (string, error) {
 	if dataDir == "" {
 		return "", errors.New("worker.data_dir must not be empty")
+	}
+
+	if mkErr := os.MkdirAll(dataDir, 0o700); mkErr != nil {
+		return "", fmt.Errorf("create data dir %s: %w", dataDir, mkErr)
 	}
 
 	idFile := filepath.Join(dataDir, workerIDFilename)
@@ -48,11 +67,7 @@ func LoadOrCreateWorkerID(dataDir string) (string, error) {
 		return "", fmt.Errorf("read worker id file %s: %w", idFile, err)
 	}
 
-	// ── First start: create data dir and generate a new UUID ──────────────────
-	if mkErr := os.MkdirAll(dataDir, 0o700); mkErr != nil {
-		return "", fmt.Errorf("create data dir %s: %w", dataDir, mkErr)
-	}
-
+	// ── First start: generate a new UUID (dataDir already created above) ──────
 	id := uuid.New().String()
 
 	if writeErr := os.WriteFile(idFile, []byte(id+"\n"), 0o600); writeErr != nil {

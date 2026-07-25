@@ -210,7 +210,8 @@ handleLeaseRequest(queueID, workerID)
   │     Decrement free; add to batch
   │
   └─ bus.Reply(batch []AssignMsg)
-         Each AssignMsg includes: resolved command, args, env, path map, session_id
+         Each AssignMsg includes: resolved command, args, env, path map, session_id,
+         isolation identity (username only — see docs/auth.md#task-isolation)
 ```
 
 A parked request is woken when new work becomes available for that queue (job

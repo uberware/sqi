@@ -72,8 +72,9 @@ type Config struct {
 
 	// NATSAddr is the TCP address the embedded NATS server listens on.
 	// It defaults to all interfaces so that workers discovering the server
-	// via mDNS can connect to NATS at the advertised LAN host. (No broker
-	// authentication yet; that arrives in phase 3.)
+	// via mDNS can connect to NATS at the advertised LAN host. (Broker
+	// authentication does not exist: any host that can reach this port can
+	// register as a worker and receive assignments. Deferred to Phase 4.)
 	NATSAddr string // default "0.0.0.0:4222"
 
 	// NATSDataDir is the directory used by JetStream for file-backed stream

@@ -41,7 +41,11 @@ func TestSendKILL_TerminatesProcessGroup(t *testing.T) {
 		t.Fatalf("marker read = %q, err = %v; want %q", line, err, "started")
 	}
 
-	if err := sendKILL(cmd.Process); err != nil {
+	tree, err := superviseTree(cmd)
+	if err != nil {
+		t.Fatalf("superviseTree: %v", err)
+	}
+	if err := tree.sendKILL(); err != nil {
 		t.Fatalf("sendKILL: %v", err)
 	}
 

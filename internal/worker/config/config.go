@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,41 @@ type WorkerConfig struct {
 	// Capabilities configures software capability auto-detection (built-in DCC
 	// detectors plus custom detectors and a disable list).
 	Capabilities capabilities.CapabilitiesConfig `yaml:"capabilities"`
+
+	// Isolation controls running tasks as a queue-configured OS user
+	// (protocol.AssignMsg.Isolation). Auth/isolation is opt-in: a worker with
+	// a zero-value IsolationConfig behaves exactly as before this feature
+	// existed.
+	Isolation IsolationConfig `yaml:"isolation"`
+}
+
+// IsolationConfig controls running tasks as a queue-configured OS user.
+type IsolationConfig struct {
+	// Required makes the worker exit at boot when it cannot assume another
+	// identity. Default false, preserving pre-isolation behavior: a worker
+	// with no isolation capability keeps running ordinary queues.
+	// Env: SQI_WORKER_ISOLATION_REQUIRED
+	Required bool `yaml:"required"`
+
+	// Provider selects the Windows credential mechanism. "logon_user" (the
+	// default) is the only supported value.
+	//
+	// "s4u" is refused. An S4U logon needs no password, but the token it
+	// produces carries no NETWORK credentials: any UNC path, mapped drive, or
+	// authenticated license server fails as ANONYMOUS from inside the task.
+	// On a render farm, where scene files and outputs live on a share, that
+	// disqualifies it as a general-purpose provider, and no driver exists for
+	// a worker whose jobs touch local scratch exclusively. Adding it later is
+	// additive.
+	// Env: SQI_WORKER_ISOLATION_PROVIDER
+	Provider string `yaml:"provider"`
+
+	// EnvPassthrough lists daemon environment variable NAME patterns inherited
+	// by isolated tasks, in addition to the minimal base. filepath.Match
+	// globs. Render farms depend on inherited licensing variables, so a pure
+	// allowlist with no escape hatch would break real jobs on day one.
+	// Env: SQI_WORKER_ISOLATION_ENV_PASSTHROUGH (comma-separated)
+	EnvPassthrough []string `yaml:"env_passthrough"`
 }
 
 // StagingConfig is the operator-owned configuration for the stage_locally path
@@ -166,10 +202,33 @@ type WorkerSettings struct {
 	// Env: SQI_WORKER_FARM_ID
 	FarmID string `yaml:"farm_id"`
 
-	// DataDir is the directory used to persist the worker ID file and
-	// session working directories.
+	// DataDir is the directory used to persist the worker ID file
+	// (worker.id) — the worker's stable, server-correlated identity. It is
+	// NEVER shared with session working directories (see SessionDir) and is
+	// never widened for run-as-user traversal: it stays private (0700) for
+	// as long as the worker exists.
 	// Env: SQI_WORKER_DATA_DIR
 	DataDir string `yaml:"data_dir"`
+
+	// SessionDir is the directory under which session working directories
+	// (<SessionDir>/<sessionID>/) are created. Deliberately separate from
+	// DataDir: session scratch is ephemeral and, when isolation is in use,
+	// must be traversable by whichever run-as-user identity a session
+	// resolves to, while DataDir holds the persistent worker-id and must stay
+	// private. Left empty (the default), the effective value is resolved at
+	// startup (see cmd/sqi-worker's effectiveSessionRoot):
+	//   - running as root: /var/lib/sqi-worker-sessions (a SIBLING of, never
+	//     a descendant of, this package's own data_dir default — see
+	//     cmd/sqi-worker's defaultRootSessionDir doc for why the two must
+	//     never nest; its ancestors, /var and /var/lib, are 0755 on every
+	//     real distribution, so nothing needs to be created or widened
+	//     specifically for this)
+	//   - otherwise: <DataDir>/sessions, the same location used before this
+	//     split existed — real run-as-user isolation cannot function without
+	//     root regardless of directory permissions, so there is nothing to
+	//     protect by moving it.
+	// Env: SQI_WORKER_SESSION_DIR
+	SessionDir string `yaml:"session_dir"`
 
 	// ComputeLocation is the named location (matching a storage location in
 	// sqi-server) where this worker's filesystem lives. Used for resolved-mode
@@ -321,6 +380,9 @@ func Default() WorkerConfig {
 		Staging: StagingConfig{
 			Defaults: true,
 		},
+		Isolation: IsolationConfig{
+			Provider: "logon_user",
+		},
 	}
 }
 
@@ -432,6 +494,19 @@ func applyEnv(cfg *WorkerConfig) {
 	applyDiagnosticsEnv(&cfg.Diagnostics)
 	applyStagingEnv(&cfg.Staging)
 	applyCapabilitiesEnv(&cfg.Capabilities)
+	applyIsolationEnv(&cfg.Isolation)
+}
+
+func applyIsolationEnv(c *IsolationConfig) {
+	if v := os.Getenv("SQI_WORKER_ISOLATION_REQUIRED"); v != "" {
+		c.Required = parseBoolEnv(v)
+	}
+	if v := os.Getenv("SQI_WORKER_ISOLATION_PROVIDER"); v != "" {
+		c.Provider = v
+	}
+	if v := os.Getenv("SQI_WORKER_ISOLATION_ENV_PASSTHROUGH"); v != "" {
+		c.EnvPassthrough = splitTags(v)
+	}
 }
 
 func applyCapabilitiesEnv(c *capabilities.CapabilitiesConfig) {
@@ -489,6 +564,9 @@ func applyWorkerEnv(c *WorkerSettings) {
 	}
 	if v := os.Getenv("SQI_WORKER_DATA_DIR"); v != "" {
 		c.DataDir = v
+	}
+	if v := os.Getenv("SQI_WORKER_SESSION_DIR"); v != "" {
+		c.SessionDir = v
 	}
 	if v := os.Getenv("SQI_WORKER_COMPUTE_LOCATION"); v != "" {
 		c.ComputeLocation = v
@@ -668,6 +746,46 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	for i, d := range cfg.Capabilities.Detect {
 		if err := d.Validate(); err != nil {
 			errs = append(errs, ValidationError{Field: fmt.Sprintf("capabilities.detect[%d]", i), Message: err.Error()})
+		}
+	}
+
+	errs = append(errs, validateIsolation(cfg)...)
+
+	return errs
+}
+
+// validateIsolation validates the Isolation section: the isolation.required /
+// worker.allow_root contradiction, and the env_passthrough glob syntax.
+// Extracted from Validate to keep its cyclomatic complexity within the
+// project limit.
+func validateIsolation(cfg WorkerConfig) []ValidationError {
+	var errs []ValidationError
+
+	// isolation.required demands the worker be ABLE to assume another OS
+	// identity; on POSIX the only mechanism today is setuid/setgid, which
+	// requires the worker to run as root (see isolation.unixProvider.Capable).
+	// worker.allow_root=false makes the worker refuse to even start as root
+	// (executor.CheckRootUser). Configuring both together is a contradiction
+	// an operator would only discover as a confusing root-user startup
+	// refusal that never mentions isolation at all — surface it explicitly
+	// instead. Windows is exempt: it resolves credentials through the
+	// logon_user provider, which does not need the worker process itself to
+	// run as a privileged account.
+	if cfg.Isolation.Required && !cfg.Worker.AllowRoot && runtime.GOOS != "windows" {
+		errs = append(errs, ValidationError{
+			Field: "isolation.required",
+			Message: "requires the worker to run as root (the POSIX isolation provider can only assume another identity from root), " +
+				"but worker.allow_root is false, which refuses to start the worker as root at all; " +
+				"set worker.allow_root: true or isolation.required: false",
+		})
+	}
+
+	for i, pat := range cfg.Isolation.EnvPassthrough {
+		if _, err := filepath.Match(pat, ""); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("isolation.env_passthrough[%d]", i),
+				Message: fmt.Sprintf("invalid glob %q: %v", pat, err),
+			})
 		}
 	}
 

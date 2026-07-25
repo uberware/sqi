@@ -21,7 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/store"
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/executor"
+	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
@@ -251,7 +254,7 @@ func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, 
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(tmpDir, false, logger)
+	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond, // short for fast tests
 	}
@@ -1387,6 +1390,158 @@ func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 	}
 }
 
+// ── Dispatch-time pre-execution failure tests ────────────────────────────────
+//
+// Unlike the pre-exec failures above (which happen inside the task goroutine,
+// after Dispatch has already returned nil), these cover a failure in
+// session.Manager.Create itself — synchronous, inside Dispatch, before any
+// taskRun exists. Before the fix, Dispatch just returned the error to its
+// caller (the lease loop), which logged a warning and dropped it: no status
+// was ever published, so the task sat in "assigned" until the server's
+// heartbeat/lease sweep reclaimed and retried it, eventually surfacing only
+// as a bare timeout instead of the actual reason.
+
+// newCredentialFailureSessionRoot builds a session root directory that
+// isolation.ValidateTraversable (called from session.Manager.Create, before
+// any credential is resolved, the moment an assignment carries run-as-user
+// isolation) will always accept, on any machine, without chmod'ing anything
+// this test does not itself own.
+//
+// t.TempDir() cannot be used for this: on macOS it sits several
+// testing/OS-owned layers under $TMPDIR (e.g. /var/folders/<x>/<y>/T), each
+// hardcoded 0700 by construction, and some sandboxed dev environments refuse
+// to widen those regardless of Unix ownership — chmod succeeds but the mode
+// is silently unchanged. That made the credential-resolution-failure test
+// this fixture supports skip via t.Skipf on such machines, proving nothing
+// there. Rooting instead directly under the OS-standard, universally
+// 1777 /tmp sidesteps the problem rather than working around it: this test
+// only ever needs to widen the ONE directory it creates (MkdirTemp always
+// creates 0700 regardless of what mode is requested), because every ancestor
+// above it (/tmp itself, and above that /, both effectively fixed system
+// directories) is already traversable by design on every POSIX system.
+func newCredentialFailureSessionRoot(t *testing.T) string {
+	t.Helper()
+	parent, err := os.MkdirTemp("/tmp", "sqi-credfail-*") //nolint:usetesting // t.TempDir() is exactly what this must NOT use — see doc above
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+	if err := os.Chmod(parent, 0o711); err != nil {
+		t.Fatalf("chmod %q: %v", parent, err)
+	}
+	return parent
+}
+
+// TestExecutor_Dispatch_credentialResolutionFailure verifies that a
+// run-as-user credential the isolation provider cannot resolve — isolation's
+// headline pre-execution error path — now surfaces as a terminal task
+// failure carrying the original error text.
+func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("run-as-user isolation and its POSIX ancestor-traversability rules are Unix-specific")
+	}
+
+	parent := newCredentialFailureSessionRoot(t)
+	nc := &stubNATS{}
+	m := metrics.New()
+	logger := slog.New(slog.DiscardHandler)
+	// isolation.NewFake(nil): no known accounts, so Resolve always errors —
+	// the injected Provider failure this test is built to drive.
+	mgr := session.NewManager(filepath.Join(parent, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
+	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
+
+	msg := makeAssign("stdout", nil)
+	msg.Isolation = &protocol.IsolationSpec{User: "render-svc"}
+
+	err := exec.Dispatch(context.Background(), msg)
+	if err == nil {
+		t.Fatal("Dispatch: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "render-svc") {
+		t.Errorf("Dispatch error = %q; want it to name the user", err.Error())
+	}
+
+	statuses := nc.statuses()
+	if len(statuses) != 2 || statuses[0] != "running" || statuses[1] != "failed" {
+		t.Fatalf("statuses = %v, want [running failed]", statuses)
+	}
+
+	last := nc.lastStatus()
+	if last.ExitCode == nil || *last.ExitCode != -1 {
+		t.Fatalf("ExitCode = %v, want -1", last.ExitCode)
+	}
+	if last.SessionID != "" {
+		t.Errorf("SessionID = %q, want empty (session was never created)", last.SessionID)
+	}
+	if !strings.Contains(last.Message, "render-svc") || !strings.Contains(last.Message, "resolve run-as-user") {
+		t.Errorf("Message = %q; want it to name the credential-resolution failure and the user", last.Message)
+	}
+
+	// The two statuses published above must form a legal state-machine
+	// transition pair (assigned→running, then running→failed) so the
+	// server's task-status consumer accepts them instead of discarding the
+	// write as store.ErrInvalidTransition — see internal/store/statemachine.go.
+	if err := store.ValidateTaskTransition(store.TaskStatusAssigned, store.TaskStatusRunning); err != nil {
+		t.Errorf("assigned→running must be legal: %v", err)
+	}
+	if err := store.ValidateTaskTransition(store.TaskStatusRunning, store.TaskStatusFailed); err != nil {
+		t.Errorf("running→failed must be legal: %v", err)
+	}
+}
+
+// failingNATS is a natsPublisher stub whose Publish always fails, for
+// exercising the branch where publishing the failure itself fails.
+type failingNATS struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *failingNATS) Publish(_ string, _ []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return errors.New("stub: publish always fails")
+}
+
+// TestExecutor_Dispatch_publishFailureDoesNotWedge verifies that when the
+// underlying status publish itself fails (e.g. NATS unreachable), Dispatch
+// still returns promptly with the original dispatch error instead of
+// blocking or panicking: status.Publisher retries transient failures
+// internally and then logs and gives up — status loss is preferred over
+// wedging the caller (the lease loop).
+func TestExecutor_Dispatch_publishFailureDoesNotWedge(t *testing.T) {
+	tmpDir := t.TempDir()
+	nc := &failingNATS{}
+	m := metrics.New()
+	logger := slog.New(slog.DiscardHandler)
+	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	statusPub := status.New(nc, status.Config{WorkerID: "test-worker", MaxRetries: 1, RetryDelay: time.Millisecond}, logger)
+	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
+
+	msg := makeAssign("stdout", nil)
+	msg.Isolation = &protocol.IsolationSpec{User: "render-svc"}
+
+	done := make(chan error, 1)
+	go func() { done <- exec.Dispatch(context.Background(), msg) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dispatch: want error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dispatch did not return: a publish failure appears to have wedged it")
+	}
+
+	nc.mu.Lock()
+	calls := nc.calls
+	nc.mu.Unlock()
+	if calls == 0 {
+		t.Error("want at least one publish attempt")
+	}
+}
+
 // ── CancelRegistrar error-path tests ─────────────────────────────────────────
 
 // stubCancelRegistrarError is a CancelRegistrar whose Register always returns
@@ -1470,7 +1625,7 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(t.TempDir(), false, logger)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		// Staging configured so the stager.Configured() check passes and
@@ -1538,7 +1693,7 @@ func TestExecutor_Dispatch_stageLocallyProceedsWithStagingDefaults(t *testing.T)
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(t.TempDir(), false, logger)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		StagingDefaults: true,
@@ -1572,7 +1727,7 @@ func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T)
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(t.TempDir(), false, logger)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		StagingDefaults: false,

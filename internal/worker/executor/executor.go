@@ -169,6 +169,18 @@ type Config struct {
 	// otherwise unconfigured (no StagingScratchDir/StagingSyncCommand). Passed
 	// to staging.New; when false an unconfigured stage_locally job fails hard.
 	StagingDefaults bool
+
+	// StagingIsolationCapable records, once per worker, whether this worker is
+	// capable of run-as-user isolation at all — the identical boolean
+	// cmd/sqi-worker's effectiveSessionRoot already uses to decide the
+	// session root's mode (there: isRoot(); the same value belongs here).
+	// Passed to staging.New via staging.WithIsolationCapable so the shared
+	// scratch base/job directory are created traversable-from-birth (0711)
+	// on a capable worker regardless of which job type's assignment happens
+	// to land first on a fresh scratch base, and stay at the narrower 0750 on
+	// a worker that can never isolate. See staging.WithIsolationCapable's doc
+	// for why this must be a per-worker, not per-assignment, decision.
+	StagingIsolationCapable bool
 }
 
 // ── CancelRegistrar ───────────────────────────────────────────────────────────
@@ -295,10 +307,11 @@ func New(
 		outputHandler: outputHandler,
 		logger:        logger,
 		cfg:           cfg,
-		stager:        staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, cfg.StagingDefaults, logger),
-		activeTasks:   make(map[string]*taskRun),
-		execCtx:       execCtx,
-		execCancel:    execCancel,
+		stager: staging.New(cfg.StagingScratchDir, cfg.StagingSyncCommand, cfg.StagingDefaults, logger,
+			staging.WithIsolationCapable(cfg.StagingIsolationCapable)),
+		activeTasks: make(map[string]*taskRun),
+		execCtx:     execCtx,
+		execCancel:  execCancel,
 	}
 }
 
@@ -310,11 +323,30 @@ func New(
 // process.  Dispatch itself returns quickly; the task goroutine runs
 // independently.  The server gates concurrency by CPU cores; the worker
 // runs whatever it is leased.
+//
+// If session creation itself fails — e.g. run-as-user credential resolution,
+// ancestor validation, or working-directory setup, all of which happen
+// inside sessionMgr.Create before any taskRun exists — the failure is
+// published as a terminal task-status message (running→failed, carrying the
+// error text) rather than only logged and returned. Without this, the lease
+// loop's caller only logs the error and the task is left in "assigned" until
+// the server's heartbeat/lease sweep eventually reclaims and retries it,
+// surfacing as a bare timeout instead of the actual operator-actionable
+// reason. The returned error is preserved so the lease loop's own logging is
+// unchanged.
 func (e *Executor) Dispatch(ctx context.Context, msg *protocol.AssignMsg) error {
 	// Create the session.
 	sess, err := e.sessionMgr.Create(ctx, msg)
 	if err != nil {
-		return fmt.Errorf("executor: create session: %w", err)
+		wrapped := fmt.Errorf("executor: create session: %w", err)
+		e.logger.ErrorContext(
+			ctx, "executor: dispatch failed before task execution — failing task",
+			slog.String("task_id", msg.TaskID),
+			slog.String("attempt_id", msg.AttemptID),
+			slog.Any("error", wrapped),
+		)
+		e.publishPreExecFailure(msg, "", wrapped.Error())
+		return wrapped
 	}
 
 	run := &taskRun{

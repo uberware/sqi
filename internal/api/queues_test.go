@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -267,6 +268,488 @@ func TestUpdateQueue_PersistsRetryPolicy(t *testing.T) {
 	}
 	if stored.FailureLimit == nil || *stored.FailureLimit != 40 {
 		t.Errorf("stored failure_limit = %v, want 40", stored.FailureLimit)
+	}
+}
+
+// ── run_as_user / run_as_group field-level authorization ─────────────────────
+//
+// Setting a queue's OS identity is gated separately from ordinary queue
+// management (policy.InfraManage, which operator holds): it requires
+// policy.IsolationManage (admin only). The check is field-level — a request
+// that does not touch run_as_user/run_as_group must succeed for an operator
+// exactly as it does today.
+
+// withPrincipal attaches p to req's context, as the real auth middleware
+// would for an authenticated request.
+func withPrincipal(req *http.Request, p auth.Principal) *http.Request {
+	return req.WithContext(auth.NewContext(req.Context(), p))
+}
+
+func TestCreateQueue_RunAsUserRequiresIsolationManage(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        "isolated-queue",
+		"run_as_user": "render-svc",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestCreateQueue_RunAsGroupRequiresIsolationManage(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         "isolated-queue-group",
+		"run_as_group": "render",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestCreateQueue_WithoutRunAsUserAllowedForOperator(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id": farm.ID,
+		"name":    "ordinary-queue",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (no isolation field, ordinary queue write) — body: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestCreateQueue_RunAsUserAllowedForAdmin(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         "isolated-queue-admin",
+		"run_as_user":  "render-svc",
+		"run_as_group": "render",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["run_as_user"] != "render-svc" {
+		t.Errorf("run_as_user = %v, want render-svc", got["run_as_user"])
+	}
+	if got["run_as_group"] != "render" {
+		t.Errorf("run_as_group = %v, want render", got["run_as_group"])
+	}
+
+	id, ok := got["id"].(string)
+	if !ok {
+		t.Fatalf("id not a string: %v", got["id"])
+	}
+	stored, err := st.GetQueue(t.Context(), id)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("stored run_as_user = %v, want render-svc", stored.RunAsUser)
+	}
+	if stored.RunAsGroup == nil || *stored.RunAsGroup != "render" {
+		t.Errorf("stored run_as_group = %v, want render", stored.RunAsGroup)
+	}
+}
+
+// TestCreateQueue_RunAsUserAllowedWhenAuthDisabled documents the auth-off
+// path: the anonymous superuser principal (injected when auth is disabled)
+// holds every permission, so setting run_as_user must still succeed —
+// auth-off behavior must stay byte-for-byte unchanged.
+func TestCreateQueue_RunAsUserAllowedWhenAuthDisabled(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        "isolated-queue-anon",
+		"run_as_user": "render-svc",
+	}))
+	req = withPrincipal(req, auth.Principal{Superuser: true, Kind: auth.KindAnonymous})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestUpdateQueue_RunAsUserRequiresIsolationManage(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	// An operator adding run_as_user to an EXISTING ordinary queue via PUT
+	// must be rejected — an update-only hole here would let InfraManage
+	// alone add isolation after the fact, defeating the create-side check.
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        q.Name,
+		"run_as_user": "render-svc",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 — body: %s", rr.Code, rr.Body)
+	}
+
+	// Confirm the store was not touched.
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser != nil {
+		t.Errorf("stored run_as_user = %v, want nil (write must not have happened)", *stored.RunAsUser)
+	}
+}
+
+func TestUpdateQueue_WithoutRunAsUserAllowedForOperator(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id": farm.ID,
+		"name":    q.Name,
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no isolation field, ordinary queue write) — body: %s", rr.Code, rr.Body)
+	}
+}
+
+// seedFarmAndIsolatedQueue creates a farm and a queue whose run_as_user is
+// already set to "render-svc". seedFarmAndQueue's queue never has isolation
+// set, so it cannot exercise the omit-preserves / explicit-null-clears gate
+// on update — these tests need a queue that already carries an OS identity.
+func seedFarmAndIsolatedQueue(t *testing.T, st *fake.Store) (store.Farm, store.Queue) {
+	t.Helper()
+	ctx := t.Context()
+	now := time.Now()
+
+	farm := store.Farm{ID: uuid.NewString(), Name: "farm-q-" + uuid.NewString(), CreatedAt: now, UpdatedAt: now}
+	f, err := st.CreateFarm(ctx, farm)
+	if err != nil {
+		t.Fatalf("seedFarmAndIsolatedQueue: CreateFarm: %v", err)
+	}
+
+	runAsUser := "render-svc"
+	q := store.Queue{
+		ID: uuid.NewString(), FarmID: f.ID, Name: "queue-" + uuid.NewString(),
+		Priority: 10, CreatedAt: now, UpdatedAt: now,
+		RunAsUser: &runAsUser,
+	}
+	created, err := st.CreateQueue(ctx, q)
+	if err != nil {
+		t.Fatalf("seedFarmAndIsolatedQueue: CreateQueue: %v", err)
+	}
+	return f, created
+}
+
+// TestUpdateQueue_OmittingIsolationKeysPreservesRunAsUser is the regression
+// test for the critical bug: an operator PUT that never mentions
+// run_as_user/run_as_group must not clear a previously-set identity just
+// because those keys are absent from the body.
+func TestUpdateQueue_OmittingIsolationKeysPreservesRunAsUser(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndIsolatedQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":  farm.ID,
+		"name":     q.Name,
+		"priority": 99,
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (ordinary field-only PUT on isolated queue) — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("stored run_as_user = %v, want render-svc (must be preserved, not cleared)", stored.RunAsUser)
+	}
+	if stored.Priority != 99 {
+		t.Errorf("stored priority = %d, want 99", stored.Priority)
+	}
+}
+
+// TestUpdateQueue_ExplicitNullRunAsUserRequiresIsolationManage asserts that
+// sending run_as_user explicitly as null (a deliberate clear) is gated the
+// same as setting it, and that a rejected request leaves the store untouched.
+func TestUpdateQueue_ExplicitNullRunAsUserRequiresIsolationManage(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndIsolatedQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        q.Name,
+		"run_as_user": nil,
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "op", Roles: []string{"operator"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (explicit null must be gated) — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("stored run_as_user = %v, want render-svc (rejected write must not have happened)", stored.RunAsUser)
+	}
+}
+
+// TestUpdateQueue_ExplicitNullRunAsUserAllowedForAdmin asserts that an admin
+// may deliberately clear run_as_user by sending it explicitly as null.
+func TestUpdateQueue_ExplicitNullRunAsUserAllowedForAdmin(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndIsolatedQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        q.Name,
+		"run_as_user": nil,
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (admin explicit null clears isolation) — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser != nil {
+		t.Errorf("stored run_as_user = %v, want nil (explicit null must clear)", *stored.RunAsUser)
+	}
+}
+
+// TestUpdateQueue_OmittedRunAsUserAllowedForAdminPreserved asserts that an
+// admin PUT that omits the isolation keys also preserves the stored value —
+// preservation is not operator-specific, it's key-presence-specific.
+func TestUpdateQueue_OmittedRunAsUserAllowedForAdminPreserved(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndIsolatedQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id": farm.ID,
+		"name":    q.Name,
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("stored run_as_user = %v, want render-svc (preserved for admin too)", stored.RunAsUser)
+	}
+}
+
+func TestUpdateQueue_RunAsUserAllowedForAdmin(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        q.Name,
+		"run_as_user": "render-svc",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("stored run_as_user = %v, want render-svc", stored.RunAsUser)
+	}
+}
+
+// TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected proves an admin (who
+// holds isolation.manage and would otherwise sail past
+// requireIsolationManage) still gets a 400 when run_as_group is set with no
+// run_as_user: that combination selects no OS identity at all — the
+// scheduler only gates isolation on RunAsUser (internal/scheduler/
+// assign.go) — so accepting it would silently give the operator no isolation
+// and no warning.
+func TestCreateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, _ := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPost, "/api/v1/queues", jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         "group-only-queue",
+		"run_as_group": "render",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+	if !strings.Contains(rr.Body.String(), "run_as_group requires run_as_user") {
+		t.Errorf("body %q does not mention the run_as_group/run_as_user requirement", rr.Body.String())
+	}
+}
+
+// TestUpdateQueue_RunAsGroupWithoutRunAsUser_Rejected is the update-side
+// equivalent, submitting both keys explicitly in the same PUT.
+func TestUpdateQueue_RunAsGroupWithoutRunAsUser_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndQueue(t, st)
+	r := newQueueRouter(st)
+
+	req := newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         q.Name,
+		"run_as_user":  nil,
+		"run_as_group": "render",
+	}))
+	req = withPrincipal(req, auth.Principal{Username: "root", Roles: []string{"admin"}})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+	if !strings.Contains(rr.Body.String(), "run_as_group requires run_as_user") {
+		t.Errorf("body %q does not mention the run_as_group/run_as_user requirement", rr.Body.String())
+	}
+}
+
+// TestUpdateQueue_ClearingRunAsUserWhileGroupOmitted_Rejected covers what
+// the handler's own request-only check cannot see: run_as_user is cleared
+// explicitly, run_as_group is omitted (preserved) from an already-non-empty
+// value. The resolved post-write state would be group-without-user, caught
+// by the store-layer check (store.ErrRunAsGroupWithoutUser, mapped to 400)
+// rather than the handler's early one.
+func TestUpdateQueue_ClearingRunAsUserWhileGroupOmitted_Rejected(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	farm, q := seedFarmAndIsolatedQueue(t, st) // run_as_user = "render-svc", no group yet
+	admin := auth.Principal{Username: "root", Roles: []string{"admin"}}
+	r := newQueueRouter(st)
+
+	// First, an admin sets run_as_group so the queue carries both fields.
+	setGroupReq := withPrincipal(newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":      farm.ID,
+		"name":         q.Name,
+		"run_as_group": "render",
+	})), admin)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, setGroupReq)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("setup: status = %d, want 200 — body: %s", rr.Code, rr.Body)
+	}
+
+	// Now clear run_as_user while omitting run_as_group (preserved).
+	req := withPrincipal(newReq(t, http.MethodPut, "/api/v1/queues/"+q.ID, jsonBody(t, map[string]any{
+		"farm_id":     farm.ID,
+		"name":        q.Name,
+		"run_as_user": nil,
+	})), admin)
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+
+	stored, err := st.GetQueue(t.Context(), q.ID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if stored.RunAsUser == nil || *stored.RunAsUser != "render-svc" {
+		t.Errorf("run_as_user = %v, want render-svc (rejected update must not partially apply)", stored.RunAsUser)
+	}
+	if stored.RunAsGroup == nil || *stored.RunAsGroup != "render" {
+		t.Errorf("run_as_group = %v, want render (rejected update must not partially apply)", stored.RunAsGroup)
 	}
 }
 

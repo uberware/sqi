@@ -96,19 +96,15 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return runDryRun(cfg)
 	}
 
-	// ── Root-user check ─────────────────────────────────────────────
+	// ── Root-user check + Worker ID ──────────────────────────────────────────
 	//
 	// Refuse to run as root on Linux/macOS unless allow_root is explicitly set,
 	// because executing render processes as root is a security risk (see
-	// docs/worker-configuration.md, "worker.allow_root").  No-op on Windows.
-	if err := executor.CheckRootUser(cfg.Worker.AllowRoot, logger); err != nil {
-		return err
-	}
-
-	// ── Worker ID ─────────────────────────────────────────────────────────────
-	workerID, err := workerconfig.LoadOrCreateWorkerID(cfg.Worker.DataDir)
+	// docs/worker-configuration.md, "worker.allow_root"); no-op on Windows.
+	// Then load or create this worker's stable ID.
+	workerID, err := checkRootAndLoadWorkerID(cfg, logger)
 	if err != nil {
-		return fmt.Errorf("load worker id: %w", err)
+		return err
 	}
 
 	// ── Signal context ────────────────────────────────────────────────────────
@@ -245,6 +241,25 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("worker registration: %w", err)
 	}
 
+	// ── Isolation provider + session root ────────────────────────
+	//
+	// Provider built once at boot: POSIX credential switching via
+	// setuid/setgid, or the Windows LogonUserW-based provider (see
+	// internal/worker/isolation's package doc for its current verification
+	// status). isolation.required makes the worker refuse to start at all
+	// when it cannot actually isolate, rather than silently accepting
+	// isolated queues it cannot honor.
+	//
+	// sessionRoot is deliberately separate from cfg.Worker.DataDir (which
+	// holds only the persistent worker-id file) — see effectiveSessionRoot's
+	// own doc. When this worker can actually assume another identity,
+	// resolveIsolation refuses to start rather than silently chmod'ing an
+	// ancestor that lacks the traversal bit isolated tasks need.
+	isolationProvider, sessionRoot, sessionRootMode, stagingIsolationCapable, err := resolveIsolation(cfg, logger)
+	if err != nil {
+		return err
+	}
+
 	// ── Session manager ─────────────────────────────────────────
 	//
 	// The session Manager creates isolated working directories and manages
@@ -252,7 +267,16 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	//
 	// keepFailedSessions retains working directories for failed sessions so
 	// operators can inspect partial outputs (SQI_WORKER_KEEP_FAILED_SESSIONS).
-	sessionMgr := session.NewManager(cfg.Worker.DataDir, cfg.Worker.KeepFailedSessions, logger)
+	// isolationProvider resolves run-as-user credentials for assignments that
+	// carry Isolation; cfg.Isolation.EnvPassthrough governs the additional
+	// daemon environment variables an isolated session may inherit.
+	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
+	// resolved to a location that must be traversable by another identity, or
+	// 0750 (the pre-split mode) for the non-root fallback under DataDir.
+	sessionMgr := session.NewManager(
+		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation, logger,
+		session.WithSessionRootMode(sessionRootMode),
+	)
 
 	// ── Log chunk publisher ────────────────────────────────────
 	//
@@ -296,11 +320,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		m,
 		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
 		executor.Config{
-			KillGracePeriod:    cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
-			AllowRoot:          cfg.Worker.AllowRoot,
-			StagingScratchDir:  cfg.Staging.ScratchDir,
-			StagingSyncCommand: cfg.Staging.SyncCommand,
-			StagingDefaults:    cfg.Staging.Defaults,
+			KillGracePeriod:         cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
+			AllowRoot:               cfg.Worker.AllowRoot,
+			StagingScratchDir:       cfg.Staging.ScratchDir,
+			StagingSyncCommand:      cfg.Staging.SyncCommand,
+			StagingDefaults:         cfg.Staging.Defaults,
+			StagingIsolationCapable: stagingIsolationCapable,
 		},
 		logger,
 	)
@@ -358,6 +383,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		slog.String("worker_id", workerID),
 		slog.String("worker_name", cfg.Worker.Name),
 		slog.String("data_dir", cfg.Worker.DataDir),
+		slog.String("session_root", sessionRoot),
 		slog.String("metrics_addr", cfg.Metrics.Addr),
 		slog.String("nats_url", nc.ConnectedUrl()),
 		slog.String("os", caps.OS),
@@ -415,6 +441,22 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	defer shutdownCancel()
 	obsServer.Shutdown(shutdownCtx)
 	return nil
+}
+
+// checkRootAndLoadWorkerID performs the two boot-time identity checks that
+// must happen before any network connection: refusing to run as root on
+// Linux/macOS unless allow_root is explicitly set (a no-op on Windows), then
+// loading or creating this worker's stable ID. Extracted from [runStart] to
+// keep that function's cyclomatic complexity within the project limit.
+func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger) (string, error) {
+	if err := executor.CheckRootUser(cfg.Worker.AllowRoot, logger); err != nil {
+		return "", err
+	}
+	workerID, err := workerconfig.LoadOrCreateWorkerID(cfg.Worker.DataDir)
+	if err != nil {
+		return "", fmt.Errorf("load worker id: %w", err)
+	}
+	return workerID, nil
 }
 
 // loadAndValidateConfig resolves CLI flag overrides, loads the layered
