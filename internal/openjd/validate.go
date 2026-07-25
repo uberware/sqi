@@ -402,9 +402,10 @@ const (
 	// maxAttributeValues caps each attribute's anyOf/allOf element count (1–50).
 	maxAttributeValues = 50
 	// maxUILabelLen caps userInterface label length in characters (runes).
-	maxUILabelLen = 256
+	// The spec's <UserInterfaceLabelStringValue> is 1-64 characters.
+	maxUILabelLen = 64
 	// maxUIGroupLabelLen caps userInterface groupLabel length in characters (runes).
-	maxUIGroupLabelLen = 256
+	maxUIGroupLabelLen = 64
 )
 
 // validateLimits runs every quantitative limit check. It is only invoked when

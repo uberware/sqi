@@ -185,9 +185,10 @@ func TestValidateUIGroupLabelLengthLimit(t *testing.T) {
 // TestValidateUILabelRuneCounting proves the label limit is counted in Unicode
 // runes (characters), not bytes.  "é" (U+00E9) is 2 bytes but 1 rune.
 //
-// With byte counting (the old len() approach) a 256-rune label of "é" would be
-// 512 bytes and would be wrongly rejected.  With correct rune counting it must
-// be accepted; 257 runes must be rejected.
+// With byte counting (the old len() approach) a maxUILabelLen-rune label of
+// "é" would be 2*maxUILabelLen bytes and would be wrongly rejected.  With
+// correct rune counting it must be accepted; maxUILabelLen+1 runes must be
+// rejected.
 func TestValidateUILabelRuneCounting(t *testing.T) {
 	base := func(label string) *JobTemplate {
 		return &JobTemplate{
@@ -201,15 +202,15 @@ func TestValidateUILabelRuneCounting(t *testing.T) {
 		}
 	}
 
-	// Exactly 256 multibyte runes — must be accepted.
-	label256 := strings.Repeat("é", 256) // 512 bytes, 256 runes
-	if errs := ValidateWithOptions(base(label256), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "label") {
-		t.Errorf("256-rune multibyte label was incorrectly rejected; got %v", errs)
+	// Exactly maxUILabelLen multibyte runes — must be accepted.
+	labelAtLimit := strings.Repeat("é", maxUILabelLen) // 2*maxUILabelLen bytes, maxUILabelLen runes
+	if errs := ValidateWithOptions(base(labelAtLimit), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "label") {
+		t.Errorf("%d-rune multibyte label was incorrectly rejected; got %v", maxUILabelLen, errs)
 	}
 
-	// 257 multibyte runes — must be rejected with a pointer on /label.
-	label257 := strings.Repeat("é", 257)
-	errs := ValidateWithOptions(base(label257), ValidateOptions{EnforceLimits: true})
+	// maxUILabelLen+1 multibyte runes — must be rejected with a pointer on /label.
+	labelOverLimit := strings.Repeat("é", maxUILabelLen+1)
+	errs := ValidateWithOptions(base(labelOverLimit), ValidateOptions{EnforceLimits: true})
 	found := false
 	for _, e := range errs {
 		if e.Pointer == "/parameterDefinitions/0/userInterface/label" {
@@ -218,6 +219,6 @@ func TestValidateUILabelRuneCounting(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("257-rune multibyte label was not flagged at expected pointer; got %v", errs)
+		t.Errorf("%d-rune multibyte label was not flagged at expected pointer; got %v", maxUILabelLen+1, errs)
 	}
 }

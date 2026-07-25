@@ -3,6 +3,7 @@
 package openjd_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -96,6 +97,49 @@ steps:
 			if got != tc.valid {
 				t.Fatalf("%s on %s: valid = %v, want %v (errs: %v)",
 					tc.control, tc.paramType, got, tc.valid, errs)
+			}
+		})
+	}
+}
+
+func TestValidate_LabelLengthBounds(t *testing.T) {
+	// No minimum-length case: getString (parse.go:693-697) returns "" for both
+	// an absent key and an explicitly empty one, and Label is a plain string, so
+	// `label: ""` and no label at all are the same state after parsing -- and the
+	// absent case is legal (label is @optional; the spec prescribes falling back
+	// to the parameter name). There is no representable "present but empty" to
+	// reject. Ruled 2026-07-24: enforce the maximum only.
+	for _, tc := range []struct {
+		name  string
+		label string
+		valid bool
+	}{
+		{"empty is indistinguishable from absent, so valid", "", true},
+		{"one char", "S", true},
+		{"exactly 64", strings.Repeat("a", 64), true},
+		{"65 is too long", strings.Repeat("a", 65), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := `
+specificationVersion: jobtemplate-2023-09
+name: LabelJob
+parameterDefinitions:
+  - name: P
+    type: STRING
+    userInterface: { control: LINE_EDIT, label: "` + tc.label + `" }
+steps:
+  - name: Step1
+    script:
+      actions:
+        onRun:
+          command: echo
+`
+			tmpl := mustParse(t, yaml)
+			errs := openjd.Validate(tmpl)
+			got := len(errs) == 0
+			if got != tc.valid {
+				t.Fatalf("label len %d: valid = %v, want %v (errs: %v)",
+					len(tc.label), got, tc.valid, errs)
 			}
 		})
 	}

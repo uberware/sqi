@@ -131,8 +131,8 @@ type JobParameter struct {
 // It is presentation metadata: the server parses, validates, and carries it but
 // never acts on it.
 type PathFileFilter struct {
-	// Label names the filter in the chooser dialog. Bounded like every other
-	// userInterface label (1-64 characters).
+	// Label names the filter in the chooser dialog. Unlike a parameter's
+	// userInterface label/groupLabel, this field has no enforced length cap.
 	Label string
 	// Patterns are the glob patterns the filter matches; at least one required.
 	Patterns []string
