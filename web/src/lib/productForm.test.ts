@@ -106,6 +106,29 @@ describe('selectWidget', () => {
     ).toBe('hidden')
   })
 
+  it('renders chooser controls as text inputs until a picker exists', () => {
+    for (const control of [
+      'CHOOSE_INPUT_FILE',
+      'CHOOSE_OUTPUT_FILE',
+      'CHOOSE_DIRECTORY',
+    ] as const) {
+      expect(
+        selectWidget(
+          param({
+            type: 'PATH',
+            user_interface: {
+              control,
+              label: '',
+              group_label: '',
+              decimals: null,
+              single_step_removal: null,
+            },
+          }),
+        ),
+      ).toBe('text')
+    }
+  })
+
   it('falls back by type when no userInterface', () => {
     expect(selectWidget(param({ allowed_values: ['a', 'b'] }))).toBe('select')
     expect(selectWidget(param({ type: 'INT' }))).toBe('number')

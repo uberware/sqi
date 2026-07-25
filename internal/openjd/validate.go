@@ -795,13 +795,16 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 // validControls is the set of OpenJD base-spec userInterface control values.
 // Read-only after initialization.
 var validControls = map[ControlType]struct{}{
-	ControlLineEdit:      {},
-	ControlMultilineEdit: {},
-	ControlDropdownList:  {},
-	ControlCheckBox:      {},
-	ControlChipInput:     {},
-	ControlHidden:        {},
-	ControlSpinBox:       {},
+	ControlLineEdit:         {},
+	ControlMultilineEdit:    {},
+	ControlDropdownList:     {},
+	ControlCheckBox:         {},
+	ControlChipInput:        {},
+	ControlHidden:           {},
+	ControlSpinBox:          {},
+	ControlChooseInputFile:  {},
+	ControlChooseOutputFile: {},
+	ControlChooseDirectory:  {},
 }
 
 // validateUserInterfaceControl checks control-specific constraints for a

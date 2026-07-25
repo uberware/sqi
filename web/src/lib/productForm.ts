@@ -11,6 +11,11 @@ const CONTROL_WIDGET: Record<string, Widget> = {
   CHIP_INPUT: 'chips',
   SPIN_BOX: 'number',
   HIDDEN: 'hidden',
+  // No file-picker widget exists yet; these render as text inputs, which is
+  // exactly what these fields rendered as before the controls were recognised.
+  CHOOSE_INPUT_FILE: 'text',
+  CHOOSE_OUTPUT_FILE: 'text',
+  CHOOSE_DIRECTORY: 'text',
 }
 
 /** Choose a form widget for a parameter: explicit userInterface control first,

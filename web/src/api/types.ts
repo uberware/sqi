@@ -432,6 +432,9 @@ export type ControlType =
   | 'CHIP_INPUT'
   | 'HIDDEN'
   | 'SPIN_BOX'
+  | 'CHOOSE_INPUT_FILE'
+  | 'CHOOSE_OUTPUT_FILE'
+  | 'CHOOSE_DIRECTORY'
 
 /** OpenJD base-spec userInterface hints on a job parameter. */
 export interface ParameterUserInterface {

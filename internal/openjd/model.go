@@ -138,6 +138,12 @@ const (
 	ControlHidden ControlType = "HIDDEN"
 	// ControlSpinBox is a numeric spinner; valid only on INT/FLOAT.
 	ControlSpinBox ControlType = "SPIN_BOX"
+	// ControlChooseInputFile is a browse-for-an-existing-file dialog; PATH only.
+	ControlChooseInputFile ControlType = "CHOOSE_INPUT_FILE"
+	// ControlChooseOutputFile is a browse-for-an-output-file dialog; PATH only.
+	ControlChooseOutputFile ControlType = "CHOOSE_OUTPUT_FILE"
+	// ControlChooseDirectory is a browse-for-a-directory dialog; PATH only.
+	ControlChooseDirectory ControlType = "CHOOSE_DIRECTORY"
 )
 
 // ParameterUserInterface is the OpenJD base-spec userInterface hint object on a

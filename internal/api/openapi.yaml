@@ -1429,7 +1429,7 @@ components:
           nullable: true
           type: object
           properties:
-            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, CHIP_INPUT, HIDDEN, SPIN_BOX] }
+            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, CHIP_INPUT, HIDDEN, SPIN_BOX, CHOOSE_INPUT_FILE, CHOOSE_OUTPUT_FILE, CHOOSE_DIRECTORY] }
             label: { type: string }
             group_label: { type: string }
             decimals: { type: integer, nullable: true }
