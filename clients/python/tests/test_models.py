@@ -688,3 +688,45 @@ def test_product_parameter_from_dict_without_user_interface() -> None:
     param = ProductParameter.from_dict({"name": "Frames", "type": "INT"})
     assert param.user_interface is None
     assert param.default is None
+
+
+def test_product_parameter_from_dict_with_file_filters() -> None:
+    from sqi_client.models import ProductParameter
+
+    param = ProductParameter.from_dict(
+        {
+            "name": "SceneFile",
+            "type": "PATH",
+            "file_filters": [
+                {"label": "Maya Scene", "patterns": ["*.ma", "*.mb"]},
+                {"label": "All Files", "patterns": ["*"]},
+            ],
+            "file_filter_default": {"label": "Maya Scene", "patterns": ["*.ma", "*.mb"]},
+        }
+    )
+    assert param.file_filters is not None
+    assert [f.label for f in param.file_filters] == ["Maya Scene", "All Files"]
+    assert param.file_filters[0].patterns == ["*.ma", "*.mb"]
+    assert param.file_filter_default is not None
+    assert param.file_filter_default.label == "Maya Scene"
+    assert param.file_filter_default.patterns == ["*.ma", "*.mb"]
+
+
+def test_product_parameter_from_dict_with_null_file_filters() -> None:
+    """The server marshals a nil slice/pointer as JSON null, not an absent key."""
+    from sqi_client.models import ProductParameter
+
+    param = ProductParameter.from_dict(
+        {"name": "SceneFile", "type": "PATH", "file_filters": None, "file_filter_default": None}
+    )
+    assert param.file_filters is None
+    assert param.file_filter_default is None
+
+
+def test_path_file_filter_from_dict() -> None:
+    from sqi_client.models import PathFileFilter
+
+    f = PathFileFilter.from_dict({"label": "Maya Scene", "patterns": ["*.ma", "*.mb"], "extra": 1})
+    assert f == PathFileFilter(label="Maya Scene", patterns=["*.ma", "*.mb"])
+    # Missing fields fall back to type defaults.
+    assert PathFileFilter.from_dict({}) == PathFileFilter(label="", patterns=[])

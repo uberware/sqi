@@ -74,7 +74,13 @@ def test_get_product_parameters(make_client: ClientFactory) -> None:
                     "type": "STRING",
                     "default": "final",
                     "user_interface": {"control": "DROPDOWN_LIST", "label": "Quality"},
-                }
+                },
+                {
+                    "name": "SceneFile",
+                    "type": "PATH",
+                    "file_filters": [{"label": "Blender Scene", "patterns": ["*.blend"]}],
+                    "file_filter_default": {"label": "Blender Scene", "patterns": ["*.blend"]},
+                },
             ],
         )
     )
@@ -83,6 +89,10 @@ def test_get_product_parameters(make_client: ClientFactory) -> None:
     assert params[0].name == "Quality"
     assert params[0].user_interface is not None
     assert params[0].user_interface.control == "DROPDOWN_LIST"
+    assert params[1].file_filters is not None
+    assert params[1].file_filters[0].label == "Blender Scene"
+    assert params[1].file_filter_default is not None
+    assert params[1].file_filter_default.patterns == ["*.blend"]
 
 
 @respx.mock

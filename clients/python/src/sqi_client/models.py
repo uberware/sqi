@@ -41,6 +41,7 @@ __all__ = [
     "LogPage",
     "Page",
     "ParameterUserInterface",
+    "PathFileFilter",
     "Principal",
     "Product",
     "ProductParameter",
@@ -1236,6 +1237,27 @@ class ParameterUserInterface:
 
 
 @dataclass(frozen=True)
+class PathFileFilter:
+    """One named file type offered by a PATH parameter's chooser dialog."""
+
+    label: str = ""
+    patterns: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> PathFileFilter:
+        """Build an instance from a decoded JSON response object.
+
+        Unknown fields are ignored and missing or mistyped fields fall back to
+        type-appropriate defaults; see the module docstring for the full
+        tolerant-parsing contract.
+        """
+        return cls(
+            label=_as_str(data.get("label")),
+            patterns=_str_list(data.get("patterns")),
+        )
+
+
+@dataclass(frozen=True)
 class ProductParameter:
     """A parsed job parameter from a product's template (with UI hints)."""
 
@@ -1251,6 +1273,8 @@ class ProductParameter:
     object_type: str = ""
     data_flow: str = ""
     user_interface: ParameterUserInterface | None = None
+    file_filters: list[PathFileFilter] | None = None
+    file_filter_default: PathFileFilter | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ProductParameter:
@@ -1261,6 +1285,8 @@ class ProductParameter:
         tolerant-parsing contract.
         """
         ui = data.get("user_interface")
+        raw_filters = data.get("file_filters")
+        default_filter = data.get("file_filter_default")
         return cls(
             name=_as_str(data.get("name")),
             type=_as_str(data.get("type")),
@@ -1279,6 +1305,16 @@ class ProductParameter:
             data_flow=_as_str(data.get("data_flow")),
             user_interface=(
                 ParameterUserInterface.from_dict(ui) if isinstance(ui, Mapping) else None
+            ),
+            file_filters=(
+                [PathFileFilter.from_dict(f) for f in raw_filters if isinstance(f, dict)]
+                if isinstance(raw_filters, list)
+                else None
+            ),
+            file_filter_default=(
+                PathFileFilter.from_dict(default_filter)
+                if isinstance(default_filter, Mapping)
+                else None
             ),
         )
 
