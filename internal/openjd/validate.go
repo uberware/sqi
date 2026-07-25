@@ -406,6 +406,13 @@ const (
 	maxUILabelLen = 64
 	// maxUIGroupLabelLen caps userInterface groupLabel length in characters (runes).
 	maxUIGroupLabelLen = 64
+	// maxFileFilterLabelLen caps a fileFilters/fileFilterDefault entry's label
+	// length in characters (runes). Same <UserInterfaceLabelStringValue> bound
+	// (1-64 characters) as maxUILabelLen (§2.6).
+	maxFileFilterLabelLen = maxUILabelLen
+	// maxFileFilters caps the number of entries in a PATH parameter's
+	// fileFilters list. Spec: "Maximum of 20 filters".
+	maxFileFilters = 20
 )
 
 // validateLimits runs every quantitative limit check. It is only invoked when
@@ -767,25 +774,60 @@ func validateCapabilityNameLength(name, ptr string) ValidationErrors {
 	return nil
 }
 
-// validateUILimits enforces length caps on userInterface labels. Gated: callers
+// validateUILimits enforces length caps on userInterface labels and the
+// fileFilters quantitative caps (label length, filter count). Gated: callers
 // run it only when EnforceLimits is set.
 func validateUILimits(params []JobParameter) ValidationErrors {
 	var errs ValidationErrors
 	for i, p := range params {
-		if p.UserInterface == nil {
-			continue
+		paramPtr := fmt.Sprintf("/parameterDefinitions/%d", i)
+		if p.UserInterface != nil {
+			base := paramPtr + "/userInterface"
+			if utf8.RuneCountInString(p.UserInterface.Label) > maxUILabelLen {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/label",
+					Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
+				})
+			}
+			if utf8.RuneCountInString(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/groupLabel",
+					Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
+				})
+			}
 		}
-		base := fmt.Sprintf("/parameterDefinitions/%d/userInterface", i)
-		if utf8.RuneCountInString(p.UserInterface.Label) > maxUILabelLen {
+		errs = append(errs, validateFileFilterLimits(p, paramPtr)...)
+	}
+	return errs
+}
+
+// validateFileFilterLimits checks the gated quantitative caps on a PATH
+// parameter's file filters: at most [maxFileFilters] entries, and each
+// entry's (including fileFilterDefault's) label at most
+// [maxFileFilterLabelLen] characters. Structural correctness (label
+// required, control pairing) lives in [validateFileFilters] instead and
+// always runs -- see the invariant documented on [ValidateOptions].
+func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if len(p.FileFilters) > maxFileFilters {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/fileFilters",
+			Message: fmt.Sprintf("at most %d file filters are allowed (got %d)", maxFileFilters, len(p.FileFilters)),
+		})
+	}
+	for i, f := range p.FileFilters {
+		if n := utf8.RuneCountInString(f.Label); n > maxFileFilterLabelLen {
 			errs = append(errs, ValidationError{
-				Pointer: base + "/label",
-				Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
+				Pointer: fmt.Sprintf("%s/fileFilters/%d/label", ptr, i),
+				Message: fmt.Sprintf("label must be at most %d characters (got %d)", maxFileFilterLabelLen, n),
 			})
 		}
-		if utf8.RuneCountInString(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
+	}
+	if p.FileFilterDefault != nil {
+		if n := utf8.RuneCountInString(p.FileFilterDefault.Label); n > maxFileFilterLabelLen {
 			errs = append(errs, ValidationError{
-				Pointer: base + "/groupLabel",
-				Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
+				Pointer: ptr + "/fileFilterDefault/label",
+				Message: fmt.Sprintf("label must be at most %d characters (got %d)", maxFileFilterLabelLen, n),
 			})
 		}
 	}
@@ -1123,39 +1165,76 @@ func validatePathOnlyField[T ~string](value T, ptr, field string, isPath bool, v
 	return errs
 }
 
-// validateFileFilters checks the PATH-only file chooser filters: they are valid
-// only on PATH parameters, and each filter must offer at least one pattern.
-// Structural -- always runs.
+// fileFilterControls is the set of userInterface controls that fileFilters and
+// fileFilterDefault are valid alongside, per OpenJD jobtemplate-2023-09 §2.7:
+// "Can be provided when the uiControl is CHOOSE_INPUT_FILE or
+// CHOOSE_OUTPUT_FILE".
+var fileFilterControls = map[ControlType]struct{}{
+	ControlChooseInputFile:  {},
+	ControlChooseOutputFile: {},
+}
+
+// validateFileFilters checks the PATH-only file chooser filters: they are
+// valid only on PATH parameters whose userInterface.control is
+// CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE, and each filter (including
+// fileFilterDefault) must declare a label and at least one pattern.
+// Structural -- always runs. The quantitative caps (label length, filter
+// count) live in [validateFileFilterLimits] instead, gated behind
+// EnforceLimits -- see the invariant documented on [ValidateOptions].
 func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
 		return nil
 	}
+	// Point at whichever field was actually declared, so a
+	// fileFilterDefault-only parameter doesn't get an error pointing at
+	// the sibling fileFilters field it never set.
+	field := "fileFilterDefault"
+	if len(p.FileFilters) > 0 {
+		field = "fileFilters"
+	}
 	if p.Type != JobParamTypePath {
-		// Point at whichever field was actually declared, so a
-		// fileFilterDefault-only parameter doesn't get an error pointing at
-		// the sibling fileFilters field it never set.
-		field := "fileFilterDefault"
-		if len(p.FileFilters) > 0 {
-			field = "fileFilters"
-		}
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
 			Message: "fileFilters and fileFilterDefault are valid only on PATH parameters",
 		})
 		return errs
 	}
-	for i, f := range p.FileFilters {
-		if len(f.Patterns) == 0 {
-			errs = append(errs, ValidationError{
-				Pointer: fmt.Sprintf("%s/fileFilters/%d/patterns", ptr, i),
-				Message: "at least one pattern is required",
-			})
-		}
-	}
-	if p.FileFilterDefault != nil && len(p.FileFilterDefault.Patterns) == 0 {
+	if p.UserInterface == nil {
 		errs = append(errs, ValidationError{
-			Pointer: ptr + "/fileFilterDefault/patterns",
+			Pointer: ptr + "/" + field,
+			Message: "fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE",
+		})
+	} else if _, ok := fileFilterControls[p.UserInterface.Control]; !ok {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/" + field,
+			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", p.UserInterface.Control),
+		})
+	}
+	for i, f := range p.FileFilters {
+		errs = append(errs, validatePathFileFilter(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
+	}
+	if p.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilter(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	}
+	return errs
+}
+
+// validatePathFileFilter checks the structural correctness of a single
+// [PathFileFilter]: label is required, and at least one pattern is required.
+// Extracted from [validateFileFilters] to keep its complexity in bounds and
+// reused for both fileFilters entries and fileFilterDefault.
+func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if f.Label == "" {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/label",
+			Message: "required",
+		})
+	}
+	if len(f.Patterns) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/patterns",
 			Message: "at least one pattern is required",
 		})
 	}
