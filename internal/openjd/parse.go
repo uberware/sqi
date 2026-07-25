@@ -261,9 +261,6 @@ func decodeParameterUserInterface(v any) (*ParameterUserInterface, error) {
 	} else if ok {
 		ui.Decimals = &n
 	}
-	if b, ok := m["singleStepRemoval"].(bool); ok {
-		ui.SingleStepRemoval = &b
-	}
 	return ui, nil
 }
 

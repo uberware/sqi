@@ -33,7 +33,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
           allowed_values: ['a', 'b'],
         }),
@@ -47,7 +46,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
           allowed_values: ['off', 'on'],
         }),
@@ -61,7 +59,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         }),
       ),
@@ -70,24 +67,10 @@ describe('selectWidget', () => {
       selectWidget(
         param({
           user_interface: {
-            control: 'CHIP_INPUT',
-            label: '',
-            group_label: '',
-            decimals: null,
-            single_step_removal: null,
-          },
-        }),
-      ),
-    ).toBe('chips')
-    expect(
-      selectWidget(
-        param({
-          user_interface: {
             control: 'SPIN_BOX',
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
           type: 'INT',
         }),
@@ -101,7 +84,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         }),
       ),
@@ -123,7 +105,6 @@ describe('selectWidget', () => {
               label: '',
               group_label: '',
               decimals: null,
-              single_step_removal: null,
             },
           }),
         ),
@@ -151,7 +132,6 @@ describe('helpers', () => {
             label: 'Scene file',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         }),
       ),

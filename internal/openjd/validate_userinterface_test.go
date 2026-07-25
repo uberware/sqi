@@ -82,14 +82,6 @@ func TestValidateUserInterface(t *testing.T) {
 			},
 			wantPointer: "/parameterDefinitions/0/userInterface/decimals",
 		},
-		{
-			name: "singleStepRemoval without chip input",
-			param: JobParameter{
-				Name: "Q", Type: JobParamTypeString,
-				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, SingleStepRemoval: new(true)},
-			},
-			wantPointer: "/parameterDefinitions/0/userInterface/singleStepRemoval",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

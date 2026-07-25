@@ -70,7 +70,6 @@ const h = vi.hoisted(() => {
       label: '',
       group_label: '',
       decimals: null,
-      single_step_removal: null,
     },
     file_filters: [],
     file_filter_default: null,

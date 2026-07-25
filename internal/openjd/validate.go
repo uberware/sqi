@@ -864,7 +864,7 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 // validateUserInterface checks a parameter's optional userInterface hints:
 // the control must be a known value, and control/constraint combinations must
 // be coherent (DROPDOWN_LIST/CHECK_BOX need allowedValues; SPIN_BOX is numeric;
-// decimals/singleStepRemoval pair with their controls). Structural — always runs.
+// decimals pairs with its control). Structural — always runs.
 func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 	ui := p.UserInterface
 	if ui == nil {
@@ -898,13 +898,6 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 			Message: "decimals is valid only with SPIN_BOX on a FLOAT parameter",
 		})
 	}
-	if ui.SingleStepRemoval != nil && ui.Control != ControlChipInput {
-		errs = append(errs, ValidationError{
-			Pointer: ptr + "/userInterface/singleStepRemoval",
-			Message: "singleStepRemoval is valid only with CHIP_INPUT",
-		})
-	}
-
 	return errs
 }
 

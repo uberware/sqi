@@ -150,8 +150,6 @@ const (
 	ControlDropdownList ControlType = "DROPDOWN_LIST"
 	// ControlCheckBox is a two-state checkbox; requires exactly two allowedValues.
 	ControlCheckBox ControlType = "CHECK_BOX"
-	// ControlChipInput is a multi-value chip/tag input.
-	ControlChipInput ControlType = "CHIP_INPUT"
 	// ControlHidden hides the parameter from the generated form.
 	ControlHidden ControlType = "HIDDEN"
 	// ControlSpinBox is a numeric spinner; valid only on INT/FLOAT.
@@ -176,8 +174,6 @@ type ParameterUserInterface struct {
 	GroupLabel string
 	// Decimals sets the precision for a SPIN_BOX on a FLOAT parameter.
 	Decimals *int
-	// SingleStepRemoval applies to CHIP_INPUT only.
-	SingleStepRemoval *bool
 }
 
 // ─── Environments ────────────────────────────────────────────────────────────

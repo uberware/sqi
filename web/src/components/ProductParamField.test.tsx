@@ -53,7 +53,6 @@ describe('ProductParamField', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         })}
         value=""

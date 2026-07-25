@@ -387,7 +387,7 @@ This repo's OpenJD `userInterface` control enum (see
 [`docs/openjd-extensions.md`](openjd-extensions.md) and
 [`docs/products.md`](products.md#userinterface-parameter-hints)) has **no
 file-chooser control** — the valid values are `LINE_EDIT`, `MULTILINE_EDIT`,
-`DROPDOWN_LIST`, `CHECK_BOX`, `CHIP_INPUT`, `HIDDEN`, and `SPIN_BOX`. There is
+`DROPDOWN_LIST`, `CHECK_BOX`, `HIDDEN`, and `SPIN_BOX`. There is
 no `CHOOSE_INPUT_FILE`/`CHOOSE_OUTPUT_FILE`/`CHOOSE_DIRECTORY` a template
 author can declare, and a `userInterface` block that is present must carry a
 `control` (the server rejects one without it).

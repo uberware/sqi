@@ -288,8 +288,7 @@ Response: `200 OK`, array of `ProductParameter` objects in template order:
       "control": "LINE_EDIT",
       "label": "Interpreter",
       "group_label": "",
-      "decimals": null,
-      "single_step_removal": null
+      "decimals": null
     }
   }
 ]

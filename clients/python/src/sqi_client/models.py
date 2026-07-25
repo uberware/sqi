@@ -1222,7 +1222,6 @@ class ParameterUserInterface:
     label: str = ""
     group_label: str = ""
     decimals: int | None = None
-    single_step_removal: bool | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ParameterUserInterface:
@@ -1237,7 +1236,6 @@ class ParameterUserInterface:
             label=_as_str(data.get("label")),
             group_label=_as_str(data.get("group_label")),
             decimals=_opt_int(data.get("decimals")),
-            single_step_removal=_opt_bool(data.get("single_step_removal")),
         )
 
 

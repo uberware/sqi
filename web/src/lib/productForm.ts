@@ -8,7 +8,6 @@ const CONTROL_WIDGET: Record<string, Widget> = {
   MULTILINE_EDIT: 'textarea',
   DROPDOWN_LIST: 'select',
   CHECK_BOX: 'checkbox',
-  CHIP_INPUT: 'chips',
   SPIN_BOX: 'number',
   HIDDEN: 'hidden',
   // No file-picker widget exists yet; these render as text inputs, which is

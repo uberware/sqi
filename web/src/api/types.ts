@@ -429,7 +429,6 @@ export type ControlType =
   | 'MULTILINE_EDIT'
   | 'DROPDOWN_LIST'
   | 'CHECK_BOX'
-  | 'CHIP_INPUT'
   | 'HIDDEN'
   | 'SPIN_BOX'
   | 'CHOOSE_INPUT_FILE'
@@ -442,7 +441,6 @@ export interface ParameterUserInterface {
   label: string
   group_label: string
   decimals: number | null
-  single_step_removal: boolean | null
 }
 
 /** One named file type offered by a PATH parameter's chooser dialog. */

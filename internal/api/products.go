@@ -74,11 +74,10 @@ func toProductResponse(p store.Product) productResponse {
 // parameterUserInterfaceResponse mirrors openjd.ParameterUserInterface for the
 // GET /products/{name}/parameters response.
 type parameterUserInterfaceResponse struct {
-	Control           string `json:"control"`
-	Label             string `json:"label"`
-	GroupLabel        string `json:"group_label"`
-	Decimals          *int   `json:"decimals"`
-	SingleStepRemoval *bool  `json:"single_step_removal"`
+	Control    string `json:"control"`
+	Label      string `json:"label"`
+	GroupLabel string `json:"group_label"`
+	Decimals   *int   `json:"decimals"`
 }
 
 // pathFileFilterResponse mirrors openjd.PathFileFilter on the wire.
@@ -122,11 +121,10 @@ func toProductParameterResponse(p openjd.JobParameter) productParameterResponse 
 	}
 	if p.UserInterface != nil {
 		out.UserInterface = &parameterUserInterfaceResponse{
-			Control:           string(p.UserInterface.Control),
-			Label:             p.UserInterface.Label,
-			GroupLabel:        p.UserInterface.GroupLabel,
-			Decimals:          p.UserInterface.Decimals,
-			SingleStepRemoval: p.UserInterface.SingleStepRemoval,
+			Control:    string(p.UserInterface.Control),
+			Label:      p.UserInterface.Label,
+			GroupLabel: p.UserInterface.GroupLabel,
+			Decimals:   p.UserInterface.Decimals,
 		}
 	}
 	for _, f := range p.FileFilters {
