@@ -227,10 +227,6 @@ def _as_bool(value: Any) -> bool:
     return value if isinstance(value, bool) else False
 
 
-def _opt_bool(value: Any) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
 def _str_dict(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
