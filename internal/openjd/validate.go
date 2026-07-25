@@ -221,6 +221,9 @@ type ValidateOptions struct {
 	// NOTE: the quantitative limit checks live in [validateLimits] (and the
 	// helpers it calls). Every limit check MUST be guarded by opts.EnforceLimits
 	// and belong to validateLimits — do not scatter gated checks elsewhere.
+	// Structural correctness checks belong in the always-run path instead:
+	// [validateHostRequirements] is the host-requirement half, deliberately
+	// separate from [validateHostRequirementLimits].
 	// Resource-exhaustion guards (e.g. the [maxRangeValues] cap in
 	// parseIntRangeExpr) are NOT limit checks: they always apply, regardless of
 	// this flag.
@@ -530,19 +533,15 @@ func taskParamValueCount(tp TaskParamDefinition) (count int, counted bool) {
 }
 
 // validateHostRequirementLimits checks the gated limits on a step's
-// hostRequirements: combined count, presence, capability name lengths, and
-// attribute anyOf/allOf element counts.
+// hostRequirements: combined count, capability name lengths, and attribute
+// anyOf/allOf element counts. Structural correctness (presence, capability
+// name well-formedness and prefix, and attribute anyOf/allOf presence) lives
+// in [validateHostRequirements] instead and always runs — see the invariant
+// documented on [ValidateOptions].
 func validateHostRequirementLimits(hr HostRequirements, base string) ValidationErrors {
 	var errs ValidationErrors
 
-	combined := len(hr.Amounts) + len(hr.Attributes)
-	switch {
-	case combined == 0:
-		errs = append(errs, ValidationError{
-			Pointer: base,
-			Message: "hostRequirements must declare at least one amount or attribute when present",
-		})
-	case combined > maxHostRequirements:
+	if combined := len(hr.Amounts) + len(hr.Attributes); combined > maxHostRequirements {
 		errs = append(errs, ValidationError{
 			Pointer: base,
 			Message: fmt.Sprintf("at most %d host requirements are allowed (got %d)", maxHostRequirements, combined),
@@ -551,14 +550,12 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 
 	for i, a := range hr.Amounts {
 		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
-		errs = append(errs, validateCapabilityName(a.Name, ptr)...)
-		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
+		errs = append(errs, validateCapabilityNameLength(a.Name, ptr)...)
 	}
 
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
-		errs = append(errs, validateCapabilityName(a.Name, ptr+"/name")...)
-		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
+		errs = append(errs, validateCapabilityNameLength(a.Name, ptr+"/name")...)
 
 		if len(a.AnyOf) > maxAttributeValues {
 			errs = append(errs, ValidationError{
@@ -572,6 +569,43 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 				Message: fmt.Sprintf("at most %d values are allowed (got %d)", maxAttributeValues, len(a.AllOf)),
 			})
 		}
+	}
+
+	// Reserved-name checks (also gated by EnforceLimits via the call chain).
+	errs = append(errs, validateReservedAmounts(hr.Amounts, base)...)
+	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
+
+	return errs
+}
+
+// validateHostRequirements checks the structural correctness of a step's host
+// requirements: that the block declares something, that capability names are
+// non-empty and correctly prefixed, and that each attribute constrains
+// something. These are correctness checks, not size caps, so they always run
+// -- see the invariant documented on [ValidateOptions]. The gated size caps
+// (combined count, name length, anyOf/allOf element counts) live in
+// [validateHostRequirementLimits] instead.
+func validateHostRequirements(hr HostRequirements, base string) ValidationErrors {
+	var errs ValidationErrors
+
+	if len(hr.Amounts)+len(hr.Attributes) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: base,
+			Message: "hostRequirements must declare at least one amount or attribute when present",
+		})
+	}
+
+	for i, a := range hr.Amounts {
+		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
+		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr)...)
+		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
+	}
+
+	for i, a := range hr.Attributes {
+		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
+		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr+"/name")...)
+		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
+
 		if len(a.AnyOf)+len(a.AllOf) == 0 {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
@@ -579,10 +613,6 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 			})
 		}
 	}
-
-	// Reserved-name checks (also gated by EnforceLimits via the call chain).
-	errs = append(errs, validateReservedAmounts(hr.Amounts, base)...)
-	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
 
 	return errs
 }
@@ -697,7 +727,8 @@ func sortedMapKeys(m map[string]bool) string {
 // "attr." for attributes. The match is case-insensitive, since OpenJD
 // jobtemplate-2023-09 defines capability names as case-insensitive and the
 // scheduler resolves them case-insensitively (see internal/scheduler/matcher.go).
-// An empty name is left to [validateCapabilityName]'s "name is required" check.
+// An empty name is left to [validateCapabilityNameRequired]'s "name is
+// required" check.
 func validateCapabilityPrefix(name, wantPrefix, ptr string) ValidationErrors {
 	if name == "" {
 		return nil
@@ -711,13 +742,21 @@ func validateCapabilityPrefix(name, wantPrefix, ptr string) ValidationErrors {
 	return nil
 }
 
-// validateCapabilityName checks that an amount/attribute capability name has a
-// length within the spec bounds (1–100 characters).
-func validateCapabilityName(name, ptr string) ValidationErrors {
-	switch n := utf8.RuneCountInString(name); {
-	case n == 0:
+// validateCapabilityNameRequired checks that an amount/attribute capability
+// name is present. Structural correctness: always runs, regardless of
+// EnforceLimits — see the invariant documented on [ValidateOptions].
+func validateCapabilityNameRequired(name, ptr string) ValidationErrors {
+	if utf8.RuneCountInString(name) == 0 {
 		return ValidationErrors{{Pointer: ptr, Message: "name is required"}}
-	case n > maxCapabilityNameLen:
+	}
+	return nil
+}
+
+// validateCapabilityNameLength checks that an amount/attribute capability name
+// is within the spec bound (at most 100 characters). Gated: only runs when
+// EnforceLimits is set (see [validateHostRequirementLimits]).
+func validateCapabilityNameLength(name, ptr string) ValidationErrors {
+	if n := utf8.RuneCountInString(name); n > maxCapabilityNameLen {
 		return ValidationErrors{{
 			Pointer: ptr,
 			Message: fmt.Sprintf("name must be at most %d characters (got %d)", maxCapabilityNameLen, n),
@@ -1175,6 +1214,11 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 	// parameter space
 	if s.ParameterSpace != nil {
 		errs = append(errs, validateParameterSpace(*s.ParameterSpace, base+"/parameterSpace")...)
+	}
+
+	// host requirements (structural; the size caps stay in validateLimits)
+	if s.HostRequirements != nil {
+		errs = append(errs, validateHostRequirements(*s.HostRequirements, base+"/hostRequirements")...)
 	}
 
 	return errs
