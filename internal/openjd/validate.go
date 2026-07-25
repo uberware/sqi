@@ -1079,14 +1079,19 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 		} else {
 			seen[e.Name] = struct{}{}
 		}
+		if e.Script == nil && len(e.Variables) == 0 {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: "at least one of script or variables must be provided",
+			})
+		}
 		if e.Script != nil {
-			if e.Script.Actions.OnEnter == nil && e.Script.Actions.OnExit == nil {
+			if e.Script.Actions.OnEnter == nil {
 				errs = append(errs, ValidationError{
-					Pointer: ptr + "/script/actions",
-					Message: "at least one of onEnter or onExit must be defined",
+					Pointer: ptr + "/script/actions/onEnter",
+					Message: "required",
 				})
-			}
-			if e.Script.Actions.OnEnter != nil {
+			} else {
 				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter")...)
 			}
 			if e.Script.Actions.OnExit != nil {
@@ -1155,8 +1160,11 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		}
 	}
 
-	// step script embedded files
-	if s.Script != nil {
+	// step script -- required by spec; without it the step has no action and
+	// scheduler/assign.go silently omits it, so the step runs nothing.
+	if s.Script == nil {
+		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
+	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, base+"/script/embeddedFiles")...)
 		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun")...)
 	}

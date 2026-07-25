@@ -28,6 +28,11 @@ func chunkTemplate(extensions []string) *openjd.JobTemplate {
 		Steps: []openjd.StepTemplate{
 			{
 				Name: "Render",
+				Script: &openjd.StepScript{
+					Actions: openjd.StepActions{
+						OnRun: openjd.Action{Command: "echo"},
+					},
+				},
 				ParameterSpace: &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{

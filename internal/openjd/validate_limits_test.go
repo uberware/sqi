@@ -99,7 +99,10 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		{
 			name: "job env name 64 ok",
 			mutate: func(t *openjd.JobTemplate) {
-				t.JobEnvironments = []openjd.Environment{{Name: strings.Repeat("e", 64)}}
+				t.JobEnvironments = []openjd.Environment{{
+					Name:      strings.Repeat("e", 64),
+					Variables: map[string]string{"K": "V"},
+				}}
 			},
 		},
 		{
@@ -114,7 +117,10 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		{
 			name: "step env name 64 ok",
 			mutate: func(t *openjd.JobTemplate) {
-				t.Steps[0].StepEnvironments = []openjd.Environment{{Name: strings.Repeat("e", 64)}}
+				t.Steps[0].StepEnvironments = []openjd.Environment{{
+					Name:      strings.Repeat("e", 64),
+					Variables: map[string]string{"K": "V"},
+				}}
 			},
 		},
 		{
