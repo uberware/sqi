@@ -2,7 +2,11 @@
 
 package openjd_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/uberware/sqi/internal/openjd"
+)
 
 func TestValidate_OnRunCommandRequired(t *testing.T) {
 	yaml := `
@@ -88,4 +92,68 @@ steps:
 `
 	tmpl := mustParse(t, yaml)
 	assertValidationContains(t, tmpl, "at least one of script or variables")
+}
+
+func TestValidate_RangeConstraintRequired(t *testing.T) {
+	yaml := `
+specificationVersion: jobtemplate-2023-09
+name: ChunkNoConstraintJob
+extensions: [TASK_CHUNKING]
+steps:
+  - name: Step1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "1-10"
+          chunks:
+            defaultTaskCount: 2
+    script:
+      actions:
+        onRun:
+          command: echo
+`
+	tmpl := mustParse(t, yaml)
+	assertValidationContains(t, tmpl, "chunks/rangeConstraint")
+}
+
+func TestValidate_RangeConstraintValue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{"contiguous", "CONTIGUOUS", true},
+		{"noncontiguous", "NONCONTIGUOUS", true},
+		{"garbage", "FOO", false},
+		{"lowercase", "contiguous", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := `
+specificationVersion: jobtemplate-2023-09
+name: ChunkConstraintJob
+extensions: [TASK_CHUNKING]
+steps:
+  - name: Step1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "1-10"
+          chunks:
+            defaultTaskCount: 2
+            rangeConstraint: ` + tc.value + `
+    script:
+      actions:
+        onRun:
+          command: echo
+`
+			tmpl := mustParse(t, yaml)
+			errs := openjd.Validate(tmpl)
+			got := len(errs) == 0
+			if got != tc.valid {
+				t.Fatalf("valid = %v, want %v (errs: %v)", got, tc.valid, errs)
+			}
+		})
+	}
 }

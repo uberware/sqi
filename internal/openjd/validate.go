@@ -1292,12 +1292,40 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string) Valida
 				Pointer: base + "/chunks",
 				Message: "required for CHUNK[INT] parameters",
 			})
-		} else if tp.Chunks.DefaultTaskCount <= 0 {
-			errs = append(errs, ValidationError{
-				Pointer: base + "/chunks/defaultTaskCount",
-				Message: "must be a positive integer",
-			})
+		} else {
+			errs = append(errs, validateChunks(*tp.Chunks, base)...)
 		}
+	}
+
+	return errs
+}
+
+// validateChunks validates a CHUNK[INT] parameter's chunks definition. It is
+// extracted from [validateTaskParamRangeAndChunks] to keep that function's
+// cyclomatic complexity within bounds.
+func validateChunks(c TaskChunks, base string) ValidationErrors {
+	var errs ValidationErrors
+
+	if c.DefaultTaskCount <= 0 {
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/defaultTaskCount",
+			Message: "must be a positive integer",
+		})
+	}
+
+	switch c.RangeConstraint {
+	case "":
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/rangeConstraint",
+			Message: "required; must be CONTIGUOUS or NONCONTIGUOUS",
+		})
+	case "CONTIGUOUS", "NONCONTIGUOUS":
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/rangeConstraint",
+			Message: fmt.Sprintf("invalid value %q; must be CONTIGUOUS or NONCONTIGUOUS", c.RangeConstraint),
+		})
 	}
 
 	return errs

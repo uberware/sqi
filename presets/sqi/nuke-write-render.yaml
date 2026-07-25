@@ -36,6 +36,7 @@ template:
             range: "{{Param.Frames}}"
             chunks:
               defaultTaskCount: 10
+              rangeConstraint: CONTIGUOUS
       script:
         actions:
           onRun:

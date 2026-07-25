@@ -24,7 +24,7 @@ func chunkStep(t *testing.T, comb string) *openjd.JobTemplate {
 				Name:      "Chunked",
 				Type:      openjd.TaskParamTypeChunkInt,
 				RangeExpr: new("1-10"),
-				Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2},
+				Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"},
 			},
 			{Name: "Other", Type: openjd.TaskParamTypeString, RangeList: []string{"x", "y", "z", "w", "v"}},
 		},
@@ -51,7 +51,7 @@ func TestValidate_ChunkAssociatedNested_Error(t *testing.T) {
 	c := "(Chunked * Other, Extra)"
 	tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 		TaskParameterDefinitions: []openjd.TaskParamDefinition{
-			{Name: "Chunked", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1-10"), Chunks: &openjd.TaskChunks{DefaultTaskCount: 2}},
+			{Name: "Chunked", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1-10"), Chunks: &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"}},
 			{Name: "Other", Type: openjd.TaskParamTypeString, RangeList: []string{"x"}},
 			{Name: "Extra", Type: openjd.TaskParamTypeString, RangeList: []string{"e"}},
 		},
@@ -79,8 +79,8 @@ func TestValidate_MultipleChunkParams_Error(t *testing.T) {
 	c := "ChunkA * ChunkB"
 	tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 		TaskParameterDefinitions: []openjd.TaskParamDefinition{
-			{Name: "ChunkA", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1-10"), Chunks: &openjd.TaskChunks{DefaultTaskCount: 2}},
-			{Name: "ChunkB", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1-10"), Chunks: &openjd.TaskChunks{DefaultTaskCount: 2}},
+			{Name: "ChunkA", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1-10"), Chunks: &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"}},
+			{Name: "ChunkB", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1-10"), Chunks: &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"}},
 		},
 		Combination: &c,
 	}

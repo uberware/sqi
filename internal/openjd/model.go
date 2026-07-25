@@ -311,9 +311,12 @@ type TaskParamDefinition struct {
 type TaskChunks struct {
 	// DefaultTaskCount is the number of INT values to group per task.
 	DefaultTaskCount int
-	// TargetRuntimeSeconds, when > 0, enables adaptive chunking.
+	// TargetRuntimeSeconds is parsed and carried but not acted on. The spec
+	// permits this explicitly: "A scheduler can ignore this, or dynamically
+	// adjust the chunk task count to be closer to this value."
 	TargetRuntimeSeconds *int
-	// RangeConstraint is "CONTIGUOUS" (default) or "NONCONTIGUOUS".
+	// RangeConstraint is "CONTIGUOUS" or "NONCONTIGUOUS"; required, validated
+	// in [validateChunks].
 	RangeConstraint string
 }
 

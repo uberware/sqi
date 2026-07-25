@@ -588,9 +588,11 @@ func decodeTaskChunks(v any) (*TaskChunks, error) {
 	if err != nil {
 		return nil, err
 	}
-	chunks := TaskChunks{
-		RangeConstraint: "CONTIGUOUS", // spec default
-	}
+	// rangeConstraint is NOT defaulted here: the spec marks it required (no
+	// @optional annotation, unlike targetRuntimeSeconds on the line above it in
+	// the schema). Defaulting it would make a missing value invisible to
+	// validation.
+	var chunks TaskChunks
 	if n, ok, err := intFieldStrict(m, "defaultTaskCount", "chunks.defaultTaskCount"); err != nil {
 		return nil, err
 	} else if ok {
