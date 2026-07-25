@@ -57,7 +57,7 @@ signature — the trust boundary is the configured index URL itself.
 
 ## Configuration
 
-See [`docs/configuration.md`](configuration.md#preset_library-remote-preset-catalog)
+See [`docs/configuration.md`](configuration.md#preset_library--remote-preset-catalog)
 for the full reference. The short version:
 
 | Key | Default | Env var |

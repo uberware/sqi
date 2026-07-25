@@ -4,10 +4,12 @@ package openjd_test
 
 // Tests for reserved capability-name and attribute-value checks.
 //
-// All checks are gated behind EnforceLimits (part of the limits bucket).
-// Each table case is exercised twice:
-//   - EnforceLimits=true  → if wantPtr != "", the error must appear at that pointer.
-//   - EnforceLimits=false → the reserved-name error must NOT appear, proving the gate.
+// These are value-domain correctness checks, not size/count caps, so they
+// run unconditionally from validateHostRequirements regardless of
+// EnforceLimits — see the invariant documented on ValidateOptions. Each
+// table case is exercised under both EnforceLimits=true and
+// EnforceLimits=false and must produce the identical result either way: if
+// wantPtr != "", the error must appear at that pointer in both modes.
 
 import (
 	"testing"
@@ -15,7 +17,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-func TestValidate_ReservedNames_Gated(t *testing.T) {
+func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 	cases := []struct {
 		name    string
 		mutate  func(*openjd.JobTemplate)
@@ -312,29 +314,22 @@ func TestValidate_ReservedNames_Gated(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// ── EnforceLimits=true: reserved-name errors must fire ────────────
-			tmplOn := mustParse(t, minimalValidYAML())
-			tc.mutate(tmplOn)
-			errsOn := openjd.ValidateWithOptions(tmplOn, openjd.ValidateOptions{EnforceLimits: true})
+			// Reserved-value checks are structural correctness, not a gated
+			// limit, so both EnforceLimits settings must behave identically.
+			for _, enforce := range []bool{true, false} {
+				tmpl := mustParse(t, minimalValidYAML())
+				tc.mutate(tmpl)
+				errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: enforce})
 
-			if tc.wantPtr == "" {
-				if len(errsOn) != 0 {
-					t.Fatalf("EnforceLimits=true: expected no errors, got %v", errsOn)
+				if tc.wantPtr == "" {
+					if len(errs) != 0 {
+						t.Fatalf("EnforceLimits=%v: expected no errors, got %v", enforce, errs)
+					}
+					continue
 				}
-			} else if !containsPointer(errsOn, tc.wantPtr) {
-				t.Fatalf("EnforceLimits=true: expected pointer %q, got %v", tc.wantPtr, errsOn)
-			}
-
-			// ── EnforceLimits=false: reserved-name check must be gated off ───
-			tmplOff := mustParse(t, minimalValidYAML())
-			tc.mutate(tmplOff)
-			errsOff := openjd.ValidateWithOptions(tmplOff, openjd.ValidateOptions{EnforceLimits: false})
-
-			if tc.wantPtr != "" && containsPointer(errsOff, tc.wantPtr) {
-				t.Fatalf("EnforceLimits=false: reserved-name pointer %q should be gated off, got %v", tc.wantPtr, errsOff)
-			}
-			if tc.wantPtr == "" && len(errsOff) != 0 {
-				t.Fatalf("EnforceLimits=false: expected no errors, got %v", errsOff)
+				if !containsPointer(errs, tc.wantPtr) {
+					t.Fatalf("EnforceLimits=%v: expected pointer %q, got %v", enforce, tc.wantPtr, errs)
+				}
 			}
 		})
 	}

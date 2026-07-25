@@ -63,6 +63,7 @@ nav:
       - Compute Locations: compute-locations.md
   - Operations:
       - Overview: operations.md
+      - Authentication: auth.md
       - Observability: observability.md
       - Release Runbook: release-runbook.md
   - Reference:
@@ -70,6 +71,7 @@ nav:
           - Overview: api.md
       - OpenJD:
           - Submission Guide: openjd-submission.md
+          - Spec Conformance: openjd-conformance.md
           - Extensions Overview: openjd-extensions.md
           - Extension Details:
               - Task Chunking: openjd-extensions/task-chunking.md
@@ -88,3 +90,10 @@ markdown_extensions:
   - pymdownx.superfences
   - toc:
       permalink: true
+      # GitHub-compatible heading slugs. The docs are read both on the MkDocs
+      # site and directly on GitHub, and every intra-doc anchor in the tree was
+      # written GitHub-style — a heading like "Roles & permissions" anchors as
+      # "roles--permissions" (the removed "&" leaves a double dash), where
+      # Python-Markdown's default slugify would produce "roles-permissions".
+      # Without this, those links resolve on GitHub and 404 on the built site.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}

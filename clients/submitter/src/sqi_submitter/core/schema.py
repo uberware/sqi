@@ -29,10 +29,12 @@ class FormField:
         ui = self.parameter.user_interface
         control = ui.control if (ui is not None and ui.control) else ""
         t = self.parameter.type
-        # PATH is type-first: OpenJD has no picker control, so LINE_EDIT (the
-        # only legal control that can carry a label on a path) must not suppress
-        # the derived picker. An explicit non-LINE_EDIT control (e.g. HIDDEN)
-        # still wins. See docs/dcc-submitters.md.
+        # PATH is type-first: a PATH parameter with no control (or a stale
+        # LINE_EDIT — no longer a legal control on PATH server-side, but
+        # tolerated here defensively) derives the picker instead of falling
+        # back to a plain text field. An explicit CHOOSE_* control falls
+        # through to the `if control` branch below and yields the same
+        # result; an explicit HIDDEN still wins. See docs/dcc-submitters.md.
         if t == "PATH" and control in ("", "LINE_EDIT"):
             if self.parameter.object_type == "DIRECTORY":
                 return "CHOOSE_DIRECTORY"

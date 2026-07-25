@@ -46,7 +46,7 @@ template:
       objectType: DIRECTORY
       dataFlow: OUT
       default: ""
-      userInterface: { control: LINE_EDIT, label: Output Directory, groupLabel: Output }
+      userInterface: { control: CHOOSE_DIRECTORY, label: Output Directory, groupLabel: Output }
   steps:
     - name: render
       hostRequirements:

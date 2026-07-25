@@ -12,9 +12,12 @@ import (
 // with "amount.", attributes with "attr.". A mis-namespaced name — e.g. an
 // `amount.worker.vcpu` requirement mistakenly written as the attribute
 // `worker.vcpu` — resolves to an empty worker value and so can never be
-// satisfied, leaving the job's tasks permanently ready. This check is gated
-// behind EnforceLimits alongside the other capability-name rules.
-func TestValidate_CapabilityNamePrefix_Gated(t *testing.T) {
+// satisfied, leaving the job's tasks permanently ready. This is structural
+// correctness, not a size cap, so it always runs — even with EnforceLimits
+// false (see the invariant documented on [openjd.ValidateOptions] and
+// [openjd.ValidateWithOptions]'s split between validateHostRequirements and
+// validateHostRequirementLimits).
+func TestValidate_CapabilityNamePrefix_Structural(t *testing.T) {
 	cases := []struct {
 		name    string
 		mutate  func(*openjd.JobTemplate)
@@ -90,13 +93,18 @@ func TestValidate_CapabilityNamePrefix_Gated(t *testing.T) {
 				t.Fatalf("EnforceLimits=true: expected pointer %q, got %v", tc.wantPtr, errsOn)
 			}
 
-			// ── EnforceLimits=false: the prefix check must be gated off ───────
+			// ── EnforceLimits=false: the prefix check is structural and must
+			// still fire ───────────────────────────────────────────────────
 			tmplOff := mustParse(t, minimalValidYAML())
 			tc.mutate(tmplOff)
 			errsOff := openjd.ValidateWithOptions(tmplOff, openjd.ValidateOptions{EnforceLimits: false})
 
-			if tc.wantPtr != "" && containsPointer(errsOff, tc.wantPtr) {
-				t.Fatalf("EnforceLimits=false: pointer %q should be gated off, got %v", tc.wantPtr, errsOff)
+			if tc.wantPtr == "" {
+				if len(errsOff) != 0 {
+					t.Fatalf("EnforceLimits=false: expected no errors, got %v", errsOff)
+				}
+			} else if !containsPointer(errsOff, tc.wantPtr) {
+				t.Fatalf("EnforceLimits=false: expected pointer %q, got %v", tc.wantPtr, errsOff)
 			}
 		})
 	}

@@ -238,7 +238,7 @@ capabilities as part of its larger config-and-capabilities summary.
 
 Custom detectors are configured under `capabilities.detect` in the worker
 config file (see
-[`docs/worker-configuration.md`](worker-configuration.md#capabilities-software-auto-detection)
+[`docs/worker-configuration.md`](worker-configuration.md#capabilities--software-auto-detection)
 and
 [`config/sqi-worker.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-worker.example.yaml)).
 They use the exact same schema as the built-ins

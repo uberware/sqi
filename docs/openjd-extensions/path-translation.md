@@ -58,7 +58,7 @@ worker falls back to a TEMP scratch directory
 (`<os.TempDir()>/sqi-staging`) and sqi's own built-in copy in place of a shell
 `sync_command`, logging a one-time WARN the first time it does so
 (`staging.defaults`, on by default — see
-[Worker configuration → `staging`](../worker-configuration.md#staging-local-path-staging-stage_locally-delivery)).
+[Worker configuration → `staging`](../worker-configuration.md#staging--local-path-staging-stage_locally-delivery)).
 Set `staging.defaults: false` to restore the previous fail-hard behavior for
 an unconfigured worker.
 

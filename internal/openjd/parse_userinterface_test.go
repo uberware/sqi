@@ -60,11 +60,6 @@ parameterDefinitions:
     userInterface:
       control: SPIN_BOX
       decimals: 3
-  - name: Tags
-    type: STRING
-    userInterface:
-      control: CHIP_INPUT
-      singleStepRemoval: true
 steps:
   - name: A
     script:
@@ -79,9 +74,5 @@ steps:
 	scale := tmpl.ParameterDefinitions[0].UserInterface
 	if scale == nil || scale.Decimals == nil || *scale.Decimals != 3 {
 		t.Fatalf("Scale.Decimals = %v, want 3", scale)
-	}
-	tags := tmpl.ParameterDefinitions[1].UserInterface
-	if tags == nil || tags.SingleStepRemoval == nil || !*tags.SingleStepRemoval {
-		t.Fatalf("Tags.SingleStepRemoval = %v, want true", tags)
 	}
 }

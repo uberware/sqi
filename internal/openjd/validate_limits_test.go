@@ -61,6 +61,12 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		name    string
 		mutate  func(*openjd.JobTemplate)
 		wantPtr string // "" means the mutation is valid (no error even when enforcing)
+		// structural marks a case whose check was split out of validateLimits
+		// (host-requirement structural correctness, always runs regardless of
+		// EnforceLimits — see the invariant documented on
+		// openjd.ValidateOptions). For these, wantPtr must fire even with
+		// EnforceLimits=false instead of being gated off.
+		structural bool
 	}{
 		// ── job parameterDefinitions: upper bound 50 ──
 		{
@@ -99,7 +105,10 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		{
 			name: "job env name 64 ok",
 			mutate: func(t *openjd.JobTemplate) {
-				t.JobEnvironments = []openjd.Environment{{Name: strings.Repeat("e", 64)}}
+				t.JobEnvironments = []openjd.Environment{{
+					Name:      strings.Repeat("e", 64),
+					Variables: map[string]string{"K": "V"},
+				}}
 			},
 		},
 		{
@@ -114,7 +123,10 @@ func TestValidate_Limits_Gated(t *testing.T) {
 		{
 			name: "step env name 64 ok",
 			mutate: func(t *openjd.JobTemplate) {
-				t.Steps[0].StepEnvironments = []openjd.Environment{{Name: strings.Repeat("e", 64)}}
+				t.Steps[0].StepEnvironments = []openjd.Environment{{
+					Name:      strings.Repeat("e", 64),
+					Variables: map[string]string{"K": "V"},
+				}}
 			},
 		},
 		{
@@ -233,7 +245,8 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{}
 			},
-			wantPtr: "/steps/0/hostRequirements",
+			wantPtr:    "/steps/0/hostRequirements",
+			structural: true,
 		},
 
 		// ── capability name length: 1–100 ──
@@ -261,7 +274,8 @@ func TestValidate_Limits_Gated(t *testing.T) {
 					Amounts: []openjd.AmountRequirement{{Name: "", Min: new("1")}},
 				}
 			},
-			wantPtr: "/steps/0/hostRequirements/amounts/0/name",
+			wantPtr:    "/steps/0/hostRequirements/amounts/0/name",
+			structural: true,
 		},
 		{
 			name: "attribute name 101 error",
@@ -307,7 +321,8 @@ func TestValidate_Limits_Gated(t *testing.T) {
 					Attributes: []openjd.AttributeRequirement{{Name: "attr.x"}},
 				}
 			},
-			wantPtr: "/steps/0/hostRequirements/attributes/0",
+			wantPtr:    "/steps/0/hostRequirements/attributes/0",
+			structural: true,
 		},
 
 		// ── INT range overlap ──
@@ -359,14 +374,20 @@ func TestValidate_Limits_Gated(t *testing.T) {
 				t.Fatalf("EnforceLimits=true: expected pointer %q, got %v", tc.wantPtr, errsOn)
 			}
 
-			// Not enforcing: the gated limit must not fire.
+			// Not enforcing: a gated limit must not fire, but a structural
+			// check (split out of validateLimits into the always-run path)
+			// must still fire.
 			tmplOff := mustParse(t, minimalValidYAML())
 			tc.mutate(tmplOff)
 			errsOff := openjd.ValidateWithOptions(tmplOff, openjd.ValidateOptions{EnforceLimits: false})
-			if tc.wantPtr != "" && containsPointer(errsOff, tc.wantPtr) {
+			switch {
+			case tc.structural:
+				if !containsPointer(errsOff, tc.wantPtr) {
+					t.Fatalf("EnforceLimits=false: structural pointer %q should still fire, got %v", tc.wantPtr, errsOff)
+				}
+			case tc.wantPtr != "" && containsPointer(errsOff, tc.wantPtr):
 				t.Fatalf("EnforceLimits=false: limit pointer %q should be gated off, got %v", tc.wantPtr, errsOff)
-			}
-			if tc.wantPtr == "" && len(errsOff) != 0 {
+			case tc.wantPtr == "" && len(errsOff) != 0:
 				t.Fatalf("EnforceLimits=false: expected no errors, got %v", errsOff)
 			}
 		})

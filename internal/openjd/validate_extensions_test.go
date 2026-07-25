@@ -28,13 +28,18 @@ func chunkTemplate(extensions []string) *openjd.JobTemplate {
 		Steps: []openjd.StepTemplate{
 			{
 				Name: "Render",
+				Script: &openjd.StepScript{
+					Actions: openjd.StepActions{
+						OnRun: openjd.Action{Command: "echo"},
+					},
+				},
 				ParameterSpace: &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{
 							Name:      "Frames",
 							Type:      openjd.TaskParamTypeChunkInt,
 							RangeExpr: new("1-10"),
-							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2},
+							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"},
 						},
 					},
 				},
@@ -247,26 +252,36 @@ func TestValidateExtensions_TwoChunkSteps_NoDeclaration(t *testing.T) {
 		Steps: []openjd.StepTemplate{
 			{
 				Name: "RenderA",
+				Script: &openjd.StepScript{
+					Actions: openjd.StepActions{
+						OnRun: openjd.Action{Command: "echo"},
+					},
+				},
 				ParameterSpace: &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{
 							Name:      "FramesA",
 							Type:      openjd.TaskParamTypeChunkInt,
 							RangeExpr: new("1-10"),
-							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2},
+							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"},
 						},
 					},
 				},
 			},
 			{
 				Name: "RenderB",
+				Script: &openjd.StepScript{
+					Actions: openjd.StepActions{
+						OnRun: openjd.Action{Command: "echo"},
+					},
+				},
 				ParameterSpace: &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{
 							Name:      "FramesB",
 							Type:      openjd.TaskParamTypeChunkInt,
 							RangeExpr: new("11-20"),
-							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2},
+							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"},
 						},
 					},
 				},
@@ -298,9 +313,12 @@ func TestValidateExtensions_TwoChunkSteps_NoDeclaration(t *testing.T) {
 
 // TestValidateExtensions_UnsupportedPlusDeclaredChunking confirms that when an
 // unsupported extension is present alongside TASK_CHUNKING, and CHUNK[INT] is
-// used, we get exactly one error (for the unsupported extension) and no
-// TASK_CHUNKING-required error. This confirms that the declared-set is
-// populated even for unsupported entries.
+// used, the unsupported extension at /extensions/0 produces exactly one error
+// at that pointer, and no TASK_CHUNKING-required error is produced anywhere
+// (since TASK_CHUNKING IS declared). This confirms that the declared-set is
+// populated even for unsupported entries. It does not assert the total error
+// count for the template, only what is checked at /extensions/0 and for the
+// TASK_CHUNKING-required message.
 func TestValidateExtensions_UnsupportedPlusDeclaredChunking(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		SpecificationVersion: openjd.SpecVersion,
@@ -309,13 +327,18 @@ func TestValidateExtensions_UnsupportedPlusDeclaredChunking(t *testing.T) {
 		Steps: []openjd.StepTemplate{
 			{
 				Name: "Render",
+				Script: &openjd.StepScript{
+					Actions: openjd.StepActions{
+						OnRun: openjd.Action{Command: "echo"},
+					},
+				},
 				ParameterSpace: &openjd.StepParameterSpace{
 					TaskParameterDefinitions: []openjd.TaskParamDefinition{
 						{
 							Name:      "Frames",
 							Type:      openjd.TaskParamTypeChunkInt,
 							RangeExpr: new("1-10"),
-							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2},
+							Chunks:    &openjd.TaskChunks{DefaultTaskCount: 2, RangeConstraint: "CONTIGUOUS"},
 						},
 					},
 				},
@@ -343,7 +366,7 @@ func TestValidateExtensions_UnsupportedPlusDeclaredChunking(t *testing.T) {
 		}
 	}
 
-	// Count total errors related to extensions (should be exactly 1)
+	// Count errors at /extensions/0 (should be exactly 1)
 	var extErrors int
 	for _, err := range errs {
 		if err.Pointer == "/extensions/0" {
@@ -351,6 +374,6 @@ func TestValidateExtensions_UnsupportedPlusDeclaredChunking(t *testing.T) {
 		}
 	}
 	if extErrors != 1 {
-		t.Errorf("expected exactly 1 extension error; got %d: %v", extErrors, errs)
+		t.Errorf("expected exactly 1 extension error at /extensions/0; got %d: %v", extErrors, errs)
 	}
 }

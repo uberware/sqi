@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -166,8 +167,9 @@ func validatePathTranslation(t *JobTemplate) ValidationErrors {
 
 // validateChunkBounds enforces the SQI_CHUNK_BOUNDS extension's constraints when
 // it is declared: TASK_CHUNKING must also be declared, and every CHUNK[INT] task
-// parameter must be CONTIGUOUS (an empty rangeConstraint defaults to contiguous),
-// because .Start/.End are undefined across the gaps of a NONCONTIGUOUS chunk.
+// parameter must be CONTIGUOUS (rangeConstraint is required, so this only rejects
+// the literal NONCONTIGUOUS value), because .Start/.End are undefined across the
+// gaps of a NONCONTIGUOUS chunk.
 // Runs unconditionally (not gated by EnforceLimits).
 func validateChunkBounds(t *JobTemplate) ValidationErrors {
 	if !t.hasExtension("SQI_CHUNK_BOUNDS") {
@@ -207,13 +209,23 @@ var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // underscores, and digits, 3-128 characters. Must match [A-Z_0-9]{3,128}.
 var extensionNameRE = regexp.MustCompile(`^[A-Z_0-9]{3,128}$`)
 
+// fileFilterPatternRE matches the grammar of
+// <FileDialogFilterPatternStringValue> (§2.8): "*", "*.*", or "*." followed
+// by one or more legal extension characters. Legal extension characters are
+// any unicode character except the Cc category, path separators ("\" and
+// "/"), wildcard characters ("*", "?", "[", "]"), and characters commonly
+// disallowed in paths ("#", "%", "&", "{", "}", "<", ">", "$", "!", "'",
+// "\"", ":", "@", "`", "|", "="). This also subsumes the spec's 1-character
+// minimum length: an empty string does not match any alternative.
+var fileFilterPatternRE = regexp.MustCompile(`^(\*|\*\.\*|\*\.[^\p{Cc}\\/*?\[\]#%&{}<>$!'":@` + "`" + `|=]+)$`)
+
 // ─── ValidateOptions ──────────────────────────────────────────────────────────
 
 // ValidateOptions controls optional validation behavior passed to
 // [ValidateWithOptions].
 type ValidateOptions struct {
 	// EnforceLimits gates quantitative limit checks: maximum name lengths,
-	// element counts, reserved-name rules, etc.
+	// element counts, etc.
 	//
 	// When false those checks are skipped — useful in operator environments
 	// that predate strict limit enforcement and cannot yet update all templates.
@@ -221,6 +233,12 @@ type ValidateOptions struct {
 	// NOTE: the quantitative limit checks live in [validateLimits] (and the
 	// helpers it calls). Every limit check MUST be guarded by opts.EnforceLimits
 	// and belong to validateLimits — do not scatter gated checks elsewhere.
+	// Structural correctness checks belong in the always-run path instead:
+	// [validateHostRequirements] is the host-requirement half, deliberately
+	// separate from [validateHostRequirementLimits]. Reserved-capability value
+	// checks ([validateReservedAmounts], [validateReservedAttributes]) are
+	// value-domain correctness, not a size or count cap, so they run from
+	// [validateHostRequirements] unconditionally too.
 	// Resource-exhaustion guards (e.g. the [maxRangeValues] cap in
 	// parseIntRangeExpr) are NOT limit checks: they always apply, regardless of
 	// this flag.
@@ -398,9 +416,22 @@ const (
 	// maxAttributeValues caps each attribute's anyOf/allOf element count (1–50).
 	maxAttributeValues = 50
 	// maxUILabelLen caps userInterface label length in characters (runes).
-	maxUILabelLen = 256
+	// The spec's <UserInterfaceLabelStringValue> is 1-64 characters.
+	maxUILabelLen = 64
 	// maxUIGroupLabelLen caps userInterface groupLabel length in characters (runes).
-	maxUIGroupLabelLen = 256
+	maxUIGroupLabelLen = 64
+	// maxFileFilterLabelLen caps a fileFilters/fileFilterDefault entry's label
+	// length in characters (runes). Same <UserInterfaceLabelStringValue> bound
+	// (1-64 characters) as maxUILabelLen (§2.6).
+	maxFileFilterLabelLen = maxUILabelLen
+	// maxFileFilters caps the number of entries in a PATH parameter's
+	// fileFilters list. Spec: "Maximum of 20 filters".
+	maxFileFilters = 20
+	// maxFileFilterPatternLen caps a single pattern string's length in
+	// characters (runes). The spec's <FileDialogFilterPatternStringValue> is
+	// 1-20 characters; the 1-character minimum is structural (subsumed by
+	// [fileFilterPatternRE]) so only the maximum is gated here.
+	maxFileFilterPatternLen = 20
 )
 
 // validateLimits runs every quantitative limit check. It is only invoked when
@@ -530,19 +561,16 @@ func taskParamValueCount(tp TaskParamDefinition) (count int, counted bool) {
 }
 
 // validateHostRequirementLimits checks the gated limits on a step's
-// hostRequirements: combined count, presence, capability name lengths, and
-// attribute anyOf/allOf element counts.
+// hostRequirements: combined count, capability name lengths, and attribute
+// anyOf/allOf element counts. Structural correctness (presence, capability
+// name well-formedness and prefix, and attribute anyOf/allOf presence) and
+// reserved-capability value checks (reserved amount minimums, reserved
+// attribute allowed values) live in [validateHostRequirements] instead and
+// always run — see the invariant documented on [ValidateOptions].
 func validateHostRequirementLimits(hr HostRequirements, base string) ValidationErrors {
 	var errs ValidationErrors
 
-	combined := len(hr.Amounts) + len(hr.Attributes)
-	switch {
-	case combined == 0:
-		errs = append(errs, ValidationError{
-			Pointer: base,
-			Message: "hostRequirements must declare at least one amount or attribute when present",
-		})
-	case combined > maxHostRequirements:
+	if combined := len(hr.Amounts) + len(hr.Attributes); combined > maxHostRequirements {
 		errs = append(errs, ValidationError{
 			Pointer: base,
 			Message: fmt.Sprintf("at most %d host requirements are allowed (got %d)", maxHostRequirements, combined),
@@ -551,14 +579,12 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 
 	for i, a := range hr.Amounts {
 		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
-		errs = append(errs, validateCapabilityName(a.Name, ptr)...)
-		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
+		errs = append(errs, validateCapabilityNameLength(a.Name, ptr)...)
 	}
 
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
-		errs = append(errs, validateCapabilityName(a.Name, ptr+"/name")...)
-		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
+		errs = append(errs, validateCapabilityNameLength(a.Name, ptr+"/name")...)
 
 		if len(a.AnyOf) > maxAttributeValues {
 			errs = append(errs, ValidationError{
@@ -572,6 +598,42 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 				Message: fmt.Sprintf("at most %d values are allowed (got %d)", maxAttributeValues, len(a.AllOf)),
 			})
 		}
+	}
+
+	return errs
+}
+
+// validateHostRequirements checks the structural correctness of a step's host
+// requirements: that the block declares something, that capability names are
+// non-empty and correctly prefixed, that each attribute constrains something,
+// and — for reserved capability names — that the value asked for is within
+// the spec-mandated domain (reserved amount minimums, reserved attribute
+// allowed values). These are correctness checks, not size caps: a template
+// asking for vcpu: 0 is malformed, not oversized. So they always run -- see
+// the invariant documented on [ValidateOptions]. The gated size caps
+// (combined count, name length, anyOf/allOf element counts) live in
+// [validateHostRequirementLimits] instead.
+func validateHostRequirements(hr HostRequirements, base string) ValidationErrors {
+	var errs ValidationErrors
+
+	if len(hr.Amounts)+len(hr.Attributes) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: base,
+			Message: "hostRequirements must declare at least one amount or attribute when present",
+		})
+	}
+
+	for i, a := range hr.Amounts {
+		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
+		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr)...)
+		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
+	}
+
+	for i, a := range hr.Attributes {
+		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
+		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr+"/name")...)
+		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
+
 		if len(a.AnyOf)+len(a.AllOf) == 0 {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
@@ -580,7 +642,9 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 		}
 	}
 
-	// Reserved-name checks (also gated by EnforceLimits via the call chain).
+	// Reserved-capability value checks: pure value-domain correctness, with
+	// no size or count component, so they belong here rather than in the
+	// gated validateHostRequirementLimits.
 	errs = append(errs, validateReservedAmounts(hr.Amounts, base)...)
 	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
 
@@ -593,8 +657,10 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 //
 // Min/Max values that contain an unresolved format-string reference ("{{") are
 // skipped: the numeric value cannot be determined before job-parameter binding.
-// Non-numeric values are already rejected by earlier structural checks, so a
-// parse failure here is silently skipped to avoid double-reporting.
+// Nothing upstream of this check rejects a non-numeric Min/Max: the decoder
+// (decodeAmountBound) accepts any scalar (string, number, or boolean) without
+// requiring it to parse as a number, so a non-numeric bound is reported here,
+// by [checkReservedBound], not silently skipped.
 func validateReservedAmounts(amounts []AmountRequirement, base string) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range amounts {
@@ -609,10 +675,11 @@ func validateReservedAmounts(amounts []AmountRequirement, base string) Validatio
 	return errs
 }
 
-// checkReservedBound validates that a *string capability bound (Min or Max),
-// when present and parseable as a number, is >= the reserved minimum. Nil
-// bounds and bounds containing format-string references ("{{") are skipped.
-// Non-finite values (NaN, ±Inf) are rejected as validation errors.
+// checkReservedBound validates that a *string capability bound (Min or Max)
+// is >= the reserved minimum. Nil bounds and bounds containing format-string
+// references ("{{") are skipped. A bound that fails to parse as a number, or
+// that parses to a non-finite value (NaN, ±Inf), is reported as a validation
+// error rather than skipped.
 func checkReservedBound(val *string, minReq float64, capName, ptr string) ValidationErrors {
 	if val == nil || strings.Contains(*val, "{{") {
 		return nil
@@ -697,7 +764,8 @@ func sortedMapKeys(m map[string]bool) string {
 // "attr." for attributes. The match is case-insensitive, since OpenJD
 // jobtemplate-2023-09 defines capability names as case-insensitive and the
 // scheduler resolves them case-insensitively (see internal/scheduler/matcher.go).
-// An empty name is left to [validateCapabilityName]'s "name is required" check.
+// An empty name is left to [validateCapabilityNameRequired]'s "name is
+// required" check.
 func validateCapabilityPrefix(name, wantPrefix, ptr string) ValidationErrors {
 	if name == "" {
 		return nil
@@ -711,13 +779,21 @@ func validateCapabilityPrefix(name, wantPrefix, ptr string) ValidationErrors {
 	return nil
 }
 
-// validateCapabilityName checks that an amount/attribute capability name has a
-// length within the spec bounds (1–100 characters).
-func validateCapabilityName(name, ptr string) ValidationErrors {
-	switch n := utf8.RuneCountInString(name); {
-	case n == 0:
+// validateCapabilityNameRequired checks that an amount/attribute capability
+// name is present. Structural correctness: always runs, regardless of
+// EnforceLimits — see the invariant documented on [ValidateOptions].
+func validateCapabilityNameRequired(name, ptr string) ValidationErrors {
+	if utf8.RuneCountInString(name) == 0 {
 		return ValidationErrors{{Pointer: ptr, Message: "name is required"}}
-	case n > maxCapabilityNameLen:
+	}
+	return nil
+}
+
+// validateCapabilityNameLength checks that an amount/attribute capability name
+// is within the spec bound (at most 100 characters). Gated: only runs when
+// EnforceLimits is set (see [validateHostRequirementLimits]).
+func validateCapabilityNameLength(name, ptr string) ValidationErrors {
+	if n := utf8.RuneCountInString(name); n > maxCapabilityNameLen {
 		return ValidationErrors{{
 			Pointer: ptr,
 			Message: fmt.Sprintf("name must be at most %d characters (got %d)", maxCapabilityNameLen, n),
@@ -726,25 +802,75 @@ func validateCapabilityName(name, ptr string) ValidationErrors {
 	return nil
 }
 
-// validateUILimits enforces length caps on userInterface labels. Gated: callers
+// validateUILimits enforces length caps on userInterface labels and the
+// fileFilters quantitative caps (label length, filter count). Gated: callers
 // run it only when EnforceLimits is set.
 func validateUILimits(params []JobParameter) ValidationErrors {
 	var errs ValidationErrors
 	for i, p := range params {
-		if p.UserInterface == nil {
-			continue
+		paramPtr := fmt.Sprintf("/parameterDefinitions/%d", i)
+		if p.UserInterface != nil {
+			base := paramPtr + "/userInterface"
+			if utf8.RuneCountInString(p.UserInterface.Label) > maxUILabelLen {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/label",
+					Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
+				})
+			}
+			if utf8.RuneCountInString(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/groupLabel",
+					Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
+				})
+			}
 		}
-		base := fmt.Sprintf("/parameterDefinitions/%d/userInterface", i)
-		if utf8.RuneCountInString(p.UserInterface.Label) > maxUILabelLen {
+		errs = append(errs, validateFileFilterLimits(p, paramPtr)...)
+	}
+	return errs
+}
+
+// validateFileFilterLimits checks the gated quantitative caps on a PATH
+// parameter's file filters: at most [maxFileFilters] entries, each entry's
+// (including fileFilterDefault's) label at most [maxFileFilterLabelLen]
+// characters, and each pattern (including fileFilterDefault's) at most
+// [maxFileFilterPatternLen] characters. Structural correctness (label
+// required, control pairing, pattern grammar) lives in [validateFileFilters]
+// instead and always runs -- see the invariant documented on
+// [ValidateOptions].
+func validateFileFilterLimits(p JobParameter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if len(p.FileFilters) > maxFileFilters {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/fileFilters",
+			Message: fmt.Sprintf("at most %d file filters are allowed (got %d)", maxFileFilters, len(p.FileFilters)),
+		})
+	}
+	for i, f := range p.FileFilters {
+		errs = append(errs, validatePathFileFilterLimits(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
+	}
+	if p.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilterLimits(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	}
+	return errs
+}
+
+// validatePathFileFilterLimits checks the gated quantitative caps on a
+// single [PathFileFilter]: label length and each pattern's length. Extracted
+// from [validateFileFilterLimits] to keep its complexity in bounds and
+// reused for both fileFilters entries and fileFilterDefault.
+func validatePathFileFilterLimits(f PathFileFilter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if n := utf8.RuneCountInString(f.Label); n > maxFileFilterLabelLen {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/label",
+			Message: fmt.Sprintf("label must be at most %d characters (got %d)", maxFileFilterLabelLen, n),
+		})
+	}
+	for i, pattern := range f.Patterns {
+		if n := utf8.RuneCountInString(pattern); n > maxFileFilterPatternLen {
 			errs = append(errs, ValidationError{
-				Pointer: base + "/label",
-				Message: fmt.Sprintf("label exceeds %d characters", maxUILabelLen),
-			})
-		}
-		if utf8.RuneCountInString(p.UserInterface.GroupLabel) > maxUIGroupLabelLen {
-			errs = append(errs, ValidationError{
-				Pointer: base + "/groupLabel",
-				Message: fmt.Sprintf("groupLabel exceeds %d characters", maxUIGroupLabelLen),
+				Pointer: fmt.Sprintf("%s/patterns/%d", ptr, i),
+				Message: fmt.Sprintf("pattern must be at most %d characters (got %d)", maxFileFilterPatternLen, n),
 			})
 		}
 	}
@@ -753,16 +879,54 @@ func validateUILimits(params []JobParameter) ValidationErrors {
 
 // ─── userInterface validation ─────────────────────────────────────────────────
 
-// validControls is the set of OpenJD base-spec userInterface control values.
-// Read-only after initialization.
-var validControls = map[ControlType]struct{}{
-	ControlLineEdit:      {},
-	ControlMultilineEdit: {},
-	ControlDropdownList:  {},
-	ControlCheckBox:      {},
-	ControlChipInput:     {},
-	ControlHidden:        {},
-	ControlSpinBox:       {},
+// controlsByType is the OpenJD base-spec userInterface control vocabulary,
+// scoped per parameter type as the spec defines it. The spec does NOT share one
+// vocabulary across types: LINE_EDIT is valid on STRING and invalid on PATH,
+// which needs a CHOOSE_* dialog instead. Read-only after initialization.
+//
+// The *_LIST control variants belong to the EXPR extension and are deliberately
+// absent -- sqi does not implement EXPR.
+var controlsByType = map[JobParamType]map[ControlType]struct{}{
+	JobParamTypeString: {
+		ControlLineEdit:      {},
+		ControlMultilineEdit: {},
+		ControlDropdownList:  {},
+		ControlCheckBox:      {},
+		ControlHidden:        {},
+	},
+	JobParamTypePath: {
+		ControlChooseInputFile:  {},
+		ControlChooseOutputFile: {},
+		ControlChooseDirectory:  {},
+		ControlDropdownList:     {},
+		ControlHidden:           {},
+	},
+	JobParamTypeInt: {
+		ControlSpinBox:      {},
+		ControlDropdownList: {},
+		ControlHidden:       {},
+	},
+	JobParamTypeFloat: {
+		ControlSpinBox:      {},
+		ControlDropdownList: {},
+		ControlHidden:       {},
+	},
+}
+
+// allowedControlsFor returns the sorted control names valid for a parameter
+// type, for use in error messages. A template author who writes LINE_EDIT on a
+// PATH needs to be told CHOOSE_INPUT_FILE exists, not merely that they are wrong.
+func allowedControlsFor(t JobParamType) string {
+	set, ok := controlsByType[t]
+	if !ok {
+		return ""
+	}
+	names := make([]string, 0, len(set))
+	for c := range set {
+		names = append(names, string(c))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // validateUserInterfaceControl checks control-specific constraints for a
@@ -778,10 +942,6 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 		if len(p.AllowedValues) != 2 {
 			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"})
 		}
-	case ControlSpinBox:
-		if p.Type != JobParamTypeInt && p.Type != JobParamTypeFloat {
-			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "SPIN_BOX is valid only on INT or FLOAT parameters"})
-		}
 	}
 	return errs
 }
@@ -789,7 +949,7 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 // validateUserInterface checks a parameter's optional userInterface hints:
 // the control must be a known value, and control/constraint combinations must
 // be coherent (DROPDOWN_LIST/CHECK_BOX need allowedValues; SPIN_BOX is numeric;
-// decimals/singleStepRemoval pair with their controls). Structural — always runs.
+// decimals pairs with its control). Structural — always runs.
 func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 	ui := p.UserInterface
 	if ui == nil {
@@ -802,10 +962,15 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 		errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "required"})
 		return errs
 	}
-	if _, ok := validControls[ui.Control]; !ok {
+	allowed, known := controlsByType[p.Type]
+	if !known {
+		return errs // unknown parameter type is reported by validateJobParams
+	}
+	if _, ok := allowed[ui.Control]; !ok {
 		errs = append(errs, ValidationError{
 			Pointer: ctrlPtr,
-			Message: fmt.Sprintf("unknown control %q", ui.Control),
+			Message: fmt.Sprintf("control %q is not valid on a %s parameter; allowed: %s",
+				ui.Control, p.Type, allowedControlsFor(p.Type)),
 		})
 		return errs
 	}
@@ -818,13 +983,6 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 			Message: "decimals is valid only with SPIN_BOX on a FLOAT parameter",
 		})
 	}
-	if ui.SingleStepRemoval != nil && ui.Control != ControlChipInput {
-		errs = append(errs, ValidationError{
-			Pointer: ptr + "/userInterface/singleStepRemoval",
-			Message: "singleStepRemoval is valid only with CHIP_INPUT",
-		})
-	}
-
 	return errs
 }
 
@@ -872,6 +1030,9 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 
 		// userInterface validation is also structural, always runs.
 		errs = append(errs, validateUserInterface(p, ptr)...)
+
+		// fileFilters / fileFilterDefault are also structural, always runs.
+		errs = append(errs, validateFileFilters(p, ptr)...)
 	}
 	return errs
 }
@@ -1047,6 +1208,107 @@ func validatePathOnlyField[T ~string](value T, ptr, field string, isPath bool, v
 	return errs
 }
 
+// fileFilterControls is the set of userInterface controls that fileFilters and
+// fileFilterDefault are valid alongside, per OpenJD jobtemplate-2023-09 §2.7:
+// "Can be provided when the uiControl is CHOOSE_INPUT_FILE or
+// CHOOSE_OUTPUT_FILE".
+var fileFilterControls = map[ControlType]struct{}{
+	ControlChooseInputFile:  {},
+	ControlChooseOutputFile: {},
+}
+
+// validateFileFilters checks the PATH-only file chooser filters: they are
+// valid only on PATH parameters whose userInterface.control is
+// CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE, and each filter (including
+// fileFilterDefault) must declare a label and at least one pattern.
+// Structural -- always runs. The quantitative caps (label length, filter
+// count) live in [validateFileFilterLimits] instead, gated behind
+// EnforceLimits -- see the invariant documented on [ValidateOptions].
+func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
+		return nil
+	}
+	// Point at whichever field was actually declared, so a
+	// fileFilterDefault-only parameter doesn't get an error pointing at
+	// the sibling fileFilters field it never set.
+	field := "fileFilterDefault"
+	if len(p.FileFilters) > 0 {
+		field = "fileFilters"
+	}
+	if p.Type != JobParamTypePath {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/" + field,
+			Message: "fileFilters and fileFilterDefault are valid only on PATH parameters",
+		})
+		return errs
+	}
+	if p.UserInterface == nil {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/" + field,
+			Message: "fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE",
+		})
+	} else if _, ok := fileFilterControls[p.UserInterface.Control]; !ok {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/" + field,
+			Message: fmt.Sprintf("fileFilters and fileFilterDefault require userInterface.control to be CHOOSE_INPUT_FILE or CHOOSE_OUTPUT_FILE (got %q)", p.UserInterface.Control),
+		})
+	}
+	for i, f := range p.FileFilters {
+		errs = append(errs, validatePathFileFilter(f, fmt.Sprintf("%s/fileFilters/%d", ptr, i))...)
+	}
+	if p.FileFilterDefault != nil {
+		errs = append(errs, validatePathFileFilter(*p.FileFilterDefault, ptr+"/fileFilterDefault")...)
+	}
+	return errs
+}
+
+// validatePathFileFilter checks the structural correctness of a single
+// [PathFileFilter]: label is required, at least one pattern is required, and
+// each pattern must match the <FileDialogFilterPatternStringValue> grammar
+// (§2.8): "*", "*.*", or "*." followed by one or more legal extension
+// characters. Extracted from [validateFileFilters] to keep its complexity in
+// bounds and reused for both fileFilters entries and fileFilterDefault.
+func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if f.Label == "" {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/label",
+			Message: "required",
+		})
+	}
+	if len(f.Patterns) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/patterns",
+			Message: "at least one pattern is required",
+		})
+	}
+	for i, pattern := range f.Patterns {
+		if !fileFilterPatternRE.MatchString(pattern) {
+			errs = append(errs, ValidationError{
+				Pointer: fmt.Sprintf("%s/patterns/%d", ptr, i),
+				Message: fmt.Sprintf("pattern %q is not a valid file filter pattern; must be \"*\", \"*.*\", or \"*.\" followed by one or more legal extension characters", pattern),
+			})
+		}
+	}
+	return errs
+}
+
+// validateAction checks the spec-required fields on a single action. The spec
+// marks command required with a minimum length of 1 character. An action with
+// no command is accepted by parse, expands into tasks, and then runs nothing --
+// the step reports success having done no work -- so this is structural
+// correctness and always runs, never gated behind EnforceLimits.
+func validateAction(a Action, ptr string) ValidationErrors {
+	if a.Command == "" {
+		return ValidationErrors{{
+			Pointer: ptr + "/command",
+			Message: "required; must be at least 1 character",
+		}}
+	}
+	return nil
+}
+
 // ─── environment validation ───────────────────────────────────────────────────
 
 func validateEnvironments(envs []Environment, base string) ValidationErrors {
@@ -1064,12 +1326,23 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 		} else {
 			seen[e.Name] = struct{}{}
 		}
+		if e.Script == nil && len(e.Variables) == 0 {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: "at least one of script or variables must be provided",
+			})
+		}
 		if e.Script != nil {
-			if e.Script.Actions.OnEnter == nil && e.Script.Actions.OnExit == nil {
+			if e.Script.Actions.OnEnter == nil {
 				errs = append(errs, ValidationError{
-					Pointer: ptr + "/script/actions",
-					Message: "at least one of onEnter or onExit must be defined",
+					Pointer: ptr + "/script/actions/onEnter",
+					Message: "required",
 				})
+			} else {
+				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter")...)
+			}
+			if e.Script.Actions.OnExit != nil {
+				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit")...)
 			}
 			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, ptr+"/script/embeddedFiles")...)
 		}
@@ -1134,9 +1407,13 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		}
 	}
 
-	// step script embedded files
-	if s.Script != nil {
+	// step script -- required by spec; without it the step has no action and
+	// scheduler/assign.go silently omits it, so the step runs nothing.
+	if s.Script == nil {
+		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
+	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, base+"/script/embeddedFiles")...)
+		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun")...)
 	}
 
 	// step environments
@@ -1145,6 +1422,11 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 	// parameter space
 	if s.ParameterSpace != nil {
 		errs = append(errs, validateParameterSpace(*s.ParameterSpace, base+"/parameterSpace")...)
+	}
+
+	// host requirements (structural; the size caps stay in validateLimits)
+	if s.HostRequirements != nil {
+		errs = append(errs, validateHostRequirements(*s.HostRequirements, base+"/hostRequirements")...)
 	}
 
 	return errs
@@ -1262,12 +1544,40 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string) Valida
 				Pointer: base + "/chunks",
 				Message: "required for CHUNK[INT] parameters",
 			})
-		} else if tp.Chunks.DefaultTaskCount <= 0 {
-			errs = append(errs, ValidationError{
-				Pointer: base + "/chunks/defaultTaskCount",
-				Message: "must be a positive integer",
-			})
+		} else {
+			errs = append(errs, validateChunks(*tp.Chunks, base)...)
 		}
+	}
+
+	return errs
+}
+
+// validateChunks validates a CHUNK[INT] parameter's chunks definition. It is
+// extracted from [validateTaskParamRangeAndChunks] to keep that function's
+// cyclomatic complexity within bounds.
+func validateChunks(c TaskChunks, base string) ValidationErrors {
+	var errs ValidationErrors
+
+	if c.DefaultTaskCount <= 0 {
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/defaultTaskCount",
+			Message: "must be a positive integer",
+		})
+	}
+
+	switch c.RangeConstraint {
+	case "":
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/rangeConstraint",
+			Message: "required; must be CONTIGUOUS or NONCONTIGUOUS",
+		})
+	case "CONTIGUOUS", "NONCONTIGUOUS":
+		// valid
+	default:
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/rangeConstraint",
+			Message: fmt.Sprintf("invalid value %q; must be CONTIGUOUS or NONCONTIGUOUS", c.RangeConstraint),
+		})
 	}
 
 	return errs

@@ -98,7 +98,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) (OpenJD) format as its native job execution format.
 
 **Benefits:**
-- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged
+- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented (e.g. `EXPR`) — those are rejected by design rather than accepted and misinterpreted; see [`docs/openjd-conformance.md`](docs/openjd-conformance.md)
 - Standardized path mapping, parameter spaces, and execution semantics
 - Clear separation between job description and job authoring (the product system)
 
@@ -161,11 +161,31 @@ S3-compatible store reachable by the operator's chosen sync tool.
 
 ### Path Translation Modes
 
-- **OpenJD** (preferred): Standard path mapping file written into each Session. Applications that support OpenJD natively consume it directly.
-- **Resolved**: All paths resolved to concrete paths before command construction. Universal for applications with no path mapping support.
-- **Command arg**: Path pairs passed as explicit arguments (e.g., Maya workspace remapping).
-- **Environment**: Path mappings via environment variables.
-- **Staged**: Pre-job staging to worker-local storage for cloud workers without direct access to source storage.
+Path translation rides the `SQI_PATH_TRANSLATION` extension and offers five
+delivery mechanisms (deliveries execute in fixed order and are mutually
+compatible — a product can declare all five):
+
+- **`translation_file`** (preferred): Native OpenJD `pathmapping-1.0` file
+  written into each Session, served via `{{Session.PathMappingRulesFile}}`.
+  Applications that support OpenJD path mapping natively consume it directly.
+- **`swap_in_place`**: String substitution of path parameters in the template.
+  Universal for applications with no path-mapping support. sqi convenience,
+  not in the OpenJD spec.
+- **`command_flags`**: Individual `src`/`dest` pairs appended as command-line
+  flags (e.g., Maya workspace remapping).
+- **`environment`**: Path mappings delivered via an environment variable.
+- **`stage_locally`**: Job-level PATH parameters staged to worker-local
+  scratch before the run and copied back after, for cloud workers without
+  direct access to source storage. Works with no worker configuration — an
+  unconfigured worker falls back to a TEMP scratch directory and sqi's own
+  built-in copy — but a farm spanning multiple compute locations needs an
+  explicit `staging.scratch_dir` and `staging.sync_command`
+  (`rsync`/`aws-cli`/etc.) for real remote transfer.
+
+`swap_in_place` and `translation_file` are the default when no
+`SQI_PATH_TRANSLATION` extension is declared. Full reference:
+[`docs/products.md`](docs/products.md#path-translation) and
+[`docs/openjd-extensions/path-translation.md`](docs/openjd-extensions/path-translation.md).
 
 ### What `sqi` does not do
 
@@ -221,7 +241,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Product/preset definition system (YAML/JSON) — a thin catalog over OpenJD templates, with embedded Script/Python/Container built-ins
 - Preset library integration — static JSON index at a configurable URL (default: official community library on GitHub Pages); browse presets in the Admin hub with per-preset status (not installed / installed / update available); preview the definition and install as a product (`source: installed`) in one click; SHA-256 integrity and update-detection check on install; read-only installed products, uninstallable, with Duplicate-to-custom available on every product
 - Web UI product management editor and a product-driven submission form (parameter form generated from the selected product)
-- Additional path translation modes (resolved, command-arg, environment, staged) as the `SQI_PATH_TRANSLATION` vendor extension
+- Path translation deliveries (`swap_in_place`, `translation_file`, `command_flags`, `environment`, `stage_locally`) as the `SQI_PATH_TRANSLATION` vendor extension
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
 - Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)

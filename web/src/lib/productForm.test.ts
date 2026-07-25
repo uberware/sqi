@@ -17,6 +17,8 @@ function param(over: Partial<ProductParameter>): ProductParameter {
     object_type: '',
     data_flow: '',
     user_interface: null,
+    file_filters: [],
+    file_filter_default: null,
     ...over,
   }
 }
@@ -31,7 +33,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
           allowed_values: ['a', 'b'],
         }),
@@ -45,7 +46,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
           allowed_values: ['off', 'on'],
         }),
@@ -59,7 +59,6 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         }),
       ),
@@ -68,24 +67,10 @@ describe('selectWidget', () => {
       selectWidget(
         param({
           user_interface: {
-            control: 'CHIP_INPUT',
-            label: '',
-            group_label: '',
-            decimals: null,
-            single_step_removal: null,
-          },
-        }),
-      ),
-    ).toBe('chips')
-    expect(
-      selectWidget(
-        param({
-          user_interface: {
             control: 'SPIN_BOX',
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
           type: 'INT',
         }),
@@ -99,11 +84,32 @@ describe('selectWidget', () => {
             label: '',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         }),
       ),
     ).toBe('hidden')
+  })
+
+  it('renders chooser controls as text inputs until a picker exists', () => {
+    for (const control of [
+      'CHOOSE_INPUT_FILE',
+      'CHOOSE_OUTPUT_FILE',
+      'CHOOSE_DIRECTORY',
+    ] as const) {
+      expect(
+        selectWidget(
+          param({
+            type: 'PATH',
+            user_interface: {
+              control,
+              label: '',
+              group_label: '',
+              decimals: null,
+            },
+          }),
+        ),
+      ).toBe('text')
+    }
   })
 
   it('falls back by type when no userInterface', () => {
@@ -126,7 +132,6 @@ describe('helpers', () => {
             label: 'Scene file',
             group_label: '',
             decimals: null,
-            single_step_removal: null,
           },
         }),
       ),

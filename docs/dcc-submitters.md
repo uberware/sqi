@@ -339,16 +339,17 @@ Blender scatter files into the worker's working directory. This differs from
 Maya's `OutputDir`, which is a real output *directory* (`Render -rd`); Blender's
 `-o` is a full path prefix, not a folder.
 
-**`PATH` is type-first.** OpenJD has no file/directory *picker* control, and the
-base spec requires a `control` whenever a `userInterface` (hence a `label`) is
-set — so a labeled path parameter must declare `control: LINE_EDIT`. The
-submitter clients treat `PATH` as type-first: a `LINE_EDIT` (or absent) control
-does **not** suppress the picker. The Qt dialog derives the picker
-(`CHOOSE_DIRECTORY` / `CHOOSE_OUTPUT_FILE` / `CHOOSE_INPUT_FILE`, from
-`objectType`/`dataFlow`) and honors the label, so a labeled path shows a browse
-button *and* its label. An explicit `HIDDEN` still wins. Templates stay valid
-OpenJD; the picker is a client rendering affordance never represented in the
-document. (The web UI renders paths as a labeled text field — a browser cannot
+**`PATH` has real file/directory picker controls.** A `PATH` parameter's
+`userInterface.control` must be one of `CHOOSE_INPUT_FILE`,
+`CHOOSE_OUTPUT_FILE`, `CHOOSE_DIRECTORY`, `DROPDOWN_LIST`, or `HIDDEN` —
+`LINE_EDIT` is **not** legal there and the server rejects it with a 422. A
+labeled path parameter declares the `CHOOSE_*` control matching its
+`objectType`/`dataFlow`. The Qt dialog honors that control directly, so a
+labeled path shows a browse button *and* its label; an explicit `HIDDEN`
+suppresses the picker. Full detail, including the fallback for a `PATH`
+parameter with no `userInterface` block at all, is in
+[PATH parameters, labels, and pickers](#path-parameters-labels-and-pickers)
+below. (The web UI renders paths as a labeled text field — a browser cannot
 browse the farm filesystem — and the Blender panel uses a text property.)
 
 A selected render target can also supply **exact-name** extras that aren't
@@ -383,32 +384,42 @@ Rules that make this a stable contract:
 
 ### PATH parameters, labels, and pickers
 
-This repo's OpenJD `userInterface` control enum (see
-[`docs/openjd-extensions.md`](openjd-extensions.md) and
-[`docs/products.md`](products.md#userinterface-parameter-hints)) has **no
-file-chooser control** — the valid values are `LINE_EDIT`, `MULTILINE_EDIT`,
-`DROPDOWN_LIST`, `CHECK_BOX`, `CHIP_INPUT`, `HIDDEN`, and `SPIN_BOX`. There is
-no `CHOOSE_INPUT_FILE`/`CHOOSE_OUTPUT_FILE`/`CHOOSE_DIRECTORY` a template
-author can declare, and a `userInterface` block that is present must carry a
-`control` (the server rejects one without it).
+This repo's OpenJD `userInterface` control vocabulary is scoped per parameter
+type (see [`docs/openjd-extensions.md`](openjd-extensions.md) and
+[`docs/products.md`](products.md#userinterface-parameter-hints)). On a `PATH`
+parameter the legal controls are `CHOOSE_INPUT_FILE`, `CHOOSE_OUTPUT_FILE`,
+`CHOOSE_DIRECTORY`, `DROPDOWN_LIST`, and `HIDDEN` — `LINE_EDIT`,
+`MULTILINE_EDIT`, `CHECK_BOX`, and `SPIN_BOX` belong to other parameter types
+and the server rejects them on a `PATH` with a 422. A `userInterface` block
+that is present must still carry a `control` (the server rejects one
+without it).
 
-Because of that, every reference preset labels its `PATH` parameters with
-`control: LINE_EDIT` — the only control that can carry a `label` on a path —
-and the Qt dialog **still** renders a real chooser for them, because it treats
-`PATH` as type-first (see [The scene file is host-managed](#the-scene-file-is-host-managed)
-above): a `LINE_EDIT` (or absent) control does not suppress the picker. So a
-Qt-hosted artist gets a browse button *and* a friendly label. The picker
-variant follows the parameter's `objectType`/`dataFlow` (`objectType:
-DIRECTORY` → folder picker, `dataFlow: OUT` → save dialog, otherwise an
-open-file dialog). An explicit non-`LINE_EDIT` control (e.g. `HIDDEN`) wins
-over the type fallback.
+Every reference preset labels its `PATH` parameters with the `CHOOSE_*`
+control matching the parameter's `objectType`/`dataFlow` — `CHOOSE_INPUT_FILE`
+for an input like `SceneFile`, `CHOOSE_DIRECTORY` for a directory-typed
+output, `CHOOSE_OUTPUT_FILE` for a file-typed output — and the Qt dialog
+renders a real chooser straight from the declared control, honoring the label
+alongside it. So a Qt-hosted artist gets a browse button *and* a friendly
+label, both read directly off the template with no client-side guessing. The
+picker variant follows `objectType`/`dataFlow` (`objectType: DIRECTORY` →
+folder picker, `dataFlow: OUT` → save dialog, otherwise an open-file dialog);
+an explicit `HIDDEN` suppresses the picker.
+
+A `PATH` parameter can also carry **no** `userInterface` block at all (so no
+control and no label). The submitter clients still treat `PATH` as
+type-first in that case (see [The scene file is host-managed](#the-scene-file-is-host-managed)
+above): they derive the same `CHOOSE_*` picker from `objectType`/`dataFlow`
+rather than falling back to a plain text field the way an unlabeled `STRING`
+would. This fallback lives in `FormField.widget` in
+`clients/submitter/src/sqi_submitter/core/schema.py`.
 
 The chooser is a **Qt-only** rendering affordance, never represented in the
-OpenJD document. The web submission form has no equivalent — `selectWidget`
-in `web/src/lib/productForm.ts` renders a `PATH` parameter as a plain labeled
-text field (a browser cannot browse the farm filesystem) — and the Blender
-panel uses a `bpy` string property. All three read the same `LINE_EDIT` +
-`label` hint; only Qt adds the browse button on top of it.
+OpenJD document beyond the declared control. The web submission form has no
+equivalent — `selectWidget` in `web/src/lib/productForm.ts` renders a `PATH`
+parameter as a plain labeled text field (a browser cannot browse the farm
+filesystem) — and the Blender panel uses a `bpy` string property. All three
+read the same `control` + `label` hint; only Qt adds the browse button on top
+of it.
 
 ---
 

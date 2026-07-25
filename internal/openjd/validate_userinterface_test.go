@@ -78,17 +78,9 @@ func TestValidateUserInterface(t *testing.T) {
 			name: "decimals without spinbox",
 			param: JobParameter{
 				Name: "Q", Type: JobParamTypeFloat,
-				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, Decimals: new(2)},
+				UserInterface: &ParameterUserInterface{Control: ControlHidden, Decimals: new(2)},
 			},
 			wantPointer: "/parameterDefinitions/0/userInterface/decimals",
-		},
-		{
-			name: "singleStepRemoval without chip input",
-			param: JobParameter{
-				Name: "Q", Type: JobParamTypeString,
-				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, SingleStepRemoval: new(true)},
-			},
-			wantPointer: "/parameterDefinitions/0/userInterface/singleStepRemoval",
 		},
 	}
 	for _, tc := range tests {
@@ -182,12 +174,54 @@ func TestValidateUIGroupLabelLengthLimit(t *testing.T) {
 	}
 }
 
+// TestValidateUIGroupLabelExactBoundary proves the groupLabel cap is enforced
+// at exactly maxUIGroupLabelLen characters, not merely somewhere below a
+// clearly-over-limit value. TestValidateUIGroupLabelLengthLimit above only
+// exercises a 257-character groupLabel, which would still fail an off-by-one
+// in the comparison (e.g. >= instead of >); this test pins the boundary
+// itself: maxUIGroupLabelLen characters must be accepted, maxUIGroupLabelLen+1
+// must be rejected.
+func TestValidateUIGroupLabelExactBoundary(t *testing.T) {
+	base := func(groupLabel string) *JobTemplate {
+		return &JobTemplate{
+			SpecificationVersion: SpecVersion,
+			Name:                 "x",
+			ParameterDefinitions: []JobParameter{{
+				Name: "Q", Type: JobParamTypeString,
+				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, GroupLabel: groupLabel},
+			}},
+			Steps: []StepTemplate{{Name: "A"}},
+		}
+	}
+
+	// Exactly maxUIGroupLabelLen characters — must be accepted.
+	groupLabelAtLimit := strings.Repeat("x", maxUIGroupLabelLen)
+	if errs := ValidateWithOptions(base(groupLabelAtLimit), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "groupLabel") {
+		t.Errorf("%d-character groupLabel was incorrectly rejected; got %v", maxUIGroupLabelLen, errs)
+	}
+
+	// maxUIGroupLabelLen+1 characters — must be rejected with a pointer on /groupLabel.
+	groupLabelOverLimit := strings.Repeat("x", maxUIGroupLabelLen+1)
+	errs := ValidateWithOptions(base(groupLabelOverLimit), ValidateOptions{EnforceLimits: true})
+	found := false
+	for _, e := range errs {
+		if e.Pointer == "/parameterDefinitions/0/userInterface/groupLabel" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("%d-character groupLabel was not flagged at expected pointer; got %v", maxUIGroupLabelLen+1, errs)
+	}
+}
+
 // TestValidateUILabelRuneCounting proves the label limit is counted in Unicode
 // runes (characters), not bytes.  "é" (U+00E9) is 2 bytes but 1 rune.
 //
-// With byte counting (the old len() approach) a 256-rune label of "é" would be
-// 512 bytes and would be wrongly rejected.  With correct rune counting it must
-// be accepted; 257 runes must be rejected.
+// With byte counting (the old len() approach) a maxUILabelLen-rune label of
+// "é" would be 2*maxUILabelLen bytes and would be wrongly rejected.  With
+// correct rune counting it must be accepted; maxUILabelLen+1 runes must be
+// rejected.
 func TestValidateUILabelRuneCounting(t *testing.T) {
 	base := func(label string) *JobTemplate {
 		return &JobTemplate{
@@ -201,15 +235,15 @@ func TestValidateUILabelRuneCounting(t *testing.T) {
 		}
 	}
 
-	// Exactly 256 multibyte runes — must be accepted.
-	label256 := strings.Repeat("é", 256) // 512 bytes, 256 runes
-	if errs := ValidateWithOptions(base(label256), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "label") {
-		t.Errorf("256-rune multibyte label was incorrectly rejected; got %v", errs)
+	// Exactly maxUILabelLen multibyte runes — must be accepted.
+	labelAtLimit := strings.Repeat("é", maxUILabelLen) // 2*maxUILabelLen bytes, maxUILabelLen runes
+	if errs := ValidateWithOptions(base(labelAtLimit), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "label") {
+		t.Errorf("%d-rune multibyte label was incorrectly rejected; got %v", maxUILabelLen, errs)
 	}
 
-	// 257 multibyte runes — must be rejected with a pointer on /label.
-	label257 := strings.Repeat("é", 257)
-	errs := ValidateWithOptions(base(label257), ValidateOptions{EnforceLimits: true})
+	// maxUILabelLen+1 multibyte runes — must be rejected with a pointer on /label.
+	labelOverLimit := strings.Repeat("é", maxUILabelLen+1)
+	errs := ValidateWithOptions(base(labelOverLimit), ValidateOptions{EnforceLimits: true})
 	found := false
 	for _, e := range errs {
 		if e.Pointer == "/parameterDefinitions/0/userInterface/label" {
@@ -218,6 +252,6 @@ func TestValidateUILabelRuneCounting(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("257-rune multibyte label was not flagged at expected pointer; got %v", errs)
+		t.Errorf("%d-rune multibyte label was not flagged at expected pointer; got %v", maxUILabelLen+1, errs)
 	}
 }

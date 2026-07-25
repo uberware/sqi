@@ -429,9 +429,11 @@ export type ControlType =
   | 'MULTILINE_EDIT'
   | 'DROPDOWN_LIST'
   | 'CHECK_BOX'
-  | 'CHIP_INPUT'
   | 'HIDDEN'
   | 'SPIN_BOX'
+  | 'CHOOSE_INPUT_FILE'
+  | 'CHOOSE_OUTPUT_FILE'
+  | 'CHOOSE_DIRECTORY'
 
 /** OpenJD base-spec userInterface hints on a job parameter. */
 export interface ParameterUserInterface {
@@ -439,7 +441,12 @@ export interface ParameterUserInterface {
   label: string
   group_label: string
   decimals: number | null
-  single_step_removal: boolean | null
+}
+
+/** One named file type offered by a PATH parameter's chooser dialog. */
+export interface PathFileFilter {
+  label: string
+  patterns: string[]
 }
 
 /** Parsed job parameter from GET /products/{name}/parameters. */
@@ -456,6 +463,8 @@ export interface ProductParameter {
   object_type: string
   data_flow: string
   user_interface: ParameterUserInterface | null
+  file_filters: PathFileFilter[] | null
+  file_filter_default: PathFileFilter | null
 }
 
 /** Input for the submitProductJob mutation. */

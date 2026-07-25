@@ -288,8 +288,7 @@ Response: `200 OK`, array of `ProductParameter` objects in template order:
       "control": "LINE_EDIT",
       "label": "Interpreter",
       "group_label": "",
-      "decimals": null,
-      "single_step_removal": null
+      "decimals": null
     }
   }
 ]
@@ -365,8 +364,11 @@ It rides the `SQI_PATH_TRANSLATION` extension and offers five delivery mechanism
    variables.
 5. **`stage_locally`** — Copy job-level PATH parameters with `dataFlow` IN/INOUT
    to worker-local scratch before the run, and copy OUT/INOUT back after (sqi
-   convenience, not in OpenJD spec). Requires operator configuration of
-   `staging.scratch_dir` and `staging.sync_command` on the worker.
+   convenience, not in OpenJD spec). Works with no worker configuration — an
+   unconfigured worker falls back to a TEMP scratch directory and sqi's own
+   built-in copy — but a farm spanning multiple compute locations needs an
+   explicit `staging.scratch_dir` and `staging.sync_command` on the worker for
+   real remote transfer.
 
 Deliveries execute in fixed order and are mutually compatible — a product can
 declare all five simultaneously. The first two (`swap_in_place`, `translation_file`)

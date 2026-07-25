@@ -118,6 +118,24 @@ type JobParameter struct {
 	// UserInterface carries optional OpenJD base-spec presentation hints.
 	// Nil when the parameter declares no userInterface object.
 	UserInterface *ParameterUserInterface
+	// FileFilters are the file-type choices offered by a CHOOSE_*_FILE dialog.
+	// Only valid on PATH parameters; validation rejects them on other types.
+	FileFilters []PathFileFilter
+	// FileFilterDefault is the filter selected when the dialog opens.
+	// Only valid on PATH parameters. Nil when absent.
+	FileFilterDefault *PathFileFilter
+}
+
+// PathFileFilter is one named file type offered by an input or output file
+// chooser dialog, e.g. {label: "Image Files", patterns: ["*.png", "*.exr"]}.
+// It is presentation metadata: the server parses, validates, and carries it but
+// never acts on it.
+type PathFileFilter struct {
+	// Label names the filter in the chooser dialog. Unlike a parameter's
+	// userInterface label/groupLabel, this field has no enforced length cap.
+	Label string
+	// Patterns are the glob patterns the filter matches; at least one required.
+	Patterns []string
 }
 
 // ControlType is the OpenJD base-spec userInterface control for a job parameter.
@@ -132,12 +150,16 @@ const (
 	ControlDropdownList ControlType = "DROPDOWN_LIST"
 	// ControlCheckBox is a two-state checkbox; requires exactly two allowedValues.
 	ControlCheckBox ControlType = "CHECK_BOX"
-	// ControlChipInput is a multi-value chip/tag input.
-	ControlChipInput ControlType = "CHIP_INPUT"
 	// ControlHidden hides the parameter from the generated form.
 	ControlHidden ControlType = "HIDDEN"
 	// ControlSpinBox is a numeric spinner; valid only on INT/FLOAT.
 	ControlSpinBox ControlType = "SPIN_BOX"
+	// ControlChooseInputFile is a browse-for-an-existing-file dialog; PATH only.
+	ControlChooseInputFile ControlType = "CHOOSE_INPUT_FILE"
+	// ControlChooseOutputFile is a browse-for-an-output-file dialog; PATH only.
+	ControlChooseOutputFile ControlType = "CHOOSE_OUTPUT_FILE"
+	// ControlChooseDirectory is a browse-for-a-directory dialog; PATH only.
+	ControlChooseDirectory ControlType = "CHOOSE_DIRECTORY"
 )
 
 // ParameterUserInterface is the OpenJD base-spec userInterface hint object on a
@@ -152,8 +174,6 @@ type ParameterUserInterface struct {
 	GroupLabel string
 	// Decimals sets the precision for a SPIN_BOX on a FLOAT parameter.
 	Decimals *int
-	// SingleStepRemoval applies to CHIP_INPUT only.
-	SingleStepRemoval *bool
 }
 
 // ─── Environments ────────────────────────────────────────────────────────────
@@ -180,7 +200,7 @@ type EnvironmentScript struct {
 }
 
 // EnvironmentActions are the lifecycle hooks for an [Environment].
-// At least one of OnEnter or OnExit must be non-nil.
+// OnEnter is required by the OpenJD spec; only OnExit is optional.
 type EnvironmentActions struct {
 	OnEnter *Action
 	OnExit  *Action
@@ -311,9 +331,12 @@ type TaskParamDefinition struct {
 type TaskChunks struct {
 	// DefaultTaskCount is the number of INT values to group per task.
 	DefaultTaskCount int
-	// TargetRuntimeSeconds, when > 0, enables adaptive chunking.
+	// TargetRuntimeSeconds is parsed and carried but not acted on. The spec
+	// permits this explicitly: "A scheduler can ignore this, or dynamically
+	// adjust the chunk task count to be closer to this value."
 	TargetRuntimeSeconds *int
-	// RangeConstraint is "CONTIGUOUS" (default) or "NONCONTIGUOUS".
+	// RangeConstraint is "CONTIGUOUS" or "NONCONTIGUOUS"; required, validated
+	// in [validateChunks].
 	RangeConstraint string
 }
 

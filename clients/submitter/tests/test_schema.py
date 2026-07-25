@@ -118,8 +118,9 @@ def test_form_field_is_scene_path() -> None:
 @pytest.mark.parametrize(
     ("param", "widget"),
     [
-        # PATH is type-first: a LINE_EDIT control (the only legal way to carry a
-        # label on a path) must not suppress the derived picker.
+        # PATH is type-first: an absent control, or a stale LINE_EDIT (no
+        # longer a legal control on PATH server-side, but tolerated here
+        # defensively), must not suppress the derived picker.
         (_p(type_="PATH", ui={"control": "LINE_EDIT"}), "CHOOSE_INPUT_FILE"),
         (
             _p(type_="PATH", object_type="DIRECTORY", ui={"control": "LINE_EDIT"}),
@@ -139,11 +140,14 @@ def test_path_is_type_first(param: ProductParameter, widget: str) -> None:
 
 
 def test_labeled_path_keeps_label() -> None:
+    # CHOOSE_DIRECTORY is the server-valid control for a labeled directory
+    # PATH parameter (LINE_EDIT is not legal on PATH); it falls through to
+    # `if control: return control` and keeps the label alongside it.
     param = _p(
         name="OutputDir",
         type_="PATH",
         object_type="DIRECTORY",
-        ui={"control": "LINE_EDIT", "label": "Output Directory"},
+        ui={"control": "CHOOSE_DIRECTORY", "label": "Output Directory"},
     )
     field = FormModel.from_parameters([param]).fields[0]
     assert field.widget == "CHOOSE_DIRECTORY"
