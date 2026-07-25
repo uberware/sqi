@@ -133,8 +133,9 @@ steps:
 Submit with explicit parameter values. Job-level parameters without a
 `default` (`SceneName` and `OutputDir` below) must be supplied on the query
 string as `param.<Name>=<value>`; omitting a required parameter is a
-**422**. See [`openapi.yaml`](../internal/api/openapi.yaml) for the full
-`param.*` rules (type checking, `allowedValues`, etc.):
+**422**. See the OpenAPI spec (`internal/api/openapi.yaml`, served at
+`GET /api/v1/openapi.yaml`) for the full `param.*` rules (type checking,
+`allowedValues`, etc.):
 
 ```sh
 curl -s -X POST \

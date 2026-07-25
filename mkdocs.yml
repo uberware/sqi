@@ -70,6 +70,7 @@ nav:
           - Overview: api.md
       - OpenJD:
           - Submission Guide: openjd-submission.md
+          - Spec Conformance: openjd-conformance.md
           - Extensions Overview: openjd-extensions.md
           - Extension Details:
               - Task Chunking: openjd-extensions/task-chunking.md
