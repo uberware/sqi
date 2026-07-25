@@ -92,6 +92,9 @@ var (
 // otherwise try to look up a literal account named e.g. ".\render-svc" and
 // fail.
 func logonUserW(username, domain, password *uint16, logonType, logonProvider uint32) (windows.Token, error) {
+	if err := mustResolve(procLogonUserW); err != nil {
+		return 0, err
+	}
 	var token windows.Token
 	r1, _, e1 := procLogonUserW.Call(
 		uintptr(unsafe.Pointer(username)),

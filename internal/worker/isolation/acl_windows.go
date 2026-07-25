@@ -11,10 +11,27 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// fileAllAccess is FILE_ALL_ACCESS (winnt.h): STANDARD_RIGHTS_REQUIRED |
+// SYNCHRONIZE | 0x1FF — the specific-rights spelling of full control on a
+// file or directory. golang.org/x/sys/windows v0.47.0 exports no constant for
+// it, hence the literal.
+//
+// Deliberately NOT windows.GENERIC_ALL. Windows canonicalizes an INHERITABLE
+// ACE that carries generic bits by splitting it into two: a non-inheritable
+// effective ACE holding the mapped specific rights, plus an inherit-only ACE
+// that keeps the generic bits for children to map on their own. The three
+// entries below would land on disk as SIX ACEs — the same trustees and the
+// same effective access, but an ACL no one reading it would recognize as the
+// three-entry one this package builds, and one whose "exactly these three
+// trustees" invariant can no longer be asserted by simple inspection.
+// Granting the already-mapped mask sidesteps the split entirely: one ACE per
+// trustee, effective and inheritable at once.
+const fileAllAccess = windows.ACCESS_MASK(0x001F01FF)
+
 // explicitFullControl builds one inheritable full-control entry for sid.
 func explicitFullControl(sid *windows.SID) windows.EXPLICIT_ACCESS {
 	return windows.EXPLICIT_ACCESS{
-		AccessPermissions: windows.GENERIC_ALL,
+		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.GRANT_ACCESS,
 		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 		Trustee: windows.TRUSTEE{

@@ -192,15 +192,24 @@ func TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees(t *tes
 	t.Run("directory", func(t *testing.T) {
 		acl := readDACL(t, dir)
 
-		// 4, not 2: SetSecurityInfo canonicalizes each "this folder,
-		// subfolders, and files" ACE applied to a container into a direct
-		// ACE (applies to the directory itself) plus a separate
-		// INHERIT_ONLY ACE (applies only to future children) — so SYSTEM
-		// and Administrators each appear twice. Nothing else: no CREATOR
-		// OWNER, no direct grant for whoever's Put call is actually
-		// running — that is exactly what finding 1's fix removes.
-		if got := aceCount(t, acl); got != 4 {
-			t.Errorf("directory ACL has %d ACEs, want exactly 4 (SYSTEM and Administrators, each split direct+inherit-only)", got)
+		// 2: one ACE per trustee, SYSTEM and Administrators, and nothing
+		// else — no CREATOR OWNER, no direct grant for whoever's Put call
+		// is actually running, which is exactly what finding 1's fix
+		// removes.
+		//
+		// This asserted 4 until the suite first ran on a real host. The
+		// reasoning behind that number was sound as far as it went —
+		// SetSecurityInfo really does canonicalize an inheritable ACE
+		// applied to a container into a direct ACE plus a separate
+		// INHERIT_ONLY one — but it only does so for an ACE carrying
+		// GENERIC bits, which have to be re-mapped per child type.
+		// explicitFullControl now grants the already-mapped FILE_ALL_ACCESS
+		// (see isolation.fileAllAccess), so no split happens and the
+		// applied ACL matches the one the package builds. A split ACL would
+		// still grant the same two trustees, but "exactly these trustees,
+		// nothing inherited" would no longer be assertable by counting.
+		if got := aceCount(t, acl); got != 2 {
+			t.Errorf("directory ACL has %d ACEs, want exactly 2 (SYSTEM, Administrators)", got)
 		}
 		if !hasSID(t, acl, system) {
 			t.Error("directory ACL must grant SYSTEM, or the worker service cannot re-secure it")
