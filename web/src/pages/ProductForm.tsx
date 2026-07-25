@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
 import { useToast } from '@/components/Toast'

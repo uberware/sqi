@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useCallback, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import CodeEditor from '@/components/CodeEditor'
 import RetryPolicyFields from '@/components/RetryPolicyFields'

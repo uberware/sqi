@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import DebouncedSearchInput from '@/components/DebouncedSearchInput'

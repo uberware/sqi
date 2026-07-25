@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useCallback, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import UsageBar from '@/components/UsageBar'
 import IconButton from '@/components/IconButton'

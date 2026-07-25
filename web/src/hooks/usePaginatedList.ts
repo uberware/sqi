@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import type { QueryKey } from '@tanstack/react-query'
 import type { ListResponse } from '@/api/types'
 

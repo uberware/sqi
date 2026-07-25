@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import DiagnosticsPanel from '@/components/DiagnosticsPanel'
 import PageHeader from '@/components/PageHeader'

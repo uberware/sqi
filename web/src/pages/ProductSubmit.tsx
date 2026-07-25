@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import ProductParamField from '@/components/ProductParamField'
 import RetryPolicyFields from '@/components/RetryPolicyFields'

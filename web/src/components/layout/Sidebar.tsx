@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { NavLink } from 'react-router-dom'
+import { NavLink } from 'react-router'
 import ConnectionStatusBadge from '@/components/ConnectionStatusBadge'
 import ThemeToggle from '@/components/layout/ThemeToggle'
 import { useAuth } from '@/auth/context'

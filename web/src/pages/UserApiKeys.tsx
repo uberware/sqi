@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import ErrorBanner from '@/components/ErrorBanner'
 import ApiKeyTable from '@/components/ApiKeyTable'

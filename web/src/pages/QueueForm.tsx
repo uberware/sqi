@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router'
 import type { Farm } from '@/api/types'
 import PageHeader from '@/components/PageHeader'
 import RetryPolicyFields from '@/components/RetryPolicyFields'
