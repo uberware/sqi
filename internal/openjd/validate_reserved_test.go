@@ -17,7 +17,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-func TestValidate_ReservedNames_Gated(t *testing.T) {
+func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 	cases := []struct {
 		name    string
 		mutate  func(*openjd.JobTemplate)
