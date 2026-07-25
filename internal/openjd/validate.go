@@ -224,7 +224,7 @@ var fileFilterPatternRE = regexp.MustCompile(`^(\*|\*\.\*|\*\.[^\p{Cc}\\/*?\[\]#
 // [ValidateWithOptions].
 type ValidateOptions struct {
 	// EnforceLimits gates quantitative limit checks: maximum name lengths,
-	// element counts, reserved-name rules, etc.
+	// element counts, etc.
 	//
 	// When false those checks are skipped — useful in operator environments
 	// that predate strict limit enforcement and cannot yet update all templates.
@@ -234,7 +234,10 @@ type ValidateOptions struct {
 	// and belong to validateLimits — do not scatter gated checks elsewhere.
 	// Structural correctness checks belong in the always-run path instead:
 	// [validateHostRequirements] is the host-requirement half, deliberately
-	// separate from [validateHostRequirementLimits].
+	// separate from [validateHostRequirementLimits]. Reserved-capability value
+	// checks ([validateReservedAmounts], [validateReservedAttributes]) are
+	// value-domain correctness, not a size or count cap, so they run from
+	// [validateHostRequirements] unconditionally too.
 	// Resource-exhaustion guards (e.g. the [maxRangeValues] cap in
 	// parseIntRangeExpr) are NOT limit checks: they always apply, regardless of
 	// this flag.
@@ -559,9 +562,10 @@ func taskParamValueCount(tp TaskParamDefinition) (count int, counted bool) {
 // validateHostRequirementLimits checks the gated limits on a step's
 // hostRequirements: combined count, capability name lengths, and attribute
 // anyOf/allOf element counts. Structural correctness (presence, capability
-// name well-formedness and prefix, and attribute anyOf/allOf presence) lives
-// in [validateHostRequirements] instead and always runs — see the invariant
-// documented on [ValidateOptions].
+// name well-formedness and prefix, and attribute anyOf/allOf presence) and
+// reserved-capability value checks (reserved amount minimums, reserved
+// attribute allowed values) live in [validateHostRequirements] instead and
+// always run — see the invariant documented on [ValidateOptions].
 func validateHostRequirementLimits(hr HostRequirements, base string) ValidationErrors {
 	var errs ValidationErrors
 
@@ -595,18 +599,17 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 		}
 	}
 
-	// Reserved-name checks (also gated by EnforceLimits via the call chain).
-	errs = append(errs, validateReservedAmounts(hr.Amounts, base)...)
-	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
-
 	return errs
 }
 
 // validateHostRequirements checks the structural correctness of a step's host
 // requirements: that the block declares something, that capability names are
-// non-empty and correctly prefixed, and that each attribute constrains
-// something. These are correctness checks, not size caps, so they always run
-// -- see the invariant documented on [ValidateOptions]. The gated size caps
+// non-empty and correctly prefixed, that each attribute constrains something,
+// and — for reserved capability names — that the value asked for is within
+// the spec-mandated domain (reserved amount minimums, reserved attribute
+// allowed values). These are correctness checks, not size caps: a template
+// asking for vcpu: 0 is malformed, not oversized. So they always run -- see
+// the invariant documented on [ValidateOptions]. The gated size caps
 // (combined count, name length, anyOf/allOf element counts) live in
 // [validateHostRequirementLimits] instead.
 func validateHostRequirements(hr HostRequirements, base string) ValidationErrors {
@@ -638,6 +641,12 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 		}
 	}
 
+	// Reserved-capability value checks: pure value-domain correctness, with
+	// no size or count component, so they belong here rather than in the
+	// gated validateHostRequirementLimits.
+	errs = append(errs, validateReservedAmounts(hr.Amounts, base)...)
+	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
+
 	return errs
 }
 
@@ -647,8 +656,10 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 //
 // Min/Max values that contain an unresolved format-string reference ("{{") are
 // skipped: the numeric value cannot be determined before job-parameter binding.
-// Non-numeric values are already rejected by earlier structural checks, so a
-// parse failure here is silently skipped to avoid double-reporting.
+// Nothing upstream of this check rejects a non-numeric Min/Max: the decoder
+// (decodeAmountBound) accepts any scalar (string, number, or boolean) without
+// requiring it to parse as a number, so a non-numeric bound is reported here,
+// by [checkReservedBound], not silently skipped.
 func validateReservedAmounts(amounts []AmountRequirement, base string) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range amounts {
@@ -663,10 +674,11 @@ func validateReservedAmounts(amounts []AmountRequirement, base string) Validatio
 	return errs
 }
 
-// checkReservedBound validates that a *string capability bound (Min or Max),
-// when present and parseable as a number, is >= the reserved minimum. Nil
-// bounds and bounds containing format-string references ("{{") are skipped.
-// Non-finite values (NaN, ±Inf) are rejected as validation errors.
+// checkReservedBound validates that a *string capability bound (Min or Max)
+// is >= the reserved minimum. Nil bounds and bounds containing format-string
+// references ("{{") are skipped. A bound that fails to parse as a number, or
+// that parses to a non-finite value (NaN, ±Inf), is reported as a validation
+// error rather than skipped.
 func checkReservedBound(val *string, minReq float64, capName, ptr string) ValidationErrors {
 	if val == nil || strings.Contains(*val, "{{") {
 		return nil
