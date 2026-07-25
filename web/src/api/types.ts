@@ -445,6 +445,12 @@ export interface ParameterUserInterface {
   single_step_removal: boolean | null
 }
 
+/** One named file type offered by a PATH parameter's chooser dialog. */
+export interface PathFileFilter {
+  label: string
+  patterns: string[]
+}
+
 /** Parsed job parameter from GET /products/{name}/parameters. */
 export interface ProductParameter {
   name: string
@@ -459,6 +465,8 @@ export interface ProductParameter {
   object_type: string
   data_flow: string
   user_interface: ParameterUserInterface | null
+  file_filters: PathFileFilter[]
+  file_filter_default: PathFileFilter | null
 }
 
 /** Input for the submitProductJob mutation. */

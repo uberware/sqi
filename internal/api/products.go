@@ -81,21 +81,29 @@ type parameterUserInterfaceResponse struct {
 	SingleStepRemoval *bool  `json:"single_step_removal"`
 }
 
+// pathFileFilterResponse mirrors openjd.PathFileFilter on the wire.
+type pathFileFilterResponse struct {
+	Label    string   `json:"label"`
+	Patterns []string `json:"patterns"`
+}
+
 // productParameterResponse is one parsed job parameter, including userInterface
 // hints, returned by GET /products/{name}/parameters.
 type productParameterResponse struct {
-	Name          string                          `json:"name"`
-	Type          string                          `json:"type"`
-	Description   string                          `json:"description"`
-	Default       *string                         `json:"default"`
-	AllowedValues []string                        `json:"allowed_values"`
-	MinValue      *string                         `json:"min_value"`
-	MaxValue      *string                         `json:"max_value"`
-	MinLength     *int                            `json:"min_length"`
-	MaxLength     *int                            `json:"max_length"`
-	ObjectType    string                          `json:"object_type"`
-	DataFlow      string                          `json:"data_flow"`
-	UserInterface *parameterUserInterfaceResponse `json:"user_interface"`
+	Name              string                          `json:"name"`
+	Type              string                          `json:"type"`
+	Description       string                          `json:"description"`
+	Default           *string                         `json:"default"`
+	AllowedValues     []string                        `json:"allowed_values"`
+	MinValue          *string                         `json:"min_value"`
+	MaxValue          *string                         `json:"max_value"`
+	MinLength         *int                            `json:"min_length"`
+	MaxLength         *int                            `json:"max_length"`
+	ObjectType        string                          `json:"object_type"`
+	DataFlow          string                          `json:"data_flow"`
+	UserInterface     *parameterUserInterfaceResponse `json:"user_interface"`
+	FileFilters       []pathFileFilterResponse        `json:"file_filters"`
+	FileFilterDefault *pathFileFilterResponse         `json:"file_filter_default"`
 }
 
 func toProductParameterResponse(p openjd.JobParameter) productParameterResponse {
@@ -119,6 +127,15 @@ func toProductParameterResponse(p openjd.JobParameter) productParameterResponse 
 			GroupLabel:        p.UserInterface.GroupLabel,
 			Decimals:          p.UserInterface.Decimals,
 			SingleStepRemoval: p.UserInterface.SingleStepRemoval,
+		}
+	}
+	for _, f := range p.FileFilters {
+		out.FileFilters = append(out.FileFilters, pathFileFilterResponse{Label: f.Label, Patterns: f.Patterns})
+	}
+	if p.FileFilterDefault != nil {
+		out.FileFilterDefault = &pathFileFilterResponse{
+			Label:    p.FileFilterDefault.Label,
+			Patterns: p.FileFilterDefault.Patterns,
 		}
 	}
 	return out

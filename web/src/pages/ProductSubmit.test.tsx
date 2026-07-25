@@ -50,6 +50,8 @@ const h = vi.hoisted(() => {
     object_type: 'FILE',
     data_flow: '',
     user_interface: null,
+    file_filters: [],
+    file_filter_default: null,
   })
   const internalParam = () => ({
     name: 'InternalPath',
@@ -70,6 +72,8 @@ const h = vi.hoisted(() => {
       decimals: null,
       single_step_removal: null,
     },
+    file_filters: [],
+    file_filter_default: null,
   })
   const defaultParams = () => [sceneParam(null), internalParam()]
   const makeJob = (overrides: Partial<Record<string, unknown>> = {}) => ({

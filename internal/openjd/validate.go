@@ -951,6 +951,9 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 
 		// userInterface validation is also structural, always runs.
 		errs = append(errs, validateUserInterface(p, ptr)...)
+
+		// fileFilters / fileFilterDefault are also structural, always runs.
+		errs = append(errs, validateFileFilters(p, ptr)...)
 	}
 	return errs
 }
@@ -1121,6 +1124,38 @@ func validatePathOnlyField[T ~string](value T, ptr, field string, isPath bool, v
 		errs = append(errs, ValidationError{
 			Pointer: ptr,
 			Message: field + " may only be set on PATH parameters",
+		})
+	}
+	return errs
+}
+
+// validateFileFilters checks the PATH-only file chooser filters: they are valid
+// only on PATH parameters, and each filter must offer at least one pattern.
+// Structural -- always runs.
+func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if len(p.FileFilters) == 0 && p.FileFilterDefault == nil {
+		return nil
+	}
+	if p.Type != JobParamTypePath {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/fileFilters",
+			Message: "fileFilters and fileFilterDefault are valid only on PATH parameters",
+		})
+		return errs
+	}
+	for i, f := range p.FileFilters {
+		if len(f.Patterns) == 0 {
+			errs = append(errs, ValidationError{
+				Pointer: fmt.Sprintf("%s/fileFilters/%d/patterns", ptr, i),
+				Message: "at least one pattern is required",
+			})
+		}
+	}
+	if p.FileFilterDefault != nil && len(p.FileFilterDefault.Patterns) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/fileFilterDefault/patterns",
+			Message: "at least one pattern is required",
 		})
 	}
 	return errs

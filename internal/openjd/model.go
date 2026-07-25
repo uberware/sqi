@@ -118,6 +118,24 @@ type JobParameter struct {
 	// UserInterface carries optional OpenJD base-spec presentation hints.
 	// Nil when the parameter declares no userInterface object.
 	UserInterface *ParameterUserInterface
+	// FileFilters are the file-type choices offered by a CHOOSE_*_FILE dialog.
+	// Only valid on PATH parameters; validation rejects them on other types.
+	FileFilters []PathFileFilter
+	// FileFilterDefault is the filter selected when the dialog opens.
+	// Only valid on PATH parameters. Nil when absent.
+	FileFilterDefault *PathFileFilter
+}
+
+// PathFileFilter is one named file type offered by an input or output file
+// chooser dialog, e.g. {label: "Image Files", patterns: ["*.png", "*.exr"]}.
+// It is presentation metadata: the server parses, validates, and carries it but
+// never acts on it.
+type PathFileFilter struct {
+	// Label names the filter in the chooser dialog. Bounded like every other
+	// userInterface label (1-64 characters).
+	Label string
+	// Patterns are the glob patterns the filter matches; at least one required.
+	Patterns []string
 }
 
 // ControlType is the OpenJD base-spec userInterface control for a job parameter.

@@ -158,7 +158,51 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 		p.UserInterface = ui
 	}
 
+	// fileFilters / fileFilterDefault (PATH-only chooser-dialog metadata;
+	// validation enforces the PATH-only constraint). Decoded by a helper to
+	// keep this function's cyclomatic complexity within bounds.
+	if err := decodeJobParamFileFilters(raw, &p); err != nil {
+		return p, err
+	}
+
 	return p, nil
+}
+
+// decodeJobParamFileFilters populates the fileFilters and fileFilterDefault
+// fields of p from the raw decoded map.
+func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
+	if filters, ok := raw["fileFilters"].([]any); ok {
+		for i, v := range filters {
+			f, err := decodePathFileFilter(v, fmt.Sprintf("parameterDefinition.fileFilters[%d]", i))
+			if err != nil {
+				return err
+			}
+			p.FileFilters = append(p.FileFilters, f)
+		}
+	}
+	if v, ok := raw["fileFilterDefault"]; ok && v != nil {
+		f, err := decodePathFileFilter(v, "parameterDefinition.fileFilterDefault")
+		if err != nil {
+			return err
+		}
+		p.FileFilterDefault = &f
+	}
+	return nil
+}
+
+// decodePathFileFilter decodes one <JobPathParameterFileFilter>.
+func decodePathFileFilter(v any, ctx string) (PathFileFilter, error) {
+	m, err := toMap(v, ctx)
+	if err != nil {
+		return PathFileFilter{}, err
+	}
+	f := PathFileFilter{Label: getString(m, "label")}
+	if raw, ok := m["patterns"].([]any); ok {
+		for _, p := range raw {
+			f.Patterns = append(f.Patterns, anyToString(p))
+		}
+	}
+	return f, nil
 }
 
 // decodeJobParamConstraints populates the allowedValues, minValue/maxValue, and

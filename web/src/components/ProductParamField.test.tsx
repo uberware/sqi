@@ -18,6 +18,8 @@ function param(over: Partial<ProductParameter>): ProductParameter {
     object_type: '',
     data_flow: '',
     user_interface: null,
+    file_filters: [],
+    file_filter_default: null,
     ...over,
   }
 }

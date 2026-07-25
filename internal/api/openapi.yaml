@@ -1434,6 +1434,21 @@ components:
             group_label: { type: string }
             decimals: { type: integer, nullable: true }
             single_step_removal: { type: boolean, nullable: true }
+        file_filters:
+          type: array
+          items:
+            type: object
+            required: [label, patterns]
+            properties:
+              label: { type: string }
+              patterns: { type: array, items: { type: string } }
+        file_filter_default:
+          nullable: true
+          type: object
+          required: [label, patterns]
+          properties:
+            label: { type: string }
+            patterns: { type: array, items: { type: string } }
 
     # ── Usage pools ───────────────────────────────────────────────────────────
     UsagePool:
