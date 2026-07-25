@@ -1132,8 +1132,15 @@ func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 		return nil
 	}
 	if p.Type != JobParamTypePath {
+		// Point at whichever field was actually declared, so a
+		// fileFilterDefault-only parameter doesn't get an error pointing at
+		// the sibling fileFilters field it never set.
+		field := "fileFilterDefault"
+		if len(p.FileFilters) > 0 {
+			field = "fileFilters"
+		}
 		errs = append(errs, ValidationError{
-			Pointer: ptr + "/fileFilters",
+			Pointer: ptr + "/" + field,
 			Message: "fileFilters and fileFilterDefault are valid only on PATH parameters",
 		})
 		return errs

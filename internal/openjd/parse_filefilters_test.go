@@ -73,6 +73,27 @@ steps:
 	assertValidationContains(t, tmpl, "fileFilters")
 }
 
+func TestValidate_FileFilterDefaultOnlyRejectedOnNonPath(t *testing.T) {
+	yaml := `
+specificationVersion: jobtemplate-2023-09
+name: BadFilterDefaultJob
+parameterDefinitions:
+  - name: Frames
+    type: STRING
+    fileFilterDefault:
+      label: Image Files
+      patterns: ["*.png"]
+steps:
+  - name: Step1
+    script:
+      actions:
+        onRun:
+          command: echo
+`
+	tmpl := mustParse(t, yaml)
+	assertValidationContains(t, tmpl, "/parameterDefinitions/0/fileFilterDefault:")
+}
+
 func TestValidate_FileFilterRequiresPatterns(t *testing.T) {
 	yaml := `
 specificationVersion: jobtemplate-2023-09
