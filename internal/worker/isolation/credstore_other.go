@@ -18,6 +18,6 @@ type fileStore struct{}
 // lookup fails.
 func NewFileStore(_ string) CredentialStore { return &fileStore{} }
 
-func (s *fileStore) Secret(string) (string, error) {
+func (*fileStore) Secret(string) (string, error) {
 	return "", errors.New("isolation: stored credentials are only supported on windows")
 }

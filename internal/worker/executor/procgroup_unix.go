@@ -20,4 +20,4 @@ func superviseTree(cmd *exec.Cmd) (*processTree, error) {
 // release is a no-op: nothing kills a task's process group on a successful
 // exit here, which internal/worker/staging's TOCTOU analysis depends on. The
 // Windows implementation goes out of its way to match this.
-func (t *processTree) release() error { return nil }
+func (*processTree) release() error { return nil }
