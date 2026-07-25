@@ -176,8 +176,11 @@ compatible — a product can declare all five):
 - **`environment`**: Path mappings delivered via an environment variable.
 - **`stage_locally`**: Job-level PATH parameters staged to worker-local
   scratch before the run and copied back after, for cloud workers without
-  direct access to source storage. Requires operator configuration of
-  `staging.scratch_dir` and `staging.sync_command`.
+  direct access to source storage. Works with no worker configuration — an
+  unconfigured worker falls back to a TEMP scratch directory and sqi's own
+  built-in copy — but a farm spanning multiple compute locations needs an
+  explicit `staging.scratch_dir` and `staging.sync_command`
+  (`rsync`/`aws-cli`/etc.) for real remote transfer.
 
 `swap_in_place` and `translation_file` are the default when no
 `SQI_PATH_TRANSLATION` extension is declared. Full reference:
