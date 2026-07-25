@@ -174,6 +174,47 @@ func TestValidateUIGroupLabelLengthLimit(t *testing.T) {
 	}
 }
 
+// TestValidateUIGroupLabelExactBoundary proves the groupLabel cap is enforced
+// at exactly maxUIGroupLabelLen characters, not merely somewhere below a
+// clearly-over-limit value. TestValidateUIGroupLabelLengthLimit above only
+// exercises a 257-character groupLabel, which would still fail an off-by-one
+// in the comparison (e.g. >= instead of >); this test pins the boundary
+// itself: maxUIGroupLabelLen characters must be accepted, maxUIGroupLabelLen+1
+// must be rejected.
+func TestValidateUIGroupLabelExactBoundary(t *testing.T) {
+	base := func(groupLabel string) *JobTemplate {
+		return &JobTemplate{
+			SpecificationVersion: SpecVersion,
+			Name:                 "x",
+			ParameterDefinitions: []JobParameter{{
+				Name: "Q", Type: JobParamTypeString,
+				UserInterface: &ParameterUserInterface{Control: ControlLineEdit, GroupLabel: groupLabel},
+			}},
+			Steps: []StepTemplate{{Name: "A"}},
+		}
+	}
+
+	// Exactly maxUIGroupLabelLen characters — must be accepted.
+	groupLabelAtLimit := strings.Repeat("x", maxUIGroupLabelLen)
+	if errs := ValidateWithOptions(base(groupLabelAtLimit), ValidateOptions{EnforceLimits: true}); strings.Contains(errs.Error(), "groupLabel") {
+		t.Errorf("%d-character groupLabel was incorrectly rejected; got %v", maxUIGroupLabelLen, errs)
+	}
+
+	// maxUIGroupLabelLen+1 characters — must be rejected with a pointer on /groupLabel.
+	groupLabelOverLimit := strings.Repeat("x", maxUIGroupLabelLen+1)
+	errs := ValidateWithOptions(base(groupLabelOverLimit), ValidateOptions{EnforceLimits: true})
+	found := false
+	for _, e := range errs {
+		if e.Pointer == "/parameterDefinitions/0/userInterface/groupLabel" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("%d-character groupLabel was not flagged at expected pointer; got %v", maxUIGroupLabelLen+1, errs)
+	}
+}
+
 // TestValidateUILabelRuneCounting proves the label limit is counted in Unicode
 // runes (characters), not bytes.  "é" (U+00E9) is 2 bytes but 1 rune.
 //

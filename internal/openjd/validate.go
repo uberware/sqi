@@ -167,8 +167,9 @@ func validatePathTranslation(t *JobTemplate) ValidationErrors {
 
 // validateChunkBounds enforces the SQI_CHUNK_BOUNDS extension's constraints when
 // it is declared: TASK_CHUNKING must also be declared, and every CHUNK[INT] task
-// parameter must be CONTIGUOUS (an empty rangeConstraint defaults to contiguous),
-// because .Start/.End are undefined across the gaps of a NONCONTIGUOUS chunk.
+// parameter must be CONTIGUOUS (rangeConstraint is required, so this only rejects
+// the literal NONCONTIGUOUS value), because .Start/.End are undefined across the
+// gaps of a NONCONTIGUOUS chunk.
 // Runs unconditionally (not gated by EnforceLimits).
 func validateChunkBounds(t *JobTemplate) ValidationErrors {
 	if !t.hasExtension("SQI_CHUNK_BOUNDS") {
