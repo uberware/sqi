@@ -338,10 +338,10 @@ diagnostics:
 # Supported on POSIX (Linux/macOS) and Windows (via the logon_user provider).
 # POSIX is verified against a real container (make test-isolation): setuid/
 # setgid/supplementary groups, workdir chown/chmod, and the
-# ancestor-traversability boot check. Windows is implemented — DPAPI
-# credential storage, NTFS session-directory ACLs, job-object process
-# containment — but make test-isolation-windows (real accounts, real ACLs,
-# under an elevated shell) had not yet had its first run as of this writing.
+# ancestor-traversability boot check. Windows is verified the same way by
+# make test-isolation-windows (real local accounts, real NTFS ACLs, DPAPI
+# credential storage, privileged tier as SYSTEM) — DPAPI credential storage,
+# NTFS session-directory ACLs, and job-object process containment all pass.
 # See docs/worker-configuration.md for full Windows setup and docs/auth.md's
 # Known gaps for the open staging TOCTOU caveat.
 # isolation:

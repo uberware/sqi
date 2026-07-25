@@ -1432,18 +1432,17 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   operator reading "I flipped `auth.enabled` to `true`, so the server is now
   locked down" should read that as "the HTTP/WebSocket surface is now locked
   down" — the worker-registration surface is unaffected either way.
-- **Task isolation is implemented on both platforms but the Windows path has
-  not run on a real elevated host yet.** See [Task isolation](#task-isolation)
-  above for the current state: a queue's `run_as_user` runs job code as a
-  distinct OS user on Linux/macOS workers, and as a distinct logon session on
-  Windows workers via `LogonUserW`. The Windows implementation is compiled,
-  vetted, and unit-tested where privilege allows, but `make test-isolation-windows`
-  (the suite that exercises real accounts, real NTFS ACLs, and DPAPI under an
-  elevated shell) had not yet had its first real run as of this writing. The
-  NSS (LDAP/AD-backed account) fallback path on POSIX has only ever been
-  exercised against canned command output, never a real directory server —
-  see [`docs/worker-configuration.md`](worker-configuration.md) for the
-  caveat in full.
+- **Task isolation is implemented and integration-tested on both platforms.**
+  See [Task isolation](#task-isolation) above for the current state: a queue's
+  `run_as_user` runs job code as a distinct OS user on Linux/macOS workers, and
+  as a distinct logon session on Windows workers via `LogonUserW`. Both suites
+  run against real OS accounts — `make test-isolation` as root in a container,
+  `make test-isolation-windows` against real local accounts with its privileged
+  tier as SYSTEM — and both pass. The POSIX NSS (LDAP/AD-backed account)
+  fallback path, however, has only ever been exercised against canned command
+  output, never a real directory server — see
+  [`docs/worker-configuration.md`](worker-configuration.md) for that caveat in
+  full.
 - **Windows staging has no TOCTOU re-check on stage-out, and isolation is what
   makes it reachable.** On POSIX, `internal/worker/staging`'s `builtinCopy`
   re-checks for a symlink swap or a hardlink-count change (`O_NOFOLLOW`,

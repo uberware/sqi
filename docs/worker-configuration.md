@@ -629,13 +629,13 @@ isolation:
 
 ### Windows
 
-Task isolation is implemented on Windows via the `logon_user` provider, but
-**the Windows path has not run on a real elevated host yet.** It is compiled,
-vetted, and unit-tested where privilege allows, but `make test-isolation-windows`
-— the suite that exercises real accounts, real NTFS ACLs, and DPAPI under an
-elevated shell — had not yet had its first real run as of this writing. See
-[Known gaps](auth.md#known-gaps) in `docs/auth.md` for the full caveat before
-relying on this in production.
+Task isolation is implemented on Windows via the `logon_user` provider. The
+full suite — `make test-isolation-windows`, which exercises real local
+accounts, real NTFS ACLs, DPAPI credential storage, and a child process
+actually launched under the target account's token — has now run and passes on
+a real elevated host (tier 1 as elevated Administrator, tier 2 as SYSTEM via a
+scheduled task). See [Known gaps](auth.md#known-gaps) in `docs/auth.md` for the
+caveats that remain.
 
 **The worker must run as a service under LocalSystem**, or as an account
 granted `SeAssignPrimaryTokenPrivilege`. Windows requires that privilege to
@@ -643,6 +643,24 @@ start a process under another account's token, and an elevated Administrator
 does **not** hold it by default — this is the single most common cause of
 `isolation: worker cannot assume another OS identity` on Windows. `Capable()`
 reports it at boot with the fix named.
+
+**Each run-as-user account needs the "Log on as a batch job" right**
+(`SeBatchLogonRight`). The provider logs the account on with
+`LOGON32_LOGON_BATCH` — the correct logon type for a service doing work on a
+user's behalf, since unlike an interactive logon it does not require "Allow log
+on locally", and unlike an S4U logon it does carry network credentials. Default
+workstation policy grants that right to Administrators, Backup Operators and
+Performance Log Users only, so a purpose-made standard account does **not**
+hold it until you say so, and credential resolution fails with:
+
+    isolation: logon "render-svc": LogonUserW: Logon failure: the user has not
+    been granted the requested logon type at this computer.
+
+Grant it in `secpol.msc` under **Local Policies → User Rights Assignment → Log
+on as a batch job**. To script it, or on an edition that ships no `secpol.msc`
+(Windows Home), call `LsaAddAccountRights` with the account's SID —
+`scripts/test-isolation-windows.ps1` does precisely that for its throwaway
+accounts and is a working reference.
 
 **Provisioning credentials.** Each run-as-user account needs its password
 stored on every worker that serves a queue configured for it. From an elevated

@@ -19,11 +19,11 @@
 // Windows: LogonUserW produces a primary token, LoadUserProfileW mounts the
 // target's registry hive and profile directory, session directories are
 // secured with a protected NTFS DACL, and task processes are contained in a
-// job object. Implemented, compiled, and unit-tested where privilege allows,
-// but make test-isolation-windows — which runs its privileged tier as SYSTEM
-// via a scheduled task, against real local accounts — has not yet had its
-// first real run. A skip verifies nothing; see that target's own output
-// before trusting a local pass.
+// job object. Verified against real local accounts by make
+// test-isolation-windows, which runs its privileged tier as SYSTEM via a
+// scheduled task. That target exits 0 when the shell is not elevated, so a
+// skip verifies nothing — see its own output before trusting a local pass;
+// CI asserts every test by name for this reason.
 //
 // A Windows worker MUST run as a service under LocalSystem, or as an account
 // granted SeAssignPrimaryTokenPrivilege. CreateProcessAsUser — which os/exec
