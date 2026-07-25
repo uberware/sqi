@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route } from 'react-router'
 import RequireRole from '@/components/RequireRole'
 import Dashboard from '@/pages/Dashboard'
 import JobList from '@/pages/JobList'

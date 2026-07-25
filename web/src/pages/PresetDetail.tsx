@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useCallback } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import { usePreset } from '@/api/queries'

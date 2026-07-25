@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import { ToastProvider } from '@/components/Toast'
@@ -99,8 +99,8 @@ const h = vi.hoisted(() => {
   }
 })
 
-vi.mock('react-router-dom', async (orig) => ({
-  ...(await orig<typeof import('react-router-dom')>()),
+vi.mock('react-router', async (orig) => ({
+  ...(await orig<typeof import('react-router')>()),
   useNavigate: () => navigateMock,
 }))
 

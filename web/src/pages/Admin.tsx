@@ -3,7 +3,7 @@
    visibleAdminLinks/hasAnyAdminAccess helpers Sidebar reuses to keep its Admin
    nav entry in lockstep with this page's card visibility */
 
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useVersion } from '@/api/queries'
 import { useAuth } from '@/auth/context'
 import { can, type Permission } from '@/auth/policy'

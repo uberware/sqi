@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import ServerLog from '@/pages/ServerLog'
 
 vi.mock('@/ws/context', () => ({ useWebSocket: () => {} }))

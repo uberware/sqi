@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import DebouncedSearchInput from '@/components/DebouncedSearchInput'
 import { useSearchParam } from '@/hooks/useSearchParam'
