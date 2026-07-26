@@ -100,6 +100,12 @@ type JobParameter struct {
 	Default *string
 	// AllowedValues, when non-nil, enumerates the only acceptable values.
 	AllowedValues []string
+	// AllowedValuesSet records whether the key was PRESENT in the template.
+	// "allowedValues: null" and "allowedValues: []" both decode to an empty
+	// slice, which is indistinguishable from the key being absent — but the
+	// spec allows omitting the list entirely while requiring a declared one to
+	// hold at least one value.
+	AllowedValuesSet bool
 	// MinValue / MaxValue constrain INT and FLOAT parameters.
 	// Stored as strings for lossless round-tripping.
 	MinValue *string
@@ -174,6 +180,16 @@ type ParameterUserInterface struct {
 	GroupLabel string
 	// Decimals sets the precision for a SPIN_BOX on a FLOAT parameter.
 	Decimals *int
+	// SingleStepDelta is the increment a SPIN_BOX applies per step. Held as a
+	// string so validation can tell an integer from a float: an INT parameter's
+	// delta must itself be an integer.
+	SingleStepDelta *string
+	// LabelSet and GroupLabelSet record whether the key was PRESENT in the
+	// template, as opposed to merely empty. Both fields are optional, but an
+	// explicitly empty one is invalid, and the string alone cannot tell the two
+	// apart.
+	LabelSet      bool
+	GroupLabelSet bool
 }
 
 // ─── Environments ────────────────────────────────────────────────────────────

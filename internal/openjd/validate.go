@@ -1200,6 +1200,49 @@ func parseNumericBound(b *string) (float64, bool) {
 	return f, err == nil
 }
 
+// validateSingleStepDelta checks a userInterface.singleStepDelta: the amount a
+// SPIN_BOX moves per step. It is meaningful only on a SPIN_BOX, must be a
+// positive number (a zero or negative step cannot advance the control), and on
+// an INT parameter must itself be an integer — a fractional step on an integer
+// field can never land on a legal value.
+func validateSingleStepDelta(p JobParameter, ui *ParameterUserInterface, ptr string) ValidationErrors {
+	if ui.SingleStepDelta == nil {
+		return nil
+	}
+	v := *ui.SingleStepDelta
+	if ui.Control != ControlSpinBox {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("singleStepDelta is valid only with the SPIN_BOX control (got %q)", ui.Control),
+		}}
+	}
+	if strings.Contains(v, "{{") {
+		return nil
+	}
+	if p.Type == JobParamTypeInt {
+		if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: fmt.Sprintf("singleStepDelta %q must be an integer on an INT parameter", v),
+			}}
+		}
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("singleStepDelta %q is not a valid number", v),
+		}}
+	}
+	if f <= 0 {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("singleStepDelta must be positive (got %s)", v),
+		}}
+	}
+	return nil
+}
+
 // checkBoxValuePairs are the allowedValues pairs a CHECK_BOX may carry. The
 // spec (§2.1.9.1) requires "two values, case-insensitive, one representing true
 // and another representing false", and enumerates the valid pairs. Either order
@@ -1230,16 +1273,20 @@ func validateCheckBoxValues(p JobParameter, ctrlPtr string) ValidationErrors {
 	}}
 }
 
-// validateUILabelText checks a userInterface label or groupLabel for control
-// characters, which corrupt the layout of any form built from the template.
+// validateUILabelText checks a declared userInterface label or groupLabel. Both
+// fields are optional, but a declared one must carry real text: an empty string
+// renders a nameless control, and a control character or line break corrupts the
+// layout of any form built from the template.
 //
-// It cannot also reject an explicitly empty label: the decoder stores a missing
-// label and `label: ""` identically as "", so distinguishing them needs
-// presence tracking at parse time. Conformance fixtures 2.1--label-empty and
-// 2--group-label-empty remain baselined for that reason.
-func validateUILabelText(v, ptr string) ValidationErrors {
-	if v == "" {
+// set reports whether the key was present at all, which the decoder tracks
+// separately — the string alone cannot distinguish a missing label from
+// `label: ""`.
+func validateUILabelText(v string, set bool, ptr string) ValidationErrors {
+	if !set {
 		return nil
+	}
+	if v == "" {
+		return ValidationErrors{{Pointer: ptr, Message: "must not be empty when provided"}}
 	}
 	for _, r := range v {
 		if unicode.IsControl(r) {
@@ -1407,9 +1454,16 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 		errs = append(errs, validateUserInterface(p, ptr)...)
 		errs = append(errs, validateParamValueConstraints(p, ptr)...)
 		errs = append(errs, validateLengthConstraintSanity(p, ptr)...)
+		if p.AllowedValuesSet && len(p.AllowedValues) == 0 {
+			errs = append(errs, ValidationError{
+				Pointer: ptr + "/allowedValues",
+				Message: "must contain at least one value when provided",
+			})
+		}
 		if ui := p.UserInterface; ui != nil {
-			errs = append(errs, validateUILabelText(ui.Label, ptr+"/userInterface/label")...)
-			errs = append(errs, validateUILabelText(ui.GroupLabel, ptr+"/userInterface/groupLabel")...)
+			errs = append(errs, validateUILabelText(ui.Label, ui.LabelSet, ptr+"/userInterface/label")...)
+			errs = append(errs, validateUILabelText(ui.GroupLabel, ui.GroupLabelSet, ptr+"/userInterface/groupLabel")...)
+			errs = append(errs, validateSingleStepDelta(p, ui, ptr+"/userInterface/singleStepDelta")...)
 		}
 
 		// fileFilters / fileFilterDefault are also structural, always runs.

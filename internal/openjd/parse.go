@@ -229,11 +229,15 @@ func decodePathFileFilter(v any, ctx string) (PathFileFilter, error) {
 // decodeJobParamConstraints populates the allowedValues, minValue/maxValue, and
 // minLength/maxLength fields of p from the raw decoded map.
 func decodeJobParamConstraints(raw map[string]any, p *JobParameter) error {
-	// allowedValues
-	if v, ok := raw["allowedValues"]; ok && v != nil {
-		items, _ := toAnySlice(v)
-		for _, item := range items {
-			p.AllowedValues = append(p.AllowedValues, anyToString(item))
+	// allowedValues. Presence is tracked separately from content: a declared
+	// list must hold at least one value, but omitting it entirely is legal.
+	if v, ok := raw["allowedValues"]; ok {
+		p.AllowedValuesSet = true
+		if v != nil {
+			items, _ := toAnySlice(v)
+			for _, item := range items {
+				p.AllowedValues = append(p.AllowedValues, anyToString(item))
+			}
 		}
 	}
 
@@ -272,15 +276,23 @@ func decodeParameterUserInterface(v any) (*ParameterUserInterface, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, labelSet := m["label"]
+	_, groupLabelSet := m["groupLabel"]
 	ui := &ParameterUserInterface{
-		Control:    ControlType(getString(m, "control")),
-		Label:      getString(m, "label"),
-		GroupLabel: getString(m, "groupLabel"),
+		Control:       ControlType(getString(m, "control")),
+		Label:         getString(m, "label"),
+		GroupLabel:    getString(m, "groupLabel"),
+		LabelSet:      labelSet,
+		GroupLabelSet: groupLabelSet,
 	}
 	if n, ok, err := intFieldStrict(m, "decimals", "userInterface.decimals"); err != nil {
 		return nil, err
 	} else if ok {
 		ui.Decimals = &n
+	}
+	if v, ok := m["singleStepDelta"]; ok && v != nil {
+		s := anyToString(v)
+		ui.SingleStepDelta = &s
 	}
 	return ui, nil
 }

@@ -121,18 +121,20 @@ steps:
 }
 
 func TestValidate_LabelLengthBounds(t *testing.T) {
-	// No minimum-length case: getString (parse.go:693-697) returns "" for both
-	// an absent key and an explicitly empty one, and Label is a plain string, so
-	// `label: ""` and no label at all are the same state after parsing -- and the
-	// absent case is legal (label is @optional; the spec prescribes falling back
-	// to the parameter name). There is no representable "present but empty" to
-	// reject. Ruled 2026-07-24: enforce the maximum only.
+	// The 2026-07-24 ruling here ("enforce the maximum only") rested on `label: ""`
+	// and an absent label being the same state after parsing, leaving no
+	// representable "present but empty" to reject. That premise no longer holds:
+	// the decoder now records LabelSet separately, so the two are distinguishable.
+	// Spec §2.6 gives <UserInterfaceLabelStringValue> a minimum length of 1, and
+	// conformance fixture 2.1--label-empty.invalid.yaml requires rejecting the
+	// empty case, so the minimum is enforced too. An absent label remains legal —
+	// it is @optional and falls back to the parameter name.
 	for _, tc := range []struct {
 		name  string
 		label string
 		valid bool
 	}{
-		{"empty is indistinguishable from absent, so valid", "", true},
+		{"explicitly empty is rejected", "", false},
 		{"one char", "S", true},
 		{"exactly 64", strings.Repeat("a", 64), true},
 		{"65 is too long", strings.Repeat("a", 65), false},
