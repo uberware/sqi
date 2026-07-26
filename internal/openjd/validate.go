@@ -301,7 +301,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 		errs = append(errs, ValidationError{Pointer: "/name", Message: "required"})
 	}
 	errs = append(errs, validateNoControlChars(t.Name, "/name")...)
-	errs = append(errs, validateFormatString(t.Name, "/name", jobScopeRefs)...)
+	errs = append(errs, validateFormatString(t.Name, "/name", jobScopeRefs, nil)...)
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
 	// ── parameterDefinitions ─────────────────────────────────────────────
@@ -1309,7 +1309,7 @@ var (
 // A reference that is well-formed but out of scope resolves to nothing at run
 // time, so the command silently receives an empty value rather than failing —
 // which is why this is structural correctness and always runs.
-func validateFormatString(s, ptr string, allowed []string) ValidationErrors {
+func validateFormatString(s, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
 	refs, err := fmtstring.References(s)
 	if err != nil {
 		return ValidationErrors{{
@@ -1325,7 +1325,9 @@ func validateFormatString(s, ptr string, allowed []string) ValidationErrors {
 				Message: fmt.Sprintf("reference %q is not available here; allowed: %s",
 					r, strings.Join(allowed, ", ")),
 			})
+			continue
 		}
+		errs = append(errs, checkFileRef(r, ptr, files)...)
 	}
 	return errs
 }
@@ -1930,7 +1932,7 @@ func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
 // no command is accepted by parse, expands into tasks, and then runs nothing --
 // the step reports success having done no work -- so this is structural
 // correctness and always runs, never gated behind EnforceLimits.
-func validateAction(a Action, ptr string, allowed []string) ValidationErrors {
+func validateAction(a Action, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
 	if a.Command == "" {
 		return ValidationErrors{{
 			Pointer: ptr + "/command",
@@ -1944,7 +1946,7 @@ func validateAction(a Action, ptr string, allowed []string) ValidationErrors {
 	for i, arg := range a.Args {
 		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
 	}
-	errs = append(errs, validateActionRefs(a, ptr, allowed)...)
+	errs = append(errs, validateActionRefs(a, ptr, allowed, files)...)
 	errs = append(errs, validateActionTiming(a, ptr)...)
 	// args is @optional, but a declared list must hold at least one argument —
 	// an empty array says "pass arguments" and then passes none.
@@ -2006,12 +2008,41 @@ func validateActionTiming(a Action, ptr string) ValidationErrors {
 // validateActionRefs checks the format strings in an action's command, args,
 // and environment-variable values against the reference scope legal at its
 // site.
-func validateActionRefs(a Action, ptr string, allowed []string) ValidationErrors {
-	errs := validateFormatString(a.Command, ptr+"/command", allowed)
+func validateActionRefs(a Action, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
+	errs := validateFormatString(a.Command, ptr+"/command", allowed, files)
 	for i, arg := range a.Args {
-		errs = append(errs, validateFormatString(arg, fmt.Sprintf("%s/args/%d", ptr, i), allowed)...)
+		errs = append(errs, validateFormatString(arg, fmt.Sprintf("%s/args/%d", ptr, i), allowed, files)...)
 	}
 	return errs
+}
+
+// embeddedFileNames indexes a script's embedded files by name, for resolving
+// Task.File / Env.File references.
+func embeddedFileNames(files []EmbeddedFile) map[string]struct{} {
+	out := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		out[f.Name] = struct{}{}
+	}
+	return out
+}
+
+// checkFileRef reports a Task.File/Env.File reference naming an embedded file
+// the script never declares. Such a reference resolves to nothing at run time,
+// so the action silently receives an empty path instead of failing.
+func checkFileRef(ref, ptr string, files map[string]struct{}) ValidationErrors {
+	for _, prefix := range []string{"Task.File.", "Env.File."} {
+		name, ok := strings.CutPrefix(ref, prefix)
+		if !ok {
+			continue
+		}
+		if _, declared := files[name]; !declared {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: fmt.Sprintf("reference %q names no embedded file declared by this script", ref),
+			}}
+		}
+	}
+	return nil
 }
 
 // ─── environment validation ───────────────────────────────────────────────────
@@ -2038,16 +2069,17 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 			})
 		}
 		if e.Script != nil {
+			envFiles := embeddedFileNames(e.Script.EmbeddedFiles)
 			if e.Script.Actions.OnEnter == nil {
 				errs = append(errs, ValidationError{
 					Pointer: ptr + "/script/actions/onEnter",
 					Message: "required",
 				})
 			} else {
-				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", envScriptRefs)...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", envScriptRefs, envFiles)...)
 			}
 			if e.Script.Actions.OnExit != nil {
-				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", envScriptRefs)...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", envScriptRefs, envFiles)...)
 			}
 			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, e.Script.EmbeddedFilesSet, ptr+"/script/embeddedFiles")...)
 		}
@@ -2226,7 +2258,7 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
 	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, s.Script.EmbeddedFilesSet, base+"/script/embeddedFiles")...)
-		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", stepScriptRefs)...)
+		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", stepScriptRefs, embeddedFileNames(s.Script.EmbeddedFiles))...)
 	}
 
 	// step environments
