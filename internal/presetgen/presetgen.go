@@ -46,13 +46,10 @@ type Index struct {
 // The sha256 is computed over the raw file bytes so the served file always
 // matches the fingerprint the index vouches for.
 func Build(presetsDir, definitionDir string) ([]Generated, error) {
-	matches, err := filepath.Glob(filepath.Join(presetsDir, "*.yaml"))
+	matches, err := fsutil.Glob(filepath.Join(presetsDir, "*.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("glob presets: %w", err)
 	}
-	// A "*.yaml" glob also matches macOS AppleDouble companions ("._foo.yaml"),
-	// which are binary and fail to parse as a product definition.
-	matches = fsutil.FilterPaths(matches)
 	out := make([]Generated, 0, len(matches))
 	for _, p := range matches {
 		data, err := os.ReadFile(p)

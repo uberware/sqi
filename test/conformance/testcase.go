@@ -5,6 +5,8 @@ package conformance
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/uberware/sqi/internal/fsutil"
 )
 
 // TestCase is one conformance fixture, described by its filename.
@@ -32,14 +34,14 @@ type TestCase struct {
 // IsFixtureFile reports whether a directory entry's base name is a conformance
 // fixture the walker should collect.
 //
-// A ".yaml" suffix alone is not enough. On a macOS checkout backed by exFAT or a
-// network share, the OS writes AppleDouble sidecars named "._<original>" beside
-// every file; those keep the ".yaml" suffix, so a suffix-only filter collects
-// them, fails to parse them, and reports regressions for fixtures that do not
-// exist. No fixture in the suite begins with a dot, so leading-dot names are
-// excluded outright — which also covers ".DS_Store" and any other OS metadata.
+// A ".yaml" suffix alone is not enough: AppleDouble companions keep the
+// extension (see [fsutil.IsAppleDouble]), and no fixture in the suite begins
+// with a dot, so leading-dot names are excluded outright — which also covers
+// ".DS_Store" and any other OS metadata.
 func IsFixtureFile(name string) bool {
-	return strings.HasSuffix(name, ".yaml") && !strings.HasPrefix(name, ".")
+	return strings.HasSuffix(name, ".yaml") &&
+		!strings.HasPrefix(name, ".") &&
+		!fsutil.IsAppleDouble(name)
 }
 
 // ParseTestCase derives a TestCase from a fixture path relative to the suite

@@ -20,6 +20,7 @@ package fsutil
 import (
 	"io/fs"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -84,4 +85,15 @@ func (h hidden) ReadDir(name string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	return FilterDirEntries(entries), nil
+}
+
+// Glob is [filepath.Glob] with AppleDouble companions removed. A "*.yaml"
+// pattern matches "._foo.yaml" like any other file, so every caller globbing
+// for data files wants this rather than the stdlib version.
+func Glob(pattern string) ([]string, error) {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	return FilterPaths(matches), nil
 }

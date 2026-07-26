@@ -308,22 +308,13 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 			Message: "unknown field; the job template schema defines no such key",
 		})
 	}
-	if t.ExtensionsSet && len(t.Extensions) == 0 {
-		errs = append(errs, ValidationError{
-			Pointer: "/extensions",
-			Message: "must name at least one extension when provided",
-		})
-	}
+	errs = append(errs, requireNonEmptyIfSet(t.ExtensionsSet, len(t.Extensions), "/extensions", "extension")...)
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
 	// ── parameterDefinitions ─────────────────────────────────────────────
 	// @optional, but a declared list must hold at least one parameter.
-	if t.ParameterDefinitionsSet && len(t.ParameterDefinitions) == 0 {
-		errs = append(errs, ValidationError{
-			Pointer: "/parameterDefinitions",
-			Message: "must contain at least one parameter when provided",
-		})
-	}
+	errs = append(errs, requireNonEmptyIfSet(t.ParameterDefinitionsSet, len(t.ParameterDefinitions),
+		"/parameterDefinitions", "parameter")...)
 	errs = append(errs, validateJobParams(t.ParameterDefinitions)...)
 
 	// ── jobEnvironments ───────────────────────────────────────────────────
@@ -721,17 +712,18 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 				Message: fmt.Sprintf("at most %d values are allowed (got %d)", maxAttributeValues, len(a.AnyOf)),
 			})
 		}
-		for j, v := range append(append([]string{}, a.AnyOf...), a.AllOf...) {
-			if utf8.RuneCountInString(v) > maxAttributeValueLen {
-				field, idx := "anyOf", j
-				if j >= len(a.AnyOf) {
-					field, idx = "allOf", j-len(a.AnyOf)
+		for _, set := range []struct {
+			field  string
+			values []string
+		}{{"anyOf", a.AnyOf}, {"allOf", a.AllOf}} {
+			for j, v := range set.values {
+				if n := utf8.RuneCountInString(v); n > maxAttributeValueLen {
+					errs = append(errs, ValidationError{
+						Pointer: fmt.Sprintf("%s/%s/%d", ptr, set.field, j),
+						Message: fmt.Sprintf("value must be at most %d characters (got %d)",
+							maxAttributeValueLen, n),
+					})
 				}
-				errs = append(errs, ValidationError{
-					Pointer: fmt.Sprintf("%s/%s/%d", ptr, field, idx),
-					Message: fmt.Sprintf("value must be at most %d characters (got %d)",
-						maxAttributeValueLen, utf8.RuneCountInString(v)),
-				})
 			}
 		}
 		if len(a.AllOf) > maxAttributeValues {
@@ -1362,6 +1354,19 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 	return false
 }
 
+// requireNonEmptyIfSet reports an error when an optional list was declared in
+// the template but holds no entries. Several schema fields share this shape:
+// omitting them is legal, but declaring an empty one is not.
+func requireNonEmptyIfSet(set bool, n int, ptr, noun string) ValidationErrors {
+	if !set || n > 0 {
+		return nil
+	}
+	return ValidationErrors{{
+		Pointer: ptr,
+		Message: fmt.Sprintf("must contain at least one %s when provided", noun),
+	}}
+}
+
 // validateNoControlChars rejects Unicode Cc control characters in a name-like
 // string. The category covers both C0 (U+0000-U+001F, U+007F) and C1
 // (U+0080-U+009F), so it catches the whole range the spec excludes. A control
@@ -1505,15 +1510,7 @@ func validateUILabelText(v string, set bool, ptr string) ValidationErrors {
 	if v == "" {
 		return ValidationErrors{{Pointer: ptr, Message: "must not be empty when provided"}}
 	}
-	for _, r := range v {
-		if unicode.IsControl(r) {
-			return ValidationErrors{{
-				Pointer: ptr,
-				Message: "must not contain control characters or line breaks",
-			}}
-		}
-	}
-	return nil
+	return validateNoControlChars(v, ptr)
 }
 
 // validateLengthConstraintSanity checks that a parameter's own minLength and
@@ -1673,12 +1670,8 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 		errs = append(errs, validateUserInterface(p, ptr)...)
 		errs = append(errs, validateParamValueConstraints(p, ptr)...)
 		errs = append(errs, validateLengthConstraintSanity(p, ptr)...)
-		if p.AllowedValuesSet && len(p.AllowedValues) == 0 {
-			errs = append(errs, ValidationError{
-				Pointer: ptr + "/allowedValues",
-				Message: "must contain at least one value when provided",
-			})
-		}
+		errs = append(errs, requireNonEmptyIfSet(p.AllowedValuesSet, len(p.AllowedValues),
+			ptr+"/allowedValues", "value")...)
 		if ui := p.UserInterface; ui != nil {
 			errs = append(errs, validateUILabelText(ui.Label, ui.LabelSet, ptr+"/userInterface/label")...)
 			errs = append(errs, validateUILabelText(ui.GroupLabel, ui.GroupLabelSet, ptr+"/userInterface/groupLabel")...)
@@ -1971,12 +1964,7 @@ func validateAction(a Action, ptr string, allowed []string, files map[string]str
 	errs = append(errs, validateActionTiming(a, ptr)...)
 	// args is @optional, but a declared list must hold at least one argument —
 	// an empty array says "pass arguments" and then passes none.
-	if a.ArgsSet && len(a.Args) == 0 {
-		errs = append(errs, ValidationError{
-			Pointer: ptr + "/args",
-			Message: "must contain at least one argument when provided",
-		})
-	}
+	errs = append(errs, requireNonEmptyIfSet(a.ArgsSet, len(a.Args), ptr+"/args", "argument")...)
 	return errs
 }
 
@@ -2026,9 +2014,13 @@ func validateActionTiming(a Action, ptr string) ValidationErrors {
 	return errs
 }
 
-// validateActionRefs checks the format strings in an action's command, args,
-// and environment-variable values against the reference scope legal at its
-// site.
+// validateActionRefs checks the format strings in an action's command and args
+// against the reference scope legal at its site.
+//
+// Environment variable values and embedded-file data are resolved through the
+// same scope split at run time (internal/worker/fmtres) but are NOT checked
+// here yet — an out-of-scope reference in either still surfaces only when the
+// worker runs that action.
 func validateActionRefs(a Action, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
 	errs := validateFormatString(a.Command, ptr+"/command", allowed, files)
 	for i, arg := range a.Args {
@@ -2120,12 +2112,7 @@ func validateEmbeddedFiles(files []EmbeddedFile, set bool, ptr string) Validatio
 	var errs ValidationErrors
 	// embeddedFiles is @optional, but a declared list must hold at least one
 	// file — an empty array declares attachments and supplies none.
-	if set && len(files) == 0 {
-		errs = append(errs, ValidationError{
-			Pointer: ptr,
-			Message: "must contain at least one embedded file when provided",
-		})
-	}
+	errs = append(errs, requireNonEmptyIfSet(set, len(files), ptr, "embedded file")...)
 	seen := make(map[string]struct{}, len(files))
 	for j, f := range files {
 		errs = append(errs, validateEmbeddedFileEntry(f, fmt.Sprintf("%s/%d", ptr, j), seen)...)
@@ -2233,18 +2220,10 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 	base := fmt.Sprintf("/steps/%d", idx)
 
 	// dependencies — @optional, but a declared list must hold at least one.
-	if s.DependenciesSet && len(s.Dependencies) == 0 {
-		errs = append(errs, ValidationError{
-			Pointer: base + "/dependencies",
-			Message: "must contain at least one dependency when provided",
-		})
-	}
-	if s.StepEnvironmentsSet && len(s.StepEnvironments) == 0 {
-		errs = append(errs, ValidationError{
-			Pointer: base + "/stepEnvironments",
-			Message: "must contain at least one environment when provided",
-		})
-	}
+	errs = append(errs, requireNonEmptyIfSet(s.DependenciesSet, len(s.Dependencies),
+		base+"/dependencies", "dependency")...)
+	errs = append(errs, requireNonEmptyIfSet(s.StepEnvironmentsSet, len(s.StepEnvironments),
+		base+"/stepEnvironments", "environment")...)
 	seenDeps := make(map[string]struct{}, len(s.Dependencies))
 	for j, dep := range s.Dependencies {
 		ptr := fmt.Sprintf("%s/dependencies/%d/dependsOn", base, j)
