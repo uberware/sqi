@@ -1085,6 +1085,113 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 	return errs
 }
 
+// validateParamValueConstraints checks that a parameter's own declared
+// constraints are satisfied by the values it ships. A template that declares
+// allowedValues or a min/max bound and then supplies a default outside it is
+// self-contradictory: the default can never be accepted at submission, so the
+// parameter is unusable without an explicit value. Structural — always runs.
+//
+// Covers, per the parameter definitions in §2.1-2.4:
+//   - default must be one of allowedValues when that list is given
+//   - default and every allowedValues entry must satisfy minLength/maxLength
+//     (STRING, PATH) or minValue/maxValue (INT, FLOAT)
+//   - an INT value must actually be an integer, and an INT/FLOAT value a number
+func validateParamValueConstraints(p JobParameter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+
+	if p.Default != nil && len(p.AllowedValues) > 0 &&
+		!strings.Contains(*p.Default, "{{") &&
+		!slices.Contains(p.AllowedValues, *p.Default) {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/default",
+			Message: fmt.Sprintf("default %q is not one of allowedValues", *p.Default),
+		})
+	}
+
+	if p.Default != nil {
+		errs = append(errs, validateParamValueInBounds(p, *p.Default, ptr+"/default")...)
+	}
+	for i, v := range p.AllowedValues {
+		errs = append(errs, validateParamValueInBounds(p, v, fmt.Sprintf("%s/allowedValues/%d", ptr, i))...)
+	}
+	return errs
+}
+
+// validateParamValueInBounds checks one concrete value against the parameter's
+// declared bounds. Values carrying an unresolved format-string reference are
+// skipped: they cannot be evaluated before job-parameter binding.
+func validateParamValueInBounds(p JobParameter, v, ptr string) ValidationErrors {
+	if strings.Contains(v, "{{") {
+		return nil
+	}
+	var errs ValidationErrors
+	switch p.Type {
+	case JobParamTypeString, JobParamTypePath:
+		n := utf8.RuneCountInString(v)
+		if p.MinLength != nil && n < *p.MinLength {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("value is shorter than minLength %d (got %d)", *p.MinLength, n),
+			})
+		}
+		if p.MaxLength != nil && n > *p.MaxLength {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("value is longer than maxLength %d (got %d)", *p.MaxLength, n),
+			})
+		}
+	case JobParamTypeInt, JobParamTypeFloat:
+		errs = append(errs, validateNumericValueInBounds(p, v, ptr)...)
+	}
+	return errs
+}
+
+// validateNumericValueInBounds is the INT/FLOAT half of
+// [validateParamValueInBounds], split out to keep the switch's complexity down.
+func validateNumericValueInBounds(p JobParameter, v, ptr string) ValidationErrors {
+	if p.Type == JobParamTypeInt {
+		if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: fmt.Sprintf("value %q is not a valid integer", v),
+			}}
+		}
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("value %q is not a valid number", v),
+		}}
+	}
+
+	var errs ValidationErrors
+	if lo, ok := parseNumericBound(p.MinValue); ok && f < lo {
+		errs = append(errs, ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf("value %s is below minValue %s", v, *p.MinValue),
+		})
+	}
+	if hi, ok := parseNumericBound(p.MaxValue); ok && f > hi {
+		errs = append(errs, ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf("value %s is above maxValue %s", v, *p.MaxValue),
+		})
+	}
+	return errs
+}
+
+// parseNumericBound reads a *string bound as a float, reporting false when it
+// is absent, unresolved, or unparseable — the bound itself is validated
+// elsewhere, so this only decides whether a comparison is possible.
+func parseNumericBound(b *string) (float64, bool) {
+	if b == nil || strings.Contains(*b, "{{") {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(*b, 64)
+	return f, err == nil
+}
+
 // validateChooseControl checks the two coherence rules the spec states for the
 // PATH parameter's CHOOSE_* controls (§2.2.9.1):
 //
@@ -1212,6 +1319,7 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 		errs = append(errs, validatePathOnlyFields(p, ptr)...)
 
 		errs = append(errs, validateUserInterface(p, ptr)...)
+		errs = append(errs, validateParamValueConstraints(p, ptr)...)
 
 		// fileFilters / fileFilterDefault are also structural, always runs.
 		errs = append(errs, validateFileFilters(p, ptr)...)
