@@ -766,15 +766,41 @@ func sortedMapKeys(m map[string]bool) string {
 // scheduler resolves them case-insensitively (see internal/scheduler/matcher.go).
 // An empty name is left to [validateCapabilityNameRequired]'s "name is
 // required" check.
+//
+// A single optional vendor prefix may precede the namespace. The spec's format
+// is "[<Identifier>:]amount.<Identifier>[.<Identifier>]*" (§3.3.1.1, and
+// §3.3.2.1 for "attr."), so "mycompany:amount.licenses" is valid and lets a
+// studio namespace capabilities of its own. The prefix is stripped before the
+// namespace check; it must itself be a well-formed <Identifier>, and only one
+// is permitted — "a:b:amount.x" is rejected because "b:amount.x" does not begin
+// with the namespace.
+//
+// Reserved-value checks ([validateReservedAmounts], [validateReservedAttributes])
+// deliberately key on the FULL name, so a vendor-prefixed capability is not
+// treated as reserved: "mycompany:amount.worker.vcpu" names the vendor's own
+// capability, not the spec's. The spec does not settle this, and no conformance
+// fixture covers it.
 func validateCapabilityPrefix(name, wantPrefix, ptr string) ValidationErrors {
 	if name == "" {
 		return nil
 	}
-	if !hasPrefixFold(name, wantPrefix) {
-		return ValidationErrors{{
-			Pointer: ptr,
-			Message: fmt.Sprintf("capability name %q must begin with %q", name, wantPrefix),
-		}}
+	malformed := ValidationErrors{{
+		Pointer: ptr,
+		Message: fmt.Sprintf(
+			"capability name %q must begin with %q, optionally preceded by a single \"<identifier>:\" vendor prefix",
+			name, wantPrefix,
+		),
+	}}
+
+	local := name
+	if vendor, rest, ok := strings.Cut(name, ":"); ok {
+		if !identifierRE.MatchString(vendor) {
+			return malformed
+		}
+		local = rest
+	}
+	if !hasPrefixFold(local, wantPrefix) {
+		return malformed
 	}
 	return nil
 }
@@ -958,24 +984,27 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	ctrlPtr := ptr + "/userInterface/control"
 
-	if ui.Control == "" {
-		errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "required"})
-		return errs
-	}
-	allowed, known := controlsByType[p.Type]
-	if !known {
-		return errs // unknown parameter type is reported by validateJobParams
-	}
-	if _, ok := allowed[ui.Control]; !ok {
-		errs = append(errs, ValidationError{
-			Pointer: ctrlPtr,
-			Message: fmt.Sprintf("control %q is not valid on a %s parameter; allowed: %s",
-				ui.Control, p.Type, allowedControlsFor(p.Type)),
-		})
-		return errs
-	}
+	// control is optional: the schema marks it "@optional" on every parameter
+	// type, so a template may supply only a label or groupLabel and leave the
+	// control to the submitting application. Checks that depend on a control
+	// are skipped when it is absent; those that do not — decimals, below — are
+	// still enforced.
+	if ui.Control != "" {
+		allowed, known := controlsByType[p.Type]
+		if !known {
+			return errs // unknown parameter type is reported by validateJobParams
+		}
+		if _, ok := allowed[ui.Control]; !ok {
+			errs = append(errs, ValidationError{
+				Pointer: ctrlPtr,
+				Message: fmt.Sprintf("control %q is not valid on a %s parameter; allowed: %s",
+					ui.Control, p.Type, allowedControlsFor(p.Type)),
+			})
+			return errs
+		}
 
-	errs = append(errs, validateUserInterfaceControl(ui, p, ctrlPtr)...)
+		errs = append(errs, validateUserInterfaceControl(ui, p, ctrlPtr)...)
+	}
 
 	if ui.Decimals != nil && (ui.Control != ControlSpinBox || p.Type != JobParamTypeFloat) {
 		errs = append(errs, ValidationError{
