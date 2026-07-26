@@ -414,6 +414,28 @@ var sqiReservedScopeNames = []string{
 	"attr.worker.computelocation",
 }
 
+// attributeValueRE matches a <AttributeCapabilityValue> (spec §3.3.2.2):
+// latin alphanumerics plus underscore and hyphen, starting with a letter or
+// underscore. Length is capped separately by validateHostRequirementLimits.
+var attributeValueRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
+// validateAttributeValue checks one attribute anyOf/allOf value against the
+// spec grammar. A value the scheduler can never match — empty, punctuation, or
+// digit-leading — leaves the step permanently unschedulable rather than failing
+// loudly, so this is structural correctness.
+func validateAttributeValue(v, ptr string) ValidationErrors {
+	if strings.Contains(v, "{{") {
+		return nil
+	}
+	if !attributeValueRE.MatchString(v) {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("attribute value %q must start with a letter or underscore and contain only letters, digits, underscores, and hyphens", v),
+		}}
+	}
+	return nil
+}
+
 // validateReservedScope reports an error when a capability name sits under a
 // spec-reserved scope but is not a name the spec (or sqi, see
 // [sqiReservedScopeNames]) defines — for example "amount.worker.custom".
@@ -723,18 +745,49 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 		})
 	}
 
+	// Capability names are case-insensitive (spec §3.3.1.1/§3.3.2.1), so two
+	// entries differing only in case name the SAME capability. Declaring both
+	// is a contradiction the scheduler cannot resolve.
+	seenAmounts := make(map[string]struct{}, len(hr.Amounts))
 	for i, a := range hr.Amounts {
 		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
 		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr)...)
 		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
 		errs = append(errs, validateReservedScope(a.Name, "amount.", ptr)...)
+		if a.Name != "" {
+			key := strings.ToLower(a.Name)
+			if _, dup := seenAmounts[key]; dup {
+				errs = append(errs, ValidationError{
+					Pointer: ptr,
+					Message: fmt.Sprintf("duplicate amount capability name %q (names are case-insensitive)", a.Name),
+				})
+			}
+			seenAmounts[key] = struct{}{}
+		}
 	}
 
+	seenAttrs := make(map[string]struct{}, len(hr.Attributes))
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
 		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr+"/name")...)
 		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
 		errs = append(errs, validateReservedScope(a.Name, "attr.", ptr+"/name")...)
+		if a.Name != "" {
+			key := strings.ToLower(a.Name)
+			if _, dup := seenAttrs[key]; dup {
+				errs = append(errs, ValidationError{
+					Pointer: ptr + "/name",
+					Message: fmt.Sprintf("duplicate attribute capability name %q (names are case-insensitive)", a.Name),
+				})
+			}
+			seenAttrs[key] = struct{}{}
+		}
+		for k, v := range a.AnyOf {
+			errs = append(errs, validateAttributeValue(v, fmt.Sprintf("%s/anyOf/%d", ptr, k))...)
+		}
+		for k, v := range a.AllOf {
+			errs = append(errs, validateAttributeValue(v, fmt.Sprintf("%s/allOf/%d", ptr, k))...)
+		}
 
 		if len(a.AnyOf)+len(a.AllOf) == 0 {
 			errs = append(errs, ValidationError{

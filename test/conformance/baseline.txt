@@ -20,13 +20,6 @@ base/job_templates/2.1--value-too-long.invalid.yaml
 base/job_templates/3.2--duplicate-dependency.invalid.yaml
 base/job_templates/3.2--empty-dependencies.invalid.yaml
 base/job_templates/3.3--allof-multiple-single-value-attr.invalid.yaml
-base/job_templates/3.3--attribute-value-empty.invalid.yaml
-base/job_templates/3.3--attribute-value-special-chars.invalid.yaml
-base/job_templates/3.3--attribute-value-starts-with-digit.invalid.yaml
-base/job_templates/3.3--duplicate-amount-names-case-insensitive.invalid.yaml
-base/job_templates/3.3--duplicate-amount-names.invalid.yaml
-base/job_templates/3.3--duplicate-attribute-names-case-insensitive.invalid.yaml
-base/job_templates/3.3--duplicate-attribute-names.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
 base/job_templates/3.4.2--empty-path-value.invalid.yaml
