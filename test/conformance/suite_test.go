@@ -7,7 +7,6 @@ package conformance_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/test/conformance"
@@ -52,7 +51,7 @@ func collectTemplateFixtures(t *testing.T) []conformance.TestCase {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".yaml") {
+		if d.IsDir() || !conformance.IsFixtureFile(d.Name()) {
 			return nil
 		}
 		rel, err := filepath.Rel(SuiteRoot, path)

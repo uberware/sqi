@@ -29,6 +29,19 @@ type TestCase struct {
 	IsJobTest bool
 }
 
+// IsFixtureFile reports whether a directory entry's base name is a conformance
+// fixture the walker should collect.
+//
+// A ".yaml" suffix alone is not enough. On a macOS checkout backed by exFAT or a
+// network share, the OS writes AppleDouble sidecars named "._<original>" beside
+// every file; those keep the ".yaml" suffix, so a suffix-only filter collects
+// them, fails to parse them, and reports regressions for fixtures that do not
+// exist. No fixture in the suite begins with a dot, so leading-dot names are
+// excluded outright — which also covers ".DS_Store" and any other OS metadata.
+func IsFixtureFile(name string) bool {
+	return strings.HasSuffix(name, ".yaml") && !strings.HasPrefix(name, ".")
+}
+
 // ParseTestCase derives a TestCase from a fixture path relative to the suite
 // root. It never fails: an unrecognized filename yields a TestCase with an
 // empty Section and the whole stem as Description, which the caller reports

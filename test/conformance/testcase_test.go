@@ -75,3 +75,37 @@ func TestParseTestCase(t *testing.T) {
 		})
 	}
 }
+
+// TestIsFixtureFile guards the fixture walker against non-fixture files that
+// happen to share the .yaml suffix.
+//
+// The motivating case is real: on a macOS checkout backed by exFAT or a network
+// share, the OS writes AppleDouble sidecars named "._<original>" beside every
+// file. Those end in ".yaml", so a suffix-only filter collects them as fixtures,
+// they fail to parse, and the run reports spurious regressions that exist
+// nowhere in the suite. No legitimate fixture name begins with a dot.
+func TestIsFixtureFile(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want bool
+	}{
+		{"plain fixture", "1.1--minimal-job-template.yaml", true},
+		{"invalid fixture", "2.1--missing-name.invalid.yaml", true},
+		{"job execution fixture", "expr2.2.4--upper.test.yaml", true},
+		{"appledouble sidecar", "._1.1--minimal-job-template.yaml", false},
+		{"appledouble of an invalid fixture", "._2.1--missing-name.invalid.yaml", false},
+		{"dotfile with yaml suffix", ".hidden.yaml", false},
+		{"json sibling", "1.2--json-format-valid.json", false},
+		{"no extension", "README", false},
+		{"ds store", ".DS_Store", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := conformance.IsFixtureFile(tt.file); got != tt.want {
+				t.Errorf("IsFixtureFile(%q) = %v, want %v", tt.file, got, tt.want)
+			}
+		})
+	}
+}
