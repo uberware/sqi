@@ -16,17 +16,10 @@ TASK_CHUNKING/job_templates/negative-target-runtime.invalid.yaml
 base/job_templates/1.1--empty-parameter-definitions.invalid.yaml
 base/job_templates/1.1--unknown-extra-field.invalid.yaml
 base/job_templates/1.1.2--extensions-field.invalid.yaml
-base/job_templates/2.1--value-too-long.invalid.yaml
-base/job_templates/3.2--duplicate-dependency.invalid.yaml
 base/job_templates/3.2--empty-dependencies.invalid.yaml
 base/job_templates/3.3--allof-multiple-single-value-attr.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
 base/job_templates/3.4.2--empty-path-value.invalid.yaml
-base/job_templates/3.5--embedded-filename-empty.invalid.yaml
-base/job_templates/3.5--embedded-files-empty.invalid.yaml
 base/job_templates/3.5--undefined-embedded-file-reference.invalid.yaml
 base/job_templates/4--empty-step-environments.invalid.yaml
-base/job_templates/4--job-step-env-name-collision.invalid.yaml
-base/job_templates/4--job-step-environment-name-collision.invalid.yaml
-base/job_templates/5--action-empty-args-array.invalid.yaml
