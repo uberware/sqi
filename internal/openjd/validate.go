@@ -298,6 +298,8 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	if strings.TrimSpace(t.Name) == "" {
 		errs = append(errs, ValidationError{Pointer: "/name", Message: "required"})
 	}
+	errs = append(errs, validateNoControlChars(t.Name, "/name")...)
+	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
 	// ── parameterDefinitions ─────────────────────────────────────────────
 	errs = append(errs, validateJobParams(t.ParameterDefinitions)...)
@@ -320,6 +322,8 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 			})
 			continue
 		}
+		errs = append(errs, validateNoControlChars(s.Name, fmt.Sprintf("/steps/%d/name", i))...)
+		errs = append(errs, validateDescriptionText(s.Description, fmt.Sprintf("/steps/%d/description", i))...)
 		if _, dup := stepNames[s.Name]; dup {
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/steps/%d/name", i),
@@ -1200,6 +1204,68 @@ func parseNumericBound(b *string) (float64, bool) {
 	return f, err == nil
 }
 
+const (
+	// maxIdentifierLen caps an <Identifier> (spec §7.1: 64 characters).
+	maxIdentifierLen = 64
+	// maxDescriptionLen caps a <Description> (spec §7.2: 2048 characters).
+	maxDescriptionLen = 2048
+)
+
+// validateNoControlChars rejects Unicode Cc control characters in a name-like
+// string. The category covers both C0 (U+0000-U+001F, U+007F) and C1
+// (U+0080-U+009F), so it catches the whole range the spec excludes. A control
+// character in a name corrupts logs, terminal output, and any UI rendering it.
+func validateNoControlChars(v, ptr string) ValidationErrors {
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: fmt.Sprintf("must not contain control characters (found U+%04X)", r),
+			}}
+		}
+	}
+	return nil
+}
+
+// validateDescriptionText checks a <Description> (spec §7.2): at most 2048
+// characters, and no Cc control characters EXCEPT newline, carriage return, and
+// horizontal tab, which a description is explicitly allowed to contain.
+func validateDescriptionText(v, ptr string) ValidationErrors {
+	if v == "" {
+		return nil
+	}
+	if n := utf8.RuneCountInString(v); n > maxDescriptionLen {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("must be at most %d characters (got %d)", maxDescriptionLen, n),
+		}}
+	}
+	for _, r := range v {
+		if r == '\n' || r == '\r' || r == '\t' {
+			continue
+		}
+		if unicode.IsControl(r) {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: fmt.Sprintf("must not contain control characters other than newline, carriage return, or tab (found U+%04X)", r),
+			}}
+		}
+	}
+	return nil
+}
+
+// validateIdentifierLen caps an <Identifier> at [maxIdentifierLen] characters.
+// The character set itself is enforced by identifierRE at each use site.
+func validateIdentifierLen(v, ptr string) ValidationErrors {
+	if n := utf8.RuneCountInString(v); n > maxIdentifierLen {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("identifier must be at most %d characters (got %d)", maxIdentifierLen, n),
+		}}
+	}
+	return nil
+}
+
 // validateSingleStepDelta checks a userInterface.singleStepDelta: the amount a
 // SPIN_BOX moves per step. It is meaningful only on a SPIN_BOX, must be a
 // positive number (a zero or negative step cannot advance the control), and on
@@ -1417,6 +1483,8 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 	for i, p := range params {
 		ptr := fmt.Sprintf("/parameterDefinitions/%d", i)
 
+		errs = append(errs, validateIdentifierLen(p.Name, ptr+"/name")...)
+		errs = append(errs, validateDescriptionText(p.Description, ptr+"/description")...)
 		if !identifierRE.MatchString(p.Name) {
 			errs = append(errs, ValidationError{
 				Pointer: ptr + "/name",
@@ -1741,7 +1809,14 @@ func validateAction(a Action, ptr string) ValidationErrors {
 			Message: "required; must be at least 1 character",
 		}}
 	}
-	return nil
+	// A command or argument carrying a tab or line break cannot survive the
+	// round trip to an OS process argv intact. (The EXPR extension relaxes this
+	// for multi-line expressions; sqi does not implement EXPR.)
+	errs := validateNoControlChars(a.Command, ptr+"/command")
+	for i, arg := range a.Args {
+		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
+	}
+	return errs
 }
 
 // ─── environment validation ───────────────────────────────────────────────────

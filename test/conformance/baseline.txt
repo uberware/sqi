@@ -17,8 +17,6 @@ base/job_templates/1.1--empty-parameter-definitions.invalid.yaml
 base/job_templates/1.1--unknown-extra-field.invalid.yaml
 base/job_templates/1.1.2--extensions-field.invalid.yaml
 base/job_templates/2.1--value-too-long.invalid.yaml
-base/job_templates/3--step-description-control-chars.invalid.yaml
-base/job_templates/3--step-description-too-long.invalid.yaml
 base/job_templates/3.2--duplicate-dependency.invalid.yaml
 base/job_templates/3.2--empty-dependencies.invalid.yaml
 base/job_templates/3.3--allof-multiple-single-value-attr.invalid.yaml
@@ -52,17 +50,6 @@ base/job_templates/5--notify-period-zero.invalid.yaml
 base/job_templates/5--timeout-negative.invalid.yaml
 base/job_templates/5--timeout-zero.invalid.yaml
 base/job_templates/6.1--embedded-filename-with-path.invalid.yaml
-base/job_templates/7--arg-string-tab.invalid.yaml
-base/job_templates/7--command-string-newline.invalid.yaml
-base/job_templates/7--command-string-tab.invalid.yaml
-base/job_templates/7--description-control-chars.invalid.yaml
-base/job_templates/7--description-too-long.invalid.yaml
-base/job_templates/7--identifier-too-long.invalid.yaml
-base/job_templates/7--job-name-control-char-1f.invalid.yaml
-base/job_templates/7--job-name-control-char-7f.invalid.yaml
-base/job_templates/7--job-name-control-char-9f.invalid.yaml
-base/job_templates/7--job-name-control-chars.invalid.yaml
-base/job_templates/7--step-name-control-chars.invalid.yaml
 base/job_templates/7.3--case-sensitive-scope.invalid.yaml
 base/job_templates/7.3--empty-reference.invalid.yaml
 base/job_templates/7.3--env-file-in-step-script.invalid.yaml
