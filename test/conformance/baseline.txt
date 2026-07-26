@@ -30,9 +30,3 @@ base/job_templates/4--empty-step-environments.invalid.yaml
 base/job_templates/4--job-step-env-name-collision.invalid.yaml
 base/job_templates/4--job-step-environment-name-collision.invalid.yaml
 base/job_templates/5--action-empty-args-array.invalid.yaml
-base/job_templates/5--cancelation-mode.invalid.yaml
-base/job_templates/5--notify-period-exceeds-max.invalid.yaml
-base/job_templates/5--notify-period-negative.invalid.yaml
-base/job_templates/5--notify-period-zero.invalid.yaml
-base/job_templates/5--timeout-negative.invalid.yaml
-base/job_templates/5--timeout-zero.invalid.yaml

@@ -1927,6 +1927,53 @@ func validateAction(a Action, ptr string, allowed []string) ValidationErrors {
 		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
 	}
 	errs = append(errs, validateActionRefs(a, ptr, allowed)...)
+	errs = append(errs, validateActionTiming(a, ptr)...)
+	return errs
+}
+
+// maxNotifyPeriodSeconds caps <CancelationMethodNotifyThenTerminate>'s
+// notifyPeriodInSeconds (spec §5.3.2: maximum value 600).
+const maxNotifyPeriodSeconds = 600
+
+// validateActionTiming checks an action's timeout and cancelation block. Both
+// numbers are <posinteger> in the spec, so an explicit zero or negative value
+// is invalid — a zero timeout would cancel the action before it could run, and
+// a zero notify period leaves no interval between the two signals.
+func validateActionTiming(a Action, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if a.TimeoutSet && a.TimeoutSeconds < 1 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/timeout",
+			Message: fmt.Sprintf("must be a positive number of seconds (got %d)", a.TimeoutSeconds),
+		})
+	}
+	c := a.Cancelation
+	if c == nil {
+		return errs
+	}
+	switch c.Mode {
+	case CancelModeTerminate, CancelModeNotifyThenTerminate, "":
+		// "" means the key was absent; the spec default is TERMINATE.
+	default:
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/cancelation/mode",
+			Message: fmt.Sprintf("must be TERMINATE or NOTIFY_THEN_TERMINATE (got %q)", c.Mode),
+		})
+	}
+	if c.NotifyPeriodSet {
+		np := ptr + "/cancelation/notifyPeriodInSeconds"
+		if c.NotifyPeriodSeconds < 1 {
+			errs = append(errs, ValidationError{
+				Pointer: np,
+				Message: fmt.Sprintf("must be a positive number of seconds (got %d)", c.NotifyPeriodSeconds),
+			})
+		} else if c.NotifyPeriodSeconds > maxNotifyPeriodSeconds {
+			errs = append(errs, ValidationError{
+				Pointer: np,
+				Message: fmt.Sprintf("must be at most %d seconds (got %d)", maxNotifyPeriodSeconds, c.NotifyPeriodSeconds),
+			})
+		}
+	}
 	return errs
 }
 

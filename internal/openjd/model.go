@@ -399,6 +399,9 @@ type Action struct {
 	Args []string
 	// TimeoutSeconds, when > 0, limits how long the action may run.
 	TimeoutSeconds int
+	// TimeoutSet records whether the key was present, so an explicit
+	// "timeout: 0" (illegal) is distinguishable from an omitted one (legal).
+	TimeoutSet bool
 	// Cancelation describes how to stop a running action.
 	Cancelation *CancelationMethod
 }
@@ -422,6 +425,9 @@ type CancelationMethod struct {
 	// [CancelModeNotifyThenTerminate].  0 means use the spec default (120s for
 	// onRun actions, 30s for others).
 	NotifyPeriodSeconds int
+	// NotifyPeriodSet records whether the key was present, so an explicit zero
+	// is distinguishable from an omitted field.
+	NotifyPeriodSet bool
 }
 
 // ─── Expanded task parameters ─────────────────────────────────────────────────

@@ -744,6 +744,7 @@ func decodeAction(raw map[string]any) (Action, error) {
 		return a, err
 	} else if ok {
 		a.TimeoutSeconds = n
+		a.TimeoutSet = true
 	}
 
 	if v, ok := raw["cancelation"]; ok && v != nil {
@@ -755,6 +756,7 @@ func decodeAction(raw map[string]any) (Action, error) {
 				return a, err
 			} else if ok {
 				cm.NotifyPeriodSeconds = n
+				cm.NotifyPeriodSet = true
 			}
 			a.Cancelation = cm
 		}
