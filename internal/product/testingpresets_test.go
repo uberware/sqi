@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/openjd"
 )
 
@@ -31,6 +32,9 @@ func TestTestingPresets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
+	// "*.yaml" also matches macOS AppleDouble companions on exFAT/network
+	// volumes; they are binary and would fail to parse as a preset.
+	paths = fsutil.FilterPaths(paths)
 	if len(paths) != len(want) {
 		t.Fatalf("expected %d testing presets, found %d: %v", len(want), len(paths), paths)
 	}

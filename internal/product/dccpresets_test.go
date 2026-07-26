@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/fsutil"
 )
 
 // The six DCC reference presets (presets/sqi/) are authored in this repo and
@@ -24,6 +26,9 @@ func TestDCCReferencePresets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
+	// "*.yaml" also matches macOS AppleDouble companions on exFAT/network
+	// volumes; they are binary and would fail to parse as a preset.
+	paths = fsutil.FilterPaths(paths)
 	if len(paths) != len(want) {
 		t.Fatalf("expected %d presets, found %d: %v", len(want), len(paths), paths)
 	}
