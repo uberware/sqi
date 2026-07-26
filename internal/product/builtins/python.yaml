@@ -23,10 +23,15 @@ template:
     - name: Run
       script:
         embeddedFiles:
-          - name: script.py
+          # name is an <Identifier> (spec §6.1) and is the key that
+          # Task.File references resolve against, so it cannot contain a dot —
+          # "{{Task.File.script.py}}" would not parse unambiguously. The on-disk
+          # basename goes in filename instead.
+          - name: script
             type: TEXT
+            filename: script.py
             data: "{{Param.Script}}"
         actions:
           onRun:
             command: "{{Param.Interpreter}}"
-            args: ["script.py"]
+            args: ["{{Task.File.script}}"]
