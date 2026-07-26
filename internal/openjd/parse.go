@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -62,6 +63,8 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	t.Name = getString(raw, "name")
 	t.Description = getString(raw, "description")
 	t.Extensions = getStringSlice(raw, "extensions")
+	_, t.ExtensionsSet = raw["extensions"]
+	t.UnknownFields = unknownTopLevelFields(raw)
 
 	pt, err := maybeDecodePathTranslation(raw)
 	if err != nil {
@@ -116,6 +119,34 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	}
 
 	return t, nil
+}
+
+// knownTopLevelFields are the keys the job template schema defines. Extension
+// blocks are permitted separately: a template that declares an extension may
+// carry a block named for it (e.g. SQI_PATH_TRANSLATION).
+var knownTopLevelFields = map[string]struct{}{
+	"specificationVersion": {}, "name": {}, "description": {}, "extensions": {},
+	"parameterDefinitions": {}, "jobEnvironments": {}, "steps": {},
+	// $schema is permitted so editors can attach a schema URL; the spec
+	// ignores it (conformance fixtures 1.1--schema-field{,-ignored}.yaml).
+	"$schema": {},
+}
+
+// unknownTopLevelFields returns the sorted top-level keys the schema does not
+// define and that do not name a registered extension.
+func unknownTopLevelFields(raw map[string]any) []string {
+	var out []string
+	for k := range raw {
+		if _, known := knownTopLevelFields[k]; known {
+			continue
+		}
+		if _, isExt := LookupExtension(k); isExt {
+			continue
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ─── job parameter decoder ───────────────────────────────────────────────────

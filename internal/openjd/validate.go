@@ -302,6 +302,18 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	}
 	errs = append(errs, validateNoControlChars(t.Name, "/name")...)
 	errs = append(errs, validateFormatString(t.Name, "/name", jobScopeRefs, nil)...)
+	for _, f := range t.UnknownFields {
+		errs = append(errs, ValidationError{
+			Pointer: "/" + f,
+			Message: "unknown field; the job template schema defines no such key",
+		})
+	}
+	if t.ExtensionsSet && len(t.Extensions) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: "/extensions",
+			Message: "must name at least one extension when provided",
+		})
+	}
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
 	// ── parameterDefinitions ─────────────────────────────────────────────
@@ -795,6 +807,15 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 		}
 		for k, v := range a.AllOf {
 			errs = append(errs, validateAttributeValue(v, fmt.Sprintf("%s/allOf/%d", ptr, k))...)
+		}
+		// A reserved attribute with a fixed value set names a single property of
+		// the host — an OS family cannot be both linux and windows — so an allOf
+		// demanding more than one of its values can never be satisfied.
+		if _, reserved := reservedAttributeAllowed[strings.ToLower(a.Name)]; reserved && len(a.AllOf) > 1 {
+			errs = append(errs, ValidationError{
+				Pointer: ptr + "/allOf",
+				Message: fmt.Sprintf("%q holds a single value, so allOf cannot require %d of them", a.Name, len(a.AllOf)),
+			})
 		}
 
 		if len(a.AnyOf)+len(a.AllOf) == 0 {
@@ -2357,6 +2378,45 @@ func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]stru
 	return errs
 }
 
+// validateRangeListValues checks each literal value in a task parameter's
+// range against the parameter's type. An INT range holding a float, or a PATH
+// range holding an empty string, expands into a task whose parameter can never
+// be used. Split from [validateTaskParamRangeAndChunks] to keep its cyclomatic
+// complexity within bounds.
+func validateRangeListValues(tp TaskParamDefinition, base string) ValidationErrors {
+	var errs ValidationErrors
+	for i, v := range tp.RangeList {
+		if strings.Contains(v, "{{") {
+			continue
+		}
+		vptr := fmt.Sprintf("%s/range/%d", base, i)
+		switch tp.Type {
+		case TaskParamTypeInt, TaskParamTypeChunkInt:
+			if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+				errs = append(errs, ValidationError{
+					Pointer: vptr,
+					Message: fmt.Sprintf("value %q is not a valid integer", v),
+				})
+			}
+		case TaskParamTypeFloat:
+			if _, err := strconv.ParseFloat(v, 64); err != nil {
+				errs = append(errs, ValidationError{
+					Pointer: vptr,
+					Message: fmt.Sprintf("value %q is not a valid number", v),
+				})
+			}
+		case TaskParamTypePath:
+			// PATH only: an empty STRING range value is legal (conformance
+			// fixture 3.4.2--empty-string-value.yaml), but an empty path names
+			// no file.
+			if v == "" {
+				errs = append(errs, ValidationError{Pointer: vptr, Message: "path value must not be empty"})
+			}
+		}
+	}
+	return errs
+}
+
 // validateTaskParamRangeAndChunks validates the range field and, for CHUNK[INT]
 // parameters, the chunks definition. It is extracted from [validateTaskParam]
 // to keep that function's cyclomatic complexity within bounds.
@@ -2367,6 +2427,8 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string) Valida
 	if tp.RangeExpr == nil && len(tp.RangeList) == 0 {
 		errs = append(errs, ValidationError{Pointer: base + "/range", Message: "required"})
 	}
+
+	errs = append(errs, validateRangeListValues(tp, base)...)
 
 	// INT and CHUNK[INT] range expressions must be parseable — but only when
 	// they contain no format-string references (those will be resolved against
@@ -2380,6 +2442,13 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string) Valida
 				})
 			}
 		}
+	}
+
+	if tp.Chunks != nil && tp.Chunks.TargetRuntimeSeconds != nil && *tp.Chunks.TargetRuntimeSeconds < 1 {
+		errs = append(errs, ValidationError{
+			Pointer: base + "/chunks/targetRuntimeSeconds",
+			Message: fmt.Sprintf("must be a positive number of seconds (got %d)", *tp.Chunks.TargetRuntimeSeconds),
+		})
 	}
 
 	// CHUNK[INT] must have a chunks definition with defaultTaskCount >= 1
@@ -2444,6 +2513,7 @@ func validateCombination(expr string, paramNames, chunked map[string]struct{}, p
 		return errs
 	}
 
+	seenNames := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if _, ok := paramNames[name]; !ok {
 			errs = append(errs, ValidationError{
@@ -2451,6 +2521,15 @@ func validateCombination(expr string, paramNames, chunked map[string]struct{}, p
 				Message: fmt.Sprintf("references undeclared parameter %q", name),
 			})
 		}
+		// Each parameter contributes its range to the space exactly once;
+		// referencing one twice ("Frame * Frame") has no defined meaning.
+		if _, dup := seenNames[name]; dup {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("references parameter %q more than once", name),
+			})
+		}
+		seenNames[name] = struct{}{}
 	}
 
 	// Every declared parameter must appear in the combination expression.

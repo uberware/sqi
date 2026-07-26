@@ -22,6 +22,13 @@ type JobTemplate struct {
 	// Extensions is the optional list of named OpenJD feature extensions to
 	// enable (e.g. "feature-bundle-1").
 	Extensions []string
+	// ExtensionsSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	ExtensionsSet bool
+	// UnknownFields are top-level keys the schema does not define. Carried from
+	// the decoder so validation can reject them; the spec's job template is a
+	// closed object.
+	UnknownFields []string
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
 	// when the extension is not declared.
