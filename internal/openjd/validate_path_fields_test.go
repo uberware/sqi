@@ -251,3 +251,56 @@ func TestValidate_PathParam_ObjectTypeAndDataFlow(t *testing.T) {
 		})
 	}
 }
+
+// fileFilters and fileFilterDefault live under `userInterface`, not at the
+// parameter root (schema §2.2). sqi decoded them from the root, so a
+// conforming template's filters were silently dropped and every validation
+// rule for them — label required, the §2.8 pattern grammar, the 20-filter cap
+// — was unreachable dead code. Ten conformance fixtures passed validation that
+// should have been rejected.
+//
+// This asserts the filters are actually decoded from the right place; without
+// it, a future refactor could quietly reinstate the silent drop.
+func TestParse_FileFiltersDecodedFromUserInterface(t *testing.T) {
+	tmpl := mustParse(t, `
+specificationVersion: jobtemplate-2023-09
+name: FileFilterJob
+parameterDefinitions:
+  - name: MyPath
+    type: PATH
+    objectType: FILE
+    userInterface:
+      control: CHOOSE_INPUT_FILE
+      fileFilters:
+        - label: Images
+          patterns: ["*.png", "*.exr"]
+      fileFilterDefault:
+        label: All
+        patterns: ["*"]
+steps:
+  - name: Step1
+    script:
+      actions:
+        onRun:
+          command: echo
+`)
+	p := tmpl.ParameterDefinitions[0]
+	if len(p.FileFilters) != 1 {
+		t.Fatalf("fileFilters not decoded from userInterface: got %d", len(p.FileFilters))
+	}
+	if got := p.FileFilters[0].Label; got != "Images" {
+		t.Errorf("label = %q, want %q", got, "Images")
+	}
+	if len(p.FileFilters[0].Patterns) != 2 {
+		t.Errorf("patterns = %v, want 2 entries", p.FileFilters[0].Patterns)
+	}
+	if p.FileFilterDefault == nil {
+		t.Fatal("fileFilterDefault not decoded from userInterface")
+	}
+	if got := p.FileFilterDefault.Label; got != "All" {
+		t.Errorf("fileFilterDefault label = %q, want %q", got, "All")
+	}
+	if errs := openjd.Validate(tmpl); len(errs) != 0 {
+		t.Errorf("expected a valid template, got %v", errs)
+	}
+}

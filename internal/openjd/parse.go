@@ -170,8 +170,29 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 
 // decodeJobParamFileFilters populates the fileFilters and fileFilterDefault
 // fields of p from the raw decoded map.
+//
+// Both live under `userInterface`, not at the parameter root — see the
+// <JobPathParameterDefinition> schema (§2.2), where fileFilters and
+// fileFilterDefault are members of the userInterface block alongside control
+// and label. sqi previously read them from the parameter root, so a conforming
+// template's filters were silently never decoded and every validation rule for
+// them (label required, pattern grammar, count cap) was dead code.
+// The parameter root is also accepted, as a deliberate back-compat allowance:
+// that is where sqi previously required them, so products already stored by an
+// older sqi carry that shape and would silently lose their filters otherwise.
+// userInterface wins when both are present. No conformance fixture asserts that
+// root-level filters must be REJECTED, so accepting them costs no conformance;
+// deprecating the root location is a follow-up.
 func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
-	if filters, ok := raw["fileFilters"].([]any); ok {
+	src := raw
+	if ui, ok := raw["userInterface"].(map[string]any); ok {
+		if _, hasFilters := ui["fileFilters"]; hasFilters {
+			src = ui
+		} else if _, hasDefault := ui["fileFilterDefault"]; hasDefault {
+			src = ui
+		}
+	}
+	if filters, ok := src["fileFilters"].([]any); ok {
 		for i, v := range filters {
 			f, err := decodePathFileFilter(v, fmt.Sprintf("parameterDefinition.fileFilters[%d]", i))
 			if err != nil {
@@ -180,7 +201,7 @@ func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
 			p.FileFilters = append(p.FileFilters, f)
 		}
 	}
-	if v, ok := raw["fileFilterDefault"]; ok && v != nil {
+	if v, ok := src["fileFilterDefault"]; ok && v != nil {
 		f, err := decodePathFileFilter(v, "parameterDefinition.fileFilterDefault")
 		if err != nil {
 			return err

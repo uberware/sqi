@@ -11,14 +11,23 @@ import (
 
 // pathParamTemplate builds a template with one PATH job parameter carrying the
 // given userInterface control.
+//
+// objectType tracks the control: a CHOOSE_*_FILE control requires FILE and
+// CHOOSE_DIRECTORY requires DIRECTORY (see validateChooseControl). This test is
+// about which controls are legal on a PATH parameter, so the objectType must
+// agree rather than accidentally testing the coherence rule.
 func pathParamTemplate(control string) string {
+	objectType := "DIRECTORY"
+	if control == "CHOOSE_INPUT_FILE" || control == "CHOOSE_OUTPUT_FILE" {
+		objectType = "FILE"
+	}
 	return `
 specificationVersion: jobtemplate-2023-09
 name: PathControlJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    objectType: FILE
+    objectType: ` + objectType + `
     dataFlow: IN
     userInterface: { control: ` + control + `, label: Scene }
 steps:
@@ -77,12 +86,21 @@ func TestValidate_ControlsScopedToParameterType(t *testing.T) {
 		{"FLOAT", "CHIP_INPUT", false},
 	} {
 		t.Run(tc.paramType+"/"+tc.control, func(t *testing.T) {
+			// A PATH parameter's objectType must agree with a CHOOSE_* control
+			// (validateChooseControl); it defaults to DIRECTORY. Declare FILE
+			// for the file choosers so this test measures control-to-parameter
+			// -type scoping rather than the coherence rule.
+			objectType := ""
+			if tc.paramType == "PATH" &&
+				(tc.control == "CHOOSE_INPUT_FILE" || tc.control == "CHOOSE_OUTPUT_FILE") {
+				objectType = "\n    objectType: FILE"
+			}
 			yaml := `
 specificationVersion: jobtemplate-2023-09
 name: ScopedControlJob
 parameterDefinitions:
   - name: P
-    type: ` + tc.paramType + `
+    type: ` + tc.paramType + objectType + `
     userInterface: { control: ` + tc.control + `, label: P }
 steps:
   - name: Step1

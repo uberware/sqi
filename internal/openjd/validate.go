@@ -1079,6 +1079,49 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 		if len(p.AllowedValues) != 2 {
 			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"})
 		}
+	case ControlChooseInputFile, ControlChooseOutputFile, ControlChooseDirectory:
+		errs = append(errs, validateChooseControl(ui, p, ctrlPtr)...)
+	}
+	return errs
+}
+
+// validateChooseControl checks the two coherence rules the spec states for the
+// PATH parameter's CHOOSE_* controls (§2.2.9.1):
+//
+//   - None of them may be combined with allowedValues — each is documented
+//     "Cannot be used when allowedValues is provided"; DROPDOWN_LIST is the
+//     control for a fixed value set.
+//   - The control must agree with objectType. The spec derives the DEFAULT
+//     control from objectType (FILE picks a CHOOSE_*_FILE variant, otherwise
+//     CHOOSE_DIRECTORY), and the conformance suite requires rejecting an
+//     explicit control that contradicts it — a file dialog cannot pick a
+//     directory. objectType defaults to DIRECTORY when absent (§2.2.7).
+func validateChooseControl(ui *ParameterUserInterface, p JobParameter, ctrlPtr string) ValidationErrors {
+	var errs ValidationErrors
+
+	if len(p.AllowedValues) > 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ctrlPtr,
+			Message: fmt.Sprintf("%s cannot be used when allowedValues is provided; use DROPDOWN_LIST", ui.Control),
+		})
+	}
+
+	objectType := p.ObjectType
+	if objectType == "" {
+		objectType = PathObjectTypeDirectory // spec default
+	}
+	wantFile := ui.Control == ControlChooseInputFile || ui.Control == ControlChooseOutputFile
+	if wantFile && objectType != PathObjectTypeFile {
+		errs = append(errs, ValidationError{
+			Pointer: ctrlPtr,
+			Message: fmt.Sprintf("%s requires objectType FILE (got %s)", ui.Control, objectType),
+		})
+	}
+	if !wantFile && objectType != PathObjectTypeDirectory {
+		errs = append(errs, ValidationError{
+			Pointer: ctrlPtr,
+			Message: fmt.Sprintf("%s requires objectType DIRECTORY (got %s)", ui.Control, objectType),
+		})
 	}
 	return errs
 }
@@ -1168,7 +1211,6 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 		// unconditionally (not gated by EnforceLimits).
 		errs = append(errs, validatePathOnlyFields(p, ptr)...)
 
-		// userInterface validation is also structural, always runs.
 		errs = append(errs, validateUserInterface(p, ptr)...)
 
 		// fileFilters / fileFilterDefault are also structural, always runs.
