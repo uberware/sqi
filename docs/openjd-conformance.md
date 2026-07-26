@@ -169,7 +169,7 @@ measured results, not assertions:
 
 | Suite | Result |
 |---|---|
-| `base/job_templates` | 442 / 449 pass (7 baselined) |
+| `base/job_templates` | 443 / 449 pass (6 baselined) |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | 10 / 11 pass (1 baselined) |
 | `EXPR/job_templates` | not applicable — extension not registered (209 tests) |
@@ -178,10 +178,10 @@ measured results, not assertions:
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
-768 fixtures collected in total: 452 live passes, 8 baselined failures, 308
+768 fixtures collected in total: 453 live passes, 7 baselined failures, 308
 not applicable.
 
-Of the 7 baselined `base/job_templates` failures, all 7 are `.invalid` fixtures
+Of the 6 baselined `base/job_templates` failures, all 6 are `.invalid` fixtures
 that `sqi` wrongly **accepts** — it is overwhelmingly too permissive rather than
 too strict. Exactly one valid template is wrongly rejected
 (`3.3.1--amount-min-zero-valid.yaml`).

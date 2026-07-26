@@ -19,4 +19,3 @@ base/job_templates/3.3--allof-multiple-single-value-attr.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
 base/job_templates/3.4.2--empty-path-value.invalid.yaml
-base/job_templates/3.5--undefined-embedded-file-reference.invalid.yaml
