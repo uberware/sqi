@@ -361,3 +361,115 @@ steps:
 		t.Fatalf("expected the capability name length cap to fire with limits enabled; got: %v", errs)
 	}
 }
+
+// Embedded-file data and environment variable values are resolved through the
+// same scope split as an action's command and args (internal/worker/fmtres), so
+// an out-of-scope reference in either resolves to nothing on the worker and the
+// action silently receives an empty value. Both are therefore validated, not
+// only the action itself.
+func TestValidate_ScriptRefScopes(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantPtr string // "" => valid
+	}{
+		{
+			name: "step embedded file data may use task parameters",
+			yaml: `
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: Frame, type: INT, range: "1-2"}
+    script:
+      embeddedFiles:
+        - {name: main, type: TEXT, data: "frame {{Task.Param.Frame}}"}
+      actions:
+        onRun: {command: echo}
+`,
+		},
+		{
+			name: "step embedded file data may not use Env.File",
+			yaml: `
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    script:
+      embeddedFiles:
+        - {name: main, type: TEXT, data: "{{Env.File.other}}"}
+      actions:
+        onRun: {command: echo}
+`,
+			wantPtr: "/steps/0/script/embeddedFiles/0/data",
+		},
+		{
+			name: "step embedded file data may not reference an undeclared file",
+			yaml: `
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    script:
+      embeddedFiles:
+        - {name: main, type: TEXT, data: "{{Task.File.absent}}"}
+      actions:
+        onRun: {command: echo}
+`,
+			wantPtr: "/steps/0/script/embeddedFiles/0/data",
+		},
+		{
+			name: "environment variable may not use task parameters",
+			yaml: `
+specificationVersion: jobtemplate-2023-09
+name: J
+jobEnvironments:
+  - name: E
+    variables:
+      OUT: "{{Task.Param.Frame}}"
+steps:
+  - name: S
+    script:
+      actions:
+        onRun: {command: echo}
+`,
+			wantPtr: "/jobEnvironments/0/variables/OUT",
+		},
+		{
+			name: "environment variable may use job parameters",
+			yaml: `
+specificationVersion: jobtemplate-2023-09
+name: J
+parameterDefinitions:
+  - {name: Out, type: STRING}
+jobEnvironments:
+  - name: E
+    variables:
+      OUT: "{{Param.Out}}"
+steps:
+  - name: S
+    script:
+      actions:
+        onRun: {command: echo}
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := mustParse(t, tc.yaml)
+			errs := openjd.Validate(tmpl)
+			if tc.wantPtr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got %v", errs)
+				}
+				return
+			}
+			if !containsPointer(errs, tc.wantPtr) {
+				t.Fatalf("expected pointer %q, got %v", tc.wantPtr, errs)
+			}
+		})
+	}
+}

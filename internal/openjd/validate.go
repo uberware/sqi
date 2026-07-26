@@ -2014,13 +2014,33 @@ func validateActionTiming(a Action, ptr string) ValidationErrors {
 	return errs
 }
 
-// validateActionRefs checks the format strings in an action's command and args
-// against the reference scope legal at its site.
+// validateScriptRefs checks the format strings a script carries outside its
+// actions: every embedded file's data, and — for an environment — every
+// variable value. All three are resolved through the same scope split at run
+// time (internal/worker/fmtres), so a reference that is out of scope here
+// resolves to nothing on the worker and the action silently receives an empty
+// value rather than failing.
 //
-// Environment variable values and embedded-file data are resolved through the
-// same scope split at run time (internal/worker/fmtres) but are NOT checked
-// here yet — an out-of-scope reference in either still surfaces only when the
-// worker runs that action.
+// vars may be nil for a step script, which has no variables of its own.
+// scriptBase points at the script object; varsBase at the object holding
+// variables — on an Environment those are siblings, not nested.
+func validateScriptRefs(files []EmbeddedFile, vars map[string]string, allowed []string, scriptBase, varsBase string) ValidationErrors {
+	var errs ValidationErrors
+	declared := embeddedFileNames(files)
+	for i, f := range files {
+		errs = append(errs, validateFormatString(f.Data,
+			fmt.Sprintf("%s/embeddedFiles/%d/data", scriptBase, i), allowed, declared)...)
+	}
+	// Sorted so the errors a template produces do not depend on map order.
+	for _, k := range slices.Sorted(maps.Keys(vars)) {
+		errs = append(errs, validateFormatString(vars[k], varsBase+"/variables/"+k, allowed, declared)...)
+	}
+	return errs
+}
+
+// validateActionRefs checks the format strings in an action's command and args
+// against the reference scope legal at its site. Embedded-file data and
+// environment variable values are covered by [validateScriptRefs].
 func validateActionRefs(a Action, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
 	errs := validateFormatString(a.Command, ptr+"/command", allowed, files)
 	for i, arg := range a.Args {
@@ -2081,6 +2101,14 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 				Message: "at least one of script or variables must be provided",
 			})
 		}
+		// Variables are checked even when the environment declares no script:
+		// they are set for the session regardless.
+		var envScriptFiles []EmbeddedFile
+		if e.Script != nil {
+			envScriptFiles = e.Script.EmbeddedFiles
+		}
+		errs = append(errs, validateScriptRefs(envScriptFiles, e.Variables, envScriptRefs, ptr+"/script", ptr)...)
+
 		if e.Script != nil {
 			envFiles := embeddedFileNames(e.Script.EmbeddedFiles)
 			if e.Script.Actions.OnEnter == nil {
@@ -2258,6 +2286,7 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
 	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, s.Script.EmbeddedFilesSet, base+"/script/embeddedFiles")...)
+		errs = append(errs, validateScriptRefs(s.Script.EmbeddedFiles, nil, stepScriptRefs, base+"/script", base)...)
 		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", stepScriptRefs, embeddedFileNames(s.Script.EmbeddedFiles))...)
 	}
 
