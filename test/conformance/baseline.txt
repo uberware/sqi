@@ -30,13 +30,7 @@ base/job_templates/3.3--duplicate-attribute-names.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
 base/job_templates/3.4.2--empty-path-value.invalid.yaml
-base/job_templates/3.5--duplicate-embedded-file-names.invalid.yaml
-base/job_templates/3.5--embedded-file-empty-data.invalid.yaml
-base/job_templates/3.5--embedded-file-missing-data.invalid.yaml
-base/job_templates/3.5--embedded-file-missing-name.invalid.yaml
-base/job_templates/3.5--embedded-file-name-invalid-format.invalid.yaml
 base/job_templates/3.5--embedded-filename-empty.invalid.yaml
-base/job_templates/3.5--embedded-filename-too-long.invalid.yaml
 base/job_templates/3.5--embedded-files-empty.invalid.yaml
 base/job_templates/3.5--undefined-embedded-file-reference.invalid.yaml
 base/job_templates/4--empty-step-environments.invalid.yaml
@@ -49,4 +43,3 @@ base/job_templates/5--notify-period-negative.invalid.yaml
 base/job_templates/5--notify-period-zero.invalid.yaml
 base/job_templates/5--timeout-negative.invalid.yaml
 base/job_templates/5--timeout-zero.invalid.yaml
-base/job_templates/6.1--embedded-filename-with-path.invalid.yaml

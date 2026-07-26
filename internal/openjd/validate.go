@@ -1212,6 +1212,8 @@ const (
 	maxIdentifierLen = 64
 	// maxDescriptionLen caps a <Description> (spec §7.2: 2048 characters).
 	maxDescriptionLen = 2048
+	// maxEmbeddedFilenameLen caps an embedded file's filename (spec §6.1.1: 64).
+	maxEmbeddedFilenameLen = 64
 )
 
 // Format-string scope sets (spec §7.3.1). Each entry is a legal reference
@@ -1937,8 +1939,54 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 // behind EnforceLimits.
 func validateEmbeddedFiles(files []EmbeddedFile, ptr string) ValidationErrors {
 	var errs ValidationErrors
+	seen := make(map[string]struct{}, len(files))
 	for j, f := range files {
 		typePtr := fmt.Sprintf("%s/%d/type", ptr, j)
+		base := fmt.Sprintf("%s/%d", ptr, j)
+
+		// name — an <Identifier>, and the key that Task.File/Env.File
+		// references resolve against, so it must be unique within the script.
+		switch {
+		case f.Name == "":
+			errs = append(errs, ValidationError{Pointer: base + "/name", Message: "required"})
+		case !identifierRE.MatchString(f.Name):
+			errs = append(errs, ValidationError{
+				Pointer: base + "/name",
+				Message: fmt.Sprintf("invalid identifier %q; must match [A-Za-z_][A-Za-z0-9_]*", f.Name),
+			})
+		default:
+			errs = append(errs, validateIdentifierLen(f.Name, base+"/name")...)
+			if _, dup := seen[f.Name]; dup {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/name",
+					Message: fmt.Sprintf("duplicate embedded file name %q", f.Name),
+				})
+			}
+			seen[f.Name] = struct{}{}
+		}
+
+		// data — a <DataString>, minimum length 1. An embedded file with no
+		// content writes an empty file the action then tries to run.
+		if f.Data == "" {
+			errs = append(errs, ValidationError{Pointer: base + "/data", Message: "required; must be at least 1 character"})
+		}
+
+		// filename — optional, but a declared one is a bare basename of at
+		// most 64 characters. A path here would write outside the session dir.
+		if f.Filename != "" {
+			if n := utf8.RuneCountInString(f.Filename); n > maxEmbeddedFilenameLen {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/filename",
+					Message: fmt.Sprintf("must be at most %d characters (got %d)", maxEmbeddedFilenameLen, n),
+				})
+			}
+			if strings.ContainsAny(f.Filename, `/\`) {
+				errs = append(errs, ValidationError{
+					Pointer: base + "/filename",
+					Message: "must be a bare filename with no directory path",
+				})
+			}
+		}
 		switch f.Type {
 		case EmbeddedFileTypeText:
 			// valid
