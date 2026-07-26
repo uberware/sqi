@@ -109,10 +109,10 @@ Both remaining classes of gap are elsewhere:
 - **Unimplemented extensions**, rejected by name at submission time, as argued
   above. A template hits this only by opting in explicitly.
 - **Over-permissiveness** — templates the spec says are *invalid* that `sqi`
-  nonetheless accepts. This does not affect portability of valid work; it means
-  `sqi` is a weaker validator than the spec requires, so an authoring mistake
-  that another OpenJD tool would catch may slip through. These are tracked
-  individually in `test/conformance/baseline.txt` and counted below.
+  nonetheless accepts. As of the measurement below there are **none**: every
+  template-validation fixture in the suite, valid and invalid alike, now scores
+  correctly. `test/conformance/baseline.txt` is empty, and CI fails if any entry
+  is added without being fixed.
 
 ## Known divergence: sqi names under the reserved `worker` scope
 
@@ -169,22 +169,17 @@ measured results, not assertions:
 
 | Suite | Result |
 |---|---|
-| `base/job_templates` | 443 / 449 pass (6 baselined) |
+| `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
-| `TASK_CHUNKING/job_templates` | 10 / 11 pass (1 baselined) |
+| `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
 | `EXPR/job_templates` | not applicable — extension not registered (209 tests) |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
-768 fixtures collected in total: 453 live passes, 7 baselined failures, 308
-not applicable.
-
-Of the 6 baselined `base/job_templates` failures, all 6 are `.invalid` fixtures
-that `sqi` wrongly **accepts** — it is overwhelmingly too permissive rather than
-too strict. Exactly one valid template is wrongly rejected
-(`3.3.1--amount-min-zero-valid.yaml`).
+768 fixtures collected in total: 460 live passes, 0 baselined failures, 308
+not applicable — **every live template-validation fixture passes.**
 
 **Scope.** Only template-validation tests run today. The suite's job-execution
 tests require a live session runtime and are not yet wired in.
