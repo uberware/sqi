@@ -66,6 +66,7 @@ func TestDiffBaseline(t *testing.T) {
 		baseline        []string
 		wantRegressions []string
 		wantStale       []string
+		wantOrphaned    []string
 	}{
 		{
 			name:            "unlisted failure is a regression",
@@ -95,6 +96,34 @@ func TestDiffBaseline(t *testing.T) {
 			results:  []conformance.Result{result("EXPR/job_templates/a.yaml", conformance.StateNotApplicable, false)},
 			baseline: nil,
 		},
+		{
+			// A normal listed-failure entry (the common case, exercised above
+			// too) must NOT be reported as orphaned just because it is
+			// present in baseline.
+			name:            "listed failure is not orphaned",
+			results:         []conformance.Result{result("base/job_templates/a.yaml", conformance.StateLive, false)},
+			baseline:        []string{"base/job_templates/a.yaml"},
+			wantRegressions: nil,
+			wantOrphaned:    nil,
+		},
+		{
+			// The fixture was removed or renamed upstream: nothing in
+			// results matches the baseline entry at all.
+			name:         "baseline entry with no matching result is orphaned",
+			results:      []conformance.Result{result("base/job_templates/a.yaml", conformance.StateLive, true)},
+			baseline:     []string{"base/job_templates/deleted-upstream.yaml"},
+			wantOrphaned: []string{"base/job_templates/deleted-upstream.yaml"},
+		},
+		{
+			// The fixture still exists but was reclassified to
+			// StateNotApplicable (e.g. Finding 1's env_templates fix) — its
+			// baseline entry is now dead too, even though the ID still
+			// matches a result.
+			name:         "baseline entry for a now-not-applicable fixture is orphaned",
+			results:      []conformance.Result{result("base/env_templates/x.yaml", conformance.StateNotApplicable, false)},
+			baseline:     []string{"base/env_templates/x.yaml"},
+			wantOrphaned: []string{"base/env_templates/x.yaml"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -103,9 +132,10 @@ func TestDiffBaseline(t *testing.T) {
 			for _, id := range tt.baseline {
 				baseline[id] = struct{}{}
 			}
-			gotReg, gotStale := conformance.DiffBaseline(tt.results, baseline)
+			gotReg, gotStale, gotOrphaned := conformance.DiffBaseline(tt.results, baseline)
 			assertIDs(t, "regressions", gotReg, tt.wantRegressions)
 			assertIDs(t, "stale", gotStale, tt.wantStale)
+			assertIDs(t, "orphaned", gotOrphaned, tt.wantOrphaned)
 		})
 	}
 }

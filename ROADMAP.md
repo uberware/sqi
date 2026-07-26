@@ -98,7 +98,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) (OpenJD) format as its native job execution format.
 
 **Benefits:**
-- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented (e.g. `EXPR`) — those are rejected by design rather than accepted and misinterpreted; see [`docs/openjd-conformance.md`](docs/openjd-conformance.md)
+- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented (e.g. `EXPR`) — those are rejected by design rather than accepted and misinterpreted; a small number of extension-free base-spec templates are also not yet conformant (tracked in `test/conformance/baseline.txt`, measured in [`docs/openjd-conformance.md`](docs/openjd-conformance.md))
 - Standardized path mapping, parameter spaces, and execution semantics
 - Clear separation between job description and job authoring (the product system)
 

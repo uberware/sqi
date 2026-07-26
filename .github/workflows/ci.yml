@@ -941,6 +941,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run the official OpenJD conformance suite
+        shell: bash
         run: make test-conformance 2>&1 | tee /tmp/conformance.log
 
       - name: Assert the suite actually ran

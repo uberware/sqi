@@ -104,7 +104,7 @@ func TestConformance_Templates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load baseline: %v", err)
 	}
-	regressions, stale := conformance.DiffBaseline(results, baseline)
+	regressions, stale, orphaned := conformance.DiffBaseline(results, baseline)
 
 	byID := map[string]conformance.Result{}
 	for _, r := range results {
@@ -115,5 +115,8 @@ func TestConformance_Templates(t *testing.T) {
 	}
 	for _, id := range stale {
 		t.Errorf("STALE BASELINE %s now passes — remove it from %s", id, baselinePath)
+	}
+	for _, id := range orphaned {
+		t.Errorf("ORPHANED BASELINE %s matches no live result — remove it from %s", id, baselinePath)
 	}
 }
