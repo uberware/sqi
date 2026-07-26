@@ -37,8 +37,6 @@ base/job_templates/2.1--maxlength-negative.invalid.yaml
 base/job_templates/2.1--maxlength-zero.invalid.yaml
 base/job_templates/2.1--minlength-negative.invalid.yaml
 base/job_templates/2.1--multiline-edit-with-allowed.invalid.yaml
-base/job_templates/2.1--string-ui-grouplabel-without-control.yaml
-base/job_templates/2.1--string-ui-label-without-control.yaml
 base/job_templates/2.1--value-too-long.invalid.yaml
 base/job_templates/2.2--choose-directory-with-allowed.invalid.yaml
 base/job_templates/2.2--choose-file-with-allowed.invalid.yaml
@@ -61,7 +59,6 @@ base/job_templates/2.2--file-object-with-choose-directory.invalid.yaml
 base/job_templates/2.2--path-allowedvalues-minlength.invalid.yaml
 base/job_templates/2.2--path-default-too-long.invalid.yaml
 base/job_templates/2.2--path-default-too-short.invalid.yaml
-base/job_templates/2.2--path-ui-label-without-control.yaml
 base/job_templates/2.2--too-many-file-filters.invalid.yaml
 base/job_templates/2.3--allowed-values-null.invalid.yaml
 base/job_templates/2.3--bool-default.invalid.yaml
@@ -70,7 +67,6 @@ base/job_templates/2.3--default-above-max.invalid.yaml
 base/job_templates/2.3--default-below-min.invalid.yaml
 base/job_templates/2.3--default-not-in-allowed.invalid.yaml
 base/job_templates/2.3--float-default.invalid.yaml
-base/job_templates/2.3--int-ui-label-without-control.yaml
 base/job_templates/2.3--spinbox-with-allowed.invalid.yaml
 base/job_templates/2.3--step-delta-float.invalid.yaml
 base/job_templates/2.3--step-delta-negative.invalid.yaml
@@ -85,7 +81,6 @@ base/job_templates/2.4--default-below-min.invalid.yaml
 base/job_templates/2.4--default-not-in-allowed.invalid.yaml
 base/job_templates/2.4--float-allowedvalues-above-max.invalid.yaml
 base/job_templates/2.4--float-allowedvalues-below-min.invalid.yaml
-base/job_templates/2.4--float-ui-label-without-control.yaml
 base/job_templates/2.4--spinbox-with-allowed.invalid.yaml
 base/job_templates/2.4--step-delta-non-spinbox.invalid.yaml
 base/job_templates/2.4--step-delta-on-hidden.invalid.yaml
@@ -106,16 +101,11 @@ base/job_templates/3.3--reserved-scope-job.invalid.yaml
 base/job_templates/3.3--reserved-scope-step.invalid.yaml
 base/job_templates/3.3--reserved-scope-task.invalid.yaml
 base/job_templates/3.3--reserved-scope-worker.invalid.yaml
-base/job_templates/3.3--vendor-prefix-amount.yaml
-base/job_templates/3.3--vendor-prefix-attribute.yaml
 base/job_templates/3.3.1--amount-min-greater-than-max.invalid.yaml
 base/job_templates/3.3.1--amount-min-zero-valid.yaml
 base/job_templates/3.3.1--min-greater-than-max.invalid.yaml
-base/job_templates/3.3.1--name-max-length.yaml
 base/job_templates/3.3.1--neither-min-nor-max.invalid.yaml
 base/job_templates/3.3.2--both-anyof-allof.invalid.yaml
-base/job_templates/3.3.2--name-max-length.yaml
-base/job_templates/3.3.2--value-max-length.yaml
 base/job_templates/3.3.2--value-too-long.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
