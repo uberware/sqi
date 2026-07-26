@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 )
@@ -49,6 +50,9 @@ func Build(presetsDir, definitionDir string) ([]Generated, error) {
 	if err != nil {
 		return nil, fmt.Errorf("glob presets: %w", err)
 	}
+	// A "*.yaml" glob also matches macOS AppleDouble companions ("._foo.yaml"),
+	// which are binary and fail to parse as a product definition.
+	matches = fsutil.FilterPaths(matches)
 	out := make([]Generated, 0, len(matches))
 	for _, p := range matches {
 		data, err := os.ReadFile(p)
