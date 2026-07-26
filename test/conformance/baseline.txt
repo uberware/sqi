@@ -96,11 +96,6 @@ base/job_templates/3.3--duplicate-amount-names-case-insensitive.invalid.yaml
 base/job_templates/3.3--duplicate-amount-names.invalid.yaml
 base/job_templates/3.3--duplicate-attribute-names-case-insensitive.invalid.yaml
 base/job_templates/3.3--duplicate-attribute-names.invalid.yaml
-base/job_templates/3.3--reserved-scope-job.invalid.yaml
-base/job_templates/3.3--reserved-scope-step.invalid.yaml
-base/job_templates/3.3--reserved-scope-task.invalid.yaml
-base/job_templates/3.3--reserved-scope-worker.invalid.yaml
-base/job_templates/3.3.2--both-anyof-allof.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
 base/job_templates/3.4.2--empty-path-value.invalid.yaml

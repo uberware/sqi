@@ -363,6 +363,87 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 // is valid — see the conformance fixture 3.3.1--amount-min-zero-valid.yaml.
 // Those bounds are enforced by [validateAmountBounds].
 
+// reservedCapabilityScopes are the identifiers the spec reserves as the first
+// segment after a capability namespace ("amount."/"attr."). §3.3.1.1: "This
+// specification has reserved specific values of the first <Identifier> after
+// 'amount.' for use in this and future revisions. The reserved values are:
+// 'worker', 'job', 'step', and 'task'". A name under one of these scopes must
+// be one the spec (or, see sqiReservedScopeNames, sqi itself) actually defines.
+// Read-only after initialization.
+var reservedCapabilityScopes = map[string]bool{
+	"worker": true, "job": true, "step": true, "task": true,
+}
+
+// specDefinedCapabilities are the full capability names the OpenJD 2023-09
+// spec defines under a reserved scope. Read-only after initialization.
+var specDefinedCapabilities = map[string]bool{
+	"amount.worker.vcpu":         true,
+	"amount.worker.memory":       true,
+	"amount.worker.gpu":          true,
+	"amount.worker.gpu.memory":   true,
+	"amount.worker.disk.scratch": true,
+	"attr.worker.os.family":      true,
+	"attr.worker.cpu.arch":       true,
+}
+
+// sqiReservedScopeNames are capability names sqi defines under the reserved
+// "worker" scope. These are a KNOWN DIVERGENCE from strict conformance: the
+// spec reserves that scope for its own future use, and a vendor is meant to
+// namespace its capabilities behind a vendor prefix instead
+// ("sqi:attr.worker.tag.nuke", which [validateCapabilityPrefix] accepts).
+//
+// They are permitted because they predate this check and are load-bearing:
+// attr.worker.tag.* backs worker capability tags (every shipped DCC preset
+// gates on one), amount.worker.usagepool.* backs usage pools, and
+// attr.worker.computelocation backs compute locations. Enforcing the spec
+// strictly here would invalidate sqi's own presets. Migrating them behind a
+// vendor prefix is the conformant fix and a breaking change; it is not made
+// here. Prefixes end in "." to match a family; bare entries match exactly.
+var sqiReservedScopeNames = []string{
+	"amount.worker.usagepool.",
+	"attr.worker.tag.",
+	"attr.worker.os.version",
+	"attr.worker.computelocation",
+}
+
+// validateReservedScope reports an error when a capability name sits under a
+// spec-reserved scope but is not a name the spec (or sqi, see
+// [sqiReservedScopeNames]) defines — for example "amount.worker.custom".
+//
+// A vendor-prefixed name is exempt: it lives in the vendor's own namespace, so
+// "mycompany:amount.worker.custom" is that vendor's capability rather than a
+// claim on the spec's reserved scope.
+func validateReservedScope(name, wantPrefix, ptr string) ValidationErrors {
+	local := strings.ToLower(name)
+	if vendor, rest, ok := strings.Cut(local, ":"); ok && identifierRE.MatchString(vendor) {
+		return nil // vendor namespace; not the spec's reserved scope
+	} else if ok {
+		local = rest
+	}
+	if !strings.HasPrefix(local, wantPrefix) {
+		return nil // prefix problems are reported by validateCapabilityPrefix
+	}
+	scope, _, _ := strings.Cut(strings.TrimPrefix(local, wantPrefix), ".")
+	if !reservedCapabilityScopes[scope] {
+		return nil // a custom scope is unconstrained
+	}
+	if specDefinedCapabilities[local] {
+		return nil
+	}
+	for _, allowed := range sqiReservedScopeNames {
+		if local == allowed || (strings.HasSuffix(allowed, ".") && strings.HasPrefix(local, allowed)) {
+			return nil
+		}
+	}
+	return ValidationErrors{{
+		Pointer: ptr,
+		Message: fmt.Sprintf(
+			"capability name %q uses the reserved scope %q but is not a defined capability; "+
+				"use a custom scope or a vendor prefix", name, scope,
+		),
+	}}
+}
+
 // reservedAttributeAllowed maps the lowercase canonical reserved ATTRIBUTE
 // capability names from the OpenJD jobtemplate-2023-09 specification to the
 // set of allowed string values. Every entry in anyOf and allOf for a matching
@@ -638,12 +719,14 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 		ptr := fmt.Sprintf("%s/amounts/%d/name", base, i)
 		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr)...)
 		errs = append(errs, validateCapabilityPrefix(a.Name, "amount.", ptr)...)
+		errs = append(errs, validateReservedScope(a.Name, "amount.", ptr)...)
 	}
 
 	for i, a := range hr.Attributes {
 		ptr := fmt.Sprintf("%s/attributes/%d", base, i)
 		errs = append(errs, validateCapabilityNameRequired(a.Name, ptr+"/name")...)
 		errs = append(errs, validateCapabilityPrefix(a.Name, "attr.", ptr+"/name")...)
+		errs = append(errs, validateReservedScope(a.Name, "attr.", ptr+"/name")...)
 
 		if len(a.AnyOf)+len(a.AllOf) == 0 {
 			errs = append(errs, ValidationError{
