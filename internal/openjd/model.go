@@ -211,6 +211,9 @@ type Environment struct {
 type EnvironmentScript struct {
 	// EmbeddedFiles are plain-text files materialized before actions run.
 	EmbeddedFiles []EmbeddedFile
+	// EmbeddedFilesSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	EmbeddedFilesSet bool
 	// Actions holds the onEnter and onExit lifecycle hooks.
 	Actions EnvironmentActions
 }
@@ -247,6 +250,9 @@ type StepTemplate struct {
 type StepScript struct {
 	// EmbeddedFiles are plain-text files written to disk before each action.
 	EmbeddedFiles []EmbeddedFile
+	// EmbeddedFilesSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	EmbeddedFilesSet bool
 	// Actions holds the task lifecycle hooks.
 	Actions StepActions
 }
@@ -377,6 +383,9 @@ type EmbeddedFile struct {
 	Name string
 	// Filename is the on-disk name; if empty the worker generates one.
 	Filename string
+	// FilenameSet records whether the key was present, so an explicitly empty
+	// filename is distinguishable from an omitted one.
+	FilenameSet bool
 	// Data is the file content (may contain format-string references).
 	Data string
 	// Type is the file-type discriminator.  In jobtemplate-2023-09 the only
@@ -397,6 +406,9 @@ type Action struct {
 	Command string
 	// Args is the optional argument list (each entry may be a format string).
 	Args []string
+	// ArgsSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one.
+	ArgsSet bool
 	// TimeoutSeconds, when > 0, limits how long the action may run.
 	TimeoutSeconds int
 	// TimeoutSet records whether the key was present, so an explicit

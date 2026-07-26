@@ -355,7 +355,11 @@ func decodeEnvVars(v any, envName string) (map[string]string, error) {
 func decodeEnvironmentScript(raw map[string]any) (EnvironmentScript, error) {
 	s := EnvironmentScript{}
 
-	if ef, ok := raw["embeddedFiles"]; ok && ef != nil {
+	if ef, ok := raw["embeddedFiles"]; ok {
+		s.EmbeddedFilesSet = true
+		if ef == nil {
+			ef = []any{}
+		}
 		files, err := decodeEmbeddedFiles(ef)
 		if err != nil {
 			return s, err
@@ -509,7 +513,11 @@ func decodeStepDependencyList(raw map[string]any) ([]StepDependency, error) {
 func decodeStepScript(raw map[string]any) (StepScript, error) {
 	s := StepScript{}
 
-	if v, ok := raw["embeddedFiles"]; ok && v != nil {
+	if v, ok := raw["embeddedFiles"]; ok {
+		s.EmbeddedFilesSet = true
+		if v == nil {
+			v = []any{}
+		}
 		files, err := decodeEmbeddedFiles(v)
 		if err != nil {
 			return s, err
@@ -711,11 +719,12 @@ func decodeEmbeddedFile(raw map[string]any, idx int) (EmbeddedFile, error) {
 		return EmbeddedFile{}, err
 	}
 	ef := EmbeddedFile{
-		Name:      getString(raw, "name"),
-		Filename:  getString(raw, "filename"),
-		Data:      data,
-		Type:      EmbeddedFileType(getString(raw, "type")),
-		EndOfLine: getString(raw, "endOfLine"),
+		Name:        getString(raw, "name"),
+		Filename:    getString(raw, "filename"),
+		FilenameSet: func() bool { _, ok := raw["filename"]; return ok }(),
+		Data:        data,
+		Type:        EmbeddedFileType(getString(raw, "type")),
+		EndOfLine:   getString(raw, "endOfLine"),
 	}
 	if v, ok := raw["runnable"]; ok {
 		if b, ok := v.(bool); ok {
@@ -732,7 +741,11 @@ func decodeAction(raw map[string]any) (Action, error) {
 		Command: getString(raw, "command"),
 	}
 
-	if v, ok := raw["args"]; ok && v != nil {
+	if v, ok := raw["args"]; ok {
+		a.ArgsSet = true
+		if v == nil {
+			v = []any{}
+		}
 		args, err := strictStringSlice(v, "args")
 		if err != nil {
 			return a, err

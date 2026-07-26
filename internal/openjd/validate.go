@@ -338,6 +338,19 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 
 	for i, s := range t.Steps {
 		errs = append(errs, validateStep(s, i, stepNames)...)
+		// A step environment may not reuse a job environment's name: both are
+		// entered for the same session, so the collision makes it ambiguous
+		// which one an Env.File reference or variable belongs to.
+		for k, se := range s.StepEnvironments {
+			for _, je := range t.JobEnvironments {
+				if se.Name != "" && se.Name == je.Name {
+					errs = append(errs, ValidationError{
+						Pointer: fmt.Sprintf("/steps/%d/stepEnvironments/%d/name", i, k),
+						Message: fmt.Sprintf("collides with a job environment named %q", se.Name),
+					})
+				}
+			}
+		}
 	}
 
 	// ── acyclicity ────────────────────────────────────────────────────────
@@ -1196,6 +1209,14 @@ func validateParamValueInBounds(p JobParameter, v, ptr string) ValidationErrors 
 	switch p.Type {
 	case JobParamTypeString, JobParamTypePath:
 		n := utf8.RuneCountInString(v)
+		// <JobParameterStringValue> is capped at 1024 characters (spec §2.5)
+		// regardless of any maxLength the parameter declares.
+		if n > maxJobParamStringValueLen {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("must be at most %d characters (got %d)", maxJobParamStringValueLen, n),
+			})
+		}
 		if p.MinLength != nil && n < *p.MinLength {
 			errs = append(errs, ValidationError{
 				Pointer: ptr,
@@ -1265,6 +1286,8 @@ const (
 	maxIdentifierLen = 64
 	// maxDescriptionLen caps a <Description> (spec §7.2: 2048 characters).
 	maxDescriptionLen = 2048
+	// maxJobParamStringValueLen caps a <JobParameterStringValue> (spec §2.5).
+	maxJobParamStringValueLen = 1024
 	// maxEmbeddedFilenameLen caps an embedded file's filename (spec §6.1.1: 64).
 	maxEmbeddedFilenameLen = 64
 )
@@ -1928,6 +1951,14 @@ func validateAction(a Action, ptr string, allowed []string) ValidationErrors {
 	}
 	errs = append(errs, validateActionRefs(a, ptr, allowed)...)
 	errs = append(errs, validateActionTiming(a, ptr)...)
+	// args is @optional, but a declared list must hold at least one argument —
+	// an empty array says "pass arguments" and then passes none.
+	if a.ArgsSet && len(a.Args) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/args",
+			Message: "must contain at least one argument when provided",
+		})
+	}
 	return errs
 }
 
@@ -2023,7 +2054,7 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 			if e.Script.Actions.OnExit != nil {
 				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", envScriptRefs)...)
 			}
-			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, ptr+"/script/embeddedFiles")...)
+			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, e.Script.EmbeddedFilesSet, ptr+"/script/embeddedFiles")...)
 		}
 	}
 	return errs
@@ -2037,70 +2068,91 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 //
 // This check is structural correctness — it runs unconditionally, NOT gated
 // behind EnforceLimits.
-func validateEmbeddedFiles(files []EmbeddedFile, ptr string) ValidationErrors {
+func validateEmbeddedFiles(files []EmbeddedFile, set bool, ptr string) ValidationErrors {
 	var errs ValidationErrors
+	// embeddedFiles is @optional, but a declared list must hold at least one
+	// file — an empty array declares attachments and supplies none.
+	if set && len(files) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr,
+			Message: "must contain at least one embedded file when provided",
+		})
+	}
 	seen := make(map[string]struct{}, len(files))
 	for j, f := range files {
-		typePtr := fmt.Sprintf("%s/%d/type", ptr, j)
-		base := fmt.Sprintf("%s/%d", ptr, j)
+		errs = append(errs, validateEmbeddedFileEntry(f, fmt.Sprintf("%s/%d", ptr, j), seen)...)
+	}
+	return errs
+}
 
-		// name — an <Identifier>, and the key that Task.File/Env.File
-		// references resolve against, so it must be unique within the script.
-		switch {
-		case f.Name == "":
-			errs = append(errs, ValidationError{Pointer: base + "/name", Message: "required"})
-		case !identifierRE.MatchString(f.Name):
+// validateEmbeddedFileEntry checks one embedded file, recording its name in
+// seen so a later duplicate is caught. Split from [validateEmbeddedFiles] to
+// keep that function's cyclomatic complexity within bounds.
+func validateEmbeddedFileEntry(f EmbeddedFile, base string, seen map[string]struct{}) ValidationErrors {
+	var errs ValidationErrors
+	typePtr := base + "/type"
+	// name — an <Identifier>, and the key that Task.File/Env.File
+	// references resolve against, so it must be unique within the script.
+	switch {
+	case f.Name == "":
+		errs = append(errs, ValidationError{Pointer: base + "/name", Message: "required"})
+	case !identifierRE.MatchString(f.Name):
+		errs = append(errs, ValidationError{
+			Pointer: base + "/name",
+			Message: fmt.Sprintf("invalid identifier %q; must match [A-Za-z_][A-Za-z0-9_]*", f.Name),
+		})
+	default:
+		errs = append(errs, validateIdentifierLen(f.Name, base+"/name")...)
+		if _, dup := seen[f.Name]; dup {
 			errs = append(errs, ValidationError{
 				Pointer: base + "/name",
-				Message: fmt.Sprintf("invalid identifier %q; must match [A-Za-z_][A-Za-z0-9_]*", f.Name),
+				Message: fmt.Sprintf("duplicate embedded file name %q", f.Name),
 			})
-		default:
-			errs = append(errs, validateIdentifierLen(f.Name, base+"/name")...)
-			if _, dup := seen[f.Name]; dup {
-				errs = append(errs, ValidationError{
-					Pointer: base + "/name",
-					Message: fmt.Sprintf("duplicate embedded file name %q", f.Name),
-				})
-			}
-			seen[f.Name] = struct{}{}
 		}
+		seen[f.Name] = struct{}{}
+	}
 
-		// data — a <DataString>, minimum length 1. An embedded file with no
-		// content writes an empty file the action then tries to run.
-		if f.Data == "" {
-			errs = append(errs, ValidationError{Pointer: base + "/data", Message: "required; must be at least 1 character"})
-		}
+	// data — a <DataString>, minimum length 1. An embedded file with no
+	// content writes an empty file the action then tries to run.
+	if f.Data == "" {
+		errs = append(errs, ValidationError{Pointer: base + "/data", Message: "required; must be at least 1 character"})
+	}
 
-		// filename — optional, but a declared one is a bare basename of at
-		// most 64 characters. A path here would write outside the session dir.
-		if f.Filename != "" {
-			if n := utf8.RuneCountInString(f.Filename); n > maxEmbeddedFilenameLen {
-				errs = append(errs, ValidationError{
-					Pointer: base + "/filename",
-					Message: fmt.Sprintf("must be at most %d characters (got %d)", maxEmbeddedFilenameLen, n),
-				})
-			}
-			if strings.ContainsAny(f.Filename, `/\`) {
-				errs = append(errs, ValidationError{
-					Pointer: base + "/filename",
-					Message: "must be a bare filename with no directory path",
-				})
-			}
-		}
-		switch f.Type {
-		case EmbeddedFileTypeText:
-			// valid
-		case "":
+	// filename — optional, but a declared one is a bare basename of at
+	// most 64 characters. A path here would write outside the session dir.
+	if f.FilenameSet && f.Filename == "" {
+		errs = append(errs, ValidationError{
+			Pointer: base + "/filename",
+			Message: "must not be empty when provided",
+		})
+	}
+	if f.Filename != "" {
+		if n := utf8.RuneCountInString(f.Filename); n > maxEmbeddedFilenameLen {
 			errs = append(errs, ValidationError{
-				Pointer: typePtr,
-				Message: "required; must be TEXT",
-			})
-		default:
-			errs = append(errs, ValidationError{
-				Pointer: typePtr,
-				Message: fmt.Sprintf("unsupported embedded file type %q; expected TEXT", f.Type),
+				Pointer: base + "/filename",
+				Message: fmt.Sprintf("must be at most %d characters (got %d)", maxEmbeddedFilenameLen, n),
 			})
 		}
+		if strings.ContainsAny(f.Filename, `/\`) {
+			errs = append(errs, ValidationError{
+				Pointer: base + "/filename",
+				Message: "must be a bare filename with no directory path",
+			})
+		}
+	}
+	switch f.Type {
+	case EmbeddedFileTypeText:
+		// valid
+	case "":
+		errs = append(errs, ValidationError{
+			Pointer: typePtr,
+			Message: "required; must be TEXT",
+		})
+	default:
+		errs = append(errs, ValidationError{
+			Pointer: typePtr,
+			Message: fmt.Sprintf("unsupported embedded file type %q; expected TEXT", f.Type),
+		})
 	}
 	return errs
 }
@@ -2112,8 +2164,16 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 	base := fmt.Sprintf("/steps/%d", idx)
 
 	// dependencies
+	seenDeps := make(map[string]struct{}, len(s.Dependencies))
 	for j, dep := range s.Dependencies {
 		ptr := fmt.Sprintf("%s/dependencies/%d/dependsOn", base, j)
+		if _, dup := seenDeps[dep.DependsOn]; dup && dep.DependsOn != "" {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("duplicate dependency on step %q", dep.DependsOn),
+			})
+		}
+		seenDeps[dep.DependsOn] = struct{}{}
 		if dep.DependsOn == "" {
 			errs = append(errs, ValidationError{Pointer: ptr, Message: "required"})
 			continue
@@ -2137,7 +2197,7 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 	if s.Script == nil {
 		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
 	} else {
-		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, base+"/script/embeddedFiles")...)
+		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, s.Script.EmbeddedFilesSet, base+"/script/embeddedFiles")...)
 		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", stepScriptRefs)...)
 	}
 
