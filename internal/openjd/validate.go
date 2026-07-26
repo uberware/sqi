@@ -353,21 +353,15 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 
 // ─── reserved-name tables ─────────────────────────────────────────────────────
 
-// reservedAmountMinimums maps the lowercase canonical reserved AMOUNT capability
-// names from the OpenJD jobtemplate-2023-09 specification to their required
-// minimum values. A host-requirement amount whose name matches (case-insensitively)
-// one of these keys must have its Min and Max (when present) >= the mapped value.
-//
-// Spec reference: OpenJD jobtemplate-2023-09 §hostRequirements.amounts —
-// Reserved Capability Names (AMOUNT).
-// Read-only after initialization; never modified at runtime.
-var reservedAmountMinimums = map[string]float64{
-	"amount.worker.vcpu":         1, // at least 1 vCPU
-	"amount.worker.memory":       0, // MiB; >= 0
-	"amount.worker.gpu":          0, // GPU count; >= 0
-	"amount.worker.gpu.memory":   0, // MiB VRAM per device; >= 0
-	"amount.worker.disk.scratch": 0, // GiB scratch space; >= 0
-}
+// NOTE: there is deliberately no reservedAmountMinimums map here. sqi once
+// enforced the spec's per-capability "Minimum Value" table (vcpu >= 1, and so
+// on) as a floor on a requirement's own min/max. That was a misreading: the
+// table gives the default used when min is OMITTED ("If not provided, then the
+// default is 0 unless the specific host capability defines a minimum"), not a
+// lower bound on an explicitly supplied value. The schema types min as
+// <nonnegativefloat> and max as <positivefloat>, so "amount.worker.vcpu min: 0"
+// is valid — see the conformance fixture 3.3.1--amount-min-zero-valid.yaml.
+// Those bounds are enforced by [validateAmountBounds].
 
 // reservedAttributeAllowed maps the lowercase canonical reserved ATTRIBUTE
 // capability names from the OpenJD jobtemplate-2023-09 specification to the
@@ -415,6 +409,10 @@ const (
 	maxCapabilityNameLen = 100
 	// maxAttributeValues caps each attribute's anyOf/allOf element count (1–50).
 	maxAttributeValues = 50
+
+	// maxAttributeValueLen caps each <AttributeCapabilityValue> string
+	// (spec §3.3.2.2: max length 100 characters).
+	maxAttributeValueLen = 100
 	// maxUILabelLen caps userInterface label length in characters (runes).
 	// The spec's <UserInterfaceLabelStringValue> is 1-64 characters.
 	maxUILabelLen = 64
@@ -592,6 +590,19 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 				Message: fmt.Sprintf("at most %d values are allowed (got %d)", maxAttributeValues, len(a.AnyOf)),
 			})
 		}
+		for j, v := range append(append([]string{}, a.AnyOf...), a.AllOf...) {
+			if utf8.RuneCountInString(v) > maxAttributeValueLen {
+				field, idx := "anyOf", j
+				if j >= len(a.AnyOf) {
+					field, idx = "allOf", j-len(a.AnyOf)
+				}
+				errs = append(errs, ValidationError{
+					Pointer: fmt.Sprintf("%s/%s/%d", ptr, field, idx),
+					Message: fmt.Sprintf("value must be at most %d characters (got %d)",
+						maxAttributeValueLen, utf8.RuneCountInString(v)),
+				})
+			}
+		}
 		if len(a.AllOf) > maxAttributeValues {
 			errs = append(errs, ValidationError{
 				Pointer: ptr + "/allOf",
@@ -642,10 +653,10 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 		}
 	}
 
-	// Reserved-capability value checks: pure value-domain correctness, with
-	// no size or count component, so they belong here rather than in the
-	// gated validateHostRequirementLimits.
-	errs = append(errs, validateReservedAmounts(hr.Amounts, base)...)
+	// Amount bound checks and reserved-attribute value checks: pure
+	// value-domain correctness, with no size or count component, so they
+	// belong here rather than in the gated validateHostRequirementLimits.
+	errs = append(errs, validateAmountBounds(hr.Amounts, base)...)
 	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
 
 	return errs
@@ -661,16 +672,42 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 // (decodeAmountBound) accepts any scalar (string, number, or boolean) without
 // requiring it to parse as a number, so a non-numeric bound is reported here,
 // by [checkReservedBound], not silently skipped.
-func validateReservedAmounts(amounts []AmountRequirement, base string) ValidationErrors {
+func validateAmountBounds(amounts []AmountRequirement, base string) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range amounts {
-		minReq, ok := reservedAmountMinimums[strings.ToLower(a.Name)]
-		if !ok {
-			continue // not a reserved capability name
-		}
 		ptr := fmt.Sprintf("%s/amounts/%d", base, i)
-		errs = append(errs, checkReservedBound(a.Min, minReq, a.Name, ptr+"/min")...)
-		errs = append(errs, checkReservedBound(a.Max, minReq, a.Name, ptr+"/max")...)
+
+		if a.Min == nil && a.Max == nil {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: "at least one of min or max must be provided",
+			})
+			continue
+		}
+
+		minV, minOK, minErrs := parseAmountBound(a.Min, ptr+"/min")
+		errs = append(errs, minErrs...)
+		maxV, maxOK, maxErrs := parseAmountBound(a.Max, ptr+"/max")
+		errs = append(errs, maxErrs...)
+
+		if minOK && minV < 0 {
+			errs = append(errs, ValidationError{
+				Pointer: ptr + "/min",
+				Message: fmt.Sprintf("min must be non-negative (got %g)", minV),
+			})
+		}
+		if maxOK && maxV <= 0 {
+			errs = append(errs, ValidationError{
+				Pointer: ptr + "/max",
+				Message: fmt.Sprintf("max must be positive (got %g)", maxV),
+			})
+		}
+		if minOK && maxOK && minV > maxV {
+			errs = append(errs, ValidationError{
+				Pointer: ptr + "/min",
+				Message: fmt.Sprintf("min %g must not exceed max %g", minV, maxV),
+			})
+		}
 	}
 	return errs
 }
@@ -680,33 +717,24 @@ func validateReservedAmounts(amounts []AmountRequirement, base string) Validatio
 // references ("{{") are skipped. A bound that fails to parse as a number, or
 // that parses to a non-finite value (NaN, ±Inf), is reported as a validation
 // error rather than skipped.
-func checkReservedBound(val *string, minReq float64, capName, ptr string) ValidationErrors {
+func parseAmountBound(val *string, ptr string) (value float64, ok bool, errs ValidationErrors) {
 	if val == nil || strings.Contains(*val, "{{") {
-		return nil
+		return 0, false, nil
 	}
 	v, err := strconv.ParseFloat(*val, 64)
 	if err != nil {
-		return ValidationErrors{{
+		return 0, false, ValidationErrors{{
 			Pointer: ptr,
 			Message: fmt.Sprintf("value %q is not a valid number", *val),
 		}}
 	}
 	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return ValidationErrors{{
+		return 0, false, ValidationErrors{{
 			Pointer: ptr,
 			Message: fmt.Sprintf("value %q is not a finite number", *val),
 		}}
 	}
-	if v < minReq {
-		return ValidationErrors{{
-			Pointer: ptr,
-			Message: fmt.Sprintf(
-				"value %s is below the reserved minimum %g for capability %q",
-				*val, minReq, capName,
-			),
-		}}
-	}
-	return nil
+	return v, true, nil
 }
 
 // validateReservedAttributes checks that any attribute with a reserved name

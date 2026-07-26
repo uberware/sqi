@@ -92,7 +92,6 @@ base/job_templates/3.3--allof-multiple-single-value-attr.invalid.yaml
 base/job_templates/3.3--attribute-value-empty.invalid.yaml
 base/job_templates/3.3--attribute-value-special-chars.invalid.yaml
 base/job_templates/3.3--attribute-value-starts-with-digit.invalid.yaml
-base/job_templates/3.3--attribute-value-too-long.invalid.yaml
 base/job_templates/3.3--duplicate-amount-names-case-insensitive.invalid.yaml
 base/job_templates/3.3--duplicate-amount-names.invalid.yaml
 base/job_templates/3.3--duplicate-attribute-names-case-insensitive.invalid.yaml
@@ -101,12 +100,7 @@ base/job_templates/3.3--reserved-scope-job.invalid.yaml
 base/job_templates/3.3--reserved-scope-step.invalid.yaml
 base/job_templates/3.3--reserved-scope-task.invalid.yaml
 base/job_templates/3.3--reserved-scope-worker.invalid.yaml
-base/job_templates/3.3.1--amount-min-greater-than-max.invalid.yaml
-base/job_templates/3.3.1--amount-min-zero-valid.yaml
-base/job_templates/3.3.1--min-greater-than-max.invalid.yaml
-base/job_templates/3.3.1--neither-min-nor-max.invalid.yaml
 base/job_templates/3.3.2--both-anyof-allof.invalid.yaml
-base/job_templates/3.3.2--value-too-long.invalid.yaml
 base/job_templates/3.4--validation-invalid-combination-double-reference.invalid.yaml
 base/job_templates/3.4.1--float-in-range.invalid.yaml
 base/job_templates/3.4.2--empty-path-value.invalid.yaml

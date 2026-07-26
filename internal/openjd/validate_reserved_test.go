@@ -34,13 +34,16 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 			},
 		},
 		{
-			name: "amount.worker.vcpu min 0 error (below reserved minimum 1)",
+			// min is <nonnegativefloat>, so 0 is valid even on a reserved
+			// capability. The spec's per-capability "Minimum Value" table is
+			// the default used when min is OMITTED, not a floor on an explicit
+			// value. Conformance: 3.3.1--amount-min-zero-valid.yaml.
+			name: "amount.worker.vcpu min 0 ok (explicit zero is non-negative)",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
 					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("0")}},
 				}
 			},
-			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
 		},
 		{
 			name: "amount.worker.vcpu min 4 ok (above reserved minimum 1)",
@@ -106,10 +109,10 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 
 		// Reserved names are matched case-insensitively.
 		{
-			name: "reserved name case-insensitive Amount.Worker.VCPU min 0 error",
+			name: "reserved name case-insensitive Amount.Worker.VCPU min -1 error",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Amounts: []openjd.AmountRequirement{{Name: "Amount.Worker.VCPU", Min: new("0")}},
+					Amounts: []openjd.AmountRequirement{{Name: "Amount.Worker.VCPU", Min: new("-1")}},
 				}
 			},
 			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
@@ -303,12 +306,16 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 		// ── Reserved amount with neither min nor max ───────────────────────────
 
 		{
-			name: "amount.worker.vcpu with neither min nor max ok (no reserved constraint)",
+			// The spec requires at least one of min or max on every amount
+			// ("Subject to the constraint that at least one of min or max must
+			// be provided"). Conformance: 3.3.1--neither-min-nor-max.invalid.yaml.
+			name: "amount with neither min nor max is an error",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
 					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu"}},
 				}
 			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0",
 		},
 	}
 

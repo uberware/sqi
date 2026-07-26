@@ -229,12 +229,14 @@ func TestValidate_ReservedCapabilityValueChecksSurviveDisabledLimits(t *testing.
 		want string
 	}{
 		{
-			name: "reserved amount below its minimum",
+			// min: 0 is VALID (see validateAmountBounds) — the structural check
+			// that must survive limits being disabled is the non-negative bound.
+			name: "amount with a negative min",
 			hr: `    hostRequirements:
       amounts:
         - name: amount.worker.vcpu
-          min: 0`,
-			want: "below the reserved minimum",
+          min: -1`,
+			want: "must be non-negative",
 		},
 		{
 			name: "reserved attribute with a disallowed value",
@@ -286,7 +288,7 @@ steps:
     hostRequirements:
       amounts:
         - name: amount.worker.vcpu
-          min: 0
+          min: -1
       attributes:
         - name: attr.worker.os.family
           anyOf: [plan9]
