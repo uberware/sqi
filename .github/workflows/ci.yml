@@ -916,6 +916,38 @@ jobs:
           fi
           exit $missing
 
+  # Runs the official OpenJD conformance suite (a pinned submodule under
+  # third_party/) against internal/openjd. Tagged `conformance`, so it does not
+  # run in the default `make test`.
+  #
+  # IMPORTANT: the assertion step below is not redundant. `make test-conformance`
+  # would report success if the walker collected zero fixtures, so this job does
+  # not trust the exit code alone — it requires both test names in the output,
+  # the same guard ldap-integration and isolation-integration use.
+  conformance:
+    name: OpenJD conformance
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out the repository and the conformance suite
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run the official OpenJD conformance suite
+        run: make test-conformance 2>&1 | tee /tmp/conformance.log
+
+      - name: Assert the suite actually ran
+        run: |
+          grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run
