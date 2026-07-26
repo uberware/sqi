@@ -100,11 +100,43 @@ mandate rejection of an unimplemented extension either way; `sqi` chooses to
 reject because a loud `422` at submission time is a better failure mode than a
 silent misinterpretation at run time.
 
-This is also why the `README.md`/`ROADMAP.md` claim that jobs authored for
-other OpenJD-compatible tools work with `sqi` "without reformatting" carries an
-explicit caveat rather than being dropped: the claim is true for the base spec
-and every extension `sqi` implements, and false only for the extensions listed
-above — which a template must opt into by name to hit.
+This is also why the portability claim in `README.md` and `ROADMAP.md` carries an
+explicit caveat rather than being dropped. The measured position is narrower and
+more useful than a slogan: `sqi` currently accepts **every valid base-spec
+template in the conformance suite** — no conforming job template is turned away.
+Both remaining classes of gap are elsewhere:
+
+- **Unimplemented extensions**, rejected by name at submission time, as argued
+  above. A template hits this only by opting in explicitly.
+- **Over-permissiveness** — templates the spec says are *invalid* that `sqi`
+  nonetheless accepts. This does not affect portability of valid work; it means
+  `sqi` is a weaker validator than the spec requires, so an authoring mistake
+  that another OpenJD tool would catch may slip through. These are tracked
+  individually in `test/conformance/baseline.txt` and counted below.
+
+## Known divergence: sqi names under the reserved `worker` scope
+
+The spec reserves `worker`, `job`, `step`, and `task` as the first identifier
+after a capability namespace, "for use in this and future revisions" (§3.3.1.1).
+`sqi` validates that: a name under a reserved scope must be one the spec defines,
+so `amount.worker.custom` is rejected.
+
+Four `sqi` names are exempted, and this is a **real divergence, not a rule**:
+
+| Name | Backs |
+|---|---|
+| `attr.worker.tag.*` | [worker capability tags](worker-capabilities.md) — every shipped DCC preset gates on one |
+| `amount.worker.usagepool.*` | [usage pools](openjd-submission.md#4-usage-pools) |
+| `attr.worker.computelocation` | [compute locations](compute-locations.md) |
+| `attr.worker.os.version` | OS version matching |
+
+These predate the check and are load-bearing; enforcing the spec strictly would
+invalidate `sqi`'s own presets. The conformant fix is to move them behind a
+vendor prefix — `sqi:attr.worker.tag.nuke`, which the validator already accepts
+(see [the vendor-prefix rule](#supported-extensions-and-the-vendor-prefix-rule))
+— but that renames a capability every existing template and worker config uses,
+so it is a breaking change that has not been made. The exemption list lives in
+`sqiReservedScopeNames` in `internal/openjd/validate.go`.
 
 ## Adding a deliberate divergence
 
@@ -137,7 +169,7 @@ measured results, not assertions:
 
 | Suite | Result |
 |---|---|
-| `base/job_templates` | 318 / 449 pass (131 baselined) |
+| `base/job_templates` | 323 / 449 pass (126 baselined) |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | 10 / 11 pass (1 baselined) |
 | `EXPR/job_templates` | not applicable — extension not registered (209 tests) |
@@ -146,10 +178,10 @@ measured results, not assertions:
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
-768 fixtures collected in total: 328 live passes, 132 baselined failures, 308
+768 fixtures collected in total: 333 live passes, 127 baselined failures, 308
 not applicable.
 
-Of the 137 baselined `base/job_templates` failures, 136 are `.invalid` fixtures
+Of the 126 baselined `base/job_templates` failures, all 126 are `.invalid` fixtures
 that `sqi` wrongly **accepts** — it is overwhelmingly too permissive rather than
 too strict. Exactly one valid template is wrongly rejected
 (`3.3.1--amount-min-zero-valid.yaml`).
