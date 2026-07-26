@@ -22,7 +22,7 @@ The render farm management space is in an awkward moment. Legacy on-premises sys
 
 **Not tied to any cloud provider.** Workers run on Linux, macOS, and Windows — bare metal, VMs, or containers. Cloud compute locations are supported across AWS, GCP, Azure, and any provider that can run a container or a binary. Your control plane runs where you want it.
 
-**OpenJD compatible.** `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) format as its native job execution layer. Jobs authored for OpenJD-compatible tools work with `sqi` without reformatting. This is a real standard designed for portability, not a proprietary format.
+**OpenJD compatible.** `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) format as its native job execution layer — not an import step or a partial translation, but the format `sqi` jobs are authored and validated in directly. This is a real standard designed for portability, not a proprietary format. Conformance is measured, not asserted: `sqi` runs the official OpenJD conformance test suite on every CI build and publishes the current pass rate and known gaps at [`openjd-conformance.md`](openjd-conformance.md).
 
 **General purpose.** Rendering is the primary use case and the domain `sqi` is designed around, but the job model is general. Any workload expressible as a command with defined inputs, outputs, and environment is a valid `sqi` job — simulation, transcoding, machine learning pipelines, data processing, software development, or anything else a studio runs at scale.
 

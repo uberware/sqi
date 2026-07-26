@@ -128,6 +128,43 @@ It is recorded here only as the shape a future divergence would take: opt-in,
 named, registered, documented — never a bare change to what the base spec's
 syntax means.
 
+## Measured conformance
+
+`sqi` runs the official [OpenJD conformance test
+suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests)
+on every CI build, from a pinned submodule (commit `42a1fb674c94`). These are
+measured results, not assertions:
+
+| Suite | Result |
+|---|---|
+| `base/job_templates` | 302 / 449 pass (147 baselined) |
+| `base/env_templates` | 24 / 39 pass (15 baselined) |
+| `TASK_CHUNKING/job_templates` | 10 / 11 pass (1 baselined) |
+| `EXPR/job_templates` | not applicable — extension not registered (209 tests) |
+| `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
+| `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
+| `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
+| `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
+
+768 fixtures collected in total: 336 live passes, 163 baselined failures, 269
+not applicable.
+
+**Scope.** Only template-validation tests run today. The suite's job-execution
+tests require a live session runtime and are not yet wired in.
+
+**`env_templates`.** `sqi` does not implement standalone `environment-2023-09`
+templates. This is a deliberate deferral, not an unknown defect.
+
+**Not-applicable rows.** `sqi` rejects templates declaring an extension it has
+not implemented, which is intentional — accepting a template whose syntax it
+cannot interpret is strictly worse. Those fixtures are therefore reported
+separately and never counted as passes, so an unimplemented extension can never
+be mistaken for a conforming one.
+
+**Known failures** are tracked in `test/conformance/baseline.txt`. CI fails both
+when an unlisted test breaks and when a listed test starts passing, so the list
+can only shrink deliberately.
+
 ## Verifying documentation examples against the real parser
 
 Every OpenJD YAML/JSON example in `docs/openjd-submission.md` is verified by
