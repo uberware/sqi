@@ -30,6 +30,9 @@ type JobTemplate struct {
 	// ParameterDefinitions declares the job-level parameters that submitters
 	// must or may provide.  Parameter names must be unique.
 	ParameterDefinitions []JobParameter
+	// ParameterDefinitionsSet records whether the key was present, so a
+	// declared but empty list is distinguishable from an omitted one.
+	ParameterDefinitionsSet bool
 
 	// JobEnvironments are environments that wrap every session in this job.
 	// They are entered in order and exited in reverse order.
@@ -237,6 +240,9 @@ type StepTemplate struct {
 	Script *StepScript
 	// StepEnvironments are per-step environments entered after job environments.
 	StepEnvironments []Environment
+	// StepEnvironmentsSet records whether the key was present, so a declared
+	// but empty list is distinguishable from an omitted one.
+	StepEnvironmentsSet bool
 	// ParameterSpace defines the task parameter combinations for this step.
 	// Nil means the step produces exactly one task with no parameters.
 	ParameterSpace *StepParameterSpace
@@ -244,6 +250,9 @@ type StepTemplate struct {
 	HostRequirements *HostRequirements
 	// Dependencies lists the steps that must complete before this one starts.
 	Dependencies []StepDependency
+	// DependenciesSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	DependenciesSet bool
 }
 
 // StepScript is the executable definition attached to a [StepTemplate].

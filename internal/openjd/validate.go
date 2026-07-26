@@ -305,6 +305,13 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
 	// ── parameterDefinitions ─────────────────────────────────────────────
+	// @optional, but a declared list must hold at least one parameter.
+	if t.ParameterDefinitionsSet && len(t.ParameterDefinitions) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: "/parameterDefinitions",
+			Message: "must contain at least one parameter when provided",
+		})
+	}
 	errs = append(errs, validateJobParams(t.ParameterDefinitions)...)
 
 	// ── jobEnvironments ───────────────────────────────────────────────────
@@ -338,19 +345,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 
 	for i, s := range t.Steps {
 		errs = append(errs, validateStep(s, i, stepNames)...)
-		// A step environment may not reuse a job environment's name: both are
-		// entered for the same session, so the collision makes it ambiguous
-		// which one an Env.File reference or variable belongs to.
-		for k, se := range s.StepEnvironments {
-			for _, je := range t.JobEnvironments {
-				if se.Name != "" && se.Name == je.Name {
-					errs = append(errs, ValidationError{
-						Pointer: fmt.Sprintf("/steps/%d/stepEnvironments/%d/name", i, k),
-						Message: fmt.Sprintf("collides with a job environment named %q", se.Name),
-					})
-				}
-			}
-		}
+		errs = append(errs, validateStepEnvCollisions(s, i, t.JobEnvironments)...)
 	}
 
 	// ── acyclicity ────────────────────────────────────────────────────────
@@ -2159,11 +2154,44 @@ func validateEmbeddedFileEntry(f EmbeddedFile, base string, seen map[string]stru
 
 // ─── step validation ──────────────────────────────────────────────────────────
 
+// validateStepEnvCollisions reports a step environment that reuses a job
+// environment's name. Both are entered for the same session, so the collision
+// makes it ambiguous which one an Env.File reference or variable belongs to.
+func validateStepEnvCollisions(s StepTemplate, idx int, jobEnvs []Environment) ValidationErrors {
+	var errs ValidationErrors
+	for k, se := range s.StepEnvironments {
+		if se.Name == "" {
+			continue
+		}
+		for _, je := range jobEnvs {
+			if se.Name == je.Name {
+				errs = append(errs, ValidationError{
+					Pointer: fmt.Sprintf("/steps/%d/stepEnvironments/%d/name", idx, k),
+					Message: fmt.Sprintf("collides with a job environment named %q", se.Name),
+				})
+			}
+		}
+	}
+	return errs
+}
+
 func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) ValidationErrors {
 	var errs ValidationErrors
 	base := fmt.Sprintf("/steps/%d", idx)
 
-	// dependencies
+	// dependencies — @optional, but a declared list must hold at least one.
+	if s.DependenciesSet && len(s.Dependencies) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: base + "/dependencies",
+			Message: "must contain at least one dependency when provided",
+		})
+	}
+	if s.StepEnvironmentsSet && len(s.StepEnvironments) == 0 {
+		errs = append(errs, ValidationError{
+			Pointer: base + "/stepEnvironments",
+			Message: "must contain at least one environment when provided",
+		})
+	}
 	seenDeps := make(map[string]struct{}, len(s.Dependencies))
 	for j, dep := range s.Dependencies {
 		ptr := fmt.Sprintf("%s/dependencies/%d/dependsOn", base, j)

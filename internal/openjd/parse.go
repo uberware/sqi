@@ -71,6 +71,7 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 
 	// parameterDefinitions
 	if defs, ok := raw["parameterDefinitions"]; ok {
+		t.ParameterDefinitionsSet = true
 		items, err := toSliceOfMaps(defs, "parameterDefinitions")
 		if err != nil {
 			return nil, err
@@ -432,7 +433,8 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	}
 
 	// stepEnvironments
-	envs, err := decodeStepEnvironmentList(raw)
+	envs, envsSet, err := decodeStepEnvironmentList(raw)
+	s.StepEnvironmentsSet = envsSet
 	if err != nil {
 		return s, err
 	}
@@ -465,7 +467,8 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	}
 
 	// dependencies
-	deps, err := decodeStepDependencyList(raw)
+	deps, depsSet, err := decodeStepDependencyList(raw)
+	s.DependenciesSet = depsSet
 	if err != nil {
 		return s, err
 	}
@@ -474,40 +477,46 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	return s, nil
 }
 
-func decodeStepEnvironmentList(raw map[string]any) ([]Environment, error) {
+func decodeStepEnvironmentList(raw map[string]any) ([]Environment, bool, error) {
 	v, ok := raw["stepEnvironments"]
-	if !ok || v == nil {
-		return nil, nil
+	if !ok {
+		return nil, false, nil
+	}
+	if v == nil {
+		return nil, true, nil
 	}
 	items, err := toSliceOfMaps(v, "stepEnvironments")
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	envs := make([]Environment, 0, len(items))
 	for _, item := range items {
 		e, err := decodeEnvironment(item)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		envs = append(envs, e)
 	}
-	return envs, nil
+	return envs, true, nil
 }
 
-func decodeStepDependencyList(raw map[string]any) ([]StepDependency, error) {
+func decodeStepDependencyList(raw map[string]any) ([]StepDependency, bool, error) {
 	v, ok := raw["dependencies"]
-	if !ok || v == nil {
-		return nil, nil
+	if !ok {
+		return nil, false, nil
+	}
+	if v == nil {
+		return nil, true, nil
 	}
 	items, err := toSliceOfMaps(v, "dependencies")
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	deps := make([]StepDependency, 0, len(items))
 	for _, item := range items {
 		deps = append(deps, StepDependency{DependsOn: getString(item, "dependsOn")})
 	}
-	return deps, nil
+	return deps, true, nil
 }
 
 func decodeStepScript(raw map[string]any) (StepScript, error) {
