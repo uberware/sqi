@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -1076,8 +1077,15 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "DROPDOWN_LIST requires allowedValues"})
 		}
 	case ControlCheckBox:
-		if len(p.AllowedValues) != 2 {
-			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"})
+		errs = append(errs, validateCheckBoxValues(p, ctrlPtr)...)
+	case ControlLineEdit, ControlMultilineEdit, ControlSpinBox:
+		// DROPDOWN_LIST is the control for a fixed value set; a free-entry or
+		// numeric-stepper control paired with allowedValues is contradictory.
+		if len(p.AllowedValues) > 0 {
+			errs = append(errs, ValidationError{
+				Pointer: ctrlPtr,
+				Message: fmt.Sprintf("%s cannot be used when allowedValues is provided; use DROPDOWN_LIST", ui.Control),
+			})
 		}
 	case ControlChooseInputFile, ControlChooseOutputFile, ControlChooseDirectory:
 		errs = append(errs, validateChooseControl(ui, p, ctrlPtr)...)
@@ -1190,6 +1198,84 @@ func parseNumericBound(b *string) (float64, bool) {
 	}
 	f, err := strconv.ParseFloat(*b, 64)
 	return f, err == nil
+}
+
+// checkBoxValuePairs are the allowedValues pairs a CHECK_BOX may carry. The
+// spec (§2.1.9.1) requires "two values, case-insensitive, one representing true
+// and another representing false", and enumerates the valid pairs. Either order
+// is accepted — the spec names no ordering requirement.
+var checkBoxValuePairs = [][2]string{
+	{"true", "false"}, {"yes", "no"}, {"on", "off"}, {"1", "0"},
+}
+
+// validateCheckBoxValues checks that a CHECK_BOX parameter's allowedValues are
+// one of the spec's true/false pairs. Two arbitrary strings are not enough: a
+// checkbox has to know which value means checked.
+func validateCheckBoxValues(p JobParameter, ctrlPtr string) ValidationErrors {
+	if len(p.AllowedValues) != 2 {
+		return ValidationErrors{{Pointer: ctrlPtr, Message: "CHECK_BOX requires exactly two allowedValues"}}
+	}
+	a, b := strings.ToLower(p.AllowedValues[0]), strings.ToLower(p.AllowedValues[1])
+	for _, pair := range checkBoxValuePairs {
+		if (a == pair[0] && b == pair[1]) || (a == pair[1] && b == pair[0]) {
+			return nil
+		}
+	}
+	return ValidationErrors{{
+		Pointer: ctrlPtr,
+		Message: fmt.Sprintf(
+			"CHECK_BOX allowedValues %v must be a true/false pair: [true false], [yes no], [on off], or [1 0]",
+			p.AllowedValues,
+		),
+	}}
+}
+
+// validateUILabelText checks a userInterface label or groupLabel for control
+// characters, which corrupt the layout of any form built from the template.
+//
+// It cannot also reject an explicitly empty label: the decoder stores a missing
+// label and `label: ""` identically as "", so distinguishing them needs
+// presence tracking at parse time. Conformance fixtures 2.1--label-empty and
+// 2--group-label-empty remain baselined for that reason.
+func validateUILabelText(v, ptr string) ValidationErrors {
+	if v == "" {
+		return nil
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: "must not contain control characters or line breaks",
+			}}
+		}
+	}
+	return nil
+}
+
+// validateLengthConstraintSanity checks that a parameter's own minLength and
+// maxLength are usable: a negative bound is meaningless, and maxLength 0 (or
+// below minLength) admits no value at all, making the parameter unsatisfiable.
+func validateLengthConstraintSanity(p JobParameter, ptr string) ValidationErrors {
+	var errs ValidationErrors
+	if p.MinLength != nil && *p.MinLength < 0 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/minLength",
+			Message: fmt.Sprintf("must not be negative (got %d)", *p.MinLength),
+		})
+	}
+	if p.MaxLength != nil && *p.MaxLength < 1 {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/maxLength",
+			Message: fmt.Sprintf("must be at least 1 (got %d)", *p.MaxLength),
+		})
+	}
+	if p.MinLength != nil && p.MaxLength != nil && *p.MinLength > *p.MaxLength {
+		errs = append(errs, ValidationError{
+			Pointer: ptr + "/minLength",
+			Message: fmt.Sprintf("minLength %d exceeds maxLength %d", *p.MinLength, *p.MaxLength),
+		})
+	}
+	return errs
 }
 
 // validateChooseControl checks the two coherence rules the spec states for the
@@ -1320,6 +1406,11 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 
 		errs = append(errs, validateUserInterface(p, ptr)...)
 		errs = append(errs, validateParamValueConstraints(p, ptr)...)
+		errs = append(errs, validateLengthConstraintSanity(p, ptr)...)
+		if ui := p.UserInterface; ui != nil {
+			errs = append(errs, validateUILabelText(ui.Label, ptr+"/userInterface/label")...)
+			errs = append(errs, validateUILabelText(ui.GroupLabel, ptr+"/userInterface/groupLabel")...)
+		}
 
 		// fileFilters / fileFilterDefault are also structural, always runs.
 		errs = append(errs, validateFileFilters(p, ptr)...)
