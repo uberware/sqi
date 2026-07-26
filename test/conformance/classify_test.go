@@ -29,23 +29,47 @@ func TestExtensionFor(t *testing.T) {
 	}
 }
 
+func TestKindFor(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"base job template", "base/job_templates/1.1--minimal.yaml", "job_templates"},
+		{"base env template", "base/env_templates/7.1--env.yaml", "env_templates"},
+		{"expr job template", "EXPR/job_templates/expr1.1--arith.yaml", "job_templates"},
+		{"wrap actions env template", "WRAP_ACTIONS/env_templates/1--wrap.yaml", "env_templates"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := conformance.KindFor(tt.path); got != tt.want {
+				t.Errorf("KindFor(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassify(t *testing.T) {
 	tests := []struct {
 		name string
 		ext  string
+		kind string
 		want conformance.State
 	}{
-		{"base is always live", "base", conformance.StateLive},
-		{"registered official extension", "TASK_CHUNKING", conformance.StateLive},
-		{"registered official extension 2", "REDACTED_ENV_VARS", conformance.StateLive},
-		{"unregistered extension", "EXPR", conformance.StateNotApplicable},
-		{"unregistered extension 2", "WRAP_ACTIONS", conformance.StateNotApplicable},
-		{"unregistered extension 3", "FEATURE_BUNDLE_1", conformance.StateNotApplicable},
+		{"base job template is live", "base", "job_templates", conformance.StateLive},
+		{"registered official extension job template", "TASK_CHUNKING", "job_templates", conformance.StateLive},
+		{"registered official extension 2 job template", "REDACTED_ENV_VARS", "job_templates", conformance.StateLive},
+		{"unregistered extension job template", "EXPR", "job_templates", conformance.StateNotApplicable},
+		{"unregistered extension 2 job template", "WRAP_ACTIONS", "job_templates", conformance.StateNotApplicable},
+		{"unregistered extension 3 job template", "FEATURE_BUNDLE_1", "job_templates", conformance.StateNotApplicable},
+		{"base env template is not applicable", "base", "env_templates", conformance.StateNotApplicable},
+		{"registered extension env template is still not applicable", "TASK_CHUNKING", "env_templates", conformance.StateNotApplicable},
+		{"unregistered extension env template is not applicable", "EXPR", "env_templates", conformance.StateNotApplicable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := conformance.Classify(tt.ext); got != tt.want {
-				t.Errorf("Classify(%q) = %v, want %v", tt.ext, got, tt.want)
+			if got := conformance.Classify(tt.ext, tt.kind); got != tt.want {
+				t.Errorf("Classify(%q, %q) = %v, want %v", tt.ext, tt.kind, got, tt.want)
 			}
 		})
 	}

@@ -110,3 +110,37 @@ func TestRunCase_NotApplicableNeverPasses(t *testing.T) {
 		t.Errorf("State = %v, want StateNotApplicable", got.State)
 	}
 }
+
+// TestRunCase_EnvTemplatesNeverPass is the second instance of the same
+// false-green failure mode TestRunCase_NotApplicableNeverPasses guards above,
+// this time keyed on template kind rather than extension. sqi does not
+// implement standalone environment-2023-09 templates at all: every
+// env_templates fixture — including under "base", which is otherwise always
+// live — is rejected on "/specificationVersion: unsupported version", never
+// on the fixture's own encoded defect. A naive classifier that only looked at
+// the extension directory (as this package's did before this fix) would call
+// "base" always live, so every "base/env_templates/*.invalid.yaml" fixture
+// would score as a pass for the wrong reason: 24 fixtures reported green
+// before sqi understood a single line of the environment document format.
+//
+// This test drives the real path production code takes — ExtensionFor +
+// KindFor feeding Classify — rather than passing StateNotApplicable directly,
+// so it catches a regression in the classification wiring itself, not just in
+// RunCase's handling of an already-correct state.
+//
+// DO NOT DELETE THIS TEST.
+func TestRunCase_EnvTemplatesNeverPass(t *testing.T) {
+	path := "base/env_templates/2.1--bad-default.invalid.yaml"
+	tc := conformance.ParseTestCase(path)
+	state := conformance.Classify(conformance.ExtensionFor(path), conformance.KindFor(path))
+
+	got := conformance.RunCase(tc, state, []byte(invalidTemplate))
+
+	if state != conformance.StateNotApplicable {
+		t.Fatalf("Classify(%q) = %v, want StateNotApplicable", path, state)
+	}
+	if got.Passed {
+		t.Fatal("a base/env_templates fixture reported Passed=true; " +
+			"this is the false-green failure kind-aware classification exists to prevent")
+	}
+}

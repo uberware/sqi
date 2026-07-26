@@ -94,7 +94,7 @@ func TestConformance_Templates(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fixture %s: %v", tc.Path, err)
 		}
-		state := conformance.Classify(conformance.ExtensionFor(tc.Path))
+		state := conformance.Classify(conformance.ExtensionFor(tc.Path), conformance.KindFor(tc.Path))
 		results = append(results, conformance.RunCase(tc, state, data))
 	}
 

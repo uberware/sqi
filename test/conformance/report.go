@@ -15,7 +15,8 @@ type Group struct {
 	Name string
 	// Passed and Failed count live tests only.
 	Passed, Failed int
-	// NotApplicable counts tests for extensions sqi has not registered. These
+	// NotApplicable counts tests for extensions sqi has not registered, or for
+	// a document kind sqi does not implement at all (env_templates). These
 	// are never folded into Passed — see StateNotApplicable.
 	NotApplicable int
 }
@@ -51,7 +52,8 @@ func Rollup(results []Result) []Group {
 // FormatRollup renders groups as an aligned human-readable table.
 //
 // Not-applicable counts are reported in their own column and never as a pass
-// ratio, so an unimplemented extension can never look like a green one.
+// ratio, so an unimplemented extension or unimplemented document kind (such as
+// env_templates) can never look like a green one.
 func FormatRollup(groups []Group) string {
 	width := 0
 	for _, g := range groups {
@@ -65,7 +67,7 @@ func FormatRollup(groups []Group) string {
 		live := g.Passed + g.Failed
 		switch live {
 		case 0:
-			fmt.Fprintf(&b, "%-*s  %s  %d n/a — extension not registered\n",
+			fmt.Fprintf(&b, "%-*s  %s  %d n/a — not implemented\n",
 				width, g.Name, strings.Repeat(" ", 9), g.NotApplicable)
 		default:
 			fmt.Fprintf(&b, "%-*s  %4d/%-4d pass", width, g.Name, g.Passed, live)

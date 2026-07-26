@@ -138,7 +138,7 @@ measured results, not assertions:
 | Suite | Result |
 |---|---|
 | `base/job_templates` | 302 / 449 pass (147 baselined) |
-| `base/env_templates` | 24 / 39 pass (15 baselined) |
+| `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | 10 / 11 pass (1 baselined) |
 | `EXPR/job_templates` | not applicable — extension not registered (209 tests) |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
@@ -146,20 +146,40 @@ measured results, not assertions:
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
-768 fixtures collected in total: 336 live passes, 163 baselined failures, 269
+768 fixtures collected in total: 312 live passes, 148 baselined failures, 308
 not applicable.
 
 **Scope.** Only template-validation tests run today. The suite's job-execution
 tests require a live session runtime and are not yet wired in.
 
 **`env_templates`.** `sqi` does not implement standalone `environment-2023-09`
-templates. This is a deliberate deferral, not an unknown defect.
+templates at all — every fixture under any `env_templates/` directory,
+`base` included, is rejected on `/specificationVersion: unsupported version
+"environment-2023-09"; expected "jobtemplate-2023-09"`, never on the fixture's
+own encoded defect. Scoring those results would be meaningless: an
+`.invalid` fixture would be "rejected" for the wrong reason and read as a
+pass, exactly the false-green failure mode described below for unregistered
+extensions, just keyed on document kind instead of extension name. So
+`env_templates` fixtures are classified `StateNotApplicable` unconditionally
+(`test/conformance/classify.go`, `Classify`) and are not scored at all — this
+is a deliberate deferral, not an unknown defect, but it is reported as
+not-applicable rather than as pass/fail for the same reason the extension
+rows below are.
 
-**Not-applicable rows.** `sqi` rejects templates declaring an extension it has
-not implemented, which is intentional — accepting a template whose syntax it
-cannot interpret is strictly worse. Those fixtures are therefore reported
-separately and never counted as passes, so an unimplemented extension can never
-be mistaken for a conforming one.
+**Not-applicable rows.** Two distinct things land here, both for the same
+underlying reason — scoring them would be meaningless because rejection
+doesn't mean what the fixture is testing:
+
+- `sqi` rejects templates declaring an extension it has not implemented,
+  which is intentional — accepting a template whose syntax it cannot
+  interpret is strictly worse.
+- `sqi` rejects every `env_templates` fixture regardless of extension,
+  because it does not implement the standalone environment document type at
+  all — see above.
+
+Those fixtures are therefore reported separately and never counted as passes,
+so an unimplemented extension or document kind can never be mistaken for a
+conforming one.
 
 **Known failures** are tracked in `test/conformance/baseline.txt`. CI fails both
 when an unlisted test breaks and when a listed test starts passing, so the list
