@@ -50,12 +50,3 @@ base/job_templates/5--notify-period-zero.invalid.yaml
 base/job_templates/5--timeout-negative.invalid.yaml
 base/job_templates/5--timeout-zero.invalid.yaml
 base/job_templates/6.1--embedded-filename-with-path.invalid.yaml
-base/job_templates/7.3--case-sensitive-scope.invalid.yaml
-base/job_templates/7.3--empty-reference.invalid.yaml
-base/job_templates/7.3--env-file-in-step-script.invalid.yaml
-base/job_templates/7.3--nested-braces.invalid.yaml
-base/job_templates/7.3--session-in-job-name.invalid.yaml
-base/job_templates/7.3--task-file-in-env.invalid.yaml
-base/job_templates/7.3--task-param-in-job-name.invalid.yaml
-base/job_templates/7.3--unclosed-brace.invalid.yaml
-base/job_templates/7.3--unknown-scope.invalid.yaml

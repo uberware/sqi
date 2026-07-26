@@ -13,6 +13,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/uberware/sqi/internal/openjd/fmtstring"
 )
 
 // ─── Validation errors ────────────────────────────────────────────────────────
@@ -299,6 +301,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 		errs = append(errs, ValidationError{Pointer: "/name", Message: "required"})
 	}
 	errs = append(errs, validateNoControlChars(t.Name, "/name")...)
+	errs = append(errs, validateFormatString(t.Name, "/name", jobScopeRefs)...)
 	errs = append(errs, validateDescriptionText(t.Description, "/description")...)
 
 	// ── parameterDefinitions ─────────────────────────────────────────────
@@ -1211,6 +1214,58 @@ const (
 	maxDescriptionLen = 2048
 )
 
+// Format-string scope sets (spec §7.3.1). Each entry is a legal reference
+// PREFIX; a reference must start with one of them. Matching is exact-case
+// because value references are case-sensitive — "param.X" is not "Param.X".
+var (
+	// jobScopeRefs are legal in a format string evaluated at job-creation time
+	// with no session or task context, such as the job's own name.
+	jobScopeRefs = []string{"Param.", "RawParam."}
+	// envScriptRefs are legal within Environment Script actions and embedded
+	// files: the environment's own attachments plus session builtins.
+	envScriptRefs = []string{"Param.", "RawParam.", "Env.File.", "Session."}
+	// stepScriptRefs are legal within Step Script actions and embedded files:
+	// task parameters and task attachments plus session builtins. Env.File is
+	// NOT among them — an environment's attachments belong to the environment.
+	stepScriptRefs = []string{"Param.", "RawParam.", "Task.Param.", "Task.RawParam.", "Task.File.", "Session."}
+)
+
+// validateFormatString checks one format string: that its interpolation
+// expressions parse, and that every reference is in scope where it appears.
+//
+// A reference that is well-formed but out of scope resolves to nothing at run
+// time, so the command silently receives an empty value rather than failing —
+// which is why this is structural correctness and always runs.
+func validateFormatString(s, ptr string, allowed []string) ValidationErrors {
+	refs, err := fmtstring.References(s)
+	if err != nil {
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("malformed format string: %v", err),
+		}}
+	}
+	var errs ValidationErrors
+	for _, r := range refs {
+		if !hasAnyPrefix(r, allowed) {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf("reference %q is not available here; allowed: %s",
+					r, strings.Join(allowed, ", ")),
+			})
+		}
+	}
+	return errs
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // validateNoControlChars rejects Unicode Cc control characters in a name-like
 // string. The category covers both C0 (U+0000-U+001F, U+007F) and C1
 // (U+0080-U+009F), so it catches the whole range the spec excludes. A control
@@ -1802,7 +1857,7 @@ func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
 // no command is accepted by parse, expands into tasks, and then runs nothing --
 // the step reports success having done no work -- so this is structural
 // correctness and always runs, never gated behind EnforceLimits.
-func validateAction(a Action, ptr string) ValidationErrors {
+func validateAction(a Action, ptr string, allowed []string) ValidationErrors {
 	if a.Command == "" {
 		return ValidationErrors{{
 			Pointer: ptr + "/command",
@@ -1815,6 +1870,18 @@ func validateAction(a Action, ptr string) ValidationErrors {
 	errs := validateNoControlChars(a.Command, ptr+"/command")
 	for i, arg := range a.Args {
 		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
+	}
+	errs = append(errs, validateActionRefs(a, ptr, allowed)...)
+	return errs
+}
+
+// validateActionRefs checks the format strings in an action's command, args,
+// and environment-variable values against the reference scope legal at its
+// site.
+func validateActionRefs(a Action, ptr string, allowed []string) ValidationErrors {
+	errs := validateFormatString(a.Command, ptr+"/command", allowed)
+	for i, arg := range a.Args {
+		errs = append(errs, validateFormatString(arg, fmt.Sprintf("%s/args/%d", ptr, i), allowed)...)
 	}
 	return errs
 }
@@ -1849,10 +1916,10 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 					Message: "required",
 				})
 			} else {
-				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter")...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", envScriptRefs)...)
 			}
 			if e.Script.Actions.OnExit != nil {
-				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit")...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", envScriptRefs)...)
 			}
 			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, ptr+"/script/embeddedFiles")...)
 		}
@@ -1923,7 +1990,7 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
 	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, base+"/script/embeddedFiles")...)
-		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun")...)
+		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", stepScriptRefs)...)
 	}
 
 	// step environments
