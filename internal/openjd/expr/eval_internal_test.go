@@ -560,3 +560,199 @@ func TestEval_TargetErrorCarriesAPosition(t *testing.T) {
 		t.Errorf("Offset = %d; want 0", pe.Offset)
 	}
 }
+
+func TestEvalCond_UnknownCondition(t *testing.T) {
+	syms := MapSymbols{
+		"Param.Flag":  Unresolved(TBool),
+		"Param.Count": Unresolved(TInt),
+	}
+	tests := []struct {
+		name string
+		src  string
+		want string // the resulting type, rendered
+	}{
+		{"both branches the same type", "1 if Param.Flag else 2", "unresolved[int]"},
+		{"branches of different types union", "1 if Param.Flag else 'x'", "unresolved[int | string]"},
+		{"a null branch makes it optional", "1 if Param.Flag else null", "unresolved[int?]"},
+		{"branch types normalize", "1 if Param.Flag else 2.0", "unresolved[float | int]"},
+		{"a placeholder branch flattens", "Param.Count if Param.Flag else 2", "unresolved[int]"},
+		// One branch can never succeed, so its error is suppressed and the other
+		// branch's type is the answer.
+		{"a failing branch is suppressed", "1 if Param.Flag else 'a' + 1", "unresolved[int]"},
+		{"the other branch failing is suppressed too", "'a' + 1 if Param.Flag else 2", "unresolved[int]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got, err := e.Eval(syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.src, err)
+			}
+			if got.Type.String() != tt.want {
+				t.Errorf("type = %q; want %q", got.Type.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestEvalCond_UnknownConditionWithBothBranchesFailing(t *testing.T) {
+	// Neither branch can produce a value, so this is a real error — and it names
+	// both failures, because a reader cannot tell which branch they meant.
+	syms := MapSymbols{"Param.Flag": Unresolved(TBool)}
+	e, err := Parse("'a' + 1 if Param.Flag else 'b' + 2")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	_, err = e.Eval(syms, TAny)
+	if err == nil {
+		t.Fatal("Eval = nil error; want an error naming both branches")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "both branches") {
+		t.Errorf("error = %q; want it to say both branches failed", msg)
+	}
+}
+
+func TestEvalCond_ResolvedConditionIsUnchanged(t *testing.T) {
+	// Sub-project A's behavior must survive exactly: one branch evaluated, no
+	// unioning, and section 1.3.5's bool-only rule intact.
+	tests := []struct {
+		name    string
+		src     string
+		want    Value
+		wantErr string
+	}{
+		{name: "true takes the first branch", src: "1 if true else 2", want: Int(1)},
+		{name: "false takes the second", src: "1 if false else 2", want: Int(2)},
+		{name: "the untaken branch is not evaluated", src: "1 if true else 'a' + 1", want: Int(1)},
+		{name: "an int condition is still an error", src: "1 if 1 else 2", wantErr: "must be a bool"},
+		{name: "a string condition is still an error", src: "1 if 'x' else 2", wantErr: "must be a bool"},
+		{name: "a null condition is still an error", src: "1 if null else 2", wantErr: "must be a bool"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got, err := e.Eval(nil, TAny)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v; want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("= %s; want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvalLogical_UnknownLeftOperand(t *testing.T) {
+	// and/or are value-returning and short-circuiting, so an unknown left
+	// operand means the result could be either operand. The spec writes this rule
+	// only for if/else; it applies here for the same reason.
+	syms := MapSymbols{"Param.Flag": Unresolved(TBool)}
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"or with a string fallback", "Param.Flag or 'x'", "unresolved[bool | string]"},
+		{"and with a string", "Param.Flag and 'x'", "unresolved[bool | string]"},
+		{"both sides the same type", "Param.Flag or false", "unresolved[bool]"},
+		{"a failing right operand leaves the left reachable", "Param.Flag or 'a' + 1", "unresolved[bool]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got, err := e.Eval(syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.src, err)
+			}
+			if got.Type.String() != tt.want {
+				t.Errorf("type = %q; want %q", got.Type.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestEvalLogical_ResolvedIsUnchanged(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want Value
+	}{
+		{"or returns the truthy left operand", "1 or 2", Int(1)},
+		{"or evaluates the right when the left is falsy", "null or 2", Int(2)},
+		{"and returns the falsy left operand", "false and 2", Bool(false)},
+		{"and evaluates the right when the left is truthy", "1 and 2", Int(2)},
+		{"zero is truthy, unlike Python", "0 or 'fallback'", Int(0)},
+		{"the empty string is truthy too", "'' or 'fallback'", String("")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got, err := e.Eval(nil, TAny)
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("= %s; want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvalCompare_UnknownLink(t *testing.T) {
+	syms := MapSymbols{
+		"Param.Count": Unresolved(TInt),
+		"Param.Name":  Unresolved(TString),
+	}
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"an unknown left operand", "Param.Count < 5", "unresolved[bool]"},
+		{"an unknown right operand", "5 < Param.Count", "unresolved[bool]"},
+		{"an unknown link in a chain", "1 < Param.Count < 10", "unresolved[bool]"},
+		{"an unknown second link", "1 < 2 < Param.Count", "unresolved[bool]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got, err := e.Eval(syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.src, err)
+			}
+			if got.Type.String() != tt.want {
+				t.Errorf("type = %q; want %q", got.Type.String(), tt.want)
+			}
+		})
+	}
+	// A type error in a chain is still caught, placeholder or not.
+	e, err := Parse("Param.Name < 5")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if _, err := e.Eval(syms, TAny); err == nil {
+		t.Error("comparing a placeholder string to an int = nil error; want a type error")
+	}
+}

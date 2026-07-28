@@ -11,7 +11,7 @@
 // # Usage
 //
 //	e, err := expr.Parse("Param.Frame * 2")
-//	v, err := e.Eval(expr.MapSymbols{"Param.Frame": expr.Int(21)})
+//	v, err := e.Eval(expr.MapSymbols{"Param.Frame": expr.Int(21)}, expr.TAny)
 //	// v.String() == "42"
 //
 // Parse reports syntax errors; Eval reports evaluation errors. Both return an

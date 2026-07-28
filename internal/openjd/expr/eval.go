@@ -156,11 +156,13 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 			// blame whichever link actually failed.
 			return Value{}, wrapAt(src, n.OpOffsets[i], err)
 		}
-		// Every operator that can appear in a comparison chain returns Bool
-		// today, but AsBool panics on any other kind (via mustBe). Guard it
-		// rather than call it blind: sub-project B's unresolved[bool] (a
-		// chain link whose result is not yet known) must fail with a
-		// positioned error here, not panic.
+		// A link whose operands are not all known yields an unknown bool, so the
+		// chain's outcome is unknown too. Stop here: the remaining operands
+		// cannot change the answer, and evaluating them would only risk a
+		// spurious error from a branch that may never run.
+		if out.IsUnresolved() {
+			return Unresolved(TBool), nil
+		}
 		if out.Type.Code != CodeBool {
 			return Value{}, wrapAt(src, n.OpOffsets[i],
 				fmt.Errorf("comparison operator %s did not produce a bool: %s", op, out.Type))
@@ -175,11 +177,26 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 
 // evalLogical implements "and" and "or" (spec section 2.1.6). They are
 // short-circuiting and VALUE-RETURNING: they return one of their operands, not
-// necessarily a bool. That is why they are not rows in the operator table.
+// necessarily a bool. That is why they are not shapes in the operator table.
+//
+// When the left operand is not yet known, neither is which operand comes back,
+// so the result is a placeholder over both types. The spec states this rule only
+// for a conditional expression, but and/or short-circuit for the same reason and
+// so need the same treatment.
 func evalLogical(n *Logical, src string, syms Symbols) (Value, error) {
 	left, err := evalNode(n.L, src, syms)
 	if err != nil {
 		return Value{}, err
+	}
+	if left.IsUnresolved() {
+		right, err := evalNode(n.R, src, syms)
+		if err != nil {
+			// The left operand is still reachable at runtime, so the expression
+			// as a whole can still produce a value: report its type rather than
+			// an error from a branch that may never be taken.
+			return Unresolved(left.Type), nil //nolint:nilerr // deliberate suppression: the right operand's error can never surface at runtime when the left is still reachable
+		}
+		return Unresolved(UnionOf(left.Type, right.Type)), nil
 	}
 	switch {
 	case n.Op == OpAnd && !truthy(left):
@@ -194,6 +211,8 @@ func evalLogical(n *Logical, src string, syms Symbols) (Value, error) {
 // falsy. Unlike Python, 0, 0.0 and "" are all truthy, which is what makes
 // "Param.X or 'fallback'" a null-coalescing operator rather than an
 // empty-string test.
+//
+// A placeholder never reaches here: evalLogical handles it before asking.
 func truthy(v Value) bool {
 	switch v.Type.Code {
 	case CodeNull:
@@ -208,10 +227,20 @@ func truthy(v Value) bool {
 // condition is evaluated first and must be a bool — there is no truthiness
 // here, in deliberate contrast to and/or — and only the chosen branch is
 // evaluated.
+//
+// When the condition is not yet known, the evaluator cannot tell which branch
+// will run, so both are evaluated and their types combined. See condResult.
 func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
 	cond, err := evalNode(n.If, src, syms)
 	if err != nil {
 		return Value{}, err
+	}
+	if cond.IsUnresolved() {
+		if !includes(cond.Type, CodeBool) {
+			return Value{}, errorAt(src, n.If.Pos(),
+				"the condition of a conditional expression must be a bool, found %s", cond.Type)
+		}
+		return condResult(n, src, syms)
 	}
 	if cond.Type.Code != CodeBool {
 		return Value{}, errorAt(src, n.If.Pos(),
@@ -221,4 +250,26 @@ func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
 		return evalNode(n.Then, src, syms)
 	}
 	return evalNode(n.Else, src, syms)
+}
+
+// condResult evaluates both branches of a conditional whose condition is not yet
+// known, per the spec's "Conditional Expressions with Unknown Conditions" rule.
+//
+// A branch that fails could never have produced a value at runtime either, so
+// its error is suppressed and the other branch's type stands alone. Only when
+// BOTH fail is there a real error, and then it names both — a reader cannot tell
+// which branch was meant.
+func condResult(n *Cond, src string, syms Symbols) (Value, error) {
+	thenVal, thenErr := evalNode(n.Then, src, syms)
+	elseVal, elseErr := evalNode(n.Else, src, syms)
+	switch {
+	case thenErr == nil && elseErr == nil:
+		return Unresolved(UnionOf(thenVal.Type, elseVal.Type)), nil
+	case thenErr == nil:
+		return Unresolved(thenVal.Type), nil
+	case elseErr == nil:
+		return Unresolved(elseVal.Type), nil
+	}
+	return Value{}, errorAt(src, n.Offset,
+		"both branches of this conditional expression fail: %v; and %v", thenErr, elseErr)
 }
