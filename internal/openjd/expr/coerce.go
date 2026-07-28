@@ -2,6 +2,12 @@
 
 package expr
 
+import (
+	"errors"
+	"fmt"
+	"strconv"
+)
+
 // This file implements section 1.2.3, implicit type coercion.
 //
 // The spec's rules are phrased against what the TARGET does not include — "int
@@ -198,4 +204,149 @@ func scalarCoercible(from, to Code) bool {
 		return from == CodeInt || from == CodeString
 	}
 	return false
+}
+
+// errNotCoercible is the sentinel behind every "cannot be coerced" report, so a
+// caller can distinguish an inapplicable conversion from a conversion that
+// applied and then failed on the value.
+var errNotCoercible = errors.New("cannot be coerced")
+
+// coerce converts v to the target type, per section 1.2.3.
+//
+// Errors carry no position: like every operator implementation, this returns a
+// plain error and the evaluator attaches the offset of the construct that
+// failed.
+func coerce(v Value, target Type) (Value, error) {
+	if v.Type.Equal(target) || target.Code == CodeAny {
+		return v, nil
+	}
+	// A placeholder has no value to convert. Coercing one narrows its
+	// constraint and it stays a placeholder — which is what lets a type check
+	// proceed through a coercion boundary.
+	if v.IsUnresolved() {
+		if !coercible(v.Type, target) {
+			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+		}
+		if target.Code == CodeUnresolved {
+			return Value{Type: target}, nil
+		}
+		return Unresolved(target), nil
+	}
+	if target.Code == CodeUnresolved && len(target.Params) == 1 {
+		return coerce(v, target.Params[0])
+	}
+	// A null reaching a target that admits null passes through; nothing else
+	// converts to or from null.
+	if v.IsNull() {
+		if includes(target, CodeNull) {
+			return v, nil
+		}
+		return Value{}, fmt.Errorf("null %w to %s", errNotCoercible, target)
+	}
+	// The three list rules (elementwise, the empty list, and range_expr ->
+	// list[int]) are type-level only in B1: coercible says yes, but performing
+	// one needs list values, which is sub-project B2's. Both directions are
+	// checked because range_expr -> list[int] has a scalar source and a list
+	// target. Report the gap plainly rather than silently returning the value
+	// unchanged, which would be a wrong value.
+	_, srcIsList := listElem(v.Type)
+	_, dstIsList := listElem(target)
+	if srcIsList || dstIsList {
+		if !coercible(v.Type, target) {
+			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+		}
+		return Value{}, fmt.Errorf(
+			"converting %s to %s is not implemented until sub-project B2", v.Type, target,
+		)
+	}
+	return coerceScalar(v, target)
+}
+
+// coerceScalar performs a scalar conversion whose applicability coercible has
+// already confirmed. It resolves which scalar code to aim for, then converts.
+func coerceScalar(v Value, target Type) (Value, error) {
+	to, ok := targetScalarCode(v, target)
+	if !ok {
+		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+	}
+	if to == v.Type.Code {
+		return v, nil
+	}
+	switch to {
+	case CodeString:
+		return String(v.String()), nil
+	case CodePath:
+		return Value{Type: TPath, s: v.AsStr()}, nil
+	case CodeInt:
+		return toInt(v)
+	case CodeFloat:
+		return toFloat(v)
+	}
+	return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+}
+
+// targetScalarCode picks the scalar code v should become. The conditional rules
+// of section 1.2.3 win over the single-scalar catch-all where they apply, in the
+// same order coercibleConditional checks them.
+func targetScalarCode(v Value, target Type) (Code, bool) {
+	switch v.Type.Code {
+	case CodeInt:
+		if includes(target, CodeFloat) && !includes(target, CodeInt) {
+			return CodeFloat, true
+		}
+	case CodePath:
+		if includes(target, CodeString) && !includes(target, CodePath) {
+			return CodeString, true
+		}
+	case CodeRangeExpr:
+		if includes(target, CodeString) && !includes(target, CodeRangeExpr) {
+			return CodeString, true
+		}
+	}
+	if includes(target, v.Type.Code) {
+		return v.Type.Code, true
+	}
+	return singleScalarTarget(target)
+}
+
+// toInt implements float/string -> int, which section 1.2.3 requires to be
+// non-destructive: a value that cannot be represented exactly is an error, not a
+// truncation.
+func toInt(v Value) (Value, error) {
+	switch v.Type.Code {
+	case CodeFloat:
+		f := v.AsFloat()
+		i := int64(f)
+		// Compare back rather than checking the fraction: this also rejects a
+		// magnitude too large for int64, where the conversion itself is
+		// undefined.
+		if float64(i) != f {
+			return Value{}, fmt.Errorf("the float %s cannot be represented exactly as an int", v)
+		}
+		return Int(i), nil
+	case CodeString:
+		i, err := strconv.ParseInt(v.AsStr(), 10, 64)
+		if err != nil {
+			return Value{}, fmt.Errorf("the string %q cannot be represented as an int", v.AsStr())
+		}
+		return Int(i), nil
+	}
+	return Value{}, fmt.Errorf("%s %w to int", v.Type, errNotCoercible)
+}
+
+// toFloat implements int/string -> float, erroring when a string is not a
+// number. floatValue rejects a result that is infinite or not a number, so a
+// string like "inf" cannot slip through.
+func toFloat(v Value) (Value, error) {
+	switch v.Type.Code {
+	case CodeInt:
+		return floatValue(float64(v.AsInt()))
+	case CodeString:
+		f, err := strconv.ParseFloat(v.AsStr(), 64)
+		if err != nil {
+			return Value{}, fmt.Errorf("the string %q cannot be parsed as a float", v.AsStr())
+		}
+		return floatValue(f)
+	}
+	return Value{}, fmt.Errorf("%s %w to float", v.Type, errNotCoercible)
 }
