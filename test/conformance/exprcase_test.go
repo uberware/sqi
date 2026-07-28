@@ -172,3 +172,89 @@ func TestRunExprCase(t *testing.T) {
 		})
 	}
 }
+
+func TestRunExprCase_EvaluatesLiteralOnlyExpressions(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		doc         string
+		wantAccept  bool
+		wantPass    bool
+		reasonMatch string
+	}{
+		{
+			name:       "arithmetic that evaluates cleanly is accepted",
+			path:       "EXPR/job_templates/expr2.1.1--ok.yaml",
+			doc:        `a: "{{ 1 + 2 }}"`,
+			wantAccept: true,
+			wantPass:   true,
+		},
+		{
+			name:       "division by zero is rejected",
+			path:       "EXPR/job_templates/expr2.1.1--division-by-zero.invalid.yaml",
+			doc:        `a: "{{ 1 / 0 }}"`,
+			wantAccept: false,
+			wantPass:   true,
+		},
+		{
+			name:       "int64 overflow on addition is rejected",
+			path:       "EXPR/job_templates/expr2.1.1--int64-overflow-add.invalid.yaml",
+			doc:        `a: "{{ 9223372036854775807 + 1 }}"`,
+			wantAccept: false,
+			wantPass:   true,
+		},
+		{
+			name:       "int64 overflow on a large power is rejected without looping",
+			path:       "EXPR/job_templates/expr2.1.1--int64-overflow-pow-large.invalid.yaml",
+			doc:        `a: "{{ 2 ** 1000000 }}"`,
+			wantAccept: false,
+			wantPass:   true,
+		},
+		{
+			// The guard: an expression referencing a symbol must NOT be
+			// evaluated against an empty table, or a valid fixture would be
+			// rejected for an "unknown symbol" that is merely unbound here.
+			name:       "an expression referencing a symbol is only parsed",
+			path:       "EXPR/job_templates/expr2.1.1--symbolic.yaml",
+			doc:        `a: "{{ Param.Frame + 1 }}"`,
+			wantAccept: true,
+			wantPass:   true,
+		},
+		{
+			name:       "a symbolic expression that cannot parse is still rejected",
+			path:       "EXPR/job_templates/expr1.1--bad.invalid.yaml",
+			doc:        `a: "{{ Param.Frame + }}"`,
+			wantAccept: false,
+			wantPass:   true,
+		},
+		{
+			name:        "a valid fixture whose literal arithmetic fails is a failure",
+			path:        "EXPR/job_templates/expr2.1.1--surprise.yaml",
+			doc:         `a: "{{ 1 / 0 }}"`,
+			wantAccept:  false,
+			wantPass:    false,
+			reasonMatch: "division by zero",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := conformance.ParseTestCase(tt.path)
+			res := conformance.RunExprCase(tc, []byte(tt.doc))
+			if res.State != conformance.StateLive {
+				t.Errorf("State = %v; want StateLive", res.State)
+			}
+			if res.Accepted != tt.wantAccept {
+				t.Errorf("Accepted = %v; want %v (reason: %s)", res.Accepted, tt.wantAccept, res.Reason)
+			}
+			if res.Passed != tt.wantPass {
+				t.Errorf("Passed = %v; want %v (reason: %s)", res.Passed, tt.wantPass, res.Reason)
+			}
+			if tt.reasonMatch != "" && !strings.Contains(res.Reason, tt.reasonMatch) {
+				t.Errorf("Reason = %q; want it to contain %q", res.Reason, tt.reasonMatch)
+			}
+			if tt.wantPass && res.Reason != "" {
+				t.Errorf("Reason = %q; want it empty on a pass", res.Reason)
+			}
+		})
+	}
+}

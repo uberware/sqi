@@ -51,9 +51,27 @@ func RunExprCase(tc TestCase, data []byte) Result {
 	default:
 		res.Accepted = true
 		for _, src := range exprs {
-			if _, perr := expr.Parse(src); perr != nil {
+			e, perr := expr.Parse(src)
+			if perr != nil {
 				res.Accepted = false
 				res.Reason = fmt.Sprintf("expression rejected: {{ %s }}: %v", src, perr)
+				break
+			}
+			// An expression referencing no symbols can be evaluated with no
+			// symbol table, which catches the errors a parse cannot see:
+			// int64 overflow, division by zero, and the like. Evaluating one
+			// that DOES reference a symbol would report "unknown symbol" and
+			// wrongly reject a valid fixture, so the check is gated on Names.
+			//
+			// The target is Any: a fixture's expression has no field context
+			// here, so it is evaluated for its natural result type rather than
+			// against a constraint the fixture never stated.
+			if len(e.Names()) > 0 {
+				continue
+			}
+			if _, eerr := e.Eval(nil, expr.TAny); eerr != nil {
+				res.Accepted = false
+				res.Reason = fmt.Sprintf("expression rejected: {{ %s }}: %v", src, eerr)
 				break
 			}
 		}
