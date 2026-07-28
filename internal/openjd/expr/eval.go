@@ -26,27 +26,43 @@ func (m MapSymbols) Lookup(name string) (Value, bool) {
 	return v, ok
 }
 
-// Eval evaluates the parsed expression against syms, which may be nil for an
-// expression that references no symbols.
+// Eval evaluates the parsed expression against syms, coercing the result to
+// target. syms may be nil for an expression that references no symbols; pass
+// TAny as the target to accept the expression's natural result type.
 //
-// Sub-project A evaluates operands of the SAME TYPE only: "1 + 2.5" is an
-// error here and becomes valid in sub-project B, which adds implicit
-// conversion. See the package documentation.
-func (e *Expression) Eval(syms Symbols) (Value, error) {
+// The target guides implicit coercion (section 1.3.1). It applies HERE, at the
+// boundary, and inside operator dispatch when a shape is matched — it does NOT
+// propagate into sub-expressions. Section 1.3.1 leaves that open; propagating it
+// would make "Param.Count + 1" against a string target concatenate its operands
+// into "11" rather than adding them. Section 1.3.2's own example of
+// "Count: {{ len(myList) }}" yielding "Count: 5" describes evaluating naturally
+// and converting afterward. List literals (section 1.2.6) and function
+// arguments do take a target inward, and both belong to later sub-projects.
+func (e *Expression) Eval(syms Symbols, target Type) (Value, error) {
 	if syms == nil {
 		syms = MapSymbols(nil)
 	}
-	return evalNode(e.root, e.src, syms)
+	v, err := evalNode(e.root, e.src, syms)
+	if err != nil {
+		return Value{}, err
+	}
+	out, err := coerce(v, target)
+	if err != nil {
+		// The whole expression failed to meet its context's type, so blame the
+		// expression's start rather than any operator inside it.
+		return Value{}, wrapAt(e.src, e.root.Pos(), err)
+	}
+	return out, nil
 }
 
-// Eval parses and evaluates src in one step. Prefer Parse plus
-// Expression.Eval when the same expression is evaluated more than once.
-func Eval(src string, syms Symbols) (Value, error) {
+// Eval parses and evaluates src in one step. Prefer Parse plus Expression.Eval
+// when the same expression is evaluated more than once.
+func Eval(src string, syms Symbols, target Type) (Value, error) {
 	e, err := Parse(src)
 	if err != nil {
 		return Value{}, err
 	}
-	return e.Eval(syms)
+	return e.Eval(syms, target)
 }
 
 // evalNode dispatches on node type. Each arm is a small named function so the

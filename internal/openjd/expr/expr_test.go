@@ -101,7 +101,7 @@ func TestLanguage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := expr.Eval(tt.src, syms)
+			got, err := expr.Eval(tt.src, syms, expr.TAny)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("Eval(%q) = %v; want an error containing %q", tt.src, got, tt.wantErr)
@@ -133,7 +133,7 @@ func TestParseThenEvalTwice(t *testing.T) {
 		in   int64
 		want string
 	}{{1, "2"}, {21, "42"}} {
-		got, err := e.Eval(expr.MapSymbols{"Param.Frame": expr.Int(tc.in)})
+		got, err := e.Eval(expr.MapSymbols{"Param.Frame": expr.Int(tc.in)}, expr.TAny)
 		if err != nil {
 			t.Fatalf("Eval: %v", err)
 		}
@@ -161,7 +161,7 @@ func TestNamesFromOutside(t *testing.T) {
 }
 
 func TestErrorsCarryLineAndColumn(t *testing.T) {
-	_, err := expr.Eval("Param.X\n  + 'oops'", expr.MapSymbols{"Param.X": expr.Int(1)})
+	_, err := expr.Eval("Param.X\n  + 'oops'", expr.MapSymbols{"Param.X": expr.Int(1)}, expr.TAny)
 	if err == nil {
 		t.Fatal("Eval = nil error; want unsupported operand types")
 	}

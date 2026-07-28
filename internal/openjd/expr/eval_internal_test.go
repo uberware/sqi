@@ -14,7 +14,7 @@ func evalSrc(t *testing.T, src string, syms Symbols) (Value, error) {
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", src, err)
 	}
-	return e.Eval(syms)
+	return e.Eval(syms, TAny)
 }
 
 func TestEval_Literals(t *testing.T) {
@@ -451,11 +451,112 @@ func TestEval_ConditionalRequiresABoolCondition(t *testing.T) {
 
 func TestEvalFunc(t *testing.T) {
 	// The package-level one-step form.
-	got, err := Eval("Param.X * 2", MapSymbols{"Param.X": Int(21)})
+	got, err := Eval("Param.X * 2", MapSymbols{"Param.X": Int(21)}, TAny)
 	if err != nil || !got.Equal(Int(42)) {
 		t.Errorf("Eval = %v, %v; want 42, nil", got, err)
 	}
-	if _, err := Eval("1 +", nil); err == nil {
+	if _, err := Eval("1 +", nil, TAny); err == nil {
 		t.Error("Eval of a syntax error = nil; want a parse error")
+	}
+}
+
+func TestEval_CoercesToTheTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		src    string
+		target Type
+		want   Value
+	}{
+		{"no constraint keeps the natural type", "1 + 2", TAny, Int(3)},
+		{"int result to a float target", "1 + 2", TFloat, Float(3)},
+		{"int result to a string target", "1 + 2", TString, String("3")},
+		{"float result to a string target", "1.5 + 1", TString, String("2.5")},
+		{"bool result to a string target", "1 < 2", TString, String("true")},
+		{"string result to an int target", "'42'", TInt, Int(42)},
+		{"an exact float to an int target", "4.0", TInt, Int(4)},
+		{"a null against an optional target", "null", OptionalOf(TInt), Null()},
+		{"a union target that already admits the result", "1", UnionOf(TInt, TString), Int(1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got, err := e.Eval(nil, tt.target)
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("Eval(%q, %s) = %s (%s); want %s (%s)",
+					tt.src, tt.target, got, got.Type, tt.want, tt.want.Type)
+			}
+		})
+	}
+}
+
+func TestEval_TargetMismatchIsAnError(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		target  Type
+		wantMsg string
+	}{
+		{"a fractional float to an int target", "3.75", TInt, "cannot be represented"},
+		{"a non-numeric string to an int target", "'abc'", TInt, "cannot be represented"},
+		{"an int to a bool target", "1", TBool, "cannot be coerced"},
+		{"a null to a required target", "null", TInt, "cannot be coerced"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			_, err = e.Eval(nil, tt.target)
+			if err == nil {
+				t.Fatalf("Eval(%q, %s) = nil error; want an error", tt.src, tt.target)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestEval_TargetDoesNotFlowInward(t *testing.T) {
+	// The resolution of section 1.3.1's ambiguity. With a string target, pushing
+	// the target inward would make both operands text and concatenate them into
+	// "11"; the correct reading adds them and converts once, at the end.
+	e, err := Parse("1 + 1")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got, err := e.Eval(nil, TString)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if want := String("2"); !got.Equal(want) {
+		t.Errorf("Eval(\"1 + 1\", string) = %s; want %s — the target must not reach the operands", got, want)
+	}
+}
+
+func TestEval_TargetErrorCarriesAPosition(t *testing.T) {
+	// A coercion failure at the boundary is still a positioned error, so a
+	// template author is told where to look.
+	e, err := Parse("3.75")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	_, err = e.Eval(nil, TInt)
+	if err == nil {
+		t.Fatal("Eval = nil error; want an error")
+	}
+	var pe *Error
+	if !errors.As(err, &pe) {
+		t.Fatalf("error is %T; want *Error", err)
+	}
+	if pe.Offset != 0 {
+		t.Errorf("Offset = %d; want 0", pe.Offset)
 	}
 }
