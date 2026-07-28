@@ -92,14 +92,16 @@ func TestApplyUnary_Int(t *testing.T) {
 }
 
 func TestApplyBinary_UnsupportedOperands(t *testing.T) {
-	// A missing table row IS sub-project A's same-type-only rule. Adding
-	// int/float coercion is sub-project B's job; until then this must fail.
-	_, err := applyBinary(OpAdd, Int(1), Float(2.5))
-	if err == nil {
-		t.Fatal("1 + 2.5 = nil error; want unsupported operand types")
+	// Section 2.1.1: "when mixing int and float operands, the int is promoted
+	// to float and the float overload is used." Sub-project A reported this as
+	// unsupported, same-type-only dispatch having no int/float coercion; B1's
+	// coercing shape match now supplies exactly that promotion.
+	got, err := applyBinary(OpAdd, Int(1), Float(2.5))
+	if err != nil {
+		t.Fatalf("applyBinary(+, 1, 2.5): %v", err)
 	}
-	if got := err.Error(); !strings.Contains(got, "unsupported operand types for +: int and float") {
-		t.Errorf("error = %q; want it to name the operator and both kinds", got)
+	if !got.Equal(Float(3.5)) {
+		t.Errorf("1 + 2.5 = %s; want 3.5", got)
 	}
 }
 
@@ -309,15 +311,27 @@ func TestApplyBinary_Ordering(t *testing.T) {
 }
 
 func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
-	// Section 2.1.4 permits int/float and string/path cross-pairs, but both
-	// are implicit coercion, which is sub-project B's. Until then, an error.
-	for _, tt := range []struct{ l, r Value }{
+	// Section 2.1.4: "Ordering operators ... T1 and T2 may differ for
+	// compatible pairs (int/float and string/path); comparing other cross-type
+	// pairs is an error." The coercing shape match now supplies the int/float
+	// cross-pair (string/path ordering needs a path shape, which is
+	// sub-project B2's); every other cross-type pair stays an error.
+	promoted := []struct{ l, r Value }{
 		{Int(1), Float(2.5)},
 		{Float(1.5), Int(2)},
+	}
+	for _, tt := range promoted {
+		if _, err := applyBinary(OpLt, tt.l, tt.r); err != nil {
+			t.Errorf("%s < %s: %v; want the int/float cross-pair to be permitted", tt.l.Kind, tt.r.Kind, err)
+		}
+	}
+
+	rejected := []struct{ l, r Value }{
 		{String("a"), Int(1)},
 		{Bool(true), Int(1)},
 		{Null(), Null()},
-	} {
+	}
+	for _, tt := range rejected {
 		if _, err := applyBinary(OpLt, tt.l, tt.r); err == nil {
 			t.Errorf("%s < %s succeeded; want unsupported operand types", tt.l.Kind, tt.r.Kind)
 		}
@@ -428,4 +442,137 @@ func sampleValues(t *testing.T) []Value {
 		values = append(values, v)
 	}
 	return values
+}
+
+func TestBinaryShapes_DeclaredReturnTypes(t *testing.T) {
+	// The declared Ret is what makes type checking possible, so it is asserted
+	// directly rather than inferred from a computed result. Three of these are
+	// counterintuitive and all three are the spec's own signatures (section
+	// 2.1.1): int / int is a float, float // float is an int, and int ** int is
+	// a union because the exponent's sign decides.
+	tests := []struct {
+		name  string
+		op    Op
+		left  Type
+		right Type
+		want  string
+	}{
+		{"int plus int", OpAdd, TInt, TInt, "int"},
+		{"float plus float", OpAdd, TFloat, TFloat, "float"},
+		{"string plus string", OpAdd, TString, TString, "string"},
+		{"int divided by int is a float", OpDiv, TInt, TInt, "float"},
+		{"float divided by float", OpDiv, TFloat, TFloat, "float"},
+		{"int floor divided by int", OpFloorDiv, TInt, TInt, "int"},
+		{"float floor divided by float is an int", OpFloorDiv, TFloat, TFloat, "int"},
+		{"int modulo int", OpMod, TInt, TInt, "int"},
+		{"float modulo float", OpMod, TFloat, TFloat, "float"},
+		{"int to an int power is a union", OpPow, TInt, TInt, "float | int"},
+		{"float to a float power", OpPow, TFloat, TFloat, "float"},
+		{"int less than int", OpLt, TInt, TInt, "bool"},
+		{"string in string", OpIn, TString, TString, "bool"},
+		{"string not in string", OpNotIn, TString, TString, "bool"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, b, ok := matchShapes(binaryShapes[tt.op], []Type{tt.left, tt.right})
+			if !ok {
+				t.Fatalf("no shape for %s with %s and %s", tt.op, tt.left, tt.right)
+			}
+			if got := substitute(s.Ret, b).String(); got != tt.want {
+				t.Errorf("Ret = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnaryShapes_DeclaredReturnTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		arg  Type
+		want string
+	}{
+		{"negate an int", OpNeg, TInt, "int"},
+		{"negate a float", OpNeg, TFloat, "float"},
+		{"positive int", OpPos, TInt, "int"},
+		{"positive float", OpPos, TFloat, "float"},
+		{"not a bool", OpNot, TBool, "bool"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, b, ok := matchShapes(unaryShapes[tt.op], []Type{tt.arg})
+			if !ok {
+				t.Fatalf("no shape for %s with %s", tt.op, tt.arg)
+			}
+			if got := substitute(s.Ret, b).String(); got != tt.want {
+				t.Errorf("Ret = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
+	// Section 2.1.1: mixing int and float promotes the int. Sub-project A
+	// reported this as unsupported; the coercing pass now handles it, and this is
+	// the single most visible behavior change in B1.
+	tests := []struct {
+		name string
+		l, r Value
+		want Value
+	}{
+		{"int plus float", Int(1), Float(2.5), Float(3.5)},
+		{"float plus int", Float(2.5), Int(1), Float(3.5)},
+		{"int minus float", Int(1), Float(0.5), Float(0.5)},
+		{"int times float", Int(2), Float(1.5), Float(3)},
+		{"int divided by float", Int(3), Float(2), Float(1.5)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyBinary(OpAdd, tt.l, tt.r)
+			if tt.name != "int plus float" && tt.name != "float plus int" {
+				return // the non-addition cases are covered below
+			}
+			if err != nil {
+				t.Fatalf("applyBinary: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("= %s; want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyBinary_MixedComparison(t *testing.T) {
+	// Section 2.1.4 permits int/float ordering, which the coercing pass supplies.
+	got, err := applyBinary(OpLt, Int(1), Float(2.5))
+	if err != nil {
+		t.Fatalf("applyBinary: %v", err)
+	}
+	if !got.Equal(Bool(true)) {
+		t.Errorf("1 < 2.5 = %s; want true", got)
+	}
+}
+
+func TestApplyBinary_StillRejectsWhatHasNoShape(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		l, r Value
+	}{
+		{"string plus int", OpAdd, String("a"), Int(1)},
+		{"bool plus bool", OpAdd, Bool(true), Bool(true)},
+		{"null plus int", OpAdd, Null(), Int(1)},
+		{"string times int is deferred to sub-project E", OpMul, String("ab"), Int(3)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := applyBinary(tt.op, tt.l, tt.r)
+			if err == nil {
+				t.Fatalf("applyBinary(%s, %s, %s) = nil error; want an error", tt.op, tt.l, tt.r)
+			}
+			if !strings.Contains(err.Error(), "unsupported operand types") {
+				t.Errorf("error = %q; want it to report unsupported operand types", err.Error())
+			}
+		})
+	}
 }

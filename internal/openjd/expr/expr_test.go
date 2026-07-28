@@ -64,6 +64,12 @@ func TestLanguage(t *testing.T) {
 		{name: "negative exponent yields a float", src: "2 ** -3", wantKind: expr.KindFloat, want: "0.125"},
 		{name: "float floor division yields an int", src: "7.5 // 2.5", wantKind: expr.KindInt, want: "3"},
 		{name: "string concatenation", src: `'a' + 'b'`, wantKind: expr.KindString, want: "ab"},
+		// Section 2.1.1/2.1.4: mixing int and float promotes the int and uses
+		// the float overload — B1's coercing shape match, not A's same-type-
+		// only dispatch. See the SUB-PROJECT B comment below for what is still
+		// deliberately out of scope.
+		{name: "int plus float promotes to float", src: "1 + 2.5", wantKind: expr.KindFloat, want: "3.5"},
+		{name: "int compared to float promotes to float", src: "1 < 2.5", wantKind: expr.KindBool, want: "true"},
 		{name: "substring test", src: `'ell' in 'hello'`, wantKind: expr.KindBool, want: "true"},
 		{name: "chained comparison", src: "1 < 2 < 3", wantKind: expr.KindBool, want: "true"},
 		{name: "chained comparison that fails in the middle", src: "1 < 3 < 2", wantKind: expr.KindBool, want: "false"},
@@ -83,9 +89,9 @@ func TestLanguage(t *testing.T) {
 		{name: "a conditional condition must be a bool", src: "1 if 1 else 2", wantErr: "must be a bool"},
 
 		// Deliberately not in sub-project A. Each of these becomes valid later;
-		// see the package documentation and the plan's scope table.
-		{name: "SUB-PROJECT B: int plus float", src: "1 + 2.5", wantErr: "unsupported operand types"},
-		{name: "SUB-PROJECT B: int compared to float", src: "1 < 2.5", wantErr: "unsupported operand types"},
+		// see the package documentation and the plan's scope table. Int/float
+		// promotion (+ and <) moved up to the Operators section above: B1
+		// delivers it.
 		{name: "SUB-PROJECT B: list literal", src: "[1, 2]", wantErr: "list expressions are not supported"},
 		{name: "SUB-PROJECT B: subscript", src: "Param.Name[0]", wantErr: "subscript and slice"},
 		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "function and method calls"},

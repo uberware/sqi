@@ -20,97 +20,116 @@ var (
 	errNegFracPower = errors.New("a negative number cannot be raised to a fractional power")
 )
 
-// opKey selects one binary operator implementation.
-//
-// Operator behavior is a table rather than a switch on purpose. "+" alone has
-// ten signatures across the full EXPR spec — integers, floats, text, paths,
-// lists, ranges and combinations — and sub-project A implements only the
-// same-type ones. A switch would force sub-projects B and C to rewrite it;
-// a table lets them add rows.
-//
-// A missing key is reported as "unsupported operand types", which is also
-// precisely A's same-type-only restriction. The mechanism and the restriction
-// are therefore one thing, not two that can drift out of step.
-type opKey struct {
-	op          Op
-	left, right Kind
-}
-
-// binaryFunc implements one operator signature. The operands are guaranteed to
-// have the kinds their key names, so an implementation may use the payload
+// binaryFunc is the shape of an operator implementation a Shape wraps. The
+// operands are guaranteed to have been coerced to the Shape's declared
+// parameter types before an implementation runs, so it may use the payload
 // accessors without checking.
 type binaryFunc func(l, r Value) (Value, error)
 
-// binaryOps is the dispatch table. Sub-project B adds rows such as
-// {OpAdd, KindPath, KindString}; sub-project C adds none, since functions are
-// registered separately.
-var binaryOps = map[opKey]binaryFunc{
-	{OpAdd, KindInt, KindInt}:      intBinary(addInt),
-	{OpSub, KindInt, KindInt}:      intBinary(subInt),
-	{OpMul, KindInt, KindInt}:      intBinary(mulInt),
-	{OpFloorDiv, KindInt, KindInt}: intBinary(floorDivInt),
-	{OpMod, KindInt, KindInt}:      intBinary(modInt),
-	{OpDiv, KindInt, KindInt}:      divInts,
-	{OpPow, KindInt, KindInt}:      powInts,
+// identity is OpPos's implementation: unary "+" changes nothing.
+func identity(v Value) (Value, error) { return v, nil }
 
-	{OpAdd, KindFloat, KindFloat}:      floatBinary(func(a, b float64) float64 { return a + b }),
-	{OpSub, KindFloat, KindFloat}:      floatBinary(func(a, b float64) float64 { return a - b }),
-	{OpMul, KindFloat, KindFloat}:      floatBinary(func(a, b float64) float64 { return a * b }),
-	{OpDiv, KindFloat, KindFloat}:      divFloats,
-	{OpFloorDiv, KindFloat, KindFloat}: floorDivFloats,
-	{OpMod, KindFloat, KindFloat}:      modFloats,
-	{OpPow, KindFloat, KindFloat}:      powFloats,
-
-	{OpAdd, KindString, KindString}:   concatStrings,
-	{OpIn, KindString, KindString}:    containsString,
-	{OpNotIn, KindString, KindString}: notContainsString,
-
-	{OpLt, KindInt, KindInt}: ordering(OpLt, compareInts),
-	{OpGt, KindInt, KindInt}: ordering(OpGt, compareInts),
-	{OpLe, KindInt, KindInt}: ordering(OpLe, compareInts),
-	{OpGe, KindInt, KindInt}: ordering(OpGe, compareInts),
-
-	{OpLt, KindFloat, KindFloat}: ordering(OpLt, compareFloats),
-	{OpGt, KindFloat, KindFloat}: ordering(OpGt, compareFloats),
-	{OpLe, KindFloat, KindFloat}: ordering(OpLe, compareFloats),
-	{OpGe, KindFloat, KindFloat}: ordering(OpGe, compareFloats),
-
-	{OpLt, KindString, KindString}: ordering(OpLt, compareStrings),
-	{OpGt, KindString, KindString}: ordering(OpGt, compareStrings),
-	{OpLe, KindString, KindString}: ordering(OpLe, compareStrings),
-	{OpGe, KindString, KindString}: ordering(OpGe, compareStrings),
-
-	{OpLt, KindBool, KindBool}: ordering(OpLt, compareBools),
-	{OpGt, KindBool, KindBool}: ordering(OpGt, compareBools),
-	{OpLe, KindBool, KindBool}: ordering(OpLe, compareBools),
-	{OpGe, KindBool, KindBool}: ordering(OpGe, compareBools),
+// shapeBinary adapts a two-operand implementation to a Shape's argument slice.
+func shapeBinary(f func(l, r Value) (Value, error)) func(args []Value) (Value, error) {
+	return func(args []Value) (Value, error) { return f(args[0], args[1]) }
 }
 
-// unaryKey selects one prefix operator implementation.
-type unaryKey struct {
-	op   Op
-	kind Kind
+// shapeUnary adapts a one-operand implementation to a Shape's argument slice.
+func shapeUnary(f func(v Value) (Value, error)) func(args []Value) (Value, error) {
+	return func(args []Value) (Value, error) { return f(args[0]) }
 }
 
-type unaryFunc func(v Value) (Value, error)
+// binaryShapes lists every accepted signature of each binary operator, in the
+// spec's own terms (sections 2.1.1, 2.1.2, 2.1.4).
+//
+// A shape declares what it returns as well as what it takes, which is what lets
+// an operand with no value still yield a typed result. Ordering within a list
+// does not affect which shape wins: matchShapes tries every shape for an exact
+// fit before trying any with coercion.
+//
+// Sub-projects B2 and C add shapes here and to their own function registry; a
+// list with no matching shape is reported as "unsupported operand types", which
+// is the same single mechanism sub-project A used.
+var binaryShapes = map[Op][]Shape{
+	OpAdd: {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(addInt))},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a + b }))},
+		{Params: []Type{TString, TString}, Ret: TString, Fn: shapeBinary(concatStrings)},
+	},
+	OpSub: {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(subInt))},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a - b }))},
+	},
+	OpMul: {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(mulInt))},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a * b }))},
+	},
+	// Dividing two ints yields a float — the spec's __truediv__(int, int) -> float.
+	OpDiv: {
+		{Params: []Type{TInt, TInt}, Ret: TFloat, Fn: shapeBinary(divInts)},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(divFloats)},
+	},
+	// Floor-dividing two floats yields an int — __floordiv__(float, float) -> int.
+	OpFloorDiv: {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(floorDivInt))},
+		{Params: []Type{TFloat, TFloat}, Ret: TInt, Fn: shapeBinary(floorDivFloats)},
+	},
+	OpMod: {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(modInt))},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(modFloats)},
+	},
+	// int ** int is int for a non-negative exponent and float for a negative one,
+	// so its declared return is the union the spec writes: float | int.
+	OpPow: {
+		{Params: []Type{TInt, TInt}, Ret: UnionOf(TInt, TFloat), Fn: shapeBinary(powInts)},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(powFloats)},
+	},
 
-var unaryOps = map[unaryKey]unaryFunc{
-	{OpNeg, KindInt}: negInt,
-	{OpPos, KindInt}: identity,
+	OpIn:    {{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(containsString)}},
+	OpNotIn: {{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(notContainsString)}},
 
-	{OpNeg, KindFloat}: negFloat,
-	{OpPos, KindFloat}: identity,
-	{OpNot, KindBool}:  notBool,
+	OpLt: orderingShapes(OpLt),
+	OpGt: orderingShapes(OpGt),
+	OpLe: orderingShapes(OpLe),
+	OpGe: orderingShapes(OpGe),
 }
 
-// applyBinary dispatches a binary operator, or reports that no signature
-// matches the operand kinds. Errors carry no position; the evaluator wraps
-// them with the offset of the operator that failed.
+// orderingShapes builds the four same-type ordering signatures for one
+// comparison operator. Section 2.1.4 also permits int/float and string/path
+// cross-pairs; both are implicit coercion, which the coercing match pass
+// supplies from these same shapes.
+func orderingShapes(op Op) []Shape {
+	return []Shape{
+		{Params: []Type{TInt, TInt}, Ret: TBool, Fn: shapeBinary(ordering(op, compareInts))},
+		{Params: []Type{TFloat, TFloat}, Ret: TBool, Fn: shapeBinary(ordering(op, compareFloats))},
+		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(ordering(op, compareStrings))},
+		{Params: []Type{TBool, TBool}, Ret: TBool, Fn: shapeBinary(ordering(op, compareBools))},
+	}
+}
+
+// unaryShapes lists every accepted signature of each prefix operator.
+var unaryShapes = map[Op][]Shape{
+	OpNeg: {
+		{Params: []Type{TInt}, Ret: TInt, Fn: shapeUnary(negInt)},
+		{Params: []Type{TFloat}, Ret: TFloat, Fn: shapeUnary(negFloat)},
+	},
+	OpPos: {
+		{Params: []Type{TInt}, Ret: TInt, Fn: shapeUnary(identity)},
+		{Params: []Type{TFloat}, Ret: TFloat, Fn: shapeUnary(identity)},
+	},
+	OpNot: {
+		{Params: []Type{TBool}, Ret: TBool, Fn: shapeUnary(notBool)},
+	},
+}
+
+// applyBinary dispatches a binary operator, or reports that no signature accepts
+// the operand types. Errors carry no position; the evaluator wraps them with the
+// offset of the operator that failed.
 func applyBinary(op Op, l, r Value) (Value, error) {
 	// Equality is handled ahead of the table because section 1.2.5 defines it
 	// for EVERY pair of types — "5" == 5 is false, 5 == 5.0 is true — so it is
-	// never "unsupported". A missing table row means unsupported, so equality
-	// cannot be a row without the two meanings colliding.
+	// never "unsupported". No matching shape means unsupported, so equality
+	// cannot be a shape without the two meanings colliding.
 	switch op {
 	case OpEq:
 		return Bool(valuesEqual(l, r)), nil
@@ -118,23 +137,40 @@ func applyBinary(op Op, l, r Value) (Value, error) {
 		return Bool(!valuesEqual(l, r)), nil
 	}
 
-	fn, ok := binaryOps[opKey{op, l.Kind, r.Kind}]
+	s, b, ok := matchShapes(binaryShapes[op], []Type{l.Type, r.Type})
 	if !ok {
-		return Value{}, fmt.Errorf("unsupported operand types for %s: %s and %s", op, l.Kind, r.Kind)
+		return Value{}, fmt.Errorf("unsupported operand types for %s: %s and %s", op, l.Type, r.Type)
 	}
-	return fn(l, r)
+	return callShape(s, b, []Value{l, r})
 }
 
 // applyUnary dispatches a prefix operator.
 func applyUnary(op Op, v Value) (Value, error) {
-	fn, ok := unaryOps[unaryKey{op, v.Kind}]
+	s, b, ok := matchShapes(unaryShapes[op], []Type{v.Type})
 	if !ok {
-		return Value{}, fmt.Errorf("unsupported operand type for %s: %s", op, v.Kind)
+		return Value{}, fmt.Errorf("unsupported operand type for %s: %s", op, v.Type)
 	}
-	return fn(v)
+	return callShape(s, b, []Value{v})
 }
 
-func identity(v Value) (Value, error) { return v, nil }
+// callShape coerces the arguments to the shape's declared parameter types and
+// runs it. The match may have been made on the coercing pass, so an argument can
+// still need converting — that is where section 2.1.1's int-to-float promotion
+// actually happens.
+func callShape(s Shape, b bindings, args []Value) (Value, error) {
+	for i := range args {
+		want := substitute(s.Params[i], b)
+		if args[i].Type.Equal(want) {
+			continue
+		}
+		converted, err := coerce(args[i], want)
+		if err != nil {
+			return Value{}, err
+		}
+		args[i] = converted
+	}
+	return s.Fn(args)
+}
 
 // intBinary adapts an int64 operation to the table's signature.
 func intBinary(f func(a, b int64) (int64, error)) binaryFunc {
@@ -421,10 +457,10 @@ func boolRank(b bool) int {
 // lint threshold; the combined behavior is unchanged.
 func valuesEqual(l, r Value) bool {
 	switch {
-	case l.Kind == KindNull || r.Kind == KindNull:
-		return l.Kind == r.Kind
-	case l.Kind == KindBool || r.Kind == KindBool:
-		return l.Kind == r.Kind && l.AsBool() == r.AsBool()
+	case l.Type.Code == CodeNull || r.Type.Code == CodeNull:
+		return l.Type.Code == r.Type.Code
+	case l.Type.Code == CodeBool || r.Type.Code == CodeBool:
+		return l.Type.Code == r.Type.Code && l.AsBool() == r.AsBool()
 	}
 	return numericOrStringEqual(l, r)
 }
@@ -433,15 +469,15 @@ func valuesEqual(l, r Value) bool {
 // Callers must have already excluded null and bool operands.
 func numericOrStringEqual(l, r Value) bool {
 	switch {
-	case l.Kind == KindInt && r.Kind == KindInt:
+	case l.Type.Code == CodeInt && r.Type.Code == CodeInt:
 		return l.AsInt() == r.AsInt()
-	case l.Kind == KindFloat && r.Kind == KindFloat:
+	case l.Type.Code == CodeFloat && r.Type.Code == CodeFloat:
 		return l.AsFloat() == r.AsFloat()
-	case l.Kind == KindInt && r.Kind == KindFloat:
+	case l.Type.Code == CodeInt && r.Type.Code == CodeFloat:
 		return intEqualsFloat(l.AsInt(), r.AsFloat())
-	case l.Kind == KindFloat && r.Kind == KindInt:
+	case l.Type.Code == CodeFloat && r.Type.Code == CodeInt:
 		return intEqualsFloat(r.AsInt(), l.AsFloat())
-	case l.Kind == KindString && r.Kind == KindString:
+	case l.Type.Code == CodeString && r.Type.Code == CodeString:
 		return l.AsStr() == r.AsStr()
 	}
 	return false
