@@ -310,6 +310,7 @@ func TestLexString_Rejected(t *testing.T) {
 		{"hex escape with a non-hex digit", `'\xzz'`, "hexadecimal digits"},
 		{"surrogate code point", `'\ud800'`, "not a valid unicode code point"},
 		{"code point above the maximum", `'\U0011FFFF'`, "not a valid unicode code point"},
+		{"hex escape value truncates to -1 as a rune", `'\UFFFFFFFF'`, "not a valid unicode code point"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

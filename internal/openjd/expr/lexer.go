@@ -381,8 +381,21 @@ func writeHexEscape(b *strings.Builder, src string, at int, body string, i, digi
 	return 2 + digits, nil
 }
 
-// writeNamedEscape decodes \N{NAME}. Task 5 replaces this body.
+// writeNamedEscape decodes \N{name} and reports how many bytes of body it
+// consumed.
 func writeNamedEscape(b *strings.Builder, src string, at int, body string, i int) (int, error) {
-	_, _, _ = b, body, i
-	return 0, errorAt(src, at, `\N escapes are not implemented yet`)
+	if i+2 >= len(body) || body[i+2] != '{' {
+		return 0, errorAt(src, at, `\N escape must be followed by a name in braces, as in \N{BULLET}`)
+	}
+	rel := strings.IndexByte(body[i+2:], '}')
+	if rel < 0 {
+		return 0, errorAt(src, at, `\N escape is missing its closing brace`)
+	}
+	name := body[i+3 : i+2+rel]
+	r, ok := unicodeByName(name)
+	if !ok {
+		return 0, errorAt(src, at, "unknown unicode character name %q", name)
+	}
+	b.WriteRune(r)
+	return rel + 3, nil
 }
