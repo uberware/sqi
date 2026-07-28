@@ -12,8 +12,9 @@ import (
 )
 
 // RunExprCase scores an EXPR fixture on whether every expression it embeds
-// parses, and is the scoring path for EXPR/job_templates until sqi registers
-// the extension for real.
+// parses and, for one that references no symbols, evaluates cleanly. It is
+// the scoring path for EXPR/job_templates until sqi registers the extension
+// for real.
 //
 // # Why this exists, and when to delete it
 //
@@ -32,10 +33,17 @@ import (
 // syntax error is rejected. Nothing here depends on internal/openjd, so the
 // production rejection of EXPR templates stays correct throughout.
 //
-// It is parse-only. A fixture that is invalid for a SEMANTIC reason — a type
-// error, an evaluation limit, an int64 overflow — parses fine, is accepted,
-// and therefore fails and is baselined. That is the intended reporting: a
-// visible failure rather than silence.
+// Every expression is parsed. One that references no symbols (Names()
+// returns empty) is also evaluated, against expr.TAny with an empty symbol
+// table — which is safe precisely because it has nothing to look up. That
+// catches a type error, an int64 overflow, a division by zero, and the like,
+// in a literal-only expression. An expression that DOES reference a symbol
+// stays parse-only: evaluating it with no symbol table would report an
+// unknown-symbol error and wrongly reject a valid fixture, so evaluation is
+// gated on Names() being empty. A fixture invalid for a semantic reason on a
+// SYMBOLIC expression therefore still parses fine, is accepted, and fails —
+// visibly baselined rather than silently passed — until sub-project E gives
+// this path real symbol tables to evaluate against.
 //
 // TestConformance_EXPRNotRegistered fails the build the moment
 // internal/openjd registers EXPR. At that point this file and its baseline

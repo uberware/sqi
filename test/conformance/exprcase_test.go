@@ -235,6 +235,45 @@ func TestRunExprCase_EvaluatesLiteralOnlyExpressions(t *testing.T) {
 			wantPass:    false,
 			reasonMatch: "division by zero",
 		},
+		{
+			// A symbolic expression must skip only its own evaluation, not
+			// the rest of the loop: the gate is a continue, not a break. A
+			// symbolic expression followed by a failing literal one must
+			// still catch the failure in the later expression. The fixture
+			// is marked valid (not .invalid) so a wrongly-accepted result
+			// fails the test with the reason still visible — Reason is
+			// cleared on a pass (see the assertion below), so a correctly
+			// rejected .invalid fixture couldn't carry the reasonMatch check
+			// this case needs.
+			name:        "a symbolic expression followed by a failing literal one is rejected",
+			path:        "EXPR/job_templates/expr2.1.1--mixed-symbolic-then-failure.yaml",
+			doc:         `a: "{{ Param.Frame }}-{{ 1 / 0 }}"`,
+			wantAccept:  false,
+			wantPass:    false,
+			reasonMatch: "division by zero",
+		},
+		{
+			// Same as above with the order reversed, so the assertion does
+			// not depend on which expression in the document comes first.
+			name:        "a failing literal expression followed by a symbolic one is rejected",
+			path:        "EXPR/job_templates/expr2.1.1--mixed-failure-then-symbolic.yaml",
+			doc:         `a: "{{ 1 / 0 }}-{{ Param.Frame }}"`,
+			wantAccept:  false,
+			wantPass:    false,
+			reasonMatch: "division by zero",
+		},
+		{
+			// A symbolic expression alongside a literal one that evaluates
+			// cleanly: distinguishes "evaluated and passed" from "skipped
+			// entirely" — both the symbolic expression (parse-only) and the
+			// literal one (parsed and evaluated) must accept for the whole
+			// fixture to accept.
+			name:       "a symbolic expression and a clean literal expression are both accepted",
+			path:       "EXPR/job_templates/expr2.1.1--mixed-symbolic-and-clean.yaml",
+			doc:        `a: "{{ Param.Frame }}-{{ 1 + 2 }}"`,
+			wantAccept: true,
+			wantPass:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
