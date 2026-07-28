@@ -922,8 +922,8 @@ jobs:
   #
   # IMPORTANT: the assertion step below is not redundant. `make test-conformance`
   # would report success if the walker collected zero fixtures, so this job does
-  # not trust the exit code alone — it requires both test names in the output,
-  # the same guard ldap-integration and isolation-integration use.
+  # not trust the exit code alone — it requires all four test names in the
+  # output, the same guard ldap-integration and isolation-integration use.
   conformance:
     name: OpenJD conformance
     runs-on: ubuntu-latest
@@ -948,6 +948,8 @@ jobs:
         run: |
           grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_Expressions' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_EXPRNotRegistered' /tmp/conformance.log
 
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
