@@ -39,7 +39,7 @@ func TestEval_Literals(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
 			}
 		})
@@ -67,7 +67,7 @@ func TestEval_Names(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v; want %v", got, tt.want)
 			}
 		})
@@ -97,7 +97,7 @@ func TestEval_NilSymbolsIsAnEmptyTable(t *testing.T) {
 	if _, err := evalSrc(t, "Param.X", nil); err == nil {
 		t.Error("Eval with nil symbols = nil error; want unknown symbol")
 	}
-	if v, err := evalSrc(t, "1 + 1", nil); err != nil || v != Int(2) {
+	if v, err := evalSrc(t, "1 + 1", nil); err != nil || !v.Equal(Int(2)) {
 		t.Errorf("Eval(1 + 1, nil) = %v, %v; want 2, nil", v, err)
 	}
 }
@@ -197,7 +197,7 @@ func TestEval_Arithmetic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
 			}
 		})
@@ -231,7 +231,7 @@ func TestEval_ChainedComparison(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v; want %v", got, tt.want)
 			}
 		})
@@ -245,7 +245,7 @@ func TestEval_ChainShortCircuitsBeforeABadOperand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	if got != Bool(false) {
+	if !got.Equal(Bool(false)) {
 		t.Errorf("= %v; want false", got)
 	}
 }
@@ -294,7 +294,7 @@ func TestEval_ChainedComparisonEvaluatesMiddleOperandExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	if got != Bool(true) {
+	if !got.Equal(Bool(true)) {
 		t.Errorf("= %v; want true", got)
 	}
 	for _, name := range []string{"Param.A", "Param.B", "Param.C"} {
@@ -350,7 +350,7 @@ func TestEval_LogicalReturnsAnOperand(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
 			}
 		})
@@ -392,7 +392,7 @@ func TestEval_Conditional(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v; want %v", got, tt.want)
 			}
 		})
@@ -427,7 +427,7 @@ func TestEval_ConditionalRequiresABoolCondition(t *testing.T) {
 func TestEvalFunc(t *testing.T) {
 	// The package-level one-step form.
 	got, err := Eval("Param.X * 2", MapSymbols{"Param.X": Int(21)})
-	if err != nil || got != Int(42) {
+	if err != nil || !got.Equal(Int(42)) {
 		t.Errorf("Eval = %v, %v; want 42, nil", got, err)
 	}
 	if _, err := Eval("1 +", nil); err == nil {

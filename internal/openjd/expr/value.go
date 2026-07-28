@@ -48,15 +48,26 @@ func (k Kind) String() string {
 
 // Value is an evaluated expression result.
 //
-// Kind is always meaningful; the payload fields are valid only for their
-// corresponding Kind, and reading the wrong one panics. The zero Value is a
-// null, so a function returning (Value{}, err) never yields an incoherent
-// value.
+// Type is always meaningful. The payload fields are valid only for their
+// corresponding type code, and reading the wrong one panics. An unresolved value
+// — a placeholder whose type is known but whose value is not — carries NO
+// payload at all, which is the case the type-tag-separate-from-payload shape
+// exists to make possible.
+//
+// Because Type contains a slice, Value is NOT comparable: use Equal, not "==".
+//
+// Kind is vestigial and duplicates Type.Code for the five scalar kinds. It exists
+// only so that ops.go and eval.go keep compiling while they are migrated, and is
+// deleted once they are.
 type Value struct {
-	// Kind is the value's type. Always set.
+	// Type is the value's type. Always set.
+	Type Type
+
+	// Kind duplicates Type.Code during the migration. Do not read it in new code.
 	Kind Kind
 
-	// Payload. Exactly one is valid, selected by Kind; a null has none.
+	// Payload. At most one is valid, selected by Type.Code; null and unresolved
+	// values have none.
 	b bool
 	i int64
 	f float64
@@ -64,45 +75,84 @@ type Value struct {
 }
 
 // Null returns the null value.
-func Null() Value { return Value{Kind: KindNull} }
+func Null() Value { return Value{Type: TNull, Kind: KindNull} }
 
 // Bool returns a boolean value.
-func Bool(b bool) Value { return Value{Kind: KindBool, b: b} }
+func Bool(b bool) Value { return Value{Type: TBool, Kind: KindBool, b: b} }
 
 // Int returns a 64-bit signed integer value.
-func Int(i int64) Value { return Value{Kind: KindInt, i: i} }
+func Int(i int64) Value { return Value{Type: TInt, Kind: KindInt, i: i} }
 
 // Float returns a 64-bit IEEE floating-point value.
-func Float(f float64) Value { return Value{Kind: KindFloat, f: f} }
+func Float(f float64) Value { return Value{Type: TFloat, Kind: KindFloat, f: f} }
 
 // String returns a string value.
-func String(s string) Value { return Value{Kind: KindString, s: s} }
+func String(s string) Value { return Value{Type: TString, Kind: KindString, s: s} }
+
+// Unresolved returns a placeholder for a value that is not yet known but whose
+// type satisfies the given constraint.
+//
+// This is the mechanism the spec's static type checking is built on: an
+// expression is evaluated with placeholders in the symbol table, operations
+// propagate the type, and a type error surfaces without any value existing. It
+// is safe because the language is side-effect free.
+//
+// The type constructor with the -Of suffix, UnresolvedOf, builds the Type; this
+// builds the Value.
+func Unresolved(constraint Type) Value { return Value{Type: UnresolvedOf(constraint)} }
+
+// IsUnresolved reports whether v is a placeholder rather than a known value.
+func (v Value) IsUnresolved() bool { return v.Type.Code == CodeUnresolved }
 
 // IsNull reports whether v is the null value.
-func (v Value) IsNull() bool { return v.Kind == KindNull }
+func (v Value) IsNull() bool { return v.Type.Code == CodeNull }
 
 // AsBool returns the boolean payload. It panics if v is not a bool.
-func (v Value) AsBool() bool { v.mustBe(KindBool); return v.b }
+func (v Value) AsBool() bool { v.mustBe(CodeBool); return v.b }
 
 // AsInt returns the integer payload. It panics if v is not an int.
-func (v Value) AsInt() int64 { v.mustBe(KindInt); return v.i }
+func (v Value) AsInt() int64 { v.mustBe(CodeInt); return v.i }
 
 // AsFloat returns the floating-point payload. It panics if v is not a float.
-func (v Value) AsFloat() float64 { v.mustBe(KindFloat); return v.f }
+func (v Value) AsFloat() float64 { v.mustBe(CodeFloat); return v.f }
 
 // AsStr returns the string payload. It panics if v is not a string.
 //
 // Named AsStr rather than AsString because String is the fmt.Stringer
 // rendering; two methods one letter apart would be a standing trap.
-func (v Value) AsStr() string { v.mustBe(KindString); return v.s }
+func (v Value) AsStr() string { v.mustBe(CodeString); return v.s }
 
-// mustBe panics unless v has the given kind. Reading the wrong payload is a
-// bug in the operator dispatch table, not a runtime condition, and a silent
+// mustBe panics unless v's type has the given code. Reading the wrong payload is
+// a bug in the operator dispatch table, not a runtime condition, and a silent
 // zero would flow into a rendered command line unnoticed.
-func (v Value) mustBe(k Kind) {
-	if v.Kind != k {
-		panic(fmt.Sprintf("expr: read %s payload from a %s value", k, v.Kind))
+func (v Value) mustBe(c Code) {
+	if v.Type.Code != c {
+		panic(fmt.Sprintf("expr: read %s payload from a %s value", c, v.Type))
 	}
+}
+
+// Equal reports whether two values have the same type and the same payload.
+//
+// Value is not comparable with "==" because Type contains a slice, so this is the
+// only way to compare two values for identity. It is NOT the language's "=="
+// operator: section 1.2.5 makes that cross-type, so 5 == 5.0 is true there while
+// Int(5).Equal(Float(5)) is false here.
+func (v Value) Equal(o Value) bool {
+	if !v.Type.Equal(o.Type) {
+		return false
+	}
+	switch v.Type.Code {
+	case CodeBool:
+		return v.b == o.b
+	case CodeInt:
+		return v.i == o.i
+	case CodeFloat:
+		return v.f == o.f
+	case CodeString, CodePath, CodeRangeExpr:
+		return v.s == o.s
+	}
+	// Null and unresolved carry no payload, so equal types are equal values.
+	return true
 }
 
 // String renders the value as text.
@@ -117,19 +167,22 @@ func (v Value) mustBe(k Kind) {
 // when interpolating a value back into a template is sub-project E's to fix,
 // and section 1.3.4's float pass-through rule belongs to it.
 func (v Value) String() string {
-	switch v.Kind {
-	case KindNull:
+	switch v.Type.Code {
+	case CodeNull:
 		return "null"
-	case KindBool:
+	case CodeBool:
 		return strconv.FormatBool(v.b)
-	case KindInt:
+	case CodeInt:
 		return strconv.FormatInt(v.i, 10)
-	case KindFloat:
+	case CodeFloat:
 		return formatFloat(v.f)
-	case KindString:
+	case CodeString, CodePath, CodeRangeExpr:
 		return v.s
+	case CodeUnresolved:
+		// A placeholder has no value to render, so name what is known instead.
+		return "<" + v.Type.String() + ">"
 	}
-	return ""
+	return "<" + v.Type.String() + ">"
 }
 
 // formatFloat renders a float the way Python's repr does, which is the form

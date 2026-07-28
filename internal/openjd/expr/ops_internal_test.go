@@ -38,7 +38,7 @@ func TestApplyBinary_IntArithmetic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyBinary(%v, %d, %d): %v", tt.op, tt.l, tt.r, err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
 			}
 		})
@@ -79,11 +79,11 @@ func TestApplyBinary_IntErrors(t *testing.T) {
 
 func TestApplyUnary_Int(t *testing.T) {
 	got, err := applyUnary(OpNeg, Int(5))
-	if err != nil || got != Int(-5) {
+	if err != nil || !got.Equal(Int(-5)) {
 		t.Errorf("applyUnary(OpNeg, 5) = %v, %v; want -5, nil", got, err)
 	}
 	got, err = applyUnary(OpPos, Int(5))
-	if err != nil || got != Int(5) {
+	if err != nil || !got.Equal(Int(5)) {
 		t.Errorf("applyUnary(OpPos, 5) = %v, %v; want 5, nil", got, err)
 	}
 	if _, err := applyUnary(OpNeg, Int(math.MinInt64)); err == nil {
@@ -138,7 +138,7 @@ func TestFloatValue_Section134(t *testing.T) {
 			if err != nil {
 				t.Fatalf("floatValue(%v): %v", tt.in, err)
 			}
-			if got != tt.want || math.Signbit(got.AsFloat()) {
+			if !got.Equal(tt.want) || math.Signbit(got.AsFloat()) {
 				t.Errorf("floatValue(%v) = %v; want %v with no sign bit", tt.in, got, tt.want)
 			}
 		})
@@ -172,7 +172,7 @@ func TestApplyBinary_FloatArithmetic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyBinary(%v, %v, %v): %v", tt.op, tt.l, tt.r, err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
 			}
 		})
@@ -225,7 +225,7 @@ func TestApplyBinary_StringOperators(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v; want %v", got, tt.want)
 			}
 		})
@@ -260,7 +260,7 @@ func TestApplyUnary_FloatAndNot(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyUnary: %v", err)
 			}
-			if got != tt.want {
+			if !got.Equal(tt.want) {
 				t.Errorf("= %v; want %v", got, tt.want)
 			}
 		})
@@ -301,7 +301,7 @@ func TestApplyBinary_Ordering(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
-			if got != Bool(tt.want) {
+			if !got.Equal(Bool(tt.want)) {
 				t.Errorf("= %v; want %v", got, Bool(tt.want))
 			}
 		})
@@ -361,7 +361,7 @@ func TestValuesEqual_Section125(t *testing.T) {
 			if err != nil {
 				t.Fatalf("applyBinary(OpNe): %v", err)
 			}
-			if ne != Bool(!tt.want) {
+			if !ne.Equal(Bool(!tt.want)) {
 				t.Errorf("!= gave %v; want %v", ne, Bool(!tt.want))
 			}
 		})

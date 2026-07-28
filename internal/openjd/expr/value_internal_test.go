@@ -113,3 +113,107 @@ func TestKind_String(t *testing.T) {
 		})
 	}
 }
+
+func TestValue_CarriesItsType(t *testing.T) {
+	tests := []struct {
+		name string
+		v    Value
+		want string
+	}{
+		{"null", Null(), "nulltype"},
+		{"bool", Bool(true), "bool"},
+		{"int", Int(7), "int"},
+		{"float", Float(1.5), "float"},
+		{"string", String("x"), "string"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.v.Type.String(); got != tt.want {
+				t.Errorf("Type = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValue_Equal(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b Value
+		want bool
+	}{
+		{"same int", Int(1), Int(1), true},
+		{"different int", Int(1), Int(2), false},
+		{"int against float of the same magnitude is not Equal", Int(1), Float(1), false},
+		{"same string", String("a"), String("a"), true},
+		{"different string", String("a"), String("b"), false},
+		{"same bool", Bool(true), Bool(true), true},
+		{"different bool", Bool(true), Bool(false), false},
+		{"null equals null", Null(), Null(), true},
+		{"null against int", Null(), Int(0), false},
+		{"same unresolved constraint", Unresolved(TInt), Unresolved(TInt), true},
+		{"different unresolved constraint", Unresolved(TInt), Unresolved(TString), false},
+		{"unresolved against a concrete value of that type", Unresolved(TInt), Int(1), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.a.Equal(tt.b); got != tt.want {
+				t.Errorf("%s.Equal(%s) = %v; want %v", tt.a.Type, tt.b.Type, got, tt.want)
+			}
+			if got := tt.b.Equal(tt.a); got != tt.want {
+				t.Errorf("Equal is not symmetric for %s and %s", tt.a.Type, tt.b.Type)
+			}
+		})
+	}
+}
+
+func TestUnresolved(t *testing.T) {
+	tests := []struct {
+		name       string
+		constraint Type
+		wantType   string
+	}{
+		{"int", TInt, "unresolved[int]"},
+		{"any", TAny, "unresolved"},
+		{"list", ListOf(TPath), "unresolved[list[path]]"},
+		{"union", UnionOf(TInt, TString), "unresolved[int | string]"},
+		{"already unresolved flattens", UnresolvedOf(TInt), "unresolved[int]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := Unresolved(tt.constraint)
+			if got := v.Type.String(); got != tt.wantType {
+				t.Errorf("Type = %q; want %q", got, tt.wantType)
+			}
+			if !v.IsUnresolved() {
+				t.Error("IsUnresolved() = false; want true")
+			}
+		})
+	}
+}
+
+func TestUnresolved_CarriesNoPayload(t *testing.T) {
+	// A placeholder has a type but no value. This is what sub-project A's
+	// separation of the type tag from the payload was built to allow, and it is
+	// what lets B1 type-check a list-typed parameter with no list machinery.
+	v := Unresolved(TInt)
+	if !v.Equal(Unresolved(TInt)) {
+		t.Error("two placeholders with the same constraint are not Equal")
+	}
+	// Reading a payload off a placeholder is a dispatch bug, and must be loud.
+	defer func() {
+		if recover() == nil {
+			t.Error("AsInt() on a placeholder did not panic")
+		}
+	}()
+	_ = v.AsInt()
+}
+
+func TestValue_ConcreteValuesAreNotUnresolved(t *testing.T) {
+	for _, v := range []Value{Null(), Bool(false), Int(0), Float(0), String("")} {
+		t.Run(v.Type.String(), func(t *testing.T) {
+			if v.IsUnresolved() {
+				t.Error("IsUnresolved() = true; want false")
+			}
+		})
+	}
+}
