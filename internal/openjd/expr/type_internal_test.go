@@ -391,6 +391,11 @@ func TestParseType_Rejected(t *testing.T) {
 		{"three levels of list", "list[list[list[int]]]", "nested"},
 		{"optional element", "list[int?]", "optional"},
 		{"optional element written as a union", "list[int | nulltype]", "optional"},
+		// Regression: ListOf hoists an outer "unresolved" wrapper on the element
+		// outward, so checkListElem must see through it — an element written as
+		// unresolved[...] must not smuggle a forbidden shape past either check.
+		{"optional element hidden behind unresolved", "list[unresolved[int]?]", "optional"},
+		{"three levels of list hidden behind unresolved", "list[unresolved[list[list[int]]]]", "nested"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -422,5 +427,46 @@ func TestType_String_DefensivePaths(t *testing.T) {
 	}
 	if got := (Type{Code: Code(9999)}).String(); got != "unknown type" {
 		t.Errorf("unknown code = %q; want %q", got, "unknown type")
+	}
+}
+
+// TestParseType_AcceptedFormsReparse exists because a validation bypass once
+// let ParseType accept input whose own canonical rendering it then rejected:
+// checkListElem ran before ListOf hoisted an outer "unresolved" wrapper on a
+// list's element outward, so an element written as unresolved[...] could hide
+// an optional or a third level of list nesting from both checks. Rather than
+// pinning just the two instances that surfaced that bug, this asserts the
+// general property every accepted form must have: if ParseType accepts a
+// string, ParseType must also accept that Type's own rendering, and get back
+// an equal Type.
+func TestParseType_AcceptedFormsReparse(t *testing.T) {
+	srcs := []string{
+		"int", "nulltype", "any", "noreturn", "path", "range_expr", "T", "T1",
+		"list[int]", "list[list[string]]", "list[nulltype]",
+		"int?", "list[path]?", "int | string", "int | string | nulltype",
+		"unresolved", "unresolved[int]", "unresolved[list[float]]", "unresolved[int | string]",
+		"list[unresolved[int]?]", "list[unresolved[list[list[int]]]]",
+	}
+	for _, src := range srcs {
+		t.Run(src, func(t *testing.T) {
+			typ, err := ParseType(src)
+			if err != nil {
+				// Not every string in this list is expected to be accepted by
+				// ParseType directly (the two regression srcs above are
+				// rejected, as TestParseType_Rejected asserts) — but every
+				// string that IS accepted must satisfy the reparse property
+				// below, so skip here and let TestParseType_Rejected own the
+				// rejection assertion.
+				return
+			}
+			rendered := typ.String()
+			again, err := ParseType(rendered)
+			if err != nil {
+				t.Fatalf("ParseType(%q) succeeded, but re-parsing its own rendering %q failed: %v", src, rendered, err)
+			}
+			if !again.Equal(typ) {
+				t.Errorf("ParseType(%q) succeeded, but re-parsing its own rendering %q produced a different type", src, rendered)
+			}
+		})
 	}
 }

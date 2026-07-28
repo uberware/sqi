@@ -436,11 +436,23 @@ func isTypeNameByte(c byte) bool {
 // type: it may be a list but not nested a third time, and it may not be
 // optional. Note that list[nulltype] is valid — it is the empty-list type — so
 // only a UNION containing nulltype is rejected, not bare nulltype.
+//
+// ListOf hoists an outer "unresolved" wrapper on the element outward, so an
+// element written as unresolved[...] does not end up nested inside the list
+// the way it appears here — it ends up wrapping the whole list. Checking
+// against the pre-hoist shape would let an element like "unresolved[int?]" or
+// "unresolved[list[list[int]]]" smuggle a forbidden shape past both checks, so
+// unwrap the wrapper first and validate what ListOf will actually place inside
+// the list.
 func checkListElem(elem Type) error {
-	if elem.Code == CodeList && len(elem.Params) == 1 && elem.Params[0].Code == CodeList {
+	checked := elem
+	if checked.Code == CodeUnresolved && len(checked.Params) == 1 {
+		checked = checked.Params[0]
+	}
+	if checked.Code == CodeList && len(checked.Params) == 1 && checked.Params[0].Code == CodeList {
 		return fmt.Errorf("a list element type may not be nested a third time: list[%s]", elem)
 	}
-	if elem.Code == CodeUnion && containsType(elem.Params, TNull) {
+	if checked.Code == CodeUnion && containsType(checked.Params, TNull) {
 		return fmt.Errorf("a list element type may not be optional: list[%s]", elem)
 	}
 	return nil
