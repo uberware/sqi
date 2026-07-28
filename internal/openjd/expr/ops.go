@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 var (
@@ -15,6 +16,7 @@ var (
 	errZeroNegPower = errors.New("zero cannot be raised to a negative power")
 	errInfinite     = errors.New("the result is infinite")
 	errNotANumber   = errors.New("the result is not a number")
+	errNegFracPower = errors.New("a negative number cannot be raised to a fractional power")
 )
 
 // opKey selects one binary operator implementation.
@@ -49,6 +51,18 @@ var binaryOps = map[opKey]binaryFunc{
 	{OpMod, KindInt, KindInt}:      intBinary(modInt),
 	{OpDiv, KindInt, KindInt}:      divInts,
 	{OpPow, KindInt, KindInt}:      powInts,
+
+	{OpAdd, KindFloat, KindFloat}:      floatBinary(func(a, b float64) float64 { return a + b }),
+	{OpSub, KindFloat, KindFloat}:      floatBinary(func(a, b float64) float64 { return a - b }),
+	{OpMul, KindFloat, KindFloat}:      floatBinary(func(a, b float64) float64 { return a * b }),
+	{OpDiv, KindFloat, KindFloat}:      divFloats,
+	{OpFloorDiv, KindFloat, KindFloat}: floorDivFloats,
+	{OpMod, KindFloat, KindFloat}:      modFloats,
+	{OpPow, KindFloat, KindFloat}:      powFloats,
+
+	{OpAdd, KindString, KindString}:   concatStrings,
+	{OpIn, KindString, KindString}:    containsString,
+	{OpNotIn, KindString, KindString}: notContainsString,
 }
 
 // unaryKey selects one prefix operator implementation.
@@ -62,6 +76,10 @@ type unaryFunc func(v Value) (Value, error)
 var unaryOps = map[unaryKey]unaryFunc{
 	{OpNeg, KindInt}: negInt,
 	{OpPos, KindInt}: identity,
+
+	{OpNeg, KindFloat}: negFloat,
+	{OpPos, KindFloat}: identity,
+	{OpNot, KindBool}:  notBool,
 }
 
 // applyBinary dispatches a binary operator, or reports that no signature
@@ -240,3 +258,80 @@ func powIntPositive(base, exp int64) (int64, error) {
 	}
 	return result, nil
 }
+
+// floatBinary adapts a total float64 operation to the table's signature. The
+// result passes through floatValue, so section 1.3.4's no-infinity, no-NaN
+// and no-negative-zero rules apply to every float-producing operator.
+func floatBinary(f func(a, b float64) float64) binaryFunc {
+	return func(l, r Value) (Value, error) {
+		return floatValue(f(l.AsFloat(), r.AsFloat()))
+	}
+}
+
+func divFloats(l, r Value) (Value, error) {
+	b := r.AsFloat()
+	if b == 0 {
+		return Value{}, errDivideByZero
+	}
+	return floatValue(l.AsFloat() / b)
+}
+
+// floorDivFloats implements __floordiv__(float, float) -> int. The int return
+// is what the spec's signature table specifies; it is not a slip.
+func floorDivFloats(l, r Value) (Value, error) {
+	b := r.AsFloat()
+	if b == 0 {
+		return Value{}, errDivideByZero
+	}
+	q := math.Floor(l.AsFloat() / b)
+	// float64(math.MaxInt64) is exactly 2^63, one past the last representable
+	// int64, so the upper bound is a >= test rather than a > test.
+	if math.IsNaN(q) || q < math.MinInt64 || q >= float64(math.MaxInt64) {
+		return Value{}, errIntOverflow
+	}
+	return Int(int64(q)), nil
+}
+
+// modFloats implements "%" on floats with floored semantics, so the result
+// takes the divisor's sign: -7.0 % 3.0 is 2.0. math.Mod truncates.
+func modFloats(l, r Value) (Value, error) {
+	b := r.AsFloat()
+	if b == 0 {
+		return Value{}, errModuloByZero
+	}
+	rem := math.Mod(l.AsFloat(), b)
+	if rem != 0 && (rem < 0) != (b < 0) {
+		rem += b
+	}
+	return floatValue(rem)
+}
+
+func powFloats(l, r Value) (Value, error) {
+	base, exp := l.AsFloat(), r.AsFloat()
+	if base == 0 && exp < 0 {
+		return Value{}, errZeroNegPower
+	}
+	if base < 0 && exp != math.Trunc(exp) {
+		return Value{}, errNegFracPower
+	}
+	return floatValue(math.Pow(base, exp))
+}
+
+func concatStrings(l, r Value) (Value, error) {
+	return String(l.AsStr() + r.AsStr()), nil
+}
+
+// containsString implements __contains__(a, b) for "b in a". The expression's
+// LEFT operand is the needle and the right is the haystack, which is the
+// reverse of the signature's parameter order.
+func containsString(l, r Value) (Value, error) {
+	return Bool(strings.Contains(r.AsStr(), l.AsStr())), nil
+}
+
+func notContainsString(l, r Value) (Value, error) {
+	return Bool(!strings.Contains(r.AsStr(), l.AsStr())), nil
+}
+
+func negFloat(v Value) (Value, error) { return floatValue(-v.AsFloat()) }
+
+func notBool(v Value) (Value, error) { return Bool(!v.AsBool()), nil }

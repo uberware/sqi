@@ -30,6 +30,7 @@ func TestApplyBinary_IntArithmetic(t *testing.T) {
 		{"power of zero", OpPow, 5, 0, Int(1)},
 		{"negative exponent yields a float", OpPow, 2, -3, Float(0.125)},
 		{"one to a huge power terminates", OpPow, 1, math.MaxInt64, Int(1)},
+		{"modulo by negative one at the int64 minimum", OpMod, math.MinInt64, -1, Int(0)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,5 +142,135 @@ func TestFloatValue_Section134(t *testing.T) {
 				t.Errorf("floatValue(%v) = %v; want %v with no sign bit", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplyBinary_FloatArithmetic(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		l, r float64
+		want Value
+	}{
+		{"add", OpAdd, 1.5, 2.25, Float(3.75)},
+		{"subtract", OpSub, 1.5, 2.25, Float(-0.75)},
+		{"multiply", OpMul, 1.5, 2.0, Float(3)},
+		{"divide", OpDiv, 7.5, 2.5, Float(3)},
+		{"floor divide yields an int", OpFloorDiv, 7.5, 2.5, Int(3)},
+		{"floor divide rounds toward negative infinity", OpFloorDiv, -7.0, 3.0, Int(-3)},
+		{"modulo takes the divisor's sign", OpMod, -7.0, 3.0, Float(2)},
+		{"power", OpPow, 2.0, 3.0, Float(8)},
+		{"fractional power of a positive base", OpPow, 4.0, 0.5, Float(2)},
+		// The expected value is a literal, not Float(0.1 + 0.2): Go folds that
+		// constant expression exactly at compile time and would give 0.3,
+		// whereas the runtime float64 addition under test gives this.
+		{"floating point is not exact", OpAdd, 0.1, 0.2, Float(0.30000000000000004)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyBinary(tt.op, Float(tt.l), Float(tt.r))
+			if err != nil {
+				t.Fatalf("applyBinary(%v, %v, %v): %v", tt.op, tt.l, tt.r, err)
+			}
+			if got != tt.want {
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+			}
+		})
+	}
+}
+
+func TestApplyBinary_FloatErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		op      Op
+		l, r    float64
+		wantMsg string
+	}{
+		{"divide by zero", OpDiv, 1, 0, "division by zero"},
+		{"floor divide by zero", OpFloorDiv, 1, 0, "division by zero"},
+		{"modulo by zero", OpMod, 1, 0, "modulo by zero"},
+		{"zero to a negative power", OpPow, 0, -1, "negative power"},
+		{"negative base to a fractional power", OpPow, -2, 0.5, "fractional power"},
+		{"overflow to infinity", OpMul, 1e300, 1e300, "infinite"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := applyBinary(tt.op, Float(tt.l), Float(tt.r)); err == nil {
+				t.Fatalf("applyBinary(%v, %v, %v) = nil error; want %q", tt.op, tt.l, tt.r, tt.wantMsg)
+			} else if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestApplyBinary_StringOperators(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		l, r string
+		want Value
+	}{
+		{"concatenate", OpAdd, "a", "b", String("ab")},
+		{"contains", OpIn, "ell", "hello", Bool(true)},
+		{"does not contain", OpIn, "xyz", "hello", Bool(false)},
+		{"not contains", OpNotIn, "xyz", "hello", Bool(true)},
+		{"not contains when present", OpNotIn, "ell", "hello", Bool(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyBinary(tt.op, String(tt.l), String(tt.r))
+			if err != nil {
+				t.Fatalf("applyBinary: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("= %v; want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyBinary_StringRepetitionIsDeferred(t *testing.T) {
+	// Deliberately absent until sub-project E supplies the operation limit
+	// that makes an unbounded repeat count safe. If this ever starts passing,
+	// confirm the limit landed with it.
+	if _, err := applyBinary(OpMul, String("x"), Int(3)); err == nil {
+		t.Error("'x' * 3 succeeded; string repetition is deferred to sub-project E")
+	}
+}
+
+func TestApplyUnary_FloatAndNot(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		in   Value
+		want Value
+	}{
+		{"negate a float", OpNeg, Float(1.5), Float(-1.5)},
+		{"negating zero does not produce negative zero", OpNeg, Float(0), Float(0)},
+		{"unary plus on a float", OpPos, Float(1.5), Float(1.5)},
+		{"not true", OpNot, Bool(true), Bool(false)},
+		{"not false", OpNot, Bool(false), Bool(true)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyUnary(tt.op, tt.in)
+			if err != nil {
+				t.Fatalf("applyUnary: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("= %v; want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyUnary_NotRequiresBool(t *testing.T) {
+	// Section 2.1.6: "not" remains strictly boolean even though "and"/"or"
+	// accept any operand.
+	for _, v := range []Value{Int(1), String(""), Null(), Float(0)} {
+		if _, err := applyUnary(OpNot, v); err == nil {
+			t.Errorf("not %v succeeded; want unsupported operand type", v.Kind)
+		}
 	}
 }
