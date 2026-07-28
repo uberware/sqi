@@ -25,61 +25,61 @@ func TestLanguage(t *testing.T) {
 	tests := []struct {
 		name     string
 		src      string
-		wantKind expr.Kind
+		wantCode expr.Code
 		want     string
 		wantErr  string
 	}{
 		// Literals — section 1.1.1, 1.1.4, 1.1.6.
-		{name: "decimal integer", src: "42", wantKind: expr.KindInt, want: "42"},
-		{name: "hex with underscores", src: "0xFF_FF", wantKind: expr.KindInt, want: "65535"},
-		{name: "octal", src: "0o52", wantKind: expr.KindInt, want: "42"},
-		{name: "binary with underscores", src: "0b1010_1010", wantKind: expr.KindInt, want: "170"},
-		{name: "underscore separators", src: "1_000_000", wantKind: expr.KindInt, want: "1000000"},
-		{name: "float", src: "3.14", wantKind: expr.KindFloat, want: "3.14"},
-		{name: "scientific notation", src: "1.5e-3", wantKind: expr.KindFloat, want: "0.0015"},
-		{name: "integer exponent yields a float", src: "1e10", wantKind: expr.KindFloat, want: "10000000000.0"},
-		{name: "single quoted string", src: `'hi'`, wantKind: expr.KindString, want: "hi"},
-		{name: "triple quoted string", src: `"""a b"""`, wantKind: expr.KindString, want: "a b"},
-		{name: "raw string keeps backslashes", src: `r'C:\out'`, wantKind: expr.KindString, want: `C:\out`},
-		{name: "escapes are expanded", src: `'a\tb'`, wantKind: expr.KindString, want: "a\tb"},
-		{name: "unicode name escape", src: `'\N{BULLET}'`, wantKind: expr.KindString, want: "•"},
-		{name: "python bool", src: "True", wantKind: expr.KindBool, want: "true"},
-		{name: "json bool alias", src: "false", wantKind: expr.KindBool, want: "false"},
-		{name: "python none", src: "None", wantKind: expr.KindNull, want: "null"},
-		{name: "json null alias", src: "null", wantKind: expr.KindNull, want: "null"},
+		{name: "decimal integer", src: "42", wantCode: expr.CodeInt, want: "42"},
+		{name: "hex with underscores", src: "0xFF_FF", wantCode: expr.CodeInt, want: "65535"},
+		{name: "octal", src: "0o52", wantCode: expr.CodeInt, want: "42"},
+		{name: "binary with underscores", src: "0b1010_1010", wantCode: expr.CodeInt, want: "170"},
+		{name: "underscore separators", src: "1_000_000", wantCode: expr.CodeInt, want: "1000000"},
+		{name: "float", src: "3.14", wantCode: expr.CodeFloat, want: "3.14"},
+		{name: "scientific notation", src: "1.5e-3", wantCode: expr.CodeFloat, want: "0.0015"},
+		{name: "integer exponent yields a float", src: "1e10", wantCode: expr.CodeFloat, want: "10000000000.0"},
+		{name: "single quoted string", src: `'hi'`, wantCode: expr.CodeString, want: "hi"},
+		{name: "triple quoted string", src: `"""a b"""`, wantCode: expr.CodeString, want: "a b"},
+		{name: "raw string keeps backslashes", src: `r'C:\out'`, wantCode: expr.CodeString, want: `C:\out`},
+		{name: "escapes are expanded", src: `'a\tb'`, wantCode: expr.CodeString, want: "a\tb"},
+		{name: "unicode name escape", src: `'\N{BULLET}'`, wantCode: expr.CodeString, want: "•"},
+		{name: "python bool", src: "True", wantCode: expr.CodeBool, want: "true"},
+		{name: "json bool alias", src: "false", wantCode: expr.CodeBool, want: "false"},
+		{name: "python none", src: "None", wantCode: expr.CodeNull, want: "null"},
+		{name: "json null alias", src: "null", wantCode: expr.CodeNull, want: "null"},
 		{name: "leading zeros are a syntax error", src: "007", wantErr: "leading zeros"},
 
 		// Names — section 1.1.3.
-		{name: "dotted name", src: "Task.Param.Frame", wantKind: expr.KindInt, want: "7"},
-		{name: "keyword as an attribute", src: "Param.if", wantKind: expr.KindString, want: "kw"},
+		{name: "dotted name", src: "Task.Param.Frame", wantCode: expr.CodeInt, want: "7"},
+		{name: "keyword as an attribute", src: "Param.if", wantCode: expr.CodeString, want: "kw"},
 		{name: "unknown name", src: "Param.Nope", wantErr: `unknown symbol "Param.Nope"`},
 
 		// Operators — section 2.1.
-		{name: "precedence", src: "1 + 2 * 3", wantKind: expr.KindInt, want: "7"},
-		{name: "parentheses", src: "(1 + 2) * 3", wantKind: expr.KindInt, want: "9"},
-		{name: "division always yields a float", src: "10 / 5", wantKind: expr.KindFloat, want: "2.0"},
-		{name: "floored floor division", src: "-7 // 3", wantKind: expr.KindInt, want: "-3"},
-		{name: "floored modulo", src: "-7 % 3", wantKind: expr.KindInt, want: "2"},
-		{name: "power is right associative", src: "2 ** 3 ** 2", wantKind: expr.KindInt, want: "512"},
-		{name: "negative exponent yields a float", src: "2 ** -3", wantKind: expr.KindFloat, want: "0.125"},
-		{name: "float floor division yields an int", src: "7.5 // 2.5", wantKind: expr.KindInt, want: "3"},
-		{name: "string concatenation", src: `'a' + 'b'`, wantKind: expr.KindString, want: "ab"},
+		{name: "precedence", src: "1 + 2 * 3", wantCode: expr.CodeInt, want: "7"},
+		{name: "parentheses", src: "(1 + 2) * 3", wantCode: expr.CodeInt, want: "9"},
+		{name: "division always yields a float", src: "10 / 5", wantCode: expr.CodeFloat, want: "2.0"},
+		{name: "floored floor division", src: "-7 // 3", wantCode: expr.CodeInt, want: "-3"},
+		{name: "floored modulo", src: "-7 % 3", wantCode: expr.CodeInt, want: "2"},
+		{name: "power is right associative", src: "2 ** 3 ** 2", wantCode: expr.CodeInt, want: "512"},
+		{name: "negative exponent yields a float", src: "2 ** -3", wantCode: expr.CodeFloat, want: "0.125"},
+		{name: "float floor division yields an int", src: "7.5 // 2.5", wantCode: expr.CodeInt, want: "3"},
+		{name: "string concatenation", src: `'a' + 'b'`, wantCode: expr.CodeString, want: "ab"},
 		// Section 2.1.1/2.1.4: mixing int and float promotes the int and uses
 		// the float overload — B1's coercing shape match, not A's same-type-
 		// only dispatch. See the SUB-PROJECT B comment below for what is still
 		// deliberately out of scope.
-		{name: "int plus float promotes to float", src: "1 + 2.5", wantKind: expr.KindFloat, want: "3.5"},
-		{name: "int compared to float promotes to float", src: "1 < 2.5", wantKind: expr.KindBool, want: "true"},
-		{name: "substring test", src: `'ell' in 'hello'`, wantKind: expr.KindBool, want: "true"},
-		{name: "chained comparison", src: "1 < 2 < 3", wantKind: expr.KindBool, want: "true"},
-		{name: "chained comparison that fails in the middle", src: "1 < 3 < 2", wantKind: expr.KindBool, want: "false"},
-		{name: "int equals an exactly equal float", src: "5 == 5.0", wantKind: expr.KindBool, want: "true"},
-		{name: "a string never equals a number", src: `'5' == 5`, wantKind: expr.KindBool, want: "false"},
-		{name: "a bool never equals a number", src: "true == 1", wantKind: expr.KindBool, want: "false"},
-		{name: "conditional", src: `'hi' if Param.Flag else 'lo'`, wantKind: expr.KindString, want: "hi"},
-		{name: "or is null-coalescing", src: `Param.Nothing or 'fallback'`, wantKind: expr.KindString, want: "fallback"},
-		{name: "zero is truthy", src: "0 or 'fallback'", wantKind: expr.KindInt, want: "0"},
-		{name: "not", src: "not Param.Flag", wantKind: expr.KindBool, want: "false"},
+		{name: "int plus float promotes to float", src: "1 + 2.5", wantCode: expr.CodeFloat, want: "3.5"},
+		{name: "int compared to float promotes to float", src: "1 < 2.5", wantCode: expr.CodeBool, want: "true"},
+		{name: "substring test", src: `'ell' in 'hello'`, wantCode: expr.CodeBool, want: "true"},
+		{name: "chained comparison", src: "1 < 2 < 3", wantCode: expr.CodeBool, want: "true"},
+		{name: "chained comparison that fails in the middle", src: "1 < 3 < 2", wantCode: expr.CodeBool, want: "false"},
+		{name: "int equals an exactly equal float", src: "5 == 5.0", wantCode: expr.CodeBool, want: "true"},
+		{name: "a string never equals a number", src: `'5' == 5`, wantCode: expr.CodeBool, want: "false"},
+		{name: "a bool never equals a number", src: "true == 1", wantCode: expr.CodeBool, want: "false"},
+		{name: "conditional", src: `'hi' if Param.Flag else 'lo'`, wantCode: expr.CodeString, want: "hi"},
+		{name: "or is null-coalescing", src: `Param.Nothing or 'fallback'`, wantCode: expr.CodeString, want: "fallback"},
+		{name: "zero is truthy", src: "0 or 'fallback'", wantCode: expr.CodeInt, want: "0"},
+		{name: "not", src: "not Param.Flag", wantCode: expr.CodeBool, want: "false"},
 
 		// Errors — section 1.3.11.
 		{name: "division by zero", src: "1 / 0", wantErr: "division by zero"},
@@ -114,8 +114,8 @@ func TestLanguage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Eval(%q): %v", tt.src, err)
 			}
-			if got.Kind != tt.wantKind {
-				t.Errorf("Kind = %s; want %s", got.Kind, tt.wantKind)
+			if got.Type.Code != tt.wantCode {
+				t.Errorf("Type = %s; want code %s", got.Type, tt.wantCode)
 			}
 			if got.String() != tt.want {
 				t.Errorf("= %q; want %q", got.String(), tt.want)

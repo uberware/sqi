@@ -8,18 +8,18 @@ func TestValue_Constructors(t *testing.T) {
 	tests := []struct {
 		name string
 		v    Value
-		kind Kind
+		code Code
 	}{
-		{"null", Null(), KindNull},
-		{"bool", Bool(true), KindBool},
-		{"int", Int(42), KindInt},
-		{"float", Float(3.5), KindFloat},
-		{"string", String("hi"), KindString},
+		{"null", Null(), CodeNull},
+		{"bool", Bool(true), CodeBool},
+		{"int", Int(42), CodeInt},
+		{"float", Float(3.5), CodeFloat},
+		{"string", String("hi"), CodeString},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.v.Kind != tt.kind {
-				t.Errorf("Kind = %v; want %v", tt.v.Kind, tt.kind)
+			if tt.v.Type.Code != tt.code {
+				t.Errorf("Type = %v; want code %v", tt.v.Type, tt.code)
 			}
 		})
 	}
@@ -29,8 +29,8 @@ func TestValue_ZeroValueIsNull(t *testing.T) {
 	// The zero Value must be a usable null, so a function returning
 	// (Value{}, err) never hands back an incoherent value.
 	var v Value
-	if v.Kind != KindNull {
-		t.Errorf("zero Value Kind = %v; want KindNull", v.Kind)
+	if v.Type.Code != CodeNull {
+		t.Errorf("zero Value Type = %v; want CodeNull", v.Type)
 	}
 	if !v.IsNull() {
 		t.Error("zero Value IsNull() = false; want true")
@@ -88,26 +88,6 @@ func TestValue_String(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.v.String(); got != tt.want {
-				t.Errorf("String() = %q; want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestKind_String(t *testing.T) {
-	tests := []struct {
-		k    Kind
-		want string
-	}{
-		{KindNull, "null"},
-		{KindBool, "bool"},
-		{KindInt, "int"},
-		{KindFloat, "float"},
-		{KindString, "string"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.k.String(); got != tt.want {
 				t.Errorf("String() = %q; want %q", got, tt.want)
 			}
 		})

@@ -138,7 +138,9 @@ func evalBinary(n *Binary, src string, syms Symbols) (Value, error) {
 // means "1 < 2 and 2 < 3" with each intermediate value evaluated EXACTLY ONCE,
 // so the loop carries the previous operand's value forward rather than
 // re-evaluating its node. A false link stops the chain, leaving the remaining
-// operands unevaluated.
+// operands unevaluated. An unknown link stops it the same way; the spec states
+// this rule only for a conditional expression, but a comparison chain
+// short-circuits for the same reason and so needs the same treatment.
 func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 	left, err := evalNode(n.Operands[0], src, syms)
 	if err != nil {

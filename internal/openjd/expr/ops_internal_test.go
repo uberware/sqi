@@ -39,7 +39,7 @@ func TestApplyBinary_IntArithmetic(t *testing.T) {
 				t.Fatalf("applyBinary(%v, %d, %d): %v", tt.op, tt.l, tt.r, err)
 			}
 			if !got.Equal(tt.want) {
-				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Type, tt.want, tt.want.Type)
 			}
 		})
 	}
@@ -175,7 +175,7 @@ func TestApplyBinary_FloatArithmetic(t *testing.T) {
 				t.Fatalf("applyBinary(%v, %v, %v): %v", tt.op, tt.l, tt.r, err)
 			}
 			if !got.Equal(tt.want) {
-				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Type, tt.want, tt.want.Type)
 			}
 		})
 	}
@@ -274,7 +274,7 @@ func TestApplyUnary_NotRequiresBool(t *testing.T) {
 	// accept any operand.
 	for _, v := range []Value{Int(1), String(""), Null(), Float(0)} {
 		if _, err := applyUnary(OpNot, v); err == nil {
-			t.Errorf("not %v succeeded; want unsupported operand type", v.Kind)
+			t.Errorf("not %v succeeded; want unsupported operand type", v.Type)
 		}
 	}
 }
@@ -322,7 +322,7 @@ func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
 	}
 	for _, tt := range promoted {
 		if _, err := applyBinary(OpLt, tt.l, tt.r); err != nil {
-			t.Errorf("%s < %s: %v; want the int/float cross-pair to be permitted", tt.l.Kind, tt.r.Kind, err)
+			t.Errorf("%s < %s: %v; want the int/float cross-pair to be permitted", tt.l.Type, tt.r.Type, err)
 		}
 	}
 
@@ -333,7 +333,7 @@ func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
 	}
 	for _, tt := range rejected {
 		if _, err := applyBinary(OpLt, tt.l, tt.r); err == nil {
-			t.Errorf("%s < %s succeeded; want unsupported operand types", tt.l.Kind, tt.r.Kind)
+			t.Errorf("%s < %s succeeded; want unsupported operand types", tt.l.Type, tt.r.Type)
 		}
 	}
 }
@@ -385,59 +385,59 @@ func TestValuesEqual_Section125(t *testing.T) {
 func TestApplyBinary_EqualityIsNeverUnsupported(t *testing.T) {
 	// Unlike ordering, == and != are defined for every pair of types, so they
 	// must never report "unsupported operand types". The pairwise check is
-	// driven off sampleValues below, which is itself keyed from kindNames —
-	// the package's real kind table in value.go — so a future Kind added
-	// there cannot silently drop out of this loop.
+	// driven off sampleValues below, which enumerates the package's scalar
+	// Codes directly, so a future scalar Code added there cannot silently
+	// drop out of this loop.
 	all := sampleValues(t)
 	for _, l := range all {
 		for _, r := range all {
 			if _, err := applyBinary(OpEq, l, r); err != nil {
-				t.Errorf("%s == %s returned %v; equality is total", l.Kind, r.Kind, err)
+				t.Errorf("%s == %s returned %v; equality is total", l.Type, r.Type, err)
 			}
 		}
 	}
 }
 
-// TestApplyBinary_EqualitySelfEquality asserts that a value of every kind
-// equals itself. A missing row in numericOrStringEqual (or valuesEqual) falls
-// through to "return false" instead of an "unsupported operand types" error,
-// so a future Kind added without extending that logic would otherwise
-// compare unequal to itself with no loud signal. Driving the loop from
-// sampleValues, rather than a hardcoded list, means that case fails this test
-// instead.
+// TestApplyBinary_EqualitySelfEquality asserts that a value of every scalar
+// Code equals itself. A missing row in numericOrStringEqual (or valuesEqual)
+// falls through to "return false" instead of an "unsupported operand types"
+// error, so a future scalar Code added without extending that logic would
+// otherwise compare unequal to itself with no loud signal. Driving the loop
+// from sampleValues, rather than a hardcoded list, means that case fails this
+// test instead.
 func TestApplyBinary_EqualitySelfEquality(t *testing.T) {
 	for _, v := range sampleValues(t) {
 		out, err := applyBinary(OpEq, v, v)
 		if err != nil {
-			t.Errorf("%s == %s returned error %v; equality is total", v.Kind, v.Kind, err)
+			t.Errorf("%s == %s returned error %v; equality is total", v.Type, v.Type, err)
 			continue
 		}
 		if !out.AsBool() {
-			t.Errorf("a %s value did not equal itself", v.Kind)
+			t.Errorf("a %s value did not equal itself", v.Type)
 		}
 	}
 }
 
-// sampleValues returns one representative Value per Kind in kindNames, the
-// package's real kind table (value.go), so tests driven from it cannot drift
-// from the actual kind set as sub-projects B and C add kinds.
+// sampleValues returns one representative Value per scalar Code, so tests
+// driven from it exercise every scalar type Value can carry.
 func sampleValues(t *testing.T) []Value {
 	t.Helper()
-	samples := map[Kind]Value{
-		KindNull:   Null(),
-		KindBool:   Bool(true),
-		KindInt:    Int(1),
-		KindFloat:  Float(1.5),
-		KindString: String("x"),
+	scalarCodes := []Code{CodeNull, CodeBool, CodeInt, CodeFloat, CodeString}
+	samples := map[Code]Value{
+		CodeNull:   Null(),
+		CodeBool:   Bool(true),
+		CodeInt:    Int(1),
+		CodeFloat:  Float(1.5),
+		CodeString: String("x"),
 	}
-	values := make([]Value, 0, len(kindNames))
-	for k := range kindNames {
-		v, ok := samples[k]
+	values := make([]Value, 0, len(scalarCodes))
+	for _, c := range scalarCodes {
+		v, ok := samples[c]
 		if !ok {
-			// A new Kind was added to kindNames without a paired sample here.
-			// Fail loudly rather than silently leaving it out of the
+			// A new scalar Code was added to scalarCodes without a paired sample
+			// here. Fail loudly rather than silently leaving it out of the
 			// self-equality check this test exists to provide.
-			t.Fatalf("no sample Value registered for Kind %s (%d); add one to samples in sampleValues", k, k)
+			t.Fatalf("no sample Value registered for Code %s (%d); add one to samples in sampleValues", c, c)
 		}
 		values = append(values, v)
 	}

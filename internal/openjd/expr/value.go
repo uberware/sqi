@@ -9,43 +9,6 @@ import (
 	"strings"
 )
 
-// Kind is the type tag of a Value.
-//
-// Sub-project A implements the five scalar kinds below. Sub-project B adds
-// KindPath, KindRangeExpr and KindList; because Kind is a field in its own
-// right rather than something inferred from which payload is populated, B can
-// also add the spec's unresolved[T] without reshaping Value or anything built
-// on it. unresolved[T] carries a type parameter — and can itself be a union
-// of types, as when an if/else whose condition is unresolved yields
-// unresolved[T | S] — so B will need a type descriptor alongside the Kind
-// tag, not merely a payload-free Kind constant; the Kind/payload separation
-// is what keeps that addition additive rather than a rewrite.
-type Kind int
-
-// The kind constants. Sub-project A produces the five scalar kinds below.
-const (
-	KindNull Kind = iota
-	KindBool
-	KindInt
-	KindFloat
-	KindString
-)
-
-var kindNames = map[Kind]string{
-	KindNull:   "null",
-	KindBool:   "bool",
-	KindInt:    "int",
-	KindFloat:  "float",
-	KindString: "string",
-}
-
-func (k Kind) String() string {
-	if name, ok := kindNames[k]; ok {
-		return name
-	}
-	return "unknown type"
-}
-
 // Value is an evaluated expression result.
 //
 // Type is always meaningful. The payload fields are valid only for their
@@ -55,16 +18,9 @@ func (k Kind) String() string {
 // exists to make possible.
 //
 // Because Type contains a slice, Value is NOT comparable: use Equal, not "==".
-//
-// Kind is vestigial and duplicates Type.Code for the five scalar kinds. It exists
-// only so that ops.go and eval.go keep compiling while they are migrated, and is
-// deleted once they are.
 type Value struct {
 	// Type is the value's type. Always set.
 	Type Type
-
-	// Kind duplicates Type.Code during the migration. Do not read it in new code.
-	Kind Kind
 
 	// Payload. At most one is valid, selected by Type.Code; null and unresolved
 	// values have none.
@@ -75,19 +31,19 @@ type Value struct {
 }
 
 // Null returns the null value.
-func Null() Value { return Value{Type: TNull, Kind: KindNull} }
+func Null() Value { return Value{Type: TNull} }
 
 // Bool returns a boolean value.
-func Bool(b bool) Value { return Value{Type: TBool, Kind: KindBool, b: b} }
+func Bool(b bool) Value { return Value{Type: TBool, b: b} }
 
 // Int returns a 64-bit signed integer value.
-func Int(i int64) Value { return Value{Type: TInt, Kind: KindInt, i: i} }
+func Int(i int64) Value { return Value{Type: TInt, i: i} }
 
 // Float returns a 64-bit IEEE floating-point value.
-func Float(f float64) Value { return Value{Type: TFloat, Kind: KindFloat, f: f} }
+func Float(f float64) Value { return Value{Type: TFloat, f: f} }
 
 // String returns a string value.
-func String(s string) Value { return Value{Type: TString, Kind: KindString, s: s} }
+func String(s string) Value { return Value{Type: TString, s: s} }
 
 // Unresolved returns a placeholder for a value that is not yet known but whose
 // type satisfies the given constraint.

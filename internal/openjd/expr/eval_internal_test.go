@@ -40,7 +40,7 @@ func TestEval_Literals(t *testing.T) {
 				t.Fatalf("Eval: %v", err)
 			}
 			if !got.Equal(tt.want) {
-				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Type, tt.want, tt.want.Type)
 			}
 		})
 	}
@@ -198,7 +198,7 @@ func TestEval_Arithmetic(t *testing.T) {
 				t.Fatalf("Eval: %v", err)
 			}
 			if !got.Equal(tt.want) {
-				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Type, tt.want, tt.want.Type)
 			}
 		})
 	}
@@ -351,7 +351,7 @@ func TestEval_LogicalReturnsAnOperand(t *testing.T) {
 				t.Fatalf("Eval: %v", err)
 			}
 			if !got.Equal(tt.want) {
-				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Type, tt.want, tt.want.Type)
 			}
 		})
 	}
@@ -374,12 +374,12 @@ func TestEval_LogicalShortCircuits(t *testing.T) {
 }
 
 func TestTruthy_PlaceholderIsNotFalsy(t *testing.T) {
-	// truthy used to read the vestigial Kind field, which Unresolved leaves at
-	// its zero value — the same zero value as KindNull — so a placeholder was
-	// silently misread as null and treated as falsy. Task 13 still owns the
-	// real semantics (a placeholder should union with the other operand's
-	// type), but this narrow property — a placeholder is not mistaken for
-	// null — must survive that rework.
+	// truthy used to read a vestigial second type-tag field, which Unresolved
+	// left at its zero value — indistinguishable from a concrete null — so a
+	// placeholder was silently misread as null and treated as falsy. Task 13
+	// still owns the real semantics (a placeholder should union with the other
+	// operand's type), but this narrow property — a placeholder is not
+	// mistaken for null — must survive that rework.
 	tests := []struct {
 		name string
 		v    Value
