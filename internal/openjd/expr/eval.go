@@ -133,7 +133,10 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 		}
 		out, err := applyBinary(op, left, right)
 		if err != nil {
-			return Value{}, wrapAt(src, n.Offset, err)
+			// n.OpOffsets[i] is THIS link's own operator, not the chain's
+			// first one (n.Offset) — a chain of three or more operators must
+			// blame whichever link actually failed.
+			return Value{}, wrapAt(src, n.OpOffsets[i], err)
 		}
 		if !out.AsBool() {
 			return Bool(false), nil

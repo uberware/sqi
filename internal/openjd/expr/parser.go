@@ -239,6 +239,7 @@ func (p *parser) parseCompare() (Node, error) {
 		}
 		cmp.Ops = append(cmp.Ops, op)
 		cmp.Operands = append(cmp.Operands, operand)
+		cmp.OpOffsets = append(cmp.OpOffsets, tok.offset)
 		if len(cmp.Ops) == 1 {
 			cmp.Offset = tok.offset
 		}

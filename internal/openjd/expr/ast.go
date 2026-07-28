@@ -133,10 +133,19 @@ type Binary struct {
 // operands and two operators; len(Operands) is always len(Ops)+1. Chains are
 // one node rather than nested Binary nodes because each intermediate value
 // must be evaluated exactly once.
+//
+// OpOffsets holds the byte offset of each operator in Ops, in order, so
+// len(OpOffsets) is always len(Ops) too: OpOffsets[i] is where Ops[i] sits in
+// the source, letting the evaluator blame the specific link in the chain that
+// failed rather than the chain's first operator.
 type Compare struct {
-	Offset   int
-	Ops      []Op
-	Operands []Node
+	// Offset is the byte offset of the FIRST comparison operator in the
+	// chain. It is what Pos() returns and is unrelated to which link, if any,
+	// fails during evaluation — see OpOffsets for that.
+	Offset    int
+	Ops       []Op
+	Operands  []Node
+	OpOffsets []int
 }
 
 // Logical is "and" or "or" (spec section 2.1.6). These are not in the

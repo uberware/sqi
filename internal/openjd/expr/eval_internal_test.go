@@ -250,6 +250,74 @@ func TestEval_ChainShortCircuitsBeforeABadOperand(t *testing.T) {
 	}
 }
 
+func TestEval_ChainedComparisonBlamesTheFailingLink(t *testing.T) {
+	// A chain's error must blame whichever link actually failed, not always
+	// the chain's first operator: "1 < 2 < 'x'" succeeds on "1 < 2" and fails
+	// on the SECOND "<" (int vs string has no dispatch-table row).
+	tests := []struct {
+		name       string
+		src        string
+		wantOffset int
+	}{
+		{"second link of a two-link chain", "1 < 2 < 'x'", 6},
+		{"third link of a four-link chain", "1 < 2 < 3 < 'x'", 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := evalSrc(t, tt.src, nil)
+			if err == nil {
+				t.Fatal("Eval = nil error; want unsupported operand types")
+			}
+			var e *Error
+			if !errors.As(err, &e) {
+				t.Fatalf("error is %T; want *Error", err)
+			}
+			if e.Offset != tt.wantOffset {
+				t.Errorf("Offset = %d; want %d (the failing link's own operator)", e.Offset, tt.wantOffset)
+			}
+		})
+	}
+}
+
+func TestEval_ChainedComparisonEvaluatesMiddleOperandExactlyOnce(t *testing.T) {
+	// Pins section 1.3.6 against a future refactor: the shared middle operand
+	// of "Param.A < Param.B < Param.C" must be evaluated exactly once, not
+	// once per link that references it. A countingSymbols records how many
+	// times each name is looked up so the claim is checked directly, rather
+	// than inferred from the result value (which cannot distinguish one
+	// lookup from two for a side-effect-free expression).
+	syms := countingSymbols{
+		values: MapSymbols{"Param.A": Int(1), "Param.B": Int(2), "Param.C": Int(3)},
+		calls:  map[string]int{},
+	}
+	got, err := evalSrc(t, "Param.A < Param.B < Param.C", syms)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got != Bool(true) {
+		t.Errorf("= %v; want true", got)
+	}
+	for _, name := range []string{"Param.A", "Param.B", "Param.C"} {
+		if syms.calls[name] != 1 {
+			t.Errorf("Lookup(%q) called %d times; want exactly 1", name, syms.calls[name])
+		}
+	}
+}
+
+// countingSymbols wraps a MapSymbols and records how many times each name is
+// looked up, so a test can assert an exact evaluation count rather than only
+// a result value.
+type countingSymbols struct {
+	values MapSymbols
+	calls  map[string]int
+}
+
+// Lookup implements Symbols.
+func (c countingSymbols) Lookup(name string) (Value, bool) {
+	c.calls[name]++
+	return c.values.Lookup(name)
+}
+
 func TestEval_LogicalReturnsAnOperand(t *testing.T) {
 	// Section 2.1.6: and/or are value-returning, and only null and false are
 	// falsy. This is what makes "or" a null-coalescing operator.
