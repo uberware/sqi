@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package expr
+
+import (
+	"errors"
+	"testing"
+)
+
+// kinds runs tokenize and returns just the token kinds, dropping the trailing
+// tokEOF, so a test can state the shape of a token stream compactly.
+func kinds(t *testing.T, src string) []tokenKind {
+	t.Helper()
+	toks, err := tokenize(src)
+	if err != nil {
+		t.Fatalf("tokenize(%q): %v", src, err)
+	}
+	if len(toks) == 0 || toks[len(toks)-1].kind != tokEOF {
+		t.Fatalf("tokenize(%q) did not end with tokEOF: %v", src, toks)
+	}
+	got := make([]tokenKind, 0, len(toks)-1)
+	for _, tok := range toks[:len(toks)-1] {
+		got = append(got, tok.kind)
+	}
+	return got
+}
+
+func TestTokenize_Operators(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []tokenKind
+	}{
+		{"maximal munch prefers double star", "**", []tokenKind{tokDoubleStar}},
+		{"maximal munch prefers double slash", "//", []tokenKind{tokDoubleSlash}},
+		{"single star after double", "* *", []tokenKind{tokStar, tokStar}},
+		{"comparison pairs", "<= >= == !=", []tokenKind{tokLe, tokGe, tokEq, tokNe}},
+		{"single comparisons", "< >", []tokenKind{tokLt, tokGt}},
+		{"arithmetic", "+ - * / %", []tokenKind{tokPlus, tokMinus, tokStar, tokSlash, tokPercent}},
+		{"grouping and punctuation", "()[],.:", []tokenKind{
+			tokLParen, tokRParen, tokLBracket, tokRBracket, tokComma, tokDot, tokColon,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kinds(t, tt.src)
+			if len(got) != len(tt.want) {
+				t.Fatalf("tokenize(%q) kinds = %v; want %v", tt.src, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("tokenize(%q) kinds = %v; want %v", tt.src, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenize_Identifiers(t *testing.T) {
+	toks, err := tokenize("Param.Frame _x9 if")
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	want := []struct {
+		kind tokenKind
+		text string
+	}{
+		{tokIdent, "Param"},
+		{tokDot, "."},
+		{tokIdent, "Frame"},
+		{tokIdent, "_x9"},
+		{tokIdent, "if"},
+		{tokEOF, ""},
+	}
+	if len(toks) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(toks), len(want), toks)
+	}
+	for i, w := range want {
+		if toks[i].kind != w.kind || toks[i].text != w.text {
+			t.Errorf("token %d = %v %q; want %v %q", i, toks[i].kind, toks[i].text, w.kind, w.text)
+		}
+	}
+}
+
+func TestTokenize_WhitespaceAndNewlines(t *testing.T) {
+	// Section 1.1.7: expressions span lines with no continuation syntax, so a
+	// newline is ordinary whitespace.
+	got := kinds(t, "Param.X +\n\t 1")
+	want := []tokenKind{tokIdent, tokDot, tokIdent, tokPlus, tokInt}
+	if len(got) != len(want) {
+		t.Fatalf("kinds = %v; want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("kinds = %v; want %v", got, want)
+		}
+	}
+}
+
+func TestTokenize_Offsets(t *testing.T) {
+	toks, err := tokenize("1 + 2")
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	wantOffsets := []int{0, 2, 4, 5}
+	for i, want := range wantOffsets {
+		if toks[i].offset != want {
+			t.Errorf("token %d offset = %d; want %d", i, toks[i].offset, want)
+		}
+	}
+}
+
+func TestTokenize_UnexpectedCharacter(t *testing.T) {
+	// Every character here is outside EXPR's grammar. Rejecting them at the
+	// lexer is what makes the expr1.1--reject-* conformance fixtures pass:
+	// bitwise operators, dict/set literals, matmul, walrus, and statements.
+	for _, src := range []string{"1 & 2", "1 | 2", "1 ^ 2", "~1", "{1: 2}", "{1}", "a @ b", "x = 1", "!x", "a; b", "$x", "a ? b"} {
+		t.Run(src, func(t *testing.T) {
+			if _, err := tokenize(src); err == nil {
+				t.Fatalf("tokenize(%q) = nil error; want an error", src)
+			}
+		})
+	}
+}
+
+func TestTokenize_UnexpectedCharacterCarriesPosition(t *testing.T) {
+	_, err := tokenize("1 + @")
+	if err == nil {
+		t.Fatal("tokenize = nil error; want an error")
+	}
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("error is %T; want *Error", err)
+	}
+	if e.Offset != 4 {
+		t.Errorf("Offset = %d; want 4", e.Offset)
+	}
+}
