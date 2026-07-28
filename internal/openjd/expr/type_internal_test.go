@@ -122,3 +122,79 @@ func TestType_String(t *testing.T) {
 		})
 	}
 }
+
+func TestUnionOf(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []Type
+		want string // the rendered canonical form
+	}{
+		{"single member unwraps", []Type{TInt}, "int"},
+		{"two members sort alphabetically", []Type{TString, TInt}, "int | string"},
+		{"already sorted stays put", []Type{TInt, TString}, "int | string"},
+		{"duplicates collapse", []Type{TInt, TInt, TString}, "int | string"},
+		{"nulltype sorts last", []Type{TNull, TInt}, "int?"},
+		{"nulltype sorts last among several", []Type{TNull, TString, TInt}, "int | string | nulltype"},
+		{"any absorbs", []Type{TInt, TAny}, "any"},
+		{"any absorbs when it comes first", []Type{TAny, TInt}, "any"},
+		{"noreturn collapses", []Type{TInt, TNoReturn}, "int"},
+		{"noreturn alone is noreturn", []Type{TNoReturn}, "noreturn"},
+		{"nothing is noreturn", nil, "noreturn"},
+		{
+			name: "nested unions flatten",
+			in:   []Type{{Code: CodeUnion, Params: []Type{TInt, TString}}, TBool},
+			want: "bool | int | string",
+		},
+		{
+			name: "list members are ordered by their rendering",
+			in:   []Type{ListOf(TString), ListOf(TInt)},
+			want: "list[int] | list[string]",
+		},
+		{
+			name: "an unresolved member hoists out of the union",
+			in:   []Type{TInt, UnresolvedOf(TString)},
+			want: "unresolved[int | string]",
+		},
+		{
+			name: "two unresolved members merge their constraints",
+			in:   []Type{UnresolvedOf(TInt), UnresolvedOf(TString)},
+			want: "unresolved[int | string]",
+		},
+		{
+			name: "an unresolved member survives any absorbing",
+			in:   []Type{TAny, UnresolvedOf(TInt)},
+			want: "unresolved",
+		},
+		{
+			name: "an unresolved single member unwraps to unresolved",
+			in:   []Type{UnresolvedOf(TInt)},
+			want: "unresolved[int]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UnionOf(tt.in...).String(); got != tt.want {
+				t.Errorf("UnionOf(...) = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnionOf_IsIdempotent(t *testing.T) {
+	// Normalizing an already-normalized union must not change it. Everything
+	// downstream compares types structurally, so a constructor that produced a
+	// different shape on a second pass would make Equal unreliable.
+	inputs := []Type{
+		UnionOf(TInt, TString),
+		UnionOf(TInt, TNull),
+		UnionOf(TInt, TString, TNull),
+		UnionOf(TInt, UnresolvedOf(TString)),
+	}
+	for _, in := range inputs {
+		t.Run(in.String(), func(t *testing.T) {
+			if got := UnionOf(in); !got.Equal(in) {
+				t.Errorf("UnionOf(%s) = %s; want it unchanged", in, got)
+			}
+		})
+	}
+}

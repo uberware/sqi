@@ -2,6 +2,8 @@
 
 package expr
 
+import "sort"
+
 // Code is the base of a Type: which type constructor it is, independent of any
 // type parameters. Section 1.2.1 lists the language's types; this is the
 // discriminant for all of them.
@@ -152,4 +154,100 @@ func (t Type) unionString() string {
 		out = append(out, t.Params[i].String()...)
 	}
 	return string(out)
+}
+
+// UnionOf builds a union type, applying every normalization rule the ExprType
+// section requires: nested unions flatten, noreturn collapses to nothing, any
+// absorbs everything, duplicates are removed, members sort with nulltype last,
+// a single member unwraps, and an unresolved member hoists to wrap the whole
+// union.
+//
+// Normalizing here rather than at each use site is what makes Equal sufficient
+// downstream. Dispatch, coercion and the conformance path all rely on two types
+// that mean the same thing having the same shape.
+func UnionOf(ts ...Type) Type {
+	var members []Type
+	unresolved := false
+	for _, t := range ts {
+		collectUnionMembers(t, &members, &unresolved)
+	}
+	out := normalizeUnionMembers(members)
+	// Re-wrap last, not first: absorbing "any" before every member has been
+	// seen would lose an unresolved member that comes after it.
+	if unresolved {
+		return UnresolvedOf(out)
+	}
+	return out
+}
+
+// collectUnionMembers appends t's contribution to a union's member list,
+// flattening nested unions, dropping noreturn, and stripping an unresolved
+// wrapper while recording that the union as a whole is unresolved. It recurses
+// so that a hand-built Type cannot smuggle a nested union past normalization.
+func collectUnionMembers(t Type, out *[]Type, unresolved *bool) {
+	switch t.Code {
+	case CodeUnresolved:
+		*unresolved = true
+		if len(t.Params) == 1 {
+			collectUnionMembers(t.Params[0], out, unresolved)
+		}
+	case CodeUnion:
+		for _, p := range t.Params {
+			collectUnionMembers(p, out, unresolved)
+		}
+	case CodeNoReturn:
+		// Collapses to nothing, so that "x if c else fail()" is x, not x?.
+	default:
+		*out = append(*out, t)
+	}
+}
+
+// normalizeUnionMembers applies the rules that do not involve unresolved: any
+// absorbs, duplicates collapse, members sort with nulltype last, and zero or one
+// member is not a union at all.
+func normalizeUnionMembers(members []Type) Type {
+	for _, m := range members {
+		if m.Code == CodeAny {
+			return TAny
+		}
+	}
+
+	uniq := make([]Type, 0, len(members))
+	for _, m := range members {
+		if !containsType(uniq, m) {
+			uniq = append(uniq, m)
+		}
+	}
+
+	switch len(uniq) {
+	case 0:
+		// Every member collapsed, which can only mean they were all noreturn.
+		return TNoReturn
+	case 1:
+		return uniq[0]
+	}
+
+	sort.Slice(uniq, func(i, j int) bool { return unionLess(uniq[i], uniq[j]) })
+	return Type{Code: CodeUnion, Params: uniq}
+}
+
+// containsType reports whether ts already holds a type equal to t.
+func containsType(ts []Type, t Type) bool {
+	for _, x := range ts {
+		if x.Equal(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// unionLess is the canonical member order: nulltype last, everything else
+// alphabetically by rendered name. Sorting by the rendering rather than by code
+// keeps the order stable as codes are added, and makes list members order
+// predictably against each other.
+func unionLess(a, b Type) bool {
+	if an, bn := a.Code == CodeNull, b.Code == CodeNull; an != bn {
+		return bn
+	}
+	return a.String() < b.String()
 }
