@@ -4,6 +4,7 @@ package expr
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -134,5 +135,116 @@ func TestTokenize_UnexpectedCharacterCarriesPosition(t *testing.T) {
 	}
 	if e.Offset != 4 {
 		t.Errorf("Offset = %d; want 4", e.Offset)
+	}
+}
+
+func TestLexNumber_Integers(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want int64
+	}{
+		{"decimal", "42", 42},
+		{"zero", "0", 0},
+		{"double zero is valid", "00", 0},
+		{"hex lower", "0x2A", 42},
+		{"hex upper prefix", "0X2a", 42},
+		{"hex with underscores", "0xFF_FF", 65535},
+		{"octal", "0o52", 42},
+		{"octal upper prefix", "0O52", 42},
+		{"binary", "0b101010", 42},
+		{"binary upper prefix", "0B101010", 42},
+		{"binary with underscores", "0b1010_1010", 170},
+		{"underscore separators", "1_000_000", 1000000},
+		{"underscore after base prefix", "0x_FF", 255},
+		{"max int64", "9223372036854775807", 9223372036854775807},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks, err := tokenize(tt.src)
+			if err != nil {
+				t.Fatalf("tokenize(%q): %v", tt.src, err)
+			}
+			if toks[0].kind != tokInt {
+				t.Fatalf("kind = %v; want tokInt", toks[0].kind)
+			}
+			if toks[0].i != tt.want {
+				t.Errorf("value = %d; want %d", toks[0].i, tt.want)
+			}
+		})
+	}
+}
+
+func TestLexNumber_Floats(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want float64
+	}{
+		{"decimal float", "3.14", 3.14},
+		{"leading dot", ".5", 0.5},
+		{"trailing dot", "5.", 5},
+		{"scientific lower", "1.5e-3", 0.0015},
+		{"scientific upper", "1.5E-3", 0.0015},
+		{"positive exponent", "1.5e+3", 1500},
+		{"integer with exponent produces a float", "1e10", 1e10},
+		{"underscores either side of the point", "1_000.000_001", 1000.000001},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks, err := tokenize(tt.src)
+			if err != nil {
+				t.Fatalf("tokenize(%q): %v", tt.src, err)
+			}
+			if toks[0].kind != tokFloat {
+				t.Fatalf("kind = %v; want tokFloat", toks[0].kind)
+			}
+			if toks[0].f != tt.want {
+				t.Errorf("value = %v; want %v", toks[0].f, tt.want)
+			}
+		})
+	}
+}
+
+func TestLexNumber_Rejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		wantMsg string
+	}{
+		{"leading zero decimal", "007", "leading zeros"},
+		{"leading zero decimal longer", "0123", "leading zeros"},
+		{"int64 overflow", "9223372036854775808", "out of range"},
+		{"double underscore", "1__0", "invalid"},
+		{"trailing underscore", "1_", "invalid"},
+		{"bare base prefix", "0x", "invalid"},
+		{"float out of range", "1e400", "out of range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tokenize(tt.src)
+			if err == nil {
+				t.Fatalf("tokenize(%q) = nil error; want an error", tt.src)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestLexNumber_ExponentMarkerIsNotAlwaysAnExponent(t *testing.T) {
+	// "0x1e+2" is hex 0x1e, then "+", then 2 — Python's reading. If the lexer
+	// treated "e+" as an exponent inside a based literal it would produce one
+	// bogus token instead of three.
+	got := kinds(t, "0x1e+2")
+	want := []tokenKind{tokInt, tokPlus, tokInt}
+	if len(got) != len(want) {
+		t.Fatalf("kinds = %v; want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("kinds = %v; want %v", got, want)
+		}
 	}
 }
