@@ -19,6 +19,10 @@ type Error struct {
 	Offset int
 	// Src is the expression source the offset refers to.
 	Src string
+
+	// err is the wrapped cause, when this Error decorates an operator error
+	// with a position. It keeps errors.Is working through the wrap.
+	err error
 }
 
 func (e *Error) Error() string {
@@ -60,4 +64,13 @@ func LineCol(src string, offset int) (line, col int) {
 // returns is constructed here, so every error carries a position.
 func errorAt(src string, offset int, format string, args ...any) *Error {
 	return &Error{Msg: fmt.Sprintf(format, args...), Offset: offset, Src: src}
+}
+
+// Unwrap returns the wrapped cause, or nil when there is none.
+func (e *Error) Unwrap() error { return e.err }
+
+// wrapAt decorates an operator error with the position of the operator that
+// produced it. The cause is preserved so errors.Is still matches.
+func wrapAt(src string, offset int, err error) *Error {
+	return &Error{Msg: err.Error(), Offset: offset, Src: src, err: err}
 }
