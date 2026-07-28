@@ -168,9 +168,27 @@ func TestCoerce_Rejected(t *testing.T) {
 		{"string to bool", String("true"), "bool", "cannot be coerced"},
 		{"null to a scalar", Null(), "int", "cannot be coerced"},
 		{"int to a list", Int(1), "list[int]", "cannot be coerced"},
+		// Regression: coerceScalar's switch has a case CodePath that calls
+		// v.AsStr(), which panics on a non-string payload. targetScalarCode's
+		// catch-all alone would report "path" reachable from any scalar,
+		// since path is the target's single admitted scalar; only the
+		// applicability gate ahead of coerceScalar stops these before they
+		// reach AsStr().
+		{"bool to path panics without the gate", Bool(true), "path", "cannot be coerced"},
+		{"int to path panics without the gate", Int(5), "path", "cannot be coerced"},
+		{"float to path panics without the gate", Float(1.5), "path", "cannot be coerced"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// A panic inside coerce would otherwise crash the whole test
+			// binary rather than just failing this subtest, silently losing
+			// the very regression these cases exist to catch. Turn it into a
+			// clean, attributable failure instead.
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("coerce(%s, %s) panicked: %v", tt.v, tt.target, r)
+				}
+			}()
 			target, err := ParseType(tt.target)
 			if err != nil {
 				t.Fatalf("ParseType(%q): %v", tt.target, err)
@@ -211,6 +229,22 @@ func TestCoerce_ListConversionIsDeferred(t *testing.T) {
 	v := Value{Type: ListOf(TPath)}
 	if _, err := coerce(v, ListOf(TString)); err == nil {
 		t.Error("coerce of a list = nil error; want a not-implemented error")
+	} else if !strings.Contains(err.Error(), "sub-project B2") {
+		t.Errorf("error = %q; want it to name sub-project B2", err.Error())
+	}
+}
+
+func TestCoerce_RangeExprToListIsDeferred(t *testing.T) {
+	// The third list rule, range_expr -> list[int], has a scalar SOURCE and a
+	// list TARGET — the opposite shape from TestCoerce_ListConversionIsDeferred
+	// above. It must be caught by the dst-listness half of coerce's list
+	// check, not just the src-listness half that a list-typed source exercises.
+	if !coercible(TRangeExpr, ListOf(TInt)) {
+		t.Fatal("coercible(range_expr, list[int]) = false; want true")
+	}
+	v := Value{Type: TRangeExpr, s: "1-5"}
+	if _, err := coerce(v, ListOf(TInt)); err == nil {
+		t.Error("coerce of a range_expr to list[int] = nil error; want a not-implemented error")
 	} else if !strings.Contains(err.Error(), "sub-project B2") {
 		t.Errorf("error = %q; want it to name sub-project B2", err.Error())
 	}

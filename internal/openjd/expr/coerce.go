@@ -259,6 +259,18 @@ func coerce(v Value, target Type) (Value, error) {
 			"converting %s to %s is not implemented until sub-project B2", v.Type, target,
 		)
 	}
+	// The general applicability check, with a direct-membership carve-out:
+	// coercible alone is too strict here because it deliberately reports false
+	// for a scalar that is already a direct (if ambiguous) member of a union
+	// target — that case needs no conversion at all, which is exactly why
+	// coercible refuses it. targetScalarCode alone is too permissive: its
+	// final catch-all resolves "which code to become" without ever asking
+	// whether that direction is legal, which let bool/int/float -> path reach
+	// AsStr() and panic. This keeps every real conversion validated by the
+	// already-vetted coercible/scalarCoercible pair.
+	if !includes(target, v.Type.Code) && !coercible(v.Type, target) {
+		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+	}
 	return coerceScalar(v, target)
 }
 
