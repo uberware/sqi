@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/test/conformance"
 )
 
@@ -117,5 +118,124 @@ func TestConformance_Templates(t *testing.T) {
 	}
 	for _, id := range orphaned {
 		t.Errorf("ORPHANED BASELINE %s matches no live result — remove it from %s", id, baselinePath)
+	}
+}
+
+// exprSuiteDir is the fixture directory scored by the expression-level path.
+const exprSuiteDir = "EXPR/job_templates"
+
+// exprBaselinePath lists EXPR fixtures whose expressions do not yet parse. It
+// is separate from baselinePath because the same fixture IDs appear in both
+// scoring paths, and an EXPR entry in baseline.txt would be reported as
+// orphaned forever — the template path never scores EXPR at all.
+const exprBaselinePath = "baseline-expr.txt"
+
+// minExpectedExprFixtures guards against a truncated submodule, exactly as
+// minExpectedTests does for the template path.
+const minExpectedExprFixtures = 200
+
+// TestConformance_EXPRNotRegistered is the drift guard for the
+// expression-level scoring path.
+//
+// That path (conformance.RunExprCase) exists only because internal/openjd
+// rejects EXPR templates outright, which makes the template path unable to
+// score EXPR fixtures without reporting 180 false passes. The moment
+// production registers EXPR, the workaround becomes not merely unnecessary but
+// actively misleading — two paths scoring the same fixtures by different
+// rules. Failing here forces its removal rather than letting it rot.
+func TestConformance_EXPRNotRegistered(t *testing.T) {
+	if _, ok := openjd.LookupExtension("EXPR"); ok {
+		t.Fatal("internal/openjd now registers EXPR.\n" +
+			"The expression-level conformance path is obsolete: delete\n" +
+			"test/conformance/exprcase.go, exprcase_test.go, baseline-expr.txt,\n" +
+			"TestConformance_Expressions and this test, and let\n" +
+			"TestConformance_Templates score EXPR/job_templates end to end.")
+	}
+}
+
+// collectEXPRFixtures returns every EXPR job-template fixture, relative to
+// SuiteRoot. Job-execution tests (".test.yaml") are excluded, as in the
+// template path.
+func collectEXPRFixtures(t *testing.T) []conformance.TestCase {
+	t.Helper()
+
+	dir := filepath.Join(SuiteRoot, exprSuiteDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v\nRun: git submodule update --init --recursive", dir, err)
+	}
+
+	var cases []conformance.TestCase
+	for _, entry := range entries {
+		if entry.IsDir() || !conformance.IsFixtureFile(entry.Name()) {
+			continue
+		}
+		tc := conformance.ParseTestCase(exprSuiteDir + "/" + entry.Name())
+		if tc.IsJobTest {
+			continue
+		}
+		cases = append(cases, tc)
+	}
+	return cases
+}
+
+// TestConformance_Expressions scores every EXPR job-template fixture by
+// parsing the expressions it embeds. See RunExprCase for why this is a
+// separate path from TestConformance_Templates.
+func TestConformance_Expressions(t *testing.T) {
+	cases := collectEXPRFixtures(t)
+	if len(cases) < minExpectedExprFixtures {
+		t.Fatalf("collected %d EXPR fixtures, want >= %d — suite looks truncated; "+
+			"an empty run must never pass", len(cases), minExpectedExprFixtures)
+	}
+
+	results := make([]conformance.Result, 0, len(cases))
+	for _, tc := range cases {
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results = append(results, conformance.RunExprCase(tc, data))
+	}
+
+	t.Logf("expression-level scoring (parse only)\n%s",
+		conformance.FormatRollup(conformance.Rollup(results)))
+
+	// A run in which almost nothing passes means the reader is broken, not
+	// that the fixtures are hard: the suite's 29 expr1.1--reject-* fixtures
+	// plus the unclosed, syntax-error and leading-zeros cases are rejected by
+	// grammar alone, and the arithmetic, comparison, conditional,
+	// contextual-keyword and JSON-alias fixtures parse.
+	passed := 0
+	for _, r := range results {
+		if r.Passed {
+			passed++
+		}
+	}
+	const minExpectedPasses = 25
+	if passed < minExpectedPasses {
+		t.Errorf("only %d/%d EXPR fixtures pass, want >= %d — the expression "+
+			"reader is likely broken rather than the fixtures being hard",
+			passed, len(results), minExpectedPasses)
+	}
+
+	baseline, err := conformance.LoadBaseline(exprBaselinePath)
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	regressions, stale, orphaned := conformance.DiffBaseline(results, baseline)
+
+	byID := map[string]conformance.Result{}
+	for _, r := range results {
+		byID[r.ID()] = r
+	}
+	for _, id := range regressions {
+		t.Errorf("REGRESSION %s\n    %s", id, byID[id].Reason)
+	}
+	for _, id := range stale {
+		t.Errorf("STALE BASELINE %s now passes — remove it from %s", id, exprBaselinePath)
+	}
+	for _, id := range orphaned {
+		t.Errorf("ORPHANED BASELINE %s matches no live result — remove it from %s", id, exprBaselinePath)
 	}
 }

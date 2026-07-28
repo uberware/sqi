@@ -100,6 +100,40 @@ mandate rejection of an unimplemented extension either way; `sqi` chooses to
 reject because a loud `422` at submission time is a better failure mode than a
 silent misinterpretation at run time.
 
+### EXPR: a temporary, second scoring path
+
+`EXPR` is still **not** in the registry, so the production behavior above is
+unchanged: a template declaring `extensions: [EXPR]` is still rejected with a
+`422` at `/extensions/0`, unconditionally, the same as any other unregistered
+extension name.
+
+What has changed is that `internal/openjd/expr` now exists as a self-contained
+reader and same-type evaluator for the EXPR expression language — `internal/openjd`
+does not call it yet, so it has no effect on template validation. Building it
+ahead of registration made it possible to start measuring conformance against
+the suite's 209 `EXPR/job_templates` fixtures, which `TestConformance_Templates`
+cannot do: every one of them declares `extensions: [EXPR]`, so the template path
+rejects all 209 for the extension-gating reason alone, and 180 of them are
+marked `.invalid` — scoring that rejection as a pass would report 180 false
+greens before a single line of EXPR semantics existed.
+
+So the suite scores `EXPR/job_templates` through a **second, temporary path**
+(`test/conformance/exprcase.go`, `TestConformance_Expressions`) that parses the
+`{{ ... }}` expressions a fixture embeds, instead of validating the template as
+a whole. As of this measurement it scores **117 / 209 pass, 92 baselined** in
+`test/conformance/baseline-expr.txt`. This path is **parse-only**: a fixture
+that is invalid for a semantic reason (a type error, an evaluation limit, an
+int64 overflow) parses fine, is accepted, and therefore fails and is baselined
+— that is deliberate reporting, the same principle as the not-applicable rows
+below, not a defect to chase down here.
+
+The path is deleted the moment EXPR is registered for real:
+`TestConformance_EXPRNotRegistered` fails the build if `openjd.LookupExtension("EXPR")`
+ever succeeds, forcing `test/conformance/exprcase.go`, `exprcase_test.go`,
+`baseline-expr.txt`, `TestConformance_Expressions` and that guard itself to be
+deleted in favor of letting `TestConformance_Templates` score `EXPR/job_templates`
+end to end.
+
 This is also why the portability claim in `README.md` and `ROADMAP.md` carries an
 explicit caveat rather than being dropped. The measured position is narrower and
 more useful than a slogan: `sqi` currently accepts **every valid base-spec
@@ -172,7 +206,7 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable — extension not registered (209 tests) |
+| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **117 / 209 pass, 92 baselined** |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |

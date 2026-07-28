@@ -1,0 +1,115 @@
+# EXPR fixtures whose embedded expressions do not yet parse.
+#
+# Scored by TestConformance_Expressions via conformance.RunExprCase, which is
+# parse-only: see the RunExprCase doc comment for why EXPR has a scoring path
+# of its own and when to delete it.
+#
+# Each line is a fixture path relative to the 2023-09 suite root.
+#
+# This is a burn-down list, not an ignore-list. CI fails in BOTH directions,
+# and in a third: a fixture that fails without being listed is a regression, a
+# listed fixture that starts passing is a stale entry, and an entry matching no
+# live result is orphaned. All three must be fixed, not suppressed.
+#
+# Expect most entries to be one of two kinds, and both to burn down later:
+#   - syntax the reader does not implement (lists, comprehensions, subscripts,
+#     slices, calls, methods) — sub-projects B and C;
+#   - a fixture invalid for a SEMANTIC reason (type error, evaluation limit,
+#     int64 overflow, unknown variable) that a parse-only path accepts and so
+#     scores as a failure — sub-project E, when templates are evaluated.
+#
+# It is kept separate from baseline.txt because the same fixture IDs appear in
+# both scoring paths, and an EXPR entry there would be reported as orphaned
+# forever.
+EXPR/job_templates/2.10--range-expr-param-invalid-default.invalid.yaml
+EXPR/job_templates/2.11--list-string-item-not-in-allowed.invalid.yaml
+EXPR/job_templates/2.11--list-string-item-too-long.invalid.yaml
+EXPR/job_templates/2.11--list-string-item-too-short.invalid.yaml
+EXPR/job_templates/2.11--list-string-scalar-not-list.invalid.yaml
+EXPR/job_templates/2.11--list-string-too-long.invalid.yaml
+EXPR/job_templates/2.11--list-string-too-short.invalid.yaml
+EXPR/job_templates/2.12--list-path-item-too-short.invalid.yaml
+EXPR/job_templates/2.12--list-path-scalar-not-list.invalid.yaml
+EXPR/job_templates/2.12--list-path-too-long.invalid.yaml
+EXPR/job_templates/2.12--list-path-too-short.invalid.yaml
+EXPR/job_templates/2.12--list-path-wrong-item-type.invalid.yaml
+EXPR/job_templates/2.13--list-int-item-below-min.invalid.yaml
+EXPR/job_templates/2.13--list-int-item-not-in-allowed.invalid.yaml
+EXPR/job_templates/2.13--list-int-scalar-not-list.invalid.yaml
+EXPR/job_templates/2.13--list-int-too-long.invalid.yaml
+EXPR/job_templates/2.13--list-int-too-short.invalid.yaml
+EXPR/job_templates/2.13--list-int-wrong-item-type.invalid.yaml
+EXPR/job_templates/2.14--list-float-item-below-min.invalid.yaml
+EXPR/job_templates/2.14--list-float-scalar-not-list.invalid.yaml
+EXPR/job_templates/2.14--list-float-too-long.invalid.yaml
+EXPR/job_templates/2.14--list-float-too-short.invalid.yaml
+EXPR/job_templates/2.14--list-float-wrong-item-type.invalid.yaml
+EXPR/job_templates/2.15--list-bool-scalar-not-list.invalid.yaml
+EXPR/job_templates/2.15--list-bool-too-long.invalid.yaml
+EXPR/job_templates/2.15--list-bool-too-short.invalid.yaml
+EXPR/job_templates/2.15--list-bool-wrong-item-type.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-inner-item-above-max.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-inner-item-below-min.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-inner-item-not-in-allowed.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-inner-too-long.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-inner-too-short.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-ragged-scalar-in-outer.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-scalar-not-list.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-string-in-inner.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-too-long.invalid.yaml
+EXPR/job_templates/2.16--list-list-int-too-short.invalid.yaml
+EXPR/job_templates/2.9--bool-param-float-invalid.invalid.yaml
+EXPR/job_templates/2.9--bool-param-int-invalid.invalid.yaml
+EXPR/job_templates/2.9--bool-param-string-invalid.invalid.yaml
+EXPR/job_templates/3.6--let-bindings.yaml
+EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
+EXPR/job_templates/3.6--let-empty-list.invalid.yaml
+EXPR/job_templates/3.6--let-host-context-symbols.yaml
+EXPR/job_templates/3.6--let-in-job-environment-requires-expr.invalid.yaml
+EXPR/job_templates/3.6--let-in-step-environment-requires-expr.invalid.yaml
+EXPR/job_templates/3.6--let-requires-expr.invalid.yaml
+EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
+EXPR/job_templates/3.6--let-too-many.invalid.yaml
+EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
+EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
+EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
+EXPR/job_templates/7.3--complex-expr-in-env-action-requires-expr.invalid.yaml
+EXPR/job_templates/7.3--complex-expr-in-env-variables-requires-expr.invalid.yaml
+EXPR/job_templates/7.3--session-in-host-requirements.invalid.yaml
+EXPR/job_templates/7.3--task-param-in-job-name.invalid.yaml
+EXPR/job_templates/7.3.1--job-name-in-job-name-field.invalid.yaml
+EXPR/job_templates/7.3.1--job-name-requires-expr.invalid.yaml
+EXPR/job_templates/7.3.1--step-name-in-job-environment-let.invalid.yaml
+EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
+EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
+EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
+EXPR/job_templates/error--non-bool-condition.invalid.yaml
+EXPR/job_templates/error--type-mismatch-add.invalid.yaml
+EXPR/job_templates/error--unknown-variable.invalid.yaml
+EXPR/job_templates/expr-extension-missing.invalid.yaml
+EXPR/job_templates/expr-with-other-extensions.yaml
+EXPR/job_templates/expr1.1--comparison-expr.yaml
+EXPR/job_templates/expr1.1--conditional-expr.yaml
+EXPR/job_templates/expr1.1--function-call-expr.yaml
+EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
+EXPR/job_templates/expr1.1--list-literal-expr.yaml
+EXPR/job_templates/expr1.1--method-call-expr.yaml
+EXPR/job_templates/expr1.1--multiline-expr.yaml
+EXPR/job_templates/expr1.1--slice-expr.yaml
+EXPR/job_templates/expr1.1--type-error.invalid.yaml
+EXPR/job_templates/expr1.1--unknown-variable.invalid.yaml
+EXPR/job_templates/expr1.3.11--float-range-expression.yaml
+EXPR/job_templates/expr1.3.11--path-range-expression.yaml
+EXPR/job_templates/expr1.3.11--string-range-expression.yaml
+EXPR/job_templates/expr1.3.4--float-overflow-infinity.invalid.yaml
+EXPR/job_templates/expr1.3.4--pow-complex-result.invalid.yaml
+EXPR/job_templates/expr1.3.4--pow-float-overflow.invalid.yaml
+EXPR/job_templates/expr1.3.4--pow-zero-negative-float.invalid.yaml
+EXPR/job_templates/expr1.3.4--pow-zero-negative-int.invalid.yaml
+EXPR/job_templates/expr1.3.9--memory-limit-exceeded.invalid.yaml
+EXPR/job_templates/expr2.1.1--division-by-zero.invalid.yaml
+EXPR/job_templates/expr2.1.1--int64-overflow-add.invalid.yaml
+EXPR/job_templates/expr2.1.1--int64-overflow-mul-neg.invalid.yaml
+EXPR/job_templates/expr2.1.1--int64-overflow-mul-pos.invalid.yaml
+EXPR/job_templates/expr2.1.1--int64-overflow-pow-large.invalid.yaml
+EXPR/job_templates/expr2.1.1--int64-overflow-pow.invalid.yaml

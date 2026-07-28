@@ -56,6 +56,13 @@ func TestExtractExpressions_Shapes(t *testing.T) {
 		{"braces inside the body", `a: "{{ {1, 2} }}"`, []string{"{1, 2}"}},
 		{"unclosed is still reported", `a: "{{ X"`, []string{"X"}},
 		{"literal closing braces outside a reference", `a: "}} tail"`, nil},
+		{"empty body yields an empty string", `a: "{{ }}"`, []string{""}},
+		{"whitespace-only body yields an empty string", `a: "{{   }}"`, []string{""}},
+		{
+			"alias resolves through its anchor's definition, not again at the alias site",
+			"a: &anchor \"{{ X }}\"\nb: *anchor\n",
+			[]string{"X"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -133,6 +140,14 @@ func TestRunExprCase(t *testing.T) {
 			doc:        "a: [1,\n  b: 2\n",
 			wantAccept: false,
 			wantPass:   true,
+		},
+		{
+			name:        "empty expression body reaches expr.Parse and is rejected",
+			path:        "EXPR/job_templates/expr1.1--empty-body.yaml",
+			doc:         `a: "{{ }}"`,
+			wantAccept:  false,
+			wantPass:    false,
+			reasonMatch: "empty expression",
 		},
 	}
 	for _, tt := range tests {

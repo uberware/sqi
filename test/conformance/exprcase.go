@@ -103,10 +103,11 @@ func collectExpressions(n *yaml.Node, out *[]string) {
 // expressionsIn returns the body of every "{{ ... }}" reference in s.
 //
 // Each body runs to the FIRST "}}" after its "{{", which is what
-// internal/openjd/fmtstring does, so this sees a reference exactly as the
-// production reader would. An unclosed "{{" yields the remaining text as a
-// body: reporting it lets expr.Parse reject it, whereas skipping it would drop
-// the fixture from scoring silently.
+// internal/openjd/fmtstring does for a closed reference. An unclosed "{{"
+// diverges from production: fmtstring.parse raises a MalformedError on a
+// genuinely unclosed reference, while this path instead treats the remaining
+// text as a candidate expression body. Reporting it lets expr.Parse reject it,
+// whereas skipping it would drop the fixture from scoring silently.
 func expressionsIn(s string) []string {
 	var out []string
 	for {
