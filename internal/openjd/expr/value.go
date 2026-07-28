@@ -14,8 +14,12 @@ import (
 // Sub-project A implements the five scalar kinds below. Sub-project B adds
 // KindPath, KindRangeExpr and KindList; because Kind is a field in its own
 // right rather than something inferred from which payload is populated, B can
-// also add the spec's unresolved[T] — a known Kind carrying no payload at all
-// — without reshaping Value or anything built on it.
+// also add the spec's unresolved[T] without reshaping Value or anything built
+// on it. unresolved[T] carries a type parameter — and can itself be a union
+// of types, as when an if/else whose condition is unresolved yields
+// unresolved[T | S] — so B will need a type descriptor alongside the Kind
+// tag, not merely a payload-free Kind constant; the Kind/payload separation
+// is what keeps that addition additive rather than a rewrite.
 type Kind int
 
 // The kind constants. Sub-project A produces the five scalar kinds below.

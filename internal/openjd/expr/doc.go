@@ -46,17 +46,30 @@
 //     unchanged, digit for digit, is not implemented here; Value.String is a
 //     diagnostic rendering, not that pass-through.
 //   - Static type checking against unbound parameters (the spec's
-//     unresolved[T]) is not implemented. Value's Kind tag is deliberately
-//     separable from its payload so it can be added without reshaping Value.
+//     unresolved[T]) is not implemented. unresolved[T] carries a type
+//     parameter — and can itself be a union of types, as when an if/else
+//     whose condition is unresolved yields unresolved[T | S] — so adding it
+//     means adding a type descriptor alongside Value's Kind tag, not merely a
+//     payload-free Kind constant. That tag is deliberately separable from the
+//     payload so the descriptor can be added without reshaping Value.
 //   - Nothing here touches a job template. Parsing a template, binding its
 //     parameters, and interpolating an expression's result back into template
 //     text are all outside this package; it evaluates expression text handed
 //     to it directly.
+//   - Section 1.1.5's escape table is narrower than its own opening claim
+//     that "all Python escape sequences are supported": \a, \b, \f, \v, \0,
+//     octal escapes and a backslash-newline line continuation are absent from
+//     the table, so this package keeps them verbatim, backslash included,
+//     rather than decoding them — "'\a'" evaluates to the two characters
+//     "\a". This is a deliberate reading of the table over the prose, not a
+//     deferral to a later sub-project.
 //
-// Anything unimplemented FAILS rather than silently misbehaving. The grammar
-// is EXPR's own rather than borrowed from a Python parser precisely so that
-// the failure runs in that direction: a borrowed parser would accept syntax
-// this package cannot evaluate.
+// Anything unimplemented FAILS rather than silently misbehaving, with one
+// deliberate exception: the escape sequences named above pass through
+// verbatim instead of erroring or being decoded. The grammar is EXPR's own
+// rather than borrowed from a Python parser precisely so that the failure
+// runs in that direction: a borrowed parser would accept syntax this package
+// cannot evaluate.
 //
 // # Extending it
 //
