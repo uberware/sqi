@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
@@ -63,6 +64,26 @@ var binaryOps = map[opKey]binaryFunc{
 	{OpAdd, KindString, KindString}:   concatStrings,
 	{OpIn, KindString, KindString}:    containsString,
 	{OpNotIn, KindString, KindString}: notContainsString,
+
+	{OpLt, KindInt, KindInt}: ordering(OpLt, compareInts),
+	{OpGt, KindInt, KindInt}: ordering(OpGt, compareInts),
+	{OpLe, KindInt, KindInt}: ordering(OpLe, compareInts),
+	{OpGe, KindInt, KindInt}: ordering(OpGe, compareInts),
+
+	{OpLt, KindFloat, KindFloat}: ordering(OpLt, compareFloats),
+	{OpGt, KindFloat, KindFloat}: ordering(OpGt, compareFloats),
+	{OpLe, KindFloat, KindFloat}: ordering(OpLe, compareFloats),
+	{OpGe, KindFloat, KindFloat}: ordering(OpGe, compareFloats),
+
+	{OpLt, KindString, KindString}: ordering(OpLt, compareStrings),
+	{OpGt, KindString, KindString}: ordering(OpGt, compareStrings),
+	{OpLe, KindString, KindString}: ordering(OpLe, compareStrings),
+	{OpGe, KindString, KindString}: ordering(OpGe, compareStrings),
+
+	{OpLt, KindBool, KindBool}: ordering(OpLt, compareBools),
+	{OpGt, KindBool, KindBool}: ordering(OpGt, compareBools),
+	{OpLe, KindBool, KindBool}: ordering(OpLe, compareBools),
+	{OpGe, KindBool, KindBool}: ordering(OpGe, compareBools),
 }
 
 // unaryKey selects one prefix operator implementation.
@@ -86,6 +107,17 @@ var unaryOps = map[unaryKey]unaryFunc{
 // matches the operand kinds. Errors carry no position; the evaluator wraps
 // them with the offset of the operator that failed.
 func applyBinary(op Op, l, r Value) (Value, error) {
+	// Equality is handled ahead of the table because section 1.2.5 defines it
+	// for EVERY pair of types — "5" == 5 is false, 5 == 5.0 is true — so it is
+	// never "unsupported". A missing table row means unsupported, so equality
+	// cannot be a row without the two meanings colliding.
+	switch op {
+	case OpEq:
+		return Bool(valuesEqual(l, r)), nil
+	case OpNe:
+		return Bool(!valuesEqual(l, r)), nil
+	}
+
 	fn, ok := binaryOps[opKey{op, l.Kind, r.Kind}]
 	if !ok {
 		return Value{}, fmt.Errorf("unsupported operand types for %s: %s and %s", op, l.Kind, r.Kind)
@@ -335,3 +367,97 @@ func notContainsString(l, r Value) (Value, error) {
 func negFloat(v Value) (Value, error) { return floatValue(-v.AsFloat()) }
 
 func notBool(v Value) (Value, error) { return Bool(!v.AsBool()), nil }
+
+// ordering turns a three-way comparison into the binaryFunc for one ordering
+// operator. Ordering is same-type-only in sub-project A: section 2.1.4's
+// int/float and string/path cross-pairs are implicit coercion, which is
+// sub-project B's, and until then the missing row reports it correctly.
+func ordering(op Op, compare func(l, r Value) int) binaryFunc {
+	return func(l, r Value) (Value, error) {
+		c := compare(l, r)
+		switch op {
+		case OpLt:
+			return Bool(c < 0), nil
+		case OpGt:
+			return Bool(c > 0), nil
+		case OpLe:
+			return Bool(c <= 0), nil
+		case OpGe:
+			return Bool(c >= 0), nil
+		}
+		return Value{}, fmt.Errorf("%s is not an ordering operator", op)
+	}
+}
+
+func compareInts(l, r Value) int { return cmp.Compare(l.AsInt(), r.AsInt()) }
+
+func compareFloats(l, r Value) int { return cmp.Compare(l.AsFloat(), r.AsFloat()) }
+
+func compareStrings(l, r Value) int { return strings.Compare(l.AsStr(), r.AsStr()) }
+
+// compareBools orders False before True (spec section 2.1.4).
+func compareBools(l, r Value) int { return cmp.Compare(boolRank(l.AsBool()), boolRank(r.AsBool())) }
+
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// valuesEqual implements cross-type equality (spec section 1.2.5):
+//
+//   - int vs float compare numerically, so 5 == 5.0
+//   - bool vs any non-bool is always unequal, so true == 1 is false
+//   - string vs a number is always unequal, so "5" == 5 is false
+//   - null equals only null
+//   - every other cross-type pair is unequal
+//
+// The list/range_expr and string/path rules belong to sub-project B, which
+// adds their kinds.
+//
+// The null and bool cases are split out from numericOrStringEqual below
+// purely to keep this function's cyclomatic complexity under the repo's
+// lint threshold; the combined behavior is unchanged.
+func valuesEqual(l, r Value) bool {
+	switch {
+	case l.Kind == KindNull || r.Kind == KindNull:
+		return l.Kind == r.Kind
+	case l.Kind == KindBool || r.Kind == KindBool:
+		return l.Kind == r.Kind && l.AsBool() == r.AsBool()
+	}
+	return numericOrStringEqual(l, r)
+}
+
+// numericOrStringEqual handles the int/float/string cases of valuesEqual.
+// Callers must have already excluded null and bool operands.
+func numericOrStringEqual(l, r Value) bool {
+	switch {
+	case l.Kind == KindInt && r.Kind == KindInt:
+		return l.AsInt() == r.AsInt()
+	case l.Kind == KindFloat && r.Kind == KindFloat:
+		return l.AsFloat() == r.AsFloat()
+	case l.Kind == KindInt && r.Kind == KindFloat:
+		return intEqualsFloat(l.AsInt(), r.AsFloat())
+	case l.Kind == KindFloat && r.Kind == KindInt:
+		return intEqualsFloat(r.AsInt(), l.AsFloat())
+	case l.Kind == KindString && r.Kind == KindString:
+		return l.AsStr() == r.AsStr()
+	}
+	return false
+}
+
+// intEqualsFloat compares an int64 to a float64 exactly. Converting the int to
+// float64 and comparing would lose precision above 2^53, making distinct
+// integers look equal.
+func intEqualsFloat(i int64, f float64) bool {
+	if f != math.Trunc(f) {
+		return false
+	}
+	// float64(math.MaxInt64) is exactly 2^63, one past the last representable
+	// int64, so the upper bound is a >= test.
+	if f < math.MinInt64 || f >= float64(math.MaxInt64) {
+		return false
+	}
+	return int64(f) == i
+}

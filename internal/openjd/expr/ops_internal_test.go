@@ -192,6 +192,7 @@ func TestApplyBinary_FloatErrors(t *testing.T) {
 		{"zero to a negative power", OpPow, 0, -1, "negative power"},
 		{"negative base to a fractional power", OpPow, -2, 0.5, "fractional power"},
 		{"overflow to infinity", OpMul, 1e300, 1e300, "infinite"},
+		{"floor divide whose true quotient exceeds int64 range", OpFloorDiv, 1e300, 1.0, "overflow"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -216,6 +217,7 @@ func TestApplyBinary_StringOperators(t *testing.T) {
 		{"does not contain", OpIn, "xyz", "hello", Bool(false)},
 		{"not contains", OpNotIn, "xyz", "hello", Bool(true)},
 		{"not contains when present", OpNotIn, "ell", "hello", Bool(false)},
+		{"empty substring is always contained", OpIn, "", "hello", Bool(true)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -271,6 +273,110 @@ func TestApplyUnary_NotRequiresBool(t *testing.T) {
 	for _, v := range []Value{Int(1), String(""), Null(), Float(0)} {
 		if _, err := applyUnary(OpNot, v); err == nil {
 			t.Errorf("not %v succeeded; want unsupported operand type", v.Kind)
+		}
+	}
+}
+
+func TestApplyBinary_Ordering(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		l, r Value
+		want bool
+	}{
+		{"int less than", OpLt, Int(1), Int(2), true},
+		{"int not less than", OpLt, Int(2), Int(1), false},
+		{"int greater than", OpGt, Int(2), Int(1), true},
+		{"int less or equal at the boundary", OpLe, Int(2), Int(2), true},
+		{"int greater or equal at the boundary", OpGe, Int(2), Int(2), true},
+		{"float less than", OpLt, Float(1.5), Float(2.5), true},
+		{"string orders lexicographically", OpLt, String("abc"), String("abd"), true},
+		{"string prefix orders first", OpLt, String("ab"), String("abc"), true},
+		{"false is less than true", OpLt, Bool(false), Bool(true), true},
+		{"true is not less than false", OpLt, Bool(true), Bool(false), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyBinary(tt.op, tt.l, tt.r)
+			if err != nil {
+				t.Fatalf("applyBinary: %v", err)
+			}
+			if got != Bool(tt.want) {
+				t.Errorf("= %v; want %v", got, Bool(tt.want))
+			}
+		})
+	}
+}
+
+func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
+	// Section 2.1.4 permits int/float and string/path cross-pairs, but both
+	// are implicit coercion, which is sub-project B's. Until then, an error.
+	for _, tt := range []struct{ l, r Value }{
+		{Int(1), Float(2.5)},
+		{Float(1.5), Int(2)},
+		{String("a"), Int(1)},
+		{Bool(true), Int(1)},
+		{Null(), Null()},
+	} {
+		if _, err := applyBinary(OpLt, tt.l, tt.r); err == nil {
+			t.Errorf("%s < %s succeeded; want unsupported operand types", tt.l.Kind, tt.r.Kind)
+		}
+	}
+}
+
+func TestValuesEqual_Section125(t *testing.T) {
+	tests := []struct {
+		name string
+		l, r Value
+		want bool
+	}{
+		{"equal ints", Int(5), Int(5), true},
+		{"unequal ints", Int(5), Int(6), false},
+		{"equal floats", Float(1.5), Float(1.5), true},
+		{"int equals an exactly equal float", Int(5), Float(5), true},
+		{"float equals an exactly equal int", Float(5), Int(5), true},
+		{"int does not equal a fractional float", Int(5), Float(5.5), false},
+		{
+			"large int is not confused by float precision",
+			Int(9007199254740993), Float(9007199254740992), false,
+		},
+		{"equal strings", String("a"), String("a"), true},
+		{"string never equals a number", String("5"), Int(5), false},
+		{"number never equals a string", Float(5), String("5"), false},
+		{"bool never equals a number", Bool(true), Int(1), false},
+		{"number never equals a bool", Int(1), Bool(true), false},
+		{"equal bools", Bool(true), Bool(true), true},
+		{"unequal bools", Bool(true), Bool(false), false},
+		{"null equals null", Null(), Null(), true},
+		{"null never equals a value", Null(), Int(0), false},
+		{"a value never equals null", String(""), Null(), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := valuesEqual(tt.l, tt.r); got != tt.want {
+				t.Errorf("valuesEqual(%v, %v) = %v; want %v", tt.l, tt.r, got, tt.want)
+			}
+			// != must always be the exact negation.
+			ne, err := applyBinary(OpNe, tt.l, tt.r)
+			if err != nil {
+				t.Fatalf("applyBinary(OpNe): %v", err)
+			}
+			if ne != Bool(!tt.want) {
+				t.Errorf("!= gave %v; want %v", ne, Bool(!tt.want))
+			}
+		})
+	}
+}
+
+func TestApplyBinary_EqualityIsNeverUnsupported(t *testing.T) {
+	// Unlike ordering, == and != are defined for every pair of types, so they
+	// must never report "unsupported operand types".
+	all := []Value{Null(), Bool(true), Int(1), Float(1.5), String("x")}
+	for _, l := range all {
+		for _, r := range all {
+			if _, err := applyBinary(OpEq, l, r); err != nil {
+				t.Errorf("%s == %s returned %v; equality is total", l.Kind, r.Kind, err)
+			}
 		}
 	}
 }
