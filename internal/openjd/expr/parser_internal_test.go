@@ -197,3 +197,102 @@ func TestExpression_Source(t *testing.T) {
 		t.Errorf("Source() = %q; want %q", e.Source(), src)
 	}
 }
+
+func TestParse_ComparisonAndLogical(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"simple comparison", "1 < 2", "(cmp 1 < 2)"},
+		{"chained comparison", "1 < 2 < 3", "(cmp 1 < 2 < 3)"},
+		{"long chain", "1 <= 2 == 2 != 3 >= 0", "(cmp 1 <= 2 == 2 != 3 >= 0)"},
+		{"arithmetic binds tighter than comparison", "1 + 2 < 4", "(cmp (+ 1 2) < 4)"},
+		{"membership", "'a' in Param.S", `(cmp "a" in Param.S)`},
+		{"negated membership", "'a' not in Param.S", `(cmp "a" not in Param.S)`},
+		{"not binds looser than comparison", "not 1 < 2", "(not (cmp 1 < 2))"},
+		{"stacked not", "not not true", "(not (not true))"}, //nolint:dupword // "not not" is a legitimate double negation, not a typo
+		{"and binds tighter than or", "a or b and c", "(or a (and b c))"},
+		{"and is left associative", "a and b and c", "(and (and a b) c)"},
+		{"or is left associative", "a or b or c", "(or (or a b) c)"},
+		{"not binds tighter than and", "not a and b", "(and (not a) b)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mustRender(t, tt.src); got != tt.want {
+				t.Errorf("Parse(%q) = %s; want %s", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_Conditional(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"simple", "1 if true else 2", "(if true 1 2)"},
+		{"right associative", "1 if a else 2 if b else 3", "(if a 1 (if b 2 3))"},
+		{"condition is an or expression", "1 if a or b else 2", "(if (or a b) 1 2)"},
+		{"branches take whole expressions", "x + 1 if c else y * 2", "(if c (+ x 1) (* y 2))"},
+		{"json aliases in a conditional", "'--flag' if true else null", `(if true "--flag" null)`},
+		{
+			"contextual keyword attributes around keywords",
+			"Param.if if Param.flag else Param.else", "(if Param.flag Param.if Param.else)",
+		},
+		{
+			"spans lines", "\"high\"\n  if Param.Q == \"final\"\n  else \"low\"",
+			`(if (cmp Param.Q == "final") "high" "low")`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mustRender(t, tt.src); got != tt.want {
+				t.Errorf("Parse(%q) = %s; want %s", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_ConditionalRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		wantMsg string
+	}{
+		{"missing else", "1 if true", `expected "else"`},
+		{"missing else branch", "1 if true else", "unexpected end of expression"},
+		{"missing condition", "1 if else 2", `unexpected keyword "else"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.src)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error; want an error", tt.src)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestParse_CompareNodeShape(t *testing.T) {
+	// A chain must be one Compare node so each intermediate value is evaluated
+	// once (section 1.3.6), not nested Binary nodes.
+	e, err := Parse("1 < 2 < 3")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cmp, ok := e.Root().(*Compare)
+	if !ok {
+		t.Fatalf("root is %T; want *Compare", e.Root())
+	}
+	if len(cmp.Ops) != 2 || len(cmp.Operands) != 3 {
+		t.Fatalf("got %d ops and %d operands; want 2 and 3", len(cmp.Ops), len(cmp.Operands))
+	}
+	if cmp.Offset != 2 {
+		t.Errorf("Offset = %d; want 2 (the first \"<\")", cmp.Offset)
+	}
+}

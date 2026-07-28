@@ -92,10 +92,153 @@ var primaryKeywords = map[string]bool{
 	"not": true, "for": true, "in": true,
 }
 
-// parseExpr is the entry production. Task 7 of the implementation plan
-// replaces the body with p.parseConditional() once the outer precedence
-// levels exist.
-func (p *parser) parseExpr() (Node, error) { return p.parseAdd() }
+// parseExpr is the entry production: the full <StringInterpExpr>.
+func (p *parser) parseExpr() (Node, error) { return p.parseConditional() }
+
+// keyword reports whether tok is the contextual keyword word. Section 1.1.3
+// makes keywords contextual: the lexer emits every identifier as tokIdent and
+// the parser decides, by position, whether a given one is a keyword. That is
+// what keeps "Param.if" a valid attribute reference.
+func keyword(tok token, word string) bool {
+	return tok.kind == tokIdent && tok.text == word
+}
+
+// parseConditional implements
+// <ConditionalExpr> ::= <OrExpr> ("if" <OrExpr> "else" <ConditionalExpr>)?.
+// The else branch recurses into parseConditional, making the form
+// right-associative: "a if p else b if q else c" groups as
+// "a if p else (b if q else c)".
+func (p *parser) parseConditional() (Node, error) {
+	then, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	tok := p.peek()
+	if !keyword(tok, "if") {
+		return then, nil
+	}
+	p.advance()
+
+	cond, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if elseTok := p.peek(); !keyword(elseTok, "else") {
+		return nil, p.errorAtTok(elseTok,
+			`expected "else" to complete the conditional expression, found %s`, elseTok.kind)
+	}
+	p.advance()
+
+	otherwise, err := p.parseConditional()
+	if err != nil {
+		return nil, err
+	}
+	return &Cond{Offset: tok.offset, Then: then, If: cond, Else: otherwise}, nil
+}
+
+// parseOr implements <OrExpr> ::= <AndExpr> ("or" <AndExpr>)*.
+func (p *parser) parseOr() (Node, error) {
+	return p.parseLogicalLevel("or", OpOr, p.parseAnd)
+}
+
+// parseAnd implements <AndExpr> ::= <NotExpr> ("and" <NotExpr>)*.
+func (p *parser) parseAnd() (Node, error) {
+	return p.parseLogicalLevel("and", OpAnd, p.parseNot)
+}
+
+// parseLogicalLevel parses one left-associative run of a keyword operator.
+// These build Logical rather than Binary nodes: section 2.1.6 makes "and" and
+// "or" short-circuiting and value-returning, so they never reach the operand
+// dispatch table.
+func (p *parser) parseLogicalLevel(word string, op Op, next func() (Node, error)) (Node, error) {
+	left, err := next()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.peek()
+		if !keyword(tok, word) {
+			return left, nil
+		}
+		p.advance()
+		right, err := next()
+		if err != nil {
+			return nil, err
+		}
+		left = &Logical{Offset: tok.offset, Op: op, L: left, R: right}
+	}
+}
+
+// parseNot implements <NotExpr> ::= "not" <NotExpr> | <CompareExpr>.
+func (p *parser) parseNot() (Node, error) {
+	tok := p.peek()
+	if !keyword(tok, "not") {
+		return p.parseCompare()
+	}
+	p.advance()
+	x, err := p.parseNot()
+	if err != nil {
+		return nil, err
+	}
+	return &Unary{Offset: tok.offset, Op: OpNot, X: x}, nil
+}
+
+var compareOps = map[tokenKind]Op{
+	tokLt: OpLt, tokGt: OpGt, tokLe: OpLe, tokGe: OpGe, tokEq: OpEq, tokNe: OpNe,
+}
+
+// parseCompare implements <CompareExpr> ::= <AddExpr> ((...) <AddExpr>)*.
+//
+// A run of comparisons collapses into a single Compare node rather than
+// nested Binary nodes: section 1.3.6 says "1 < 2 < 3" means "1 < 2 and 2 < 3"
+// with each intermediate value evaluated exactly once, which nesting cannot
+// express.
+func (p *parser) parseCompare() (Node, error) {
+	first, err := p.parseAdd()
+	if err != nil {
+		return nil, err
+	}
+	cmp := &Compare{Offset: first.Pos(), Operands: []Node{first}}
+	for {
+		tok := p.peek()
+		op, ok := p.compareOperator(tok)
+		if !ok {
+			if len(cmp.Ops) == 0 {
+				return first, nil
+			}
+			return cmp, nil
+		}
+		operand, err := p.parseAdd()
+		if err != nil {
+			return nil, err
+		}
+		cmp.Ops = append(cmp.Ops, op)
+		cmp.Operands = append(cmp.Operands, operand)
+		if len(cmp.Ops) == 1 {
+			cmp.Offset = tok.offset
+		}
+	}
+}
+
+// compareOperator consumes a comparison operator if one is next and reports
+// which it was. It handles the two-word "not in" form, which is why the caller
+// cannot simply look the token up in compareOps.
+func (p *parser) compareOperator(tok token) (Op, bool) {
+	if op, ok := compareOps[tok.kind]; ok {
+		p.advance()
+		return op, true
+	}
+	if keyword(tok, "in") {
+		p.advance()
+		return OpIn, true
+	}
+	if keyword(tok, "not") && p.pos+1 < len(p.toks) && keyword(p.toks[p.pos+1], "in") {
+		p.advance()
+		p.advance()
+		return OpNotIn, true
+	}
+	return 0, false
+}
 
 var (
 	addOps = map[tokenKind]Op{tokPlus: OpAdd, tokMinus: OpSub}
