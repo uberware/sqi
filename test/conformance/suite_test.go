@@ -148,7 +148,10 @@ func TestConformance_EXPRNotRegistered(t *testing.T) {
 		t.Fatal("internal/openjd now registers EXPR.\n" +
 			"The expression-level conformance path is obsolete: delete\n" +
 			"test/conformance/exprcase.go, exprcase_test.go, baseline-expr.txt,\n" +
-			"TestConformance_Expressions and this test, and let\n" +
+			"TestConformance_Expressions, collectEXPRFixtures, this test, and the\n" +
+			"exprSuiteDir, exprBaselinePath, minExpectedExprFixtures and\n" +
+			"minExpectedPasses constants; also delete the \"EXPR: a temporary,\n" +
+			"second scoring path\" section of docs/openjd-conformance.md; then let\n" +
 			"TestConformance_Templates score EXPR/job_templates end to end.")
 	}
 }
@@ -204,8 +207,9 @@ func TestConformance_Expressions(t *testing.T) {
 	// A run in which almost nothing passes means the reader is broken, not
 	// that the fixtures are hard: the suite's 29 expr1.1--reject-* fixtures
 	// plus the unclosed, syntax-error and leading-zeros cases are rejected by
-	// grammar alone, and the arithmetic, comparison, conditional,
-	// contextual-keyword and JSON-alias fixtures parse.
+	// grammar alone, and the arithmetic, contextual-keyword and JSON-alias
+	// fixtures parse. The comparison and conditional fixtures each also
+	// contain a list literal, so they are baselined.
 	passed := 0
 	for _, r := range results {
 		if r.Passed {
