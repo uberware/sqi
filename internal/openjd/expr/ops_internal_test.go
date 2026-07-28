@@ -370,8 +370,11 @@ func TestValuesEqual_Section125(t *testing.T) {
 
 func TestApplyBinary_EqualityIsNeverUnsupported(t *testing.T) {
 	// Unlike ordering, == and != are defined for every pair of types, so they
-	// must never report "unsupported operand types".
-	all := []Value{Null(), Bool(true), Int(1), Float(1.5), String("x")}
+	// must never report "unsupported operand types". The pairwise check is
+	// driven off sampleValues below, which is itself keyed from kindNames —
+	// the package's real kind table in value.go — so a future Kind added
+	// there cannot silently drop out of this loop.
+	all := sampleValues(t)
 	for _, l := range all {
 		for _, r := range all {
 			if _, err := applyBinary(OpEq, l, r); err != nil {
@@ -379,4 +382,50 @@ func TestApplyBinary_EqualityIsNeverUnsupported(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestApplyBinary_EqualitySelfEquality asserts that a value of every kind
+// equals itself. A missing row in numericOrStringEqual (or valuesEqual) falls
+// through to "return false" instead of an "unsupported operand types" error,
+// so a future Kind added without extending that logic would otherwise
+// compare unequal to itself with no loud signal. Driving the loop from
+// sampleValues, rather than a hardcoded list, means that case fails this test
+// instead.
+func TestApplyBinary_EqualitySelfEquality(t *testing.T) {
+	for _, v := range sampleValues(t) {
+		out, err := applyBinary(OpEq, v, v)
+		if err != nil {
+			t.Errorf("%s == %s returned error %v; equality is total", v.Kind, v.Kind, err)
+			continue
+		}
+		if !out.AsBool() {
+			t.Errorf("a %s value did not equal itself", v.Kind)
+		}
+	}
+}
+
+// sampleValues returns one representative Value per Kind in kindNames, the
+// package's real kind table (value.go), so tests driven from it cannot drift
+// from the actual kind set as sub-projects B and C add kinds.
+func sampleValues(t *testing.T) []Value {
+	t.Helper()
+	samples := map[Kind]Value{
+		KindNull:   Null(),
+		KindBool:   Bool(true),
+		KindInt:    Int(1),
+		KindFloat:  Float(1.5),
+		KindString: String("x"),
+	}
+	values := make([]Value, 0, len(kindNames))
+	for k := range kindNames {
+		v, ok := samples[k]
+		if !ok {
+			// A new Kind was added to kindNames without a paired sample here.
+			// Fail loudly rather than silently leaving it out of the
+			// self-equality check this test exists to provide.
+			t.Fatalf("no sample Value registered for Kind %s (%d); add one to samples in sampleValues", k, k)
+		}
+		values = append(values, v)
+	}
+	return values
 }
