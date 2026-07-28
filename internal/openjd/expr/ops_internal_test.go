@@ -512,26 +512,28 @@ func TestUnaryShapes_DeclaredReturnTypes(t *testing.T) {
 }
 
 func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
-	// Section 2.1.1: mixing int and float promotes the int. Sub-project A
-	// reported this as unsupported; the coercing pass now handles it, and this is
-	// the single most visible behavior change in B1.
+	// Section 2.1.1: mixing int and float promotes the int and uses the float
+	// overload. Sub-project A reported this as unsupported; the coercing pass
+	// now handles it, and this is the single most visible behavior change in
+	// B1. Each operator is exercised in both operand orders.
 	tests := []struct {
 		name string
+		op   Op
 		l, r Value
 		want Value
 	}{
-		{"int plus float", Int(1), Float(2.5), Float(3.5)},
-		{"float plus int", Float(2.5), Int(1), Float(3.5)},
-		{"int minus float", Int(1), Float(0.5), Float(0.5)},
-		{"int times float", Int(2), Float(1.5), Float(3)},
-		{"int divided by float", Int(3), Float(2), Float(1.5)},
+		{"int plus float", OpAdd, Int(1), Float(2.5), Float(3.5)},
+		{"float plus int", OpAdd, Float(2.5), Int(1), Float(3.5)},
+		{"int minus float", OpSub, Int(1), Float(0.5), Float(0.5)},
+		{"float minus int", OpSub, Float(2.5), Int(1), Float(1.5)},
+		{"int times float", OpMul, Int(2), Float(1.5), Float(3)},
+		{"float times int", OpMul, Float(1.5), Int(2), Float(3)},
+		{"int divided by float", OpDiv, Int(3), Float(2), Float(1.5)},
+		{"float divided by int", OpDiv, Float(3), Int(2), Float(1.5)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(OpAdd, tt.l, tt.r)
-			if tt.name != "int plus float" && tt.name != "float plus int" {
-				return // the non-addition cases are covered below
-			}
+			got, err := applyBinary(tt.op, tt.l, tt.r)
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}

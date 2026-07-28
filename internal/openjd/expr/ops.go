@@ -405,9 +405,12 @@ func negFloat(v Value) (Value, error) { return floatValue(-v.AsFloat()) }
 func notBool(v Value) (Value, error) { return Bool(!v.AsBool()), nil }
 
 // ordering turns a three-way comparison into the binaryFunc for one ordering
-// operator. Ordering is same-type-only in sub-project A: section 2.1.4's
-// int/float and string/path cross-pairs are implicit coercion, which is
-// sub-project B's, and until then the missing row reports it correctly.
+// operator. Each ordering shape it backs is declared same-type (int/int,
+// float/float, string/string, bool/bool); section 2.1.4's compatible
+// cross-pairs — int/float and string/path — reach a same-type shape by
+// promotion during shape matching (shape.go's argCost), not by an extra row
+// here. A cross-type pair that is not one of those two compatible pairs still
+// has no shape to promote into, so it is correctly reported as unsupported.
 func ordering(op Op, compare func(l, r Value) int) binaryFunc {
 	return func(l, r Value) (Value, error) {
 		c := compare(l, r)
