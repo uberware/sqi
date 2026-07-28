@@ -373,6 +373,31 @@ func TestEval_LogicalShortCircuits(t *testing.T) {
 	}
 }
 
+func TestTruthy_PlaceholderIsNotFalsy(t *testing.T) {
+	// truthy used to read the vestigial Kind field, which Unresolved leaves at
+	// its zero value — the same zero value as KindNull — so a placeholder was
+	// silently misread as null and treated as falsy. Task 13 still owns the
+	// real semantics (a placeholder should union with the other operand's
+	// type), but this narrow property — a placeholder is not mistaken for
+	// null — must survive that rework.
+	tests := []struct {
+		name string
+		v    Value
+		want bool
+	}{
+		{"null is falsy", Null(), false},
+		{"false is falsy", Bool(false), false},
+		{"a placeholder is not falsy", Unresolved(TBool), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truthy(tt.v); got != tt.want {
+				t.Errorf("truthy(%s) = %v; want %v", tt.v, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEval_Conditional(t *testing.T) {
 	syms := MapSymbols{"Param.Q": String("final")}
 	tests := []struct {

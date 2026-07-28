@@ -145,9 +145,9 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 		// rather than call it blind: sub-project B's unresolved[bool] (a
 		// chain link whose result is not yet known) must fail with a
 		// positioned error here, not panic.
-		if out.Kind != KindBool {
+		if out.Type.Code != CodeBool {
 			return Value{}, wrapAt(src, n.OpOffsets[i],
-				fmt.Errorf("comparison operator %s did not produce a bool: %s", op, out.Kind))
+				fmt.Errorf("comparison operator %s did not produce a bool: %s", op, out.Type))
 		}
 		if !out.AsBool() {
 			return Bool(false), nil
@@ -179,10 +179,10 @@ func evalLogical(n *Logical, src string, syms Symbols) (Value, error) {
 // "Param.X or 'fallback'" a null-coalescing operator rather than an
 // empty-string test.
 func truthy(v Value) bool {
-	switch v.Kind {
-	case KindNull:
+	switch v.Type.Code {
+	case CodeNull:
 		return false
-	case KindBool:
+	case CodeBool:
 		return v.AsBool()
 	}
 	return true
@@ -197,9 +197,9 @@ func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	if cond.Kind != KindBool {
+	if cond.Type.Code != CodeBool {
 		return Value{}, errorAt(src, n.If.Pos(),
-			"the condition of a conditional expression must be a bool, found %s", cond.Kind)
+			"the condition of a conditional expression must be a bool, found %s", cond.Type)
 	}
 	if cond.AsBool() {
 		return evalNode(n.Then, src, syms)
