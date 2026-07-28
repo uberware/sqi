@@ -134,6 +134,46 @@ func TestEval_ErrorUnwrapsToTheCause(t *testing.T) {
 	}
 }
 
+func TestEval_UnaryErrorBlamesTheOperator(t *testing.T) {
+	// The offset must point at the unary operator itself, not the start of the
+	// expression or the operand it failed to apply to.
+	_, err := evalSrc(t, "1 + -'x'", nil)
+	if err == nil {
+		t.Fatal("Eval = nil error; want unsupported operand type")
+	}
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("error is %T; want *Error", err)
+	}
+	if e.Offset != 4 {
+		t.Errorf("Offset = %d; want 4 (the unary \"-\")", e.Offset)
+	}
+	if !strings.Contains(e.Error(), "unsupported operand type for -: string") {
+		t.Errorf("error = %q; want it to name the unary operator and the kind", e.Error())
+	}
+}
+
+func TestEval_NestedSubexpressionErrorBlamesTheInnerOperator(t *testing.T) {
+	// "1 + (2 / 0)": the division fails inside the parens. The reported
+	// offset must blame the inner "/" and not the outer "+" that never got
+	// applied — this pins the innermost-failing-operator-wins, no-double-wrap
+	// property.
+	_, err := evalSrc(t, "1 + (2 / 0)", nil)
+	if err == nil {
+		t.Fatal("Eval = nil error; want division by zero")
+	}
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("error is %T; want *Error", err)
+	}
+	if e.Offset != 7 {
+		t.Errorf("Offset = %d; want 7 (the inner \"/\")", e.Offset)
+	}
+	if !errors.Is(err, errDivideByZero) {
+		t.Errorf("errors.Is(err, errDivideByZero) = false; err = %v", err)
+	}
+}
+
 func TestEval_Arithmetic(t *testing.T) {
 	tests := []struct {
 		src  string
@@ -161,5 +201,168 @@ func TestEval_Arithmetic(t *testing.T) {
 				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
 			}
 		})
+	}
+}
+
+func TestEval_ChainedComparison(t *testing.T) {
+	tests := []struct {
+		src  string
+		want Value
+	}{
+		{"1 < 2", Bool(true)},
+		{"2 < 1", Bool(false)},
+		{"1 < 2 < 3", Bool(true)},
+		{"1 < 3 < 2", Bool(false)},
+		{"3 < 2 < 1", Bool(false)},
+		{"1 <= 1 <= 1", Bool(true)},
+		{"5 == 5.0", Bool(true)},
+		{`'5' == 5`, Bool(false)},
+		{"true == 1", Bool(false)},
+		{"None == None", Bool(true)},
+		{"1 != 2", Bool(true)},
+		{`'ell' in 'hello'`, Bool(true)},
+		{`'zzz' not in 'hello'`, Bool(true)},
+		{`'abc' < 'abd'`, Bool(true)},
+		{"false < true", Bool(true)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			got, err := evalSrc(t, tt.src, nil)
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("= %v; want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEval_ChainShortCircuitsBeforeABadOperand(t *testing.T) {
+	// "1 > 2" is false, so the chain stops and Param.Missing is never looked
+	// up. If the chain evaluated eagerly this would fail with unknown symbol.
+	got, err := evalSrc(t, "1 > 2 > Param.Missing", MapSymbols{})
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got != Bool(false) {
+		t.Errorf("= %v; want false", got)
+	}
+}
+
+func TestEval_LogicalReturnsAnOperand(t *testing.T) {
+	// Section 2.1.6: and/or are value-returning, and only null and false are
+	// falsy. This is what makes "or" a null-coalescing operator.
+	syms := MapSymbols{
+		"Param.Null":  Null(),
+		"Param.False": Bool(false),
+		"Param.Zero":  Int(0),
+		"Param.Empty": String(""),
+		"Param.Name":  String("shot01"),
+	}
+	tests := []struct {
+		src  string
+		want Value
+	}{
+		{"Param.Null or 'fallback'", String("fallback")},
+		{"Param.False or 'fallback'", String("fallback")},
+		{"Param.Name or 'fallback'", String("shot01")},
+		{"Param.Zero or 'fallback'", Int(0)},
+		{"Param.Empty or 'fallback'", String("")},
+		{"Param.Null and 'never'", Null()},
+		{"Param.False and 'never'", Bool(false)},
+		{"Param.Name and 'reached'", String("reached")},
+		{"Param.Zero and 'reached'", String("reached")},
+		{"true and false", Bool(false)},
+		{"false or true", Bool(true)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			got, err := evalSrc(t, tt.src, syms)
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("= %v (%s); want %v (%s)", got, got.Kind, tt.want, tt.want.Kind)
+			}
+		})
+	}
+}
+
+func TestEval_LogicalShortCircuits(t *testing.T) {
+	// The right operand must not be evaluated when the left settles the
+	// answer, or the unknown symbol would surface.
+	syms := MapSymbols{"Param.False": Bool(false), "Param.True": Bool(true)}
+	for _, src := range []string{
+		"Param.False and Param.Missing",
+		"Param.True or Param.Missing",
+	} {
+		t.Run(src, func(t *testing.T) {
+			if _, err := evalSrc(t, src, syms); err != nil {
+				t.Errorf("Eval(%q) = %v; want the right operand to be skipped", src, err)
+			}
+		})
+	}
+}
+
+func TestEval_Conditional(t *testing.T) {
+	syms := MapSymbols{"Param.Q": String("final")}
+	tests := []struct {
+		src  string
+		want Value
+	}{
+		{"1 if true else 2", Int(1)},
+		{"1 if false else 2", Int(2)},
+		{`'high' if Param.Q == 'final' else 'low'`, String("high")},
+		{"'--flag' if true else null", String("--flag")},
+		{"'--flag' if false else null", Null()},
+		{"1 if false else 2 if true else 3", Int(2)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			got, err := evalSrc(t, tt.src, syms)
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("= %v; want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEval_ConditionalOnlyEvaluatesTheChosenBranch(t *testing.T) {
+	if _, err := evalSrc(t, "1 if true else Param.Missing", MapSymbols{}); err != nil {
+		t.Errorf("Eval = %v; want the else branch to be skipped", err)
+	}
+	if _, err := evalSrc(t, "Param.Missing if false else 2", MapSymbols{}); err != nil {
+		t.Errorf("Eval = %v; want the then branch to be skipped", err)
+	}
+}
+
+func TestEval_ConditionalRequiresABoolCondition(t *testing.T) {
+	// Section 1.3.5: there is no truthiness in a conditional, in deliberate
+	// contrast to and/or.
+	for _, src := range []string{"1 if 1 else 2", "1 if 'x' else 2", "1 if null else 2"} {
+		t.Run(src, func(t *testing.T) {
+			_, err := evalSrc(t, src, nil)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error; want a bool-condition error", src)
+			}
+			if !strings.Contains(err.Error(), "must be a bool") {
+				t.Errorf("error = %q; want it to say the condition must be a bool", err.Error())
+			}
+		})
+	}
+}
+
+func TestEvalFunc(t *testing.T) {
+	// The package-level one-step form.
+	got, err := Eval("Param.X * 2", MapSymbols{"Param.X": Int(21)})
+	if err != nil || got != Int(42) {
+		t.Errorf("Eval = %v, %v; want 42, nil", got, err)
+	}
+	if _, err := Eval("1 +", nil); err == nil {
+		t.Error("Eval of a syntax error = nil; want a parse error")
 	}
 }

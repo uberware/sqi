@@ -67,6 +67,12 @@ func evalNode(n Node, src string, syms Symbols) (Value, error) {
 		return evalUnary(v, src, syms)
 	case *Binary:
 		return evalBinary(v, src, syms)
+	case *Compare:
+		return evalCompare(v, src, syms)
+	case *Logical:
+		return evalLogical(v, src, syms)
+	case *Cond:
+		return evalCond(v, src, syms)
 	}
 	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
 }
@@ -108,4 +114,81 @@ func evalBinary(n *Binary, src string, syms Symbols) (Value, error) {
 		return Value{}, wrapAt(src, n.Offset, err)
 	}
 	return out, nil
+}
+
+// evalCompare evaluates a comparison chain (spec section 1.3.6). "1 < 2 < 3"
+// means "1 < 2 and 2 < 3" with each intermediate value evaluated EXACTLY ONCE,
+// so the loop carries the previous operand's value forward rather than
+// re-evaluating its node. A false link stops the chain, leaving the remaining
+// operands unevaluated.
+func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
+	left, err := evalNode(n.Operands[0], src, syms)
+	if err != nil {
+		return Value{}, err
+	}
+	for i, op := range n.Ops {
+		right, err := evalNode(n.Operands[i+1], src, syms)
+		if err != nil {
+			return Value{}, err
+		}
+		out, err := applyBinary(op, left, right)
+		if err != nil {
+			return Value{}, wrapAt(src, n.Offset, err)
+		}
+		if !out.AsBool() {
+			return Bool(false), nil
+		}
+		left = right
+	}
+	return Bool(true), nil
+}
+
+// evalLogical implements "and" and "or" (spec section 2.1.6). They are
+// short-circuiting and VALUE-RETURNING: they return one of their operands, not
+// necessarily a bool. That is why they are not rows in the operator table.
+func evalLogical(n *Logical, src string, syms Symbols) (Value, error) {
+	left, err := evalNode(n.L, src, syms)
+	if err != nil {
+		return Value{}, err
+	}
+	switch {
+	case n.Op == OpAnd && !truthy(left):
+		return left, nil
+	case n.Op == OpOr && truthy(left):
+		return left, nil
+	}
+	return evalNode(n.R, src, syms)
+}
+
+// truthy implements section 2.1.6's falsiness rule: ONLY null and false are
+// falsy. Unlike Python, 0, 0.0 and "" are all truthy, which is what makes
+// "Param.X or 'fallback'" a null-coalescing operator rather than an
+// empty-string test.
+func truthy(v Value) bool {
+	switch v.Kind {
+	case KindNull:
+		return false
+	case KindBool:
+		return v.AsBool()
+	}
+	return true
+}
+
+// evalCond implements "<then> if <cond> else <else>" (spec section 1.3.5). The
+// condition is evaluated first and must be a bool — there is no truthiness
+// here, in deliberate contrast to and/or — and only the chosen branch is
+// evaluated.
+func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
+	cond, err := evalNode(n.If, src, syms)
+	if err != nil {
+		return Value{}, err
+	}
+	if cond.Kind != KindBool {
+		return Value{}, errorAt(src, n.If.Pos(),
+			"the condition of a conditional expression must be a bool, found %s", cond.Kind)
+	}
+	if cond.AsBool() {
+		return evalNode(n.Then, src, syms)
+	}
+	return evalNode(n.Else, src, syms)
 }
