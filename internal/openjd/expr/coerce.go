@@ -376,12 +376,38 @@ func toFloat(v Value) (Value, error) {
 // (int, int) shape and drop the .5, and "'a' + 'b'" would select it by parsing
 // both strings as integers. Section 2.1.1 requires the opposite — "the int is
 // promoted to float and the float overload is used".
+//
+// unresolved is transparent on both sides, matching coercible's own rule: a
+// placeholder's constraint is what can fail or not, and a target that is
+// itself unresolved constrains no more tightly than its own constraint does.
+// Leaving either side wrapped would let a still-lossy constraint (unresolved's
+// float -> int, say) hide behind the "not a bare scalar" check below.
+//
+// A list conversion is elementwise, and lossless only when converting each
+// element is: list[float] -> list[int] is exactly as lossy, element by
+// element, as float -> int is on its own. The one exception is
+// list[nulltype], the empty list literal's type, which has no element that
+// could ever fail to convert.
 func losslesslyCoercible(from, to Type) bool {
+	if from.Code == CodeUnresolved && len(from.Params) == 1 {
+		return losslesslyCoercible(from.Params[0], to)
+	}
+	if to.Code == CodeUnresolved && len(to.Params) == 1 {
+		return losslesslyCoercible(from, to.Params[0])
+	}
 	if !coercible(from, to) {
 		return false
 	}
-	// A list conversion is elementwise over conversions that are themselves
-	// permitted, and none of the list rules can fail on a value.
+	if fromElem, ok := listElem(from); ok {
+		if fromElem.Code == CodeNull {
+			return true
+		}
+		if toElem, ok := listElem(to); ok {
+			return losslesslyCoercible(fromElem, toElem)
+		}
+	}
+	// Neither a list nor a bare scalar — any, nulltype and noreturn carry no
+	// conversion that can fail.
 	if !isScalarCode(from.Code) {
 		return true
 	}

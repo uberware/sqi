@@ -2,6 +2,8 @@
 
 package expr
 
+import "maps"
+
 // Shape is one accepted signature of an operator or function: the types it
 // takes, the type it gives back, and the code that computes it.
 //
@@ -134,6 +136,15 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 		len(param.Params) == 1 && len(arg.Params) == 1 {
 		return argCost(param.Params[0], arg.Params[0], b)
 	}
+	// A union parameter is scored member-wise, before the exact-match fallback
+	// below: the union as a whole is never Equal to one of its own members, so
+	// an exact member match (int against int | float | string) would otherwise
+	// be missed entirely. This is also more precise than testing membership by
+	// type code, which could not tell list[int] from list[string] inside the
+	// union — argCost's own list-descent handles that correctly per member.
+	if param.Code == CodeUnion {
+		return unionArgCost(param, arg, b)
+	}
 	if param.Equal(arg) {
 		return costExact, true
 	}
@@ -141,6 +152,36 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 		return costWiden, true
 	}
 	return 0, false
+}
+
+// unionArgCost scores arg against every member of a union parameter and keeps
+// the lowest-cost admissible member; the argument is inadmissible only if no
+// member is.
+//
+// Each member is tried against its own scratch copy of the bindings
+// accumulated so far, not the caller's b directly: trying member two must not
+// see a variable binding left behind by a failed or losing attempt at member
+// one. Only the winning member's bindings are folded back into b, so a type
+// variable never ends up bound to a type from a member that did not win.
+func unionArgCost(param, arg Type, b bindings) (int, bool) {
+	best := -1
+	var bestBindings bindings
+	for _, member := range param.Params {
+		scratch := make(bindings, len(b))
+		maps.Copy(scratch, b)
+		cost, ok := argCost(member, arg, scratch)
+		if !ok {
+			continue
+		}
+		if best < 0 || cost < best {
+			best, bestBindings = cost, scratch
+		}
+	}
+	if best < 0 {
+		return 0, false
+	}
+	maps.Copy(b, bestBindings)
+	return best, true
 }
 
 // isTypeVar reports whether c is one of the type-variable codes, which appear

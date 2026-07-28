@@ -170,3 +170,63 @@ func TestSubstitute(t *testing.T) {
 		})
 	}
 }
+
+// TestMatchShapes_UnionParameterMatchesAMember covers a real signature from
+// the spec's own function library, int(value: int | float | string) -> int:
+// a union parameter must accept an argument that is exactly one of its
+// members, scored at costExact rather than requiring any coercion at all.
+// Pitting it against an "any" shape (which always costs costWiden) is what
+// makes the exact-cost claim observable through matchShapes rather than by
+// reaching into argCost directly.
+func TestMatchShapes_UnionParameterMatchesAMember(t *testing.T) {
+	shapes := []Shape{
+		{Params: []Type{UnionOf(TInt, TFloat, TString)}, Ret: TInt, Fn: noFn},
+		{Params: []Type{TAny}, Ret: TBool, Fn: noFn},
+	}
+	tests := []struct {
+		name string
+		arg  Type
+	}{
+		{"an exact int member", TInt},
+		{"an exact float member", TFloat},
+		{"an exact string member", TString},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, ok := matchShapes(shapes, []Type{tt.arg})
+			if !ok {
+				t.Fatal("no shape matched")
+			}
+			if !got.Ret.Equal(TInt) {
+				t.Errorf("winner Ret = %s; want int — an exact member costs costExact and "+
+					"must beat the any shape's costWiden", got.Ret)
+			}
+		})
+	}
+}
+
+// TestMatchShapes_UnionParameterWidensToAMember checks that a union
+// parameter also accepts an argument that reaches one of its members by a
+// conversion that cannot fail, exactly as a bare parameter of that member's
+// type would. bool has exactly one reachable scalar target in the whole
+// coercion matrix — string, unconditionally, per section 1.2.3's
+// "bool/int/float/path -> string" — so this is unambiguous even though the
+// union offers three members: only the string member is ever reachable.
+func TestMatchShapes_UnionParameterWidensToAMember(t *testing.T) {
+	shapes := []Shape{{Params: []Type{UnionOf(TInt, TFloat, TString)}, Ret: TInt, Fn: noFn}}
+	if _, _, ok := matchShapes(shapes, []Type{TBool}); !ok {
+		t.Error("bool did not match a union offering string, which it widens to losslessly")
+	}
+}
+
+// TestMatchShapes_UnionParameterRejectsAMismatchedList pins the case a
+// membership test on type codes alone would get wrong: a union containing
+// list[int] must not accept list[string], even though "list" is among the
+// union's member codes — the element types differ and list[string] cannot
+// losslessly become list[int] (a string element can fail to parse).
+func TestMatchShapes_UnionParameterRejectsAMismatchedList(t *testing.T) {
+	shapes := []Shape{{Params: []Type{UnionOf(TInt, ListOf(TInt))}, Ret: TBool, Fn: noFn}}
+	if _, _, ok := matchShapes(shapes, []Type{ListOf(TString)}); ok {
+		t.Error("list[string] matched a union containing list[int]; want no match")
+	}
+}

@@ -109,6 +109,66 @@ func TestCoercible(t *testing.T) {
 	}
 }
 
+// TestLosslesslyCoercible covers the two defects the two-tier tests below
+// found in the first cut of losslesslyCoercible: an unresolved constraint on
+// either side must be unwrapped before the "not a bare scalar" shortcut can
+// see it, and a list conversion is lossless only when its element conversion
+// is — not simply because coercible permits it.
+func TestLosslesslyCoercible(t *testing.T) {
+	tests := []struct {
+		name string
+		from string // parsed with ParseType, so the table reads as the spec does
+		to   string
+		want bool
+	}{
+		// The already-passing cases, kept here so a future change to the
+		// unresolved/list branches is checked against the whole picture, not
+		// just the two defects below.
+		{"int to float widens", "int", "float", true},
+		{"float to int can fail", "float", "int", false},
+		{"string to int can fail", "string", "int", false},
+		{"string to float can fail", "string", "float", false},
+		{"path to string widens", "path", "string", true},
+		{"string to path widens", "string", "path", true},
+
+		// F2: unresolved must unwrap to its constraint on both sides before
+		// the scalar/non-scalar branch runs, exactly like coercible does.
+		{"unresolved float to int is still lossy", "unresolved[float]", "int", false},
+		{"unresolved int to float still widens", "unresolved[int]", "float", true},
+		{"int to unresolved float still widens", "int", "unresolved[float]", true},
+		{"float to unresolved int is still lossy", "float", "unresolved[int]", false},
+
+		// F3: a list conversion is only as lossless as its element
+		// conversion — coercible merely says the conversion is PERMITTED,
+		// not that it cannot fail on some value.
+		{"list of float to list of int can fail elementwise", "list[float]", "list[int]", false},
+		{"list of int to list of float widens elementwise", "list[int]", "list[float]", true},
+		{"list of string to list of int can fail elementwise", "list[string]", "list[int]", false},
+		// The empty-list literal's type has no element that could ever fail
+		// to convert, so it stays lossless into any list type.
+		{"list of nulltype reaches any list losslessly", "list[nulltype]", "list[int]", true},
+		// A nested list is elementwise too: the inner list[float] -> list[int]
+		// step is what makes the whole thing lossy.
+		{"nested list is lossy exactly when its element is", "list[list[float]]", "list[list[int]]", false},
+		{"nested list widens when its element does", "list[list[int]]", "list[list[float]]", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			from, err := ParseType(tt.from)
+			if err != nil {
+				t.Fatalf("ParseType(%q): %v", tt.from, err)
+			}
+			to, err := ParseType(tt.to)
+			if err != nil {
+				t.Fatalf("ParseType(%q): %v", tt.to, err)
+			}
+			if got := losslesslyCoercible(from, to); got != tt.want {
+				t.Errorf("losslesslyCoercible(%s, %s) = %v; want %v", from, to, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCoerce(t *testing.T) {
 	tests := []struct {
 		name   string
