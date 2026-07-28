@@ -198,3 +198,102 @@ func TestUnionOf_IsIdempotent(t *testing.T) {
 		})
 	}
 }
+
+func TestUnresolvedOf(t *testing.T) {
+	tests := []struct {
+		name string
+		in   Type
+		want string
+	}{
+		{"wraps a scalar", TInt, "unresolved[int]"},
+		{"wraps any as the bare shorthand", TAny, "unresolved"},
+		{"nested unresolved flattens", UnresolvedOf(TInt), "unresolved[int]"},
+		{"double nesting flattens to one", UnresolvedOf(UnresolvedOf(TString)), "unresolved[string]"},
+		{"wraps a union", UnionOf(TInt, TString), "unresolved[int | string]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UnresolvedOf(tt.in).String(); got != tt.want {
+				t.Errorf("UnresolvedOf(%s) = %q; want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListOf(t *testing.T) {
+	tests := []struct {
+		name string
+		elem Type
+		want string
+	}{
+		{"list of a scalar", TInt, "list[int]"},
+		{"list of a list", ListOf(TInt), "list[list[int]]"},
+		{"list of a union", UnionOf(TInt, TString), "list[int | string]"},
+		{"list of nulltype is the empty list type", TNull, "list[nulltype]"},
+		// The hoisting rule: a list of unresolved elements is an unresolved list.
+		{"unresolved element hoists out", UnresolvedOf(TInt), "unresolved[list[int]]"},
+		{"unresolved hoists out of a nested list too", ListOf(UnresolvedOf(TInt)), "unresolved[list[list[int]]]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ListOf(tt.elem).String(); got != tt.want {
+				t.Errorf("ListOf(%s) = %q; want %q", tt.elem, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOptionalOf(t *testing.T) {
+	tests := []struct {
+		name string
+		in   Type
+		want string
+	}{
+		{"scalar becomes optional", TInt, "int?"},
+		{"already optional is unchanged", UnionOf(TInt, TNull), "int?"},
+		{"nulltype alone stays nulltype", TNull, "nulltype"},
+		{"list becomes optional", ListOf(TPath), "list[path]?"},
+		{"union gains nulltype", UnionOf(TInt, TString), "int | string | nulltype"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := OptionalOf(tt.in).String(); got != tt.want {
+				t.Errorf("OptionalOf(%s) = %q; want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnresolvedIsAlwaysOutermost(t *testing.T) {
+	// The canonical form the ExprType section requires: unresolved is either
+	// absent or wraps the whole type. It never appears inside a list's element
+	// type or a union's members. Later tasks rely on being able to test for it
+	// by looking at the outermost code alone.
+	built := []Type{
+		ListOf(UnresolvedOf(TInt)),
+		UnionOf(TInt, UnresolvedOf(TString)),
+		UnionOf(UnresolvedOf(TInt), UnresolvedOf(TString)),
+		OptionalOf(UnresolvedOf(TInt)),
+		ListOf(ListOf(UnresolvedOf(TFloat))),
+	}
+	for _, typ := range built {
+		t.Run(typ.String(), func(t *testing.T) {
+			if typ.Code != CodeUnresolved {
+				t.Fatalf("%s: outermost code is %v; want CodeUnresolved", typ, typ.Code)
+			}
+			forEachNestedType(typ.Params[0], func(inner Type) {
+				if inner.Code == CodeUnresolved {
+					t.Errorf("%s: unresolved appears nested inside the constraint", typ)
+				}
+			})
+		})
+	}
+}
+
+// forEachNestedType calls fn on t and every type nested inside it.
+func forEachNestedType(t Type, fn func(Type)) {
+	fn(t)
+	for _, p := range t.Params {
+		forEachNestedType(p, fn)
+	}
+}

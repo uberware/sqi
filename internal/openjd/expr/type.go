@@ -251,3 +251,36 @@ func unionLess(a, b Type) bool {
 	}
 	return a.String() < b.String()
 }
+
+// UnresolvedOf builds the type of a value whose type is known but whose value is
+// not, per the spec's static-type-checking model. Nested unresolved types
+// flatten, so unresolved is idempotent.
+//
+// The value-level counterpart is Unresolved, which builds a Value; the -Of
+// suffix on the type constructors keeps the two apart.
+func UnresolvedOf(t Type) Type {
+	if t.Code == CodeUnresolved {
+		return t
+	}
+	return Type{Code: CodeUnresolved, Params: []Type{t}}
+}
+
+// ListOf builds a list type. An unresolved element type hoists outward — a list
+// of unresolved elements is an unresolved list — which keeps unresolved as the
+// outermost constructor, the canonical form the ExprType section requires.
+//
+// Section 1.2.1's constraints on the element type (no third level of nesting, no
+// optional element) are enforced by ParseType, where untrusted text enters.
+// Internal callers pass programmer-controlled types, so an error return here
+// would add an unfailing check to every call site.
+func ListOf(elem Type) Type {
+	if elem.Code == CodeUnresolved {
+		return UnresolvedOf(ListOf(elem.Params[0]))
+	}
+	return Type{Code: CodeList, Params: []Type{elem}}
+}
+
+// OptionalOf builds the type of a value that may also be null. The spec has no
+// separate optional code: "int?" is exactly the union of int and nulltype, and
+// UnionOf's normalization means applying this twice changes nothing.
+func OptionalOf(t Type) Type { return UnionOf(t, TNull) }
