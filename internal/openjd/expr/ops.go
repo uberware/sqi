@@ -126,20 +126,27 @@ var unaryShapes = map[Op][]Shape{
 // the operand types. Errors carry no position; the evaluator wraps them with the
 // offset of the operator that failed.
 func applyBinary(op Op, l, r Value) (Value, error) {
-	// Equality is handled ahead of the table because section 1.2.5 defines it
-	// for EVERY pair of types — "5" == 5 is false, 5 == 5.0 is true — so it is
-	// never "unsupported". No matching shape means unsupported, so equality
-	// cannot be a shape without the two meanings colliding.
 	switch op {
-	case OpEq:
-		return Bool(valuesEqual(l, r)), nil
-	case OpNe:
+	case OpEq, OpNe:
+		// Equality is total across types (section 1.2.5), so it is never
+		// unsupported — but with a placeholder it has no concrete answer
+		// either. A bare false would be wrong: the values may be equal at
+		// runtime.
+		if l.IsUnresolved() || r.IsUnresolved() {
+			return Unresolved(TBool), nil
+		}
+		if op == OpEq {
+			return Bool(valuesEqual(l, r)), nil
+		}
 		return Bool(!valuesEqual(l, r)), nil
 	}
 
 	s, b, ok := matchShapes(binaryShapes[op], []Type{l.Type, r.Type})
 	if !ok {
 		return Value{}, fmt.Errorf("unsupported operand types for %s: %s and %s", op, l.Type, r.Type)
+	}
+	if l.IsUnresolved() || r.IsUnresolved() {
+		return unresolvedResult(s, b), nil
 	}
 	return callShape(s, b, []Value{l, r})
 }
@@ -150,7 +157,21 @@ func applyUnary(op Op, v Value) (Value, error) {
 	if !ok {
 		return Value{}, fmt.Errorf("unsupported operand type for %s: %s", op, v.Type)
 	}
+	if v.IsUnresolved() {
+		return unresolvedResult(s, b), nil
+	}
 	return callShape(s, b, []Value{v})
+}
+
+// unresolvedResult is the whole reason a Shape declares a return type.
+//
+// When an operand has no value there is nothing to execute, so the result is
+// read off the matched shape instead: substitute the bound type variables into
+// the declared Ret and wrap it as a placeholder. Note that the shape was still
+// SELECTED by the operand types, so a type error is still caught here — this
+// path makes an expression checkable, not unconditionally valid.
+func unresolvedResult(s Shape, b bindings) Value {
+	return Unresolved(substitute(s.Ret, b))
 }
 
 // callShape coerces the arguments to the shape's declared parameter types and

@@ -578,3 +578,130 @@ func TestApplyBinary_StillRejectsWhatHasNoShape(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyBinary_PropagatesAPlaceholder(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		l, r Value
+		want string // the resulting type, rendered
+	}{
+		{"placeholder plus int", OpAdd, Unresolved(TInt), Int(1), "unresolved[int]"},
+		{"int plus placeholder", OpAdd, Int(1), Unresolved(TInt), "unresolved[int]"},
+		{"both placeholders", OpAdd, Unresolved(TInt), Unresolved(TInt), "unresolved[int]"},
+		{"placeholder floats", OpAdd, Unresolved(TFloat), Unresolved(TFloat), "unresolved[float]"},
+		{"placeholder strings concatenate", OpAdd, Unresolved(TString), String("x"), "unresolved[string]"},
+		// The declared return type is what answers this, so int / int is a float
+		// even though nothing was divided.
+		{"placeholder division is a float", OpDiv, Unresolved(TInt), Int(2), "unresolved[float]"},
+		{"placeholder floor division of floats is an int", OpFloorDiv, Unresolved(TFloat), Float(2), "unresolved[int]"},
+		// int ** int declares float | int, so the placeholder carries the union.
+		{"placeholder power is a union", OpPow, Unresolved(TInt), Int(2), "unresolved[float | int]"},
+		{"placeholder comparison is a bool", OpLt, Unresolved(TInt), Int(1), "unresolved[bool]"},
+		// Section 2.1.1's promotion applies to a placeholder too.
+		{"placeholder int promoted against a float", OpAdd, Unresolved(TInt), Float(1.5), "unresolved[float]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyBinary(tt.op, tt.l, tt.r)
+			if err != nil {
+				t.Fatalf("applyBinary: %v", err)
+			}
+			if !got.IsUnresolved() {
+				t.Fatalf("result is %s; want a placeholder", got.Type)
+			}
+			if got.Type.String() != tt.want {
+				t.Errorf("type = %q; want %q", got.Type.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyBinary_PlaceholderStillTypeChecks(t *testing.T) {
+	// A placeholder does not make everything succeed: its constraint still has
+	// to select a shape. This is what catches "Param.Name + 5" at check time,
+	// before any parameter value exists.
+	tests := []struct {
+		name string
+		l, r Value
+	}{
+		{"placeholder string plus int", Unresolved(TString), Int(5)},
+		{"int plus placeholder string", Int(5), Unresolved(TString)},
+		{"placeholder bool plus placeholder bool", Unresolved(TBool), Unresolved(TBool)},
+		{"placeholder list plus int", Unresolved(ListOf(TInt)), Int(1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := applyBinary(OpAdd, tt.l, tt.r); err == nil {
+				t.Error("applyBinary = nil error; want unsupported operand types")
+			}
+		})
+	}
+}
+
+func TestApplyUnary_PropagatesAPlaceholder(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		v    Value
+		want string
+	}{
+		{"negate a placeholder int", OpNeg, Unresolved(TInt), "unresolved[int]"},
+		{"negate a placeholder float", OpNeg, Unresolved(TFloat), "unresolved[float]"},
+		{"not a placeholder bool", OpNot, Unresolved(TBool), "unresolved[bool]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyUnary(tt.op, tt.v)
+			if err != nil {
+				t.Fatalf("applyUnary: %v", err)
+			}
+			if got.Type.String() != tt.want {
+				t.Errorf("type = %q; want %q", got.Type.String(), tt.want)
+			}
+		})
+	}
+	if _, err := applyUnary(OpNot, Unresolved(TInt)); err == nil {
+		t.Error("not on a placeholder int = nil error; want unsupported operand type")
+	}
+}
+
+func TestApplyBinary_EqualityWithAPlaceholder(t *testing.T) {
+	// Equality is total across types, so it never reports unsupported — but with
+	// a placeholder it cannot report a concrete answer either. A bare false would
+	// be a wrong answer: the values may be equal at runtime.
+	for _, op := range []Op{OpEq, OpNe} {
+		for _, pair := range [][2]Value{
+			{Unresolved(TInt), Int(1)},
+			{Int(1), Unresolved(TInt)},
+			{Unresolved(TString), Int(1)},
+			{Unresolved(TInt), Unresolved(TInt)},
+		} {
+			t.Run(op.String()+" "+pair[0].Type.String()+" "+pair[1].Type.String(), func(t *testing.T) {
+				got, err := applyBinary(op, pair[0], pair[1])
+				if err != nil {
+					t.Fatalf("applyBinary: %v", err)
+				}
+				if want := "unresolved[bool]"; got.Type.String() != want {
+					t.Errorf("type = %q; want %q", got.Type.String(), want)
+				}
+			})
+		}
+	}
+}
+
+func TestApplyBinary_PlaceholderChains(t *testing.T) {
+	// A placeholder result keeps propagating, so a longer expression does not
+	// fail at the second operator.
+	first, err := applyBinary(OpAdd, Unresolved(TInt), Int(1))
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	second, err := applyBinary(OpMul, first, Int(2))
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if want := "unresolved[int]"; second.Type.String() != want {
+		t.Errorf("type = %q; want %q", second.Type.String(), want)
+	}
+}
