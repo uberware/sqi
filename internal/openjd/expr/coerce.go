@@ -362,3 +362,51 @@ func toFloat(v Value) (Value, error) {
 	}
 	return Value{}, fmt.Errorf("%s %w to float", v.Type, errNotCoercible)
 }
+
+// losslesslyCoercible reports whether a value of type from can reach the target
+// type to by a conversion that CANNOT FAIL on any value.
+//
+// This is the subset of section 1.2.3 that overload selection may use. The full
+// matrix also permits float -> int, string -> int and string -> float, each of
+// which errors when the value does not fit — the spec's own examples are 3.75
+// and "3.1" to int, and "" and "nothing" to float. Those are legitimate where a
+// context demanded the type and is prepared for the failure, which is what
+// coerce() does at an explicit target. Choosing an operator overload with one
+// would silently discard information instead: "1 + 2.5" would select the
+// (int, int) shape and drop the .5, and "'a' + 'b'" would select it by parsing
+// both strings as integers. Section 2.1.1 requires the opposite — "the int is
+// promoted to float and the float overload is used".
+func losslesslyCoercible(from, to Type) bool {
+	if !coercible(from, to) {
+		return false
+	}
+	// A list conversion is elementwise over conversions that are themselves
+	// permitted, and none of the list rules can fail on a value.
+	if !isScalarCode(from.Code) {
+		return true
+	}
+	// The conditional rules all widen: int -> float, path -> string,
+	// range_expr -> string, range_expr -> list[int]. Only the single-scalar
+	// catch-all can select a narrowing conversion.
+	if coercibleConditional(from, to) {
+		return true
+	}
+	c, ok := singleScalarTarget(to)
+	if !ok {
+		return true
+	}
+	return !lossyScalarPair(from.Code, c)
+}
+
+// lossyScalarPair reports whether converting from -> to can fail on some value.
+// These are exactly the three conversions section 1.2.3 marks with a failure
+// condition.
+func lossyScalarPair(from, to Code) bool {
+	switch to {
+	case CodeInt:
+		return from == CodeFloat || from == CodeString
+	case CodeFloat:
+		return from == CodeString
+	}
+	return false
+}
