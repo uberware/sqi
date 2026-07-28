@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// render prints a tree as a fully parenthesised prefix form, so a test can
+// render prints a tree as a fully parenthesized prefix form, so a test can
 // state the shape a precedence rule must produce without asserting on struct
 // literals. "1 + 2 * 3" renders as "(+ 1 (* 2 3))".
 func render(n Node) string {

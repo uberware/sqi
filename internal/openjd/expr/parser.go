@@ -188,7 +188,7 @@ func (p *parser) parsePostfix() (Node, error) {
 		return nil, p.errorAtTok(tok, "function and method calls are not supported")
 	case tokDot:
 		// A Name consumes its own dots, so a dot reaching here follows a
-		// literal or a parenthesised expression.
+		// literal or a parenthesized expression.
 		return nil, p.errorAtTok(tok, "property access is not supported")
 	}
 	return x, nil
