@@ -296,3 +296,114 @@ func TestParse_CompareNodeShape(t *testing.T) {
 		t.Errorf("Offset = %d; want 2 (the first \"<\")", cmp.Offset)
 	}
 }
+
+func TestExpression_Names(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{"no names", "1 + 2", nil},
+		{"one name", "Param.X + 1", []string{"Param.X"}},
+		{"sorted and deduplicated", "Param.Z + Param.A + Param.Z", []string{"Param.A", "Param.Z"}},
+		{
+			"across every node kind", "Param.A if Param.B and Param.C < Param.D else -Param.E",
+			[]string{"Param.A", "Param.B", "Param.C", "Param.D", "Param.E"},
+		},
+		{"keyword attributes are ordinary names", "Param.if", []string{"Param.if"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.src, err)
+			}
+			got := e.Names()
+			if len(got) != len(tt.want) {
+				t.Fatalf("Names() = %v; want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("Names() = %v; want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestParse_RejectsPythonBeyondEXPR runs the exact expression bodies from the
+// EXPR conformance suite's expr1.1--reject-* fixtures. EXPR's grammar is a
+// subset of Python's, and the failure direction matters: a reader that
+// accepted any of these would let sqi admit a template it cannot evaluate.
+func TestParse_RejectsPythonBeyondEXPR(t *testing.T) {
+	tests := []struct {
+		fixture string
+		src     string
+	}{
+		{"reject-await", "await Param.X"},
+		{"reject-bitwise-and", "5 & 3"},
+		{"reject-bitwise-not", "~5"},
+		{"reject-bitwise-or", "5 | 3"},
+		{"reject-bitwise-xor", "5 ^ 3"},
+		{"reject-bstring", "b'hello'"},
+		{"reject-complex-literal", "1+2j"},
+		{"reject-dict-comp", "{k: k for k in [1,2]}"},
+		{"reject-dict-literal", "{'a': 1}"},
+		{"reject-double-star-arg", "len(**Items)"},
+		{"reject-ellipsis", "..."},
+		{"reject-fstring", "f'hello'"},
+		{"reject-generator-expr", "(x for x in [1,2])"},
+		{"reject-is-not-operator", "Param.X is not None"},
+		{"reject-is-operator", "Param.X is None"},
+		{"reject-keyword-arg", "len(x=1)"},
+		{"reject-lambda", "lambda x: x + 1"},
+		{"reject-left-shift", "5 << 1"},
+		{"reject-matmul", "Param.X @ Param.X"},
+		{"reject-multi-generator", "[x + y for x in [1,2] for y in [3,4]]"},
+		{"reject-multi-if-comp", "[x for x in [1,2,3,4,5] if x > 1 if x < 5]"},
+		{"reject-right-shift", "5 >> 1"},
+		{"reject-set-comp", "{x for x in [1,2]}"},
+		{"reject-set-literal", "{1, 2, 3}"},
+		{"reject-star-arg", "len(*Items)"},
+		{"reject-star-unpack", "[*[1,2], 3]"},
+		{"reject-tuple", "(1, 2, 3)"},
+		{"reject-tuple-unpack-comp", "[a + b for a, b in [[1,2], [3,4]]]"},
+		{"reject-walrus", "(x := 5)"},
+		{"unclosed-bracket", "[1, 2, 3"},
+		{"unclosed-paren", "(1 + 2"},
+		{"syntax-error", "1 + "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			e, err := Parse(tt.src)
+			if err == nil {
+				t.Fatalf("Parse(%q) accepted the expression (root %T); want a syntax error", tt.src, e.Root())
+			}
+			var pe *Error
+			if !errors.As(err, &pe) {
+				t.Errorf("error is %T; want *Error carrying a position", err)
+			}
+		})
+	}
+}
+
+// TestParse_AcceptsWhatEXPRRequires is the counterpart: sub-project A's
+// grammar must not have become so strict that it rejects valid expressions.
+func TestParse_AcceptsWhatEXPRRequires(t *testing.T) {
+	for _, src := range []string{
+		"Param.X + 3", "Param.X // 3", "2 ** 3", "-Param.X", "(Param.X + 1) * 2",
+		"true", "false", "null", "True", "False", "None",
+		"Param.if if Param.flag else Param.else",
+		"Param.not if not false else Param.None",
+		"0xFF_FF", "0b1010_1010", "0o52", "1_000_000", "1.5e-3", ".5",
+		`r'C:\renders\shot'`, `'''multi\nline'''`,
+		"1 < 2 < 3", "'a' in Param.S", "'a' not in Param.S",
+		"Param.A or 'fallback'", "Param.A and Param.B",
+	} {
+		t.Run(src, func(t *testing.T) {
+			if _, err := Parse(src); err != nil {
+				t.Errorf("Parse(%q) = %v; want it to parse", src, err)
+			}
+		})
+	}
+}

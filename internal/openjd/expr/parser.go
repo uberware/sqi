@@ -2,6 +2,8 @@
 
 package expr
 
+import "sort"
+
 // Expression is a parsed expression, ready to evaluate.
 type Expression struct {
 	src  string
@@ -41,6 +43,29 @@ func (e *Expression) Source() string { return e.src }
 
 // Root returns the tree's root node.
 func (e *Expression) Root() Node { return e.root }
+
+// Names returns every dotted value reference the expression makes — for
+// example {"Param.Frame", "Task.Param.Chunk"} — sorted and deduplicated.
+//
+// This is the spec's accessed_symbols set. Callers use it to decide which
+// symbols an expression needs before evaluating it; sub-project E uses it to
+// scope-check a template's expressions without binding values.
+func (e *Expression) Names() []string {
+	seen := map[string]bool{}
+	var out []string
+	walk(e.root, func(n Node) {
+		name, ok := n.(*Name)
+		if !ok {
+			return
+		}
+		if s := name.String(); !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
 
 // parser turns a token slice into a tree. One method per grammar production,
 // named for it, so the code can be diffed against the BNF in spec section 1.1.

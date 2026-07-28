@@ -199,3 +199,29 @@ func (*Binary) node()    {}
 func (*Compare) node()   {}
 func (*Logical) node()   {}
 func (*Cond) node()      {}
+
+// walk calls fn for n and every node beneath it, parents before children.
+func walk(n Node, fn func(Node)) {
+	if n == nil {
+		return
+	}
+	fn(n)
+	switch v := n.(type) {
+	case *Unary:
+		walk(v.X, fn)
+	case *Binary:
+		walk(v.L, fn)
+		walk(v.R, fn)
+	case *Logical:
+		walk(v.L, fn)
+		walk(v.R, fn)
+	case *Cond:
+		walk(v.Then, fn)
+		walk(v.If, fn)
+		walk(v.Else, fn)
+	case *Compare:
+		for _, operand := range v.Operands {
+			walk(operand, fn)
+		}
+	}
+}
