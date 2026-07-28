@@ -2,6 +2,8 @@
 
 package expr
 
+import "fmt"
+
 // Symbols resolves the dotted names an expression references — Param.Frame,
 // Task.Param.Chunk, Session.WorkingDirectory and the like.
 //
@@ -137,6 +139,15 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 			// first one (n.Offset) — a chain of three or more operators must
 			// blame whichever link actually failed.
 			return Value{}, wrapAt(src, n.OpOffsets[i], err)
+		}
+		// Every operator that can appear in a comparison chain returns Bool
+		// today, but AsBool panics on any other kind (via mustBe). Guard it
+		// rather than call it blind: sub-project B's unresolved[bool] (a
+		// chain link whose result is not yet known) must fail with a
+		// positioned error here, not panic.
+		if out.Kind != KindBool {
+			return Value{}, wrapAt(src, n.OpOffsets[i],
+				fmt.Errorf("comparison operator %s did not produce a bool: %s", op, out.Kind))
 		}
 		if !out.AsBool() {
 			return Bool(false), nil
