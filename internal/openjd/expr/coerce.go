@@ -363,76 +363,70 @@ func toFloat(v Value) (Value, error) {
 	return Value{}, fmt.Errorf("%s %w to float", v.Type, errNotCoercible)
 }
 
-// losslesslyCoercible reports whether a value of type from can reach the target
-// type to by a conversion that CANNOT FAIL on any value.
+// promotable reports whether a value of type from may be chosen, ON THE
+// CALLER'S BEHALF, to fill a parameter declared as to — the narrower question
+// shape.go's argCost asks when SELECTING an operator overload, as opposed to
+// coerce()'s question of what happens once a context has already demanded a
+// specific type.
 //
-// This is the subset of section 1.2.3 that overload selection may use. The full
-// matrix also permits float -> int, string -> int and string -> float, each of
-// which errors when the value does not fit — the spec's own examples are 3.75
-// and "3.1" to int, and "" and "nothing" to float. Those are legitimate where a
-// context demanded the type and is prepared for the failure, which is what
-// coerce() does at an explicit target. Choosing an operator overload with one
-// would silently discard information instead: "1 + 2.5" would select the
-// (int, int) shape and drop the .5, and "'a' + 'b'" would select it by parsing
-// both strings as integers. Section 2.1.1 requires the opposite — "the int is
-// promoted to float and the float overload is used".
+// Those are different questions with different answers. Section 1.2.3's
+// single-scalar catch-all ("any scalar value when the target types have a
+// single scalar type") answers the coerce() question: given a concrete target
+// the caller named, may this value become it. It says nothing about which
+// target an operator with several overloads should be steered toward, and
+// applying it there answers a question the spec never asked: every bare-scalar
+// shape in a multi-shape operator trivially "has a single scalar type" on its
+// own, so the catch-all would let ANY scalar argument reach it — an operator
+// offering int, float and string overloads would see every pair of scalars
+// funneled through the string one, since bool/int/float/path -> string can
+// never fail. That is precisely how "true + true" and "'a' + 1" wrongly
+// stopped being errors when the operator tables were first built as multi-shape
+// lists: the catch-all's own qualifier, "a single scalar type", was meant to
+// rule out exactly that ambiguity, not fire once per candidate shape.
+//
+// What DOES belong to overload selection is section 2.1.1's and 2.1.4's own
+// named compatible pairs — "the int is promoted to float", "compatible pairs
+// (int/float and string/path)" — which are exactly coercibleConditional's four
+// rules: int -> float, path -> string, range_expr -> string, range_expr ->
+// list[int]. Each is a conversion the spec explicitly calls compatible, and
+// none can fail on any value, so choosing an overload with one never discards
+// information the way choosing float -> int or string -> int would (the spec's
+// own destructive examples: 3.75 and "3.1" to int, "" and "nothing" to float).
 //
 // unresolved is transparent on both sides, matching coercible's own rule: a
 // placeholder's constraint is what can fail or not, and a target that is
 // itself unresolved constrains no more tightly than its own constraint does.
-// Leaving either side wrapped would let a still-lossy constraint (unresolved's
-// float -> int, say) hide behind the "not a bare scalar" check below.
 //
-// A list conversion is elementwise, and lossless only when converting each
+// A list conversion is elementwise, and promotable only when converting each
 // element is: list[float] -> list[int] is exactly as lossy, element by
 // element, as float -> int is on its own. The one exception is
 // list[nulltype], the empty list literal's type, which has no element that
 // could ever fail to convert.
-func losslesslyCoercible(from, to Type) bool {
+func promotable(from, to Type) bool {
+	// A placeholder is promoted on its constraint; the same on the target side.
 	if from.Code == CodeUnresolved && len(from.Params) == 1 {
-		return losslesslyCoercible(from.Params[0], to)
+		return promotable(from.Params[0], to)
 	}
 	if to.Code == CodeUnresolved && len(to.Params) == 1 {
-		return losslesslyCoercible(from, to.Params[0])
+		return promotable(from, to.Params[0])
 	}
 	if !coercible(from, to) {
 		return false
 	}
+	// A list is promoted elementwise. The empty list literal is compatible with
+	// any list type and has no element that could fail, so it always promotes.
 	if fromElem, ok := listElem(from); ok {
+		toElem, ok := listElem(to)
+		if !ok {
+			return false
+		}
 		if fromElem.Code == CodeNull {
 			return true
 		}
-		if toElem, ok := listElem(to); ok {
-			return losslesslyCoercible(fromElem, toElem)
-		}
+		return promotable(fromElem, toElem)
 	}
-	// Neither a list nor a bare scalar — any, nulltype and noreturn carry no
-	// conversion that can fail.
-	if !isScalarCode(from.Code) {
-		return true
-	}
-	// The conditional rules all widen: int -> float, path -> string,
-	// range_expr -> string, range_expr -> list[int]. Only the single-scalar
-	// catch-all can select a narrowing conversion.
-	if coercibleConditional(from, to) {
-		return true
-	}
-	c, ok := singleScalarTarget(to)
-	if !ok {
-		return true
-	}
-	return !lossyScalarPair(from.Code, c)
-}
-
-// lossyScalarPair reports whether converting from -> to can fail on some value.
-// These are exactly the three conversions section 1.2.3 marks with a failure
-// condition.
-func lossyScalarPair(from, to Code) bool {
-	switch to {
-	case CodeInt:
-		return from == CodeFloat || from == CodeString
-	case CodeFloat:
-		return from == CodeString
-	}
-	return false
+	// Only the conditional rules: int -> float, path -> string,
+	// range_expr -> string, range_expr -> list[int]. Each is a compatible pair
+	// the spec names, and none can fail on a value.
+	return coercibleConditional(from, to)
 }

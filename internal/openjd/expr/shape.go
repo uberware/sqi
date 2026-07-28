@@ -148,7 +148,7 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 	if param.Equal(arg) {
 		return costExact, true
 	}
-	if losslesslyCoercible(arg, param) {
+	if promotable(arg, param) {
 		return costWiden, true
 	}
 	return 0, false

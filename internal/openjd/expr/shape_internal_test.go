@@ -206,16 +206,31 @@ func TestMatchShapes_UnionParameterMatchesAMember(t *testing.T) {
 }
 
 // TestMatchShapes_UnionParameterWidensToAMember checks that a union
-// parameter also accepts an argument that reaches one of its members by a
-// conversion that cannot fail, exactly as a bare parameter of that member's
-// type would. bool has exactly one reachable scalar target in the whole
-// coercion matrix — string, unconditionally, per section 1.2.3's
-// "bool/int/float/path -> string" — so this is unambiguous even though the
-// union offers three members: only the string member is ever reachable.
+// parameter accepts an argument that reaches one of its members by a
+// PROMOTABLE conversion — one of the spec's own named compatible pairs — the
+// same way a bare parameter of that member's type would.
+//
+// path is such a case: path -> string is the int -> float promotion's own
+// sibling, coercibleConditional's named rule, and it cannot fail on any value,
+// so it must still match here even though the union offers three members —
+// only the string member is reachable, and it is reachable by a rule the spec
+// names explicitly.
+//
+// bool is the pair this test used to get wrong: it has no promotable path to
+// any of int, float or string. Its only route to string is section 1.2.3's
+// single-scalar catch-all (bool/int/float/path -> string, unconditionally),
+// and that catch-all is deliberately excluded from overload selection — see
+// promotable's doc comment in coerce.go. Asserting bool does NOT match here is
+// what pins that exclusion at the point selection actually happens, rather
+// than only in promotable's own unit tests.
 func TestMatchShapes_UnionParameterWidensToAMember(t *testing.T) {
 	shapes := []Shape{{Params: []Type{UnionOf(TInt, TFloat, TString)}, Ret: TInt, Fn: noFn}}
-	if _, _, ok := matchShapes(shapes, []Type{TBool}); !ok {
-		t.Error("bool did not match a union offering string, which it widens to losslessly")
+	if _, _, ok := matchShapes(shapes, []Type{TPath}); !ok {
+		t.Error("path did not match a union offering string, via the named path -> string promotion")
+	}
+	if _, _, ok := matchShapes(shapes, []Type{TBool}); ok {
+		t.Error("bool matched a union offering string; its only route is the catch-all, " +
+			"which overload selection must not use")
 	}
 }
 

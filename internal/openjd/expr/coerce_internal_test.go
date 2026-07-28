@@ -109,12 +109,24 @@ func TestCoercible(t *testing.T) {
 	}
 }
 
-// TestLosslesslyCoercible covers the two defects the two-tier tests below
-// found in the first cut of losslesslyCoercible: an unresolved constraint on
-// either side must be unwrapped before the "not a bare scalar" shortcut can
-// see it, and a list conversion is lossless only when its element conversion
-// is — not simply because coercible permits it.
-func TestLosslesslyCoercible(t *testing.T) {
+// TestPromotable covers promotable, the narrower subset of section 1.2.3 that
+// overload selection uses (shape.go's argCost): only the compatible pairs the
+// spec names explicitly — int -> float, path -> string, range_expr ->
+// string/list[int] — plus the two defects the two-tier tests below found in
+// the first cut of this function (then named losslesslyCoercible): an
+// unresolved constraint on either side must be unwrapped before the list/
+// conditional checks can see it, and a list conversion is promotable only when
+// its element conversion is — not simply because coercible permits it.
+//
+// The single-scalar catch-all (bool/int/float/path -> string, string -> path,
+// and the rest) is deliberately EXCLUDED here even though coerce() honors it:
+// that catch-all answers "what may this value become at an explicit target",
+// not "which overload should the language pick on the caller's behalf". Firing
+// it during overload selection let every scalar pair reach a bare-string
+// shape, which is why "string to path widens" below flipped from true to
+// false — string -> path is the catch-all's doing, not one of the four named
+// compatible pairs, so it no longer promotes.
+func TestPromotable(t *testing.T) {
 	tests := []struct {
 		name string
 		from string // parsed with ParseType, so the table reads as the spec does
@@ -129,7 +141,10 @@ func TestLosslesslyCoercible(t *testing.T) {
 		{"string to int can fail", "string", "int", false},
 		{"string to float can fail", "string", "float", false},
 		{"path to string widens", "path", "string", true},
-		{"string to path widens", "string", "path", true},
+		// Not a named compatible pair (only path -> string is), and it is the
+		// single-scalar catch-all that would otherwise say yes — the exact
+		// mechanism this function exists to exclude from overload selection.
+		{"string to path is the catch-all, not a compatible pair", "string", "path", false},
 
 		// F2: unresolved must unwrap to its constraint on both sides before
 		// the scalar/non-scalar branch runs, exactly like coercible does.
@@ -162,8 +177,8 @@ func TestLosslesslyCoercible(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseType(%q): %v", tt.to, err)
 			}
-			if got := losslesslyCoercible(from, to); got != tt.want {
-				t.Errorf("losslesslyCoercible(%s, %s) = %v; want %v", from, to, got, tt.want)
+			if got := promotable(from, to); got != tt.want {
+				t.Errorf("promotable(%s, %s) = %v; want %v", from, to, got, tt.want)
 			}
 		})
 	}
