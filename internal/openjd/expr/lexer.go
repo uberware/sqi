@@ -82,7 +82,7 @@ func (l *lexer) skipSpace() {
 	}
 }
 
-// lexIdent reads an identifier. Keywords are not recognised here: spec section
+// lexIdent reads an identifier. Keywords are not recognized here: spec section
 // 1.1.3 makes them contextual — "if", "and" and "True" are keywords only in
 // their syntactic positions, and are ordinary attribute names after a ".". The
 // parser makes that call, so the lexer emits tokIdent for all of them.
@@ -231,7 +231,158 @@ func checkNoLeadingZeros(text string) error {
 	return nil
 }
 
+// lexString reads a string literal (spec sections 1.1.1 and 1.1.5). raw
+// reports whether an r or R prefix is present, in which case escape sequences
+// are left as written.
 func (l *lexer) lexString(raw bool) (token, error) {
-	_ = raw
-	return token{}, errorAt(l.src, l.pos, "string literals are not implemented yet")
+	start := l.pos
+	if raw {
+		l.pos++
+	}
+
+	quote := string(l.src[l.pos])
+	delim := quote
+	if strings.HasPrefix(l.src[l.pos:], strings.Repeat(quote, 3)) {
+		delim = strings.Repeat(quote, 3)
+	}
+	l.pos += len(delim)
+
+	bodyOffset := l.pos
+	body, err := l.scanStringBody(start, delim)
+	if err != nil {
+		return token{}, err
+	}
+
+	s := body
+	if !raw {
+		if s, err = decodeEscapes(l.src, bodyOffset, body); err != nil {
+			return token{}, err
+		}
+	}
+	return token{kind: tokString, text: l.src[start:l.pos], offset: start, s: s}, nil
+}
+
+// scanStringBody advances past the literal's contents and its closing
+// delimiter, returning the raw contents. start is the offset of the whole
+// literal, used for the position of an unterminated-literal error.
+func (l *lexer) scanStringBody(start int, delim string) (string, error) {
+	long := len(delim) == 3
+	bodyStart := l.pos
+	for l.pos < len(l.src) {
+		if strings.HasPrefix(l.src[l.pos:], delim) {
+			body := l.src[bodyStart:l.pos]
+			l.pos += len(delim)
+			return body, nil
+		}
+		switch c := l.src[l.pos]; {
+		case c == '\\':
+			// A backslash consumes the next character so an escaped quote
+			// does not terminate the literal. This holds for raw strings too:
+			// r'\'' is the two-character string \', matching Python. Only the
+			// decoding step below distinguishes raw from non-raw.
+			if l.pos+1 >= len(l.src) {
+				return "", errorAt(l.src, start, "unterminated string literal")
+			}
+			l.pos += 2
+		case c == '\n' && !long:
+			return "", errorAt(l.src, start,
+				"unterminated string literal: a newline may not appear in a singly-quoted string")
+		default:
+			l.pos++
+		}
+	}
+	return "", errorAt(l.src, start, "unterminated string literal")
+}
+
+// decodeEscapes expands the escape sequences in a non-raw string body.
+// bodyOffset is the body's offset within src, so an error can point at the
+// offending escape rather than at the literal.
+func decodeEscapes(src string, bodyOffset int, body string) (string, error) {
+	var b strings.Builder
+	b.Grow(len(body))
+	for i := 0; i < len(body); {
+		if body[i] != '\\' {
+			b.WriteByte(body[i])
+			i++
+			continue
+		}
+		n, err := writeEscape(&b, src, bodyOffset, body, i)
+		if err != nil {
+			return "", err
+		}
+		i += n
+	}
+	return b.String(), nil
+}
+
+// writeEscape decodes the escape sequence starting at body[i] and reports how
+// many bytes of body it consumed.
+func writeEscape(b *strings.Builder, src string, bodyOffset int, body string, i int) (int, error) {
+	at := bodyOffset + i
+	if i+1 >= len(body) {
+		return 0, errorAt(src, at, "string ends with a lone backslash")
+	}
+	switch c := body[i+1]; c {
+	case '\\', '\'', '"':
+		b.WriteByte(c)
+		return 2, nil
+	case 'n':
+		b.WriteByte('\n')
+		return 2, nil
+	case 'r':
+		b.WriteByte('\r')
+		return 2, nil
+	case 't':
+		b.WriteByte('\t')
+		return 2, nil
+	case 'x':
+		return writeHexEscape(b, src, at, body, i, 2)
+	case 'u':
+		return writeHexEscape(b, src, at, body, i, 4)
+	case 'U':
+		return writeHexEscape(b, src, at, body, i, 8)
+	case 'N':
+		return writeNamedEscape(b, src, at, body, i)
+	default:
+		// Section 1.1.5 lists the escapes handled above. Python keeps any
+		// other escape verbatim, backslash included, and so does this:
+		// rejecting them would break Windows paths and regular expressions
+		// written without an r prefix. \a, \b, \f, \v and octal escapes are
+		// therefore NOT decoded — they are absent from the spec's table.
+		b.WriteByte('\\')
+		b.WriteByte(c)
+		return 2, nil
+	}
+}
+
+// writeHexEscape decodes \xhh, \uhhhh and \Uhhhhhhhh, which take exactly 2, 4
+// and 8 hexadecimal digits respectively.
+func writeHexEscape(b *strings.Builder, src string, at int, body string, i, digits int) (int, error) {
+	marker := body[i+1]
+	start := i + 2
+	if start+digits > len(body) {
+		return 0, errorAt(src, at, `\%c escape needs %d hexadecimal digits`, marker, digits)
+	}
+	text := body[start : start+digits]
+	v, err := strconv.ParseUint(text, 16, 32)
+	if err != nil {
+		return 0, errorAt(src, at, `\%c escape needs %d hexadecimal digits, got %q`, marker, digits, text)
+	}
+
+	// \xhh names a code point, not a byte, so U+0000 to U+00FF are always
+	// valid. The wider escapes can name something that is not a code point.
+	// The range check runs on v, before the conversion to rune, so a
+	// \Uhhhhhhhh value near the uint32 ceiling cannot wrap around int32 and
+	// slip past the check.
+	if marker != 'x' && (v > utf8.MaxRune || (v >= 0xD800 && v <= 0xDFFF)) {
+		return 0, errorAt(src, at, `\%c escape %q is not a valid unicode code point`, marker, text)
+	}
+	b.WriteRune(rune(v)) //nolint:gosec // G115: the check above bounds v to utf8.MaxRune, so it fits in an int32 rune
+	return 2 + digits, nil
+}
+
+// writeNamedEscape decodes \N{NAME}. Task 5 replaces this body.
+func writeNamedEscape(b *strings.Builder, src string, at int, body string, i int) (int, error) {
+	_, _, _ = b, body, i
+	return 0, errorAt(src, at, `\N escapes are not implemented yet`)
 }

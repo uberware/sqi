@@ -248,3 +248,102 @@ func TestLexNumber_ExponentMarkerIsNotAlwaysAnExponent(t *testing.T) {
 		}
 	}
 }
+
+func TestLexString_Forms(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"single quoted", `'hello'`, "hello"},
+		{"double quoted", `"hello"`, "hello"},
+		{"empty", `''`, ""},
+		{"triple single quoted", `'''hello'''`, "hello"},
+		{"triple double quoted", `"""hello"""`, "hello"},
+		{"triple spans lines", "'''a\nb'''", "a\nb"},
+		{"quote of the other kind is literal", `'say "hi"'`, `say "hi"`},
+		{"raw single quoted", `r'hello\n'`, `hello\n`},
+		{"raw double quoted", `R"C:\path\to"`, `C:\path\to`},
+		{"raw triple quoted", `r'''a\tb'''`, `a\tb`},
+		{"raw keeps the backslash before an escaped quote", `r'\''`, `\'`},
+		{"escape backslash", `'a\\b'`, `a\b`},
+		{"escape single quote", `'it\'s'`, "it's"},
+		{"escape double quote", `"say \"hi\""`, `say "hi"`},
+		{"escape newline", `'a\nb'`, "a\nb"},
+		{"escape carriage return", `'a\rb'`, "a\rb"},
+		{"escape tab", `'a\tb'`, "a\tb"},
+		{"hex escape", `'\x41'`, "A"},
+		{"hex escape above ascii", `'\xe9'`, "\u00e9"},
+		{"16-bit unicode escape", `'\u00e9'`, "\u00e9"},
+		{"32-bit unicode escape", `'\U0001F600'`, "\U0001F600"},
+		{"unrecognized escape is kept verbatim", `'a\db'`, `a\db`},
+		{"bell is not in the spec table so it is kept verbatim", `'\a'`, `\a`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks, err := tokenize(tt.src)
+			if err != nil {
+				t.Fatalf("tokenize(%s): %v", tt.src, err)
+			}
+			if toks[0].kind != tokString {
+				t.Fatalf("kind = %v; want tokString", toks[0].kind)
+			}
+			if toks[0].s != tt.want {
+				t.Errorf("value = %q; want %q", toks[0].s, tt.want)
+			}
+		})
+	}
+}
+
+func TestLexString_Rejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		wantMsg string
+	}{
+		{"unterminated short string", `'abc`, "unterminated string literal"},
+		{"newline in a short string", "'a\nb'", "newline may not appear"},
+		{"unterminated long string", `'''abc`, "unterminated string literal"},
+		{"lone trailing backslash", `'abc\`, "unterminated string literal"},
+		{"hex escape too short", `'\x4'`, "hexadecimal digits"},
+		{"unicode escape too short", `'\u00e'`, "hexadecimal digits"},
+		{"hex escape with a non-hex digit", `'\xzz'`, "hexadecimal digits"},
+		{"surrogate code point", `'\ud800'`, "not a valid unicode code point"},
+		{"code point above the maximum", `'\U0011FFFF'`, "not a valid unicode code point"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tokenize(tt.src)
+			if err == nil {
+				t.Fatalf("tokenize(%s) = nil error; want an error", tt.src)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestLexString_PrefixMustTouchTheQuote(t *testing.T) {
+	// "r 'x'" is the name r followed by a string, not a raw string. The parser
+	// rejects it; the lexer must not silently glue them together.
+	got := kinds(t, `r 'x'`)
+	want := []tokenKind{tokIdent, tokString}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("kinds = %v; want %v", got, want)
+	}
+}
+
+func TestLexString_RejectsPythonOnlyPrefixes(t *testing.T) {
+	// f-strings and b-strings are not EXPR. They lex as a name followed by a
+	// string, which the parser rejects — fixtures expr1.1--reject-fstring and
+	// expr1.1--reject-bstring depend on this.
+	for _, src := range []string{`f'{x}'`, `b'bytes'`} {
+		t.Run(src, func(t *testing.T) {
+			got := kinds(t, src)
+			if len(got) != 2 || got[0] != tokIdent || got[1] != tokString {
+				t.Fatalf("kinds = %v; want [name, string literal]", got)
+			}
+		})
+	}
+}
