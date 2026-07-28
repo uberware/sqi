@@ -67,3 +67,58 @@ func TestCode_String(t *testing.T) {
 		t.Errorf("codeNames has %d entries; want %d — a code was added without a test case", len(codeNames), len(codes))
 	}
 }
+
+func TestType_String(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  Type
+		want string
+	}{
+		{"scalar", TInt, "int"},
+		{"null", TNull, "nulltype"},
+		{"any", TAny, "any"},
+		{"noreturn", TNoReturn, "noreturn"},
+		{"range expression", TRangeExpr, "range_expr"},
+		{"list", Type{Code: CodeList, Params: []Type{TString}}, "list[string]"},
+		{
+			name: "nested list",
+			typ:  Type{Code: CodeList, Params: []Type{{Code: CodeList, Params: []Type{TInt}}}},
+			want: "list[list[int]]",
+		},
+		{
+			name: "two member union renders as a union",
+			typ:  Type{Code: CodeUnion, Params: []Type{TInt, TString}},
+			want: "int | string",
+		},
+		{
+			name: "optional is the two member union ending in nulltype",
+			typ:  Type{Code: CodeUnion, Params: []Type{TInt, TNull}},
+			want: "int?",
+		},
+		{
+			name: "optional list",
+			typ:  Type{Code: CodeUnion, Params: []Type{{Code: CodeList, Params: []Type{TPath}}, TNull}},
+			want: "list[path]?",
+		},
+		{
+			name: "three member union with null spells nulltype out",
+			typ:  Type{Code: CodeUnion, Params: []Type{TInt, TString, TNull}},
+			want: "int | string | nulltype",
+		},
+		{"unresolved with a constraint", Type{Code: CodeUnresolved, Params: []Type{TInt}}, "unresolved[int]"},
+		{"unresolved of any is bare", Type{Code: CodeUnresolved, Params: []Type{TAny}}, "unresolved"},
+		{
+			name: "unresolved list",
+			typ:  Type{Code: CodeUnresolved, Params: []Type{{Code: CodeList, Params: []Type{TInt}}}},
+			want: "unresolved[list[int]]",
+		},
+		{"type variable", Type{Code: CodeVarT}, "T"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.typ.String(); got != tt.want {
+				t.Errorf("String() = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
