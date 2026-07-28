@@ -2,7 +2,10 @@
 
 package expr
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestType_Equal(t *testing.T) {
 	tests := []struct {
@@ -295,5 +298,129 @@ func forEachNestedType(t Type, fn func(Type)) {
 	fn(t)
 	for _, p := range t.Params {
 		forEachNestedType(p, fn)
+	}
+}
+
+func TestParseType(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string // rendered canonical form, so normalization is checked too
+	}{
+		{"scalar", "int", "int"},
+		{"null", "nulltype", "nulltype"},
+		{"path", "path", "path"},
+		{"range expression", "range_expr", "range_expr"},
+		{"any", "any", "any"},
+		{"noreturn", "noreturn", "noreturn"},
+		{"type variable", "T", "T"},
+		{"numbered type variable", "T2", "T2"},
+		{"list", "list[string]", "list[string]"},
+		{"nested list", "list[list[int]]", "list[list[int]]"},
+		{"empty list type", "list[nulltype]", "list[nulltype]"},
+		{"optional", "int?", "int?"},
+		{"optional list", "list[path]?", "list[path]?"},
+		{"union", "int | string", "int | string"},
+		{"union normalizes on the way in", "string | int", "int | string"},
+		{"union with a null member", "int | nulltype", "int?"},
+		{"unresolved", "unresolved", "unresolved"},
+		{"unresolved with a constraint", "unresolved[int]", "unresolved[int]"},
+		{"unresolved of a union", "unresolved[int | string]", "unresolved[int | string]"},
+		{"unresolved hoists out of a list", "list[unresolved[int]]", "unresolved[list[int]]"},
+		{"whitespace is insignificant", "  list [ int ]  ", "list[int]"},
+		{"question mark binds tighter than the bar", "int | string?", "int | string | nulltype"},
+		{"redundant optional collapses", "int??", "int?"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseType(tt.src)
+			if err != nil {
+				t.Fatalf("ParseType(%q): %v", tt.src, err)
+			}
+			if got.String() != tt.want {
+				t.Errorf("ParseType(%q) = %q; want %q", tt.src, got.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestParseType_RoundTrips(t *testing.T) {
+	// String and ParseType are inverses. This is the property the symbol table
+	// and the test tables both lean on, and it is the cheapest way to catch a
+	// rendering or parsing rule that drifted.
+	for _, src := range []string{
+		"int", "nulltype", "any", "noreturn", "path", "range_expr", "T", "T1",
+		"list[int]", "list[list[string]]", "list[nulltype]",
+		"int?", "list[path]?", "int | string", "int | string | nulltype",
+		"unresolved", "unresolved[int]", "unresolved[list[float]]", "unresolved[int | string]",
+	} {
+		t.Run(src, func(t *testing.T) {
+			typ, err := ParseType(src)
+			if err != nil {
+				t.Fatalf("ParseType(%q): %v", src, err)
+			}
+			if got := typ.String(); got != src {
+				t.Errorf("round trip: ParseType(%q).String() = %q", src, got)
+			}
+			again, err := ParseType(typ.String())
+			if err != nil {
+				t.Fatalf("re-parsing %q: %v", typ.String(), err)
+			}
+			if !again.Equal(typ) {
+				t.Errorf("re-parsing %q produced a different type", src)
+			}
+		})
+	}
+}
+
+func TestParseType_Rejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		wantMsg string
+	}{
+		{"empty", "", "expected a type"},
+		{"unknown name", "integer", "unknown type"},
+		{"unclosed bracket", "list[int", `expected "]"`},
+		{"list without an element type", "list", `expected "["`},
+		{"empty brackets", "list[]", "expected a type"},
+		{"trailing text", "int extra", "unexpected"},
+		{"trailing bar", "int |", "expected a type"},
+		{"leading bar", "| int", "expected a type"},
+		// Section 1.2.1's two constraints on a list's element type.
+		{"three levels of list", "list[list[list[int]]]", "nested"},
+		{"optional element", "list[int?]", "optional"},
+		{"optional element written as a union", "list[int | nulltype]", "optional"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseType(tt.src)
+			if err == nil {
+				t.Fatalf("ParseType(%q) = nil error; want an error", tt.src)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+// TestType_String_DefensivePaths exercises the two rendering paths that no
+// constructor can reach: paramString's "?" fallback for a Type missing its
+// Params, and Code.String's "unknown type" fallback for a code outside
+// codeNames. Both are unreachable through UnionOf/ListOf/UnresolvedOf, which
+// is why this test builds the Type literals directly. It is a regression
+// guard, not a test of reachable behavior — a reordered bounds check could
+// silently turn either fallback into a panic, and nothing else in this file
+// would catch it.
+func TestType_String_DefensivePaths(t *testing.T) {
+	if got := (Type{Code: CodeList}).String(); got != "list[?]" {
+		t.Errorf("list with no Params = %q; want %q", got, "list[?]")
+	}
+	if got := (Type{Code: CodeUnresolved}).String(); got != "unresolved[?]" {
+		t.Errorf("unresolved with no Params = %q; want %q", got, "unresolved[?]")
+	}
+	if got := (Type{Code: Code(9999)}).String(); got != "unknown type" {
+		t.Errorf("unknown code = %q; want %q", got, "unknown type")
 	}
 }

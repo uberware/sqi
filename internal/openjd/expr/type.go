@@ -2,7 +2,10 @@
 
 package expr
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+)
 
 // Code is the base of a Type: which type constructor it is, independent of any
 // type parameters. Section 1.2.1 lists the language's types; this is the
@@ -284,3 +287,161 @@ func ListOf(elem Type) Type {
 // separate optional code: "int?" is exactly the union of int and nulltype, and
 // UnionOf's normalization means applying this twice changes nothing.
 func OptionalOf(t Type) Type { return UnionOf(t, TNull) }
+
+// ParseType reads a type in the notation String produces: "int",
+// "list[string]", "int?", "int | string", "unresolved[int]".
+//
+// This is where untrusted text becomes a Type — declared parameter types arrive
+// as strings — so it is also where section 1.2.1's constraints on a list's
+// element type are enforced.
+func ParseType(s string) (Type, error) {
+	p := &typeParser{src: s}
+	t, err := p.parseUnion()
+	if err != nil {
+		return Type{}, err
+	}
+	p.skipSpace()
+	if p.pos != len(p.src) {
+		return Type{}, fmt.Errorf("unexpected %q in type %q", s[p.pos:], s)
+	}
+	return t, nil
+}
+
+// typeParser is a recursive-descent reader over a type's text.
+type typeParser struct {
+	src string
+	pos int
+}
+
+// parseUnion reads one or more "|"-separated members. UnionOf normalizes the
+// result, so "string | int" and "int | string" produce the same Type.
+func (p *typeParser) parseUnion() (Type, error) {
+	first, err := p.parseSuffixed()
+	if err != nil {
+		return Type{}, err
+	}
+	members := []Type{first}
+	for {
+		p.skipSpace()
+		if p.pos >= len(p.src) || p.src[p.pos] != '|' {
+			return UnionOf(members...), nil
+		}
+		p.pos++
+		next, err := p.parseSuffixed()
+		if err != nil {
+			return Type{}, err
+		}
+		members = append(members, next)
+	}
+}
+
+// parseSuffixed reads an atom and any trailing "?" marks. "?" binds tighter
+// than "|", so "int | string?" is int | (string?).
+func (p *typeParser) parseSuffixed() (Type, error) {
+	t, err := p.parseAtom()
+	if err != nil {
+		return Type{}, err
+	}
+	for {
+		p.skipSpace()
+		if p.pos >= len(p.src) || p.src[p.pos] != '?' {
+			return t, nil
+		}
+		p.pos++
+		t = OptionalOf(t)
+	}
+}
+
+// parseAtom reads a bare type name, or a parameterized "list[...]" or
+// "unresolved[...]".
+func (p *typeParser) parseAtom() (Type, error) {
+	p.skipSpace()
+	name := p.word()
+	if name == "" {
+		return Type{}, fmt.Errorf("expected a type at offset %d in %q", p.pos, p.src)
+	}
+
+	switch name {
+	case "list":
+		elem, err := p.parseBracketed(name)
+		if err != nil {
+			return Type{}, err
+		}
+		if err := checkListElem(elem); err != nil {
+			return Type{}, err
+		}
+		return ListOf(elem), nil
+	case "unresolved":
+		// The constraint is optional: bare "unresolved" means unresolved[any].
+		p.skipSpace()
+		if p.pos >= len(p.src) || p.src[p.pos] != '[' {
+			return UnresolvedOf(TAny), nil
+		}
+		inner, err := p.parseBracketed(name)
+		if err != nil {
+			return Type{}, err
+		}
+		return UnresolvedOf(inner), nil
+	}
+
+	for code, codeName := range codeNames {
+		if codeName == name && code != CodeList && code != CodeUnion && code != CodeUnresolved {
+			return Type{Code: code}, nil
+		}
+	}
+	return Type{}, fmt.Errorf("unknown type %q", name)
+}
+
+// parseBracketed reads "[" a type "]" after a parameterized type's name.
+func (p *typeParser) parseBracketed(name string) (Type, error) {
+	p.skipSpace()
+	if p.pos >= len(p.src) || p.src[p.pos] != '[' {
+		return Type{}, fmt.Errorf("expected %q after %q in type %q", "[", name, p.src)
+	}
+	p.pos++
+	inner, err := p.parseUnion()
+	if err != nil {
+		return Type{}, err
+	}
+	p.skipSpace()
+	if p.pos >= len(p.src) || p.src[p.pos] != ']' {
+		return Type{}, fmt.Errorf("expected %q to close %q in type %q", "]", name, p.src)
+	}
+	p.pos++
+	return inner, nil
+}
+
+// skipSpace advances past any spaces and tabs.
+func (p *typeParser) skipSpace() {
+	for p.pos < len(p.src) && (p.src[p.pos] == ' ' || p.src[p.pos] == '\t') {
+		p.pos++
+	}
+}
+
+// word reads a type name: letters, digits and underscores, as in "range_expr"
+// and "T1".
+func (p *typeParser) word() string {
+	start := p.pos
+	for p.pos < len(p.src) && isTypeNameByte(p.src[p.pos]) {
+		p.pos++
+	}
+	return p.src[start:p.pos]
+}
+
+func isTypeNameByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// checkListElem enforces section 1.2.1's two constraints on a list's element
+// type: it may be a list but not nested a third time, and it may not be
+// optional. Note that list[nulltype] is valid — it is the empty-list type — so
+// only a UNION containing nulltype is rejected, not bare nulltype.
+func checkListElem(elem Type) error {
+	if elem.Code == CodeList && len(elem.Params) == 1 && elem.Params[0].Code == CodeList {
+		return fmt.Errorf("a list element type may not be nested a third time: list[%s]", elem)
+	}
+	if elem.Code == CodeUnion && containsType(elem.Params, TNull) {
+		return fmt.Errorf("a list element type may not be optional: list[%s]", elem)
+	}
+	return nil
+}
