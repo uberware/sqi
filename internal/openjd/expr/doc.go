@@ -185,12 +185,15 @@
 //     still not be handed untrusted expressions in its present state: the hard
 //     bounds stop one operation from allocating unbounded memory and stop the
 //     parser and the evaluator from overflowing the stack, not a pathological
-//     expression from doing unbounded total work. One recursive walk over a
-//     parsed tree is still UNBOUNDED and worth naming rather than leaving to be
-//     found: ast.go's walk, which Expression.Names uses. Its frames are far
-//     smaller than the evaluator's — a 1,000,000-operator chain walks fine
-//     where the same chain overflowed evalNode — but 10,000,000 does kill the
-//     process, measured, and no bound stands in the way.
+//     expression from doing unbounded total work. The one remaining walk over a
+//     parsed tree — ast.go's walk, which Expression.Names uses — needs no bound
+//     at all any more: it is ITERATIVE, with an explicit stack, so its Go stack
+//     depth is constant however deep the tree is. It was recursive, and it was
+//     the last unbounded recursion here: 10,000,000 chained operators killed
+//     the process with "fatal error: stack overflow", measured. A bound would
+//     have been the wrong fix — Names returns []string with no error channel,
+//     and a tree that already parsed cannot fail to be walked — so the hazard
+//     was removed rather than converted into an error.
 //
 //   - A float value does not preserve the original source text it was parsed
 //     from — "1.100" evaluates to a value that renders as "1.1", not

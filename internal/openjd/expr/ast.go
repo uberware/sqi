@@ -252,40 +252,74 @@ func (*ListLit) node()   {}
 func (*Index) node()     {}
 func (*Slice) node()     {}
 
-// walk calls fn for n and every node beneath it, parents before children.
+// walk calls fn for n and every node beneath it, parents before children and
+// siblings left to right — the same order the recursive version visited in.
+//
+// It is ITERATIVE, with an explicit stack, and that is the whole point. The
+// recursive version was the last unbounded recursion in the package: the
+// parser and the evaluator both carry depth bounds (limits.go's maxParseDepth
+// and maxEvalDepth) because exhausting the Go stack is a runtime.throw that
+// recover() cannot catch, and walk had no such bound — 1,000,000 operators
+// walked fine, 10,000,000 killed the process outright with "fatal error: stack
+// overflow". Expression.Names is its only caller, and sub-project E calls that
+// on every expression in a template, so the hazard was on its way to being
+// reachable.
+//
+// A depth bound was the other option and is the wrong one here. The parser and
+// the evaluator bound their recursion because they genuinely need to REJECT —
+// both are handed source that may be hostile, and both already return errors.
+// Walking a tree that has already parsed cannot fail on anything: every node
+// came from the bounded parser, Names returns []string with no error channel,
+// and a bound would therefore have to either lie by truncating the name set or
+// panic. An explicit stack removes the failure mode rather than converting it
+// into one, and for this node set it costs one small helper.
+//
+// The stack is LIFO, so children are pushed in reverse to preserve the
+// left-to-right order fn used to see. Nothing depends on that today (Names
+// sorts its result), which is exactly why it is stated here rather than left
+// to be rediscovered.
 func walk(n Node, fn func(Node)) {
 	if n == nil {
 		return
 	}
-	fn(n)
+	stack := []Node{n}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		fn(cur)
+		stack = pushChildren(stack, cur)
+	}
+}
+
+// pushChildren appends n's child nodes to a walk stack in REVERSE order, so
+// that popping them yields the leftmost child first. A nil child — an absent
+// slice component, which section 1.3.8 distinguishes from an explicit zero — is
+// skipped rather than pushed, since the caller's fn must never be handed one.
+func pushChildren(stack []Node, n Node) []Node {
+	push := func(children ...Node) {
+		for i := len(children) - 1; i >= 0; i-- {
+			if children[i] != nil {
+				stack = append(stack, children[i])
+			}
+		}
+	}
 	switch v := n.(type) {
 	case *Unary:
-		walk(v.X, fn)
+		push(v.X)
 	case *Binary:
-		walk(v.L, fn)
-		walk(v.R, fn)
+		push(v.L, v.R)
 	case *Logical:
-		walk(v.L, fn)
-		walk(v.R, fn)
+		push(v.L, v.R)
 	case *Cond:
-		walk(v.Then, fn)
-		walk(v.If, fn)
-		walk(v.Else, fn)
+		push(v.Then, v.If, v.Else)
 	case *Compare:
-		for _, operand := range v.Operands {
-			walk(operand, fn)
-		}
+		push(v.Operands...)
 	case *ListLit:
-		for _, elem := range v.Elems {
-			walk(elem, fn)
-		}
+		push(v.Elems...)
 	case *Index:
-		walk(v.X, fn)
-		walk(v.Idx, fn)
+		push(v.X, v.Idx)
 	case *Slice:
-		walk(v.X, fn)
-		walk(v.Start, fn)
-		walk(v.Stop, fn)
-		walk(v.Step, fn)
+		push(v.X, v.Start, v.Stop, v.Step)
 	}
+	return stack
 }

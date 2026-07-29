@@ -5,6 +5,7 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -433,6 +434,46 @@ func TestWalk_DescendsIntoCollectionNodes(t *testing.T) {
 				t.Fatalf("Pos() = %d, want 0", got)
 			}
 		})
+	}
+}
+
+// TestWalk_UsesConstantStackDepth is the regression test for walk's rewrite
+// from recursion to an explicit stack (ast.go). It asserts the property
+// directly — the Go stack does not grow with the tree — rather than by walking
+// a tree big enough to overflow it.
+//
+// That choice is deliberate, and follows the same reasoning
+// TestListOperators_RepeatOverflow states for its own omitted case: the tree
+// that actually distinguishes the two implementations is 10,000,000 operators
+// deep, which costs 458 MB of heap and, under -race, 3.6 GB of resident memory.
+// A test that OOM-kills the suite on a revert is worse than one that fails.
+// The measurement itself was made by hand and is recorded here instead: with
+// the recursive walk, 10,000,000 chained Binary nodes died with "fatal error:
+// stack overflow" (the uncatchable runtime.throw, exactly as maxParseDepth and
+// maxEvalDepth exist to prevent); with the iterative one they walk in 0.72 s.
+//
+// A reverted walk fails this test at any chain length past a few hundred,
+// because each Binary node it descends through costs one real Go frame.
+func TestWalk_UsesConstantStackDepth(t *testing.T) {
+	var pcs [8192]uintptr
+	deepestFrames := func(chain int) int {
+		leaf := &IntLit{Val: 1}
+		var root Node = leaf
+		for range chain {
+			root = &Binary{Op: OpAdd, L: root, R: leaf}
+		}
+		deepest := 0
+		walk(root, func(Node) {
+			if n := runtime.Callers(0, pcs[:]); n > deepest {
+				deepest = n
+			}
+		})
+		return deepest
+	}
+	shallow, deep := deepestFrames(100), deepestFrames(4000)
+	if shallow != deep {
+		t.Fatalf("walk reached %d stack frames on a 100-node chain and %d on a 4000-node chain; "+
+			"want the same count — walk must not recurse", shallow, deep)
 	}
 }
 
