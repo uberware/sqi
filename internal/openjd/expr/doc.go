@@ -177,15 +177,20 @@
 //     like "true or true or …" or "1 + 1 + …" is built by a loop, so it costs
 //     the parser no recursion at all and passes maxParseDepth however long it
 //     is, while the left-deep tree it produces is then walked recursively by
-//     evalNode — which overflowed the stack for real between 500,000 and
-//     600,000 operators.
-//     None of the three is the spec's own configurable memory and operation
+//     evalNode — which overflowed the stack for real between 400,000 and
+//     500,000 operators.
+//     None of the four is the spec's own configurable memory and operation
 //     limits (sections 1.3.9 and 1.3.10) — those remain unimplemented, still
 //     sub-project E's, unchanged from sub-project A — so this package must
 //     still not be handed untrusted expressions in its present state: the hard
 //     bounds stop one operation from allocating unbounded memory and stop the
-//     parser from overflowing the stack, not a pathological expression from
-//     doing unbounded total work.
+//     parser and the evaluator from overflowing the stack, not a pathological
+//     expression from doing unbounded total work. One recursive walk over a
+//     parsed tree is still UNBOUNDED and worth naming rather than leaving to be
+//     found: ast.go's walk, which Expression.Names uses. Its frames are far
+//     smaller than the evaluator's — a 1,000,000-operator chain walks fine
+//     where the same chain overflowed evalNode — but 10,000,000 does kill the
+//     process, measured, and no bound stands in the way.
 //
 //   - A float value does not preserve the original source text it was parsed
 //     from — "1.100" evaluates to a value that renders as "1.1", not

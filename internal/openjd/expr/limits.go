@@ -61,16 +61,17 @@ const maxParseDepth = 500
 // long chain costs it no recursion and passes maxParseDepth untouched. The TREE
 // it produces is left-deep, and evalBinary/evalLogical descend into the left
 // operand recursively, one Go frame per operator. Measured on the machine this
-// was written on: 500,000 operators evaluated, 600,000 died with "fatal error:
-// stack overflow" — the same uncatchable runtime.throw maxParseDepth exists to
-// prevent, reached by a different road.
+// was written on, with the guard bypassed: "1 + 1 + …" evaluated at 400,000
+// operators and died at 500,000 with "fatal error: stack overflow", "true or
+// true or …" at 500,000 and 600,000 — the same uncatchable runtime.throw
+// maxParseDepth exists to prevent, reached by a different road.
 //
 // The value is chosen between those two facts. 10,000 nested evaluations is
 // orders of magnitude past any expression a template author writes (source
 // nesting is capped far below it by maxParseDepth; only a flat chain of 10,000
-// operators in one expression can reach it at all), and roughly fifty times
-// below the measured crash point, which leaves room for a platform with a
-// smaller stack or a deeper frame than the one measured.
+// operators in one expression can reach it at all), and forty times below the
+// lowest measured crash point, which leaves room for a platform with a smaller
+// stack or a deeper frame than the one measured.
 const maxEvalDepth = 10_000
 
 // errTooLarge is wrapped by every bound failure so callers can match it.
