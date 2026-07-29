@@ -107,8 +107,16 @@ func sliceResultType(recv Type, step *int64) (Type, error) {
 			"a path cannot be sliced; use its parts to get its components as a list",
 		)
 	default:
-		return Type{}, fmt.Errorf("a %s cannot be sliced", t)
+		return Type{}, errNotSliceable(t)
 	}
+}
+
+// errNotSliceable is the "cannot be sliced" counterpart of list.go's
+// errNotSubscriptable, and the same relationship holds: sliceResultType runs on
+// every path into a slice, so sliceValue's own default below is unreachable and
+// exists only because the function must return after its switch.
+func errNotSliceable(t Type) error {
+	return fmt.Errorf("a %s cannot be sliced", t)
 }
 
 // sliceValue performs the slice on a receiver that has one.
@@ -137,7 +145,9 @@ func sliceValue(recv Value, start, stop, step *int64) (Value, error) {
 	case CodeRangeExpr:
 		return sliceRangeExpr(recv, start, stop, step)
 	}
-	return Value{}, fmt.Errorf("a %s cannot be sliced", recv.Type)
+	// Unreachable: sliceResultType has already rejected every receiver this
+	// switch does not handle. See errNotSliceable.
+	return Value{}, errNotSliceable(recv.Type)
 }
 
 // sliceRangeExpr slices a range expression, which section 2.1.8 says is treated

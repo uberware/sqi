@@ -190,8 +190,8 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 	// A placeholder is matched on its constraint. Its lack of a value is
 	// irrelevant to selecting a signature — which is what lets an expression be
 	// type-checked before any parameter value exists.
-	if arg.Code == CodeUnresolved && len(arg.Params) == 1 {
-		return argCost(param, arg.Params[0], b, pr)
+	if c, ok := unresolvedConstraint(arg); ok {
+		return argCost(param, c, b, pr)
 	}
 	if isTypeVar(param.Code) {
 		return typeVarCost(param.Code, arg, b, pr)

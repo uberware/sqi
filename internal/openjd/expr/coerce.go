@@ -26,7 +26,8 @@ func includes(target Type, c Code) bool {
 	case CodeAny:
 		return true
 	case CodeUnresolved:
-		return len(target.Params) == 1 && includes(target.Params[0], c)
+		constraint, ok := unresolvedConstraint(target)
+		return ok && includes(constraint, c)
 	case CodeUnion:
 		for _, m := range target.Params {
 			if includes(m, c) {
@@ -49,10 +50,12 @@ func coercible(from, to Type) bool {
 	// is decided by its constraint, and a target that is itself unresolved
 	// constrains no more tightly than the constraint does.
 	if from.Code == CodeUnresolved {
-		return len(from.Params) == 1 && coercible(from.Params[0], to)
+		constraint, ok := unresolvedConstraint(from)
+		return ok && coercible(constraint, to)
 	}
 	if to.Code == CodeUnresolved {
-		return len(to.Params) == 1 && coercible(from, to.Params[0])
+		constraint, ok := unresolvedConstraint(to)
+		return ok && coercible(from, constraint)
 	}
 	// A union value is usable only where EVERY member would be: it is SOME ONE
 	// of its members, decided at runtime, so a target that would reject any one
@@ -138,8 +141,8 @@ func listElem(t Type) (Type, bool) {
 			return t.Params[0], true
 		}
 	case CodeUnresolved:
-		if len(t.Params) == 1 {
-			return listElem(t.Params[0])
+		if c, ok := unresolvedConstraint(t); ok {
+			return listElem(c)
 		}
 	case CodeUnion:
 		var found Type
@@ -165,8 +168,8 @@ func listElem(t Type) (Type, bool) {
 func singleScalarTarget(t Type) (Code, bool) {
 	switch t.Code {
 	case CodeUnresolved:
-		if len(t.Params) == 1 {
-			return singleScalarTarget(t.Params[0])
+		if c, ok := unresolvedConstraint(t); ok {
+			return singleScalarTarget(c)
 		}
 	case CodeUnion:
 		var found Code
@@ -239,8 +242,8 @@ func coerce(v Value, target Type) (Value, error) {
 	if v.IsUnresolved() {
 		return coerceUnresolved(v, target)
 	}
-	if target.Code == CodeUnresolved && len(target.Params) == 1 {
-		return coerce(v, target.Params[0])
+	if c, ok := unresolvedConstraint(target); ok {
+		return coerce(v, c)
 	}
 	// A null reaching a target that admits null passes through; nothing else
 	// converts to or from null.
@@ -321,8 +324,8 @@ func coerceUnresolved(v Value, target Type) (Value, error) {
 // with the opposite consequence: nothing to convert means pass the value
 // through, not refuse it.
 func directUnionMember(target, t Type) bool {
-	if target.Code == CodeUnresolved && len(target.Params) == 1 {
-		return directUnionMember(target.Params[0], t)
+	if c, ok := unresolvedConstraint(target); ok {
+		return directUnionMember(c, t)
 	}
 	return target.Code == CodeUnion && containsType(target.Params, t)
 }
@@ -504,11 +507,11 @@ func toFloat(v Value) (Value, error) {
 // could ever fail to convert.
 func promotable(from, to Type) bool {
 	// A placeholder is promoted on its constraint; the same on the target side.
-	if from.Code == CodeUnresolved && len(from.Params) == 1 {
-		return promotable(from.Params[0], to)
+	if c, ok := unresolvedConstraint(from); ok {
+		return promotable(c, to)
 	}
-	if to.Code == CodeUnresolved && len(to.Params) == 1 {
-		return promotable(from, to.Params[0])
+	if c, ok := unresolvedConstraint(to); ok {
+		return promotable(from, c)
 	}
 	// Same "every member must clear the bar" rule as coercible's union branch
 	// above, using promotable per member since this function answers the

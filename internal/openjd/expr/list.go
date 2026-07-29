@@ -76,8 +76,8 @@ func evalListLit(n *ListLit, src string, syms Symbols, target Type, depth int) (
 // type" — a union naming two different list types does not qualify, because
 // there would be no single T to aim at.
 func listElemTarget(target Type) Type {
-	if target.Code == CodeUnresolved && len(target.Params) == 1 {
-		return listElemTarget(target.Params[0])
+	if c, ok := unresolvedConstraint(target); ok {
+		return listElemTarget(c)
 	}
 	if elem, ok := listElem(target); ok {
 		return elem
@@ -153,16 +153,6 @@ func isPathStringPair(a, b Type) bool {
 	return a.Code == CodePath && b.Code == CodeString || a.Code == CodeString && b.Code == CodePath
 }
 
-// unwrapUnresolved returns a placeholder's constraint, or t unchanged. An
-// element with no value still has a type, and that type is what unification
-// works on.
-func unwrapUnresolved(t Type) Type {
-	if t.Code == CodeUnresolved && len(t.Params) == 1 {
-		return t.Params[0]
-	}
-	return t
-}
-
 // evalIndex evaluates a subscript (spec section 2.1.7). The receiver may be a
 // list, a string or a range_expr; a path is explicitly excluded by section
 // 1.3.8.
@@ -223,8 +213,19 @@ func indexResultType(recv Type) (Type, error) {
 			"a path cannot be subscripted; use its parts to get its components as a list",
 		)
 	default:
-		return Type{}, fmt.Errorf("a %s cannot be subscripted", t)
+		return Type{}, errNotSubscriptable(t)
 	}
+}
+
+// errNotSubscriptable is the single place the "cannot be subscripted" wording
+// lives. Both indexResultType (the type-level check) and indexValue (the
+// value-level fallback) report it, and the relationship between the two is
+// worth stating rather than leaving as two identical-looking literals: the
+// type check runs FIRST, on every path into a subscript, so indexValue's own
+// default is unreachable — it exists because Go requires the function to
+// return something after the switch, not because a receiver can reach it.
+func errNotSubscriptable(t Type) error {
+	return fmt.Errorf("a %s cannot be subscripted", t)
 }
 
 // unionResultType answers a subscript's or a slice's result type for a UNION
@@ -313,7 +314,9 @@ func indexValue(recv Value, i int64) (Value, error) {
 		}
 		return Int(ints[at]), nil
 	}
-	return Value{}, fmt.Errorf("a %s cannot be subscripted", recv.Type)
+	// Unreachable: indexResultType has already rejected every receiver this
+	// switch does not handle. See errNotSubscriptable.
+	return Value{}, errNotSubscriptable(recv.Type)
 }
 
 // normalizeIndex resolves a possibly negative index against a length, reporting

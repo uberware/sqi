@@ -447,10 +447,7 @@ func isTypeNameByte(c byte) bool {
 // unwrap the wrapper first and validate what ListOf will actually place inside
 // the list.
 func checkListElem(elem Type) error {
-	checked := elem
-	if checked.Code == CodeUnresolved && len(checked.Params) == 1 {
-		checked = checked.Params[0]
-	}
+	checked := unwrapUnresolved(elem)
 	if checked.Code == CodeList && len(checked.Params) == 1 && checked.Params[0].Code == CodeList {
 		return fmt.Errorf("a list element type may not be nested a third time: list[%s]", elem)
 	}
@@ -458,4 +455,39 @@ func checkListElem(elem Type) error {
 		return fmt.Errorf("a list element type may not be optional: list[%s]", elem)
 	}
 	return nil
+}
+
+// unresolvedConstraint returns the type a placeholder is constrained to, and
+// reports false when t is not a placeholder at all — or is a malformed one
+// carrying something other than exactly one constraint.
+//
+// This and unwrapUnresolved below are the ONE definition of "look through an
+// unresolved wrapper". The test was hand-inlined as
+// "t.Code == CodeUnresolved && len(t.Params) == 1" in a dozen places across
+// coercion, shape matching, the list code and this file, while
+// unwrapUnresolved already existed in list.go and was used elsewhere — two
+// spellings of one rule, which is one more than can stay in step. Both live
+// here now rather than in list.go, because the rule is a property of Type and
+// every part of the package asks it.
+//
+// The length check is not decoration, which is why the guard form is exported
+// to callers rather than folded away: UnresolvedOf normalizes to exactly one
+// parameter, so a Type failing it was hand-built and is malformed, and every
+// call site deliberately declines to look through such a type rather than
+// recursing on an unchanged value forever.
+func unresolvedConstraint(t Type) (Type, bool) {
+	if t.Code == CodeUnresolved && len(t.Params) == 1 {
+		return t.Params[0], true
+	}
+	return Type{}, false
+}
+
+// unwrapUnresolved returns a placeholder's constraint, or t unchanged. A value
+// that does not exist yet still has a type, and that type is what unification,
+// promotion and the result-type rules work on.
+func unwrapUnresolved(t Type) Type {
+	if c, ok := unresolvedConstraint(t); ok {
+		return c
+	}
+	return t
 }
