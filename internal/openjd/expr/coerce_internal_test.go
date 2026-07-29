@@ -442,6 +442,19 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 		"int", "float", "string", "bool", "path", "range_expr", "nulltype",
 		"list[int]", "list[float]", "list[string]", "list[list[int]]",
 		"int?", "list[int]?", "int | string", "any",
+		// A union MIXING a list type with a scalar one, which every name above
+		// misses: each is either all-scalar or all-list, so nothing exercised a
+		// scalar value against a list-shaped target. That blind spot is what let
+		// coerce() take its list branch on the target alone and panic in
+		// AsList() on a plain scalar. "string? | list[string]" is verbatim
+		// section 1.3.2's target for a template "args" item, so it is the shape
+		// a caller actually builds first.
+		"int | list[int]", "string? | list[string]",
+		// Two list types with DIFFERING element types, which listElem reports as
+		// not list-shaped at all — the union-coercion gap doc.go recorded, where
+		// a list value that already IS one of the union's own members was
+		// rejected by the target that names it.
+		"list[float] | list[int]",
 	}
 	for _, v := range values {
 		for _, name := range targetNames {
@@ -470,9 +483,14 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 				// list to satisfy a list of lists). Omitting the restriction is a
 				// test-harness bug, not a coercible/coerce disagreement: both
 				// production functions already agree the conversion is illegal.
+				// directUnionMember is coerce()'s own second carve-out, and the
+				// element-aware one: it is what admits a list value that IS one
+				// of a union target's members, which includes() above cannot
+				// answer for exactly the reason the paragraph above gives.
 				canDo := coercible(v.Type, target) || v.Type.Equal(target) ||
 					target.Code == CodeAny ||
-					(v.Type.Code != CodeList && includes(target, v.Type.Code))
+					(v.Type.Code != CodeList && includes(target, v.Type.Code)) ||
+					directUnionMember(target, v.Type)
 				got, coerceErr := coerce(v, target)
 				switch {
 				case canDo && coerceErr != nil:
@@ -530,11 +548,19 @@ func resultTypeAdmitted(got Value, target Type) bool {
 // valueMayNotFit reports whether the conversion is one section 1.2.3 allows to
 // fail on a particular value: a narrowing scalar conversion, which is the only
 // legal reason coerce may refuse what coercible permitted.
+//
+// It dispatches on the SOURCE, exactly as coerce() itself now does: a target
+// mixing a list type with a scalar one ("int | list[int]") reports a single
+// scalar target AND a list element type, so asking the scalar question first
+// would answer for a list value with the wrong rule — "is a list a string or a
+// float", trivially no — and shadow the list rule coerce actually applied.
 func valueMayNotFit(v Value, target Type) bool {
-	if to, ok := singleScalarTarget(target); ok {
-		switch to {
-		case CodeInt, CodeFloat:
-			return v.Type.Code == CodeString || v.Type.Code == CodeFloat
+	if _, srcIsList := listElem(v.Type); !srcIsList {
+		if to, ok := singleScalarTarget(target); ok {
+			switch to {
+			case CodeInt, CodeFloat:
+				return v.Type.Code == CodeString || v.Type.Code == CodeFloat
+			}
 		}
 		return false
 	}

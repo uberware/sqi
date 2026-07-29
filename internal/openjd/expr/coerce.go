@@ -259,12 +259,34 @@ func coerce(v Value, target Type) (Value, error) {
 		}
 		return Value{}, fmt.Errorf("null %w to %s", errNotCoercible, target)
 	}
+	// A value whose type is already one of a union target's own members needs no
+	// conversion at all: the target names it. This is the same direct-membership
+	// carve-out the scalar path below carries, but comparing whole TYPES rather
+	// than type codes, which is what a list needs — includes() matches a list by
+	// its outer code alone and would call a list[int] a member of
+	// "list[string] | int". It has to sit above the list branch, because
+	// coercible cannot answer it: coercibleList asks listElem about the target,
+	// and listElem reports a union naming two DIFFERENT list types as not
+	// list-shaped at all, which is why "[1.0, 2.0]" was rejected by the target
+	// "list[float] | list[int]" that literally names its type.
+	if directUnionMember(target, v.Type) {
+		return v, nil
+	}
 	// The three list rules of section 1.2.3: elementwise conversion, the empty
-	// list, and range_expr -> list[int]. Both directions are checked because
-	// range_expr -> list[int] has a scalar source and a list target.
+	// list, and range_expr -> list[int].
+	//
+	// The gate is on the SOURCE, not on either side. A list-shaped TARGET alone
+	// is not enough: a plain scalar reaching a target that merely CONTAINS a list
+	// type — "T? | list[T]", which section 1.3.2 makes the target of every
+	// template "args" item, so it is the first shape a caller will construct —
+	// has no list conversion to perform at all and belongs on the scalar path
+	// below. Sending it here instead reached coerceList's AsList() and PANICKED.
+	// range_expr is the one non-list source with a list conversion, and only when
+	// the target really is list-shaped; a range_expr against a string target is
+	// section 1.2.3's range_expr -> string rule, which is the scalar path's.
 	_, srcIsList := listElem(v.Type)
 	dstElem, dstIsList := listElem(target)
-	if srcIsList || dstIsList {
+	if srcIsList || (v.Type.Code == CodeRangeExpr && dstIsList) {
 		if !coercible(v.Type, target) {
 			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 		}
@@ -283,6 +305,22 @@ func coerce(v Value, target Type) (Value, error) {
 		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 	}
 	return coerceScalar(v, target)
+}
+
+// directUnionMember reports whether target is a union that names t exactly as
+// one of its own members, looking through an unresolved constraint.
+//
+// This is deliberately NOT coercible's question. coercible answers "does a
+// conversion apply", and its own tests pin it to false for a type the target
+// already admits unchanged — coercible(int, "float | int") is false precisely
+// because nothing needs converting. That is the answer coerce() needs here too,
+// with the opposite consequence: nothing to convert means pass the value
+// through, not refuse it.
+func directUnionMember(target, t Type) bool {
+	if target.Code == CodeUnresolved && len(target.Params) == 1 {
+		return directUnionMember(target.Params[0], t)
+	}
+	return target.Code == CodeUnion && containsType(target.Params, t)
 }
 
 // coerceScalar performs a scalar conversion whose applicability coercible has
@@ -314,6 +352,14 @@ func coerceScalar(v Value, target Type) (Value, error) {
 // dstElem/dstIsList are passed in rather than recomputed: the caller needed them
 // to decide this branch applied at all.
 func coerceList(v Value, target, dstElem Type, dstIsList bool) (Value, error) {
+	// The invariant this function is written against, stated where it is relied
+	// upon: only a list source or a range_expr source has a list conversion, and
+	// the AsList() below is unchecked precisely because of it. A scalar arriving
+	// here used to panic there rather than being reported, so the guard is an
+	// error and not an assertion.
+	if _, ok := listElem(v.Type); !ok && v.Type.Code != CodeRangeExpr {
+		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+	}
 	// range_expr -> list[int]: expand, then convert elementwise in case the
 	// target's element type is not int (list[float], say).
 	if v.Type.Code == CodeRangeExpr {
