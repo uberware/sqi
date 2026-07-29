@@ -572,3 +572,74 @@ func TestParse_SubscriptErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestParse_NestingDepthIsBounded asserts that unbounded nesting comes back as
+// an ordinary parse error rather than killing the process.
+//
+// This is not the usual "assert the error message" test. Before maxParseDepth
+// existed, each of these inputs — at a large enough depth — produced
+// "fatal error: stack overflow", which is a runtime.throw and NOT a panic:
+// recover() cannot catch it, no deferred function runs, and the whole process
+// exits. So a regression here does not fail this test, it takes the test binary
+// down with it, which is exactly the failure the guard prevents in sqi-server.
+//
+// The depths are kept just past the limit rather than near the depth that
+// actually overflows: the point is that the guard fires first, and a test that
+// had to build a 200,000-deep source to prove it would be measuring the stack
+// rather than the bound.
+func TestParse_NestingDepthIsBounded(t *testing.T) {
+	tests := []struct {
+		name  string
+		src   string
+		depth int
+	}{
+		{"list literals", "[", 600},
+		{"parentheses", "(", 600},
+		// parseNot and parseUnary recurse into themselves without ever passing
+		// through the entry production, so a guard placed only there would
+		// leave both of these unbounded. Both were verified to overflow the
+		// stack for real before the guard existed.
+		{"not operators", "not ", 600},
+		{"unary minus", "-", 600},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var src string
+			switch tc.src {
+			case "[":
+				src = strings.Repeat("[", tc.depth) + "1" + strings.Repeat("]", tc.depth)
+			case "(":
+				src = strings.Repeat("(", tc.depth) + "1" + strings.Repeat(")", tc.depth)
+			default:
+				src = strings.Repeat(tc.src, tc.depth) + "1"
+			}
+			_, err := Parse(src)
+			if err == nil {
+				t.Fatalf("Parse of %d-deep %q = nil error, want a depth error", tc.depth, tc.name)
+			}
+			if !strings.Contains(err.Error(), "nested too deeply") {
+				t.Fatalf("Parse of %d-deep %q error = %q, want it to mention nesting depth",
+					tc.depth, tc.name, err.Error())
+			}
+			var e *Error
+			if !errors.As(err, &e) {
+				t.Fatalf("Parse of %d-deep %q returned %T, want an *Error carrying a position",
+					tc.depth, tc.name, err)
+			}
+		})
+	}
+}
+
+// TestParse_NestingWithinTheBoundStillParses pins the other side of the guard:
+// a depth comfortably under the limit must still parse, so the bound cannot be
+// tightened into rejecting real expressions without a test noticing.
+func TestParse_NestingWithinTheBoundStillParses(t *testing.T) {
+	for _, depth := range []int{1, 10, 50} {
+		t.Run(strconv.Itoa(depth), func(t *testing.T) {
+			src := strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth)
+			if _, err := Parse(src); err != nil {
+				t.Fatalf("Parse of %d-deep list literals = %v, want it to parse", depth, err)
+			}
+		})
+	}
+}

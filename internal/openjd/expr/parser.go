@@ -73,6 +73,30 @@ type parser struct {
 	src  string
 	toks []token
 	pos  int
+	// depth is how many grammar-descent frames are currently on the stack, so
+	// that unbounded nesting is reported instead of overflowing it. See enter.
+	depth int
+}
+
+// enter accounts for one level of recursive descent and returns the matching
+// leave, so a production guards itself with a single deferred line.
+//
+// Every function that takes part in a recursion CYCLE must call it, not just
+// the outermost production: parseNot and parseUnary recurse into themselves
+// without passing through parseExpr at all ("not not not …", "- - - …"), and
+// parseConditional recurses into itself for the right-associative else branch,
+// so guarding parseExpr alone would leave all three unbounded. parsePostfix is
+// guarded too, covering the trailer cycle it shares with parseSubscript.
+//
+// The limit is reported as an ordinary *Error carrying a position, which is the
+// whole point: a stack overflow is a runtime.throw that recover() cannot catch,
+// so it has to be turned into a value before it happens, not handled after.
+func (p *parser) enter(tok token) (func(), error) {
+	if p.depth >= maxParseDepth {
+		return nil, p.errorAtTok(tok, "this expression is nested too deeply")
+	}
+	p.depth++
+	return func() { p.depth-- }, nil
 }
 
 func (p *parser) peek() token { return p.toks[p.pos] }
@@ -134,6 +158,12 @@ func keyword(tok token, word string) bool {
 // right-associative: "a if p else b if q else c" groups as
 // "a if p else (b if q else c)".
 func (p *parser) parseConditional() (Node, error) {
+	leave, err := p.enter(p.peek())
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
 	then, err := p.parseOr()
 	if err != nil {
 		return nil, err
@@ -200,6 +230,12 @@ func (p *parser) parseNot() (Node, error) {
 	if !keyword(tok, "not") {
 		return p.parseCompare()
 	}
+	leave, err := p.enter(tok)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
 	p.advance()
 	x, err := p.parseNot()
 	if err != nil {
@@ -313,6 +349,12 @@ func (p *parser) parseUnary() (Node, error) {
 	default:
 		return p.parsePower()
 	}
+	leave, err := p.enter(tok)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
 	p.advance()
 	x, err := p.parseUnary()
 	if err != nil {
@@ -346,6 +388,12 @@ func (p *parser) parsePower() (Node, error) {
 // It is a LOOP because the grammar's trailer group repeats: "x[0][1]" is a
 // subscript of a subscript. Sub-project B3 attaches <Call> to the same loop.
 func (p *parser) parsePostfix() (Node, error) {
+	leave, err := p.enter(p.peek())
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
 	x, err := p.parsePrimary()
 	if err != nil {
 		return nil, err

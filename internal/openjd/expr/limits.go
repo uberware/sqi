@@ -27,6 +27,29 @@ const maxElements = 10_000_000
 // "'x' * 100000000" costs memory by length rather than by element count.
 const maxStringBytes = 10_000_000
 
+// maxParseDepth is the third bound, and the only one that applies before any
+// value exists: how deep the recursive-descent parser (parser.go) may nest.
+//
+// The two bounds above cap what one operation ALLOCATES. This one caps the Go
+// STACK the parser itself consumes, which is a strictly worse failure mode:
+// exhausting it is a runtime.throw ("fatal error: stack overflow"), not a
+// panic, so recover() cannot catch it and the whole process dies — including
+// sqi-server, once sub-project E makes this package reachable from
+// POST /api/v1/jobs. Measured before the guard existed: a list literal nested
+// 200,000 deep, or 4,000,000 stacked "not" operators, killed the test binary
+// outright.
+//
+// It counts GRAMMAR-DESCENT frames, not source brackets: one level of source
+// nesting costs several units, because the guard has to sit on every function
+// that takes part in a recursion cycle rather than only on the outermost one.
+// Those cycles are parseConditional (the entry production, reached again
+// through a list literal, a parenthesis, a subscript, and through its own
+// right-associative else branch), parseNot, parseUnary, and parsePostfix. So
+// the effective limit on source nesting is a fraction of this number — still
+// two orders of magnitude beyond any real template, and two below the depth at
+// which the stack actually gives out.
+const maxParseDepth = 500
+
 // errTooLarge is wrapped by every bound failure so callers can match it.
 var errTooLarge = errors.New("the result is too large")
 
