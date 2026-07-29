@@ -194,6 +194,7 @@ var binaryShapes = map[Op][]Shape{
 	// would reject "2.0 in [1, 2, 3]" outright since it never reaches
 	// containsElem's cross-type valuesEqual at all. Verified by
 	// TestListOperators's "2.0 in [1, 2, 3]" case rather than assumed.
+	//
 	// The substring rows carry promoteNoRangeText for the same reason OpMul's
 	// string row does, and it is the same defect one operator over: without it
 	// a range_expr operand coerced to its own text and "'1' in Param.Range"

@@ -72,8 +72,7 @@
 //     spec. The unification happens during shape matching (shape.go's
 //     orderingUnified), so both operands are coerced to the common element type
 //     BEFORE any element is compared. Ordering also reaches the empty list, in
-//     either operand
-//     position and at any nesting depth: section 1.2.6 rule 6 makes
+//     either operand position and at any nesting depth: section 1.2.6 rule 6 makes
 //     list[nulltype] convertible to list[T] for any T, so "[] < [1]" is true,
 //     "[1] < []" is false, and "[[]] < [[1]]" and "[[1]] < [[]]" answer the
 //     same way one level down. The empty literal's binding of the shared
