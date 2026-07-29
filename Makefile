@@ -207,6 +207,38 @@ test-integration: ## Run integration tests (tagged 'integration')
 test-conformance: ## Run the official OpenJD conformance suite (needs the pinned submodule)
 	go test $(TEST_FLAGS) -tags conformance -v ./test/conformance/
 
+# The OpenJD expression-language reference implementation, pinned. It ships as
+# the openjd.expr namespace of openjd-model, which is a thin re-export layer
+# over a compiled Rust crate rather than a Python implementation. Pinned
+# because it is Beta (0.x, breaking changes permitted in minor bumps), so an
+# unpinned upgrade could turn the differential test red without a single sqi
+# commit — and because a divergence report is meaningless without knowing
+# which build of the reference produced it.
+OPENJD_MODEL_VERSION ?= 0.11.1
+ORACLE_VENV := .venv-oracle
+
+.PHONY: expr-oracle-venv
+expr-oracle-venv: ## Create the venv holding the pinned OpenJD reference implementation
+	@python3 -m venv $(ORACLE_VENV)
+	@$(ORACLE_VENV)/bin/python3 -m pip install --quiet --upgrade pip
+	@$(ORACLE_VENV)/bin/python3 -m pip install --quiet "openjd-model==$(OPENJD_MODEL_VERSION)"
+	@echo "reference implementation ready: openjd-model $(OPENJD_MODEL_VERSION) in $(ORACLE_VENV)"
+
+# Differential test against the reference implementation. Like test-isolation,
+# this exits 0 when its dependency is absent, so A LOCAL PASS PROVES NOTHING
+# ON ITS OWN — look for the "--- PASS: TestExprOracle" line. CI asserts it by
+# name for that reason.
+.PHONY: test-expr-oracle
+test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD reference (needs python3)
+	@if [ ! -x "$(ORACLE_VENV)/bin/python3" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
+	  if ! command -v python3 >/dev/null 2>&1; then \
+	    echo "python3 unavailable — skipping the expression oracle"; exit 0; fi; \
+	  echo "no $(ORACLE_VENV) — creating it (run 'make expr-oracle-venv' to do this explicitly)"; \
+	  $(MAKE) --no-print-directory expr-oracle-venv || \
+	    { echo "could not install the reference implementation — skipping the expression oracle"; exit 0; }; \
+	fi
+	go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
+
 .PHONY: test-ldap
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestLDAP_' -v -timeout 15m ./test/integration/

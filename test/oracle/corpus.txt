@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Differential-test corpus for `make test-expr-oracle`. Each case is evaluated
+# by BOTH sqi's Go evaluator and the OpenJD reference implementation, and the
+# two results are compared.
+#
+# Format: one case per line, a TARGET TYPE and an EXPRESSION separated by a
+# single TAB. Blank lines and lines starting with "#" are ignored. A tab is the
+# separator because every other candidate appears inside real cases: spaces are
+# everywhere, and "|" is a union in the target type ("int | string").
+#
+# SCOPE: expressions that sub-projects A and B1 actually implement — scalar
+# operators, the coercion matrix, comparison chains, conditionals, and
+# and/or. Functions, lists, and range expressions belong to later sub-projects;
+# adding them here now would bury real divergences under known absences.
+#
+# A handful of cases are in deliberately and are expected to diverge. They earn
+# their place by DOCUMENTING a gap or a disagreement rather than leaving it
+# implicit, and each is listed in baseline.txt with the reason. Do not delete a
+# case to make the target green.
+
+# ── Arithmetic, same type (spec section 2.1.1) ───────────────────────────────
+int	1 + 2
+int	10 - 4
+int	6 * 7
+float	1.5 + 2.25
+float	10.0 - 0.5
+float	1.5 * 2.0
+int	-5 + 3
+int	0 - 0
+
+# Division is the spec's counterintuitive pair: "/" on two ints is a FLOAT and
+# "//" on two floats is an INT. Both directions are checked because a shape's
+# declared return type is what drives static type checking.
+float	7 / 2
+float	1 / 3
+int	7 // 2
+int	-7 // 2
+float	7.0 / 2.0
+int	7.0 // 2.0
+int	7 % 3
+int	-7 % 3
+float	7.5 % 2.0
+
+# Exponentiation returns a union when the exponent's sign is not statically
+# known, which is why it is the operator that first exercised union handling.
+int	2 ** 3
+float	2 ** -1
+float	2.0 ** 0.5
+int	0 ** 0
+
+# ── Numeric limits and precision ─────────────────────────────────────────────
+# Integers above 2^53 are where a float-based comparison silently loses.
+int	9007199254740993 + 0
+bool	9007199254740993 == 9007199254740992
+int	9223372036854775807 - 1
+
+# Float rendering: Go's formatFloat reproduces Python's repr on purpose, so
+# these compare the two renderings directly. 1e16 and 1e-5 sit outside the
+# window where Python prints fixed notation.
+float	1e10 * 1.0
+float	1e15 * 1.0
+float	1e16 * 1.0
+float	0.0001 * 1.0
+float	0.00001 * 1.0
+float	1.0 / 3.0
+float	0.1 + 0.2
+float	-0.0 + 0.0
+
+# ── Comparison and chained comparison (section 1.3.6) ────────────────────────
+bool	1 < 2
+bool	2 <= 2
+bool	3 > 4
+bool	1 < 2 < 3
+bool	1 < 2 > 5
+bool	3 >= 2 >= 1
+bool	'a' < 'b'
+bool	'abc' <= 'abd'
+
+# ── Equality, including the cross-type rules (section 1.2.5) ─────────────────
+bool	5 == 5.0
+bool	5 != 5.0
+bool	'5' == 5
+bool	true == 1
+bool	null == null
+bool	null == false
+bool	'a' == 'a'
+bool	1 == 1
+
+# ── Booleans and unary operators ─────────────────────────────────────────────
+bool	not true
+bool	not false
+bool	true and false
+bool	true or false
+bool	not (1 < 2)
+int	-(2 + 3)
+int	--5
+float	-1.5
+
+# and/or are VALUE-returning (section 2.1.6): they return an operand, not a
+# bool, and only null/false are falsy. "true and 0" is the case where the
+# reference and sqi disagree — see baseline.txt.
+int	true and 0
+string	false or 'fallback'
+int	null or 7
+string	'' or 'unused'
+int	0 or 99
+
+# ── Conditional expressions (section 1.3.5) ──────────────────────────────────
+int	1 if true else 2
+int	1 if false else 2
+string	'yes' if 1 < 2 else 'no'
+float	1.5 if false else 2.5
+
+# ── Target-type coercion at the boundary (section 1.3.1) ─────────────────────
+string	1 + 2
+string	1.5 + 0.0
+string	true and true
+string	7 / 2
+float	1 + 2
+string	'already'
+string	null
+
+# ── String operators ─────────────────────────────────────────────────────────
+string	'a' + 'b'
+string	'' + ''
+bool	'a' < 'a'
+# String repetition is in the spec's operator table (__mul__(string, int)) but
+# is not in sqi's shape set yet — see baseline.txt.
+string	'a' * 3
+
+# ── Errors: both sides must REFUSE these ─────────────────────────────────────
+int	1 / 0
+int	1 // 0
+int	1 % 0
+int	'a' + 1
+int	true + 1
+bool	1 if 5 else 2
+int	1 +
+int	(1 + 2

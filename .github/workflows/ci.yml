@@ -951,6 +951,48 @@ jobs:
           grep -q -- '--- PASS: TestConformance_Expressions' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_EXPRNotRegistered' /tmp/conformance.log
 
+  # Differential-tests internal/openjd/expr against the implementation the EXPR
+  # specification names as its reference — the openjd.expr namespace of
+  # openjd-model, which is a thin re-export layer over a compiled Rust crate
+  # rather than a Python implementation. Tagged `oracle`, so it does not run in
+  # the default `make test`.
+  #
+  # IMPORTANT: the assertion step below is not redundant. `make test-expr-oracle`
+  # exits 0 when no interpreter has the package importable, and the test itself
+  # SKIPS in that case — so a green job would otherwise prove nothing at all.
+  # Requiring the PASS line is the same guard conformance, ldap-integration and
+  # isolation-integration use.
+  #
+  # One arch: the corpus exercises expression semantics, and no arch divergence
+  # is plausible for either side (Go's evaluator is pure Go; the reference ships
+  # as an abi3 wheel built per-arch by upstream).
+  expr-oracle:
+    name: EXPR reference-implementation oracle
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run the differential test against the OpenJD reference
+        shell: bash
+        run: make test-expr-oracle 2>&1 | tee /tmp/expr-oracle.log
+
+      - name: Assert the oracle actually ran
+        run: |
+          grep -q -- '--- PASS: TestExprOracle_MatchesReferenceImplementation' /tmp/expr-oracle.log
+
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9
   # floor for src and 3.13 for tests via flags), not by the interpreter they run

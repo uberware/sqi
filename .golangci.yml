@@ -20,6 +20,7 @@ run:
   build-tags:
     - integration
     - conformance
+    - oracle
 
 # ── Linters ───────────────────────────────────────────────────────────────────
 linters:

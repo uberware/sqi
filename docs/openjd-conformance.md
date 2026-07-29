@@ -167,6 +167,20 @@ Both remaining classes of gap are elsewhere:
   correctly. `test/conformance/baseline.txt` is empty, and CI fails if any entry
   is added without being fixed.
 
+### A second, independent check on EXPR: the reference-implementation oracle
+
+The fixture suite scores whether `sqi` reaches the right verdict on the
+templates upstream happens to ship. It cannot tell you whether the *evaluator*
+agrees with upstream on an expression no fixture contains, and it cannot catch a
+misreading of the spec applied consistently across `sqi`'s own tests.
+
+`make test-expr-oracle` covers that gap by evaluating a corpus with both `sqi`
+and the implementation the EXPR spec names as its reference, and comparing.
+It is supplementary to this suite, never a substitute — and the reference is
+**Beta**, so the spec still outranks it. Setup, the baseline format, and the
+currently accepted divergences are documented in
+[`docs/development.md`](development.md#differential-testing-expr-against-the-reference-implementation).
+
 ## Known divergence: sqi names under the reserved `worker` scope
 
 The spec reserves `worker`, `job`, `step`, and `task` as the first identifier

@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Accepted divergences between sqi's Go evaluator and the OpenJD reference
+# implementation, in the same spirit as test/conformance/baseline-expr.txt: a
+# case listed here is known to disagree, and the disagreement has been
+# adjudicated rather than ignored.
+#
+# Format: the comment lines immediately above an entry are its reason, and the
+# entry itself is a case id from corpus.txt — "<target> :: <expression>",
+# exactly as the failure output prints it. A blank line separates entries. An
+# entry with no reason above it is a hard error, and so is an entry naming a
+# case that is not in the corpus.
+#
+# THE SPEC OUTRANKS THE REFERENCE. openjd-expr is Beta (0.x, breaking changes
+# permitted in minor bumps), so an entry here may record either a genuine gap
+# in sqi or a case where sqi is right and the reference is wrong. Say which.
+#
+# A baselined case that STOPS diverging also fails the test. That is deliberate
+# — this file is a list of open questions, and one answering itself is worth
+# knowing about.
+
+# ── sqi is right: the reference mishandles and/or under a target type ────────
+#
+# Three entries, one root cause, and the evidence is that the reference gets
+# all three RIGHT when no target type is supplied:
+#
+#   false or 'fallback'  ->  'fallback' : string
+#   null or 7            ->  7 : int
+#   true and 0           ->  0 : int
+#
+# Supplying a target type changes the ANSWER, not merely its coercion. With
+# target=string, "false or 'fallback'" returns "false" — the operand the spec
+# says is discarded. The reference appears to type and/or statically as a union
+# of both operand types and push the target coercion through that union, which
+# both loses the short-circuit and, when a member cannot coerce (bool->int,
+# nulltype->int), rejects an expression that has a perfectly good value.
+#
+# Spec section 2.1.6 is unambiguous, and states the rule as a value rule rather
+# than a typing rule:
+#
+#   a and b   If a is null or false, return a; otherwise evaluate and return b
+#   a or b    If a is null or false, evaluate and return b; otherwise return a
+#
+# and adds that they "are value-returning: they return one of their operands,
+# not necessarily a bool". sqi evaluates the operator first and coerces the
+# operand it actually returned, which is what those rules describe.
+#
+# Worth reporting upstream. Until then these stay as documentation that the
+# disagreement is known and which side the spec is on.
+
+# and/or under a target type: the reference errors, sqi returns 0 per 2.1.6.
+int :: true and 0
+
+# and/or under a target type: the reference returns the DISCARDED operand
+# ("false"), sqi returns 'fallback' per 2.1.6.
+string :: false or 'fallback'
+
+# and/or under a target type: the reference errors on nulltype->int, sqi
+# returns 7 per 2.1.6 — the null operand is the one being discarded.
+int :: null or 7
+
+# ── sqi is right: float exponent rendering ──────────────────────────────────
+#
+# sqi renders 1e-05, the reference renders 1e-5. Python's repr — which sqi's
+# formatFloat deliberately reproduces, and which the spec's own float examples
+# follow — gives 1e-05, so sqi matches the language the spec defines itself as
+# a subset of and the reference does not. Note the reference is not internally
+# consistent about this either: it renders the positive exponent as 1e+16,
+# keeping both the sign and the two-digit field it drops here.
+#
+# The spec does not state a rendering for computed floats outside the fixed
+# notation window, so this is a real ambiguity rather than a plain bug. If it is
+# ever settled against sqi, the change is confined to formatFloat in value.go.
+
+# Float exponent rendering: sqi gives 1e-05 (Python's repr), reference 1e-5.
+float :: 0.00001 * 1.0
+
+# ── sqi is wrong: string repetition is not implemented ──────────────────────
+#
+# The reference gives 'aaa'. sqi errors with "unsupported operand types for *".
+# The spec's operator table has __mul__(s: string, n: int) -> string, alongside
+# __mul__(a: list[T], n: int) -> list[T]. Sub-projects A and B1 only ever
+# defined same-type scalar shapes, so this is an absence rather than a defect —
+# but it is a real gap and the case is kept here so it cannot be forgotten.
+#
+# Remove this entry when the cross-type shape lands.
+
+# String repetition: the spec has __mul__(string, int); sqi has no such shape.
+string :: 'a' * 3
