@@ -161,6 +161,13 @@
 //     the parser's recursive descent is depth-limited, because exhausting the
 //     Go stack is a runtime.throw that recover() cannot catch — a 200,000-deep
 //     list literal killed the process outright rather than returning an error.
+//     "Depth-limited" means every recursion CYCLE in the descent is counted,
+//     which is a stronger claim than guarding the entry production and was not
+//     true when it was first written: parsePower reads its exponent through
+//     parseUnary, and parseUnary falls back through to parsePower, a loop that
+//     passed no guard at all, so "2**2**2**…" a million operators long still
+//     killed the process. It is counted now (parser.go's enter carries the full
+//     enumeration).
 //     None of the three is the spec's own configurable memory and operation
 //     limits (sections 1.3.9 and 1.3.10) — those remain unimplemented, still
 //     sub-project E's, unchanged from sub-project A — so this package must

@@ -82,15 +82,35 @@ type parser struct {
 // leave, so a production guards itself with a single deferred line.
 //
 // Every function that takes part in a recursion CYCLE must call it, not just
-// the outermost production: parseNot and parseUnary recurse into themselves
-// without passing through parseExpr at all (a stack of "not" keywords, or of
-// unary minus signs), and
-// parseConditional recurses into itself for the right-associative else branch,
-// so guarding parseExpr alone would leave all three unbounded. parsePostfix is
-// guarded as well, which closes no cycle today — its trailer group is a LOOP,
-// and parseSubscript re-enters the grammar through parseExpr, which is already
-// counted — but it is the natural place for the guard if that loop is ever
-// turned into recursion, and one more counted frame per level costs nothing.
+// the outermost production. The cycles, enumerated from parser.go's call graph:
+//
+//   - Every path that re-enters the grammar from inside a construct — a
+//     parenthesis, a list element, a subscript, a slice component — goes through
+//     parseExpr and so through parseConditional, which is guarded.
+//   - parseConditional recurses into ITSELF for the right-associative else
+//     branch, without leaving the production.
+//   - parseNot and parseUnary each recurse into themselves (a stack of "not"
+//     keywords, or of unary minus signs) without passing through parseExpr at
+//     all. Both are guarded on the branch that recurses.
+//   - parsePower and parseUnary recurse into EACH OTHER: parsePower reads its
+//     exponent with parseUnary (which is what makes "**" right-associative),
+//     and parseUnary falls through to parsePower whenever the next token is not
+//     a sign. Neither of the two guards above closes that loop — parseUnary's
+//     sits on the sign branch, which this cycle never takes — so "2**2**2**…"
+//     was unbounded until parsePower was guarded too, and killed the process
+//     with a stack overflow at a million operators. parsePostfix's guard does
+//     not help either: its defer has already run by the time parsePower reads
+//     the "**".
+//   - parsePostfix is guarded as well, which closes no cycle of its own — its
+//     trailer group is a LOOP, and parseSubscript re-enters through parseExpr,
+//     already counted — but it is the natural place for the guard if that loop
+//     is ever turned into recursion, and one more counted frame per level costs
+//     nothing.
+//
+// The remaining productions (parseOr, parseAnd, parseLogicalLevel, parseCompare,
+// parseAdd, parseMul, parseBinaryLevel) form a strictly descending precedence
+// chain with no back edge, so they take part in no cycle except through
+// parseExpr, and need no guard of their own.
 //
 // The limit is reported as an ordinary *Error carrying a position, which is the
 // whole point: a stack overflow is a runtime.throw that recover() cannot catch,
@@ -370,7 +390,17 @@ func (p *parser) parseUnary() (Node, error) {
 // parsePower implements <PowerExpr> ::= <PostfixExpr> ("**" <UnaryExpr>)?.
 // The right operand is a UnaryExpr, which makes ** right-associative and lets
 // "2 ** -1" parse while leaving "-2 ** 2" as -(2 ** 2).
+//
+// That right operand is also a recursion cycle — parseUnary falls straight back
+// through to parsePower — so this production takes the depth guard, which is
+// what keeps "2**2**2**…" a parse error rather than a stack overflow. See enter.
 func (p *parser) parsePower() (Node, error) {
+	leave, err := p.enter(p.peek())
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
 	base, err := p.parsePostfix()
 	if err != nil {
 		return nil, err

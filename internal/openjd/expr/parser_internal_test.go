@@ -601,6 +601,12 @@ func TestParse_NestingDepthIsBounded(t *testing.T) {
 		// stack for real before the guard existed.
 		{"not operators", "not ", 600},
 		{"unary minus", "-", 600},
+		// parsePower reads its exponent through parseUnary, which falls straight
+		// back through to parsePower when the next token is not a sign. That
+		// cycle passed through no guard at all until parsePower took one:
+		// Parse(strings.Repeat("2**", 1000000) + "2") died with "fatal error:
+		// stack overflow", taking the whole process with it.
+		{"power operators", "2**", 600},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

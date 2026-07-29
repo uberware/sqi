@@ -44,10 +44,12 @@ const maxStringBytes = 10_000_000
 // that takes part in a recursion cycle rather than only on the outermost one.
 // Those cycles are parseConditional (the entry production, reached again
 // through a list literal, a parenthesis, a subscript, and through its own
-// right-associative else branch), parseNot, parseUnary, and parsePostfix. So
-// the effective limit on source nesting is a fraction of this number — still
-// two orders of magnitude beyond any real template, and two below the depth at
-// which the stack actually gives out.
+// right-associative else branch), parseNot, parseUnary, parsePower — which
+// recurses into parseUnary for its exponent, and back — and parsePostfix. The
+// full enumeration, with the proof that no cycle escapes it, is in parser.go's
+// enter. So the effective limit on source nesting is a fraction of this number
+// — one bracket costs three frames — still two orders of magnitude beyond any
+// real template, and two below the depth at which the stack actually gives out.
 const maxParseDepth = 500
 
 // errTooLarge is wrapped by every bound failure so callers can match it.
