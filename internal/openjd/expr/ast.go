@@ -2,7 +2,10 @@
 
 package expr
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // Op identifies an operator. The same value names an operator in the tree and
 // keys the dispatch tables in ops.go, so there is one operator vocabulary
@@ -297,9 +300,9 @@ func walk(n Node, fn func(Node)) {
 // skipped rather than pushed, since the caller's fn must never be handed one.
 func pushChildren(stack []Node, n Node) []Node {
 	push := func(children ...Node) {
-		for i := len(children) - 1; i >= 0; i-- {
-			if children[i] != nil {
-				stack = append(stack, children[i])
+		for _, child := range slices.Backward(children) {
+			if child != nil {
+				stack = append(stack, child)
 			}
 		}
 	}
