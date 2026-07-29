@@ -371,11 +371,7 @@ func coerceList(v Value, target, dstElem Type, dstIsList bool) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		vals := make([]Value, len(ints))
-		for i, n := range ints {
-			vals[i] = Int(n)
-		}
-		return coerceList(List(TInt, vals), target, dstElem, dstIsList)
+		return coerceList(List(TInt, intValues(ints)), target, dstElem, dstIsList)
 	}
 	// A list value whose type already satisfies the target needs no conversion.
 	// listElem's element-aware comparison is what makes this safe where the

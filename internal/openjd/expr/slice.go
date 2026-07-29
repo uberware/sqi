@@ -158,11 +158,7 @@ func sliceRangeExpr(recv Value, start, stop, step *int64) (Value, error) {
 		picked[i] = ints[at]
 	}
 	if step != nil && *step < 0 || len(picked) == 0 {
-		vals := make([]Value, len(picked))
-		for i, n := range picked {
-			vals[i] = Int(n)
-		}
-		return List(TInt, vals), nil
+		return List(TInt, intValues(picked)), nil
 	}
 	return RangeExpr(canonicalRange(picked))
 }

@@ -794,8 +794,10 @@ func listsEqual(a, b []Value) bool {
 	return true
 }
 
-// intValues wraps expanded range integers as values so they can be compared
-// against a list's elements.
+// intValues wraps expanded range integers as list elements. It is the single
+// copy of that two-line loop: coerce.go (range_expr -> list[int]) and slice.go
+// (a range_expr slice that cannot come back as a range_expr) each hand-rolled
+// their own before, which is three chances for one of them to drift.
 func intValues(ints []int64) []Value {
 	out := make([]Value, len(ints))
 	for i, n := range ints {
@@ -862,13 +864,20 @@ func concatLists(l, r Value) (Value, error) {
 	if err := checkElementCount(len(left) + len(right)); err != nil {
 		return Value{}, err
 	}
+	// Both operands are ranged over in turn rather than joined into a
+	// throwaway slice first: the join allocated a complete second copy of both
+	// operands, on top of the correctly-sized result below, purely to have one
+	// loop instead of two — doubling the peak memory of every concatenation,
+	// with maxElements putting that at 10,000,000 values.
 	out := make([]Value, 0, len(left)+len(right))
-	for _, v := range append(append([]Value{}, left...), right...) {
-		converted, err := coerce(v, elem)
-		if err != nil {
-			return Value{}, err
+	for _, side := range [][]Value{left, right} {
+		for _, v := range side {
+			converted, err := coerce(v, elem)
+			if err != nil {
+				return Value{}, err
+			}
+			out = append(out, converted)
 		}
-		out = append(out, converted)
 	}
 	return List(elem, out), nil
 }
