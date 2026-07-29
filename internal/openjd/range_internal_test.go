@@ -38,31 +38,6 @@ func TestParseIntRangeExpr_HugeRange(t *testing.T) {
 	}
 }
 
-// TestIntRangeCount checks the allocation-free arithmetic count.
-func TestIntRangeCount(t *testing.T) {
-	cases := []struct {
-		r    intRange
-		want int
-	}{
-		{intRange{Start: 1, End: 1, Step: 1}, 1},
-		{intRange{Start: 1, End: 5, Step: 1}, 5},
-		{intRange{Start: 1, End: 10, Step: 2}, 5},
-		{intRange{Start: 1, End: 10, Step: 3}, 4},
-		{intRange{Start: 0, End: 0, Step: 0}, 1},   // step normalized to 1
-		{intRange{Start: 5, End: 1, Step: 1}, 0},   // start > end
-		{intRange{Start: -5, End: 5, Step: 1}, 11}, // negatives
-	}
-	for _, tc := range cases {
-		if got := tc.r.count(); got != tc.want {
-			t.Errorf("intRange%+v.count() = %d, want %d", tc.r, got, tc.want)
-		}
-		// count() must match the materialized length for in-bounds ranges.
-		if got := len(tc.r.iterate()); tc.want != got {
-			t.Errorf("intRange%+v: count()=%d but len(iterate())=%d", tc.r, tc.want, got)
-		}
-	}
-}
-
 // TestParseIntRangeExpr_InBoundsUnchanged confirms normal ranges still expand
 // exactly (dedupe + ordering preserved).
 func TestParseIntRangeExpr_InBoundsUnchanged(t *testing.T) {
@@ -151,6 +126,51 @@ func TestValidateIntRangeExpr_LargeInBoundsNoMaterialize(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("validateIntRangeExpr(%q) = %v, want nil", expr, err)
+	}
+}
+
+// TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged pins the exact error
+// strings parseIntRangeExpr and validateIntRangeExpr have always produced, as
+// literals — not merely against each other the way
+// TestValidateIntRangeExpr_MatchesParse does. That test compares the two
+// functions to EACH OTHER, so it stays green even if both drifted together
+// (e.g. during the range.go / internal/openjd/intrange rewire); this test
+// exists so such a drift is caught. The strings were captured from the
+// pre-rewire implementation and must remain byte-identical, since callers
+// (e.g. job submission validation) surface them verbatim.
+func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
+	cases := []struct {
+		expr string
+		want string
+	}{
+		{"", `openjd: range expression is empty`},
+		{",,", `openjd: range expression ",," produced no values`},
+		{"bad-", `openjd: range expression "bad-": invalid range start "bad"`},
+		{"5-1", `openjd: range expression "5-1": range start (5) must be ≤ end (1)`},
+		{"1-10:0", `openjd: range expression "1-10:0": invalid step "0": must be a positive integer`},
+		{"1-10:-2", `openjd: range expression "1-10:-2": invalid step "-2": must be a positive integer`},
+		{"1-10:x", `openjd: range expression "1-10:x": invalid step "x": must be a positive integer`},
+		{"7:2", `openjd: range expression "7:2": step (2) requires a range, not a single value`},
+		{"1-2000000000", `openjd: range expression "1-2000000000": openjd: range expression expands to too many values (limit 10000000)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.expr, func(t *testing.T) {
+			_, perr := parseIntRangeExpr(tc.expr)
+			if perr == nil {
+				t.Fatalf("parseIntRangeExpr(%q) = nil error, want %q", tc.expr, tc.want)
+			}
+			if perr.Error() != tc.want {
+				t.Fatalf("parseIntRangeExpr(%q) error = %q, want %q", tc.expr, perr.Error(), tc.want)
+			}
+
+			verr := validateIntRangeExpr(tc.expr)
+			if verr == nil {
+				t.Fatalf("validateIntRangeExpr(%q) = nil error, want %q", tc.expr, tc.want)
+			}
+			if verr.Error() != tc.want {
+				t.Fatalf("validateIntRangeExpr(%q) error = %q, want %q", tc.expr, verr.Error(), tc.want)
+			}
+		})
 	}
 }
 
