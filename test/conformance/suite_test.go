@@ -209,7 +209,8 @@ func TestConformance_Expressions(t *testing.T) {
 	// plus the unclosed, syntax-error and leading-zeros cases are rejected by
 	// grammar alone, and the arithmetic, contextual-keyword and JSON-alias
 	// fixtures parse. The comparison and conditional fixtures each also
-	// contain a list literal, so they are baselined.
+	// contain a list literal, which now parses and evaluates too, so both
+	// fixtures pass outright rather than being baselined.
 	passed := 0
 	for _, r := range results {
 		if r.Passed {

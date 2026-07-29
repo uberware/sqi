@@ -24,8 +24,8 @@
 # live result is orphaned. All three must be fixed, not suppressed.
 #
 # Expect most entries to be one of two kinds, and both to burn down later:
-#   - syntax the reader does not implement (lists, comprehensions, subscripts,
-#     slices, calls, methods) — sub-projects B and C;
+#   - syntax the reader does not implement (comprehensions, calls, methods) —
+#     sub-projects B3 and C;
 #   - a fixture invalid for a reason DeclaredSymbols' flat, scope-blind table
 #     cannot see: a symbol used somewhere the real template schema forbids it
 #     (Session.WorkingDirectory in host requirements, Step.Name in the job's
@@ -111,14 +111,8 @@ EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
 EXPR/job_templates/expr-extension-missing.invalid.yaml
 EXPR/job_templates/expr-with-other-extensions.yaml
-EXPR/job_templates/expr1.1--comparison-expr.yaml
-EXPR/job_templates/expr1.1--conditional-expr.yaml
 EXPR/job_templates/expr1.1--function-call-expr.yaml
 EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
-EXPR/job_templates/expr1.1--list-literal-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
 EXPR/job_templates/expr1.1--multiline-expr.yaml
-EXPR/job_templates/expr1.1--slice-expr.yaml
-EXPR/job_templates/expr1.3.11--float-range-expression.yaml
 EXPR/job_templates/expr1.3.11--path-range-expression.yaml
-EXPR/job_templates/expr1.3.11--string-range-expression.yaml
