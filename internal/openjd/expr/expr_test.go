@@ -111,10 +111,10 @@ func TestLanguage(t *testing.T) {
 		// the "not yet implemented" group below, unlike its still-unimplemented
 		// neighbor, subscript.
 		{name: "list literal, element type inferred", src: "[1, 2]", wantCode: expr.CodeList, want: "[1, 2]"},
-		// "Param.Name[0]" now parses too (this task's change); evaluating an
-		// Index is still unimplemented until a later sub-project gives it a
-		// value.
-		{name: "SUB-PROJECT B: subscript", src: "Param.Name[0]", wantErr: "cannot evaluate"},
+		// "Param.Name[0]" now evaluates too (section 2.1.7, this task's
+		// change) — no longer belongs in the "not yet implemented" group
+		// below.
+		{name: "subscript", src: "Param.Name[0]", wantCode: expr.CodeString, want: "s"},
 		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "function and method calls"},
 		{name: "function calls are sub-project C", src: "len('ab')", wantErr: "function and method calls are not supported"},
 		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: "function and method calls"},

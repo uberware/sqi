@@ -102,6 +102,8 @@ func evalNode(n Node, src string, syms Symbols, target Type) (Value, error) {
 		return evalCond(v, src, syms, target)
 	case *ListLit:
 		return evalListLit(v, src, syms, target)
+	case *Index:
+		return evalIndex(v, src, syms)
 	}
 	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
 }

@@ -2,7 +2,11 @@
 
 package expr
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // evalListLit evaluates a list literal, inferring its element type per spec
 // section 1.2.6.
@@ -157,6 +161,110 @@ func unwrapUnresolved(t Type) Type {
 		return t.Params[0]
 	}
 	return t
+}
+
+// evalIndex evaluates a subscript (spec section 2.1.7). The receiver may be a
+// list, a string or a range_expr; a path is explicitly excluded by section
+// 1.3.8.
+//
+// An index out of bounds is an ERROR here, in deliberate contrast to a slice,
+// whose bounds are clamped (section 2.1.8).
+func evalIndex(n *Index, src string, syms Symbols) (Value, error) {
+	recv, err := evalNode(n.X, src, syms, TAny)
+	if err != nil {
+		return Value{}, err
+	}
+	idx, err := evalNode(n.Idx, src, syms, TInt)
+	if err != nil {
+		return Value{}, err
+	}
+	if !isIntish(idx) {
+		return Value{}, errorAt(src, n.Idx.Pos(),
+			"a subscript index must be an int, found %s", idx.Type)
+	}
+	elem, err := indexResultType(recv.Type)
+	if err != nil {
+		return Value{}, wrapAt(src, n.Offset, err)
+	}
+	// Either operand missing means the result is typed but has no value. A
+	// bounds check is impossible and must NOT be attempted: whether the index
+	// is in range is not knowable until the value exists.
+	if recv.IsUnresolved() || idx.IsUnresolved() {
+		return Unresolved(elem), nil
+	}
+	out, err := indexValue(recv, idx.AsInt())
+	if err != nil {
+		return Value{}, wrapAt(src, n.Offset, err)
+	}
+	return out, nil
+}
+
+// isIntish reports whether v can serve as an index: an int, or a placeholder
+// constrained to one.
+func isIntish(v Value) bool {
+	return unwrapUnresolved(v.Type).Code == CodeInt
+}
+
+// indexResultType gives the type a subscript of recv produces, per section
+// 2.1.7's three signatures. It is the type half of evalIndex, split out so that
+// a receiver with no value still yields a typed result.
+func indexResultType(recv Type) (Type, error) {
+	switch t := unwrapUnresolved(recv); t.Code {
+	case CodeList:
+		return t.Params[0], nil
+	case CodeString:
+		return TString, nil
+	case CodeRangeExpr:
+		return TInt, nil
+	case CodePath:
+		return Type{}, errors.New(
+			"a path cannot be subscripted; use its parts to get its components as a list")
+	default:
+		return Type{}, fmt.Errorf("a %s cannot be subscripted", t)
+	}
+}
+
+// indexValue performs the subscript on a receiver that has one.
+func indexValue(recv Value, i int64) (Value, error) {
+	switch recv.Type.Code {
+	case CodeList:
+		elems := recv.AsList()
+		at, ok := normalizeIndex(i, int64(len(elems)))
+		if !ok {
+			return Value{}, fmt.Errorf("index %d is out of bounds for a list of %d", i, len(elems))
+		}
+		return elems[at], nil
+	case CodeString:
+		runes := []rune(recv.AsStr())
+		at, ok := normalizeIndex(i, int64(len(runes)))
+		if !ok {
+			return Value{}, fmt.Errorf("index %d is out of bounds for a string of %d characters", i, len(runes))
+		}
+		return String(string(runes[at])), nil
+	case CodeRangeExpr:
+		ints, err := rangeInts(recv)
+		if err != nil {
+			return Value{}, err
+		}
+		at, ok := normalizeIndex(i, int64(len(ints)))
+		if !ok {
+			return Value{}, fmt.Errorf("index %d is out of bounds for a range of %d values", i, len(ints))
+		}
+		return Int(ints[at]), nil
+	}
+	return Value{}, fmt.Errorf("a %s cannot be subscripted", recv.Type)
+}
+
+// normalizeIndex resolves a possibly negative index against a length, reporting
+// false when it falls outside. Section 2.1.7: "-1 is the last element".
+func normalizeIndex(i, length int64) (int64, bool) {
+	if i < 0 {
+		i += length
+	}
+	if i < 0 || i >= length {
+		return 0, false
+	}
+	return i, true
 }
 
 // joinTypes renders a list of types for an error message.
