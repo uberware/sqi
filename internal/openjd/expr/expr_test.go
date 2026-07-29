@@ -106,9 +106,11 @@ func TestLanguage(t *testing.T) {
 		// see the package documentation and the plan's scope table. Int/float
 		// promotion (+ and <) moved up to the Operators section above: B1
 		// delivers it.
-		// "[1, 2]" now parses (this sub-project's own change); evaluating a
-		// ListLit is still unimplemented until B2 gives it a value.
-		{name: "SUB-PROJECT B: list literal", src: "[1, 2]", wantErr: "cannot evaluate"},
+		// A list literal now both parses AND evaluates, inferring its element
+		// type per section 1.2.6 (this task's change) — no longer belongs in
+		// the "not yet implemented" group below, unlike its still-unimplemented
+		// neighbor, subscript.
+		{name: "list literal, element type inferred", src: "[1, 2]", wantCode: expr.CodeList, want: "[1, 2]"},
 		// "Param.Name[0]" now parses too (this task's change); evaluating an
 		// Index is still unimplemented until a later sub-project gives it a
 		// value.
@@ -118,9 +120,9 @@ func TestLanguage(t *testing.T) {
 		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: "function and method calls"},
 		{name: "SUB-PROJECT E: string repetition", src: `'ab' * 3`, wantErr: "unsupported operand types"},
 
-		// Grammar B1 deliberately does not add. "[1, 2]" and "'ab' * 3" already
-		// appear above (SUB-PROJECT B and SUB-PROJECT E), so they are not
-		// repeated here.
+		// Grammar B1 deliberately does not add. "'ab' * 3" already appears above
+		// (SUB-PROJECT E), so it is not repeated here. "[1, 2]" no longer belongs
+		// in this "grammar only" group at all: it now evaluates, see above.
 	}
 
 	for _, tt := range tests {
