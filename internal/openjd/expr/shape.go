@@ -247,6 +247,14 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 // did not, because T had been pinned to nulltype first and int then mismatched.
 // Section 1.2.5 says the shorter list is less, so both are answerable, and the
 // reference implementation agrees ("[] < [1]" is true, "[1] < []" false).
+//
+// The exception has to be SYMMETRIC, and was not. One layer down, where the
+// empty literal reaches this function as a plain argument rather than through
+// argCostList's own branch, "[[]] < [[1]]" bound T to list[nulltype] and then
+// replaced it with list[int], while "[[1]] < [[]]" bound T to list[int] and met
+// list[nulltype] — the same pair, the same rule, and an "unsupported operand
+// types" error for want of the second direction. The reference returns false
+// for it, queried directly.
 func typeVarCost(code Code, arg Type, b bindings) (int, bool) {
 	bound, ok := b[code]
 	if !ok {
@@ -256,8 +264,18 @@ func typeVarCost(code Code, arg Type, b bindings) (int, bool) {
 	if bound.Equal(arg) {
 		return costExact, true
 	}
+	// The empty side may be EITHER of the two, and the fix that made "[] < [1]"
+	// work handled only the first of these. When the BINDING is the empty one it
+	// is replaced, so the variable ends up naming the type the caller actually
+	// chose. When the INCOMING ARGUMENT is the empty one the binding already
+	// names that type, so it stands and the argument is merely admitted:
+	// rebinding to it would throw the real element type away and pin the
+	// variable to nulltype, which is what the first branch exists to undo.
 	if emptyListBinding(bound, arg) {
 		b[code] = arg
+		return costWiden, true
+	}
+	if emptyListBinding(arg, bound) {
 		return costWiden, true
 	}
 	return 0, false

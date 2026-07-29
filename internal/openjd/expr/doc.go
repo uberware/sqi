@@ -63,11 +63,16 @@
 //     section 1.2.5) does not reach across element types AT ALL, not even
 //     int/float: "[1] < [1.0]" is the same "unsupported operand types" error,
 //     with no promotion. It DOES reach the empty list, in either operand
-//     position: section 1.2.6 rule 6 makes list[nulltype] convertible to
-//     list[T] for any T, so "[] < [1]" is true and "[1] < []" is false. The
-//     empty literal's binding of the shared element-type variable is
-//     provisional rather than pinning (shape.go's emptyListBinding), which is
-//     what makes the two orders agree.
+//     position and at any nesting depth: section 1.2.6 rule 6 makes
+//     list[nulltype] convertible to list[T] for any T, so "[] < [1]" is true,
+//     "[1] < []" is false, and "[[]] < [[1]]" and "[[1]] < [[]]" answer the
+//     same way one level down. The empty literal's binding of the shared
+//     element-type variable is provisional rather than pinning (shape.go's
+//     emptyListBinding), and the exception is applied in BOTH directions —
+//     an empty binding meeting a real argument, and a real binding meeting an
+//     empty argument — which is what makes the orders agree. Only the first of
+//     those two directions existed at first, which is exactly why the nested
+//     case worked one way and errored the other.
 //
 //   - List literals, subscripts and slices are implemented, and list[T] has
 //     real values — "[1, 2, 3]" parses and evaluates. A literal with no

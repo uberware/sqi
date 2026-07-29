@@ -830,6 +830,22 @@ func TestListOperators_Errors(t *testing.T) {
 		// match, and it would then fail inside coerce() instead of being
 		// reported as an unsupported operand pair.
 		{"[[]] < [1]", "unsupported operand types"},
+		// The rest of the fence around that exception, in both operand orders.
+		// Widening it far enough to order "[[1]] < [[]]" must not turn any of
+		// these into a match: only a binding (or an argument) that bottoms out
+		// at nulltype under matching list layers is replaceable, and none of
+		// these does.
+		{"['a'] < [1]", "unsupported operand types"},
+		{"[1] < ['a']", "unsupported operand types"},
+		{"[1] < [[]]", "unsupported operand types"},
+		{"[] < 1", "unsupported operand types"},
+		{"1 < []", "unsupported operand types"},
+		// Section 2.1.4's compatible pairs are NOT applied elementwise today,
+		// so list ordering does not cross int/float even though scalar ordering
+		// does. A later wave revisits this deliberately; until then it is an
+		// error, and the empty-list exception must not quietly become the route
+		// that admits it.
+		{"[1] < [1.0]", "unsupported operand types"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
@@ -979,10 +995,22 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		// pinned the shared type variable to nulltype before int arrived. The
 		// nested row is the same defect one level down, where the provisional
 		// binding is list[nulltype] rather than nulltype.
+		//
+		// Both directions of both depths are listed, because fixing one
+		// direction is what caused the second defect: the nested case worked
+		// with the empty list on the LEFT and errored with it on the right,
+		// since the exception was written for an empty BINDING meeting a real
+		// argument and not for the reverse. A row for one direction alone
+		// cannot see that.
 		{"[] < [1]", "true"},
 		{"[] <= [1]", "true"},
 		{"[[]] < [[1]]", "true"},
+		{"[[1]] < [[]]", "false"},
+		{"[[1]] > [[]]", "true"},
+		{"[[]] <= [[1]]", "true"},
+		{"[[[1]]] < [[[]]]", "false"},
 		{"[1] < []", "false"},
+		{"[1] > []", "true"},
 		{"[] < []", "false"},
 		{"[] <= []", "true"},
 		{"[] == []", "true"},

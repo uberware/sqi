@@ -229,10 +229,19 @@ bool	['a'] < ['b']
 # to nulltype when it came first. The reference agrees with the fixed behaviour
 # on every line here, including the last, where the empty list is nested one
 # level deeper than the other operand and there is no conversion at all.
+#
+# BOTH ORDERS of every nesting depth, which is the part this section originally
+# missed: the nested case was pinned in one direction only ("[[]] < [[1]]"), and
+# "[[1]] < [[]]" was still a type error for want of the mirror-image rule, with
+# nothing here to notice. A corpus row that exists in one direction only cannot
+# see an asymmetric fix.
 bool	[] < [1]
 bool	[1] < []
 bool	[] <= [1]
 bool	[] < []
 bool	[] <= []
 bool	[[]] < [[1]]
+bool	[[1]] < [[]]
+bool	[[1]] > [[]]
+bool	[[]] <= [[1]]
 bool	[[]] < [1]
