@@ -313,33 +313,101 @@ func TestCoerce_PlaceholderKeepsItsConstraint(t *testing.T) {
 	}
 }
 
-func TestCoerce_ListConversionIsDeferred(t *testing.T) {
-	// The three list rules are type-level only in B1: coercible says yes, but
-	// performing one must report that it is not implemented rather than silently
-	// returning the value unchanged, which would be a wrong value.
+func TestCoerce_ListConversionPerformed(t *testing.T) {
+	// Sub-project B2 implements the three list rules coercible only judged at
+	// the type level before now: this performs the conversion rather than
+	// reporting it as not-yet-implemented.
 	if !coercible(ListOf(TPath), ListOf(TString)) {
 		t.Fatal("coercible(list[path], list[string]) = false; want true")
 	}
-	v := Value{Type: ListOf(TPath)}
-	if _, err := coerce(v, ListOf(TString)); err == nil {
-		t.Error("coerce of a list = nil error; want a not-implemented error")
-	} else if !strings.Contains(err.Error(), "sub-project B2") {
-		t.Errorf("error = %q; want it to name sub-project B2", err.Error())
+	v := List(TPath, []Value{{Type: TPath, s: "a"}})
+	got, err := coerce(v, ListOf(TString))
+	if err != nil {
+		t.Fatalf("coerce(list[path], list[string]): %v", err)
+	}
+	if want := "list[string]"; got.Type.String() != want {
+		t.Errorf("Type = %s; want %s", got.Type, want)
 	}
 }
 
-func TestCoerce_RangeExprToListIsDeferred(t *testing.T) {
+func TestCoerce_RangeExprToListPerformed(t *testing.T) {
 	// The third list rule, range_expr -> list[int], has a scalar SOURCE and a
-	// list TARGET — the opposite shape from TestCoerce_ListConversionIsDeferred
+	// list TARGET — the opposite shape from TestCoerce_ListConversionPerformed
 	// above. It must be caught by the dst-listness half of coerce's list
 	// check, not just the src-listness half that a list-typed source exercises.
+	// Sub-project B2 now performs this conversion rather than deferring it.
 	if !coercible(TRangeExpr, ListOf(TInt)) {
 		t.Fatal("coercible(range_expr, list[int]) = false; want true")
 	}
 	v := Value{Type: TRangeExpr, s: "1-5"}
-	if _, err := coerce(v, ListOf(TInt)); err == nil {
-		t.Error("coerce of a range_expr to list[int] = nil error; want a not-implemented error")
-	} else if !strings.Contains(err.Error(), "sub-project B2") {
-		t.Errorf("error = %q; want it to name sub-project B2", err.Error())
+	got, err := coerce(v, ListOf(TInt))
+	if err != nil {
+		t.Fatalf("coerce(range_expr, list[int]): %v", err)
+	}
+	if want := "[1, 2, 3, 4, 5]"; got.String() != want {
+		t.Errorf("coerce(...) = %s; want %s", got, want)
+	}
+}
+
+func TestCoerce_Lists(t *testing.T) {
+	rng, err := RangeExpr("1-3")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	tests := []struct {
+		name    string
+		v       Value
+		target  string
+		want    string // rendered value
+		wantTyp string
+	}{
+		{"identity", List(TInt, []Value{Int(1)}), "list[int]", "[1]", "list[int]"},
+		{"elementwise int to float", List(TInt, []Value{Int(1), Int(2)}), "list[float]", "[1.0, 2.0]", "list[float]"},
+		{"elementwise to string", List(TInt, []Value{Int(1)}), "list[string]", "[1]", "list[string]"},
+		{"empty adopts any element type", List(TNull, nil), "list[string]", "[]", "list[string]"},
+		{"nested elementwise", List(ListOf(TInt), []Value{List(TInt, []Value{Int(1)})}), "list[list[float]]", "[[1.0]]", "list[list[float]]"},
+		{"range_expr to list[int]", rng, "list[int]", "[1, 2, 3]", "list[int]"},
+		{"list into an optional list", List(TInt, []Value{Int(1)}), "list[int]?", "[1]", "list[int]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := ParseType(tc.target)
+			if err != nil {
+				t.Fatalf("ParseType(%q): %v", tc.target, err)
+			}
+			got, err := coerce(tc.v, target)
+			if err != nil {
+				t.Fatalf("coerce(%s, %s): %v", tc.v.Type, tc.target, err)
+			}
+			if s := got.String(); s != tc.want {
+				t.Errorf("coerce(...) = %s, want %s", s, tc.want)
+			}
+			if s := got.Type.String(); s != tc.wantTyp {
+				t.Errorf("coerce(...) type = %s, want %s", s, tc.wantTyp)
+			}
+		})
+	}
+}
+
+func TestCoerce_ListErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		v      Value
+		target string
+	}{
+		{"string elements to int", List(TString, []Value{String("a")}), "list[int]"},
+		{"list to a scalar", List(TInt, []Value{Int(1)}), "int"},
+		{"scalar to a list", Int(1), "list[int]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := ParseType(tc.target)
+			if err != nil {
+				t.Fatalf("ParseType(%q): %v", tc.target, err)
+			}
+			if _, err := coerce(tc.v, target); err == nil {
+				t.Fatalf("coerce(%s, %s) = nil error, want one", tc.v.Type, tc.target)
+			}
+		})
 	}
 }

@@ -56,47 +56,13 @@ func evalListLit(n *ListLit, src string, syms Symbols, target Type) (Value, erro
 	}
 	out := make([]Value, len(vals))
 	for i, v := range vals {
-		coerced, err := coerceListElem(v, elem)
+		coerced, err := coerce(v, elem)
 		if err != nil {
 			return Value{}, wrapAt(src, n.Elems[i].Pos(), err)
 		}
 		out[i] = coerced
 	}
 	return List(elem, out), nil
-}
-
-// coerceListElem coerces v — one (possibly nested) element of a list literal —
-// to the target type.
-//
-// This is NOT the general coerce(): that function's list-to-list path is
-// explicitly unimplemented until sub-project B2 gives it list values to work
-// with (see the PARKED comment in coerce.go), and B2 has not landed yet. But
-// rule 5 of section 1.2.6 is recursive — unifyElemPair can decide that
-// list[int] and list[float] unify to list[list[float]] one level down — and
-// turning that unified TYPE into an actual VALUE means converting an inner
-// list[int] value to list[float] element by element, which is exactly the
-// case coerce() defers. This function performs only that one list-literal-
-// scoped recursion; everything else (scalar coercions, and any mismatch that
-// is not a list on both sides) is delegated to coerce() unchanged.
-func coerceListElem(v Value, target Type) (Value, error) {
-	if v.Type.Equal(target) {
-		return v, nil
-	}
-	targetElem, targetIsList := listElem(target)
-	_, srcIsList := listElem(v.Type)
-	if !targetIsList || !srcIsList {
-		return coerce(v, target)
-	}
-	elems := v.AsList()
-	out := make([]Value, len(elems))
-	for i, e := range elems {
-		coerced, err := coerceListElem(e, targetElem)
-		if err != nil {
-			return Value{}, err
-		}
-		out[i] = coerced
-	}
-	return List(targetElem, out), nil
 }
 
 // listElemTarget returns the element type a list literal should coerce its
@@ -112,21 +78,11 @@ func listElemTarget(target Type) Type {
 	if elem, ok := listElem(target); ok {
 		return elem
 	}
-	if target.Code != CodeUnion {
-		return TAny
-	}
-	found := TAny
-	for _, member := range target.Params {
-		elem, ok := listElem(member)
-		if !ok {
-			continue
-		}
-		if found.Code != CodeAny && !found.Equal(elem) {
-			return TAny // more than one list type: no single T to aim at
-		}
-		found = elem
-	}
-	return found
+	// listElem already handles a union internally — "exactly one list type
+	// across the members" — and reports ok=false for zero or for more than one
+	// differing list member, so there is no further disambiguation to do here:
+	// any target that reaches this point has no single T to aim at.
+	return TAny
 }
 
 // unifyElemTypes implements section 1.2.6's rules 2 to 7: the element type of a

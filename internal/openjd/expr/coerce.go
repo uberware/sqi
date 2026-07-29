@@ -258,36 +258,16 @@ func coerce(v Value, target Type) (Value, error) {
 		}
 		return Value{}, fmt.Errorf("null %w to %s", errNotCoercible, target)
 	}
-	// The three list rules (elementwise, the empty list, and range_expr ->
-	// list[int]) are type-level only in B1: coercible says yes, but performing
-	// one needs list values, which is sub-project B2's. Both directions are
-	// checked because range_expr -> list[int] has a scalar source and a list
-	// target. Report the gap plainly rather than silently returning the value
-	// unchanged, which would be a wrong value.
-	//
-	// PARKED: a list value whose type already directly satisfies the target —
-	// list[int] against list[int]?, say — needs no conversion at all and could
-	// pass through unchanged, the same direct-membership carve-out the scalar
-	// path below gets. It does not get one here: it is routed into the
-	// "not implemented" branch below instead. Unreachable in B1 — every list
-	// value here is a placeholder, which the caller (coerce's IsUnresolved
-	// branch, above) handles first — so this never fires today. B2 will make
-	// it reachable, and the fix is not just "add the carve-out": it needs a
-	// membership test over FULL types, not type codes. includes() — which the
-	// scalar carve-out above (coerceScalar's caller) uses — only compares
-	// v.Type.Code against a target's member codes, so it cannot distinguish
-	// list[int] from list[string] inside a union the way listElem's own
-	// element-aware comparison does; using it here would let a list[string]
-	// value slip through a list[int]? target unconverted.
+	// The three list rules of section 1.2.3: elementwise conversion, the empty
+	// list, and range_expr -> list[int]. Both directions are checked because
+	// range_expr -> list[int] has a scalar source and a list target.
 	_, srcIsList := listElem(v.Type)
-	_, dstIsList := listElem(target)
+	dstElem, dstIsList := listElem(target)
 	if srcIsList || dstIsList {
 		if !coercible(v.Type, target) {
 			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 		}
-		return Value{}, fmt.Errorf(
-			"converting %s to %s is not implemented until sub-project B2", v.Type, target,
-		)
+		return coerceList(v, target, dstElem, dstIsList)
 	}
 	// The general applicability check, with a direct-membership carve-out:
 	// coercible alone is too strict here because it deliberately reports false
@@ -325,6 +305,49 @@ func coerceScalar(v Value, target Type) (Value, error) {
 		return toFloat(v)
 	}
 	return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+}
+
+// coerceList performs the list conversions of section 1.2.3, having already
+// confirmed with coercible that the conversion is legal.
+//
+// dstElem/dstIsList are passed in rather than recomputed: the caller needed them
+// to decide this branch applied at all.
+func coerceList(v Value, target, dstElem Type, dstIsList bool) (Value, error) {
+	// range_expr -> list[int]: expand, then convert elementwise in case the
+	// target's element type is not int (list[float], say).
+	if v.Type.Code == CodeRangeExpr {
+		ints, err := rangeInts(v)
+		if err != nil {
+			return Value{}, err
+		}
+		vals := make([]Value, len(ints))
+		for i, n := range ints {
+			vals[i] = Int(n)
+		}
+		return coerceList(List(TInt, vals), target, dstElem, dstIsList)
+	}
+	// A list value whose type already satisfies the target needs no conversion.
+	// listElem's element-aware comparison is what makes this safe where the
+	// scalar path's code-only includes() would not be: it cannot confuse a
+	// list[string] with a list[int] inside a union target.
+	if !dstIsList {
+		// The target admits the list without naming an element type — TAny, or
+		// a union in which the list is a direct member.
+		return v, nil
+	}
+	elems := v.AsList()
+	if err := checkElementCount(len(elems)); err != nil {
+		return Value{}, err
+	}
+	out := make([]Value, len(elems))
+	for i, elem := range elems {
+		converted, err := coerce(elem, dstElem)
+		if err != nil {
+			return Value{}, fmt.Errorf("element %d: %w", i, err)
+		}
+		out[i] = converted
+	}
+	return List(dstElem, out), nil
 }
 
 // targetScalarCode picks the scalar code v should become. The conditional rules
