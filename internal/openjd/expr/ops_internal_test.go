@@ -834,26 +834,41 @@ func TestListOperators_Errors(t *testing.T) {
 // here is chosen so the WRAPPED product would slip past a naive "product >
 // max" check (landing on a negative number, or on a small positive one),
 // while the guard that actually runs (checkRepeat, limits.go) rejects it by
-// comparing the operands before ever forming that product — so none of these
-// allocate anything, and all must return instantly with a clean errTooLarge
-// rather than panicking or hanging. If the fix regresses, the likely failure
-// mode is not a normal test failure but the test process panicking
-// (negative-capacity make) or timing out (a loop over the raw, un-wrapped
-// count) — both are exactly what this test exists to catch.
+// comparing the operands before ever forming that product — so each case
+// here returns instantly with a clean errTooLarge rather than panicking or
+// hanging.
+//
+// Deliberately NOT included: a list wrap-to-ZERO case (the string one below,
+// "wraps to zero", has a list analog: "([0] * 1048576) * 17592186044416").
+// Unlike every case actually here, that one is not safe to run against a
+// reverted fix: repeatList's own loop ("for range n { append }") has no
+// built-in guard the way strings.Repeat and make()'s capacity check do, so
+// on a revert it does not panic — a second re-review confirmed by actually
+// running it that it grows past 13GB resident and is still climbing after 15
+// seconds, with no panic and no termination. A test that OOM-kills the
+// process instead of failing cleanly when the thing it guards regresses is
+// worse than no test at all — it turns a caught regression into an outage,
+// and invites someone to delete it rather than read it. TestCheckRepeat_
+// OverflowSafe (limits_internal_test.go) already covers this exact wrap-to-
+// zero arithmetic directly against checkRepeat, which cannot allocate at
+// all since it never calls the operator; do not re-add an end-to-end list
+// version of it for symmetry.
 func TestListOperators_RepeatOverflow(t *testing.T) {
 	tests := []struct {
 		name string
 		src  string
 	}{
 		// 2 * 9223372036854775807 (math.MaxInt64) overflows int64 and wraps
-		// to a NEGATIVE number.
+		// to a NEGATIVE number. Safe on a revert: make([]Value, 0, total)
+		// panics on the negative capacity.
 		{"list: wraps to negative", "[0, 0] * 9223372036854775807"},
 		{"string: wraps to negative", "'xx' * 9223372036854775807"},
 		// 1048576 (2^20) * 17592186044416 (2^44) is exactly 2^64, which
-		// wraps to ZERO — the smallest possible positive-check bypass. The
-		// inner "* 1048576" is itself well within the limit and builds
+		// wraps to ZERO — the smallest possible positive-check bypass. Safe
+		// on a revert for the STRING case specifically: strings.Repeat has
+		// its own internal overflow guard and panics rather than looping.
+		// The inner "* 1048576" is itself well within the limit and builds
 		// instantly.
-		{"list: wraps to zero", "([0] * 1048576) * 17592186044416"},
 		{"string: wraps to zero", "('x' * 1048576) * 17592186044416"},
 	}
 	for _, tc := range tests {
