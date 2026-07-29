@@ -83,12 +83,22 @@ var binaryShapes = map[Op][]Shape{
 		// row's own cost as 2 and recreate the very tie this row exists to
 		// avoid. concatRanges performs the same expansion by hand instead.
 		{Params: []Type{TRangeExpr, TRangeExpr}, Ret: ListOf(TInt), Fn: shapeBinary(concatRanges)},
-		// Section 2.1.3. The declared return is list[T] with T bound by the
-		// LEFT operand; concatLists recomputes the real common element type
-		// from both operands, since section 2.1.3's "finding a common type"
-		// (list[int] + list[float] -> list[float]) cannot be expressed as a
-		// binding.
-		{Params: []Type{ListOf(varT), ListOf(varT1)}, Ret: ListOf(varT), Fn: shapeBinary(concatLists)},
+		// Section 2.1.3. The two element variables are independent, so that
+		// "[1] + [2.0]" matches at all; concatLists then computes the real
+		// common element type from both operands, since section 2.1.3's
+		// "finding a common type" (list[int] + list[float] -> list[float])
+		// cannot be expressed as a binding. RetOf performs the SAME unification
+		// over the bound types, for the path where an operand has no value and
+		// concatLists never runs. Substituting into a declared Ret cannot do
+		// it: Ret: ListOf(varT) reads only the LEFT operand, which typed
+		// "[] + Param.Items" as list[nulltype] while "Param.Items + []" — the
+		// same concatenation — came out list[int].
+		{
+			Params: []Type{ListOf(varT), ListOf(varT1)},
+			Ret:    ListOf(varT),
+			RetOf:  concatRet,
+			Fn:     shapeBinary(concatLists),
+		},
 		// A bare range_expr operand cannot reach the generic list[T] shape
 		// above at all: coercibleConditional's range_expr -> list[int] rule
 		// (coerce.go) only recognizes a CONCRETE list[int] target, not an
@@ -254,7 +264,13 @@ func applyUnary(op Op, v Value) (Value, error) {
 // the declared Ret and wrap it as a placeholder. Note that the shape was still
 // SELECTED by the operand types, so a type error is still caught here — this
 // path makes an expression checkable, not unconditionally valid.
+//
+// A shape whose result is a unification of its operands rather than a copy of
+// one of them supplies RetOf and is asked instead; see Shape.RetOf.
 func unresolvedResult(s Shape, b bindings) Value {
+	if s.RetOf != nil {
+		return Unresolved(s.RetOf(b))
+	}
 	return Unresolved(substitute(s.Ret, b))
 }
 
@@ -803,6 +819,33 @@ func concatLists(l, r Value) (Value, error) {
 		out = append(out, converted)
 	}
 	return List(elem, out), nil
+}
+
+// concatRet is the generic list concatenation shape's RetOf: the type
+// concatLists WOULD produce, computed from the matched element bindings.
+//
+// It calls unifyElemPair on the two LIST types rather than on the bound element
+// types, exactly as concatLists does and for the same reason — the empty-list
+// rule fires only between two list types (list.go), which is what lets
+// list[nulltype] adopt the other side's element type in EITHER position.
+//
+// An unbound variable, or a pair with no common type, leaves the left operand's
+// list type as the answer. Neither is reachable from the shape this is attached
+// to: both parameters are list[var], so matching binds both, and a pair with no
+// common type is one concatLists would reject — but a declared return type is
+// read on the path where nothing executes, so it must still answer something,
+// and the pre-RetOf answer is the conservative one.
+func concatRet(b bindings) Type {
+	left, leftOK := b[CodeVarT]
+	right, rightOK := b[CodeVarT1]
+	if !leftOK || !rightOK {
+		return ListOf(left)
+	}
+	combined, ok := unifyElemPair(ListOf(left), ListOf(right))
+	if !ok {
+		return ListOf(left)
+	}
+	return combined
 }
 
 // concatRanges implements section 2.1.3's range_expr + range_expr -> list[int]

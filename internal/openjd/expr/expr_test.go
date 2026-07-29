@@ -398,19 +398,19 @@ func TestCollections_Composed(t *testing.T) {
 		// The whole chain feeding an arithmetic operator.
 		{"chain feeding arithmetic", "([1, 2] + [3])[::-1][0] + 1", "4", "int"},
 
-		// PRE-EXISTING DEFECT, asserted as it behaves rather than omitted, so
-		// that fixing it trips this row instead of passing unnoticed. OpAdd's
-		// generic list shape declares Ret as list[T] with T bound from the LEFT
-		// operand only; concatLists recomputes the real common element type at
-		// runtime, but on the placeholder path no Fn runs, so an empty list on
-		// the left leaves the static result list[nulltype] instead of
-		// list[int]. It is direction-dependent — "Param.Items + []" above is
-		// correctly unresolved[int] — and predates this fix wave (verified
-		// against the branch point). Out of scope here; the fix belongs in the
-		// shape's declared return, not in the composition.
+		// This row asserted unresolved[nulltype] until the shape's declared
+		// return was fixed: OpAdd's generic list shape read T from the LEFT
+		// operand only, so an empty list on the left typed the concatenation
+		// list[nulltype] while "Param.Items + []" just above — the same
+		// concatenation — came out list[int]. concatLists recomputes the real
+		// element type at runtime, so no VALUE was ever wrong; the placeholder
+		// path runs no Fn, which is exactly where the declared type is the
+		// whole answer. The fix is the shape's RetOf (ops.go's concatRet), not
+		// anything in the composition, and this row now pins the two directions
+		// agreeing.
 		{
 			"empty list on the left of an unresolved concat",
-			"([] + Param.Items)[0]", "", "unresolved[nulltype]",
+			"([] + Param.Items)[0]", "", "unresolved[int]",
 		},
 	}
 	for _, tc := range tests {

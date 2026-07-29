@@ -911,6 +911,22 @@ func TestListOperators_Unresolved(t *testing.T) {
 		{"Param.Items * 3", "unresolved[list[int]]"},
 		{"[1] * Param.N", "unresolved[list[int]]"},
 		{"1 in Param.Items", "unresolved[bool]"},
+		// Concatenation's declared result must not depend on operand ORDER.
+		// It did: the shape's Ret was list[T] with T bound from the left
+		// operand, so an empty left operand answered list[nulltype] — no
+		// runtime value was wrong, because concatLists recomputes the element
+		// type, but that path never runs when an operand has no value, which
+		// is precisely when the declared type is all there is. Indexed as
+		// well, since the element type is what the mistyping loses.
+		{"[] + Param.Items", "unresolved[list[int]]"},
+		{"Param.Items + []", "unresolved[list[int]]"},
+		{"([] + Param.Items)[0]", "unresolved[int]"},
+		{"(Param.Items + [])[0]", "unresolved[int]"},
+		// The same unification, now with a type to FIND rather than adopt:
+		// section 2.1.3's common type of int and float is float, in either
+		// order, and substituting the left binding into Ret could not say so.
+		{"Param.Items + [2.0]", "unresolved[list[float]]"},
+		{"[2.0] + Param.Items", "unresolved[list[float]]"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {

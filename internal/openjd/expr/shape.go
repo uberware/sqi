@@ -24,6 +24,19 @@ type Shape struct {
 	// Ret is the declared result type. It may be a union: the spec's own
 	// __pow__(int, int) -> float | int is one.
 	Ret Type
+	// RetOf, when set, computes the declared result from the match's variable
+	// bindings INSTEAD of substituting them into Ret.
+	//
+	// It exists for a result type that is a UNIFICATION of the operands rather
+	// than a copy of one of them. List concatenation is the case: its two
+	// element variables are independent (they must be, or "[1] + [2.0]" would
+	// not match at all), so no substitution into Ret can say what section
+	// 2.1.3's "common type" of the two is — "[] + list[int]" reads the LEFT
+	// variable and answers list[nulltype], and "list[int] + []" answers
+	// list[int], for the same concatenation. concatLists computes the real
+	// answer from the VALUES, which is no help on the path where there are no
+	// values; this is that same computation over types.
+	RetOf func(b bindings) Type
 	// Fn computes the result. It is called only with arguments that matched
 	// Params, so it may use the payload accessors without checking.
 	Fn func(args []Value) (Value, error)
