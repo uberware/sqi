@@ -114,17 +114,19 @@ func unifyElemPair(a, b Type) (Type, bool) {
 	if a.Equal(b) {
 		return a, true
 	}
-	// Rule 3: a mix of int and float is list[float].
+	// Rule 2: a mix of int and float is list[float].
 	if isNumericPair(a, b) {
 		return TFloat, true
 	}
-	// Rule 4: a mix of path and string is list[string].
+	// Rule 3: a mix of path and string is list[string].
 	if isPathStringPair(a, b) {
 		return TString, true
 	}
-	// Rule 5 is rules 3 and 4 one level down, so it is the same function
-	// applied to the element types. list[nulltype] is the empty literal and
-	// adopts the other side's element type.
+	// Rules 4 and 5 are rules 2 and 3 one level down (list[int] with
+	// list[float] gives list[list[float]], list[path] with list[string] gives
+	// list[list[string]]), so they are the same function applied to the element
+	// types. list[nulltype] is the empty literal and adopts the other side's
+	// element type.
 	aElem, aIsList := listElem(a)
 	bElem, bIsList := listElem(b)
 	if aIsList && bIsList {

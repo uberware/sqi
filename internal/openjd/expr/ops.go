@@ -850,7 +850,7 @@ func intEqualsFloat(i int64, f float64) bool {
 //
 // unifyElemPair is called on the two LIST types themselves (l.Type, r.Type),
 // not on their already-extracted element types: its empty-list rule ("rule
-// 5", list.go) fires only when both of ITS OWN arguments are list types, so
+// 6", list.go) fires only when both of ITS OWN arguments are list types, so
 // it can adopt the other side's element when one is list[nulltype]. Passing
 // pre-stripped element types (nulltype vs int) would skip that rule entirely
 // and wrongly reject "[] + [1]" as incompatible.

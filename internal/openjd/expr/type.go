@@ -470,11 +470,11 @@ func checkListElem(elem Type) error {
 // here now rather than in list.go, because the rule is a property of Type and
 // every part of the package asks it.
 //
-// The length check is not decoration, which is why the guard form is exported
-// to callers rather than folded away: UnresolvedOf normalizes to exactly one
-// parameter, so a Type failing it was hand-built and is malformed, and every
-// call site deliberately declines to look through such a type rather than
-// recursing on an unchanged value forever.
+// The length check is not decoration, which is why the guard form stays a
+// function of its own rather than being folded away: UnresolvedOf normalizes
+// to exactly one parameter, so a Type failing it was hand-built and is
+// malformed, and every call site deliberately declines to look through such a
+// type rather than recursing on an unchanged value forever.
 func unresolvedConstraint(t Type) (Type, bool) {
 	if t.Code == CodeUnresolved && len(t.Params) == 1 {
 		return t.Params[0], true

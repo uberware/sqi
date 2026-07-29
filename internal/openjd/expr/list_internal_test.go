@@ -26,8 +26,8 @@ func TestEvalListLit_InferenceWithoutTarget(t *testing.T) {
 		{"nested int and float lists", "[[1], [2.0]]", "list[list[float]]", "[[1.0], [2.0]]"},
 		{"nested with an empty list", "[[], [1]]", "list[list[int]]", "[[], [1]]"},
 		{"computed elements", "[1 + 1, 2 * 2]", "list[int]", "[2, 4]"},
-		// Section 1.2.6 rule 4 (a mix of path and string is list[string]) and
-		// rule 5 (rules 3 and 4 one level down), which no row above reached:
+		// Section 1.2.6 rule 3 (a mix of path and string is list[string]) and
+		// rule 5 (rule 3 one level down), which no row above reached:
 		// every other case here is int/float/bool/string, so unifyElemPair's
 		// isPathStringPair branch had no direct coverage at all. The coercion
 		// tests exercise path -> string through a different code path
@@ -275,7 +275,7 @@ func TestEvalIndexAndSlice_UnionReceiver(t *testing.T) {
 		// collapsing to list[int] — see unifyResultPair.
 		{"Param.Range[:][0:1]", "unresolved[list[int] | range_expr]"},
 		// A conditional with an unknown condition, its branches two list types
-		// with different elements. Section 1.2.6 rule 3 unifies int and float.
+		// with different elements. Section 1.2.6 rule 2 unifies int and float.
 		{"([1, 2] if Param.Flag else [3.0])[0]", "unresolved[float]"},
 		{"([1, 2] if Param.Flag else [3.0])[0:1]", "unresolved[list[float]]"},
 		// Branches of the same type need no unification at all.
