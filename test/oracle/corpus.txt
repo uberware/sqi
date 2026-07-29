@@ -220,3 +220,19 @@ bool	[1] == 1
 bool	[1, 2] < [1, 3]
 bool	[1, 2] < [1, 2, 0]
 bool	['a'] < ['b']
+#
+# The EMPTY list on either side of an ordering operator. Section 1.2.5 says the
+# shorter list is less when all compared elements are equal, and section 1.2.6
+# rule 6 makes list[nulltype] convertible to list[T] for any T — so both orders
+# must answer, and sqi's did not: "[] < [1]" was a type error while "[1] < []"
+# was false, because the empty literal PINNED the shared element-type variable
+# to nulltype when it came first. The reference agrees with the fixed behaviour
+# on every line here, including the last, where the empty list is nested one
+# level deeper than the other operand and there is no conversion at all.
+bool	[] < [1]
+bool	[1] < []
+bool	[] <= [1]
+bool	[] < []
+bool	[] <= []
+bool	[[]] < [[1]]
+bool	[[]] < [1]

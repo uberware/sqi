@@ -62,7 +62,12 @@
 //     "5 == 'a'" evaluates fine (to false). List ordering (lexicographic,
 //     section 1.2.5) does not reach across element types AT ALL, not even
 //     int/float: "[1] < [1.0]" is the same "unsupported operand types" error,
-//     with no promotion.
+//     with no promotion. It DOES reach the empty list, in either operand
+//     position: section 1.2.6 rule 6 makes list[nulltype] convertible to
+//     list[T] for any T, so "[] < [1]" is true and "[1] < []" is false. The
+//     empty literal's binding of the shared element-type variable is
+//     provisional rather than pinning (shape.go's emptyListBinding), which is
+//     what makes the two orders agree.
 //
 //   - List literals, subscripts and slices are implemented, and list[T] has
 //     real values — "[1, 2, 3]" parses and evaluates. A literal with no
@@ -70,7 +75,15 @@
 //     1.2.6's unification rules; a list[T] target instead coerces every
 //     element to T directly. "x[0]" and "x[1:3]" work on a list, a string or
 //     a range_expr (sections 2.1.7 and 2.1.8) — subscript is bounds-checked
-//     and errors out of range, while slice clamps like Python. list[T] also
+//     and errors out of range, while slice clamps like Python. Both also work
+//     on a UNION of those, which matters because this package manufactures
+//     such a union itself: slicing a range_expr whose length is not yet known
+//     is typed "range_expr | list[int]", and section 1.3.1's
+//     unknown-condition rule types a conditional as the union of both
+//     branches. Every member is indexed and the results combined, so
+//     "Param.Range[:][0]" is an int and "([1, 2] if Param.Flag else
+//     [3.0])[0]" a float; the operation is rejected only when some member
+//     genuinely cannot be indexed. list[T] also
 //     has its own operators: concatenation ("+"), repetition ("*" by an int,
 //     section 2.1.3) and membership ("in"/"not in"). What is still missing is
 //     list comprehensions (section 1.3.7) — "[x for x in [1]]" fails to
@@ -124,32 +137,37 @@
 //     written from the spec's worked table in section 3.4.1.1.1 rather than
 //     from what this code happens to do.
 //
-//   - coerce() has a real, narrow gap of its own: a list value that exactly
-//     matches one arm of a union target is wrongly rejected. Eval("[1.0,
-//     2.0]", nil, expr.UnionOf(expr.ListOf(expr.TFloat),
-//     expr.ListOf(expr.TInt))) fails with "list[float] cannot be coerced to
-//     list[float] | list[int]" even though the value already IS a
-//     list[float], one of the union's own members. coerce's scalar path
-//     carries an explicit direct-membership carve-out for exactly this case;
-//     the list path has none, so it falls through to coercible, which asks
-//     listElem about the union target — and listElem reports false, not
-//     found, for a union naming two list types with DIFFERING element types,
-//     treating the whole union as not list-shaped rather than as "one member
-//     already matches." Found during this sub-project and deliberately left
-//     unfixed as out of scope; the fix is the same direct-membership check
-//     the scalar path already has, applied before the list branch in
-//     coerce.go.
+//   - A union target that names a value's own type exactly now admits it
+//     unchanged, list types included: Eval("[1.0, 2.0]", nil,
+//     expr.UnionOf(expr.ListOf(expr.TFloat), expr.ListOf(expr.TInt)))
+//     returns the list rather than failing with "list[float] cannot be
+//     coerced to list[float] | list[int]". An earlier revision of this
+//     comment recorded that as a known gap; it is closed
+//     (coerce.go's directUnionMember). Note the shape of the check, because
+//     the two are easy to conflate: coercible() still reports FALSE for a
+//     type the target already admits — "does a conversion apply" is a
+//     different question from "may this value pass" — so the carve-out lives
+//     in coerce(), and it compares whole types rather than type codes, since
+//     a code-only test cannot tell a list[int] from a list[string] inside a
+//     union.
 //
 //   - A hard, fixed bound (limits.go's maxElements and maxStringBytes, both
 //     10,000,000) applies to any list, string or range_expr this package
-//     produces, including through repetition ("'x' * 3", "[0] * 3" are both
-//     bounded by it, which is what let repetition ship at all). That bound is
-//     NOT the spec's own configurable memory and operation limits (sections
-//     1.3.9 and 1.3.10) — those remain unimplemented, still sub-project E's,
-//     unchanged from sub-project A — so this package must still not be
-//     handed untrusted expressions in its present state: the hard bound
-//     stops one operation from allocating unbounded memory, not a
-//     pathological expression from doing unbounded total work.
+//     produces, whether by repetition ("'x' * 3", "[0] * 3") or by
+//     concatenation ("'a' + 'b'", "[1] + [2]"). Both producers are checked
+//     on both types; string concatenation was the one gap, and a chain of
+//     individually-legal repetitions walked 18x past the bound through it.
+//     A THIRD bound, maxParseDepth (500), applies before any value exists:
+//     the parser's recursive descent is depth-limited, because exhausting the
+//     Go stack is a runtime.throw that recover() cannot catch — a 200,000-deep
+//     list literal killed the process outright rather than returning an error.
+//     None of the three is the spec's own configurable memory and operation
+//     limits (sections 1.3.9 and 1.3.10) — those remain unimplemented, still
+//     sub-project E's, unchanged from sub-project A — so this package must
+//     still not be handed untrusted expressions in its present state: the hard
+//     bounds stop one operation from allocating unbounded memory and stop the
+//     parser from overflowing the stack, not a pathological expression from
+//     doing unbounded total work.
 //
 //   - A float value does not preserve the original source text it was parsed
 //     from — "1.100" evaluates to a value that renders as "1.1", not
@@ -210,7 +228,7 @@
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
 //     EXPR/job_templates group is 140/209 passing, 69 fixtures baselined
-//     (make test-conformance), and the differential oracle test has 108/139
+//     (make test-conformance), and the differential oracle test has 115/146
 //     cases agreeing with the reference implementation, 31 baselined
 //     divergences (make test-expr-oracle). Most baselined divergences are the
 //     reference's own bugs, adjudicated against the spec text and recorded
