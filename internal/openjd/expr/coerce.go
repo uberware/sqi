@@ -100,8 +100,8 @@ func coercibleConditional(from, to Type) bool {
 			return true
 		}
 		// range_expr -> list[int] when the target includes list[int] but not
-		// range_expr. The conversion itself is sub-project B2's; this is the
-		// type-level half.
+		// range_expr. This is the type-level half; coerceList below performs
+		// the conversion.
 		if !includes(to, CodeRangeExpr) {
 			if el, ok := listElem(to); ok && el.Code == CodeInt {
 				return true
@@ -112,7 +112,8 @@ func coercibleConditional(from, to Type) bool {
 }
 
 // coercibleList covers list[T] -> list[U] elementwise and the empty-list rule.
-// Both are type-level only in B1; sub-project B2 performs them.
+// This is the type-level half; coerceList performs the conversion once
+// coerce() has confirmed via this function that it is legal.
 func coercibleList(from, to Type) bool {
 	fromElem, fromIsList := listElem(from)
 	toElem, toIsList := listElem(to)
