@@ -511,15 +511,41 @@ func numericOrStringEqual(l, r Value) bool {
 		return intEqualsFloat(r.AsInt(), l.AsFloat())
 	case l.Type.Code == CodeString && r.Type.Code == CodeString:
 		return l.AsStr() == r.AsStr()
-	// string vs path (spec section 1.2.5): the path converts to string for the
-	// comparison. Read the path's payload directly (v.s) rather than through
-	// AsStr, which panics on anything but CodeString.
-	case l.Type.Code == CodeString && r.Type.Code == CodePath:
-		return l.AsStr() == r.s
-	case l.Type.Code == CodePath && r.Type.Code == CodeString:
-		return l.s == r.AsStr()
+	case l.Type.Code == CodePath || r.Type.Code == CodePath:
+		return pathEqual(l, r)
 	}
+	// PARKED, for whichever sub-project implements range_expr expansion: two
+	// range_exprs land here and compare unequal, including to themselves.
+	// Comparing their string payloads is NOT obviously right — section 1.2.5
+	// expands a range_expr when it meets a list, which would make '1-3' equal
+	// '1,2,3', so a payload comparison would contradict the expanded one. Decide
+	// it alongside expansion, then add the row and CodeRangeExpr to
+	// sampleValues' scalarCodes in ops_internal_test.go. Unreachable through
+	// Eval today: nothing produces two range_expr operands.
 	return false
+}
+
+// pathEqual handles the equality rows where at least one operand is a path.
+// Split out of numericOrStringEqual for the same reason null and bool are split
+// out of valuesEqual: to keep each function under the repo's complexity
+// threshold. Callers must have already excluded null and bool operands.
+//
+// A path compares equal to a string with the same text, which is section
+// 1.2.5's rule that the path converts to string for the comparison, and equal
+// to a path with the same text, which is not that section's business — 1.2.5
+// covers CROSS-type comparison — but is required for a path to equal itself.
+// Anything else is a cross-type pair 1.2.5 makes unequal.
+//
+// The path's payload is read directly (v.s) rather than through AsStr, which
+// panics on anything but CodeString.
+func pathEqual(l, r Value) bool {
+	if l.Type.Code != CodeString && l.Type.Code != CodePath {
+		return false
+	}
+	if r.Type.Code != CodeString && r.Type.Code != CodePath {
+		return false
+	}
+	return l.s == r.s
 }
 
 // intEqualsFloat compares an int64 to a float64 exactly. Converting the int to

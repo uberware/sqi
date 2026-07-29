@@ -435,13 +435,28 @@ func TestApplyBinary_EqualitySelfEquality(t *testing.T) {
 // driven from it exercise every scalar type Value can carry.
 func sampleValues(t *testing.T) []Value {
 	t.Helper()
-	scalarCodes := []Code{CodeNull, CodeBool, CodeInt, CodeFloat, CodeString}
+	// CodeRangeExpr is deliberately absent, and its absence is the finding this
+	// comment records rather than hides. Two range_exprs comparing their string
+	// payloads would make '1-3' != '1,2,3', yet section 1.2.5 has a range_expr
+	// EXPAND when compared against a list — so the same two values would be
+	// equal once expansion exists. Which answer is right is undecided until the
+	// sub-project that implements expansion decides it; adding a payload
+	// comparison now would bake in the guess. valuesEqual's fallthrough makes a
+	// range_expr unequal to itself in the meantime, unreachable through Eval
+	// because nothing constructs two range_expr operands.
+	//
+	// CodePath is present precisely because it has no such ambiguity.
+	scalarCodes := []Code{CodeNull, CodeBool, CodeInt, CodeFloat, CodeString, CodePath}
 	samples := map[Code]Value{
 		CodeNull:   Null(),
 		CodeBool:   Bool(true),
 		CodeInt:    Int(1),
 		CodeFloat:  Float(1.5),
 		CodeString: String("x"),
+		// The package exports no path constructor — section 1.2.3's string->path
+		// coercion is the only route to one, and is how a real path value is
+		// built at the evaluation boundary.
+		CodePath: mustCoerce(t, String("/a/b"), TPath),
 	}
 	values := make([]Value, 0, len(scalarCodes))
 	for _, c := range scalarCodes {
@@ -455,6 +470,18 @@ func sampleValues(t *testing.T) []Value {
 		values = append(values, v)
 	}
 	return values
+}
+
+// mustCoerce builds a value of a type with no exported constructor by running
+// the coercion that produces it, failing the test if that coercion is ever
+// removed.
+func mustCoerce(t *testing.T, v Value, target Type) Value {
+	t.Helper()
+	out, err := coerce(v, target)
+	if err != nil {
+		t.Fatalf("coerce(%v, %s) failed: %v", v, target, err)
+	}
+	return out
 }
 
 func TestBinaryShapes_DeclaredReturnTypes(t *testing.T) {
