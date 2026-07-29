@@ -53,18 +53,6 @@
 //     compatible pairs, int/float and string/path; every other cross-type
 //     comparison is an ERROR, so "5 < 'a'" fails with "unsupported operand
 //     types" even though "5 == 'a'" evaluates fine (to false).
-//   - KNOWN DIVERGENCE: a range_expr orders against a string, which section
-//     2.1.4 does not name as a compatible pair — it restricts ordering
-//     operands to int, float, string, path and bool. promotable (coerce.go),
-//     the predicate argCost (shape.go) uses to admit a cross-type argument
-//     into a same-type shape, is shared by every operator rather than
-//     parameterized per one, so section 1.2.3's own range_expr -> string
-//     coercion rule leaks into ordering's (string, string) shape the same
-//     way path -> string legitimately does. It cannot produce a false green:
-//     the conformance suite has no fixture asserting that ordering a
-//     range_expr must be rejected. Left as a documented gap rather than
-//     restructuring admissibility per-operator, which is a larger design
-//     change than this fix wave should make.
 //   - Lists, list literals, comprehensions, subscripts and slices are not
 //     implemented. "[1, 2]" and "x[0]" fail to parse. list[T] exists as a
 //     Type and participates in coercion — B1 can answer whether a

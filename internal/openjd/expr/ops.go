@@ -169,21 +169,25 @@ var binaryShapes = map[Op][]Shape{
 
 // orderingShapes builds the four same-type ordering signatures for one
 // comparison operator. Section 2.1.4 also permits int/float and string/path
-// cross-pairs; both reach one of these same-type shapes by the ordinary
-// promotion argCost (shape.go) already gives every operator — int -> float
-// and path -> string are both coercibleConditional's named compatible pairs —
-// with no dedicated cross-type shape of their own.
+// cross-pairs; both reach one of these same-type shapes by promotion, but not
+// the ordinary promotion argCost (shape.go) gives every other operator —
+// each shape here carries Promote: promoteOrdering, which admits only those
+// two named pairs (and their elementwise form inside a list) rather than
+// every lossless conversion coerce.go allows. Without that restriction,
+// section 1.2.3's range_expr -> string coercion would leak into the
+// (string, string) shape below and wrongly let a range_expr order against a
+// string.
 func orderingShapes(op Op) []Shape {
 	return []Shape{
-		{Params: []Type{TInt, TInt}, Ret: TBool, Fn: shapeBinary(ordering(op, compareInts))},
-		{Params: []Type{TFloat, TFloat}, Ret: TBool, Fn: shapeBinary(ordering(op, compareFloats))},
-		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(ordering(op, compareStrings))},
-		{Params: []Type{TBool, TBool}, Ret: TBool, Fn: shapeBinary(ordering(op, compareBools))},
+		{Params: []Type{TInt, TInt}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareInts))},
+		{Params: []Type{TFloat, TFloat}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareFloats))},
+		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareStrings))},
+		{Params: []Type{TBool, TBool}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareBools))},
 		// Section 1.2.5's lexicographic list ordering. The shared varT ties
 		// both operand lists to the same element type, so a cross-element-type
 		// pair like [1] < [1.0] is rejected at shape matching rather than
 		// reaching compareLists at all.
-		{Params: []Type{ListOf(varT), ListOf(varT)}, Ret: TBool, Fn: shapeBinary(ordering(op, compareLists))},
+		{Params: []Type{ListOf(varT), ListOf(varT)}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareLists))},
 	}
 }
 

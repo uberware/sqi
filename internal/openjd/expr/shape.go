@@ -27,6 +27,60 @@ type Shape struct {
 	// Fn computes the result. It is called only with arguments that matched
 	// Params, so it may use the payload accessors without checking.
 	Fn func(args []Value) (Value, error)
+	// Promote narrows which conversions this shape's parameters will accept to
+	// admit an argument of a different type. The zero value accepts every
+	// lossless conversion coerce.go allows, which is right for most operators
+	// and wrong for ordering — see promotion.
+	Promote promotion
+}
+
+// promotion selects the set of conversions a shape's parameters accept.
+//
+// It exists because admissibility is NOT uniform across operators, which
+// sub-project B1 assumed and documented as a divergence when it turned out
+// false. Section 1.2.3's range_expr -> string coercion is real, and section
+// 2.1.2 has an explicit string + range_expr row that depends on it; but section
+// 2.1.4 restricts ORDERING to int, float, string, path and bool, crossing type
+// only between int/float and string/path. With one global predicate, "r < 'a'"
+// was accepted.
+type promotion int
+
+const (
+	// promoteDefault accepts every lossless conversion, which is what section
+	// 1.2.3 permits generally.
+	promoteDefault promotion = iota
+	// promoteOrdering accepts only section 2.1.4's two named compatible pairs,
+	// int/float and string/path, plus the elementwise form of each for lists.
+	promoteOrdering
+)
+
+// promotableUnder is promotable, restricted by a shape's promotion set.
+func promotableUnder(pr promotion, from, to Type) bool {
+	if !promotable(from, to) {
+		return false
+	}
+	if pr != promoteOrdering {
+		return true
+	}
+	f, t := unwrapUnresolved(from), unwrapUnresolved(to)
+	if fElem, ok := listElem(f); ok {
+		tElem, ok := listElem(t)
+		if !ok {
+			return false
+		}
+		if fElem.Code == CodeNull {
+			return true
+		}
+		return promotableUnder(pr, fElem, tElem)
+	}
+	// Section 2.1.4's compatible pairs, and only these.
+	switch {
+	case f.Code == CodeInt && t.Code == CodeFloat:
+		return true
+	case f.Code == CodePath && t.Code == CodeString:
+		return true
+	}
+	return false
 }
 
 // bindings records what each type variable in a signature bound to.
@@ -96,7 +150,7 @@ func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
 func shapeCost(s Shape, args []Type, b bindings) (int, bool) {
 	total := 0
 	for i := range s.Params {
-		cost, ok := argCost(s.Params[i], args[i], b)
+		cost, ok := argCost(s.Params[i], args[i], b, s.Promote)
 		if !ok {
 			return 0, false
 		}
@@ -106,13 +160,14 @@ func shapeCost(s Shape, args []Type, b bindings) (int, bool) {
 }
 
 // argCost reports what it costs to pass an argument of type arg to a parameter
-// declared as param, and whether it is admissible at all.
-func argCost(param, arg Type, b bindings) (int, bool) {
+// declared as param, and whether it is admissible at all. pr narrows which
+// conversions the enclosing shape accepts — see promotion.
+func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 	// A placeholder is matched on its constraint. Its lack of a value is
 	// irrelevant to selecting a signature — which is what lets an expression be
 	// type-checked before any parameter value exists.
 	if arg.Code == CodeUnresolved && len(arg.Params) == 1 {
-		return argCost(param, arg.Params[0], b)
+		return argCost(param, arg.Params[0], b, pr)
 	}
 	if isTypeVar(param.Code) {
 		// A variable binds once: seeing it a second time requires the same type.
@@ -134,7 +189,7 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 	// list[T] against list[int] must bind T to int.
 	if param.Code == CodeList && arg.Code == CodeList &&
 		len(param.Params) == 1 && len(arg.Params) == 1 {
-		return argCostList(param, arg, b)
+		return argCostList(param, arg, b, pr)
 	}
 	// A union parameter is scored member-wise, before the exact-match fallback
 	// below: the union as a whole is never Equal to one of its own members, so
@@ -143,19 +198,19 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 	// type code, which could not tell list[int] from list[string] inside the
 	// union — argCost's own list-descent handles that correctly per member.
 	if param.Code == CodeUnion {
-		return unionArgCost(param, arg, b)
+		return unionArgCost(param, arg, b, pr)
 	}
 	// A union ARGUMENT is the dual case: it is SOME ONE of its members,
 	// decided at runtime, so it is admissible only where EVERY member would
 	// be — the caller must be prepared to pay for whichever member actually
 	// shows up, so the cost is the worst of them rather than the best.
 	if arg.Code == CodeUnion {
-		return unionArgValueCost(param, arg, b)
+		return unionArgValueCost(param, arg, b, pr)
 	}
 	if param.Equal(arg) {
 		return costExact, true
 	}
-	if promotable(arg, param) {
+	if promotableUnder(pr, arg, param) {
 		return costWiden, true
 	}
 	return 0, false
@@ -164,7 +219,7 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 // argCostList scores a list[T]-shaped argument against a list[T]-shaped
 // parameter, both already confirmed single-parameter list types by argCost's
 // caller. Split out to keep argCost itself under the repo's complexity cap.
-func argCostList(param, arg Type, b bindings) (int, bool) {
+func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
 	// list[nulltype] is the empty-list literal's type (section 1.2.3) and is
 	// compatible with any list type — promotable's own list branch already
 	// says so — but descending elementwise below would instead ask whether
@@ -192,7 +247,7 @@ func argCostList(param, arg Type, b bindings) (int, bool) {
 		}
 		return costWiden, true
 	}
-	return argCost(param.Params[0], arg.Params[0], b)
+	return argCost(param.Params[0], arg.Params[0], b, pr)
 }
 
 // unionArgValueCost scores a union-typed ARGUMENT against a (non-union)
@@ -208,14 +263,14 @@ func argCostList(param, arg Type, b bindings) (int, bool) {
 // is no single binding that is correct regardless of which member shows up
 // at runtime, so the whole argument is inadmissible rather than picking one
 // arbitrarily. Bindings the members agree on are merged back into b.
-func unionArgValueCost(param, arg Type, b bindings) (int, bool) {
+func unionArgValueCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 	worst := 0
 	merged := make(bindings, len(b))
 	maps.Copy(merged, b)
 	for _, member := range arg.Params {
 		scratch := make(bindings, len(b))
 		maps.Copy(scratch, b)
-		cost, ok := argCost(param, member, scratch)
+		cost, ok := argCost(param, member, scratch, pr)
 		if !ok {
 			return 0, false
 		}
@@ -245,13 +300,13 @@ func unionArgValueCost(param, arg Type, b bindings) (int, bool) {
 // see a variable binding left behind by a failed or losing attempt at member
 // one. Only the winning member's bindings are folded back into b, so a type
 // variable never ends up bound to a type from a member that did not win.
-func unionArgCost(param, arg Type, b bindings) (int, bool) {
+func unionArgCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 	best := -1
 	var bestBindings bindings
 	for _, member := range param.Params {
 		scratch := make(bindings, len(b))
 		maps.Copy(scratch, b)
-		cost, ok := argCost(member, arg, scratch)
+		cost, ok := argCost(member, arg, scratch, pr)
 		if !ok {
 			continue
 		}

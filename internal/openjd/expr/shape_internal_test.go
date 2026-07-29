@@ -297,3 +297,96 @@ func TestMatchShapes_UnionArgumentBindingConflictIsInadmissible(t *testing.T) {
 		t.Error("a union argument with conflicting type-variable bindings matched; want no match")
 	}
 }
+
+// TestOrderingAdmissibility pins section 2.1.4's restriction that ordering
+// operands may cross type only between int/float and string/path. Sub-project
+// B1 documented a divergence here: promotable was global, so section 1.2.3's
+// range_expr -> string coercion leaked into ordering's (string, string) shape.
+func TestOrderingAdmissibility(t *testing.T) {
+	rng, err := RangeExpr("1-3")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	syms := MapSymbols{
+		"Param.Range": rng,
+		"Param.Dir":   Value{Type: TPath, s: "/a"},
+	}
+	rejected := []string{
+		"Param.Range < 'a'",
+		"'a' < Param.Range",
+		"Param.Range > 'a'",
+		"Param.Range <= 'a'",
+		"Param.Range >= 'a'",
+	}
+	for _, src := range rejected {
+		t.Run("rejected/"+src, func(t *testing.T) {
+			if _, err := Eval(src, syms, TAny); err == nil {
+				t.Fatalf("Eval(%q) = nil error, want ordering to reject a range_expr", src)
+			}
+		})
+	}
+	accepted := []struct {
+		src  string
+		want string
+	}{
+		{"1 < 2.5", "true"},               // int/float, a named compatible pair
+		{"Param.Dir < '/b'", "true"},      // string/path, a named compatible pair
+		{"'a' + Param.Range", "a1-3"},     // section 2.1.2 gives + an explicit row
+		{"Param.Range == '1-3'", "false"}, // equality is total and never rejects
+		{"1 < 2 < 3", "true"},             // chains still work
+	}
+	for _, tc := range accepted {
+		t.Run("accepted/"+tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Fatalf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPromotableUnder_DefaultMatchesPromotable pins promoteDefault's whole
+// reason for existing as the promotion zero value: every OTHER operator in
+// the language relies on it being byte-identical to the old, global
+// promotable predicate, and the shapeCost/argCost call chain now threads a
+// promotion through every one of them. Reasoning about the two call sites
+// staying in lock-step is exactly what sub-project B1 got wrong once already
+// (the very divergence this task closes); this asserts it across the
+// conversions promotable actually recognizes, including the list and
+// unresolved-wrapper cases where the two functions could diverge silently.
+func TestPromotableUnder_DefaultMatchesPromotable(t *testing.T) {
+	pairs := []struct {
+		from, to Type
+	}{
+		{TInt, TFloat},
+		{TFloat, TInt},
+		{TPath, TString},
+		{TString, TPath},
+		{TRangeExpr, TString},
+		{TString, TRangeExpr},
+		{TRangeExpr, ListOf(TInt)},
+		{TRangeExpr, TFloat},
+		{TInt, TString},
+		{TBool, TInt},
+		{ListOf(TInt), ListOf(TFloat)},
+		{ListOf(TFloat), ListOf(TInt)},
+		{ListOf(TNull), ListOf(TString)},
+		{ListOf(TPath), ListOf(TString)},
+		{UnresolvedOf(TInt), TFloat},
+		{TInt, UnresolvedOf(TFloat)},
+		{TInt, TInt},
+	}
+	for _, p := range pairs {
+		t.Run(p.from.String()+"->"+p.to.String(), func(t *testing.T) {
+			want := promotable(p.from, p.to)
+			got := promotableUnder(promoteDefault, p.from, p.to)
+			if got != want {
+				t.Errorf("promotableUnder(promoteDefault, %s, %s) = %v, want %v (promotable)",
+					p.from, p.to, got, want)
+			}
+		})
+	}
+}
