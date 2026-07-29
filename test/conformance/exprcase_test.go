@@ -114,12 +114,16 @@ func TestRunExprCase(t *testing.T) {
 			wantPass:   true,
 		},
 		{
+			// A list literal itself now parses (this sub-project's own
+			// change); a list comprehension shares the "[" opener but is a
+			// later sub-project's, so it is still a construct that genuinely
+			// fails to parse — what this case needs to test.
 			name:        "valid fixture whose expression does not parse is a failure",
-			path:        "EXPR/job_templates/expr1.1--list.yaml",
-			doc:         `a: "{{ [1, 2] }}"`,
+			path:        "EXPR/job_templates/expr1.1--list-comprehension.yaml",
+			doc:         `a: "{{ [x for x in Param.Items] }}"`,
 			wantAccept:  false,
 			wantPass:    false,
-			reasonMatch: "list expressions are not supported",
+			reasonMatch: "list comprehensions are not supported",
 		},
 		{
 			name: "invalid fixture whose expressions all parse is a failure",
