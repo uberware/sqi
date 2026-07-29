@@ -411,3 +411,115 @@ func TestCoerce_ListErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestCoercibleMatchesCoerce sweeps every value/target pair B2 touches and
+// asserts that the type-level answer and the value-level one agree.
+//
+// A disagreement is the specific failure the unresolved[T] machinery cannot
+// tolerate: coercible says an expression type-checks, evaluation then fails at
+// submission time on a value that was promised to fit. The exception is
+// deliberately narrow — a conversion that CAN fail on a particular value, like
+// string -> int on "abc", is legal for the type and wrong for that value.
+func TestCoercibleMatchesCoerce(t *testing.T) {
+	rng, err := RangeExpr("1-3")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	values := []Value{
+		Int(1),
+		Float(1.5),
+		String("2"),
+		Bool(true),
+		Null(),
+		rng,
+		List(TInt, []Value{Int(1), Int(2)}),
+		List(TFloat, []Value{Float(1.5)}),
+		List(TString, []Value{String("a")}),
+		List(TNull, nil),
+		List(ListOf(TInt), []Value{List(TInt, []Value{Int(1)})}),
+	}
+	targetNames := []string{
+		"int", "float", "string", "bool", "path", "range_expr", "nulltype",
+		"list[int]", "list[float]", "list[string]", "list[list[int]]",
+		"int?", "list[int]?", "int | string", "any",
+	}
+	for _, v := range values {
+		for _, name := range targetNames {
+			t.Run(v.Type.String()+"->"+name, func(t *testing.T) {
+				target, err := ParseType(name)
+				if err != nil {
+					t.Fatalf("ParseType(%q): %v", name, err)
+				}
+				// The final disjunct mirrors coerce()'s own direct-membership
+				// carve-out (coerce.go's "general applicability check" comment on
+				// its includes(target, v.Type.Code) test): a scalar or null value
+				// already an unambiguous member of a union target needs no
+				// conversion, even where coercible's ambiguity guard would
+				// otherwise refuse it. It is restricted to non-list codes because
+				// that is exactly what coerce() itself does: its list branch
+				// (coerce.go, the "three list rules" block) returns before ever
+				// reaching that carve-out, deciding list-vs-list solely through
+				// coercible/coercibleList, which is element-type aware.
+				// includes() is deliberately NOT element-aware for CodeList
+				// (TestIncludes: "list matches by code, not element type"), so
+				// applying it to a list-shaped v.Type here would call, e.g.,
+				// list[int] -> list[list[int]] "no conversion needed" merely
+				// because both share the outer list code — which section 1.2.3
+				// never sanctions (its only list rule is "list[T] -> list[U] when
+				// each element T can be coerced to U"; there is no rule wrapping a
+				// list to satisfy a list of lists). Omitting the restriction is a
+				// test-harness bug, not a coercible/coerce disagreement: both
+				// production functions already agree the conversion is illegal.
+				canDo := coercible(v.Type, target) || v.Type.Equal(target) ||
+					target.Code == CodeAny ||
+					(v.Type.Code != CodeList && includes(target, v.Type.Code))
+				_, coerceErr := coerce(v, target)
+				switch {
+				case canDo && coerceErr != nil:
+					// The narrow exception: a conversion legal for the type can
+					// still fail on a value that does not fit.
+					if !valueMayNotFit(v, target) {
+						t.Fatalf("coercible says %s -> %s is legal, but coerce failed: %v",
+							v.Type, target, coerceErr)
+					}
+				case !canDo && coerceErr == nil:
+					t.Fatalf("coercible says %s -> %s is illegal, but coerce succeeded",
+						v.Type, target)
+				}
+			})
+		}
+	}
+}
+
+// valueMayNotFit reports whether the conversion is one section 1.2.3 allows to
+// fail on a particular value: a narrowing scalar conversion, which is the only
+// legal reason coerce may refuse what coercible permitted.
+func valueMayNotFit(v Value, target Type) bool {
+	if to, ok := singleScalarTarget(target); ok {
+		switch to {
+		case CodeInt, CodeFloat:
+			return v.Type.Code == CodeString || v.Type.Code == CodeFloat
+		}
+		return false
+	}
+	// Section 1.2.3's list rule, "list[T] -> list[U] when each element T can be
+	// coerced to U", performs the very same per-element scalar conversion the
+	// bare-scalar case above already covers — so a list conversion can fail on
+	// a value for exactly the reason a scalar one can: an element that is a
+	// string/float landing in a list[int]/list[float] target may not fit
+	// (float 1.5 -> int, string "a" -> int/float), even though coercible
+	// correctly permits the type-level list[T] -> list[U] conversion. This is
+	// the same exception as the scalar case, just applied elementwise; it is
+	// not a new kind of failure.
+	if elemFrom, srcOK := listElem(v.Type); srcOK {
+		if elemTo, dstOK := listElem(target); dstOK {
+			if to, ok := singleScalarTarget(elemTo); ok {
+				switch to {
+				case CodeInt, CodeFloat:
+					return elemFrom.Code == CodeString || elemFrom.Code == CodeFloat
+				}
+			}
+		}
+	}
+	return false
+}
