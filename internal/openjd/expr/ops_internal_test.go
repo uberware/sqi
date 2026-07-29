@@ -818,6 +818,12 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] + 1", "unsupported operand types"},
 		{"[0] * 100000000", "too large"},
 		{"'x' * 100000000", "too large"},
+		// String CONCATENATION was unbounded while repetition was not, so a
+		// chain of individually-legal repetitions walked straight past
+		// maxStringBytes. Each term here is well inside the bound on its own;
+		// only the sum is over it, which is exactly what concatStrings now
+		// checks.
+		{"'xxxxxxxxxx' * 900000 + 'xxxxxxxxxx' * 900000", "too large"},
 		// The empty-list literal's provisional type-variable binding is
 		// replaceable only by a type that has a list layer wherever the binding
 		// did. Without that restriction "[] < [1]"'s fix would also make this

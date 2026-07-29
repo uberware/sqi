@@ -490,7 +490,20 @@ func powFloats(l, r Value) (Value, error) {
 	return floatValue(math.Pow(base, exp))
 }
 
+// concatStrings implements section 2.1.2's string concatenation, bounded by
+// the same maxStringBytes that bounds string REPETITION.
+//
+// Without the bound this was the one unbounded producer left in the package —
+// a plain asymmetry, since concatLists has always checked its own element
+// count. Repetition alone is no defence: "'x' * 900000" is well inside the
+// bound, and twenty of those chained with "+" measured 180,000,000 bytes, 18
+// times over it. The check is ARITHMETIC on the two lengths, before the
+// concatenation allocates, for the same reason checkElementCount is: a check
+// made after allocating would be no protection at all.
 func concatStrings(l, r Value) (Value, error) {
+	if err := checkStringBytes(len(l.AsStr()) + len(r.AsStr())); err != nil {
+		return Value{}, err
+	}
 	return String(l.AsStr() + r.AsStr()), nil
 }
 
