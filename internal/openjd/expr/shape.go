@@ -63,6 +63,18 @@ func promotableUnder(pr promotion, from, to Type) bool {
 		return true
 	}
 	f, t := unwrapUnresolved(from), unwrapUnresolved(to)
+	// NOTE: the ELEMENTWISE part of this branch — the empty-list case and the
+	// recursive call below — is unexercised on every live path, and is the
+	// package's coverage floor. Only the "the other side is not a list, so no"
+	// exit is reached, by a list argument against a scalar parameter. argCost
+	// intercepts a list-versus-list pair before it can ever get here, via its
+	// own CodeList/CodeList descent into argCostList. It is kept rather than
+	// deleted because that interception is a property of today's ONE list
+	// ordering shape, (list[T], list[T]) with a single shared type variable: a
+	// future two-variable shape — section 2.1.4's compatible pairs applied
+	// elementwise, so that "[1] < [1.0]" orders instead of erroring — would
+	// score its operands through promotableUnder directly and land here. Read
+	// it as forward-compatibility, not as tested behavior.
 	if fElem, ok := listElem(f); ok {
 		tElem, ok := listElem(t)
 		if !ok {
