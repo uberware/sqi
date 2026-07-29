@@ -42,7 +42,10 @@ func (e *Expression) Eval(syms Symbols, target Type) (Value, error) {
 	if syms == nil {
 		syms = MapSymbols(nil)
 	}
-	v, err := evalNode(e.root, e.src, syms)
+	// The target is threaded inward for the node kinds that forward it (see
+	// evalNode); the boundary coercion below still applies to the result of the
+	// whole expression, whether or not any node consumed the target.
+	v, err := evalNode(e.root, e.src, syms, target)
 	if err != nil {
 		return Value{}, err
 	}
@@ -65,9 +68,15 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 	return e.Eval(syms, target)
 }
 
-// evalNode dispatches on node type. Each arm is a small named function so the
-// switch stays within the complexity budget as sub-projects B and C add node types.
-func evalNode(n Node, src string, syms Symbols) (Value, error) {
+// evalNode dispatches on node type.
+//
+// target is the type the surrounding context expects (section 1.3.1). It is
+// forwarded ONLY by the node kinds whose result IS a sub-expression's value —
+// see the forwarding table in evalCond, evalLogical and evalListLit. Nodes that
+// COMPUTE a value pass TAny to their operands: propagating a string target into
+// "Param.Count + 1" would concatenate its operands into "11" rather than adding
+// them.
+func evalNode(n Node, src string, syms Symbols, target Type) (Value, error) {
 	switch v := n.(type) {
 	case *IntLit:
 		return Int(v.Val), nil
@@ -88,9 +97,9 @@ func evalNode(n Node, src string, syms Symbols) (Value, error) {
 	case *Compare:
 		return evalCompare(v, src, syms)
 	case *Logical:
-		return evalLogical(v, src, syms)
+		return evalLogical(v, src, syms, target)
 	case *Cond:
-		return evalCond(v, src, syms)
+		return evalCond(v, src, syms, target)
 	}
 	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
 }
@@ -105,7 +114,7 @@ func evalName(n *Name, src string, syms Symbols) (Value, error) {
 }
 
 func evalUnary(n *Unary, src string, syms Symbols) (Value, error) {
-	x, err := evalNode(n.X, src, syms)
+	x, err := evalNode(n.X, src, syms, TAny)
 	if err != nil {
 		return Value{}, err
 	}
@@ -117,11 +126,11 @@ func evalUnary(n *Unary, src string, syms Symbols) (Value, error) {
 }
 
 func evalBinary(n *Binary, src string, syms Symbols) (Value, error) {
-	l, err := evalNode(n.L, src, syms)
+	l, err := evalNode(n.L, src, syms, TAny)
 	if err != nil {
 		return Value{}, err
 	}
-	r, err := evalNode(n.R, src, syms)
+	r, err := evalNode(n.R, src, syms, TAny)
 	if err != nil {
 		return Value{}, err
 	}
@@ -142,12 +151,12 @@ func evalBinary(n *Binary, src string, syms Symbols) (Value, error) {
 // this rule only for a conditional expression, but a comparison chain
 // short-circuits for the same reason and so needs the same treatment.
 func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
-	left, err := evalNode(n.Operands[0], src, syms)
+	left, err := evalNode(n.Operands[0], src, syms, TAny)
 	if err != nil {
 		return Value{}, err
 	}
 	for i, op := range n.Ops {
-		right, err := evalNode(n.Operands[i+1], src, syms)
+		right, err := evalNode(n.Operands[i+1], src, syms, TAny)
 		if err != nil {
 			return Value{}, err
 		}
@@ -185,13 +194,13 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 // so the result is a placeholder over both types. The spec states this rule only
 // for a conditional expression, but and/or short-circuit for the same reason and
 // so need the same treatment.
-func evalLogical(n *Logical, src string, syms Symbols) (Value, error) {
-	left, err := evalNode(n.L, src, syms)
+func evalLogical(n *Logical, src string, syms Symbols, target Type) (Value, error) {
+	left, err := evalNode(n.L, src, syms, target)
 	if err != nil {
 		return Value{}, err
 	}
 	if left.IsUnresolved() {
-		right, err := evalNode(n.R, src, syms)
+		right, err := evalNode(n.R, src, syms, target)
 		if err != nil {
 			// The left operand is still reachable at runtime, so the expression
 			// as a whole can still produce a value: report its type rather than
@@ -206,7 +215,7 @@ func evalLogical(n *Logical, src string, syms Symbols) (Value, error) {
 	case n.Op == OpOr && truthy(left):
 		return left, nil
 	}
-	return evalNode(n.R, src, syms)
+	return evalNode(n.R, src, syms, target)
 }
 
 // truthy implements section 2.1.6's falsiness rule: ONLY null and false are
@@ -232,8 +241,8 @@ func truthy(v Value) bool {
 //
 // When the condition is not yet known, the evaluator cannot tell which branch
 // will run, so both are evaluated and their types combined. See condResult.
-func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
-	cond, err := evalNode(n.If, src, syms)
+func evalCond(n *Cond, src string, syms Symbols, target Type) (Value, error) {
+	cond, err := evalNode(n.If, src, syms, TBool)
 	if err != nil {
 		return Value{}, err
 	}
@@ -242,16 +251,16 @@ func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
 			return Value{}, errorAt(src, n.If.Pos(),
 				"the condition of a conditional expression must be a bool, found %s", cond.Type)
 		}
-		return condResult(n, src, syms)
+		return condResult(n, src, syms, target)
 	}
 	if cond.Type.Code != CodeBool {
 		return Value{}, errorAt(src, n.If.Pos(),
 			"the condition of a conditional expression must be a bool, found %s", cond.Type)
 	}
 	if cond.AsBool() {
-		return evalNode(n.Then, src, syms)
+		return evalNode(n.Then, src, syms, target)
 	}
-	return evalNode(n.Else, src, syms)
+	return evalNode(n.Else, src, syms, target)
 }
 
 // condResult evaluates both branches of a conditional whose condition is not yet
@@ -261,9 +270,9 @@ func evalCond(n *Cond, src string, syms Symbols) (Value, error) {
 // its error is suppressed and the other branch's type stands alone. Only when
 // BOTH fail is there a real error, and then it names both — a reader cannot tell
 // which branch was meant.
-func condResult(n *Cond, src string, syms Symbols) (Value, error) {
-	thenVal, thenErr := evalNode(n.Then, src, syms)
-	elseVal, elseErr := evalNode(n.Else, src, syms)
+func condResult(n *Cond, src string, syms Symbols, target Type) (Value, error) {
+	thenVal, thenErr := evalNode(n.Then, src, syms, target)
+	elseVal, elseErr := evalNode(n.Else, src, syms, target)
 	switch {
 	case thenErr == nil && elseErr == nil:
 		return Unresolved(UnionOf(thenVal.Type, elseVal.Type)), nil
