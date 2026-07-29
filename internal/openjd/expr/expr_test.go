@@ -303,3 +303,118 @@ func TestErrorsCarryLineAndColumn(t *testing.T) {
 		t.Errorf("error = %q; want it to start with the operator's line and column", err.Error())
 	}
 }
+
+// TestCollections_Composed exercises the collection features AGAINST EACH
+// OTHER, which nothing else here does.
+//
+// Every other collections test is per-feature: list literals in one table,
+// subscripts in another, slices in a third, list operators in a fourth. Each
+// feature was correct on its own and the suite was green, yet composing two of
+// them — subscripting the union that slicing a range_expr produces — was a hard
+// type error, because the subscript code and the slice code were written one
+// task apart and never met. That is the class of defect this test exists to
+// catch, so every row here chains at least two constructs, and every row
+// asserts a real result rather than merely the absence of an error.
+//
+// Each shape appears twice: once fully resolved, and once with an unresolved
+// placeholder somewhere in it, since the placeholder path computes its result
+// TYPE from a different code path than the value path computes its value.
+func TestCollections_Composed(t *testing.T) {
+	rng, err := expr.RangeExpr("1-5")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	syms := expr.MapSymbols{
+		"Param.Range": rng,
+		"Param.Items": expr.Unresolved(expr.ListOf(expr.TInt)),
+		"Param.I":     expr.Unresolved(expr.TInt),
+		"Param.Flag":  expr.Unresolved(expr.TBool),
+		"Param.Rng":   expr.Unresolved(expr.TRangeExpr),
+	}
+	tests := []struct {
+		name     string
+		src      string
+		want     string // Value.String(), or "" to assert the type only
+		wantType string
+	}{
+		// Concatenation, then a reversing slice, then a subscript.
+		{"concat then reverse then index", "([1, 2] + [3])[::-1][0]", "3", "int"},
+		{"concat then reverse then index, unresolved",
+			"(Param.Items + [3])[::-1][0]", "", "unresolved[int]"},
+
+		// Slice, then a reversing slice.
+		{"slice then reverse", "[1, 2, 3, 4, 5][1:4][::-1]", "[4, 3, 2]", "list[int]"},
+		{"slice then reverse, unresolved", "Param.Items[1:4][::-1]", "", "unresolved[list[int]]"},
+
+		// A conditional's chosen branch, then a subscript. With an unknown
+		// condition this becomes a union receiver, which is exactly the I2
+		// false rejection.
+		{"conditional then index", "([1, 2, 3] if true else [4])[0]", "1", "int"},
+		{"conditional then index, unknown condition",
+			"([1, 2, 3] if Param.Flag else [4])[0]", "", "unresolved[int]"},
+
+		// A subscript of a slice of a literal, nested two levels deep.
+		{"index a slice of a nested literal", "[[1, 2], [3, 4]][1:][0][1]", "4", "int"},
+		{"index a slice of a literal, unresolved bound",
+			"[[1, 2], [3, 4]][Param.I:][0][1]", "", "unresolved[int]"},
+
+		// Membership against a SLICED range_expr: the operator table meets the
+		// slice result type.
+		{"in a sliced range", "2 in Param.Range[1:4]", "true", "bool"},
+		{"not in a reversed range", "9 not in Param.Range[::-1]", "true", "bool"},
+		{"in a sliced range, unresolved item",
+			"Param.I in Param.Range[1:4]", "", "unresolved[bool]"},
+
+		// Subscripting the union a range_expr slice produces — the I2 case,
+		// and the one this package manufactures for itself.
+		{"index a sliced range placeholder", "Param.Rng[:][0]", "", "unresolved[int]"},
+		{"index a reverse-sliced range placeholder", "Param.Rng[::-1][0]", "", "unresolved[int]"},
+		{"slice a sliced range placeholder", "Param.Rng[:][0:2]", "", "unresolved[list[int] | range_expr]"},
+
+		// The empty list in each operator position, composed with the rest.
+		{"empty list on the left of concat", "([] + [1])[0]", "1", "int"},
+		{"empty list on the right of concat", "([1] + [])[0]", "1", "int"},
+		{"empty list repeated", "([] * 3) + [1]", "[1]", "list[int]"},
+		{"empty list ordered against a non-empty one", "[] < [1]", "true", "bool"},
+		{"empty list as a haystack", "1 in []", "false", "bool"},
+		{"empty list sliced then concatenated", "[][:] + [1]", "[1]", "list[int]"},
+		{"empty list on the right of concat, unresolved",
+			"(Param.Items + [])[0]", "", "unresolved[int]"},
+
+		// Repetition composed with slicing.
+		{"repeat then slice", "([1, 2] * 2)[1:3]", "[2, 1]", "list[int]"},
+		// A string behaves as a sequence under the same two constructs.
+		{"string slice then reverse", "'abcdef'[1:5][::-1]", "edcb", "string"},
+		// The whole chain feeding an arithmetic operator.
+		{"chain feeding arithmetic", "([1, 2] + [3])[::-1][0] + 1", "4", "int"},
+
+		// PRE-EXISTING DEFECT, asserted as it behaves rather than omitted, so
+		// that fixing it trips this row instead of passing unnoticed. OpAdd's
+		// generic list shape declares Ret as list[T] with T bound from the LEFT
+		// operand only; concatLists recomputes the real common element type at
+		// runtime, but on the placeholder path no Fn runs, so an empty list on
+		// the left leaves the static result list[nulltype] instead of
+		// list[int]. It is direction-dependent — "Param.Items + []" above is
+		// correctly unresolved[int] — and predates this fix wave (verified
+		// against the branch point). Out of scope here; the fix belongs in the
+		// shape's declared return, not in the composition.
+		{"empty list on the left of an unresolved concat",
+			"([] + Param.Items)[0]", "", "unresolved[nulltype]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := expr.Eval(tc.src, syms, expr.TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) type = %s, want %s", tc.src, got, tc.wantType)
+			}
+			if tc.want != "" {
+				if got := v.String(); got != tc.want {
+					t.Errorf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+				}
+			}
+		})
+	}
+}
