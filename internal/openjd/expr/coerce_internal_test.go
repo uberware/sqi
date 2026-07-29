@@ -473,7 +473,7 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 				canDo := coercible(v.Type, target) || v.Type.Equal(target) ||
 					target.Code == CodeAny ||
 					(v.Type.Code != CodeList && includes(target, v.Type.Code))
-				_, coerceErr := coerce(v, target)
+				got, coerceErr := coerce(v, target)
 				switch {
 				case canDo && coerceErr != nil:
 					// The narrow exception: a conversion legal for the type can
@@ -485,9 +485,45 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 				case !canDo && coerceErr == nil:
 					t.Fatalf("coercible says %s -> %s is illegal, but coerce succeeded",
 						v.Type, target)
+				case coerceErr == nil:
+					// A success is only half-verified by "no error": coerce must
+					// also have actually produced a value of the promised type,
+					// not merely passed the input through unconverted. This is
+					// the other half of the unresolved[T] promise — a type check
+					// that passed must be backed by a value that really is what
+					// it claims to be, not just one that arrived without error.
+					if !resultTypeAdmitted(got, target) {
+						t.Fatalf("coerce(%s, %s) succeeded but returned type %s, which %s does not admit",
+							v, target, got.Type, target)
+					}
 				}
 			})
 		}
+	}
+}
+
+// resultTypeAdmitted reports whether got's type is one target actually
+// admits, once coerce has already reported success. "No error" alone is not
+// proof the conversion happened: a coerce() defect that returns its input
+// unconverted (a no-op) reports no error and still holds the wrong type, and
+// a caller trusting the type check would carry that mistyped value forward
+// undetected. This closes that gap by checking what target actually promises:
+//
+//   - CodeAny admits any type unconverted — coerce()'s own first check.
+//   - A union target (int?, list[int]?, int | string, all normalized to
+//     CodeUnion) admits exactly its own members; containsType is the package's
+//     existing union-membership predicate (type.go, used by
+//     normalizeUnionMembers), reused rather than hand-rolled here.
+//   - Anything else is a single concrete type, which coerce must have hit
+//     exactly.
+func resultTypeAdmitted(got Value, target Type) bool {
+	switch target.Code {
+	case CodeAny:
+		return true
+	case CodeUnion:
+		return containsType(target.Params, got.Type)
+	default:
+		return got.Type.Equal(target)
 	}
 }
 
