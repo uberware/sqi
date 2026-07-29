@@ -827,6 +827,48 @@ func TestListOperators_Errors(t *testing.T) {
 	}
 }
 
+// TestListOperators_RepeatOverflow pins the class of bug a Critical review
+// found in repeatList/repeatString: computing unitSize*n and checking the
+// PRODUCT — rather than checking the operands first — lets int64
+// multiplication overflow and wrap, silently defeating the bound. Every case
+// here is chosen so the WRAPPED product would slip past a naive "product >
+// max" check (landing on a negative number, or on a small positive one),
+// while the guard that actually runs (checkRepeat, limits.go) rejects it by
+// comparing the operands before ever forming that product — so none of these
+// allocate anything, and all must return instantly with a clean errTooLarge
+// rather than panicking or hanging. If the fix regresses, the likely failure
+// mode is not a normal test failure but the test process panicking
+// (negative-capacity make) or timing out (a loop over the raw, un-wrapped
+// count) — both are exactly what this test exists to catch.
+func TestListOperators_RepeatOverflow(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		// 2 * 9223372036854775807 (math.MaxInt64) overflows int64 and wraps
+		// to a NEGATIVE number.
+		{"list: wraps to negative", "[0, 0] * 9223372036854775807"},
+		{"string: wraps to negative", "'xx' * 9223372036854775807"},
+		// 1048576 (2^20) * 17592186044416 (2^44) is exactly 2^64, which
+		// wraps to ZERO — the smallest possible positive-check bypass. The
+		// inner "* 1048576" is itself well within the limit and builds
+		// instantly.
+		{"list: wraps to zero", "([0] * 1048576) * 17592186044416"},
+		{"string: wraps to zero", "('x' * 1048576) * 17592186044416"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Eval(tc.src, nil, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error, want errTooLarge", tc.src)
+			}
+			if !strings.Contains(err.Error(), "too large") {
+				t.Fatalf("Eval(%q) error = %q, want it to mention %q", tc.src, err.Error(), "too large")
+			}
+		})
+	}
+}
+
 func TestListOperators_Unresolved(t *testing.T) {
 	syms := MapSymbols{"Param.Items": Unresolved(ListOf(TInt)), "Param.N": Unresolved(TInt)}
 	tests := []struct {

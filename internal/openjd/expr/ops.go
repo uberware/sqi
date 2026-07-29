@@ -683,21 +683,31 @@ func concatRanges(l, r Value) (Value, error) {
 // repeatList implements section 2.1.3's list repetition. A non-positive count
 // gives an empty list, as in Python.
 func repeatList(l, r Value) (Value, error) {
+	elem, _ := listElem(l.Type)
 	elems := l.AsList()
 	n := r.AsInt()
-	if n <= 0 {
-		elem, _ := listElem(l.Type)
+	// Repeating an empty list is always empty, for ANY n, including one too
+	// large to even loop over — checkRepeat treats a zero unitSize as
+	// needing no bound (nothing to overflow), so it would let an arbitrarily
+	// large n through, and "for range n" below would then spin, doing
+	// nothing but burning CPU, for as long as n says. Short-circuiting here
+	// avoids that hang entirely rather than relying on the bound to prevent
+	// it.
+	if n <= 0 || len(elems) == 0 {
 		return List(elem, nil), nil
 	}
-	total := int64(len(elems)) * n
-	if total > int64(maxElements) {
-		return Value{}, fmt.Errorf("%w: %d elements exceeds the limit of %d", errTooLarge, total, maxElements)
+	// checkRepeat multiplies len(elems) by n only after confirming the
+	// product cannot overflow int64 — see its doc comment. Multiplying first
+	// and checking the result, as this used to, is not a bound at all: the
+	// product can wrap to a small or negative number and slip past it.
+	total, err := checkRepeat(len(elems), n, maxElements)
+	if err != nil {
+		return Value{}, err
 	}
 	out := make([]Value, 0, total)
 	for range n {
 		out = append(out, elems...)
 	}
-	elem, _ := listElem(l.Type)
 	return List(elem, out), nil
 }
 
@@ -706,12 +716,14 @@ func repeatList(l, r Value) (Value, error) {
 func repeatString(l, r Value) (Value, error) {
 	s := l.AsStr()
 	n := r.AsInt()
-	if n <= 0 {
+	if n <= 0 || s == "" {
 		return String(""), nil
 	}
-	total := int64(len(s)) * n
-	if total > int64(maxStringBytes) {
-		return Value{}, fmt.Errorf("%w: %d bytes exceeds the limit of %d", errTooLarge, total, maxStringBytes)
+	// See repeatList's comment: checkRepeat's division-first bound is what
+	// makes this multiplication-free of the overflow that let the previous,
+	// multiply-then-check version through.
+	if _, err := checkRepeat(len(s), n, maxStringBytes); err != nil {
+		return Value{}, err
 	}
 	return String(strings.Repeat(s, int(n))), nil
 }

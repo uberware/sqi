@@ -50,3 +50,29 @@ func checkStringBytes(n int) error {
 	}
 	return nil
 }
+
+// checkRepeat bounds a REPETITION — unitSize copied n times — against limit,
+// and returns the safe total. It exists because unitSize*n is exactly the
+// quantity being bounded, so computing that product first and checking the
+// result afterward is not a check at all: for a large enough unitSize and n,
+// the product overflows int64 and wraps — possibly to a small positive
+// number that sails straight past the limit check while the caller then
+// loops on the raw, un-wrapped n, or to a negative number that panics an
+// allocation sized from it. Comparing n against limit/unitSize instead never
+// forms that product: limit and unitSize both fit comfortably within int64,
+// so the division itself cannot overflow, and n > limit/unitSize implies
+// n*unitSize > limit for any unitSize, n > 0 — which is what makes the
+// multiplication below provably safe once this check has passed.
+//
+// A non-positive unitSize or n needs no bound — repeating nothing, or
+// repeating something zero or fewer times, is always the empty result — and
+// reports so via a zero total rather than an error.
+func checkRepeat(unitSize int, n int64, limit int) (int64, error) {
+	if unitSize <= 0 || n <= 0 {
+		return 0, nil
+	}
+	if n > int64(limit)/int64(unitSize) {
+		return 0, fmt.Errorf("%w: repeating %d elements %d times exceeds the limit of %d", errTooLarge, unitSize, n, limit)
+	}
+	return int64(unitSize) * n, nil
+}
