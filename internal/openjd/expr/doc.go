@@ -3,10 +3,12 @@
 // Package expr reads and evaluates the OpenJD EXPR extension's expression
 // language.
 //
-// The package is a self-contained leaf: it imports nothing from
-// internal/openjd. The dependency runs the other way — internal/openjd will
-// import expr once template integration lands — so expr can be tested with no
-// template machinery present.
+// The package is a self-contained leaf with respect to internal/openjd
+// itself: the only intra-openjd import is internal/openjd/intrange, a leaf
+// shared between the two (see the intrange bullet below), not internal/openjd
+// proper. The dependency with internal/openjd proper still runs the other way
+// — it will import expr once template integration lands — so expr can be
+// tested with no template machinery present.
 //
 // # Usage
 //
@@ -28,10 +30,11 @@
 // that do not exist yet (section 1.3.1's unresolved[T]) — "Param.Frame + 1"
 // type-checks to unresolved[int] before any parameter has a value, and
 // "Param.Name + 5" is rejected as a type error the same way, with Param.Name
-// declared but still unbound. Every literal form, dotted names and the full
-// ten-level operator grammar are implemented on top of that type system. The
-// rest of the extension is not implemented, and several of the remaining
-// omissions look like bugs when tried by hand. They are not:
+// declared but still unbound. Every literal form — including list literals —
+// dotted names and the full ten-level operator grammar are implemented on top
+// of that type system. The rest of the extension is not implemented, and
+// several of the remaining omissions look like bugs when tried by hand. They
+// are not:
 //
 //   - "1 + 2.5" now evaluates to 3.5, and "1 < 2.5" to true: section 2.1.1's
 //     int-to-float promotion is implemented, and an operator is selected by
@@ -46,21 +49,43 @@
 //     operator overload to run on the caller's behalf. "true + true" is an
 //     error for the same reason: no shape accepts (bool, bool), and bool has
 //     no promoting route into one that does.
+//
 //   - Equality and ordering diverge in how far they reach across types.
 //     Section 1.2.5 defines equality for every pair of types, so "5 == 5.0"
 //     is true and "'5' == 5" is false — equality never fails, it just isn't
-//     always true. Section 2.1.4 permits ordering to cross only two named
-//     compatible pairs, int/float and string/path; every other cross-type
-//     comparison is an ERROR, so "5 < 'a'" fails with "unsupported operand
-//     types" even though "5 == 'a'" evaluates fine (to false).
-//   - Lists, list literals, comprehensions, subscripts and slices are not
-//     implemented. "[1, 2]" and "x[0]" fail to parse. list[T] exists as a
-//     Type and participates in coercion — B1 can answer whether a
-//     list[T] would coerce to a list[U], element type by element type — but
-//     it has no values, no literal syntax and no operators of its own —
-//     including no subscript or slice operator; that performing half,
-//     indexing and slicing, list-literal type inference (section 1.2.6), and
-//     the element-wise conversion itself all belong to sub-project B2.
+//     always true — and a list or range_expr value follows the same
+//     cross-type rule: "[1, 2] == [1.0, 2.0]" is true, and a range_expr
+//     compares equal to the list of integers it expands to. Section 2.1.4
+//     permits ordering to cross only two named compatible pairs, int/float
+//     and string/path; every other cross-type comparison is an ERROR, so
+//     "5 < 'a'" fails with "unsupported operand types" even though
+//     "5 == 'a'" evaluates fine (to false). List ordering (lexicographic,
+//     section 1.2.5) does not reach across element types AT ALL, not even
+//     int/float: "[1] < [1.0]" is the same "unsupported operand types" error,
+//     with no promotion.
+//
+//   - List literals, subscripts and slices are implemented, and list[T] has
+//     real values — "[1, 2, 3]" parses and evaluates. A literal with no
+//     target type infers its element type from its own elements per section
+//     1.2.6's unification rules; a list[T] target instead coerces every
+//     element to T directly. "x[0]" and "x[1:3]" work on a list, a string or
+//     a range_expr (sections 2.1.7 and 2.1.8) — subscript is bounds-checked
+//     and errors out of range, while slice clamps like Python. list[T] also
+//     has its own operators: concatenation ("+"), repetition ("*" by an int,
+//     section 2.1.3) and membership ("in"/"not in"). What is still missing is
+//     list comprehensions (section 1.3.7) — "[x for x in [1]]" fails to
+//     parse — along with every function and method call; both are
+//     sub-project B3's. Subscript and slice have NO differential coverage
+//     against the OpenJD reference implementation (make test-expr-oracle),
+//     though: verified directly against it under every target tried (int,
+//     list[int], float, string, and even a matching type), the reference
+//     mis-infers a subscript's or slice's own static result type whenever
+//     ANY target type is supplied at all, and is correct only with none — a
+//     bug in the reference, not here (see the root-cause-B entries in
+//     test/oracle/baseline.txt, which baseline all 22 such corpus cases as a
+//     known reference defect). So subscript and slice are checked by this
+//     package's own tests and the conformance fixtures only.
+//
 //   - Function and method calls are not implemented. "len(x)" and "x.upper()"
 //     fail, and comprehensions (section 1.3.7) do not parse either — that is
 //     sub-project B3's call and method syntax (sections 1.3.3, 1.2.4). The
@@ -68,37 +93,81 @@
 //     are sub-project C's; the type-variable codes (CodeVarT and friends) and
 //     the matcher's binding of them already live here in shape.go, ready for
 //     C's signatures to use.
-//   - path and range_expr now exist as types — TPath and TRangeExpr
-//     participate in Type, coercion and cross-type equality, and a declared
-//     parameter can be typed as either. path has no literal syntax of its
-//     own, but a value IS produced by evaluation: string -> path is section
-//     1.2.3's own coercion rule, so Eval(src, syms, expr.TPath) returns a
-//     path value for any expression that evaluates to a string. range_expr
-//     has no such route — nothing coerces to it — so it has no value ever
-//     produced by evaluation. Neither has an operator of its own; path's
-//     POSIX/Windows semantics, its URI awareness and its operators (section
-//     2.1.5) belong to sub-projects D and E. The range_expr -> list[int]
-//     conversion is recognized at the type level (coercible says yes when the
-//     target admits list[int]), but performing it needs list values, which is
-//     sub-project B2's, same as every other list conversion. Cross-type
-//     equality is only PARTLY implemented: section 1.2.5's string/path rule
-//     (the path converts to string for the comparison) is implemented in
-//     valuesEqual, but its list/range_expr rule is not — that needs list
-//     values, which is sub-project B2's along with everything else list.
-//   - String repetition ("'x' * 3") is absent until the operation limits that
-//     bound the repeat count exist.
-//   - The memory and operation limits themselves are not implemented, so this
-//     package must not be handed untrusted expressions in its present state.
-//     Both belong to sub-project E, unchanged from sub-project A.
+//
+//   - path and range_expr exist as types — TPath and TRangeExpr participate
+//     in Type, coercion and cross-type equality, and a declared parameter can
+//     be typed as either. path has no literal syntax of its own, but a value
+//     IS produced by evaluation: string -> path is section 1.2.3's own
+//     coercion rule, so Eval(src, syms, expr.TPath) returns a path value for
+//     any expression that evaluates to a string. Neither path nor range_expr
+//     has an operator of its own beyond what coercion gives it for free:
+//     path's POSIX/Windows semantics, its URI awareness and its own
+//     operators (section 2.1.5) belong to sub-projects D and E. The
+//     range_expr -> list[int] conversion (section 1.2.3) is fully
+//     implemented — coercing a range_expr value to a list[int] target expands
+//     it — and so is section 1.2.5's list/range_expr cross-type equality
+//     rule, both exercised above.
+//
+//   - range_expr has real values, but nothing in the language's own grammar
+//     constructs one: no literal syntax, coercion or operator produces a
+//     range_expr from anything else — "nothing coerces to it" still holds.
+//     The only way to get one is expr.RangeExpr(text) directly, or a caller's
+//     symbol table binding a name to a value built that way; parsing and
+//     evaluating an expression never yields a range_expr on its own. That
+//     stays true until sub-project C's range_expr() function or sub-project
+//     E's CHUNK[INT] symbol gives the language a way to construct one itself.
+//     For the same reason, range_expr has NO differential coverage against
+//     the OpenJD reference implementation either: the oracle corpus format
+//     (make test-expr-oracle) is a target type plus a bare expression with no
+//     symbol table, and nothing in the grammar can write a case that
+//     produces a range_expr, so its only check is this package's own tests,
+//     written from the spec's worked table in section 3.4.1.1.1 rather than
+//     from what this code happens to do.
+//
+//   - coerce() has a real, narrow gap of its own: a list value that exactly
+//     matches one arm of a union target is wrongly rejected. Eval("[1.0,
+//     2.0]", nil, expr.UnionOf(expr.ListOf(expr.TFloat),
+//     expr.ListOf(expr.TInt))) fails with "list[float] cannot be coerced to
+//     list[float] | list[int]" even though the value already IS a
+//     list[float], one of the union's own members. coerce's scalar path
+//     carries an explicit direct-membership carve-out for exactly this case;
+//     the list path has none, so it falls through to coercible, which asks
+//     listElem about the union target — and listElem reports false, not
+//     found, for a union naming two list types with DIFFERING element types,
+//     treating the whole union as not list-shaped rather than as "one member
+//     already matches." Found during this sub-project and deliberately left
+//     unfixed as out of scope; the fix is the same direct-membership check
+//     the scalar path already has, applied before the list branch in
+//     coerce.go.
+//
+//   - A hard, fixed bound (limits.go's maxElements and maxStringBytes, both
+//     10,000,000) applies to any list, string or range_expr this package
+//     produces, including through repetition ("'x' * 3", "[0] * 3" are both
+//     bounded by it, which is what let repetition ship at all). That bound is
+//     NOT the spec's own configurable memory and operation limits (sections
+//     1.3.9 and 1.3.10) — those remain unimplemented, still sub-project E's,
+//     unchanged from sub-project A — so this package must still not be
+//     handed untrusted expressions in its present state: the hard bound
+//     stops one operation from allocating unbounded memory, not a
+//     pathological expression from doing unbounded total work.
+//
 //   - A float value does not preserve the original source text it was parsed
-//     from. Section 1.3.4's requirement that a float pass through a template
-//     unchanged, digit for digit, is not implemented here; Value.String is a
-//     diagnostic rendering, not that pass-through. This is sub-project E's,
-//     unchanged from sub-project A.
+//     from — "1.100" evaluates to a value that renders as "1.1", not
+//     "1.100". Section 1.3.4's requirement that a float pass through a
+//     template unchanged, digit for digit, is not implemented here;
+//     Value.String is a rendering for diagnostics and tests, not that
+//     pass-through, and the same underlying gap now shows up for a list too:
+//     Value.String renders a list's string elements unquoted ("[a, b]"),
+//     while the reference implementation's to_string() JSON-quotes them
+//     ("[\"a\", \"b\"]") — confirmed directly against the reference, not just
+//     inferred. Both are sub-project E's to fix, unchanged from sub-project
+//     A.
+//
 //   - Nothing here touches a job template. Parsing a template, binding its
 //     parameters, and interpolating an expression's result back into template
 //     text are all outside this package; it evaluates expression text handed
 //     to it directly.
+//
 //   - Section 1.1.5's escape table is narrower than its own opening claim
 //     that "all Python escape sequences are supported": \a, \b, \f, \v, \0,
 //     octal escapes and a backslash-newline line continuation are absent from
@@ -106,6 +175,47 @@
 //     rather than decoding them — "'\a'" evaluates to the two characters
 //     "\a". This is a deliberate reading of the table over the prose, not a
 //     deferral to a later sub-project.
+//
+// A target type propagates into a sub-expression from exactly three node
+// kinds, and nowhere else — a rule not answerable from outside the package,
+// so it is spelled out here rather than left to be inferred from eval.go:
+//
+//	Cond, the chosen branch (or both, under an unknown condition)  forwards the target
+//	Logical ("and"/"or"), both operands                            forwards the target
+//	ListLit, each element (through listElemTarget)                 forwards the target
+//	Unary / Binary / Compare, all operands                         always TAny instead
+//	Index / Slice, the receiver being indexed or sliced             always TAny instead
+//	Index's own index; Slice's start/stop/step                     always TInt instead
+//
+// The three "forwards" rows compute a value that literally IS one of the
+// sub-expression's values, so the caller's target applies to it directly.
+// Everything else COMPUTES a new value from its operands, so forwarding the
+// target would leak context across an operator boundary — a string target
+// reaching into "Param.Count + 1" would concatenate its operands into "11"
+// rather than add them — and a subscript's own index or a slice's bound is
+// fixed at TInt regardless of the target because that position must already
+// be an int no matter what the whole expression is being coerced to.
+//
+//   - This package imports internal/openjd/intrange for range_expr's own
+//     grammar, section 3.4.1.1.1's <IntRangeExpr>. internal/openjd expands
+//     the identical grammar for a different purpose — a step's task parameter
+//     space — with its own pre-existing divergences from both this package
+//     and the spec: it orders values first-seen rather than increasing,
+//     rejects a range whose start exceeds its end where the spec yields a
+//     single value, and rejects a negative step the spec permits. Both
+//     callers share intrange's Range type but use different entry points
+//     (Parse here, ParseWithPolicy there) precisely because they disagree
+//     about what to accept — see the intrange package doc for the full
+//     comparison.
+//
+//   - Test coverage, as of this writing: the OpenJD conformance suite's
+//     EXPR/job_templates group is 140/209 passing, 69 fixtures baselined
+//     (make test-conformance), and the differential oracle test has 108/139
+//     cases agreeing with the reference implementation, 31 baselined
+//     divergences (make test-expr-oracle). Most baselined divergences are the
+//     reference's own bugs, adjudicated against the spec text and recorded
+//     one by one in test/oracle/baseline.txt — that file, not this comment,
+//     is the place to check any individual ruling.
 //
 // Anything unimplemented FAILS rather than silently misbehaving, with one
 // deliberate exception: the escape sequences named above pass through
