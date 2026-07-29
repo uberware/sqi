@@ -216,6 +216,8 @@ func indexResultType(recv Type) (Type, error) {
 		return TString, nil
 	case CodeRangeExpr:
 		return TInt, nil
+	case CodeUnion:
+		return unionResultType(t, indexResultType)
 	case CodePath:
 		return Type{}, errors.New(
 			"a path cannot be subscripted; use its parts to get its components as a list",
@@ -223,6 +225,64 @@ func indexResultType(recv Type) (Type, error) {
 	default:
 		return Type{}, fmt.Errorf("a %s cannot be subscripted", t)
 	}
+}
+
+// unionResultType answers a subscript's or a slice's result type for a UNION
+// receiver, by mapping every member through fn and combining the answers.
+//
+// A union receiver is SOME ONE of its members at runtime, so the operation is
+// legal exactly when it is legal on every member, and its static result is the
+// type that holds all of the per-member results. This is the same rule the
+// operator table already applies to a union ARGUMENT (shape.go's
+// unionArgValueCost, which is why "Param.Range[:] + [1]" always worked); a
+// subscript and a slice do not go through that table, so they need it here.
+//
+// Without this, three FALSE REJECTIONS at type-check time stood, of
+// expressions that cannot fail at runtime. The first is self-inflicted:
+// sliceResultType deliberately types a range_expr slice as
+// "range_expr | list[int]", and subscripting that union — "Param.Range[:][0]",
+// an int under every outcome — was then reported as not subscriptable. The
+// other two come from condResult (eval.go), which types a conditional with an
+// unknown condition as the union of both branches per section 1.3.1.
+func unionResultType(t Type, fn func(Type) (Type, error)) (Type, error) {
+	// UnionOf normalizes a union to at least two members, so this is
+	// unreachable through the constructors; it is here because the loop below
+	// would otherwise index an empty slice.
+	if len(t.Params) == 0 {
+		return Type{}, fmt.Errorf("a %s names no member type", t)
+	}
+	acc, err := fn(t.Params[0])
+	if err != nil {
+		return Type{}, err
+	}
+	for _, member := range t.Params[1:] {
+		r, err := fn(member)
+		if err != nil {
+			return Type{}, err
+		}
+		acc = unifyResultPair(acc, r)
+	}
+	return acc, nil
+}
+
+// unifyResultPair combines two per-member results into one.
+//
+// Section 1.2.6's own unification (unifyElemPair) is used where it applies, so
+// an int member and a float member give float rather than "float | int" — the
+// same rule that already decides a list literal's element type. It is skipped
+// when either side is ITSELF a union, because unifyElemPair reaches through a
+// union with listElem and would collapse "list[int]" and
+// "range_expr | list[int]" to plain list[int], silently dropping the
+// range_expr possibility. In that case, and whenever the two are simply
+// unrelated, the union of both is the honest answer, and the operator table
+// consumes a union argument correctly.
+func unifyResultPair(a, b Type) Type {
+	if a.Code != CodeUnion && b.Code != CodeUnion {
+		if u, ok := unifyElemPair(a, b); ok {
+			return u
+		}
+	}
+	return UnionOf(a, b)
 }
 
 // indexValue performs the subscript on a receiver that has one.

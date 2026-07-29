@@ -243,3 +243,89 @@ func TestEvalIndex_Unresolved(t *testing.T) {
 		})
 	}
 }
+
+// TestEvalIndexAndSlice_UnionReceiver pins the union arm of indexResultType and
+// sliceResultType.
+//
+// Every case here was a FALSE REJECTION before that arm existed — a type error
+// reported for an expression that cannot fail at runtime, which for a template
+// author means a rejected job. The first is self-inflicted: sliceResultType
+// deliberately types a range_expr slice as "range_expr | list[int]", and the
+// subscript function could not then consume the union its own package
+// manufactures. The rest come from condResult (eval.go) typing a conditional
+// with an unknown condition as the union of both branches, per section 1.3.1.
+//
+// The expected types are asserted, not merely the absence of an error: the
+// point of the arm is that the result is USABLE downstream, which it is only if
+// it carries the type the runtime value will really have.
+func TestEvalIndexAndSlice_UnionReceiver(t *testing.T) {
+	syms := MapSymbols{
+		"Param.Range": Unresolved(TRangeExpr),
+		"Param.Flag":  Unresolved(TBool),
+		"Param.Name":  Unresolved(TString),
+	}
+	tests := []struct {
+		src      string
+		wantType string
+	}{
+		// range_expr | list[int], sliced then subscripted: an int either way.
+		{"Param.Range[:][0]", "unresolved[int]"},
+		{"Param.Range[:][-1]", "unresolved[int]"},
+		// Slicing that same union again keeps both possibilities rather than
+		// collapsing to list[int] — see unifyResultPair.
+		{"Param.Range[:][0:1]", "unresolved[list[int] | range_expr]"},
+		// A conditional with an unknown condition, its branches two list types
+		// with different elements. Section 1.2.6 rule 3 unifies int and float.
+		{"([1, 2] if Param.Flag else [3.0])[0]", "unresolved[float]"},
+		{"([1, 2] if Param.Flag else [3.0])[0:1]", "unresolved[list[float]]"},
+		// Branches of the same type need no unification at all.
+		{"([1, 2] if Param.Flag else [3])[0]", "unresolved[int]"},
+		// Genuinely unrelated member results stay a union, which downstream
+		// operators consume (shape.go's unionArgValueCost).
+		{"('ab' if Param.Flag else [1])[0]", "unresolved[int | string]"},
+		// The union arm must still reject a member that really cannot be
+		// subscripted, rather than quietly dropping it.
+		{"Param.Name[0]", "unresolved[string]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Fatalf("Eval(%q) type = %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestEvalIndexAndSlice_UnionReceiverRejectsAnUnindexableMember checks the other
+// half of the union rule: legal on EVERY member, not on any one of them. A
+// union holding a path is not subscriptable, because the runtime value might be
+// the path.
+func TestEvalIndexAndSlice_UnionReceiverRejectsAnUnindexableMember(t *testing.T) {
+	syms := MapSymbols{
+		"Param.Flag": Unresolved(TBool),
+		"Param.Dir":  Value{Type: TPath, s: "/tmp"},
+	}
+	tests := []struct {
+		src      string
+		wantSubs string
+	}{
+		{"([1] if Param.Flag else Param.Dir)[0]", "path cannot be subscripted"},
+		{"([1] if Param.Flag else Param.Dir)[0:1]", "path cannot be sliced"},
+		{"([1] if Param.Flag else 2)[0]", "cannot be subscripted"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Eval(tc.src, syms, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Eval(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+		})
+	}
+}

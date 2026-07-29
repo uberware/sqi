@@ -94,6 +94,14 @@ func sliceResultType(recv Type, step *int64) (Type, error) {
 			return ListOf(TInt), nil
 		}
 		return UnionOf(TRangeExpr, ListOf(TInt)), nil
+	case CodeUnion:
+		// Every member sliced, then combined — see unionResultType (list.go).
+		// The union this very function returns one case above is the first
+		// thing that lands here: "Param.Range[:][0:1]" slices a
+		// "range_expr | list[int]".
+		return unionResultType(t, func(m Type) (Type, error) {
+			return sliceResultType(m, step)
+		})
 	case CodePath:
 		return Type{}, errors.New(
 			"a path cannot be sliced; use its parts to get its components as a list",
