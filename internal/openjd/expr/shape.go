@@ -84,29 +84,20 @@ func promotableUnder(pr promotion, from, to Type) bool {
 		return true
 	}
 	f, t := unwrapUnresolved(from), unwrapUnresolved(to)
-	// NOTE: the ELEMENTWISE part of this branch — the empty-list case and the
-	// recursive call below — is unexercised on every live path, and is the
-	// package's coverage floor. Only the "the other side is not a list, so no"
-	// exit is reached, by a list argument against a scalar parameter. argCost
-	// intercepts a list-versus-list pair before it can ever get here, via its
-	// own CodeList/CodeList descent into argCostList. It is kept rather than
-	// deleted because that interception is a property of today's ONE list
-	// ordering shape, (list[T], list[T]) with a single shared type variable: a
-	// future two-variable shape — section 2.1.4's compatible pairs applied
-	// elementwise, so that "[1] < [1.0]" orders instead of erroring — would
-	// score its operands through promotableUnder directly and land here. Read
-	// it as forward-compatibility, not as tested behavior.
-	if fElem, ok := listElem(f); ok {
-		tElem, ok := listElem(t)
-		if !ok {
-			return false
-		}
-		if fElem.Code == CodeNull {
-			return true
-		}
-		return promotableUnder(pr, fElem, tElem)
-	}
-	// Section 2.1.4's compatible pairs, and only these.
+	// Section 2.1.4's compatible pairs, and only these. Both are pairs of
+	// SCALARS, which is all this function ever has to answer for: a list
+	// argument against a list parameter never reaches here at all, because
+	// argCost intercepts that pair first and descends elementwise through
+	// argCostList. The elementwise form of these pairs — section 1.2.5's
+	// "[1] < [1.0]" — is therefore applied there, by typeVarCost's ordering
+	// unification, not here.
+	//
+	// An earlier revision carried a list branch of its own for that case,
+	// unreachable on every path and flagged as such; it was removed once the
+	// elementwise rule landed for real, rather than left as an untestable
+	// second implementation of it. A list argument reaching a SCALAR parameter
+	// is the only list-shaped call this function sees, and promotable() above
+	// has already answered it false.
 	switch {
 	case f.Code == CodeInt && t.Code == CodeFloat:
 		return true
@@ -203,7 +194,7 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 		return argCost(param, arg.Params[0], b, pr)
 	}
 	if isTypeVar(param.Code) {
-		return typeVarCost(param.Code, arg, b)
+		return typeVarCost(param.Code, arg, b, pr)
 	}
 	// "any" accepts anything, but costs more than an exact match so that a
 	// specific shape wins over a generic one when both fit.
@@ -263,7 +254,16 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 // list[nulltype] — the same pair, the same rule, and an "unsupported operand
 // types" error for want of the second direction. The reference returns false
 // for it, queried directly.
-func typeVarCost(code Code, arg Type, b bindings) (int, bool) {
+//
+// There is a SECOND exception, and it belongs to ordering alone (pr,
+// promoteOrdering): section 2.1.4's compatible pairs, applied elementwise. See
+// orderingUnified below for the adjudication; the mechanism is that the two
+// occurrences are unified rather than required equal, so the variable ends up
+// naming the type BOTH operands reach — list[float] for "[1] < [1.0]" — and
+// callShape then coerces each operand to it before compareLists runs. Nothing
+// downstream has to learn about cross-type element comparison, because by the
+// time it runs there is no longer a cross-type pair.
+func typeVarCost(code Code, arg Type, b bindings, pr promotion) (int, bool) {
 	bound, ok := b[code]
 	if !ok {
 		b[code] = arg
@@ -286,7 +286,47 @@ func typeVarCost(code Code, arg Type, b bindings) (int, bool) {
 	if emptyListBinding(arg, bound) {
 		return costWiden, true
 	}
+	if unified, ok := orderingUnified(pr, bound, arg); ok {
+		b[code] = unified
+		return costWiden, true
+	}
 	return 0, false
+}
+
+// orderingUnified answers section 2.1.4's compatible pairs applied ELEMENTWISE,
+// for the shared element variable of the list ordering shape: given the type one
+// operand's elements have and the type the other's have, the type both reach, or
+// false when there is none.
+//
+// The adjudication, since this reverses a documented behavior. Section 1.2.5
+// defines list ordering as "elements are compared pairwise from the start, and
+// the first unequal pair determines the result" — it constrains the two lists'
+// LENGTHS and nothing about their element types. Section 2.1.4 then says an
+// ordering operator's operands "may differ for compatible pairs (int/float and
+// string/path)". Composing the two, an elementwise comparison of an int against
+// a float is an ordering comparison of a compatible pair, which section 2.1.4
+// permits; so "[1] < [1.0]" is false, not an error. It was an error here, and
+// that error was the artifact of an implementation choice rather than a reading
+// of the spec: one shared type variable across both parameters, which requires
+// EXACT equality by construction.
+//
+// unifyElemPair (list.go) is reused rather than restated because it already
+// computes exactly this set — section 1.2.6's int/float and path/string rules,
+// applied through nested lists — and section 1.2.6's compatible pairs are
+// section 2.1.4's, named twice in the same spec. Anything outside it stays
+// inadmissible, which is what keeps "['a'] < [1]" and "[1] < [[]]" reported as
+// unsupported operand types rather than failing later inside coerce().
+//
+// The reference implementation agrees on the result ("[1] < [1.0]" is false
+// there, "[1.0] < [1]" false, "[1] <= [1.0]" true), which is corroboration and
+// not the reason; it disagrees with sqi in the other direction on the adjacent
+// membership question ("2.0 in [1, 2, 3]" errors there and is true here, see
+// test/oracle/baseline.txt), and the spec is what decides both.
+func orderingUnified(pr promotion, bound, arg Type) (Type, bool) {
+	if pr != promoteOrdering {
+		return Type{}, false
+	}
+	return unifyElemPair(bound, arg)
 }
 
 // emptyListBinding reports whether a type variable's existing binding came from

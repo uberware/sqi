@@ -60,9 +60,19 @@
 //     and string/path; every other cross-type comparison is an ERROR, so
 //     "5 < 'a'" fails with "unsupported operand types" even though
 //     "5 == 'a'" evaluates fine (to false). List ordering (lexicographic,
-//     section 1.2.5) does not reach across element types AT ALL, not even
-//     int/float: "[1] < [1.0]" is the same "unsupported operand types" error,
-//     with no promotion. It DOES reach the empty list, in either operand
+//     section 1.2.5) reaches across element types by exactly those same two
+//     compatible pairs, applied ELEMENTWISE: "[1] < [1.0]" is false, not an
+//     error, and so is "[[1]] < [[1.0]]" one level down, while "['a'] < [1]"
+//     stays an "unsupported operand types" error because string/int is not one
+//     of the pairs. That composes section 1.2.5 (list ordering is elementwise,
+//     and says nothing about the elements' types) with section 2.1.4 (an
+//     ordering operator's operands "may differ for compatible pairs"); it was
+//     an error here until this wave, and the error was an artifact of the list
+//     ordering shape's single shared type variable rather than a reading of the
+//     spec. The unification happens during shape matching (shape.go's
+//     orderingUnified), so both operands are coerced to the common element type
+//     BEFORE any element is compared. Ordering also reaches the empty list, in
+//     either operand
 //     position and at any nesting depth: section 1.2.6 rule 6 makes
 //     list[nulltype] convertible to list[T] for any T, so "[] < [1]" is true,
 //     "[1] < []" is false, and "[[]] < [[1]]" and "[[1]] < [[]]" answer the
@@ -264,7 +274,7 @@
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
 //     EXPR/job_templates group is 140/209 passing, 69 fixtures baselined
-//     (make test-conformance), and the differential oracle test has 115/146
+//     (make test-conformance), and the differential oracle test has 127/158
 //     cases agreeing with the reference implementation, 31 baselined
 //     divergences (make test-expr-oracle). Most baselined divergences are the
 //     reference's own bugs, adjudicated against the spec text and recorded

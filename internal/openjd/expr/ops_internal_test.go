@@ -840,12 +840,12 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] < [[]]", "unsupported operand types"},
 		{"[] < 1", "unsupported operand types"},
 		{"1 < []", "unsupported operand types"},
-		// Section 2.1.4's compatible pairs are NOT applied elementwise today,
-		// so list ordering does not cross int/float even though scalar ordering
-		// does. A later wave revisits this deliberately; until then it is an
-		// error, and the empty-list exception must not quietly become the route
-		// that admits it.
-		{"[1] < [1.0]", "unsupported operand types"},
+		// Section 2.1.4's compatible pairs ARE now applied elementwise (see
+		// orderingUnified, shape.go, and TestListOrdering_CompatiblePairs
+		// below), which widens what list ordering admits — so every row above
+		// is also the fence around that widening. int/float and string/path
+		// unify; a genuinely mismatched element pair, at any nesting depth,
+		// still has no shape to match.
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
@@ -1088,6 +1088,80 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		{"[] < []", "false"},
 		{"[] <= []", "true"},
 		{"[] == []", "true"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Fatalf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestListOrdering_CompatiblePairs pins the second adjudication of this wave:
+// section 2.1.4's compatible pairs (int/float and string/path) apply
+// ELEMENTWISE to list ordering, so "[1] < [1.0]" is false rather than the
+// "unsupported operand types" error it used to be.
+//
+// The reasoning is in orderingUnified (shape.go) and rests on composing two
+// spec sections: 1.2.5 defines list ordering elementwise and says nothing about
+// the elements' types, and 2.1.4 permits an ordering operator's operands to
+// differ for exactly those two pairs. The error was an artifact of the shape's
+// single shared type variable, which requires exact equality by construction.
+//
+// Every case was also queried against the reference implementation. It agrees
+// on every int/float row and on the two same-type path rows. It does NOT agree
+// on the MIXED path/string rows: it answers false for both
+// "[path('/a')] < ['/b']" and "['/b'] < [path('/a')]", which cannot both be
+// right — "/a" and "/b" are unequal, so one order must be true. Section 1.2.5
+// says the path is converted to string for the comparison and section 2.1.4
+// names string/path as a compatible pair, which makes "/a" < "/b" true; sqi
+// answers that, and the reference is wrong. These rows are not in the oracle
+// corpus (path has no literal syntax here and the corpus supplies no symbols),
+// so there is no baseline entry to add — it is recorded here instead.
+//
+// The same-type path rows found a real gap while this was being written:
+// list[path] against list[path] matches the ordering shape EXACTLY, so nothing
+// coerced its elements and compareValues had no path row to compare them with.
+// That is fixed here too (ops.go), since section 2.1.4 lists path as orderable.
+func TestListOrdering_CompatiblePairs(t *testing.T) {
+	syms := MapSymbols{
+		"Param.Dir":   Value{Type: TPath, s: "/a"},
+		"Param.Later": Value{Type: TPath, s: "/b"},
+	}
+	tests := []struct {
+		src  string
+		want string
+	}{
+		// int/float, both operand orders and all four operators.
+		{"[1] < [1.0]", "false"},
+		{"[1.0] < [1]", "false"},
+		{"[1] <= [1.0]", "true"},
+		{"[1] > [1.0]", "false"},
+		{"[1] >= [1.0]", "true"},
+		// The unified element type is what decides, not the left operand's:
+		// both sides become list[float] and 2.0 < 3.0 settles it.
+		{"[1, 2] < [1.0, 3.0]", "true"},
+		{"[1.0, 3.0] > [1, 2]", "true"},
+		// One level down. unifyElemPair recurses, so list[list[int]] and
+		// list[list[float]] unify the same way section 1.2.6 rule 4 says a
+		// literal's would.
+		{"[[1]] < [[1.0]]", "false"},
+		{"[[1]] <= [[1.0]]", "true"},
+		{"[[1, 2]] < [[1.0, 3.0]]", "true"},
+		// string/path, section 2.1.4's other compatible pair, in both orders.
+		{"[Param.Dir] < ['/b']", "true"},
+		{"['/b'] < [Param.Dir]", "false"},
+		{"[Param.Dir] < [Param.Later]", "true"},
+		{"[[Param.Dir]] < [['/b']]", "true"},
+		// The empty-list rule still composes with all of it: an empty operand
+		// adopts the other side's element type, whatever that turned out to be.
+		{"[] < [1.0]", "true"},
+		{"[1.0] < []", "false"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {

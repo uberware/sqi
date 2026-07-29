@@ -655,6 +655,16 @@ func compareValues(a, b Value) (int, error) {
 		return compareFloats(a, b)
 	case a.Type.Code == CodeString && b.Type.Code == CodeString:
 		return compareStrings(a, b)
+	case a.Type.Code == CodePath && b.Type.Code == CodePath:
+		// Section 2.1.4 lists path among the orderable types. A SCALAR path
+		// pair never reaches here — it promotes to the (string, string) shape
+		// and is compared as text — but a list[path] pair matches the list
+		// ordering shape EXACTLY, at no cost, so nothing coerces its elements
+		// and this is the only place the comparison can happen. Comparing the
+		// payload as text is what the scalar path does after promotion, so the
+		// two agree by construction. The payload is read directly (v.s) rather
+		// than through AsStr, which panics on anything but CodeString.
+		return strings.Compare(a.s, b.s), nil
 	case a.Type.Code == CodeBool && b.Type.Code == CodeBool:
 		return compareBools(a, b)
 	case a.Type.Code == CodeList && b.Type.Code == CodeList:

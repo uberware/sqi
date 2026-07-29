@@ -245,3 +245,26 @@ bool	[[1]] < [[]]
 bool	[[1]] > [[]]
 bool	[[]] <= [[1]]
 bool	[[]] < [1]
+#
+# Section 2.1.4's compatible pairs (int/float, string/path) applied
+# ELEMENTWISE, which list ordering rejected outright until this wave: sqi
+# answered "unsupported operand types" for every row here, on the reading that
+# section 1.2.5's elementwise rule required an exact element-type match. It does
+# not say that, and 2.1.4 says operands "may differ for compatible pairs" — so
+# these now order rather than erroring, and every row agrees with the reference.
+# The string/path half cannot be written here (path has no literal syntax and
+# the corpus supplies no symbol table); it is covered by
+# TestListOrdering_CompatiblePairs, where the reference DISAGREES on the mixed
+# path/string rows by answering false in both directions.
+bool	[1] < [1.0]
+bool	[1.0] < [1]
+bool	[1] <= [1.0]
+bool	[1] >= [1.0]
+bool	[1, 2] < [1.0, 3.0]
+bool	[[1]] < [[1.0]]
+#
+# The fence: a pair that is NOT one of section 2.1.4's compatible pairs is
+# still an error on both sides, at either nesting depth.
+bool	['a'] < [1]
+bool	[1] < ['a']
+bool	[1] < [[]]
