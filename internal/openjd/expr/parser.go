@@ -87,7 +87,10 @@ type parser struct {
 // unary minus signs), and
 // parseConditional recurses into itself for the right-associative else branch,
 // so guarding parseExpr alone would leave all three unbounded. parsePostfix is
-// guarded too, covering the trailer cycle it shares with parseSubscript.
+// guarded as well, which closes no cycle today — its trailer group is a LOOP,
+// and parseSubscript re-enters the grammar through parseExpr, which is already
+// counted — but it is the natural place for the guard if that loop is ever
+// turned into recursion, and one more counted frame per level costs nothing.
 //
 // The limit is reported as an ordinary *Error carrying a position, which is the
 // whole point: a stack overflow is a runtime.throw that recover() cannot catch,
