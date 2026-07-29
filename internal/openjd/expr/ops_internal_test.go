@@ -860,6 +860,80 @@ func TestListOperators_Errors(t *testing.T) {
 	}
 }
 
+// TestRangeExpr_TextCoercionIsAddOnly pins an adjudication, so that the next
+// reader sees it was decided rather than defaulted: section 1.2.3's
+// range_expr -> string coercion is granted to the operators whose tables name a
+// range_expr row, and to no others.
+//
+// "Param.Range * 2" used to evaluate to the string "1-101-10" — the range
+// coerced to its own text and repeated — which is spec-legal only if that
+// coercion fires during operator overload selection wherever a string
+// parameter appears. It does not: section 2.1.2 writes out
+// __add__(string, range_expr) and __add__(range_expr, string) as explicit rows,
+// and section 2.1.3 writes out three more __add__ rows plus
+// __contains__(range_expr, int), which would all be redundant if a range_expr
+// reached a string parameter on its own. Neither table gives __mul__ any
+// range_expr row, nor gives "in" a string/range_expr one.
+//
+// Both halves are tested together because they are one ruling: the same
+// promoteNoRangeText annotation (shape.go) produces both, and the "+" rows that
+// the spec DOES name must keep working, or the ruling has been over-applied.
+// The reference implementation independently rejects both rejected forms
+// ("Cannot use '*' operator with range_expr and int", "Cannot use 'in'
+// operator with range_expr and string") — corroboration, not the reason.
+func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
+	syms := MapSymbols{"Param.Range": mustRangeExpr(t, "1-10")}
+	rejected := []string{
+		// Section 2.1.2's __mul__(string, int) must not swallow a range_expr.
+		"Param.Range * 2",
+		// A non-positive count took the same route and produced "".
+		"Param.Range * 0",
+		// Section 2.1.2's __contains__(string, string) must not either: this
+		// asked whether "1" is a SUBSTRING of "1-10", which it is, rather than
+		// the membership question section 2.1.3 defines.
+		"'1' in Param.Range",
+		"'1' not in Param.Range",
+		"Param.Range in '1-10'",
+	}
+	for _, src := range rejected {
+		t.Run("rejected: "+src, func(t *testing.T) {
+			_, err := Eval(src, syms, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error, want an unsupported-operand-types error", src)
+			}
+			if !strings.Contains(err.Error(), "unsupported operand types") {
+				t.Fatalf("Eval(%q) error = %q, want it to mention %q", src, err.Error(), "unsupported operand types")
+			}
+		})
+	}
+	accepted := []struct {
+		src  string
+		want string
+	}{
+		// The rows section 2.1.2 names explicitly, both operand orders.
+		{"Param.Range + '!'", "1-10!"},
+		{"'n=' + Param.Range", "n=1-10"},
+		// Section 2.1.3's own range_expr rows, untouched by the restriction.
+		{"2 in Param.Range", "true"},
+		{"99 not in Param.Range", "true"},
+		{"Param.Range + [11]", "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]"},
+		// A range_expr coerced to a string TARGET is section 1.2.3's rule
+		// working normally; only overload selection is restricted.
+		{"Param.Range", "1-10"},
+	}
+	for _, tc := range accepted {
+		t.Run("accepted: "+tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Fatalf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestListOperators_RepeatOverflow pins the class of bug a Critical review
 // found in repeatList/repeatString: computing unitSize*n and checking the
 // PRODUCT — rather than checking the operands first — lets int64

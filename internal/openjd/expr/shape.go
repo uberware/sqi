@@ -65,12 +65,20 @@ const (
 	// promoteOrdering accepts only section 2.1.4's two named compatible pairs,
 	// int/float and string/path, plus the elementwise form of each for lists.
 	promoteOrdering
+	// promoteNoRangeText accepts every lossless conversion EXCEPT
+	// range_expr -> string, which section 1.2.3 defines but which the operator
+	// tables grant to ONE operator only. See the OpMul table's comment on why
+	// that is a reading of the spec rather than a restriction invented here.
+	promoteNoRangeText
 )
 
 // promotableUnder is promotable, restricted by a shape's promotion set.
 func promotableUnder(pr promotion, from, to Type) bool {
 	if !promotable(from, to) {
 		return false
+	}
+	if pr == promoteNoRangeText {
+		return unwrapUnresolved(from).Code != CodeRangeExpr
 	}
 	if pr != promoteOrdering {
 		return true

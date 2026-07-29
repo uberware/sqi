@@ -124,7 +124,17 @@
 //     range_expr -> list[int] conversion (section 1.2.3) is fully
 //     implemented — coercing a range_expr value to a list[int] target expands
 //     it — and so is section 1.2.5's list/range_expr cross-type equality
-//     rule, both exercised above.
+//     rule, both exercised above. What coercion gives a range_expr OPERAND for
+//     free is deliberately narrow, and the narrowing is an adjudication rather
+//     than a gap: section 1.2.3's range_expr -> string rule reaches a string
+//     PARAMETER only for the operators whose own tables name a range_expr row,
+//     which is "+" alone — sections 2.1.2 and 2.1.3 write those rows out
+//     explicitly, and would not need to if the coercion fired on its own during
+//     overload selection. So "Param.Range + '!'" still concatenates as text,
+//     while "Param.Range * 2" and "'1' in Param.Range" are "unsupported operand
+//     types" errors rather than the string repetition "1-101-10" and the
+//     substring test over "1-10" they used to be. The reference implementation
+//     rejects both as well.
 //
 //   - range_expr has real values, but nothing in the language's own grammar
 //     constructs one: no literal syntax, coercion or operator produces a

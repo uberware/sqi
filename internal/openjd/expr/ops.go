@@ -126,8 +126,42 @@ var binaryShapes = map[Op][]Shape{
 		// Section 2.1.3's __mul__(list[T], int) and section 2.1.2's
 		// __mul__(string, int). String repetition was absent until the size
 		// bound in limits.go existed to cap the repeat count.
+		//
+		// promoteNoRangeText on the string row is what makes "Param.Range * 2"
+		// an ERROR rather than the string repetition "1-101-10" it used to be,
+		// and it is the answer to a question the OpAdd table above raises: why
+		// does "+" go out of its way to stop a range_expr pair concatenating as
+		// text while "*" would not? Because the spec answers the two operators
+		// differently, and both times explicitly.
+		//
+		// Section 1.2.3's range_expr -> string coercion is real, so a bare
+		// range_expr operand CAN reach a string parameter — that is precisely
+		// how "Param.Range + '!'" works. But the operator tables enumerate
+		// where a range_expr operand is meant to be seen, and the enumeration
+		// is exhaustive on its face: section 2.1.2 spells out
+		// __add__(string, range_expr) and __add__(range_expr, string) as their
+		// own rows, section 2.1.3 spells out three more __add__ rows plus
+		// __contains__(range_expr, int) — and NEITHER table gives __mul__ a
+		// range_expr row of any kind. Those explicit __add__ rows would be
+		// redundant if the coercion fired on its own during overload selection,
+		// so their existence is the evidence that it does not: a range_expr
+		// reaches a string parameter where the spec says so, and nowhere else.
+		// Reading it the other way makes "Param.Frames * 2" quietly produce a
+		// doubled frame-range TEXT, which no template author can have meant.
+		//
+		// The other two readings were considered and rejected. Treating the
+		// range as list[int] (matching the __add__ precedent, giving a
+		// list[int] result) needs section 1.2.3's range_expr -> list[int] rule,
+		// which is conditioned on "the target types include list[int]" — the
+		// generic list row's element is an unbound variable, not int, so the
+		// rule does not apply and the row is inadmissible for a bare
+		// range_expr, exactly as the OpAdd table documents. Keeping the string
+		// repetition needs the coercion to fire where no row invites it. The
+		// reference implementation independently rejects this expression with
+		// "Cannot use '*' operator with range_expr and int" under every target
+		// type tried (any, string, list[int]) — evidence, not the reason.
 		{Params: []Type{ListOf(varT), TInt}, Ret: ListOf(varT), Fn: shapeBinary(repeatList)},
-		{Params: []Type{TString, TInt}, Ret: TString, Fn: shapeBinary(repeatString)},
+		{Params: []Type{TString, TInt}, Ret: TString, Promote: promoteNoRangeText, Fn: shapeBinary(repeatString)},
 	},
 	// Dividing two ints yields a float — the spec's __truediv__(int, int) -> float.
 	OpDiv: {
@@ -160,13 +194,21 @@ var binaryShapes = map[Op][]Shape{
 	// would reject "2.0 in [1, 2, 3]" outright since it never reaches
 	// containsElem's cross-type valuesEqual at all. Verified by
 	// TestListOperators's "2.0 in [1, 2, 3]" case rather than assumed.
+	// The substring rows carry promoteNoRangeText for the same reason OpMul's
+	// string row does, and it is the same defect one operator over: without it
+	// a range_expr operand coerced to its own text and "'1' in Param.Range"
+	// answered a SUBSTRING question about "1-10" rather than the membership
+	// question section 2.1.3 defines, whose only range_expr row is
+	// __contains__(range_expr, int) — the row directly below. Neither section
+	// 2.1.2 nor 2.1.3 gives "in" a string/range_expr row, and the reference
+	// implementation likewise rejects "'1' in range_expr('1-10')".
 	OpIn: {
-		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(containsString)},
+		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Fn: shapeBinary(containsString)},
 		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Fn: shapeBinary(containsElem)},
 		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(containsRangeInt)},
 	},
 	OpNotIn: {
-		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(notContainsString)},
+		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Fn: shapeBinary(notContainsString)},
 		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Fn: shapeBinary(negate(containsElem))},
 		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(negate(containsRangeInt))},
 	},
