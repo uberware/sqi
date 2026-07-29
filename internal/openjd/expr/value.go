@@ -23,7 +23,8 @@ type Value struct {
 	Type Type
 
 	// Payload. At most one is valid, selected by Type.Code; null and unresolved
-	// values have none.
+	// values have none. Payloads: b for bool, i for int, f for float, s for
+	// string/path/rangeexpr, l for list.
 	b bool
 	i int64
 	f float64
@@ -137,11 +138,10 @@ func (v Value) Equal(o Value) bool {
 	}
 	// A payload-carrying Code with no case above is a defect, not a value this
 	// function has ever seen: falling through to "equal types means equal
-	// values" — the old bare default this replaced — would make two DIFFERENT
-	// list payloads (once B2 adds one) silently compare equal, in a function
-	// roughly 30 tests across this package depend on. Panic rather than guess;
-	// this can only fire when a new Code gains a payload field without a
-	// matching case here.
+	// values" — the old bare default this replaced — would silently make two
+	// DIFFERENT payloads compare equal, in a function roughly 30 tests across
+	// this package depend on. Panic rather than guess; this can only fire when
+	// a new Code gains a payload field without a matching case here.
 	panic(fmt.Sprintf("expr: Value.Equal has no case for %s", v.Type))
 }
 
