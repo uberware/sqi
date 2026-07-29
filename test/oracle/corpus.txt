@@ -150,28 +150,33 @@ int	1 +
 int	(1 + 2
 
 # ── List literals and inference (spec sections 1.1.2, 1.2.6) ─────────────────
-any	[1, 2, 3]
-any	[]
-any	[42]
-any	[1, 2, 3,]
-any	['a', 'b']
-any	[true, false]
+# Concrete list[T] targets, not "any", wherever a concrete target still
+# exercises the same inference: the reference cannot handle an explicit "any"
+# target at all (see baseline.txt), so a case that only agrees under "any"
+# buys no differential coverage. Two cases stay on "any" on purpose — see
+# baseline.txt for why a concrete target would test something else entirely.
+list[int]	[1, 2, 3]
+list[nulltype]	[]
+list[int]	[42]
+list[int]	[1, 2, 3,]
+list[string]	['a', 'b']
+list[bool]	[true, false]
 any	[1, 2.0, 3]
-any	[[1, 2], [3, 4]]
+list[list[int]]	[[1, 2], [3, 4]]
 any	[[1], [2.0]]
-any	[1 + 1, 2 * 2]
+list[int]	[1 + 1, 2 * 2]
 list[float]	[1, 2]
 list[string]	[1, 2]
 list[int]	[]
 list[list[float]]	[[1], [2]]
 
 # ── List operators (spec section 2.1.3) ──────────────────────────────────────
-any	[1, 2] + [3, 4]
-any	[1] + [2.0]
-any	[] + [1]
-any	[0] * 3
-any	[1, 2] * 2
-any	[1] * 0
+list[int]	[1, 2] + [3, 4]
+list[float]	[1] + [2.0]
+list[int]	[] + [1]
+list[int]	[0] * 3
+list[int]	[1, 2] * 2
+list[int]	[1] * 0
 bool	2 in [1, 2, 3]
 bool	9 in [1, 2, 3]
 bool	9 not in [1, 2, 3]
