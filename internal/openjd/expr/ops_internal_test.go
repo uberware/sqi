@@ -443,18 +443,11 @@ func TestApplyBinary_EqualitySelfEquality(t *testing.T) {
 // driven from it exercise every scalar type Value can carry.
 func sampleValues(t *testing.T) []Value {
 	t.Helper()
-	// CodeRangeExpr is deliberately absent, and its absence is the finding this
-	// comment records rather than hides. Two range_exprs comparing their string
-	// payloads would make '1-3' != '1,2,3', yet section 1.2.5 has a range_expr
-	// EXPAND when compared against a list — so the same two values would be
-	// equal once expansion exists. Which answer is right is undecided until the
-	// sub-project that implements expansion decides it; adding a payload
-	// comparison now would bake in the guess. valuesEqual's fallthrough makes a
-	// range_expr unequal to itself in the meantime, unreachable through Eval
-	// because nothing constructs two range_expr operands.
-	//
-	// CodePath is present precisely because it has no such ambiguity.
-	scalarCodes := []Code{CodeNull, CodeBool, CodeInt, CodeFloat, CodeString, CodePath}
+	// CodeRangeExpr is now present: range_expr expansion exists (rangeInts,
+	// rangeexpr.go) and listOrRangeEqual (ops.go) decides range_expr vs
+	// range_expr equality by comparing text first, then falling back to
+	// expanding both sides — which is what makes this sample equal itself.
+	scalarCodes := []Code{CodeNull, CodeBool, CodeInt, CodeFloat, CodeString, CodePath, CodeRangeExpr}
 	samples := map[Code]Value{
 		CodeNull:   Null(),
 		CodeBool:   Bool(true),
@@ -464,7 +457,8 @@ func sampleValues(t *testing.T) []Value {
 		// The package exports no path constructor — section 1.2.3's string->path
 		// coercion is the only route to one, and is how a real path value is
 		// built at the evaluation boundary.
-		CodePath: mustCoerce(t, String("/a/b"), TPath),
+		CodePath:      mustCoerce(t, String("/a/b"), TPath),
+		CodeRangeExpr: mustRangeExpr(t, "1-3"),
 	}
 	values := make([]Value, 0, len(scalarCodes))
 	for _, c := range scalarCodes {
@@ -490,6 +484,17 @@ func mustCoerce(t *testing.T, v Value, target Type) Value {
 		t.Fatalf("coerce(%v, %s) failed: %v", v, target, err)
 	}
 	return out
+}
+
+// mustRangeExpr builds a range_expr sample value, failing the test if the
+// text is ever rejected.
+func mustRangeExpr(t *testing.T, text string) Value {
+	t.Helper()
+	v, err := RangeExpr(text)
+	if err != nil {
+		t.Fatalf("RangeExpr(%q) failed: %v", text, err)
+	}
+	return v
 }
 
 func TestBinaryShapes_DeclaredReturnTypes(t *testing.T) {
@@ -903,6 +908,82 @@ func TestListOperators_Unresolved(t *testing.T) {
 			}
 			if got := v.Type.String(); got != tc.wantType {
 				t.Fatalf("Eval(%q) type = %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+func TestListEqualityAndOrdering(t *testing.T) {
+	rng, err := RangeExpr("1-3")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	syms := MapSymbols{"Param.Range": rng}
+	tests := []struct {
+		src  string
+		want string
+	}{
+		// Section 1.2.5: list equality is recursive.
+		{"[1, 2] == [1, 2]", "true"},
+		{"[1, 2] == [1, 3]", "false"},
+		{"[1, 2] == [1]", "false"},
+		{"[[1]] == [[1]]", "true"},
+		{"[1, 2] != [1]", "true"},
+		{"[1] == 1", "false"},   // scalar vs list is always unequal
+		{"[1] == 'a'", "false"}, // other cross-type comparisons are unequal
+		// Section 1.2.5: a range_expr is expanded and compared elementwise.
+		{"Param.Range == [1, 2, 3]", "true"},
+		{"[1, 2, 3] == Param.Range", "true"},
+		{"Param.Range == [1, 2]", "false"},
+		// Section 1.2.5: list ordering is lexicographic, and a shorter list
+		// that is otherwise equal is less.
+		{"[1, 2] < [1, 3]", "true"},
+		{"[1, 2] < [1, 2, 0]", "true"},
+		{"[2] > [1, 9]", "true"},
+		{"[1, 2] <= [1, 2]", "true"},
+		{"[1, 2] >= [1, 2]", "true"},
+		{"['a'] < ['b']", "true"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Fatalf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRangeExprEquality_SelfEquality pins the fix for a previously PARKED
+// bug (see listOrRangeEqual, ops.go): a range_expr must equal itself even
+// though two range_exprs are not producible from EXPR source syntax alone —
+// RangeExpr is an exported constructor, so a caller's symbol table can hand
+// the evaluator two range_expr operands directly, and Param.R == Param.R was
+// false before this fix. It also exercises the differently-spelled-but-
+// equal path (two range_exprs with different text that expand to the same
+// integers) and a genuine inequality.
+func TestRangeExprEquality_SelfEquality(t *testing.T) {
+	a := mustRangeExpr(t, "1-3")
+	sameText := mustRangeExpr(t, "1-3")
+	sameInts := mustRangeExpr(t, "1,2,3")
+	different := mustRangeExpr(t, "1-4")
+	tests := []struct {
+		name string
+		l, r Value
+		want bool
+	}{
+		{"a range_expr equals itself", a, a, true},
+		{"two range_exprs with identical text are equal", a, sameText, true},
+		{"two range_exprs with different text but the same integers are equal", a, sameInts, true},
+		{"two range_exprs with different integers are unequal", a, different, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := valuesEqual(tt.l, tt.r); got != tt.want {
+				t.Errorf("valuesEqual(%v, %v) = %v; want %v", tt.l, tt.r, got, tt.want)
 			}
 		})
 	}

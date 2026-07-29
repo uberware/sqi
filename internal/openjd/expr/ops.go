@@ -179,6 +179,11 @@ func orderingShapes(op Op) []Shape {
 		{Params: []Type{TFloat, TFloat}, Ret: TBool, Fn: shapeBinary(ordering(op, compareFloats))},
 		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(ordering(op, compareStrings))},
 		{Params: []Type{TBool, TBool}, Ret: TBool, Fn: shapeBinary(ordering(op, compareBools))},
+		// Section 1.2.5's lexicographic list ordering. The shared varT ties
+		// both operand lists to the same element type, so a cross-element-type
+		// pair like [1] < [1.0] is rejected at shape matching rather than
+		// reaching compareLists at all.
+		{Params: []Type{ListOf(varT), ListOf(varT)}, Ret: TBool, Fn: shapeBinary(ordering(op, compareLists))},
 	}
 }
 
@@ -502,14 +507,23 @@ func notBool(v Value) (Value, error) { return Bool(!v.AsBool()), nil }
 
 // ordering turns a three-way comparison into the binaryFunc for one ordering
 // operator. Each ordering shape it backs is declared same-type (int/int,
-// float/float, string/string, bool/bool); section 2.1.4's compatible
-// cross-pairs — int/float and string/path — reach a same-type shape by
-// promotion during shape matching (shape.go's argCost), not by an extra row
-// here. A cross-type pair that is not one of those two compatible pairs still
-// has no shape to promote into, so it is correctly reported as unsupported.
-func ordering(op Op, compare func(l, r Value) int) binaryFunc {
+// float/float, string/string, bool/bool, list/list); section 2.1.4's
+// compatible cross-pairs — int/float and string/path — reach a same-type
+// shape by promotion during shape matching (shape.go's argCost), not by an
+// extra row here. A cross-type pair that is not one of those two compatible
+// pairs still has no shape to promote into, so it is correctly reported as
+// unsupported.
+//
+// The comparator returns an error, not just an int, because compareLists
+// (the list/list shape) can recurse into elements with no defined order and
+// has to report that rather than fabricate a result — the scalar
+// comparators below simply never fail.
+func ordering(op Op, compare func(l, r Value) (int, error)) binaryFunc {
 	return func(l, r Value) (Value, error) {
-		c := compare(l, r)
+		c, err := compare(l, r)
+		if err != nil {
+			return Value{}, err
+		}
 		switch op {
 		case OpLt:
 			return Bool(c < 0), nil
@@ -524,14 +538,55 @@ func ordering(op Op, compare func(l, r Value) int) binaryFunc {
 	}
 }
 
-func compareInts(l, r Value) int { return cmp.Compare(l.AsInt(), r.AsInt()) }
+func compareInts(l, r Value) (int, error) { return cmp.Compare(l.AsInt(), r.AsInt()), nil }
 
-func compareFloats(l, r Value) int { return cmp.Compare(l.AsFloat(), r.AsFloat()) }
+func compareFloats(l, r Value) (int, error) { return cmp.Compare(l.AsFloat(), r.AsFloat()), nil }
 
-func compareStrings(l, r Value) int { return strings.Compare(l.AsStr(), r.AsStr()) }
+func compareStrings(l, r Value) (int, error) { return strings.Compare(l.AsStr(), r.AsStr()), nil }
 
 // compareBools orders False before True (spec section 2.1.4).
-func compareBools(l, r Value) int { return cmp.Compare(boolRank(l.AsBool()), boolRank(r.AsBool())) }
+func compareBools(l, r Value) (int, error) {
+	return cmp.Compare(boolRank(l.AsBool()), boolRank(r.AsBool())), nil
+}
+
+// compareLists implements section 1.2.5's lexicographic list ordering:
+// elements are compared pairwise from the start using compareValues (so a
+// nested list compares recursively through here too), the first unequal pair
+// decides, and if every compared element is equal the shorter list is less.
+func compareLists(a, b Value) (int, error) {
+	left, right := a.AsList(), b.AsList()
+	for i := 0; i < len(left) && i < len(right); i++ {
+		c, err := compareValues(left[i], right[i])
+		if err != nil {
+			return 0, err
+		}
+		if c != 0 {
+			return c, nil
+		}
+	}
+	return cmp.Compare(len(left), len(right)), nil
+}
+
+// compareValues orders two same-type values, for comparing list elements
+// pairwise in compareLists. It dispatches to the same per-type comparators
+// the scalar ordering shapes use (shape matching guarantees a list's two
+// operands share an element type, so this never sees a genuine cross-type
+// pair from that path) and recurses through compareLists for a nested list.
+func compareValues(a, b Value) (int, error) {
+	switch {
+	case a.Type.Code == CodeInt && b.Type.Code == CodeInt:
+		return compareInts(a, b)
+	case a.Type.Code == CodeFloat && b.Type.Code == CodeFloat:
+		return compareFloats(a, b)
+	case a.Type.Code == CodeString && b.Type.Code == CodeString:
+		return compareStrings(a, b)
+	case a.Type.Code == CodeBool && b.Type.Code == CodeBool:
+		return compareBools(a, b)
+	case a.Type.Code == CodeList && b.Type.Code == CodeList:
+		return compareLists(a, b)
+	}
+	return 0, fmt.Errorf("unsupported operand types for a comparison: %s and %s", a.Type, b.Type)
+}
 
 func boolRank(b bool) int {
 	if b {
@@ -547,11 +602,9 @@ func boolRank(b bool) int {
 //   - bool vs any non-bool is always unequal, so true == 1 is false
 //   - string vs a number is always unequal, so "5" == 5 is false
 //   - null equals only null
+//   - list equality is recursive, and a range_expr compared with a list is
+//     expanded and compared elementwise (both via listOrRangeEqual below)
 //   - every other cross-type pair is unequal
-//
-// The list vs range_expr rule is NOT implemented: expanding a range_expr for
-// comparison needs list values, which is sub-project B2's, same as every
-// other list operation.
 //
 // The null and bool cases are split out from numericOrStringEqual below
 // purely to keep this function's cyclomatic complexity under the repo's
@@ -583,15 +636,87 @@ func numericOrStringEqual(l, r Value) bool {
 	case l.Type.Code == CodePath || r.Type.Code == CodePath:
 		return pathEqual(l, r)
 	}
-	// PARKED, for whichever sub-project implements range_expr expansion: two
-	// range_exprs land here and compare unequal, including to themselves.
-	// Comparing their string payloads is NOT obviously right — section 1.2.5
-	// expands a range_expr when it meets a list, which would make '1-3' equal
-	// '1,2,3', so a payload comparison would contradict the expanded one. Decide
-	// it alongside expansion, then add the row and CodeRangeExpr to
-	// sampleValues' scalarCodes in ops_internal_test.go. Unreachable through
-	// Eval today: nothing produces two range_expr operands.
+	return listOrRangeEqual(l, r)
+}
+
+// listOrRangeEqual handles the list and range_expr equality rows of
+// valuesEqual, split out for the same complexity reason pathEqual is: list
+// equality is recursive (same length, all corresponding elements equal, spec
+// section 1.2.5), and a range_expr compared against a list is expanded and
+// compared elementwise.
+//
+// It is also where the range_expr vs range_expr row lives — closing a
+// previously PARKED gap where two range_exprs, including one compared to
+// itself, always compared unequal. Comparing their raw text is not right in
+// general (section 1.2.5's expansion rule would make "1-3" equal "1,2,3",
+// which a payload comparison can't see), so the general case expands both
+// sides and compares elementwise like the list rows. But two operands with
+// IDENTICAL text always expand to the identical list, so that case is
+// checked first without expanding — which is what keeps a range_expr past
+// the element-count bound equal to itself even though expanding it would
+// error.
+//
+// An expansion failure elsewhere in this function (list vs an oversized
+// range_expr, or two DIFFERENT range_expr texts where at least one is
+// oversized) becomes false rather than propagating: valuesEqual returns a
+// bare bool by design, since section 1.2.5 makes equality total and gives it
+// no error channel. The only way to reach an expansion failure is a
+// range_expr past the size bound, which cannot be materialized to compare
+// against a list — or another differently-spelled range_expr — anyway.
+//
+// Anything else reaching here is a cross-type pair 1.2.5 makes unequal.
+func listOrRangeEqual(l, r Value) bool {
+	switch {
+	case l.Type.Code == CodeList && r.Type.Code == CodeList:
+		return listsEqual(l.AsList(), r.AsList())
+	case l.Type.Code == CodeRangeExpr && r.Type.Code == CodeList:
+		expanded, err := rangeInts(l)
+		if err != nil {
+			return false
+		}
+		return listsEqual(intValues(expanded), r.AsList())
+	case l.Type.Code == CodeList && r.Type.Code == CodeRangeExpr:
+		expanded, err := rangeInts(r)
+		if err != nil {
+			return false
+		}
+		return listsEqual(l.AsList(), intValues(expanded))
+	case l.Type.Code == CodeRangeExpr && r.Type.Code == CodeRangeExpr:
+		if l.s == r.s {
+			return true
+		}
+		lInts, lErr := rangeInts(l)
+		rInts, rErr := rangeInts(r)
+		if lErr != nil || rErr != nil {
+			return false
+		}
+		return listsEqual(intValues(lInts), intValues(rInts))
+	}
 	return false
+}
+
+// listsEqual compares two element slices with the language's own cross-type
+// equality, so that [1] == [1.0] is true (section 1.2.5).
+func listsEqual(a, b []Value) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !valuesEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// intValues wraps expanded range integers as values so they can be compared
+// against a list's elements.
+func intValues(ints []int64) []Value {
+	out := make([]Value, len(ints))
+	for i, n := range ints {
+		out[i] = Int(n)
+	}
+	return out
 }
 
 // pathEqual handles the equality rows where at least one operand is a path.
