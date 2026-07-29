@@ -390,9 +390,45 @@ func (p *parser) parsePrimary() (Node, error) {
 		}
 		return inner, nil
 	case tokLBracket:
-		return nil, p.errorAtTok(tok, "list expressions are not supported")
+		return p.parseListLiteral()
 	}
 	return nil, p.errorAtTok(tok, "unexpected %s", tok.kind)
+}
+
+// parseListLiteral implements <ListExpr> ::= "[" (<ConditionalExpr> (","
+// <ConditionalExpr>)* ","?)? "]" (spec section 1.1.2).
+//
+// <ListComp> shares the opening bracket and is sub-project B3's. It is detected
+// here rather than left to fall out as a syntax error at "for", because a bare
+// "unexpected name" would send a reader hunting for a typo in a construct that
+// is simply not implemented yet.
+func (p *parser) parseListLiteral() (Node, error) {
+	open := p.advance()
+	lit := &ListLit{Offset: open.offset}
+	if _, ok := p.accept(tokRBracket); ok {
+		return lit, nil
+	}
+	for {
+		elem, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		lit.Elems = append(lit.Elems, elem)
+		if tok := p.peek(); keyword(tok, "for") {
+			return nil, p.errorAtTok(tok, "list comprehensions are not supported")
+		}
+		if _, ok := p.accept(tokComma); !ok {
+			break
+		}
+		// A trailing comma ends the list rather than starting an element.
+		if _, ok := p.accept(tokRBracket); ok {
+			return lit, nil
+		}
+	}
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return lit, nil
 }
 
 // parseIdentPrimary reads a literal keyword or a dotted <Name>.

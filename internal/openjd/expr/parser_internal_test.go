@@ -150,7 +150,6 @@ func TestParse_Rejected(t *testing.T) {
 		{"trailing operator", "1 +", "unexpected end of expression"},
 		{"unclosed paren", "(1 + 2", "unexpected end of expression"},
 		{"tuple", "(1, 2)", `expected ")"`},
-		{"list literal", "[1, 2]", "list expressions are not supported"},
 		{"subscript", "Param.X[0]", "subscript and slice expressions are not supported"},
 		{"function call", "min(1, 2)", "function and method calls are not supported"},
 		{"method call", "'a'.upper()", "property access is not supported"},
@@ -174,7 +173,10 @@ func TestParse_Rejected(t *testing.T) {
 }
 
 func TestParse_ErrorCarriesPosition(t *testing.T) {
-	_, err := Parse("Param.X + [1]")
+	// A bare list literal used to be the rejected construct here, but this
+	// task makes it parse; a subscript (still unimplemented) takes its place
+	// as an error that still carries a meaningful, non-zero offset.
+	_, err := Parse("Param.X + Param.X[0]")
 	if err == nil {
 		t.Fatal("Parse = nil error; want an error")
 	}
@@ -182,8 +184,8 @@ func TestParse_ErrorCarriesPosition(t *testing.T) {
 	if !errors.As(err, &e) {
 		t.Fatalf("error is %T; want *Error", err)
 	}
-	if e.Offset != 10 {
-		t.Errorf("Offset = %d; want 10 (the \"[\")", e.Offset)
+	if e.Offset != 17 {
+		t.Errorf("Offset = %d; want 17 (the second \"[\")", e.Offset)
 	}
 }
 
@@ -429,6 +431,63 @@ func TestWalk_DescendsIntoCollectionNodes(t *testing.T) {
 			}
 			if got := tc.node.Pos(); got != 0 {
 				t.Fatalf("Pos() = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestParse_ListLiteral(t *testing.T) {
+	tests := []struct {
+		src       string
+		wantElems int
+	}{
+		{"[]", 0},
+		{"[1]", 1},
+		{"[1, 2, 3]", 3},
+		{"[1, 2, 3,]", 3},
+		{"[[1, 2], [3]]", 2},
+		{"[1 + 2, Param.X if Param.C else 0]", 2},
+		{"[\n  1,\n  2\n]", 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			e, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+			lit, ok := e.root.(*ListLit)
+			if !ok {
+				t.Fatalf("Parse(%q) root = %T, want *ListLit", tc.src, e.root)
+			}
+			if len(lit.Elems) != tc.wantElems {
+				t.Fatalf("Parse(%q) has %d elements, want %d", tc.src, len(lit.Elems), tc.wantElems)
+			}
+		})
+	}
+}
+
+func TestParse_ListLiteralErrors(t *testing.T) {
+	tests := []struct {
+		src      string
+		wantSubs string
+	}{
+		// EOF hits expect()'s existing "unexpected end of expression" wording
+		// (same convention as the "unclosed paren" case above), not "expected
+		// \"]\"" — there is no next token to point at.
+		{"[1, 2", "unexpected end of expression"},
+		{"[,]", "unexpected"},
+		{"[1 2]", `"]"`},
+		{"[x for x in Param.Items]", "list comprehensions are not supported"},
+		{"[x * 2 for x in Param.Items if x > 2]", "list comprehensions are not supported"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Parse(tc.src)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Parse(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
 			}
 		})
 	}

@@ -106,7 +106,9 @@ func TestLanguage(t *testing.T) {
 		// see the package documentation and the plan's scope table. Int/float
 		// promotion (+ and <) moved up to the Operators section above: B1
 		// delivers it.
-		{name: "SUB-PROJECT B: list literal", src: "[1, 2]", wantErr: "list expressions are not supported"},
+		// "[1, 2]" now parses (this sub-project's own change); evaluating a
+		// ListLit is still unimplemented until B2 gives it a value.
+		{name: "SUB-PROJECT B: list literal", src: "[1, 2]", wantErr: "cannot evaluate"},
 		{name: "SUB-PROJECT B: subscript", src: "Param.Name[0]", wantErr: "subscript and slice"},
 		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "function and method calls"},
 		{name: "function calls are sub-project C", src: "len('ab')", wantErr: "function and method calls are not supported"},
