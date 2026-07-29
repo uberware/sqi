@@ -818,6 +818,12 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] + 1", "unsupported operand types"},
 		{"[0] * 100000000", "too large"},
 		{"'x' * 100000000", "too large"},
+		// The empty-list literal's provisional type-variable binding is
+		// replaceable only by a type that has a list layer wherever the binding
+		// did. Without that restriction "[] < [1]"'s fix would also make this
+		// match, and it would then fail inside coerce() instead of being
+		// reported as an unsupported operand pair.
+		{"[[]] < [1]", "unsupported operand types"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
@@ -943,6 +949,21 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		{"[1, 2] <= [1, 2]", "true"},
 		{"[1, 2] >= [1, 2]", "true"},
 		{"['a'] < ['b']", "true"},
+		// Section 1.2.5's "if all compared elements are equal, the shorter list
+		// is considered less than the longer one", with the shorter list EMPTY —
+		// which this table had no case for at all, and which was order-dependent
+		// as a result: "[1] < []" was already false, while "[] < [1]" errored
+		// out at shape matching because the empty literal's list[nulltype] had
+		// pinned the shared type variable to nulltype before int arrived. The
+		// nested row is the same defect one level down, where the provisional
+		// binding is list[nulltype] rather than nulltype.
+		{"[] < [1]", "true"},
+		{"[] <= [1]", "true"},
+		{"[[]] < [[1]]", "true"},
+		{"[1] < []", "false"},
+		{"[] < []", "false"},
+		{"[] <= []", "true"},
+		{"[] == []", "true"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
