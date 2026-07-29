@@ -182,31 +182,7 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 		return argCost(param, arg.Params[0], b, pr)
 	}
 	if isTypeVar(param.Code) {
-		// A variable binds once: seeing it a second time requires the same type.
-		if bound, ok := b[param.Code]; ok {
-			if bound.Equal(arg) {
-				return costExact, true
-			}
-			// …with one exception, and it is the empty list literal's. Section
-			// 1.2.6 rule 6 makes list[nulltype] "implicitly convertible to
-			// list[T] for any T", so a binding that came from an empty list
-			// names no type the caller actually chose — it is a placeholder for
-			// whatever the OTHER occurrence turns out to be. Holding it fixed
-			// made the shared-variable ordering shape (list[T], list[T])
-			// ORDER-DEPENDENT: "[1] < []" matched, because T was already int
-			// when argCostList's own empty-list branch declined to rebind it,
-			// while "[] < [1]" did not, because T had been pinned to nulltype
-			// first and int then mismatched. Section 1.2.5 says the shorter
-			// list is less, so both are answerable, and the reference
-			// implementation agrees ("[] < [1]" is true).
-			if emptyListBinding(bound, arg) {
-				b[param.Code] = arg
-				return costWiden, true
-			}
-			return 0, false
-		}
-		b[param.Code] = arg
-		return costExact, true
+		return typeVarCost(param.Code, arg, b)
 	}
 	// "any" accepts anything, but costs more than an exact match so that a
 	// specific shape wins over a generic one when both fit.
@@ -244,6 +220,36 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 	return 0, false
 }
 
+// typeVarCost binds a type variable to an argument, or scores the argument
+// against the type the variable already bound to.
+//
+// A variable binds once: seeing it a second time requires the same type…
+// …with one exception, and it is the empty list literal's. Section 1.2.6 rule 6
+// makes list[nulltype] "implicitly convertible to list[T] for any T", so a
+// binding that came from an empty list names no type the caller actually chose
+// — it is a placeholder for whatever the OTHER occurrence turns out to be.
+// Holding it fixed made the shared-variable ordering shape (list[T], list[T])
+// ORDER-DEPENDENT: "[1] < []" matched, because T was already int when
+// argCostList's own empty-list branch declined to rebind it, while "[] < [1]"
+// did not, because T had been pinned to nulltype first and int then mismatched.
+// Section 1.2.5 says the shorter list is less, so both are answerable, and the
+// reference implementation agrees ("[] < [1]" is true, "[1] < []" false).
+func typeVarCost(code Code, arg Type, b bindings) (int, bool) {
+	bound, ok := b[code]
+	if !ok {
+		b[code] = arg
+		return costExact, true
+	}
+	if bound.Equal(arg) {
+		return costExact, true
+	}
+	if emptyListBinding(bound, arg) {
+		b[code] = arg
+		return costWiden, true
+	}
+	return 0, false
+}
+
 // emptyListBinding reports whether a type variable's existing binding came from
 // an empty list literal and may therefore be replaced by arg.
 //
@@ -252,7 +258,7 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 // list[nulltype], then meets list[int]), so matching list layers are peeled off
 // both sides until the bound side bottoms out at nulltype. Requiring arg to
 // have a list layer wherever bound has one is what keeps this from being a
-// licence to rebind anything: "[[]] < [1]" leaves bound at list[nulltype] with
+// license to rebind anything: "[[]] < [1]" leaves bound at list[nulltype] with
 // arg at int, which is NOT convertible and stays inadmissible — otherwise the
 // match would succeed and then fail in coerce(), turning a clean "unsupported
 // operand types" into a coercion error.

@@ -236,17 +236,8 @@ func coerce(v Value, target Type) (Value, error) {
 	if v.Type.Equal(target) || target.Code == CodeAny {
 		return v, nil
 	}
-	// A placeholder has no value to convert. Coercing one narrows its
-	// constraint and it stays a placeholder — which is what lets a type check
-	// proceed through a coercion boundary.
 	if v.IsUnresolved() {
-		if !coercible(v.Type, target) {
-			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
-		}
-		if target.Code == CodeUnresolved {
-			return Value{Type: target}, nil
-		}
-		return Unresolved(target), nil
+		return coerceUnresolved(v, target)
 	}
 	if target.Code == CodeUnresolved && len(target.Params) == 1 {
 		return coerce(v, target.Params[0])
@@ -305,6 +296,19 @@ func coerce(v Value, target Type) (Value, error) {
 		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 	}
 	return coerceScalar(v, target)
+}
+
+// coerceUnresolved coerces a PLACEHOLDER, which has no value to convert.
+// Coercing one narrows its constraint and it stays a placeholder — which is
+// what lets a type check proceed through a coercion boundary.
+func coerceUnresolved(v Value, target Type) (Value, error) {
+	if !coercible(v.Type, target) {
+		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+	}
+	if target.Code == CodeUnresolved {
+		return Value{Type: target}, nil
+	}
+	return Unresolved(target), nil
 }
 
 // directUnionMember reports whether target is a union that names t exactly as

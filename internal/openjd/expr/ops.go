@@ -495,7 +495,7 @@ func powFloats(l, r Value) (Value, error) {
 //
 // Without the bound this was the one unbounded producer left in the package —
 // a plain asymmetry, since concatLists has always checked its own element
-// count. Repetition alone is no defence: "'x' * 900000" is well inside the
+// count. Repetition alone is no defense: "'x' * 900000" is well inside the
 // bound, and twenty of those chained with "+" measured 180,000,000 bytes, 18
 // times over it. The check is ARITHMETIC on the two lengths, before the
 // concatenation allocates, for the same reason checkElementCount is: a check

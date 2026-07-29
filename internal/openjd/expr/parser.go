@@ -83,7 +83,8 @@ type parser struct {
 //
 // Every function that takes part in a recursion CYCLE must call it, not just
 // the outermost production: parseNot and parseUnary recurse into themselves
-// without passing through parseExpr at all ("not not not …", "- - - …"), and
+// without passing through parseExpr at all (a stack of "not" keywords, or of
+// unary minus signs), and
 // parseConditional recurses into itself for the right-associative else branch,
 // so guarding parseExpr alone would leave all three unbounded. parsePostfix is
 // guarded too, covering the trailer cycle it shares with parseSubscript.

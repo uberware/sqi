@@ -339,8 +339,10 @@ func TestCollections_Composed(t *testing.T) {
 	}{
 		// Concatenation, then a reversing slice, then a subscript.
 		{"concat then reverse then index", "([1, 2] + [3])[::-1][0]", "3", "int"},
-		{"concat then reverse then index, unresolved",
-			"(Param.Items + [3])[::-1][0]", "", "unresolved[int]"},
+		{
+			"concat then reverse then index, unresolved",
+			"(Param.Items + [3])[::-1][0]", "", "unresolved[int]",
+		},
 
 		// Slice, then a reversing slice.
 		{"slice then reverse", "[1, 2, 3, 4, 5][1:4][::-1]", "[4, 3, 2]", "list[int]"},
@@ -350,20 +352,26 @@ func TestCollections_Composed(t *testing.T) {
 		// condition this becomes a union receiver, which is exactly the I2
 		// false rejection.
 		{"conditional then index", "([1, 2, 3] if true else [4])[0]", "1", "int"},
-		{"conditional then index, unknown condition",
-			"([1, 2, 3] if Param.Flag else [4])[0]", "", "unresolved[int]"},
+		{
+			"conditional then index, unknown condition",
+			"([1, 2, 3] if Param.Flag else [4])[0]", "", "unresolved[int]",
+		},
 
 		// A subscript of a slice of a literal, nested two levels deep.
 		{"index a slice of a nested literal", "[[1, 2], [3, 4]][1:][0][1]", "4", "int"},
-		{"index a slice of a literal, unresolved bound",
-			"[[1, 2], [3, 4]][Param.I:][0][1]", "", "unresolved[int]"},
+		{
+			"index a slice of a literal, unresolved bound",
+			"[[1, 2], [3, 4]][Param.I:][0][1]", "", "unresolved[int]",
+		},
 
 		// Membership against a SLICED range_expr: the operator table meets the
 		// slice result type.
 		{"in a sliced range", "2 in Param.Range[1:4]", "true", "bool"},
 		{"not in a reversed range", "9 not in Param.Range[::-1]", "true", "bool"},
-		{"in a sliced range, unresolved item",
-			"Param.I in Param.Range[1:4]", "", "unresolved[bool]"},
+		{
+			"in a sliced range, unresolved item",
+			"Param.I in Param.Range[1:4]", "", "unresolved[bool]",
+		},
 
 		// Subscripting the union a range_expr slice produces — the I2 case,
 		// and the one this package manufactures for itself.
@@ -378,8 +386,10 @@ func TestCollections_Composed(t *testing.T) {
 		{"empty list ordered against a non-empty one", "[] < [1]", "true", "bool"},
 		{"empty list as a haystack", "1 in []", "false", "bool"},
 		{"empty list sliced then concatenated", "[][:] + [1]", "[1]", "list[int]"},
-		{"empty list on the right of concat, unresolved",
-			"(Param.Items + [])[0]", "", "unresolved[int]"},
+		{
+			"empty list on the right of concat, unresolved",
+			"(Param.Items + [])[0]", "", "unresolved[int]",
+		},
 
 		// Repetition composed with slicing.
 		{"repeat then slice", "([1, 2] * 2)[1:3]", "[2, 1]", "list[int]"},
@@ -398,8 +408,10 @@ func TestCollections_Composed(t *testing.T) {
 		// correctly unresolved[int] — and predates this fix wave (verified
 		// against the branch point). Out of scope here; the fix belongs in the
 		// shape's declared return, not in the composition.
-		{"empty list on the left of an unresolved concat",
-			"([] + Param.Items)[0]", "", "unresolved[nulltype]"},
+		{
+			"empty list on the left of an unresolved concat",
+			"([] + Param.Items)[0]", "", "unresolved[nulltype]",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
