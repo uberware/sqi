@@ -74,16 +74,3 @@ int :: null or 7
 
 # Float exponent rendering: sqi gives 1e-05 (Python's repr), reference 1e-5.
 float :: 0.00001 * 1.0
-
-# ── sqi is wrong: string repetition is not implemented ──────────────────────
-#
-# The reference gives 'aaa'. sqi errors with "unsupported operand types for *".
-# The spec's operator table has __mul__(s: string, n: int) -> string, alongside
-# __mul__(a: list[T], n: int) -> list[T]. Sub-projects A and B1 only ever
-# defined same-type scalar shapes, so this is an absence rather than a defect —
-# but it is a real gap and the case is kept here so it cannot be forgotten.
-#
-# Remove this entry when the cross-type shape lands.
-
-# String repetition: the spec has __mul__(string, int); sqi has no such shape.
-string :: 'a' * 3

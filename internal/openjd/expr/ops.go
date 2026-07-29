@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 )
 
@@ -18,6 +19,13 @@ var (
 	errInfinite     = errors.New("the result is infinite")
 	errNotANumber   = errors.New("the result is not a number")
 	errNegFracPower = errors.New("a negative number cannot be raised to a fractional power")
+)
+
+// Type-variable types, used only in signatures. A variable binds at match time
+// and is substituted into the declared return.
+var (
+	varT  = Type{Code: CodeVarT}
+	varT1 = Type{Code: CodeVarT1}
 )
 
 // binaryFunc is the shape of an operator implementation a Shape wraps. The
@@ -59,6 +67,44 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(addInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a + b }))},
 		{Params: []Type{TString, TString}, Ret: TString, Fn: shapeBinary(concatStrings)},
+		// Section 2.1.3: range_expr + range_expr -> list[int]. range_expr
+		// promotes losslessly to BOTH list[int] and string (coercibleConditional,
+		// coerce.go), and the generic list shape below cannot admit a bare
+		// range_expr argument at all — its element type is an unbound type
+		// variable, and range_expr's own promotion rule only recognizes a
+		// concrete list[int] target, not list[T]. Without this row,
+		// "Param.Range + Param.Range" ties into the (string, string) shape above
+		// and wrongly concatenates as text ("1-31-3") instead of expanding to
+		// list[int]. An EXACT match (cost 0, beating the string shape's cost 2)
+		// rather than a tie broken by position, so its Fn is concatRanges, not
+		// concatLists directly: an exact-match Shape needs no coercion at all,
+		// so declaring the params as list[int] here (to get coercion's range
+		// expansion for free, as the mixed row below does) would report this
+		// row's own cost as 2 and recreate the very tie this row exists to
+		// avoid. concatRanges performs the same expansion by hand instead.
+		{Params: []Type{TRangeExpr, TRangeExpr}, Ret: ListOf(TInt), Fn: shapeBinary(concatRanges)},
+		// Section 2.1.3. The declared return is list[T] with T bound by the
+		// LEFT operand; concatLists recomputes the real common element type
+		// from both operands, since section 2.1.3's "finding a common type"
+		// (list[int] + list[float] -> list[float]) cannot be expressed as a
+		// binding.
+		{Params: []Type{ListOf(varT), ListOf(varT1)}, Ret: ListOf(varT), Fn: shapeBinary(concatLists)},
+		// A bare range_expr operand cannot reach the generic list[T] shape
+		// above at all: coercibleConditional's range_expr -> list[int] rule
+		// (coerce.go) only recognizes a CONCRETE list[int] target, not an
+		// unbound type variable, so promotable(range_expr, list[T]) is false
+		// and the shape is inadmissible for that argument. A concrete
+		// list[int] parameter on both sides is what actually lets
+		// "Param.Range + [4]" and "[0] + Param.Range" match — range_expr
+		// promotes to list[int] on whichever side it appears, and a real
+		// list[int] argument matches this row exactly — verified by
+		// TestListOperators rather than assumed. Declaring the parameter as
+		// list[int] rather than range_expr matters: callShape only coerces
+		// (and so only expands the range) when the declared type differs from
+		// the argument's own, so a bare range_expr parameter would pass the
+		// unconverted range_expr straight to concatLists, which expects a
+		// list payload.
+		{Params: []Type{ListOf(TInt), ListOf(TInt)}, Ret: ListOf(TInt), Fn: shapeBinary(concatLists)},
 	},
 	OpSub: {
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(subInt))},
@@ -67,6 +113,11 @@ var binaryShapes = map[Op][]Shape{
 	OpMul: {
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(mulInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a * b }))},
+		// Section 2.1.3's __mul__(list[T], int) and section 2.1.2's
+		// __mul__(string, int). String repetition was absent until the size
+		// bound in limits.go existed to cap the repeat count.
+		{Params: []Type{ListOf(varT), TInt}, Ret: ListOf(varT), Fn: shapeBinary(repeatList)},
+		{Params: []Type{TString, TInt}, Ret: TString, Fn: shapeBinary(repeatString)},
 	},
 	// Dividing two ints yields a float — the spec's __truediv__(int, int) -> float.
 	OpDiv: {
@@ -89,8 +140,26 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(powFloats)},
 	},
 
-	OpIn:    {{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(containsString)}},
-	OpNotIn: {{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(notContainsString)}},
+	// Note the operand order: the AST puts the searched-for value on the LEFT
+	// ("item in list"), matching containsString's own (needle, haystack)
+	// convention, so the item is each shape's first parameter.
+	//
+	// The item and the list's element use TWO distinct variables (varT,
+	// varT1), not the same one twice: a shared variable requires both
+	// occurrences to bind to the EXACTLY equal type (shape.go's argCost), which
+	// would reject "2.0 in [1, 2, 3]" outright since it never reaches
+	// containsElem's cross-type valuesEqual at all. Verified by
+	// TestListOperators's "2.0 in [1, 2, 3]" case rather than assumed.
+	OpIn: {
+		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(containsString)},
+		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Fn: shapeBinary(containsElem)},
+		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(containsRangeInt)},
+	},
+	OpNotIn: {
+		{Params: []Type{TString, TString}, Ret: TBool, Fn: shapeBinary(notContainsString)},
+		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Fn: shapeBinary(negate(containsElem))},
+		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(negate(containsRangeInt))},
+	},
 
 	OpLt: orderingShapes(OpLt),
 	OpGt: orderingShapes(OpGt),
@@ -561,4 +630,121 @@ func intEqualsFloat(i int64, f float64) bool {
 		return false
 	}
 	return int64(f) == i
+}
+
+// concatLists implements section 2.1.3's list concatenation. The result's
+// element type is the common type of both operands' — the same unification
+// section 1.2.6 uses for a list literal, reused rather than restated.
+//
+// unifyElemPair is called on the two LIST types themselves (l.Type, r.Type),
+// not on their already-extracted element types: its empty-list rule ("rule
+// 5", list.go) fires only when both of ITS OWN arguments are list types, so
+// it can adopt the other side's element when one is list[nulltype]. Passing
+// pre-stripped element types (nulltype vs int) would skip that rule entirely
+// and wrongly reject "[] + [1]" as incompatible.
+func concatLists(l, r Value) (Value, error) {
+	combined, ok := unifyElemPair(l.Type, r.Type)
+	if !ok {
+		return Value{}, fmt.Errorf("cannot concatenate %s and %s: incompatible element types", l.Type, r.Type)
+	}
+	elem, _ := listElem(combined)
+	left, right := l.AsList(), r.AsList()
+	if err := checkElementCount(len(left) + len(right)); err != nil {
+		return Value{}, err
+	}
+	out := make([]Value, 0, len(left)+len(right))
+	for _, v := range append(append([]Value{}, left...), right...) {
+		converted, err := coerce(v, elem)
+		if err != nil {
+			return Value{}, err
+		}
+		out = append(out, converted)
+	}
+	return List(elem, out), nil
+}
+
+// concatRanges implements section 2.1.3's range_expr + range_expr -> list[int]
+// for OpAdd's exact-match (TRangeExpr, TRangeExpr) row. That row is exact-match
+// on purpose (see the OpAdd table's comment on why), which means callShape
+// performs no coercion before calling it — so unlike concatLists's other
+// callers, this one must expand each range itself before delegating.
+func concatRanges(l, r Value) (Value, error) {
+	ll, err := coerce(l, ListOf(TInt))
+	if err != nil {
+		return Value{}, err
+	}
+	rl, err := coerce(r, ListOf(TInt))
+	if err != nil {
+		return Value{}, err
+	}
+	return concatLists(ll, rl)
+}
+
+// repeatList implements section 2.1.3's list repetition. A non-positive count
+// gives an empty list, as in Python.
+func repeatList(l, r Value) (Value, error) {
+	elems := l.AsList()
+	n := r.AsInt()
+	if n <= 0 {
+		elem, _ := listElem(l.Type)
+		return List(elem, nil), nil
+	}
+	total := int64(len(elems)) * n
+	if total > int64(maxElements) {
+		return Value{}, fmt.Errorf("%w: %d elements exceeds the limit of %d", errTooLarge, total, maxElements)
+	}
+	out := make([]Value, 0, total)
+	for range n {
+		out = append(out, elems...)
+	}
+	elem, _ := listElem(l.Type)
+	return List(elem, out), nil
+}
+
+// repeatString implements section 2.1.2's string repetition, bounded by length
+// rather than by element count.
+func repeatString(l, r Value) (Value, error) {
+	s := l.AsStr()
+	n := r.AsInt()
+	if n <= 0 {
+		return String(""), nil
+	}
+	total := int64(len(s)) * n
+	if total > int64(maxStringBytes) {
+		return Value{}, fmt.Errorf("%w: %d bytes exceeds the limit of %d", errTooLarge, total, maxStringBytes)
+	}
+	return String(strings.Repeat(s, int(n))), nil
+}
+
+// containsElem implements section 2.1.3's membership test. It uses the
+// language's own cross-type equality (section 1.2.5) rather than Value.Equal, so
+// that "2.0 in [1, 2, 3]" is true.
+func containsElem(item, list Value) (Value, error) {
+	for _, elem := range list.AsList() {
+		if valuesEqual(item, elem) {
+			return Bool(true), nil
+		}
+	}
+	return Bool(false), nil
+}
+
+// containsRangeInt implements section 2.1.3's range membership test.
+func containsRangeInt(item, rng Value) (Value, error) {
+	ints, err := rangeInts(rng)
+	if err != nil {
+		return Value{}, err
+	}
+	return Bool(slices.Contains(ints, item.AsInt())), nil
+}
+
+// negate inverts a bool-returning operator implementation, which is how each
+// "not in" row is built from its "in" counterpart.
+func negate(f func(l, r Value) (Value, error)) func(l, r Value) (Value, error) {
+	return func(l, r Value) (Value, error) {
+		v, err := f(l, r)
+		if err != nil {
+			return Value{}, err
+		}
+		return Bool(!v.AsBool()), nil
+	}
 }

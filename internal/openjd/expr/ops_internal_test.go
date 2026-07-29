@@ -234,12 +234,20 @@ func TestApplyBinary_StringOperators(t *testing.T) {
 	}
 }
 
-func TestApplyBinary_StringRepetitionIsDeferred(t *testing.T) {
-	// Deliberately absent until sub-project E supplies the operation limit
-	// that makes an unbounded repeat count safe. If this ever starts passing,
-	// confirm the limit landed with it.
-	if _, err := applyBinary(OpMul, String("x"), Int(3)); err == nil {
-		t.Error("'x' * 3 succeeded; string repetition is deferred to sub-project E")
+func TestApplyBinary_StringRepetitionNowBounded(t *testing.T) {
+	// String repetition was deferred until limits.go's size bound existed to
+	// cap an unbounded repeat count; this task implements it now that the
+	// bound exists. Confirm both that a modest repeat succeeds and that it is
+	// not exempt from the bound.
+	got, err := applyBinary(OpMul, String("x"), Int(3))
+	if err != nil {
+		t.Fatalf("applyBinary: %v", err)
+	}
+	if want := "xxx"; got.AsStr() != want {
+		t.Errorf("= %q; want %q", got.AsStr(), want)
+	}
+	if _, err := applyBinary(OpMul, String("x"), Int(100_000_000)); err == nil {
+		t.Error("'x' * 100000000 succeeded; want the size bound to reject it")
 	}
 }
 
@@ -605,7 +613,6 @@ func TestApplyBinary_StillRejectsWhatHasNoShape(t *testing.T) {
 		{"string plus int", OpAdd, String("a"), Int(1)},
 		{"bool plus bool", OpAdd, Bool(true), Bool(true)},
 		{"null plus int", OpAdd, Null(), Int(1)},
-		{"string times int is deferred to sub-project E", OpMul, String("ab"), Int(3)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -744,5 +751,102 @@ func TestApplyBinary_PlaceholderChains(t *testing.T) {
 	}
 	if want := "unresolved[int]"; second.Type.String() != want {
 		t.Errorf("type = %q; want %q", second.Type.String(), want)
+	}
+}
+
+func TestListOperators(t *testing.T) {
+	rng, err := RangeExpr("1-3")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	syms := MapSymbols{"Param.Range": rng}
+	tests := []struct {
+		src      string
+		want     string
+		wantType string
+	}{
+		{"[1, 2] + [3, 4]", "[1, 2, 3, 4]", "list[int]"},
+		{"[1] + [2.0]", "[1.0, 2.0]", "list[float]"},
+		{"[] + [1]", "[1]", "list[int]"},
+		{"[1] + []", "[1]", "list[int]"},
+		{"[['a']] + [['b']]", "[[a], [b]]", "list[list[string]]"},
+		{"[0] * 3", "[0, 0, 0]", "list[int]"},
+		{"[1, 2] * 2", "[1, 2, 1, 2]", "list[int]"},
+		{"[1] * 0", "[]", "list[int]"},
+		{"'ab' * 3", "ababab", "string"},
+		{"'x' * 0", "", "string"},
+		{"2 in [1, 2, 3]", "true", "bool"},
+		{"9 in [1, 2, 3]", "false", "bool"},
+		{"9 not in [1, 2, 3]", "true", "bool"},
+		{"2.0 in [1, 2, 3]", "true", "bool"},
+		{"Param.Range + [4]", "[1, 2, 3, 4]", "list[int]"},
+		{"[0] + Param.Range", "[0, 1, 2, 3]", "list[int]"},
+		{"Param.Range + Param.Range", "[1, 2, 3, 1, 2, 3]", "list[int]"},
+		{"2 in Param.Range", "true", "bool"},
+		{"9 not in Param.Range", "true", "bool"},
+		{"'n=' + Param.Range", "n=1-3", "string"},
+		{"Param.Range + '!'", "1-3!", "string"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) type = %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+func TestListOperators_Errors(t *testing.T) {
+	tests := []struct {
+		src      string
+		wantSubs string
+	}{
+		{"['a'] + [1]", "incompatible"},
+		{"[1] * 'a'", "unsupported operand types"},
+		{"[1] + 1", "unsupported operand types"},
+		{"[0] * 100000000", "too large"},
+		{"'x' * 100000000", "too large"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Eval(tc.src, nil, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Eval(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+		})
+	}
+}
+
+func TestListOperators_Unresolved(t *testing.T) {
+	syms := MapSymbols{"Param.Items": Unresolved(ListOf(TInt)), "Param.N": Unresolved(TInt)}
+	tests := []struct {
+		src      string
+		wantType string
+	}{
+		{"Param.Items + [1]", "unresolved[list[int]]"},
+		{"Param.Items * 3", "unresolved[list[int]]"},
+		{"[1] * Param.N", "unresolved[list[int]]"},
+		{"1 in Param.Items", "unresolved[bool]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Fatalf("Eval(%q) type = %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
 	}
 }

@@ -118,10 +118,13 @@ func TestLanguage(t *testing.T) {
 		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "function and method calls"},
 		{name: "function calls are sub-project C", src: "len('ab')", wantErr: "function and method calls are not supported"},
 		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: "function and method calls"},
-		{name: "SUB-PROJECT E: string repetition", src: `'ab' * 3`, wantErr: "unsupported operand types"},
+		// String repetition (section 2.1.2) now evaluates too — this task's
+		// change, once limits.go's size bound made an unbounded repeat count
+		// safe — no longer belongs in the "not yet implemented" group above,
+		// unlike its still-unimplemented neighbors.
+		{name: "string repetition", src: `'ab' * 3`, wantCode: expr.CodeString, want: "ababab"},
 
-		// Grammar B1 deliberately does not add. "'ab' * 3" already appears above
-		// (SUB-PROJECT E), so it is not repeated here. "[1, 2]" no longer belongs
+		// Grammar B1 deliberately does not add. "[1, 2]" no longer belongs
 		// in this "grammar only" group at all: it now evaluates, see above.
 	}
 

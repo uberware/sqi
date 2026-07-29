@@ -174,6 +174,22 @@ func argCostList(param, arg Type, b bindings) (int, bool) {
 	// first list[T] parameter B2 registers would reject "[]" outright
 	// without this.
 	if arg.Params[0].Code == CodeNull {
+		// When the parameter's element is itself a type variable (B2's
+		// concatLists/repeatList shapes), it must still bind — otherwise
+		// callShape later substitutes the UNBOUND variable into the param
+		// type and coerces the empty-list argument to a bogus "list[T]"
+		// value instead of leaving it list[nulltype], corrupting whatever
+		// the shape's Fn inspects. Binding to nulltype is exactly what a
+		// normal argCost(varT, nulltype, b) call would have done; only the
+		// costWiden override (nulltype is a WIDENING match, not exact) is
+		// special about this branch. A variable already bound by another
+		// occurrence is left alone: the empty list is compatible with
+		// whatever that binding resolved to, per the same empty-list rule.
+		if elem := param.Params[0]; isTypeVar(elem.Code) {
+			if _, bound := b[elem.Code]; !bound {
+				b[elem.Code] = TNull
+			}
+		}
 		return costWiden, true
 	}
 	return argCost(param.Params[0], arg.Params[0], b)
