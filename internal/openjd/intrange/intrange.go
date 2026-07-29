@@ -59,7 +59,10 @@ func (r Range) String() string {
 }
 
 // Count returns how many integers the range yields, computed arithmetically
-// without allocating — the allocation-free equivalent of len(r.Iterate()).
+// without allocating — the allocation-free equivalent of len(r.Iterate()), with
+// one exception at the top of the scale: a count that SATURATES (below) is one
+// Iterate declines to materialize at all, so it answers nil rather than that
+// many values.
 //
 // The specification's set is {x} union {x+mn : m in Z+, x+mn <= y if n > 0,
 // x+mn >= y if n < 0}, so the start is ALWAYS a member and the count is never
@@ -105,10 +108,24 @@ func (r Range) Count() int {
 }
 
 // Iterate yields every integer in the range, in the order the step defines.
+//
+// A range whose [Range.Count] SATURATES to math.MaxInt cannot be materialized
+// on any machine, so Iterate returns nil for it rather than trying: the loops
+// below would otherwise append until the process ran out of memory. Both
+// callers in this repository bound Count() themselves before ever calling this
+// (internal/openjd's sumRangeCounts and internal/openjd/expr's rangeInts), so
+// the early-out is unreachable through them — it exists so that a caller which
+// FORGETS that bound gets an empty result instead of an out-of-memory kill,
+// which is the only outcome the previous code could offer. It is a backstop,
+// not a substitute for the bound: a range of, say, ten billion values does not
+// saturate and is returned in full, one int per value.
 func (r Range) Iterate() []int {
 	step := r.Step
 	if step == 0 {
 		step = 1
+	}
+	if r.Count() == math.MaxInt {
+		return nil
 	}
 	out := make([]int, 0, min(r.Count(), 1024))
 	if step > 0 {

@@ -116,6 +116,38 @@ func TestRange_CountMatchesIterate(t *testing.T) {
 	}
 }
 
+// TestRange_IterateStopsWhenCountSaturates covers Iterate's early-out: a range
+// whose Count saturates to math.MaxInt cannot be materialized on any machine,
+// so Iterate returns nothing rather than appending until the process is killed.
+// Both callers in this repository bound Count() before calling Iterate, so this
+// is a backstop against a FUTURE caller that forgets — and an untested backstop
+// is not one.
+//
+// Every case here uses a huge STEP, and that is deliberate rather than
+// incidental. With the early-out removed, these ranges walk to their break
+// condition in three iterations and the test fails cleanly by returning values
+// instead of nil. Choosing a unit-step saturating range instead would make a
+// revert allocate until the machine died, which is a worse outcome than having
+// no test at all — the same reasoning TestListOperators_RepeatOverflow states
+// for its own omitted case.
+func TestRange_IterateStopsWhenCountSaturates(t *testing.T) {
+	tests := []intrange.Range{
+		// End-Start overflows the subtraction; the step spans the whole range.
+		{Start: math.MinInt, End: math.MaxInt, Step: math.MaxInt},
+		{Start: -(1 << 62), End: 1 << 62, Step: 1 << 62},
+	}
+	for _, r := range tests {
+		t.Run(r.String(), func(t *testing.T) {
+			if got := r.Count(); got != math.MaxInt {
+				t.Fatalf("Count() = %d, want math.MaxInt — this case no longer reaches the early-out", got)
+			}
+			if got := r.Iterate(); got != nil {
+				t.Fatalf("Iterate() returned %d values, want nil for a range that cannot be materialized", len(got))
+			}
+		})
+	}
+}
+
 func TestRange_CountSaturatesOnOverflow(t *testing.T) {
 	tests := []intrange.Range{
 		// End-Start overflows the int subtraction outright.
