@@ -12,9 +12,9 @@ import (
 )
 
 // RunExprCase scores an EXPR fixture on whether every expression it embeds
-// parses and, for one that references no symbols, evaluates cleanly. It is
-// the scoring path for EXPR/job_templates until sqi registers the extension
-// for real.
+// parses and evaluates cleanly, against a symbol table built from the
+// fixture's own declared parameter types. It is the scoring path for
+// EXPR/job_templates until sqi registers the extension for real.
 //
 // # Why this exists, and when to delete it
 //
@@ -33,17 +33,19 @@ import (
 // syntax error is rejected. Nothing here depends on internal/openjd, so the
 // production rejection of EXPR templates stays correct throughout.
 //
-// Every expression is parsed. One that references no symbols (Names()
-// returns empty) is also evaluated, against expr.TAny with an empty symbol
-// table — which is safe precisely because it has nothing to look up. That
-// catches a type error, an int64 overflow, a division by zero, and the like,
-// in a literal-only expression. An expression that DOES reference a symbol
-// stays parse-only: evaluating it with no symbol table would report an
-// unknown-symbol error and wrongly reject a valid fixture, so evaluation is
-// gated on Names() being empty. A fixture invalid for a semantic reason on a
-// SYMBOLIC expression therefore still parses fine, is accepted, and fails —
-// visibly baselined rather than silently passed — until sub-project E gives
-// this path real symbol tables to evaluate against.
+// Every expression is both parsed AND evaluated, against expr.TAny and a
+// symbol table DeclaredSymbols builds from what the fixture itself declares:
+// every symbol section 1.2.2 defines is bound as an UNRESOLVED placeholder of
+// its declared type, and every name introduced by a "let:" block is bound
+// UNTYPED (expr.TAny), since this path does not track "let" scoping or
+// evaluate a binding's right-hand side to learn its real type. That is enough
+// to catch a type error, an int64 overflow, a division by zero, or an
+// unknown symbol in ANY expression, symbolic or not — not only a literal-only
+// one. A fixture invalid for a semantic reason a placeholder can catch is
+// rejected and passes; one invalid for a reason this path cannot see (a
+// runtime-only condition, or a "let" binding whose real type would have
+// caught it) still parses and evaluates fine, is accepted, and fails —
+// visibly baselined rather than silently passed.
 //
 // TestConformance_EXPRNotRegistered fails the build the moment
 // internal/openjd registers EXPR. At that point this file and its baseline

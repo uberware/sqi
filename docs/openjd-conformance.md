@@ -108,24 +108,42 @@ unchanged: a template declaring `extensions: [EXPR]` is still rejected with a
 extension name.
 
 What has changed is that `internal/openjd/expr` now exists as a self-contained
-reader and same-type evaluator for the EXPR expression language — `internal/openjd`
-does not call it yet, so it has no effect on template validation. Building it
-ahead of registration made it possible to start measuring conformance against
-the suite's 209 `EXPR/job_templates` fixtures, which `TestConformance_Templates`
+reader and evaluator implementing the spec's real type system — nested types,
+coercion, and static type checking via placeholders for values that don't
+exist yet — for the EXPR expression language. `internal/openjd` does not call
+it yet, so it has no effect on template validation. Building it ahead of
+registration made it possible to start measuring conformance against the
+suite's 209 `EXPR/job_templates` fixtures, which `TestConformance_Templates`
 cannot do: every one of them declares `extensions: [EXPR]`, so the template path
 rejects all 209 for the extension-gating reason alone, and 180 of them are
 marked `.invalid` — scoring that rejection as a pass would report 180 false
 greens before a single line of EXPR semantics existed.
 
 So the suite scores `EXPR/job_templates` through a **second, temporary path**
-(`test/conformance/exprcase.go`, `TestConformance_Expressions`) that parses the
-`{{ ... }}` expressions a fixture embeds, instead of validating the template as
-a whole. As of this measurement it scores **117 / 209 pass, 92 baselined** in
-`test/conformance/baseline-expr.txt`. This path is **parse-only**: a fixture
-that is invalid for a semantic reason (a type error, an evaluation limit, an
-int64 overflow) parses fine, is accepted, and therefore fails and is baselined
+(`test/conformance/exprcase.go`, `TestConformance_Expressions`) that parses AND
+evaluates the `{{ ... }}` expressions a fixture embeds, instead of validating
+the template as a whole. Evaluation runs against a symbol table built from the
+fixture's own declared parameter types: every symbol section 1.2.2 defines is
+bound as an unresolved placeholder of its declared type, so a type error, an
+int64 overflow, a division by zero, or an unknown symbol is caught without any
+parameter value ever existing — the same static type checking `internal/openjd/expr`
+performs everywhere else. A name introduced by a `let:` block binds untyped,
+since this path does not track `let` scoping or evaluate a binding's
+right-hand side to learn its real type. As of this measurement it scores
+**134 / 209 pass, 75 baselined** in `test/conformance/baseline-expr.txt`. A
+fixture that is invalid for a reason this path cannot see — a runtime-only
+condition, or a `let` binding whose real type would have caught it — still
+parses and evaluates fine, is accepted, and therefore fails and is baselined
 — that is deliberate reporting, the same principle as the not-applicable rows
-below, not a defect to chase down here.
+below, not a defect to chase down here. One baselined-list entry is worth
+calling out because it is easy to misread the other way:
+`expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) currently passes,
+but not because section 1.3.9's memory limit is enforced — it isn't, this
+package has no memory limit at all yet. It passes because string repetition
+(`__mul__(string, int)`) is itself unimplemented, so the expression is
+rejected for an unrelated reason that happens to produce the right verdict;
+expect this entry to start failing again once string repetition ships, until
+a real memory limit lands beside it.
 
 The path is deleted the moment EXPR is registered for real:
 `TestConformance_EXPRNotRegistered` fails the build if `openjd.LookupExtension("EXPR")`
@@ -206,7 +224,7 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **117 / 209 pass, 92 baselined** |
+| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **134 / 209 pass, 75 baselined** |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |

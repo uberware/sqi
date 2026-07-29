@@ -201,7 +201,7 @@ func TestConformance_Expressions(t *testing.T) {
 		results = append(results, conformance.RunExprCase(tc, data))
 	}
 
-	t.Logf("expression-level scoring (parse only)\n%s",
+	t.Logf("expression-level scoring (parse and evaluate)\n%s",
 		conformance.FormatRollup(conformance.Rollup(results)))
 
 	// A run in which almost nothing passes means the reader is broken, not

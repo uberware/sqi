@@ -81,6 +81,19 @@ func TestLanguage(t *testing.T) {
 		{name: "zero is truthy", src: "0 or 'fallback'", wantCode: expr.CodeInt, want: "0"},
 		{name: "not", src: "not Param.Flag", wantCode: expr.CodeBool, want: "false"},
 
+		// Implicit coercion, section 1.2.3. Sub-project A rejected every one of
+		// these as an unsupported operand pair. "1 + 2.5", "1 < 2.5" and
+		// "5 == 5.0" already appear in the Operators section above, so they are
+		// not repeated here.
+		{name: "float plus int promotes the int", src: "2.5 + 1", wantCode: expr.CodeFloat, want: "3.5"},
+		{name: "int divided by int is a float", src: "7 / 2", wantCode: expr.CodeFloat, want: "3.5"},
+		{name: "float floor division is an int", src: "7.5 // 2.0", wantCode: expr.CodeInt, want: "3"},
+		{name: "int to a negative power is a float", src: "2 ** -2", wantCode: expr.CodeFloat, want: "0.25"},
+
+		// Still errors, because no shape accepts them.
+		{name: "string plus int has no signature", src: "'a' + 1", wantErr: "unsupported operand types"},
+		{name: "bool arithmetic has no signature", src: "true + true", wantErr: "unsupported operand types"},
+
 		// Errors — section 1.3.11.
 		{name: "division by zero", src: "1 / 0", wantErr: "division by zero"},
 		{name: "int64 overflow", src: "9223372036854775807 + 1", wantErr: "integer overflow"},
@@ -95,8 +108,13 @@ func TestLanguage(t *testing.T) {
 		{name: "SUB-PROJECT B: list literal", src: "[1, 2]", wantErr: "list expressions are not supported"},
 		{name: "SUB-PROJECT B: subscript", src: "Param.Name[0]", wantErr: "subscript and slice"},
 		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "function and method calls"},
+		{name: "function calls are sub-project C", src: "len('ab')", wantErr: "function and method calls are not supported"},
 		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: "function and method calls"},
 		{name: "SUB-PROJECT E: string repetition", src: `'ab' * 3`, wantErr: "unsupported operand types"},
+
+		// Grammar B1 deliberately does not add. "[1, 2]" and "'ab' * 3" already
+		// appear above (SUB-PROJECT B and SUB-PROJECT E), so they are not
+		// repeated here.
 	}
 
 	for _, tt := range tests {
@@ -119,6 +137,65 @@ func TestLanguage(t *testing.T) {
 			}
 			if got.String() != tt.want {
 				t.Errorf("= %q; want %q", got.String(), tt.want)
+			}
+		})
+	}
+}
+
+// TestLanguage_TargetAndPlaceholders states the target-type and static-type-
+// checking half of the language as the same kind of table: an expression, an
+// optional symbol table of placeholders, and a target type in; the RESULT'S
+// TYPE, rendered, or an error out. It is a separate function from TestLanguage
+// because these rows need arguments — syms and target — that the rest of the
+// table does not carry.
+func TestLanguage_TargetAndPlaceholders(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		syms    expr.MapSymbols
+		target  expr.Type
+		want    string // the result's type, rendered
+		wantErr string
+	}{
+		{name: "no constraint keeps the natural type", src: "1 + 1", target: expr.TAny, want: "int"},
+		{name: "an int result reaches a string target", src: "1 + 1", target: expr.TString, want: "string"},
+		{name: "a fractional float will not narrow to an int", src: "3.75", target: expr.TInt, wantErr: "cannot be represented"},
+		{
+			name:   "arithmetic on a declared int is checkable before its value exists",
+			src:    "Param.Frame + 1",
+			syms:   expr.MapSymbols{"Param.Frame": expr.Unresolved(expr.TInt)},
+			target: expr.TAny,
+			want:   "unresolved[int]",
+		},
+		{
+			name:    "a type error is caught before any value exists",
+			src:     "Param.Name + 5",
+			syms:    expr.MapSymbols{"Param.Name": expr.Unresolved(expr.TString)},
+			target:  expr.TAny,
+			wantErr: "unsupported operand types",
+		},
+		{
+			name:   "an unknown condition unions both branches",
+			src:    "1 if Param.Flag else 'x'",
+			syms:   expr.MapSymbols{"Param.Flag": expr.Unresolved(expr.TBool)},
+			target: expr.TAny,
+			want:   "unresolved[int | string]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := expr.Eval(tt.src, tt.syms, tt.target)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v; want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.src, err)
+			}
+			if got.Type.String() != tt.want {
+				t.Errorf("type = %q; want %q", got.Type.String(), tt.want)
 			}
 		})
 	}
