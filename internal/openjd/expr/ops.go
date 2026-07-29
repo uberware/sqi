@@ -236,10 +236,13 @@ func orderingShapes(op Op) []Shape {
 		{Params: []Type{TFloat, TFloat}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareFloats))},
 		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareStrings))},
 		{Params: []Type{TBool, TBool}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareBools))},
-		// Section 1.2.5's lexicographic list ordering. The shared varT ties
-		// both operand lists to the same element type, so a cross-element-type
-		// pair like [1] < [1.0] is rejected at shape matching rather than
-		// reaching compareLists at all.
+		// Section 1.2.5's lexicographic list ordering. The shared varT is
+		// UNIFIED across both operand lists rather than required exactly
+		// equal, admitting section 2.1.4's compatible pairs elementwise: "[1]
+		// < [1.0]" binds varT to float, coerces both operands to
+		// list[float], and reaches compareLists, answering false. A
+		// genuinely incompatible pair like ['a'] < [1] has no unification to
+		// reach and is still rejected at shape matching.
 		{Params: []Type{ListOf(varT), ListOf(varT)}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareLists))},
 	}
 }
