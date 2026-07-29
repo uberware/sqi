@@ -44,8 +44,12 @@ func shapeUnary(f func(v Value) (Value, error)) func(args []Value) (Value, error
 //
 // A shape declares what it returns as well as what it takes, which is what lets
 // an operand with no value still yield a typed result. Ordering within a list
-// does not affect which shape wins: matchShapes tries every shape for an exact
-// fit before trying any with coercion.
+// mostly does not affect which shape wins: matchShapes (shape.go) ranks every
+// candidate by cost — an exact match cheaper than a coercing one — and the
+// lowest total wins regardless of list position. The one place position still
+// matters is an exact tie, which keeps the earliest shape; no operator table
+// here relies on that, since no operator lists two shapes of equal cost for
+// the same argument types.
 //
 // Sub-projects B2 and C add shapes here and to their own function registry; a
 // list with no matching shape is reported as "unsupported operand types", which
@@ -96,8 +100,10 @@ var binaryShapes = map[Op][]Shape{
 
 // orderingShapes builds the four same-type ordering signatures for one
 // comparison operator. Section 2.1.4 also permits int/float and string/path
-// cross-pairs; both are implicit coercion, which the coercing match pass
-// supplies from these same shapes.
+// cross-pairs; both reach one of these same-type shapes by the ordinary
+// promotion argCost (shape.go) already gives every operator — int -> float
+// and path -> string are both coercibleConditional's named compatible pairs —
+// with no dedicated cross-type shape of their own.
 func orderingShapes(op Op) []Shape {
 	return []Shape{
 		{Params: []Type{TInt, TInt}, Ret: TBool, Fn: shapeBinary(ordering(op, compareInts))},
@@ -175,9 +181,9 @@ func unresolvedResult(s Shape, b bindings) Value {
 }
 
 // callShape coerces the arguments to the shape's declared parameter types and
-// runs it. The match may have been made on the coercing pass, so an argument can
-// still need converting — that is where section 2.1.1's int-to-float promotion
-// actually happens.
+// runs it. The shape may have been selected at a widening cost rather than an
+// exact one, so an argument can still need converting — that is where section
+// 2.1.1's int-to-float promotion actually happens.
 func callShape(s Shape, b bindings, args []Value) (Value, error) {
 	for i := range args {
 		want := substitute(s.Params[i], b)
@@ -468,13 +474,15 @@ func boolRank(b bool) int {
 // valuesEqual implements cross-type equality (spec section 1.2.5):
 //
 //   - int vs float compare numerically, so 5 == 5.0
+//   - string vs path: the path converts to string for the comparison
 //   - bool vs any non-bool is always unequal, so true == 1 is false
 //   - string vs a number is always unequal, so "5" == 5 is false
 //   - null equals only null
 //   - every other cross-type pair is unequal
 //
-// The list/range_expr and string/path rules belong to sub-project B, which
-// adds their kinds.
+// The list vs range_expr rule is NOT implemented: expanding a range_expr for
+// comparison needs list values, which is sub-project B2's, same as every
+// other list operation.
 //
 // The null and bool cases are split out from numericOrStringEqual below
 // purely to keep this function's cyclomatic complexity under the repo's
@@ -503,6 +511,13 @@ func numericOrStringEqual(l, r Value) bool {
 		return intEqualsFloat(r.AsInt(), l.AsFloat())
 	case l.Type.Code == CodeString && r.Type.Code == CodeString:
 		return l.AsStr() == r.AsStr()
+	// string vs path (spec section 1.2.5): the path converts to string for the
+	// comparison. Read the path's payload directly (v.s) rather than through
+	// AsStr, which panics on anything but CodeString.
+	case l.Type.Code == CodeString && r.Type.Code == CodePath:
+		return l.AsStr() == r.s
+	case l.Type.Code == CodePath && r.Type.Code == CodeString:
+		return l.s == r.AsStr()
 	}
 	return false
 }

@@ -106,9 +106,19 @@ func (v Value) Equal(o Value) bool {
 		return v.f == o.f
 	case CodeString, CodePath, CodeRangeExpr:
 		return v.s == o.s
+	case CodeNull, CodeUnresolved:
+		// Null and unresolved carry no payload, so equal types are equal
+		// values.
+		return true
 	}
-	// Null and unresolved carry no payload, so equal types are equal values.
-	return true
+	// A payload-carrying Code with no case above is a defect, not a value this
+	// function has ever seen: falling through to "equal types means equal
+	// values" — the old bare default this replaced — would make two DIFFERENT
+	// list payloads (once B2 adds one) silently compare equal, in a function
+	// roughly 30 tests across this package depend on. Panic rather than guess;
+	// this can only fire when a new Code gains a payload field without a
+	// matching case here.
+	panic(fmt.Sprintf("expr: Value.Equal has no case for %s", v.Type))
 }
 
 // String renders the value as text.

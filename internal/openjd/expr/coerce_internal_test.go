@@ -91,6 +91,15 @@ func TestCoercible(t *testing.T) {
 		{"unresolved source uses its constraint", "unresolved[int]", "float", true},
 		{"unresolved target uses its constraint", "int", "unresolved[float]", true},
 		{"unresolved on both sides", "unresolved[path]", "unresolved[string]", true},
+
+		// A union SOURCE is coercible only where every member is: it is some
+		// one of its members, decided at runtime, so a target that would
+		// reject any one of them cannot safely receive it.
+		{"every union member reaches the target", "int | float", "float", true},
+		// path has no route to float at all (not even through the permissive
+		// catch-all: scalarCoercible admits only int/string into float), so
+		// adding it as a member sinks the whole union.
+		{"a union member with no route to the target sinks it", "int | path", "float", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -166,6 +175,16 @@ func TestPromotable(t *testing.T) {
 		// step is what makes the whole thing lossy.
 		{"nested list is lossy exactly when its element is", "list[list[float]]", "list[list[int]]", false},
 		{"nested list widens when its element does", "list[list[int]]", "list[list[float]]", true},
+
+		// A union SOURCE promotes only where every member does — same rule as
+		// coercible's union branch, but scored by promotable per member since
+		// this function answers the narrower, lossless question. int -> float
+		// is a named compatible pair, so union(int, float) -> float is
+		// lossless regardless of which member shows up; string -> float can
+		// fail (it is coercible's permissive catch-all, not a named
+		// compatible pair), so adding a string member sinks it.
+		{"union of a widening member and the target itself promotes", "int | float", "float", true},
+		{"a union member with only a lossy route sinks it", "int | string", "float", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -54,6 +54,21 @@ func coercible(from, to Type) bool {
 	if to.Code == CodeUnresolved {
 		return len(to.Params) == 1 && coercible(from, to.Params[0])
 	}
+	// A union value is usable only where EVERY member would be: it is SOME ONE
+	// of its members, decided at runtime, so a target that would reject any one
+	// of them cannot safely receive it. This is the dual of shape.go's
+	// unionArgCost, which scores a union on the PARAMETER side by trying each
+	// member and keeping the best — correct there because the caller picks
+	// which member satisfies it. Here the union itself picks which member it
+	// is, so every member must clear the bar.
+	if from.Code == CodeUnion {
+		for _, m := range from.Params {
+			if !coercible(m, to) {
+				return false
+			}
+		}
+		return true
+	}
 	if coercibleConditional(from, to) {
 		return true
 	}
@@ -249,6 +264,21 @@ func coerce(v Value, target Type) (Value, error) {
 	// checked because range_expr -> list[int] has a scalar source and a list
 	// target. Report the gap plainly rather than silently returning the value
 	// unchanged, which would be a wrong value.
+	//
+	// PARKED: a list value whose type already directly satisfies the target —
+	// list[int] against list[int]?, say — needs no conversion at all and could
+	// pass through unchanged, the same direct-membership carve-out the scalar
+	// path below gets. It does not get one here: it is routed into the
+	// "not implemented" branch below instead. Unreachable in B1 — every list
+	// value here is a placeholder, which the caller (coerce's IsUnresolved
+	// branch, above) handles first — so this never fires today. B2 will make
+	// it reachable, and the fix is not just "add the carve-out": it needs a
+	// membership test over FULL types, not type codes. includes() — which the
+	// scalar carve-out above (coerceScalar's caller) uses — only compares
+	// v.Type.Code against a target's member codes, so it cannot distinguish
+	// list[int] from list[string] inside a union the way listElem's own
+	// element-aware comparison does; using it here would let a list[string]
+	// value slip through a list[int]? target unconverted.
 	_, srcIsList := listElem(v.Type)
 	_, dstIsList := listElem(target)
 	if srcIsList || dstIsList {
@@ -409,6 +439,22 @@ func promotable(from, to Type) bool {
 	}
 	if to.Code == CodeUnresolved && len(to.Params) == 1 {
 		return promotable(from, to.Params[0])
+	}
+	// Same "every member must clear the bar" rule as coercible's union branch
+	// above, using promotable per member since this function answers the
+	// narrower, lossless question. Unlike coercible, promotable has no
+	// from.Equal(to) short-circuit — none of its other callers ever invoke it
+	// on two already-equal types, since argCost's param.Equal(arg) check
+	// filters those out first — so a member that already equals the target
+	// must be accepted explicitly here; falling through to a bare
+	// promotable(m, to) call would wrongly reject it.
+	if from.Code == CodeUnion {
+		for _, m := range from.Params {
+			if !m.Equal(to) && !promotable(m, to) {
+				return false
+			}
+		}
+		return true
 	}
 	if !coercible(from, to) {
 		return false

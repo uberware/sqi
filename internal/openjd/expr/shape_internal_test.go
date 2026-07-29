@@ -10,9 +10,10 @@ import "testing"
 func noFn(_ []Value) (Value, error) { return Value{}, nil }
 
 func TestMatchShapes_ExactBeatsCoercion(t *testing.T) {
-	// The float shape is listed FIRST so that a shape-by-shape search would
-	// coerce the ints and pick it. Two passes over the whole list are what make
-	// 1 + 1 stay an int.
+	// The float shape is listed FIRST so that a shape-by-shape search
+	// stopping at the first admissible candidate would coerce the ints and
+	// pick it. Ranking every candidate by cost, and taking the cheapest, is
+	// what makes 1 + 1 stay an int instead.
 	shapes := []Shape{
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: noFn},
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: noFn},
@@ -28,7 +29,9 @@ func TestMatchShapes_ExactBeatsCoercion(t *testing.T) {
 
 func TestMatchShapes_CoercionPromotesAMixedPair(t *testing.T) {
 	// Section 2.1.1: "when mixing int and float operands, the int is promoted to
-	// float and the float overload is used". That falls out of the second pass.
+	// float and the float overload is used". That falls out of cost ranking:
+	// the (int, int) shape is inadmissible (float has no lossless route to
+	// int), so (float, float) is the only, and therefore cheapest, candidate.
 	shapes := []Shape{
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: noFn},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: noFn},
@@ -243,5 +246,54 @@ func TestMatchShapes_UnionParameterRejectsAMismatchedList(t *testing.T) {
 	shapes := []Shape{{Params: []Type{UnionOf(TInt, ListOf(TInt))}, Ret: TBool, Fn: noFn}}
 	if _, _, ok := matchShapes(shapes, []Type{ListOf(TString)}); ok {
 		t.Error("list[string] matched a union containing list[int]; want no match")
+	}
+}
+
+// TestMatchShapes_EmptyListArgumentMatchesAnyListParameter covers a seam
+// between argCost and promotable: promotable(list[nulltype], list[int]) is
+// true per section 1.2.3's empty-list rule, but argCost's list-descent
+// branch used to recurse into the element types BEFORE promotable was ever
+// consulted, so it never saw that rule and rejected list[nulltype] outright.
+// Inert while B1 registers no list-typed shapes, but the first one B2 adds
+// would otherwise reject "[]" against any list parameter.
+func TestMatchShapes_EmptyListArgumentMatchesAnyListParameter(t *testing.T) {
+	shapes := []Shape{{Params: []Type{ListOf(TInt)}, Ret: TBool, Fn: noFn}}
+	if _, _, ok := matchShapes(shapes, []Type{ListOf(TNull)}); !ok {
+		t.Error("list[nulltype] did not match a list[int] parameter; want the empty-list rule to admit it")
+	}
+}
+
+// TestMatchShapes_UnionArgumentRequiresEveryMemberAdmissible covers the
+// argument-side dual of the union-PARAMETER tests above: a union-typed
+// ARGUMENT is admissible only where every one of its members is, since the
+// union could BE any one of them at runtime. __pow__'s own declared return,
+// int | float, is exactly this shape once it feeds into another operator —
+// the case the B1 review found unusable end to end.
+func TestMatchShapes_UnionArgumentRequiresEveryMemberAdmissible(t *testing.T) {
+	shapes := []Shape{{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: noFn}}
+	if _, _, ok := matchShapes(shapes, []Type{UnionOf(TInt, TFloat), TFloat}); !ok {
+		t.Error("union(int, float) did not match (float, float); both members have a lossless route to float")
+	}
+	if _, _, ok := matchShapes(shapes, []Type{UnionOf(TInt, TString), TFloat}); ok {
+		t.Error("union(int, string) matched (float, float); string has no lossless route to float")
+	}
+}
+
+// TestMatchShapes_UnionArgumentBindingConflictIsInadmissible covers the
+// bindings hazard a union argument introduces that a union parameter does
+// not: list[T] against a union of list[int] and list[string] would bind T to
+// int for one member and string for the other. Neither binding is correct
+// regardless of which member the value turns out to be at runtime, so the
+// whole argument must be rejected rather than arbitrarily keeping one
+// member's binding.
+func TestMatchShapes_UnionArgumentBindingConflictIsInadmissible(t *testing.T) {
+	shapes := []Shape{{
+		Params: []Type{ListOf(Type{Code: CodeVarT})},
+		Ret:    Type{Code: CodeVarT},
+		Fn:     noFn,
+	}}
+	arg := UnionOf(ListOf(TInt), ListOf(TString))
+	if _, _, ok := matchShapes(shapes, []Type{arg}); ok {
+		t.Error("a union argument with conflicting type-variable bindings matched; want no match")
 	}
 }

@@ -182,6 +182,52 @@ func TestLanguage_TargetAndPlaceholders(t *testing.T) {
 			target: expr.TAny,
 			want:   "unresolved[int | string]",
 		},
+		// A union-typed value can now be USED, not just produced: __pow__'s
+		// declared return, int | float, feeds "+ 1" here. Every member has a
+		// route into the (float, float) shape (int by widening, float
+		// exactly), so it is the only admissible candidate; neither member
+		// alone would pick (int, int), since float has no lossless route to
+		// int. The result is unresolved[float], not unresolved[float | int]:
+		// once "+" has selected its shape, the shape's OWN declared return —
+		// float, not a union — is what propagates, same as any other
+		// operator call.
+		{
+			name:   "a union produced by ** is usable by + that consumes it",
+			src:    "Param.X ** 2 + 1",
+			syms:   expr.MapSymbols{"Param.X": expr.Unresolved(expr.TInt)},
+			target: expr.TAny,
+			want:   "unresolved[float]",
+		},
+		// The same union, unary-negated: -(int | float) has a route through
+		// both members (OpNeg has both an (int) and a (float) shape), so it
+		// is admissible too, and by the same reasoning settles on float.
+		{
+			name:   "a union produced by ** is usable by unary minus",
+			src:    "-(Param.X ** 2)",
+			syms:   expr.MapSymbols{"Param.X": expr.Unresolved(expr.TInt)},
+			target: expr.TAny,
+			want:   "unresolved[float]",
+		},
+		// The same union reaching an explicit target directly: both members
+		// (int, float) are individually coercible to float, so the whole
+		// union is, per coercible's new union-source rule.
+		{
+			name:   "a union produced by ** reaches a float target",
+			src:    "Param.X ** 2",
+			syms:   expr.MapSymbols{"Param.X": expr.Unresolved(expr.TInt)},
+			target: expr.TFloat,
+			want:   "unresolved[float]",
+		},
+		// evalLogical's own union (int | string here) reaching a string
+		// target: both members are individually coercible to string (every
+		// scalar is, via section 1.2.3's catch-all), so the union is too.
+		{
+			name:   "a union produced by the conditional expression reaches a string target",
+			src:    "1 if Param.Flag else 'x'",
+			syms:   expr.MapSymbols{"Param.Flag": expr.Unresolved(expr.TBool)},
+			target: expr.TString,
+			want:   "unresolved[string]",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

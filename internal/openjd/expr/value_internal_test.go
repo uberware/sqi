@@ -52,7 +52,7 @@ func TestValue_Accessors(t *testing.T) {
 	}
 }
 
-func TestValue_AccessorOnWrongKindPanics(t *testing.T) {
+func TestValue_AccessorOnWrongCodePanics(t *testing.T) {
 	// Reading the wrong payload is a programming error in the dispatch table,
 	// not a runtime condition. Failing loudly beats returning a silent zero
 	// that would flow into a rendered command line.

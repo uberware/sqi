@@ -134,7 +134,7 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 	// list[T] against list[int] must bind T to int.
 	if param.Code == CodeList && arg.Code == CodeList &&
 		len(param.Params) == 1 && len(arg.Params) == 1 {
-		return argCost(param.Params[0], arg.Params[0], b)
+		return argCostList(param, arg, b)
 	}
 	// A union parameter is scored member-wise, before the exact-match fallback
 	// below: the union as a whole is never Equal to one of its own members, so
@@ -145,6 +145,13 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 	if param.Code == CodeUnion {
 		return unionArgCost(param, arg, b)
 	}
+	// A union ARGUMENT is the dual case: it is SOME ONE of its members,
+	// decided at runtime, so it is admissible only where EVERY member would
+	// be — the caller must be prepared to pay for whichever member actually
+	// shows up, so the cost is the worst of them rather than the best.
+	if arg.Code == CodeUnion {
+		return unionArgValueCost(param, arg, b)
+	}
 	if param.Equal(arg) {
 		return costExact, true
 	}
@@ -152,6 +159,65 @@ func argCost(param, arg Type, b bindings) (int, bool) {
 		return costWiden, true
 	}
 	return 0, false
+}
+
+// argCostList scores a list[T]-shaped argument against a list[T]-shaped
+// parameter, both already confirmed single-parameter list types by argCost's
+// caller. Split out to keep argCost itself under the repo's complexity cap.
+func argCostList(param, arg Type, b bindings) (int, bool) {
+	// list[nulltype] is the empty-list literal's type (section 1.2.3) and is
+	// compatible with any list type — promotable's own list branch already
+	// says so — but descending elementwise below would instead ask whether
+	// nulltype itself reaches the element type, which it never does
+	// (isScalarCode excludes it deliberately: null coerces to nothing). That
+	// seam is inert while B1 has no list shapes to match against, but the
+	// first list[T] parameter B2 registers would reject "[]" outright
+	// without this.
+	if arg.Params[0].Code == CodeNull {
+		return costWiden, true
+	}
+	return argCost(param.Params[0], arg.Params[0], b)
+}
+
+// unionArgValueCost scores a union-typed ARGUMENT against a (non-union)
+// parameter: the dual of unionArgCost just above, which scores a union
+// PARAMETER. Every member is scored, not just the cheapest, because the
+// union's actual runtime value could be any one of them; the argument is
+// admissible only if all of them are, at the cost of the most expensive.
+//
+// Each member is scored against its own scratch copy of the bindings
+// accumulated so far, exactly as unionArgCost's members are. But unlike
+// unionArgCost, every member's bindings must survive, not just a winner's:
+// if two members would bind the same type variable to different types there
+// is no single binding that is correct regardless of which member shows up
+// at runtime, so the whole argument is inadmissible rather than picking one
+// arbitrarily. Bindings the members agree on are merged back into b.
+func unionArgValueCost(param, arg Type, b bindings) (int, bool) {
+	worst := 0
+	merged := make(bindings, len(b))
+	maps.Copy(merged, b)
+	for _, member := range arg.Params {
+		scratch := make(bindings, len(b))
+		maps.Copy(scratch, b)
+		cost, ok := argCost(param, member, scratch)
+		if !ok {
+			return 0, false
+		}
+		if cost > worst {
+			worst = cost
+		}
+		for code, t := range scratch {
+			if existing, seen := merged[code]; seen {
+				if !existing.Equal(t) {
+					return 0, false
+				}
+				continue
+			}
+			merged[code] = t
+		}
+	}
+	maps.Copy(b, merged)
+	return worst, true
 }
 
 // unionArgCost scores arg against every member of a union parameter and keeps

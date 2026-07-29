@@ -313,16 +313,21 @@ func TestApplyBinary_Ordering(t *testing.T) {
 func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
 	// Section 2.1.4: "Ordering operators ... T1 and T2 may differ for
 	// compatible pairs (int/float and string/path); comparing other cross-type
-	// pairs is an error." The coercing shape match now supplies the int/float
-	// cross-pair (string/path ordering needs a path shape, which is
-	// sub-project B2's); every other cross-type pair stays an error.
+	// pairs is an error." Cost-ranked shape matching supplies BOTH named pairs
+	// from the plain same-type shapes in orderingShapes, with no dedicated
+	// cross-type shape needed: int -> float and path -> string are both
+	// coercibleConditional's named compatible pairs, so argCost admits them at
+	// a widening cost into the (float, float) and (string, string) shapes
+	// respectively. Every other cross-type pair stays an error.
 	promoted := []struct{ l, r Value }{
 		{Int(1), Float(2.5)},
 		{Float(1.5), Int(2)},
+		{Value{Type: TPath, s: "abc"}, String("z")},
+		{String("z"), Value{Type: TPath, s: "abc"}},
 	}
 	for _, tt := range promoted {
 		if _, err := applyBinary(OpLt, tt.l, tt.r); err != nil {
-			t.Errorf("%s < %s: %v; want the int/float cross-pair to be permitted", tt.l.Type, tt.r.Type, err)
+			t.Errorf("%s < %s: %v; want the named compatible pair to be permitted", tt.l.Type, tt.r.Type, err)
 		}
 	}
 
@@ -364,6 +369,14 @@ func TestValuesEqual_Section125(t *testing.T) {
 		{"null equals null", Null(), Null(), true},
 		{"null never equals a value", Null(), Int(0), false},
 		{"a value never equals null", String(""), Null(), false},
+		// string vs path (section 1.2.5): the path converts to string for the
+		// comparison, in both operand orders.
+		{"string equals a path with the same text", String("/a/b"), Value{Type: TPath, s: "/a/b"}, true},
+		{"path equals a string with the same text", Value{Type: TPath, s: "/a/b"}, String("/a/b"), true},
+		{"string does not equal a differently-spelled path", String("/a/b"), Value{Type: TPath, s: "/a/c"}, false},
+		// path still compares unequal to a number: no cross-type rule reaches
+		// across path and int/float, only string and path.
+		{"path never equals a number", Value{Type: TPath, s: "5"}, Int(5), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -513,9 +526,9 @@ func TestUnaryShapes_DeclaredReturnTypes(t *testing.T) {
 
 func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
 	// Section 2.1.1: mixing int and float promotes the int and uses the float
-	// overload. Sub-project A reported this as unsupported; the coercing pass
-	// now handles it, and this is the single most visible behavior change in
-	// B1. Each operator is exercised in both operand orders.
+	// overload. Sub-project A reported this as unsupported; cost-ranked shape
+	// matching now handles it, and this is the single most visible behavior
+	// change in B1. Each operator is exercised in both operand orders.
 	tests := []struct {
 		name string
 		op   Op
@@ -545,7 +558,8 @@ func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
 }
 
 func TestApplyBinary_MixedComparison(t *testing.T) {
-	// Section 2.1.4 permits int/float ordering, which the coercing pass supplies.
+	// Section 2.1.4 permits int/float ordering, which cost-ranked shape
+	// matching supplies by promoting the int and choosing the float shape.
 	got, err := applyBinary(OpLt, Int(1), Float(2.5))
 	if err != nil {
 		t.Fatalf("applyBinary: %v", err)
