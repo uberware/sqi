@@ -164,6 +164,37 @@ type Cond struct {
 	Then, If, Else Node
 }
 
+// ListLit is a list literal (spec section 1.1.2). Elems is empty for "[]",
+// whose type is list[nulltype] (section 1.2.6).
+type ListLit struct {
+	// Offset is the byte offset of the opening "[".
+	Offset int
+	Elems  []Node
+}
+
+// Index is a subscript, "X[Idx]" (spec section 2.1.7).
+type Index struct {
+	// Offset is the byte offset of the "[", so an out-of-bounds error blames
+	// the subscript rather than the start of the expression.
+	Offset int
+	X, Idx Node
+}
+
+// Slice is a slice, "X[Start:Stop:Step]" (spec sections 1.3.8 and 2.1.8).
+//
+// An ABSENT component is nil, which is distinct from an explicit one: section
+// 1.3.8 defaults start to 0 or to the end and stop to the length or to
+// -length-1, depending on the SIGN OF THE STEP, so a zero value could not carry
+// the distinction.
+type Slice struct {
+	// Offset is the byte offset of the "[".
+	Offset int
+	X      Node
+	Start  Node
+	Stop   Node
+	Step   Node
+}
+
 // Pos returns the byte offset in the source where this literal begins.
 func (n *IntLit) Pos() int { return n.Offset }
 
@@ -197,6 +228,15 @@ func (n *Logical) Pos() int { return n.Offset }
 // Pos returns the byte offset of this conditional expression's "if".
 func (n *Cond) Pos() int { return n.Offset }
 
+// Pos returns the byte offset of this list literal's opening bracket.
+func (n *ListLit) Pos() int { return n.Offset }
+
+// Pos returns the byte offset of this subscript's opening bracket.
+func (n *Index) Pos() int { return n.Offset }
+
+// Pos returns the byte offset of this slice's opening bracket.
+func (n *Slice) Pos() int { return n.Offset }
+
 func (*IntLit) node()    {}
 func (*FloatLit) node()  {}
 func (*StringLit) node() {}
@@ -208,6 +248,9 @@ func (*Binary) node()    {}
 func (*Compare) node()   {}
 func (*Logical) node()   {}
 func (*Cond) node()      {}
+func (*ListLit) node()   {}
+func (*Index) node()     {}
+func (*Slice) node()     {}
 
 // walk calls fn for n and every node beneath it, parents before children.
 func walk(n Node, fn func(Node)) {
@@ -232,5 +275,17 @@ func walk(n Node, fn func(Node)) {
 		for _, operand := range v.Operands {
 			walk(operand, fn)
 		}
+	case *ListLit:
+		for _, elem := range v.Elems {
+			walk(elem, fn)
+		}
+	case *Index:
+		walk(v.X, fn)
+		walk(v.Idx, fn)
+	case *Slice:
+		walk(v.X, fn)
+		walk(v.Start, fn)
+		walk(v.Stop, fn)
+		walk(v.Step, fn)
 	}
 }

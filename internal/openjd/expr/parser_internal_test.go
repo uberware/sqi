@@ -407,3 +407,29 @@ func TestParse_AcceptsWhatEXPRRequires(t *testing.T) {
 		})
 	}
 }
+
+func TestWalk_DescendsIntoCollectionNodes(t *testing.T) {
+	inner := &IntLit{Offset: 1, Val: 1}
+	tests := []struct {
+		name string
+		node Node
+		want int // total nodes visited, including the root
+	}{
+		{"list literal", &ListLit{Offset: 0, Elems: []Node{inner, inner}}, 3},
+		{"index", &Index{Offset: 0, X: inner, Idx: inner}, 3},
+		{"slice with every component", &Slice{Offset: 0, X: inner, Start: inner, Stop: inner, Step: inner}, 5},
+		{"slice with absent components", &Slice{Offset: 0, X: inner}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			count := 0
+			walk(tc.node, func(Node) { count++ })
+			if count != tc.want {
+				t.Fatalf("walk visited %d nodes, want %d", count, tc.want)
+			}
+			if got := tc.node.Pos(); got != 0 {
+				t.Fatalf("Pos() = %d, want 0", got)
+			}
+		})
+	}
+}
