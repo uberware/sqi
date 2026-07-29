@@ -218,7 +218,8 @@ func indexResultType(recv Type) (Type, error) {
 		return TInt, nil
 	case CodePath:
 		return Type{}, errors.New(
-			"a path cannot be subscripted; use its parts to get its components as a list")
+			"a path cannot be subscripted; use its parts to get its components as a list",
+		)
 	default:
 		return Type{}, fmt.Errorf("a %s cannot be subscripted", t)
 	}

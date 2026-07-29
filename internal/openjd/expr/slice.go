@@ -96,7 +96,8 @@ func sliceResultType(recv Type, step *int64) (Type, error) {
 		return UnionOf(TRangeExpr, ListOf(TInt)), nil
 	case CodePath:
 		return Type{}, errors.New(
-			"a path cannot be sliced; use its parts to get its components as a list")
+			"a path cannot be sliced; use its parts to get its components as a list",
+		)
 	default:
 		return Type{}, fmt.Errorf("a %s cannot be sliced", t)
 	}
