@@ -3,6 +3,7 @@
 package intrange_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd/intrange"
@@ -30,6 +31,11 @@ func TestParse_SpecTable(t *testing.T) {
 		{"1 - -1", []int{1}},
 		{"-1 - 1", []int{-1, 0, 1}},
 		{"1-5:2", []int{1, 3, 5}},
+		// Per-element concatenation in expression order, not the spec table's
+		// "combined ... in increasing order": Parse's contract is to report
+		// elements without combining them (see the package doc comment) — the
+		// increasing-order merge belongs to a caller, so this is not a
+		// transcription error against the spec's [1,2,3,4,5,10,12,14].
 		{"10-15:2,1-5", []int{10, 12, 14, 1, 2, 3, 4, 5}},
 		{"1-10:4", []int{1, 5, 9}},
 		{"7", []int{7}},
@@ -111,8 +117,19 @@ func TestRange_CountMatchesIterate(t *testing.T) {
 }
 
 func TestRange_CountSaturatesOnOverflow(t *testing.T) {
-	r := intrange.Range{Start: -(1 << 62), End: 1 << 62, Step: 1}
-	if got := r.Count(); got <= 0 {
-		t.Fatalf("Count() = %d, want a large positive saturated value", got)
+	tests := []intrange.Range{
+		// End-Start overflows the int subtraction outright.
+		{Start: -(1 << 62), End: 1 << 62, Step: 1},
+		// The subtraction itself doesn't overflow (span lands exactly on
+		// math.MinInt), but negating that span to normalize a negative step
+		// would wrap straight back to itself instead of becoming positive.
+		{Start: 1 << 62, End: -(1 << 62), Step: -1},
+	}
+	for _, r := range tests {
+		t.Run(r.String(), func(t *testing.T) {
+			if got := r.Count(); got != math.MaxInt {
+				t.Fatalf("Count() = %d, want math.MaxInt (%d) as the saturated value", got, math.MaxInt)
+			}
+		})
 	}
 }

@@ -63,27 +63,45 @@ func (r Range) String() string {
 //
 // The specification's set is {x} union {x+mn : m in Z+, x+mn <= y if n > 0,
 // x+mn >= y if n < 0}, so the start is ALWAYS a member and the count is never
-// zero. If the span overflows it saturates to math.MaxInt, which exceeds any
-// caller's bound.
+// zero. If the span, or the arithmetic needed to turn it into a count, would
+// overflow, Count saturates to math.MaxInt, which exceeds any caller's bound.
 func (r Range) Count() int {
 	step := r.Step
 	if step == 0 {
 		step = 1
 	}
 	span := r.End - r.Start
+	// This overflow check MUST run before the sign-mismatch check below: when
+	// End-Start itself overflows, the wrapped span can carry a sign that
+	// disagrees with step's, which would make that check fire first and
+	// return 1 for a range far larger than any bound.
+	if span > 0 && r.End < r.Start || span < 0 && r.End > r.Start {
+		// Subtraction overflowed; the range is far larger than any bound.
+		return math.MaxInt
+	}
 	if (span > 0) != (step > 0) {
 		// The end is on the far side of the start from the step's direction, so
 		// no term beyond the start qualifies.
 		return 1
 	}
-	if span > 0 && r.End < r.Start || span < 0 && r.End > r.Start {
-		// Subtraction overflowed; the range is far larger than any bound.
+	if span == math.MinInt && step == -1 {
+		// Go defines MinInt/-1 to wrap back to MinInt rather than panic (the
+		// two's-complement quotient equals the dividend), which the direct
+		// division below would silently accept as a tiny count. The range is
+		// already larger than any bound.
 		return math.MaxInt
 	}
-	if span < 0 {
-		span, step = -span, -step
+	// span and step share a sign (checked above), so truncating division
+	// already yields the correct positive term count without negating either
+	// operand — negating math.MinInt would silently wrap back to itself and
+	// corrupt the result, which is the same overflow hazard as above, one
+	// step later in the arithmetic.
+	count := span / step
+	if count == math.MaxInt {
+		// The +1 below would overflow back to math.MinInt.
+		return math.MaxInt
 	}
-	return span/step + 1
+	return count + 1
 }
 
 // Iterate yields every integer in the range, in the order the step defines.
@@ -168,8 +186,10 @@ func parseElement(s string, p Policy) (Range, error) {
 }
 
 // parseStep reads an element's step suffix. The error strings are load-bearing:
-// internal/openjd's existing tests assert them byte for byte, which is how the
-// policy layer is verified to have preserved its behavior.
+// they must match internal/openjd/range.go's current output verbatim, and
+// intrange_test.go's own TestParseWithPolicy_ReproducesOpenJDStrictness — not
+// any existing internal/openjd test, which never compares against a literal
+// string — is what pins them.
 func parseStep(stepText string, p Policy) (int, error) {
 	if stepText == "" {
 		return 1, nil
