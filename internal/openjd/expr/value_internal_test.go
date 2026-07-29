@@ -197,3 +197,84 @@ func TestValue_ConcreteValuesAreNotUnresolved(t *testing.T) {
 		})
 	}
 }
+
+func TestList_EqualAndString(t *testing.T) {
+	tests := []struct {
+		name   string
+		a, b   Value
+		want   bool
+		render string
+	}{
+		{
+			name:   "same elements are equal",
+			a:      List(TInt, []Value{Int(1), Int(2)}),
+			b:      List(TInt, []Value{Int(1), Int(2)}),
+			want:   true,
+			render: "[1, 2]",
+		},
+		{
+			name:   "different elements are not equal",
+			a:      List(TInt, []Value{Int(1), Int(2)}),
+			b:      List(TInt, []Value{Int(1), Int(3)}),
+			want:   false,
+			render: "[1, 2]",
+		},
+		{
+			name:   "different lengths are not equal",
+			a:      List(TInt, []Value{Int(1)}),
+			b:      List(TInt, []Value{Int(1), Int(2)}),
+			want:   false,
+			render: "[1]",
+		},
+		{
+			name:   "empty list",
+			a:      List(TNull, nil),
+			b:      List(TNull, nil),
+			want:   true,
+			render: "[]",
+		},
+		{
+			name:   "nested lists compare elementwise",
+			a:      List(ListOf(TInt), []Value{List(TInt, []Value{Int(1)})}),
+			b:      List(ListOf(TInt), []Value{List(TInt, []Value{Int(1)})}),
+			want:   true,
+			render: "[[1]]",
+		},
+		{
+			name:   "strings render without quotes",
+			a:      List(TString, []Value{String("a"), String("b")}),
+			b:      List(TString, []Value{String("a"), String("b")}),
+			want:   true,
+			render: "[a, b]",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.a.Equal(tc.b); got != tc.want {
+				t.Errorf("Equal() = %v, want %v", got, tc.want)
+			}
+			if got := tc.a.String(); got != tc.render {
+				t.Errorf("String() = %q, want %q", got, tc.render)
+			}
+		})
+	}
+}
+
+func TestList_TypeAndPayload(t *testing.T) {
+	v := List(TInt, []Value{Int(1), Int(2)})
+	if want := ListOf(TInt); !v.Type.Equal(want) {
+		t.Fatalf("Type = %s, want %s", v.Type, want)
+	}
+	if got := v.AsList(); len(got) != 2 || got[0].AsInt() != 1 || got[1].AsInt() != 2 {
+		t.Fatalf("AsList() = %v, want [1 2]", got)
+	}
+}
+
+func TestList_AsListPanicsOnNonList(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("AsList on an int did not panic")
+		}
+	}()
+	_ = Int(1).AsList()
+}

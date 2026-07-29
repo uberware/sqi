@@ -28,6 +28,7 @@ type Value struct {
 	i int64
 	f float64
 	s string
+	l []Value
 }
 
 // Null returns the null value.
@@ -44,6 +45,19 @@ func Float(f float64) Value { return Value{Type: TFloat, f: f} }
 
 // String returns a string value.
 func String(s string) Value { return Value{Type: TString, s: s} }
+
+// List returns a list value with the given element type and elements.
+//
+// The element type is passed explicitly rather than inferred from vals because
+// an EMPTY list still has one: "[]" is list[nulltype] (section 1.2.6), and
+// section 1.2.6's inference rules can also give a list an element type no
+// element has exactly — [1, 2.0] is list[float] after its elements are coerced.
+func List(elem Type, vals []Value) Value {
+	return Value{Type: ListOf(elem), l: vals}
+}
+
+// AsList returns the list payload. It panics if v is not a list.
+func (v Value) AsList() []Value { v.mustBe(CodeList); return v.l }
 
 // Unresolved returns a placeholder for a value that is not yet known but whose
 // type satisfies the given constraint.
@@ -110,6 +124,16 @@ func (v Value) Equal(o Value) bool {
 		// Null and unresolved carry no payload, so equal types are equal
 		// values.
 		return true
+	case CodeList:
+		if len(v.l) != len(o.l) {
+			return false
+		}
+		for i := range v.l {
+			if !v.l[i].Equal(o.l[i]) {
+				return false
+			}
+		}
+		return true
 	}
 	// A payload-carrying Code with no case above is a defect, not a value this
 	// function has ever seen: falling through to "equal types means equal
@@ -144,6 +168,12 @@ func (v Value) String() string {
 		return formatFloat(v.f)
 	case CodeString, CodePath, CodeRangeExpr:
 		return v.s
+	case CodeList:
+		parts := make([]string, len(v.l))
+		for i, elem := range v.l {
+			parts[i] = elem.String()
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
 	case CodeUnresolved:
 		// A placeholder has no value to render, so name what is known instead.
 		return "<" + v.Type.String() + ">"
