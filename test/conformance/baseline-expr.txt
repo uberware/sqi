@@ -101,7 +101,6 @@ EXPR/job_templates/7.3.1--step-name-in-job-environment-let.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
-EXPR/job_templates/error--unknown-variable.invalid.yaml
 EXPR/job_templates/expr-extension-missing.invalid.yaml
 EXPR/job_templates/expr-with-other-extensions.yaml
 EXPR/job_templates/expr1.1--comparison-expr.yaml
@@ -112,8 +111,6 @@ EXPR/job_templates/expr1.1--list-literal-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
 EXPR/job_templates/expr1.1--multiline-expr.yaml
 EXPR/job_templates/expr1.1--slice-expr.yaml
-EXPR/job_templates/expr1.1--type-error.invalid.yaml
-EXPR/job_templates/expr1.1--unknown-variable.invalid.yaml
 EXPR/job_templates/expr1.3.11--float-range-expression.yaml
 EXPR/job_templates/expr1.3.11--path-range-expression.yaml
 EXPR/job_templates/expr1.3.11--string-range-expression.yaml
