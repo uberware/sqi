@@ -13,20 +13,20 @@ import (
 // rejected — in deliberate contrast to a subscript, where an out-of-bounds index
 // is an error — negative indices count from the end, and a step of zero is an
 // error.
-func evalSlice(n *Slice, src string, syms Symbols) (Value, error) {
-	recv, err := evalNode(n.X, src, syms, TAny)
+func evalSlice(n *Slice, src string, syms Symbols, depth int) (Value, error) {
+	recv, err := evalNode(n.X, src, syms, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	start, startOK, err := sliceComponent(n.Start, src, syms)
+	start, startOK, err := sliceComponent(n.Start, src, syms, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	stop, stopOK, err := sliceComponent(n.Stop, src, syms)
+	stop, stopOK, err := sliceComponent(n.Stop, src, syms, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	step, stepOK, err := sliceComponent(n.Step, src, syms)
+	step, stepOK, err := sliceComponent(n.Step, src, syms, depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -51,11 +51,11 @@ func evalSlice(n *Slice, src string, syms Symbols) (Value, error) {
 // nil) when the component is ABSENT, which is not the same as zero: section
 // 1.3.8's defaults depend on the sign of the step. ok is false when the
 // component has no value yet.
-func sliceComponent(n Node, src string, syms Symbols) (val *int64, ok bool, err error) {
+func sliceComponent(n Node, src string, syms Symbols, depth int) (val *int64, ok bool, err error) {
 	if n == nil {
 		return nil, true, nil
 	}
-	v, err := evalNode(n, src, syms, TInt)
+	v, err := evalNode(n, src, syms, TInt, depth)
 	if err != nil {
 		return nil, false, err
 	}

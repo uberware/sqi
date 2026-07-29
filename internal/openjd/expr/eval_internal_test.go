@@ -756,3 +756,61 @@ func TestEvalCompare_UnknownLink(t *testing.T) {
 		t.Error("comparing a placeholder string to an int = nil error; want a type error")
 	}
 }
+
+// TestEval_RecursionDepthIsBounded is the parser's TestParse_NestingDepthIsBounded
+// for the OTHER half of the hazard: a chain the parser builds ITERATIVELY, and so
+// never counts against maxParseDepth, but which evalNode then walks recursively.
+//
+// Like that test, a regression here does not fail the assertion — it takes the
+// test binary down with "fatal error: stack overflow", which recover() cannot
+// catch. Both inputs were verified to do exactly that, at 600,000 operators,
+// before maxEvalDepth existed. The depths used here are just past the bound, so
+// the test measures the guard rather than the stack.
+func TestEval_RecursionDepthIsBounded(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"or chain", "true" + strings.Repeat(" or true", maxEvalDepth+10)},
+		{"and chain", "true" + strings.Repeat(" and true", maxEvalDepth+10)},
+		{"addition chain", "1" + strings.Repeat(" + 1", maxEvalDepth+10)},
+		{"comparison operands", "1" + strings.Repeat(" + 1", maxEvalDepth+10) + " < 2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("Parse of a %d-deep %s = %v, want it to parse: the parser builds this iteratively", maxEvalDepth+10, tc.name, err)
+			}
+			_, err = e.Eval(nil, TAny)
+			if err == nil {
+				t.Fatalf("Eval of a %d-deep %s = nil error, want a depth error", maxEvalDepth+10, tc.name)
+			}
+			if !strings.Contains(err.Error(), "nested too deeply") {
+				t.Fatalf("Eval of a %d-deep %s error = %q, want it to mention nesting depth", maxEvalDepth+10, tc.name, err.Error())
+			}
+			var e2 *Error
+			if !errors.As(err, &e2) {
+				t.Fatalf("Eval of a %d-deep %s returned %T, want an *Error carrying a position", maxEvalDepth+10, tc.name, err)
+			}
+		})
+	}
+}
+
+// TestEval_RecursionWithinTheBoundStillEvaluates pins the other side of the
+// bound, so it cannot be tightened into rejecting real expressions unnoticed.
+func TestEval_RecursionWithinTheBoundStillEvaluates(t *testing.T) {
+	const n = 1000
+	got, err := evalSrc(t, "1"+strings.Repeat(" + 1", n), nil)
+	if err != nil {
+		t.Fatalf("Eval of a %d-deep addition chain = %v, want it to evaluate", n, err)
+	}
+	if got.AsInt() != int64(n+1) {
+		t.Errorf("Eval of a %d-deep addition chain = %d, want %d", n, got.AsInt(), n+1)
+	}
+	// Source nesting is capped far below maxEvalDepth by the parser's own guard,
+	// so the deepest legal NESTED expression must evaluate too.
+	if _, err := evalSrc(t, strings.Repeat("[", 50)+"1"+strings.Repeat("]", 50), nil); err != nil {
+		t.Errorf("Eval of a 50-deep list literal = %v, want it to evaluate", err)
+	}
+}

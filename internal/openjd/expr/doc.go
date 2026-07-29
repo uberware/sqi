@@ -167,7 +167,13 @@
 //     parseUnary, and parseUnary falls back through to parsePower, a loop that
 //     passed no guard at all, so "2**2**2**…" a million operators long still
 //     killed the process. It is counted now (parser.go's enter carries the full
-//     enumeration).
+//     enumeration). A FOURTH bound, maxEvalDepth (10,000), does the same for
+//     EVALUATION, which the parse guard cannot cover: a left-associative run
+//     like "true or true or …" or "1 + 1 + …" is built by a loop, so it costs
+//     the parser no recursion at all and passes maxParseDepth however long it
+//     is, while the left-deep tree it produces is then walked recursively by
+//     evalNode — which overflowed the stack for real between 500,000 and
+//     600,000 operators.
 //     None of the three is the spec's own configurable memory and operation
 //     limits (sections 1.3.9 and 1.3.10) — those remain unimplemented, still
 //     sub-project E's, unchanged from sub-project A — so this package must

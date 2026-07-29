@@ -45,7 +45,7 @@ func (e *Expression) Eval(syms Symbols, target Type) (Value, error) {
 	// The target is threaded inward for the node kinds that forward it (see
 	// evalNode); the boundary coercion below still applies to the result of the
 	// whole expression, whether or not any node consumed the target.
-	v, err := evalNode(e.root, e.src, syms, target)
+	v, err := evalNode(e.root, e.src, syms, target, 0)
 	if err != nil {
 		return Value{}, err
 	}
@@ -68,7 +68,17 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 	return e.Eval(syms, target)
 }
 
-// evalNode dispatches on node type.
+// evalNode dispatches on node type, counting one level of evaluation recursion
+// against maxEvalDepth on the way in.
+//
+// The parser's own depth guard does NOT cover this. A left-deep tree costs the
+// parser no recursion at all — parseBinaryLevel and parseLogicalLevel build one
+// in a LOOP — so "true or true or true or …" and "1 + 1 + 1 + …" parse happily
+// at any length and then overflow the Go stack here, in evalBinary's and
+// evalLogical's descent into their left operand. Measured before this guard
+// existed: both died with "fatal error: stack overflow" between 500,000 and
+// 600,000 operators, which is a runtime.throw that recover() cannot catch, so it
+// has to be turned into a value before it happens. See maxEvalDepth.
 //
 // target is the type the surrounding context expects (section 1.3.1). It is
 // forwarded ONLY by the node kinds whose result IS a sub-expression's value —
@@ -76,7 +86,17 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 // COMPUTE a value pass TAny to their operands: propagating a string target into
 // "Param.Count + 1" would concatenate its operands into "11" rather than adding
 // them.
-func evalNode(n Node, src string, syms Symbols, target Type) (Value, error) {
+func evalNode(n Node, src string, syms Symbols, target Type, depth int) (Value, error) {
+	if depth >= maxEvalDepth {
+		return Value{}, errorAt(src, n.Pos(), "this expression is nested too deeply to evaluate")
+	}
+	return evalDispatch(n, src, syms, target, depth+1)
+}
+
+// evalDispatch is evalNode's type switch, split out so that the depth check and
+// the dispatch each stay under the repo's complexity cap. Call evalNode, never
+// this: entering here does not count the frame.
+func evalDispatch(n Node, src string, syms Symbols, target Type, depth int) (Value, error) {
 	switch v := n.(type) {
 	case *IntLit:
 		return Int(v.Val), nil
@@ -91,21 +111,21 @@ func evalNode(n Node, src string, syms Symbols, target Type) (Value, error) {
 	case *Name:
 		return evalName(v, src, syms)
 	case *Unary:
-		return evalUnary(v, src, syms)
+		return evalUnary(v, src, syms, depth)
 	case *Binary:
-		return evalBinary(v, src, syms)
+		return evalBinary(v, src, syms, depth)
 	case *Compare:
-		return evalCompare(v, src, syms)
+		return evalCompare(v, src, syms, depth)
 	case *Logical:
-		return evalLogical(v, src, syms, target)
+		return evalLogical(v, src, syms, target, depth)
 	case *Cond:
-		return evalCond(v, src, syms, target)
+		return evalCond(v, src, syms, target, depth)
 	case *ListLit:
-		return evalListLit(v, src, syms, target)
+		return evalListLit(v, src, syms, target, depth)
 	case *Index:
-		return evalIndex(v, src, syms)
+		return evalIndex(v, src, syms, depth)
 	case *Slice:
-		return evalSlice(v, src, syms)
+		return evalSlice(v, src, syms, depth)
 	}
 	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
 }
@@ -119,8 +139,8 @@ func evalName(n *Name, src string, syms Symbols) (Value, error) {
 	return v, nil
 }
 
-func evalUnary(n *Unary, src string, syms Symbols) (Value, error) {
-	x, err := evalNode(n.X, src, syms, TAny)
+func evalUnary(n *Unary, src string, syms Symbols, depth int) (Value, error) {
+	x, err := evalNode(n.X, src, syms, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -131,12 +151,12 @@ func evalUnary(n *Unary, src string, syms Symbols) (Value, error) {
 	return out, nil
 }
 
-func evalBinary(n *Binary, src string, syms Symbols) (Value, error) {
-	l, err := evalNode(n.L, src, syms, TAny)
+func evalBinary(n *Binary, src string, syms Symbols, depth int) (Value, error) {
+	l, err := evalNode(n.L, src, syms, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	r, err := evalNode(n.R, src, syms, TAny)
+	r, err := evalNode(n.R, src, syms, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -156,13 +176,13 @@ func evalBinary(n *Binary, src string, syms Symbols) (Value, error) {
 // operands unevaluated. An unknown link stops it the same way; the spec states
 // this rule only for a conditional expression, but a comparison chain
 // short-circuits for the same reason and so needs the same treatment.
-func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
-	left, err := evalNode(n.Operands[0], src, syms, TAny)
+func evalCompare(n *Compare, src string, syms Symbols, depth int) (Value, error) {
+	left, err := evalNode(n.Operands[0], src, syms, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	for i, op := range n.Ops {
-		right, err := evalNode(n.Operands[i+1], src, syms, TAny)
+		right, err := evalNode(n.Operands[i+1], src, syms, TAny, depth)
 		if err != nil {
 			return Value{}, err
 		}
@@ -200,13 +220,13 @@ func evalCompare(n *Compare, src string, syms Symbols) (Value, error) {
 // so the result is a placeholder over both types. The spec states this rule only
 // for a conditional expression, but and/or short-circuit for the same reason and
 // so need the same treatment.
-func evalLogical(n *Logical, src string, syms Symbols, target Type) (Value, error) {
-	left, err := evalNode(n.L, src, syms, target)
+func evalLogical(n *Logical, src string, syms Symbols, target Type, depth int) (Value, error) {
+	left, err := evalNode(n.L, src, syms, target, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	if left.IsUnresolved() {
-		right, err := evalNode(n.R, src, syms, target)
+		right, err := evalNode(n.R, src, syms, target, depth)
 		if err != nil {
 			// The left operand is still reachable at runtime, so the expression
 			// as a whole can still produce a value: report its type rather than
@@ -221,7 +241,7 @@ func evalLogical(n *Logical, src string, syms Symbols, target Type) (Value, erro
 	case n.Op == OpOr && truthy(left):
 		return left, nil
 	}
-	return evalNode(n.R, src, syms, target)
+	return evalNode(n.R, src, syms, target, depth)
 }
 
 // truthy implements section 2.1.6's falsiness rule: ONLY null and false are
@@ -247,8 +267,8 @@ func truthy(v Value) bool {
 //
 // When the condition is not yet known, the evaluator cannot tell which branch
 // will run, so both are evaluated and their types combined. See condResult.
-func evalCond(n *Cond, src string, syms Symbols, target Type) (Value, error) {
-	cond, err := evalNode(n.If, src, syms, TBool)
+func evalCond(n *Cond, src string, syms Symbols, target Type, depth int) (Value, error) {
+	cond, err := evalNode(n.If, src, syms, TBool, depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -257,16 +277,16 @@ func evalCond(n *Cond, src string, syms Symbols, target Type) (Value, error) {
 			return Value{}, errorAt(src, n.If.Pos(),
 				"the condition of a conditional expression must be a bool, found %s", cond.Type)
 		}
-		return condResult(n, src, syms, target)
+		return condResult(n, src, syms, target, depth)
 	}
 	if cond.Type.Code != CodeBool {
 		return Value{}, errorAt(src, n.If.Pos(),
 			"the condition of a conditional expression must be a bool, found %s", cond.Type)
 	}
 	if cond.AsBool() {
-		return evalNode(n.Then, src, syms, target)
+		return evalNode(n.Then, src, syms, target, depth)
 	}
-	return evalNode(n.Else, src, syms, target)
+	return evalNode(n.Else, src, syms, target, depth)
 }
 
 // condResult evaluates both branches of a conditional whose condition is not yet
@@ -276,9 +296,9 @@ func evalCond(n *Cond, src string, syms Symbols, target Type) (Value, error) {
 // its error is suppressed and the other branch's type stands alone. Only when
 // BOTH fail is there a real error, and then it names both — a reader cannot tell
 // which branch was meant.
-func condResult(n *Cond, src string, syms Symbols, target Type) (Value, error) {
-	thenVal, thenErr := evalNode(n.Then, src, syms, target)
-	elseVal, elseErr := evalNode(n.Else, src, syms, target)
+func condResult(n *Cond, src string, syms Symbols, target Type, depth int) (Value, error) {
+	thenVal, thenErr := evalNode(n.Then, src, syms, target, depth)
+	elseVal, elseErr := evalNode(n.Else, src, syms, target, depth)
 	switch {
 	case thenErr == nil && elseErr == nil:
 		return Unresolved(UnionOf(thenVal.Type, elseVal.Type)), nil

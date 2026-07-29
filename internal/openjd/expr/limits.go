@@ -52,6 +52,27 @@ const maxStringBytes = 10_000_000
 // real template, and two below the depth at which the stack actually gives out.
 const maxParseDepth = 500
 
+// maxEvalDepth is maxParseDepth's counterpart for EVALUATION: how many nested
+// evalNode frames one expression may use.
+//
+// A separate bound is needed because the parse guard cannot see this hazard at
+// all. The parser builds a left-associative run — "1 + 1 + 1 + …", "true or true
+// or …" — in a LOOP (parseBinaryLevel, parseLogicalLevel), so an arbitrarily
+// long chain costs it no recursion and passes maxParseDepth untouched. The TREE
+// it produces is left-deep, and evalBinary/evalLogical descend into the left
+// operand recursively, one Go frame per operator. Measured on the machine this
+// was written on: 500,000 operators evaluated, 600,000 died with "fatal error:
+// stack overflow" — the same uncatchable runtime.throw maxParseDepth exists to
+// prevent, reached by a different road.
+//
+// The value is chosen between those two facts. 10,000 nested evaluations is
+// orders of magnitude past any expression a template author writes (source
+// nesting is capped far below it by maxParseDepth; only a flat chain of 10,000
+// operators in one expression can reach it at all), and roughly fifty times
+// below the measured crash point, which leaves room for a platform with a
+// smaller stack or a deeper frame than the one measured.
+const maxEvalDepth = 10_000
+
 // errTooLarge is wrapped by every bound failure so callers can match it.
 var errTooLarge = errors.New("the result is too large")
 

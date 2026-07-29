@@ -16,13 +16,13 @@ import (
 // without one the elements' own types are unified by section 1.2.6's rules and
 // then coerced to the result. This is one of the three places a target flows
 // INWARD (see evalNode).
-func evalListLit(n *ListLit, src string, syms Symbols, target Type) (Value, error) {
+func evalListLit(n *ListLit, src string, syms Symbols, target Type, depth int) (Value, error) {
 	elemTarget := listElemTarget(target)
 	vals := make([]Value, 0, len(n.Elems))
 	types := make([]Type, 0, len(n.Elems))
 	unresolved := false
 	for _, node := range n.Elems {
-		v, err := evalNode(node, src, syms, elemTarget)
+		v, err := evalNode(node, src, syms, elemTarget, depth)
 		if err != nil {
 			return Value{}, err
 		}
@@ -169,12 +169,12 @@ func unwrapUnresolved(t Type) Type {
 //
 // An index out of bounds is an ERROR here, in deliberate contrast to a slice,
 // whose bounds are clamped (section 2.1.8).
-func evalIndex(n *Index, src string, syms Symbols) (Value, error) {
-	recv, err := evalNode(n.X, src, syms, TAny)
+func evalIndex(n *Index, src string, syms Symbols, depth int) (Value, error) {
+	recv, err := evalNode(n.X, src, syms, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	idx, err := evalNode(n.Idx, src, syms, TInt)
+	idx, err := evalNode(n.Idx, src, syms, TInt, depth)
 	if err != nil {
 		return Value{}, err
 	}
