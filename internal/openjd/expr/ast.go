@@ -150,7 +150,7 @@ type Compare struct {
 
 // Logical is "and" or "or" (spec section 2.1.6). These are not in the
 // dispatch table: they short-circuit and return one of their operands rather
-// than a bool, so they cannot be expressed as a (op, kind, kind) row.
+// than a bool, so they cannot be expressed as a Shape with a fixed return type.
 type Logical struct {
 	Offset int
 	Op     Op

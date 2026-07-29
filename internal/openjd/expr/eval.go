@@ -66,7 +66,7 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 }
 
 // evalNode dispatches on node type. Each arm is a small named function so the
-// switch stays within the complexity budget as sub-projects B and C add kinds.
+// switch stays within the complexity budget as sub-projects B and C add node types.
 func evalNode(n Node, src string, syms Symbols) (Value, error) {
 	switch v := n.(type) {
 	case *IntLit:

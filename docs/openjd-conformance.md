@@ -135,8 +135,9 @@ fixture that is invalid for a reason this path cannot see — a runtime-only
 condition, or a `let` binding whose real type would have caught it — still
 parses and evaluates fine, is accepted, and therefore fails and is baselined
 — that is deliberate reporting, the same principle as the not-applicable rows
-below, not a defect to chase down here. One baselined-list entry is worth
-calling out because it is easy to misread the other way:
+below, not a defect to chase down here. One entry that is NOT on the baseline
+list — it currently passes — is worth calling out because it is easy to
+misread the other way:
 `expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) currently passes,
 but not because section 1.3.9's memory limit is enforced — it isn't, this
 package has no memory limit at all yet. It passes because string repetition

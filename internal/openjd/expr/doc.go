@@ -21,7 +21,9 @@
 // # This is a SUBSET of EXPR
 //
 // This package implements the spec's full type system: a recursive Type with
-// all sixteen type codes (section 1.2.1), automatic coercion between them
+// all sixteen type codes (the Recommended Library Interface's Type Codes
+// table — section 1.2.1 itself lists twelve rows and omits any, noreturn and
+// the type variables), automatic coercion between them
 // (section 1.2.3), and static type checking against placeholders for values
 // that do not exist yet (section 1.3.1's unresolved[T]) — "Param.Frame + 1"
 // type-checks to unresolved[int] before any parameter has a value, and
@@ -51,6 +53,18 @@
 //     compatible pairs, int/float and string/path; every other cross-type
 //     comparison is an ERROR, so "5 < 'a'" fails with "unsupported operand
 //     types" even though "5 == 'a'" evaluates fine (to false).
+//   - KNOWN DIVERGENCE: a range_expr orders against a string, which section
+//     2.1.4 does not name as a compatible pair — it restricts ordering
+//     operands to int, float, string, path and bool. promotable (coerce.go),
+//     the predicate argCost (shape.go) uses to admit a cross-type argument
+//     into a same-type shape, is shared by every operator rather than
+//     parameterized per one, so section 1.2.3's own range_expr -> string
+//     coercion rule leaks into ordering's (string, string) shape the same
+//     way path -> string legitimately does. It cannot produce a false green:
+//     the conformance suite has no fixture asserting that ordering a
+//     range_expr must be rejected. Left as a documented gap rather than
+//     restructuring admissibility per-operator, which is a larger design
+//     change than this fix wave should make.
 //   - Lists, list literals, comprehensions, subscripts and slices are not
 //     implemented. "[1, 2]" and "x[0]" fail to parse. list[T] exists as a
 //     Type and participates in coercion — B1 can answer whether a
@@ -68,13 +82,21 @@
 //     C's signatures to use.
 //   - path and range_expr now exist as types — TPath and TRangeExpr
 //     participate in Type, coercion and cross-type equality, and a declared
-//     parameter can be typed as either — but neither has a literal syntax, a
-//     value ever produced by evaluation, or any operator of its own. path's
+//     parameter can be typed as either. path has no literal syntax of its
+//     own, but a value IS produced by evaluation: string -> path is section
+//     1.2.3's own coercion rule, so Eval(src, syms, expr.TPath) returns a
+//     path value for any expression that evaluates to a string. range_expr
+//     has no such route — nothing coerces to it — so it has no value ever
+//     produced by evaluation. Neither has an operator of its own; path's
 //     POSIX/Windows semantics, its URI awareness and its operators (section
 //     2.1.5) belong to sub-projects D and E. The range_expr -> list[int]
 //     conversion is recognized at the type level (coercible says yes when the
 //     target admits list[int]), but performing it needs list values, which is
-//     sub-project B2's, same as every other list conversion.
+//     sub-project B2's, same as every other list conversion. Cross-type
+//     equality is only PARTLY implemented: section 1.2.5's string/path rule
+//     (the path converts to string for the comparison) is implemented in
+//     valuesEqual, but its list/range_expr rule is not — that needs list
+//     values, which is sub-project B2's along with everything else list.
 //   - String repetition ("'x' * 3") is absent until the operation limits that
 //     bound the repeat count exist.
 //   - The memory and operation limits themselves are not implemented, so this

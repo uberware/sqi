@@ -8,8 +8,10 @@ import (
 )
 
 // Code is the base of a Type: which type constructor it is, independent of any
-// type parameters. Section 1.2.1 lists the language's types; this is the
-// discriminant for all of them.
+// type parameters. The Recommended Library Interface's Type Codes table lists
+// all sixteen codes this discriminates between; section 1.2.1 itself lists
+// only the twelve the language surfaces to a template author, omitting any,
+// noreturn and the type variables, which exist only in a function signature.
 type Code int
 
 // The type codes. Params carries the type parameters each one takes: none for

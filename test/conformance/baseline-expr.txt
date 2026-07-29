@@ -1,16 +1,20 @@
-# EXPR fixtures whose embedded expressions do not yet parse, or — for a
-# literal-only expression (one with no symbol references) — do not evaluate
-# cleanly.
+# EXPR fixtures whose embedded expressions do not yet parse, or do not
+# evaluate cleanly against a symbol table built from what the fixture itself
+# declares.
 #
 # Scored by TestConformance_Expressions via conformance.RunExprCase: see the
 # RunExprCase doc comment for why EXPR has a scoring path of its own and when
-# to delete it. RunExprCase also evaluates any expression with zero symbol
-# references (against expr.TAny), which is why fixtures like the
-# expr2.1.1--int64-overflow-* group and expr2.1.1--division-by-zero left this
-# list once evaluation shipped (sub-project B1, task 15) — they parse fine
-# but were always rejected by the evaluator. Any expression that references a
-# symbol is still parse-only here: evaluating it against an empty symbol
-# table would misreport a valid fixture as an unknown-variable error.
+# to delete it. RunExprCase evaluates EVERY expression, not only a
+# symbol-free one: conformance.DeclaredSymbols binds every symbol section
+# 1.2.2 defines as an unresolved placeholder of its declared type, and every
+# name introduced by a "let:" block as untyped (expr.TAny), so an expression
+# that references a symbol is checked, not skipped. That is why fixtures like
+# the expr2.1.1--int64-overflow-* group and expr2.1.1--division-by-zero left
+# this list once evaluation shipped (sub-project B1, task 15) — they parse
+# fine but were always rejected by the evaluator — and why a further batch of
+# symbolic fixtures left it once the declared-symbol table shipped (task 16):
+# a genuine type error or unknown-variable fixture now fails for real,
+# rather than being reported as parse-only.
 #
 # Each line is a fixture path relative to the 2023-09 suite root.
 #
@@ -22,10 +26,14 @@
 # Expect most entries to be one of two kinds, and both to burn down later:
 #   - syntax the reader does not implement (lists, comprehensions, subscripts,
 #     slices, calls, methods) — sub-projects B and C;
-#   - a fixture invalid for a SEMANTIC reason on a SYMBOLIC expression (type
-#     error, evaluation limit, unknown variable) that the symbol guard above
-#     leaves parse-only — sub-project E, when templates are evaluated with
-#     real symbol tables.
+#   - a fixture invalid for a reason DeclaredSymbols' flat, scope-blind table
+#     cannot see: a symbol used somewhere the real template schema forbids it
+#     (Session.WorkingDirectory in host requirements, Step.Name in the job's
+#     own name field), a "let" binding invalid for a scoping reason (a
+#     duplicate name, a self-reference, one shadowing an enclosing binding),
+#     or a parameter default that fails validation against its own declared
+#     type — all context this scoring path does not carry, and all still
+#     sub-project E's, when templates are evaluated with real scope tracking.
 #
 # Note for sub-project E: expr1.3.9--memory-limit-exceeded
 # ({{ 'a' * 100000000 }}) left this list in task 15 too, but NOT because a
