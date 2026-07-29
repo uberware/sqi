@@ -55,9 +55,10 @@
 //     implemented. "[1, 2]" and "x[0]" fail to parse. list[T] exists as a
 //     Type and participates in coercion — B1 can answer whether a
 //     list[T] would coerce to a list[U], element type by element type — but
-//     it has no values, no literal syntax and no operators of its own; that
-//     performing half, list-literal type inference (section 1.2.6), and the
-//     element-wise conversion itself belong to sub-project B2.
+//     it has no values, no literal syntax and no operators of its own —
+//     including no subscript or slice operator; that performing half,
+//     indexing and slicing, list-literal type inference (section 1.2.6), and
+//     the element-wise conversion itself all belong to sub-project B2.
 //   - Function and method calls are not implemented. "len(x)" and "x.upper()"
 //     fail, and comprehensions (section 1.3.7) do not parse either — that is
 //     sub-project B3's call and method syntax (sections 1.3.3, 1.2.4). The

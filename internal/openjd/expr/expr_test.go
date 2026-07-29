@@ -9,8 +9,9 @@ import (
 	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
-// TestLanguage states sub-project A's language as a table: expression text in,
-// expected value or error out. Read it as the specification it is.
+// TestLanguage states the language this package implements as a table:
+// expression text in, expected value or error out. Read it as the
+// specification it is.
 func TestLanguage(t *testing.T) {
 	syms := expr.MapSymbols{
 		"Param.X":          expr.Int(10),
