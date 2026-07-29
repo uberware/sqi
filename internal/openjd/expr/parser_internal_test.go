@@ -4,6 +4,7 @@ package expr
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -150,7 +151,6 @@ func TestParse_Rejected(t *testing.T) {
 		{"trailing operator", "1 +", "unexpected end of expression"},
 		{"unclosed paren", "(1 + 2", "unexpected end of expression"},
 		{"tuple", "(1, 2)", `expected ")"`},
-		{"subscript", "Param.X[0]", "subscript and slice expressions are not supported"},
 		{"function call", "min(1, 2)", "function and method calls are not supported"},
 		{"method call", "'a'.upper()", "property access is not supported"},
 		{"trailing garbage", "1 2", "unexpected integer literal after expression"},
@@ -173,10 +173,10 @@ func TestParse_Rejected(t *testing.T) {
 }
 
 func TestParse_ErrorCarriesPosition(t *testing.T) {
-	// A bare list literal used to be the rejected construct here, but this
-	// task makes it parse; a subscript (still unimplemented) takes its place
-	// as an error that still carries a meaningful, non-zero offset.
-	_, err := Parse("Param.X + Param.X[0]")
+	// A subscript used to be the rejected construct here, but this task makes
+	// it parse; a function call (still unimplemented) takes its place as an
+	// error that still carries a meaningful, non-zero offset.
+	_, err := Parse("Param.X + Param.X(0)")
 	if err == nil {
 		t.Fatal("Parse = nil error; want an error")
 	}
@@ -185,7 +185,7 @@ func TestParse_ErrorCarriesPosition(t *testing.T) {
 		t.Fatalf("error is %T; want *Error", err)
 	}
 	if e.Offset != 17 {
-		t.Errorf("Offset = %d; want 17 (the second \"[\")", e.Offset)
+		t.Errorf("Offset = %d; want 17 (the second \"(\")", e.Offset)
 	}
 }
 
@@ -479,6 +479,86 @@ func TestParse_ListLiteralErrors(t *testing.T) {
 		{"[1 2]", `"]"`},
 		{"[x for x in Param.Items]", "list comprehensions are not supported"},
 		{"[x * 2 for x in Param.Items if x > 2]", "list comprehensions are not supported"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Parse(tc.src)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Parse(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+		})
+	}
+}
+
+func TestParse_SubscriptAndSlice(t *testing.T) {
+	tests := []struct {
+		src  string
+		want string // "index" or "slice", plus which slice components are present
+	}{
+		{"Param.X[0]", "index"},
+		{"Param.X[-1]", "index"},
+		{"[1, 2][0]", "index"},
+		{"Param.X[0][1]", "index"},
+		{"Param.X[1:3]", "slice start stop"},
+		{"Param.X[:3]", "slice stop"},
+		{"Param.X[2:]", "slice start"},
+		{"Param.X[:]", "slice"},
+		{"Param.X[::2]", "slice step"},
+		{"Param.X[::-1]", "slice step"},
+		{"Param.X[0:5:2]", "slice start stop step"},
+		{"Param.X[-3:]", "slice start"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			e, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+			got := describeTrailer(e.root)
+			if got != tc.want {
+				t.Fatalf("Parse(%q) produced %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// describeTrailer names the outermost trailer node and, for a slice, which of
+// its components are present.
+func describeTrailer(n Node) string {
+	switch v := n.(type) {
+	case *Index:
+		return "index"
+	case *Slice:
+		out := "slice"
+		if v.Start != nil {
+			out += " start"
+		}
+		if v.Stop != nil {
+			out += " stop"
+		}
+		if v.Step != nil {
+			out += " step"
+		}
+		return out
+	}
+	return fmt.Sprintf("%T", n)
+}
+
+func TestParse_SubscriptErrors(t *testing.T) {
+	tests := []struct {
+		src      string
+		wantSubs string
+	}{
+		// EOF hits expect()'s existing "unexpected end of expression" wording
+		// (same convention as the "unclosed paren" and list-literal EOF cases
+		// above), not "expected \"]\"" — there is no next token to point at.
+		{"Param.X[0", "unexpected end of expression"},
+		{"Param.X[]", "unexpected"},
+		{"Param.X[1:2:3:4]", `"]"`},
+		{"len(Param.X)", "function and method calls are not supported"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {

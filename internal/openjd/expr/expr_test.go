@@ -109,7 +109,10 @@ func TestLanguage(t *testing.T) {
 		// "[1, 2]" now parses (this sub-project's own change); evaluating a
 		// ListLit is still unimplemented until B2 gives it a value.
 		{name: "SUB-PROJECT B: list literal", src: "[1, 2]", wantErr: "cannot evaluate"},
-		{name: "SUB-PROJECT B: subscript", src: "Param.Name[0]", wantErr: "subscript and slice"},
+		// "Param.Name[0]" now parses too (this task's change); evaluating an
+		// Index is still unimplemented until a later sub-project gives it a
+		// value.
+		{name: "SUB-PROJECT B: subscript", src: "Param.Name[0]", wantErr: "cannot evaluate"},
 		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "function and method calls"},
 		{name: "function calls are sub-project C", src: "len('ab')", wantErr: "function and method calls are not supported"},
 		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: "function and method calls"},

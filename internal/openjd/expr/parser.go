@@ -340,27 +340,92 @@ func (p *parser) parsePower() (Node, error) {
 	return &Binary{Offset: tok.offset, Op: OpPow, L: base, R: exp}, nil
 }
 
-// parsePostfix implements <PostfixExpr> ::= <PrimaryExpr> (<Subscript> | <Call>)*.
+// parsePostfix implements <PostfixExpr> ::= <PrimaryExpr> (<Subscript> |
+// <Call>)*.
 //
-// Sub-project A has no postfix forms, so each one is rejected by name rather
-// than by falling through to a generic "unexpected token". Sub-projects B
-// (subscript, slice) and C (calls, properties) replace these arms.
+// It is a LOOP because the grammar's trailer group repeats: "x[0][1]" is a
+// subscript of a subscript. Sub-project B3 attaches <Call> to the same loop.
 func (p *parser) parsePostfix() (Node, error) {
 	x, err := p.parsePrimary()
 	if err != nil {
 		return nil, err
 	}
-	switch tok := p.peek(); tok.kind {
-	case tokLBracket:
-		return nil, p.errorAtTok(tok, "subscript and slice expressions are not supported")
-	case tokLParen:
-		return nil, p.errorAtTok(tok, "function and method calls are not supported")
-	case tokDot:
-		// A Name consumes its own dots, so a dot reaching here follows a
-		// literal or a parenthesized expression.
-		return nil, p.errorAtTok(tok, "property access is not supported")
+	for {
+		switch tok := p.peek(); tok.kind {
+		case tokLBracket:
+			x, err = p.parseSubscript(x)
+			if err != nil {
+				return nil, err
+			}
+		case tokLParen:
+			return nil, p.errorAtTok(tok, "function and method calls are not supported")
+		case tokDot:
+			// A Name consumes its own dots, so a dot reaching here follows a
+			// literal, a parenthesized expression or a trailer.
+			return nil, p.errorAtTok(tok, "property access is not supported")
+		default:
+			return x, nil
+		}
 	}
-	return x, nil
+}
+
+// parseSubscript implements <Subscript> ::= "[" <SliceExpr> "]" where
+// <SliceExpr> ::= <ConditionalExpr> | <Slice>.
+//
+// The two are told apart by a ":" at this bracket's own level: with one it is
+// a slice, without one an index.
+func (p *parser) parseSubscript(x Node) (Node, error) {
+	open := p.advance()
+	// "[:...]" — a slice whose start is absent.
+	if _, ok := p.accept(tokColon); ok {
+		return p.parseSliceRest(open.offset, x, nil)
+	}
+	first, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := p.accept(tokColon); ok {
+		return p.parseSliceRest(open.offset, x, first)
+	}
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return &Index{Offset: open.offset, X: x, Idx: first}, nil
+}
+
+// parseSliceRest reads a slice's remaining components, the first ":" already
+// consumed. An omitted component stays nil, which is NOT the same as a zero:
+// its default depends on the sign of the step (spec section 1.3.8).
+func (p *parser) parseSliceRest(offset int, x, start Node) (Node, error) {
+	s := &Slice{Offset: offset, X: x, Start: start}
+	if _, ok := p.accept(tokRBracket); ok {
+		return s, nil
+	}
+	if p.peek().kind != tokColon {
+		stop, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		s.Stop = stop
+		if _, ok := p.accept(tokRBracket); ok {
+			return s, nil
+		}
+	}
+	if _, err := p.expect(tokColon); err != nil {
+		return nil, err
+	}
+	if _, ok := p.accept(tokRBracket); ok {
+		return s, nil
+	}
+	step, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	s.Step = step
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // parsePrimary implements <PrimaryExpr> ::= <ValueReference> | <Literal>
