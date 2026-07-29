@@ -151,7 +151,16 @@ func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
 		{"1-10:-2", `openjd: range expression "1-10:-2": invalid step "-2": must be a positive integer`},
 		{"1-10:x", `openjd: range expression "1-10:x": invalid step "x": must be a positive integer`},
 		{"7:2", `openjd: range expression "7:2": step (2) requires a range, not a single value`},
-		{"1-2000000000", `openjd: range expression "1-2000000000": openjd: range expression expands to too many values (limit 10000000)`},
+		// CHANGED DELIBERATELY, and the only string in this table that has
+		// ever changed. It read "openjd: range expression
+		// \"1-2000000000\": openjd: range expression expands to too many
+		// values (limit 10000000)", doubling both the package prefix and the
+		// words "range expression", because errRangeTooLarge carried a prefix
+		// its call sites add already. The message a caller surfaces is the
+		// improvement; this table is updated in the same commit because it
+		// pins the strings byte-for-byte on purpose, so an intentional change
+		// has to be recorded here or nowhere.
+		{"1-2000000000", `openjd: range expression "1-2000000000": expands to too many values (limit 10000000)`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.expr, func(t *testing.T) {

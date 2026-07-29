@@ -20,7 +20,13 @@ const maxRangeValues = 10_000_000
 
 // errRangeTooLarge is returned (wrapped) when a range expression's arithmetic
 // value count exceeds maxRangeValues, before any slice is allocated.
-var errRangeTooLarge = errors.New("openjd: range expression expands to too many values")
+//
+// Its text carries NO "openjd: " prefix and does not name the range expression
+// again: both call sites wrap it in "openjd: range expression %q: " already, so
+// a prefix here produced "openjd: range expression \"1-2000000000\": openjd:
+// range expression expands to too many values". Every other error reaching those
+// same call sites (from internal/openjd/intrange) is likewise a bare phrase.
+var errRangeTooLarge = errors.New("expands to too many values")
 
 // intRange is the shared range element type. internal/openjd is STRICTER than
 // the base specification about what it accepts — see openjdRangePolicy — and
