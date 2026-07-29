@@ -2,7 +2,58 @@
 
 package expr
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/uberware/sqi/internal/openjd/intrange"
+)
+
+// TestExpandOneRange_MatchesGeneralPath is the safety net under rangeInts's
+// single-sub-range fast path (expandOneRange): it skips the de-duplication map
+// AND the sort that expandRanges performs, on the argument that one arithmetic
+// progression is already strictly monotonic. Every case here is run through
+// BOTH functions and the results compared element for element, so the fast
+// path cannot quietly answer something the general path would not.
+//
+// The descending rows are the reason this test exists rather than a spot check:
+// Iterate walks in the step's own direction, so a negative step produces the
+// right values in exactly the wrong order, and only the reversal in
+// expandOneRange puts them back into the increasing order section 3.4.1.1.1
+// requires. A sort cannot be skipped without noticing that.
+func TestExpandOneRange_MatchesGeneralPath(t *testing.T) {
+	for _, text := range []string{
+		"1-5",       // ascending, unit step
+		"1-10000:7", // ascending, stepped, not landing on the end
+		"1-5:2",     // ascending, stepped, landing on the end
+		"7",         // a single bare value
+		"-5--1",     // negative bounds
+		"5-5",       // start equals end
+		"10-1:-1",   // descending, unit step
+		"10-1:-3",   // descending, stepped
+		"-1--5:-2",  // descending through negative bounds
+		"5-5:-1",    // descending with start equal to end
+	} {
+		t.Run(text, func(t *testing.T) {
+			ranges, err := intrange.Parse(text)
+			if err != nil {
+				t.Fatalf("intrange.Parse(%q): %v", text, err)
+			}
+			if len(ranges) != 1 {
+				t.Fatalf("intrange.Parse(%q) gave %d sub-ranges, want 1 — this test only covers the fast path", text, len(ranges))
+			}
+			total := ranges[0].Count()
+			fast := expandOneRange(ranges[0], total)
+			general := expandRanges(ranges, total)
+			if !slices.Equal(fast, general) {
+				t.Fatalf("expandOneRange(%q) = %v, expandRanges = %v", text, fast, general)
+			}
+			if !slices.IsSorted(fast) {
+				t.Fatalf("expandOneRange(%q) = %v, want increasing order", text, fast)
+			}
+		})
+	}
+}
 
 func TestRangeExpr_ConstructAndExpand(t *testing.T) {
 	tests := []struct {

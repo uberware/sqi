@@ -66,6 +66,44 @@ func rangeInts(v Value) ([]int64, error) {
 			return nil, err
 		}
 	}
+	if len(ranges) == 1 {
+		return expandOneRange(ranges[0], total), nil
+	}
+	return expandRanges(ranges, total), nil
+}
+
+// expandOneRange expands a range expression with exactly ONE sub-range, which
+// needs neither of the two things the general path below does.
+//
+// A single sub-range is an arithmetic progression with a non-zero step, so its
+// values are strictly monotonic: no two are equal, which retires the
+// de-duplication map, and they are already ordered, which retires the sort —
+// they are merely in the WRONG order for a negative step, and reversing a
+// slice in place is linear where sorting it is not. Both retired structures
+// were paid for on every call, including the "1-10000000" case that costs
+// about 600 MB for the map alone, and every operation re-expands from scratch
+// ("Param.Big[:][:][:]" expands three times).
+//
+// Correctness rests entirely on the "exactly one" test, so the general path is
+// still what runs for anything else — two sub-ranges may overlap and may be
+// written in any order, and only the map and the sort make section 3.4.1.1.1's
+// "increasing order", de-duplicated, come out right.
+func expandOneRange(r intrange.Range, total int) []int64 {
+	out := make([]int64, 0, total)
+	for _, n := range r.Iterate() {
+		out = append(out, int64(n))
+	}
+	// Iterate walks in the step's own direction, and rangeInts owes its caller
+	// increasing order. A single reversal is the whole difference.
+	if r.Step < 0 {
+		slices.Reverse(out)
+	}
+	return out
+}
+
+// expandRanges is the general path: several sub-ranges, which may overlap and
+// may be written in any order, so the values must be de-duplicated and sorted.
+func expandRanges(ranges []intrange.Range, total int) []int64 {
 	seen := make(map[int]struct{}, total)
 	out := make([]int64, 0, total)
 	for _, r := range ranges {
@@ -78,7 +116,7 @@ func rangeInts(v Value) ([]int64, error) {
 		}
 	}
 	slices.Sort(out)
-	return out, nil
+	return out
 }
 
 // canonicalRange renders integers as range expression text, collapsing runs
