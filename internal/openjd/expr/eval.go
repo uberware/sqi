@@ -96,18 +96,16 @@ func evalNode(n Node, src string, syms Symbols, target Type, depth int) (Value, 
 // evalDispatch is evalNode's type switch, split out so that the depth check and
 // the dispatch each stay under the repo's complexity cap. Call evalNode, never
 // this: entering here does not count the frame.
+//
+// The five leaf literal kinds are peeled off into evalLiteral first — adding
+// *ListComp as a fifteenth case here pushed the switch itself over cyclop's
+// cap, so the literals (which need none of this function's parameters beyond
+// n) move out rather than the cap moving up.
 func evalDispatch(n Node, src string, syms Symbols, target Type, depth int) (Value, error) {
+	if v, ok := evalLiteral(n); ok {
+		return v, nil
+	}
 	switch v := n.(type) {
-	case *IntLit:
-		return Int(v.Val), nil
-	case *FloatLit:
-		return Float(v.Val), nil
-	case *StringLit:
-		return String(v.Val), nil
-	case *BoolLit:
-		return Bool(v.Val), nil
-	case *NullLit:
-		return Null(), nil
 	case *Name:
 		return evalName(v, src, syms)
 	case *Unary:
@@ -126,8 +124,28 @@ func evalDispatch(n Node, src string, syms Symbols, target Type, depth int) (Val
 		return evalIndex(v, src, syms, depth)
 	case *Slice:
 		return evalSlice(v, src, syms, depth)
+	case *ListComp:
+		return evalListComp(v, src, syms, target, depth)
 	}
 	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
+}
+
+// evalLiteral evaluates a leaf literal node. ok is false for any other node
+// kind, so evalDispatch falls through to its own switch.
+func evalLiteral(n Node) (v Value, ok bool) {
+	switch lit := n.(type) {
+	case *IntLit:
+		return Int(lit.Val), true
+	case *FloatLit:
+		return Float(lit.Val), true
+	case *StringLit:
+		return String(lit.Val), true
+	case *BoolLit:
+		return Bool(lit.Val), true
+	case *NullLit:
+		return Null(), true
+	}
+	return Value{}, false
 }
 
 func evalName(n *Name, src string, syms Symbols) (Value, error) {

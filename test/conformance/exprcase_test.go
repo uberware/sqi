@@ -114,17 +114,16 @@ func TestRunExprCase(t *testing.T) {
 			wantPass:   true,
 		},
 		{
-			// A list comprehension now parses (sub-project B3's Task 2), but
-			// still has no evaluator (that's Task 3) — Eval falls through to
-			// the generic "cannot evaluate" case, so this fixture is still a
-			// genuine failure, just no longer a parse failure. What this case
-			// needs to test is unaffected: something that fails end to end.
-			name:        "valid fixture whose expression does not evaluate is a failure",
-			path:        "EXPR/job_templates/expr1.1--list-comprehension.yaml",
-			doc:         `a: "{{ [x for x in Param.Items] }}"`,
-			wantAccept:  false,
-			wantPass:    false,
-			reasonMatch: "cannot evaluate",
+			// A list comprehension now both parses (sub-project B3's Task 2)
+			// and evaluates (Task 3): Param.Items is declared, so its
+			// placeholder flows through the comprehension and comes back as an
+			// unresolved list[int] — a symbolic comprehension is no different
+			// from any other symbolic expression this path checks.
+			name:       "a list comprehension over a declared symbol evaluates cleanly",
+			path:       "EXPR/job_templates/expr1.1--list-comprehension.yaml",
+			doc:        "parameterDefinitions:\n  - name: Items\n    type: LIST[INT]\na: \"{{ [x for x in Param.Items] }}\"",
+			wantAccept: true,
+			wantPass:   true,
 		},
 		{
 			name: "invalid fixture whose expressions all parse is a failure",
