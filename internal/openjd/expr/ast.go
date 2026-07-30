@@ -198,6 +198,52 @@ type Slice struct {
 	Step   Node
 }
 
+// ListComp is a list comprehension (spec section 1.3.7):
+// "[" Elem "for" Var "in" Iter ("if" Cond)? "]".
+//
+// Cond is nil when the comprehension has no filter. Section 1.3.7 permits
+// exactly one filter and no second "for" — Python's multi-generator form is
+// rejected by the parser, not represented here.
+type ListComp struct {
+	// Offset is the byte offset of the opening "[".
+	Offset int
+	Elem   Node
+	// Var is the loop variable, which section 1.3.7 requires to be a
+	// <UserIdentifier> so it cannot shadow a spec-defined symbol like Param.
+	Var string
+	// VarOffset is where Var sits in the source, so a shadowing error blames
+	// the variable rather than the opening bracket.
+	VarOffset int
+	Iter      Node
+	Cond      Node
+}
+
+// Access is a property access, "X.Attr" (spec section 1.3.3, where a property
+// p resolves to the function __property_p__).
+//
+// It is produced ONLY when the receiver is not a Name — "[1,2].len" or
+// "(x).y". A dotted name keeps all its segments inside one Name node, and
+// resolution splits it, so "Param.File.stem" produces no Access.
+type Access struct {
+	// Offset is the byte offset of the ".".
+	Offset int
+	X      Node
+	Attr   string
+}
+
+// Call is a call, "Callee(Args...)" (spec section 1.3.3).
+//
+// Callee carries the un-split callee: a Name whose segments resolution walks,
+// or an Access whose X is the receiver. Which of those it is decides whether
+// section 1.2.4's receiver coercion restriction applies, so the distinction
+// must survive parsing rather than being desugared away here.
+type Call struct {
+	// Offset is the byte offset of the "(".
+	Offset int
+	Callee Node
+	Args   []Node
+}
+
 // Pos returns the byte offset in the source where this literal begins.
 func (n *IntLit) Pos() int { return n.Offset }
 
@@ -240,6 +286,15 @@ func (n *Index) Pos() int { return n.Offset }
 // Pos returns the byte offset of this slice's opening bracket.
 func (n *Slice) Pos() int { return n.Offset }
 
+// Pos returns the byte offset of this comprehension's opening bracket.
+func (n *ListComp) Pos() int { return n.Offset }
+
+// Pos returns the byte offset of this property access's dot.
+func (n *Access) Pos() int { return n.Offset }
+
+// Pos returns the byte offset of this call's opening parenthesis.
+func (n *Call) Pos() int { return n.Offset }
+
 func (*IntLit) node()    {}
 func (*FloatLit) node()  {}
 func (*StringLit) node() {}
@@ -254,6 +309,9 @@ func (*Cond) node()      {}
 func (*ListLit) node()   {}
 func (*Index) node()     {}
 func (*Slice) node()     {}
+func (*ListComp) node()  {}
+func (*Access) node()    {}
+func (*Call) node()      {}
 
 // walk calls fn for n and every node beneath it, parents before children and
 // siblings left to right — the same order the recursive version visited in.
@@ -323,6 +381,12 @@ func pushChildren(stack []Node, n Node) []Node {
 		push(v.X, v.Idx)
 	case *Slice:
 		push(v.X, v.Start, v.Stop, v.Step)
+	case *ListComp:
+		push(v.Elem, v.Iter, v.Cond)
+	case *Access:
+		push(v.X)
+	case *Call:
+		push(append([]Node{v.Callee}, v.Args...)...)
 	}
 	return stack
 }

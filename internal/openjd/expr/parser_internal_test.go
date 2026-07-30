@@ -690,3 +690,30 @@ func TestParse_NestingWithinTheBoundStillParses(t *testing.T) {
 		})
 	}
 }
+
+func TestWalk_DescendsIntoCallAndCompNodes(t *testing.T) {
+	inner := &IntLit{Offset: 1, Val: 1}
+	tests := []struct {
+		name string
+		node Node
+		want int // total nodes visited, including the root
+	}{
+		{"comprehension without a filter", &ListComp{Offset: 0, Elem: inner, Var: "x", Iter: inner}, 3},
+		{"comprehension with a filter", &ListComp{Offset: 0, Elem: inner, Var: "x", Iter: inner, Cond: inner}, 4},
+		{"property access", &Access{Offset: 0, X: inner, Attr: "stem"}, 2},
+		{"call with no arguments", &Call{Offset: 0, Callee: inner}, 2},
+		{"call with arguments", &Call{Offset: 0, Callee: inner, Args: []Node{inner, inner}}, 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			count := 0
+			walk(tc.node, func(Node) { count++ })
+			if count != tc.want {
+				t.Fatalf("walk visited %d nodes, want %d", count, tc.want)
+			}
+			if got := tc.node.Pos(); got != 0 {
+				t.Fatalf("Pos() = %d, want 0", got)
+			}
+		})
+	}
+}
