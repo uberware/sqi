@@ -14,11 +14,10 @@ type Expression struct {
 // position at which the source stopped making sense.
 //
 // The grammar implemented here is EXPR's, not Python's. Anything outside it —
-// list literals, comprehensions, subscripts, slices, calls, property access,
-// bitwise operators, assignment — is rejected. That direction is deliberate:
-// a reader borrowed from a full Python parser would silently ACCEPT syntax
-// this package cannot evaluate, whereas anything unimplemented here fails to
-// parse.
+// bitwise operators, dict and set literals, assignment, and the rest of
+// section 1.1's exclusion list — is rejected. That direction is deliberate: a
+// reader borrowed from a full Python parser would silently ACCEPT syntax this
+// package cannot evaluate, whereas anything unimplemented here fails to parse.
 func Parse(src string) (*Expression, error) {
 	toks, err := tokenize(src)
 	if err != nil {
@@ -85,8 +84,9 @@ type parser struct {
 // the outermost production. The cycles, enumerated from parser.go's call graph:
 //
 //   - Every path that re-enters the grammar from inside a construct — a
-//     parenthesis, a list element, a subscript, a slice component — goes through
-//     parseExpr and so through parseConditional, which is guarded.
+//     parenthesis, a list element, a subscript, a slice component, a call
+//     argument — goes through parseExpr and so through parseConditional, which
+//     is guarded.
 //   - parseConditional recurses into ITSELF for the right-associative else
 //     branch, without leaving the production.
 //   - parseNot and parseUnary each recurse into themselves (a stack of "not"
@@ -102,10 +102,10 @@ type parser struct {
 //     not help either: its defer has already run by the time parsePower reads
 //     the "**".
 //   - parsePostfix is guarded as well, which closes no cycle of its own — its
-//     trailer group is a LOOP, and parseSubscript re-enters through parseExpr,
-//     already counted — but it is the natural place for the guard if that loop
-//     is ever turned into recursion, and one more counted frame per level costs
-//     nothing.
+//     trailer group is a LOOP, and parseSubscript and parseCall both re-enter
+//     through parseExpr, already counted — but it is the natural place for the
+//     guard if that loop is ever turned into recursion, and one more counted
+//     frame per level costs nothing.
 //
 // The remaining productions (parseOr, parseAnd, parseLogicalLevel, parseCompare,
 // parseAdd, parseMul, parseBinaryLevel) form a strictly descending precedence
@@ -417,10 +417,11 @@ func (p *parser) parsePower() (Node, error) {
 }
 
 // parsePostfix implements <PostfixExpr> ::= <PrimaryExpr> (<Subscript> |
-// <Call>)*.
+// <Call> | "." <Identifier>)*.
 //
 // It is a LOOP because the grammar's trailer group repeats: "x[0][1]" is a
-// subscript of a subscript. Sub-project B3 attaches <Call> to the same loop.
+// subscript of a subscript. Sub-project B3 attaches <Call> and the property
+// trailer to the same loop.
 func (p *parser) parsePostfix() (Node, error) {
 	leave, err := p.enter(p.peek())
 	if err != nil {
@@ -440,11 +441,19 @@ func (p *parser) parsePostfix() (Node, error) {
 				return nil, err
 			}
 		case tokLParen:
-			return nil, p.errorAtTok(tok, "function and method calls are not supported")
+			x, err = p.parseCall(x)
+			if err != nil {
+				return nil, err
+			}
 		case tokDot:
 			// A Name consumes its own dots, so a dot reaching here follows a
-			// literal, a parenthesized expression or a trailer.
-			return nil, p.errorAtTok(tok, "property access is not supported")
+			// literal, a parenthesized expression or a trailer — "[1,2].len"
+			// or "(x).y". A dotted name's own properties stay inside the Name
+			// until resolution splits them.
+			x, err = p.parseAccess(x)
+			if err != nil {
+				return nil, err
+			}
 		default:
 			return x, nil
 		}
@@ -508,6 +517,39 @@ func (p *parser) parseSliceRest(offset int, x, start Node) (Node, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// parseCall implements <Call> ::= "(" <ArgList>? ")" (spec section 1.1.2).
+func (p *parser) parseCall(callee Node) (Node, error) {
+	open := p.advance()
+	call := &Call{Offset: open.offset, Callee: callee}
+	if _, ok := p.accept(tokRParen); ok {
+		return call, nil
+	}
+	for {
+		arg, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		call.Args = append(call.Args, arg)
+		if _, ok := p.accept(tokComma); !ok {
+			break
+		}
+	}
+	if _, err := p.expect(tokRParen); err != nil {
+		return nil, err
+	}
+	return call, nil
+}
+
+// parseAccess implements a property trailer, "X.attr" (spec section 1.3.3).
+func (p *parser) parseAccess(x Node) (Node, error) {
+	dot := p.advance()
+	attr, err := p.expect(tokIdent)
+	if err != nil {
+		return nil, err
+	}
+	return &Access{Offset: dot.offset, X: x, Attr: attr.text}, nil
 }
 
 // parsePrimary implements <PrimaryExpr> ::= <ValueReference> | <Literal>

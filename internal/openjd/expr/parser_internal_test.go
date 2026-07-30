@@ -152,8 +152,6 @@ func TestParse_Rejected(t *testing.T) {
 		{"trailing operator", "1 +", "unexpected end of expression"},
 		{"unclosed paren", "(1 + 2", "unexpected end of expression"},
 		{"tuple", "(1, 2)", `expected ")"`},
-		{"function call", "min(1, 2)", "function and method calls are not supported"},
-		{"method call", "'a'.upper()", "property access is not supported"},
 		{"trailing garbage", "1 2", "unexpected integer literal after expression"},
 		{"f-string", `f'{x}'`, "unexpected string literal after expression"},
 		{"lambda", "lambda x: x", "unexpected name after expression"},
@@ -174,10 +172,12 @@ func TestParse_Rejected(t *testing.T) {
 }
 
 func TestParse_ErrorCarriesPosition(t *testing.T) {
-	// A subscript used to be the rejected construct here, but this task makes
-	// it parse; a function call (still unimplemented) takes its place as an
-	// error that still carries a meaningful, non-zero offset.
-	_, err := Parse("Param.X + Param.X(0)")
+	// A subscript used to be the rejected construct here, then a call (both
+	// now parse — B2 and this task, respectively). A trailing comma in a call's
+	// argument list takes their place: section 1.1.2's <ArgList> has no
+	// optional trailing comma, unlike <ListExpr>, so it remains a genuine parse
+	// error carrying a meaningful, non-zero offset.
+	_, err := Parse("Param.X + Param.X(0,)")
 	if err == nil {
 		t.Fatal("Parse = nil error; want an error")
 	}
@@ -185,8 +185,8 @@ func TestParse_ErrorCarriesPosition(t *testing.T) {
 	if !errors.As(err, &e) {
 		t.Fatalf("error is %T; want *Error", err)
 	}
-	if e.Offset != 17 {
-		t.Errorf("Offset = %d; want 17 (the second \"(\")", e.Offset)
+	if e.Offset != 20 {
+		t.Errorf("Offset = %d; want 20 (the closing \")\" after the trailing comma)", e.Offset)
 	}
 }
 
@@ -597,7 +597,6 @@ func TestParse_SubscriptErrors(t *testing.T) {
 		{"Param.X[0", "unexpected end of expression"},
 		{"Param.X[]", "unexpected"},
 		{"Param.X[1:2:3:4]", `"]"`},
-		{"len(Param.X)", "function and method calls are not supported"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
@@ -794,5 +793,99 @@ func TestParse_BracesStillDieInTheLexer(t *testing.T) {
 		if !strings.Contains(err.Error(), "unexpected character '{'") {
 			t.Fatalf("Parse(%q) error = %q, want the lexer's brace rejection", src, err.Error())
 		}
+	}
+}
+
+func TestParse_CallAndAccess(t *testing.T) {
+	tests := []struct {
+		src  string
+		want string // shape summary
+	}{
+		{"len(x)", "call(name:len, 1 arg)"},
+		{"len()", "call(name:len, 0 args)"},
+		{"max(a, b)", "call(name:max, 2 args)"},
+		{"Param.Name.upper()", "call(name:Param.Name.upper, 0 args)"},
+		{"[1, 2].len()", "call(access:len, 0 args)"},
+		{"Param.File.stem", "name:Param.File.stem"},
+		{"(x).y", "access:y"},
+		{"Param.Name.upper().strip()", "call(access:strip, 0 args)"},
+		{"len(x)[0]", "index"},
+		{"f(g(x))", "call(name:f, 1 arg)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			e, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+			if got := describeCallShape(e.root); got != tc.want {
+				t.Fatalf("Parse(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// describeCallShape summarizes the outermost node, so the test asserts the tree
+// shape rather than re-implementing the parser.
+func describeCallShape(n Node) string {
+	switch v := n.(type) {
+	case *Call:
+		unit := "args"
+		if len(v.Args) == 1 {
+			unit = "arg"
+		}
+		switch callee := v.Callee.(type) {
+		case *Name:
+			return fmt.Sprintf("call(name:%s, %d %s)", callee.String(), len(v.Args), unit)
+		case *Access:
+			return fmt.Sprintf("call(access:%s, %d %s)", callee.Attr, len(v.Args), unit)
+		default:
+			return fmt.Sprintf("call(%T, %d %s)", v.Callee, len(v.Args), unit)
+		}
+	case *Access:
+		return "access:" + v.Attr
+	case *Name:
+		return "name:" + v.String()
+	case *Index:
+		return "index"
+	}
+	return fmt.Sprintf("%T", n)
+}
+
+func TestParse_CallErrors(t *testing.T) {
+	tests := []struct {
+		src      string
+		wantSubs string
+	}{
+		{"len(", "unexpected end of expression"},
+		{"len(x", "unexpected end of expression"},
+		{"len(x,)", "unexpected"},
+		// "x." reads its trailing dot inside parseIdentPrimary's own dotted-name
+		// loop, not parseAccess: a bare identifier consumes every dot that
+		// follows it before parsePostfix ever sees one. That loop's own
+		// expect(tokIdent) hits EOF here, which — same convention as every
+		// other EOF case in this file — reads as "unexpected end of
+		// expression", not "expected name, found end of expression".
+		{"x.", "unexpected end of expression"},
+		// "x.1" cannot exercise parseAccess's "attribute must be a name" error:
+		// the lexer (unchanged by this task) reads a leading-dot float across
+		// any "." immediately followed by a digit, so "x.1" tokenizes as
+		// ident("x"), float(".1") — no tokDot at all, confirmed against
+		// Python's own tokenizer, which splits it the same way. "(x).+" tests
+		// the same error through parseAccess instead, since a parenthesized
+		// receiver's dot cannot be absorbed into any identifier loop and "+"
+		// cannot be absorbed into a number.
+		{"(x).+", "name"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Parse(tc.src)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Parse(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+		})
 	}
 }
