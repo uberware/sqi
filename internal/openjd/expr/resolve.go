@@ -2,7 +2,10 @@
 
 package expr
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 // resolved is what a dotted name resolved to: a symbol, plus whatever segments
 // followed it.
@@ -43,7 +46,17 @@ func resolveName(n *Name, syms Symbols) (resolved, bool) {
 
 // evalProperty resolves a property access. Section 1.3.3 defines a property p
 // as the function __property_p__, so this routes into the function registry —
-// which sub-project C fills. Until then every property is unknown.
+// which sub-project C fills.
+//
+// callFunction can fail three ways: the function is not registered at all, no
+// registered signature accepts the receiver, or the matched signature's own
+// Fn (or the coercion callShape applies before running it) errors out. Only
+// the first of those is "unknown property" — the other two are genuine
+// failures of a property that DOES exist, and reporting them as "unknown"
+// would send a user chasing a typo that isn't there. errUnknownFunction is
+// the sentinel that tells the three apart; anything else is wrapped with its
+// real cause preserved, matching evalCall's own wrapAt treatment of a
+// callFunction error.
 func evalProperty(recv Value, attr, src string, offset, depth int) (Value, error) { //nolint:revive // depth: not yet consumed here, kept for the signature evalCall and evalDispatch already call through
 	if isDunder(attr) {
 		return Value{}, errorAt(src, offset,
@@ -52,7 +65,29 @@ func evalProperty(recv Value, attr, src string, offset, depth int) (Value, error
 	// Section 1.3.3: the property p is the function __property_p__.
 	v, err := callFunction("__property_"+attr+"__", []Value{recv}, true)
 	if err != nil {
-		return Value{}, errorAt(src, offset, "unknown property %q on %s", attr, recv.Type)
+		if errors.Is(err, errUnknownFunction) {
+			return Value{}, errorAt(src, offset, "unknown property %q on %s", attr, recv.Type)
+		}
+		return Value{}, wrapAt(src, offset, err)
+	}
+	return v, nil
+}
+
+// evalProperties applies a chain of property accesses in order, e.g. for
+// "Param.File.parent.name" attrs is ["parent", "name"].
+//
+// This is the one place that walk lives. evalName (a plain dotted name's
+// trailing properties) and Call.nameTarget (a method call's receiver walk,
+// every resolved segment but the last) are the same loop over a different
+// slice of the same resolved.Rest, and were duplicated before this helper
+// existed.
+func evalProperties(v Value, attrs []string, src string, offset, depth int) (Value, error) {
+	for _, attr := range attrs {
+		var err error
+		v, err = evalProperty(v, attr, src, offset, depth)
+		if err != nil {
+			return Value{}, err
+		}
 	}
 	return v, nil
 }

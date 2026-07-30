@@ -2,7 +2,22 @@
 
 package expr
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// errUnknownFunction is callFunction's sentinel for "no such function is
+// registered", as distinct from every other way a call can fail (a signature
+// mismatch, a coercion failure, or the function's own Fn erroring out).
+//
+// evalProperty relies on the distinction: section 1.3.3 property syntax is
+// sugar for a call to __property_p__, so a genuine runtime error inside a
+// registered property function must not be relabeled "unknown property" —
+// that would tell a user their correctly spelled property doesn't exist
+// instead of showing them the real failure. errors.Is against this sentinel
+// is what evalProperty checks before rewording.
+var errUnknownFunction = errors.New("unknown function")
 
 // functionShapes is the function registry: a name mapped to its accepted
 // signatures, in the same Shape form ops.go uses for operators, so type-variable
@@ -92,13 +107,9 @@ func (*Call) nameTarget(callee *Name, src string, syms Symbols, depth int) (name
 			"%s is not a function", r.Prefix)
 	}
 	// Every segment but the last is a property; the last is the method.
-	cur := r.Val
-	for _, attr := range r.Rest[:len(r.Rest)-1] {
-		v, err := evalProperty(cur, attr, src, callee.Offset, depth)
-		if err != nil {
-			return "", Value{}, false, err
-		}
-		cur = v
+	cur, err := evalProperties(r.Val, r.Rest[:len(r.Rest)-1], src, callee.Offset, depth)
+	if err != nil {
+		return "", Value{}, false, err
 	}
 	method := r.Rest[len(r.Rest)-1]
 	if isDunder(method) {
@@ -118,7 +129,7 @@ func (*Call) nameTarget(callee *Name, src string, syms Symbols, depth int) (name
 func callFunction(name string, args []Value, methodStyle bool) (Value, error) {
 	shapes, ok := functionShapes[name]
 	if !ok {
-		return Value{}, fmt.Errorf("unknown function %q", name)
+		return Value{}, fmt.Errorf("%w %q", errUnknownFunction, name)
 	}
 	types := make([]Type, len(args))
 	for i, a := range args {

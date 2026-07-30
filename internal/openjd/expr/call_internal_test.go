@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,10 @@ func TestEvalCall_Errors(t *testing.T) {
 
 // withTestFunction registers a function for the duration of a test, so the call
 // path can be exercised end to end while the shipped registry stays empty.
+//
+// It mutates the package-level functionShapes map directly, which is safe
+// only because nothing in this package calls t.Parallel(); the moment a test
+// here does, two tests racing on functionShapes becomes a real data race.
 func withTestFunction(t *testing.T, name string, shapes []Shape) {
 	t.Helper()
 	if _, exists := functionShapes[name]; exists {
@@ -90,6 +95,113 @@ func TestEvalCall_DispatchesThroughTheRegistry(t *testing.T) {
 				t.Errorf("value = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEvalProperty_RealFailureIsNotRelabeledUnknown is the discriminating test
+// for the errUnknownFunction sentinel: a property that IS registered but
+// fails for a real reason — its Fn errors, or no signature accepts the
+// receiver's type — must surface that real cause, not the "unknown property"
+// wording that is reserved for a property that was never registered at all.
+// Before the sentinel this collapsed all three into "unknown property",
+// which is unobservable while the registry is empty and would have shipped
+// silently the moment sub-project C added a real property.
+func TestEvalProperty_RealFailureIsNotRelabeledUnknown(t *testing.T) {
+	tests := []struct {
+		name      string
+		shapeName string
+		shapes    []Shape
+		src       string
+		syms      MapSymbols
+		wantSubs  string
+	}{
+		{
+			name:      "the property function's own error is preserved",
+			shapeName: "__property_boom__",
+			shapes: []Shape{{
+				Params: []Type{TInt},
+				Ret:    TInt,
+				Fn: func([]Value) (Value, error) {
+					return Value{}, errors.New("boom: something failed")
+				},
+			}},
+			src:      "Param.N.boom",
+			syms:     MapSymbols{"Param.N": Int(21)},
+			wantSubs: "boom: something failed",
+		},
+		{
+			name:      "no signature accepting the receiver is preserved",
+			shapeName: "__property_onlystring__",
+			shapes: []Shape{{
+				Params: []Type{TString},
+				Ret:    TString,
+				Fn:     func(args []Value) (Value, error) { return args[0], nil },
+			}},
+			src:      "Param.N.onlystring",
+			syms:     MapSymbols{"Param.N": Int(21)},
+			wantSubs: `no signature of "__property_onlystring__" accepts`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withTestFunction(t, tc.shapeName, tc.shapes)
+			_, err := Eval(tc.src, tc.syms, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Eval(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+			if strings.Contains(err.Error(), "unknown property") {
+				t.Fatalf("Eval(%q) error = %q, want it NOT relabeled \"unknown property\"", tc.src, err.Error())
+			}
+		})
+	}
+}
+
+// TestEvalCall_PropertyChainThenMethod covers the one outcome of
+// Call.nameTarget's four that TestEvalCall_DispatchesThroughTheRegistry never
+// exercises: a receiver walk through one or more LEADING properties before
+// the trailing method, "Param.N.doubled.twice()" — Rest is ["doubled",
+// "twice"], so the "every segment but the last is a property" loop actually
+// runs.
+func TestEvalCall_PropertyChainThenMethod(t *testing.T) {
+	withTestFunction(t, "__property_doubled__", []Shape{{
+		Params: []Type{TInt},
+		Ret:    TInt,
+		Fn:     func(args []Value) (Value, error) { return Int(args[0].AsInt() * 2), nil },
+	}})
+	withTestFunction(t, "twice", []Shape{{
+		Params: []Type{TInt},
+		Ret:    TInt,
+		Fn:     func(args []Value) (Value, error) { return Int(args[0].AsInt() * 2), nil },
+	}})
+	v, err := Eval("Param.N.doubled.twice()", MapSymbols{"Param.N": Int(21)}, TAny)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := v.String(), "84"; got != want {
+		t.Fatalf("Eval = %s, want %s", got, want)
+	}
+}
+
+// TestEvalCall_NoSignatureAccepts covers callFunction's other failure path —
+// the function IS registered, but no shape accepts the argument types given —
+// which TestEvalCall_Errors never exercises (every case there hits the
+// "unknown function" branch instead).
+func TestEvalCall_NoSignatureAccepts(t *testing.T) {
+	withTestFunction(t, "twice", []Shape{{
+		Params: []Type{TInt},
+		Ret:    TInt,
+		Fn:     func(args []Value) (Value, error) { return Int(args[0].AsInt() * 2), nil },
+	}})
+	_, err := Eval("twice('a')", nil, TAny)
+	if err == nil {
+		t.Fatal("Eval(\"twice('a')\") = nil error, want one mentioning no signature")
+	}
+	wantSubs := `no signature of "twice" accepts`
+	if !strings.Contains(err.Error(), wantSubs) {
+		t.Fatalf("Eval error = %q, want it to mention %q", err.Error(), wantSubs)
 	}
 }
 

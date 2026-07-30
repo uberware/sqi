@@ -166,15 +166,7 @@ func evalName(n *Name, src string, syms Symbols, depth int) (Value, error) {
 		// shorter prefix would misreport which part is unknown.
 		return Value{}, errorAt(src, n.Offset, "unknown symbol %q", n.String())
 	}
-	v := r.Val
-	for _, attr := range r.Rest {
-		var err error
-		v, err = evalProperty(v, attr, src, n.Offset, depth)
-		if err != nil {
-			return Value{}, err
-		}
-	}
-	return v, nil
+	return evalProperties(r.Val, r.Rest, src, n.Offset, depth)
 }
 
 func evalUnary(n *Unary, src string, syms Symbols, depth int) (Value, error) {
