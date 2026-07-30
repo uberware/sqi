@@ -107,7 +107,7 @@ func evalDispatch(n Node, src string, syms Symbols, target Type, depth int) (Val
 	}
 	switch v := n.(type) {
 	case *Name:
-		return evalName(v, src, syms)
+		return evalName(v, src, syms, depth)
 	case *Unary:
 		return evalUnary(v, src, syms, depth)
 	case *Binary:
@@ -148,11 +148,23 @@ func evalLiteral(n Node) (v Value, ok bool) {
 	return Value{}, false
 }
 
-func evalName(n *Name, src string, syms Symbols) (Value, error) {
-	name := n.String()
-	v, ok := syms.Lookup(name)
+// evalName evaluates a dotted name: a symbol, optionally followed by property
+// accesses. See resolveName for why the split happens here rather than in the
+// parser.
+func evalName(n *Name, src string, syms Symbols, depth int) (Value, error) {
+	r, ok := resolveName(n, syms)
 	if !ok {
-		return Value{}, errorAt(src, n.Offset, "unknown symbol %q", name)
+		// Name the longest candidate: it is what the author wrote, and a
+		// shorter prefix would misreport which part is unknown.
+		return Value{}, errorAt(src, n.Offset, "unknown symbol %q", n.String())
+	}
+	v := r.Val
+	for _, attr := range r.Rest {
+		var err error
+		v, err = evalProperty(v, attr, src, n.Offset, depth)
+		if err != nil {
+			return Value{}, err
+		}
 	}
 	return v, nil
 }
