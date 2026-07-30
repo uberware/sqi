@@ -30,6 +30,16 @@ func compSyms(t *testing.T) MapSymbols {
 		"Mystery":     Unresolved(TInt),
 		"LetFlag":     Unresolved(TAny),
 		"NotBoolFlag": Unresolved(TString),
+		// Mixed is declared list[float] but its items are actually Int —
+		// something evalListLit itself would never build (coerce makes every
+		// item's type match a list literal's own declared element type), but
+		// nothing stops a caller from injecting one through Symbols. It
+		// exists to tell apart "the iterable's OWN declared element type"
+		// from "the first collected item's own type", which agree for every
+		// list this package builds itself and so are otherwise
+		// indistinguishable from any test built only out of well-formed
+		// lists.
+		"Param.Mixed": List(TFloat, []Value{Int(1), Int(2), Int(3)}),
 	}
 }
 
@@ -67,6 +77,28 @@ func TestEvalListComp_Values(t *testing.T) {
 	}
 }
 
+// evalRaw parses and evaluates src against target WITHOUT Expression.Eval's own
+// final boundary coerce.
+//
+// That final coerce narrows the WHOLE expression's result to target no matter
+// what an inner node computed, which masks exactly the class of bug
+// TestEvalListComp_TargetFlowsInward exists to catch: when the comprehension
+// IS the entire expression, Eval's own boundary call quietly repairs a wrong
+// inner derivation (an unresolved list[int] narrows straight to list[float]
+// when the target asks for it, whether or not the inner code that produced
+// list[int] ever consulted the target at all), so a test built on the public
+// Eval alone cannot tell a fixed unresolvedComp from the unfixed one. Calling
+// evalNode directly, the same way Eval does internally before that final
+// step, observes the comprehension's own derivation honestly.
+func evalRaw(t *testing.T, src string, syms Symbols, target Type) (Value, error) {
+	t.Helper()
+	e, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	return evalNode(e.root, e.src, syms, target, 0)
+}
+
 // TestEvalListComp_TargetFlowsInward pins that the element expression is an
 // identity position for the target type, like a list literal's elements — on
 // BOTH the resolved iterable path (runComp's coerce call) and the unresolved
@@ -74,7 +106,10 @@ func TestEvalListComp_Values(t *testing.T) {
 // disagree: the unresolved path used to derive its result type solely from
 // the element expression and silently drop the target, so the same source
 // text reported two different static types depending on whether its iterable
-// happened to be resolved at the time.
+// happened to be resolved at the time. The unresolved-path subtests use
+// evalRaw, not Eval, because Eval's own final boundary coerce independently
+// narrows the WHOLE result to target and would pass even against the
+// unfixed code — see evalRaw's doc.
 func TestEvalListComp_TargetFlowsInward(t *testing.T) {
 	syms := compSyms(t)
 	target, err := ParseType("list[float]")
@@ -94,9 +129,9 @@ func TestEvalListComp_TargetFlowsInward(t *testing.T) {
 		}
 	})
 	t.Run("unresolved iterable", func(t *testing.T) {
-		v, err := Eval("[i for i in Param.Unk]", syms, target)
+		v, err := evalRaw(t, "[i for i in Param.Unk]", syms, target)
 		if err != nil {
-			t.Fatalf("Eval: %v", err)
+			t.Fatalf("evalRaw: %v", err)
 		}
 		if got, want := v.Type.String(), "unresolved[list[float]]"; got != want {
 			t.Errorf("type = %s, want %s", got, want)
@@ -112,15 +147,17 @@ func TestEvalListComp_TargetFlowsInward(t *testing.T) {
 		}
 		// true cannot coerce to int (coerce.go's scalarCoercible has no
 		// bool -> int rule), so this must be reported exactly as the
-		// resolved path's coerce() call would report it, rather than
-		// silently accepted because there is no concrete value yet to check
-		// against the target.
-		_, err = Eval("[true for i in Param.Unk]", syms, intTarget)
+		// resolved path's coerce() call would report it — as "bool cannot be
+		// coerced to int", blaming the "true" literal itself — rather than
+		// silently accepted (the unfixed unresolvedComp never checks the
+		// element against the target at all, so it returns
+		// unresolved[list[bool]] with no error here).
+		_, err = evalRaw(t, "[true for i in Param.Unk]", syms, intTarget)
 		if err == nil {
-			t.Fatal("Eval = nil error, want the element rejected against the target")
+			t.Fatal("evalRaw = nil error, want the element rejected against the target")
 		}
-		if !strings.Contains(err.Error(), "cannot be coerced") {
-			t.Fatalf("Eval error = %q, want it to mention %q", err.Error(), "cannot be coerced")
+		if !strings.Contains(err.Error(), "bool cannot be coerced to int") {
+			t.Fatalf("evalRaw error = %q, want it to mention %q", err.Error(), "bool cannot be coerced to int")
 		}
 	})
 }
@@ -165,6 +202,30 @@ func TestEvalListComp_MidIterationUnresolved(t *testing.T) {
 	}
 }
 
+// TestEvalListComp_ElemTypeIsThreadedNotRederived pins Minor finding 2 (review
+// round 1): runComp's fallback to unresolvedComp must use the SAME elemType
+// evalListComp computed from the iterable's own declared type, not re-derive
+// one from whatever partial items runComp happened to collect before falling
+// back.
+//
+// The two agree for any list this package's own evaluator builds — coerce
+// always makes every item's type match the list's declared element type — so
+// Param.Mixed (compSyms) exists specifically to break that agreement: it is
+// declared list[float] but its items are actually Int, which only a value
+// injected directly through Symbols can produce.
+func TestEvalListComp_ElemTypeIsThreadedNotRederived(t *testing.T) {
+	syms := compSyms(t)
+	v, err := Eval("[i for i in Param.Mixed if Param.Maybe]", syms, TAny)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	// The iterable's OWN declared element type is float; the first collected
+	// item's raw payload type (int) must not leak into the result.
+	if got, want := v.Type.String(), "unresolved[list[float]]"; got != want {
+		t.Errorf("type = %s, want %s", got, want)
+	}
+}
+
 // TestEvalListComp_FilterAcceptsAnyTypedPlaceholder pins the fix for a filter
 // bound to an untyped ("any") placeholder — exactly what a "let" binding is
 // bound as by the conformance harness's DeclaredSymbols
@@ -196,6 +257,24 @@ func TestEvalListComp_FilterAcceptsAnyTypedPlaceholder(t *testing.T) {
 	})
 	t.Run("a placeholder that could never be bool is still rejected", func(t *testing.T) {
 		_, err := Eval("[i for i in Param.Unk if NotBoolFlag]", syms, TAny)
+		if err == nil {
+			t.Fatal("Eval = nil error, want a bool-filter rejection")
+		}
+		if !strings.Contains(err.Error(), "must be a bool") {
+			t.Fatalf("Eval error = %q, want it to mention %q", err.Error(), "must be a bool")
+		}
+	})
+	t.Run("a placeholder that could never be bool is rejected directly over a concrete iterable too", func(t *testing.T) {
+		// Unlike the previous case, Param.Items is CONCRETE, so evaluation
+		// reaches evalCompFilter's own includes check first (runComp's
+		// per-item loop), which now rejects on the spot rather than only
+		// deferring to checkCompFilter's identical check by way of the
+		// unresolvedComp fallback. The two checks are intentionally
+		// redundant here — for a filter that does not depend on the loop
+		// variable, checkCompFilter's fallback would report the identical
+		// error either way, so this pins the end-to-end behavior rather
+		// than discriminating evalCompFilter's branch in isolation.
+		_, err := Eval("[i for i in Param.Items if NotBoolFlag]", syms, TAny)
 		if err == nil {
 			t.Fatal("Eval = nil error, want a bool-filter rejection")
 		}
