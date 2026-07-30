@@ -44,12 +44,17 @@ func resolveName(n *Name, syms Symbols) (resolved, bool) {
 // evalProperty resolves a property access. Section 1.3.3 defines a property p
 // as the function __property_p__, so this routes into the function registry —
 // which sub-project C fills. Until then every property is unknown.
-func evalProperty(recv Value, attr, src string, offset, depth int) (Value, error) { //nolint:revive // depth: implemented in the next task
+func evalProperty(recv Value, attr, src string, offset, depth int) (Value, error) { //nolint:revive // depth: not yet consumed here, kept for the signature evalCall and evalDispatch already call through
 	if isDunder(attr) {
 		return Value{}, errorAt(src, offset,
 			"%q is a specification naming convention and is not directly callable", attr)
 	}
-	return Value{}, errorAt(src, offset, "unknown property %q on %s", attr, recv.Type)
+	// Section 1.3.3: the property p is the function __property_p__.
+	v, err := callFunction("__property_"+attr+"__", []Value{recv}, true)
+	if err != nil {
+		return Value{}, errorAt(src, offset, "unknown property %q on %s", attr, recv.Type)
+	}
+	return v, nil
 }
 
 // isDunder reports whether a name is a __double_underscore__ name. Section

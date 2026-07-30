@@ -126,6 +126,14 @@ func evalDispatch(n Node, src string, syms Symbols, target Type, depth int) (Val
 		return evalSlice(v, src, syms, depth)
 	case *ListComp:
 		return evalListComp(v, src, syms, target, depth)
+	case *Call:
+		return evalCall(v, src, syms, depth)
+	case *Access:
+		recv, err := evalNode(v.X, src, syms, TAny, depth+1)
+		if err != nil {
+			return Value{}, err
+		}
+		return evalProperty(recv, v.Attr, src, v.Offset, depth)
 	}
 	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
 }

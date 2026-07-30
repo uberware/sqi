@@ -115,15 +115,16 @@ func TestLanguage(t *testing.T) {
 		// change) — no longer belongs in the "not yet implemented" group
 		// below.
 		{name: "subscript", src: "Param.Name[0]", wantCode: expr.CodeString, want: "s"},
-		// Calls and property access now PARSE (sub-project B3, this task) — no
-		// longer "function and method calls are not supported". Evaluating one
-		// is still sub-project C: the function registry and call/access
-		// resolution do not exist yet, so both still fail, now with the
-		// generic "cannot evaluate" the evaluator gives any node kind it has
-		// no case for.
-		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: "internal error: cannot evaluate"},
-		{name: "function calls are sub-project C", src: "len('ab')", wantErr: "internal error: cannot evaluate"},
-		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: "internal error: cannot evaluate"},
+		// Calls, methods and property access now fully EVALUATE (sub-project
+		// B3, this task): the callee resolves, arguments are evaluated, and
+		// the call reaches the function registry. The registry itself is
+		// empty until sub-project C populates it, so every one of these still
+		// fails, but now with "unknown function" — a real diagnostic about a
+		// missing function, not the generic "cannot evaluate" the evaluator
+		// gives a node kind it has no case for at all.
+		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: `unknown function "len"`},
+		{name: "function calls are sub-project C", src: "len('ab')", wantErr: `unknown function "len"`},
+		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: `unknown function "upper"`},
 		// String repetition (section 2.1.2) now evaluates too — this task's
 		// change, once limits.go's size bound made an unbounded repeat count
 		// safe — no longer belongs in the "not yet implemented" group above,
