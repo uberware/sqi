@@ -518,8 +518,6 @@ func TestParse_ListLiteralErrors(t *testing.T) {
 		{"[1, 2", "unexpected end of expression"},
 		{"[,]", "unexpected"},
 		{"[1 2]", `"]"`},
-		{"[x for x in Param.Items]", "list comprehensions are not supported"},
-		{"[x * 2 for x in Param.Items if x > 2]", "list comprehensions are not supported"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
@@ -715,5 +713,86 @@ func TestWalk_DescendsIntoCallAndCompNodes(t *testing.T) {
 				t.Fatalf("Pos() = %d, want 0", got)
 			}
 		})
+	}
+}
+
+func TestParse_Comprehension(t *testing.T) {
+	tests := []struct {
+		src      string
+		wantVar  string
+		wantCond bool
+	}{
+		{"[x for x in Param.Items]", "x", false},
+		{"[x * 2 for x in Param.Items]", "x", false},
+		{"[x for x in Param.Items if x > 2]", "x", true},
+		{"[_i + 1 for _i in Param.Items]", "_i", false},
+		{"[[y for y in x] for x in Param.Items]", "x", false},
+		{"[a if b else c for x in Param.Items]", "x", false},
+		{"[x for x in (a if b else c)]", "x", false},
+		{"[\n  x\n  for x in Param.Items\n]", "x", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			e, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+			comp, ok := e.root.(*ListComp)
+			if !ok {
+				t.Fatalf("root = %T, want *ListComp", e.root)
+			}
+			if comp.Var != tc.wantVar {
+				t.Errorf("Var = %q, want %q", comp.Var, tc.wantVar)
+			}
+			if (comp.Cond != nil) != tc.wantCond {
+				t.Errorf("Cond present = %v, want %v", comp.Cond != nil, tc.wantCond)
+			}
+			if comp.Elem == nil || comp.Iter == nil {
+				t.Error("Elem and Iter must both be set")
+			}
+		})
+	}
+}
+
+func TestParse_ComprehensionErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		src      string
+		wantSubs string
+	}{
+		{"multi for", "[x + y for x in a for y in b]", "only one \"for\""},
+		{"multi if", "[x for x in a if p if q]", "only one \"if\""},
+		{"generator expression", "(x for x in [1,2])", "generator expressions are not supported"},
+		{"uppercase loop variable", "[x for X in a]", "must start with a lowercase letter or underscore"},
+		{"dotted loop variable", "[x for a.b in c]", "\"in\""},
+		{"missing in", "[x for x a]", "\"in\""},
+		{"missing iterable", "[x for x in]", "unexpected"},
+		{"unclosed", "[x for x in a", "unexpected end of expression"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(tc.src)
+			if err == nil {
+				t.Fatalf("Parse(%q) = nil error, want one mentioning %q", tc.src, tc.wantSubs)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Fatalf("Parse(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+		})
+	}
+}
+
+// TestParse_BracesStillDieInTheLexer pins that dict and set comprehensions need
+// no parser work: "{" is not a token, so they fail before parsing. Section
+// 1.3.7 supports neither, and the conformance suite has a fixture for each.
+func TestParse_BracesStillDieInTheLexer(t *testing.T) {
+	for _, src := range []string{"{k: k for k in [1,2]}", "{x for x in [1,2]}"} {
+		_, err := Parse(src)
+		if err == nil {
+			t.Fatalf("Parse(%q) = nil error, want a lexer rejection", src)
+		}
+		if !strings.Contains(err.Error(), "unexpected character '{'") {
+			t.Fatalf("Parse(%q) error = %q, want the lexer's brace rejection", src, err.Error())
+		}
 	}
 }

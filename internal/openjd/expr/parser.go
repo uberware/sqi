@@ -532,6 +532,9 @@ func (p *parser) parsePrimary() (Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		if tok := p.peek(); keyword(tok, "for") {
+			return nil, p.errorAtTok(tok, "generator expressions are not supported")
+		}
 		if _, err := p.expect(tokRParen); err != nil {
 			return nil, err
 		}
@@ -545,10 +548,11 @@ func (p *parser) parsePrimary() (Node, error) {
 // parseListLiteral implements <ListExpr> ::= "[" (<ConditionalExpr> (","
 // <ConditionalExpr>)* ","?)? "]" (spec section 1.1.2).
 //
-// <ListComp> shares the opening bracket and is sub-project B3's. It is detected
-// here rather than left to fall out as a syntax error at "for", because a bare
-// "unexpected name" would send a reader hunting for a typo in a construct that
-// is simply not implemented yet.
+// <ListComp> shares the opening bracket and is detected here — on the first
+// element only, since "[a, b for x in y]" is not a comprehension — rather than
+// left to fall out as a syntax error at "for", because a bare "unexpected
+// name" would send a reader hunting for a typo instead of pointing at the
+// actual problem.
 func (p *parser) parseListLiteral() (Node, error) {
 	open := p.advance()
 	lit := &ListLit{Offset: open.offset}
@@ -562,7 +566,10 @@ func (p *parser) parseListLiteral() (Node, error) {
 		}
 		lit.Elems = append(lit.Elems, elem)
 		if tok := p.peek(); keyword(tok, "for") {
-			return nil, p.errorAtTok(tok, "list comprehensions are not supported")
+			if len(lit.Elems) != 1 {
+				return nil, p.errorAtTok(tok, "a list comprehension takes a single element expression")
+			}
+			return p.parseComprehensionRest(open.offset, elem)
 		}
 		if _, ok := p.accept(tokComma); !ok {
 			break
@@ -576,6 +583,85 @@ func (p *parser) parseListLiteral() (Node, error) {
 		return nil, err
 	}
 	return lit, nil
+}
+
+// parseComprehensionRest reads a comprehension after its element expression and
+// the "for" keyword have been seen, through the closing bracket. Implements
+// <ListComp> (spec section 1.1.2) with the semantics of section 1.3.7.
+//
+// The ITERABLE and the FILTER are parsed with parseOr, not parseExpr, and that
+// is load-bearing rather than a shortcut. Section 1.1.2 writes both as
+// <ConditionalExpr>, which is ambiguous against the optional ("if"
+// <ConditionalExpr>) filter: parseConditional consumes an "if" and then demands
+// an "else", so "[x for x in y if c]" would fail at the "]" looking for one.
+// Python resolves the same ambiguity the same way — comp_for and comp_if both
+// take an or_test — so a conditional in either position needs parentheses.
+func (p *parser) parseComprehensionRest(offset int, elem Node) (Node, error) {
+	p.advance() // the "for"
+	comp := &ListComp{Offset: offset, Elem: elem}
+
+	name, err := p.expect(tokIdent)
+	if err != nil {
+		return nil, err
+	}
+	if !isUserIdentifier(name.text) {
+		return nil, p.errorAtTok(name,
+			"a comprehension loop variable must start with a lowercase letter or underscore, found %q", name.text)
+	}
+	comp.Var, comp.VarOffset = name.text, name.offset
+
+	if tok := p.peek(); !keyword(tok, "in") {
+		return nil, p.errorAtTok(tok, `expected "in", found %s`, tok.kind)
+	}
+	p.advance()
+
+	iter, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	comp.Iter = iter
+
+	if tok := p.peek(); keyword(tok, "if") {
+		p.advance()
+		cond, err := p.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		comp.Cond = cond
+		if tok := p.peek(); keyword(tok, "if") {
+			return nil, p.errorAtTok(tok, `a list comprehension takes only one "if" filter`)
+		}
+	}
+	if tok := p.peek(); keyword(tok, "for") {
+		return nil, p.errorAtTok(tok,
+			`a list comprehension takes only one "for" clause; Python's multi-generator form is not supported`)
+	}
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return comp, nil
+}
+
+// isUserIdentifier reports whether s is a <UserIdentifier> (spec section
+// 1.3.7): a lowercase letter or underscore, then letters, digits or
+// underscores. The casing rule is what makes it impossible for a loop variable
+// to shadow a spec-defined symbol like Param or Task.
+func isUserIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	if c := s[0]; (c < 'a' || c > 'z') && c != '_' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // parseIdentPrimary reads a literal keyword or a dotted <Name>.
