@@ -302,6 +302,30 @@ list[string] :: ['a', 'b']
 # Value.String()'s rendering, not to comprehension evaluation itself.
 list[string] :: [s for s in ['a', 'b']]
 
+# List-of-strings rendering, via flatten(): sqi prints unquoted elements
+# ([a, b]), the reference prints JSON-quoted elements (["a", "b"]); both sides
+# agree on the actual values and on the list[string] type. Same gap as the
+# entries above, not a new one — flatten() concatenates already-string
+# sub-lists, so the divergence is confined to Value.String()'s rendering, not
+# to flatten() itself.
+list[string] | list[list[string]] :: flatten([["a"], ["b"]])
+
+# List-of-strings rendering, via sorted(): sqi prints unquoted elements
+# ([a, b, c]), the reference prints JSON-quoted elements (["a", "b", "c"]);
+# both sides agree on the actual values, the order and the list[string] type.
+# Same gap as the entries above, not a new one — sorted() reorders
+# already-string elements, so the divergence is confined to Value.String()'s
+# rendering, not to sorted() itself.
+list[string] :: sorted(["b", "a", "c"])
+
+# List-of-strings rendering, via unique(): sqi prints unquoted elements
+# ([a, b]), the reference prints JSON-quoted elements (["a", "b"]); both sides
+# agree on the actual values and on the list[string] type. Same gap as the
+# entries above, not a new one — unique() de-duplicates already-string
+# elements, so the divergence is confined to Value.String()'s rendering, not
+# to unique() itself.
+list[string] :: unique(["a", "b", "a"])
+
 # ── sqi is right: the reference mistypes list comprehensions under a target type ─
 #
 # Both cases below evaluate correctly and produce the expected nested list
@@ -355,3 +379,69 @@ list[list[int]] :: [[x] for x in [1, 2]]
 # reference's error names the OUTER iterable's element type even though the
 # outer variable never appears in the body. Correct absent a target.
 list[list[int]] :: [[y for y in [1, 2]] for x in ['a', 'b']]
+
+# ── sqi is right: the reference widens round(x, ndigits <= 0) to float ───────
+#
+# RFC 0006's signature table is explicit: "round(x: float, ndigits: int) ->
+# float | int" returns "int when ndigits <= 0, float when ndigits > 0". The
+# reference returns 1230.0 typed float. sqi returns 1230 typed int.
+#
+# This is not a rendering difference — the reference reports the TYPE as float —
+# so it cannot be explained by the float pass-through rule, and the same query
+# with a positive ndigits returns a float correctly. The specification outranks
+# the reference (openjd-expr is Beta), and reported upstream alongside the
+# call-argument target pushdown.
+
+# round(x, ndigits <= 0): reference widens to 1230.0 : float, sqi returns
+# 1230 : int per RFC 0006's signature table — see the shared explanation above.
+int | float :: round(1234.5, -1)
+
+# ── sqi is right: range_expr(string) preserves the input text, the reference
+#    re-derives an undocumented "corrected" form ─────────────────────────────
+#
+# `range_expr("1-10:2")` computes the identical VALUE on both sides — the set
+# {1, 3, 5, 7, 9} — but the two sides disagree on the TEXT a bare range_expr
+# value carries: sqi keeps the input text verbatim ("1-10:2"), the reference
+# reports "1-9:2", correcting the declared end (10) to the actual last
+# generated value (9).
+#
+# Investigated directly against openjd-model 0.11.1 rather than assumed. The
+# reference's correction is NOT the same "flatten every value and greedily
+# collapse constant-delta runs" algorithm internal/openjd/expr already uses for
+# range_expr(list[int]) (canonicalRange in rangeexpr.go) — that algorithm
+# agrees with the reference on every range_expr([...]) case in this corpus, so
+# it is not in question here. Probed directly:
+#
+#   range_expr("1,3,5-7")          -> "1,3,5-7"        (unchanged — no merge)
+#   range_expr("1,2,3,10-15:2")    -> "1-3,10-14:2"     (bare 1,2,3 merged; the
+#                                                        stepped element only
+#                                                        had its end corrected)
+#   range_expr("10-15:2,1-5")      -> "1-5,10-14:2"     (elements REORDERED by
+#                                                        start, each otherwise
+#                                                        kept as its own group)
+#
+# So the reference's actual behavior is none of: preserve verbatim, or fully
+# flatten-and-regroup by canonicalRange's rule. It reorders top-level elements
+# by start, merges only ADJACENT bare/step-1 elements into a contiguous span,
+# and otherwise corrects each already-stepped element's own end bound — an
+# algorithm with no citation in either the base specification (3.4.1.1.1 defines
+# <IntRangeExpr> purely as a value SET, "combined to form a list of values in
+# increasing order", with no re-serialization rule at all) or RFC 0005's EXPR
+# layer, whose one "canonical form like '1-5'" sentence is scoped to the
+# range_expr -> string COERCION rule (target types that do NOT include
+# range_expr) — it does not apply here, where the target admits range_expr and
+# no coercion occurs.
+#
+# Replicating the reference's specific, unspecified re-grouping algorithm would
+# be matching Beta reference behavior with no spec backing, which the project
+# rule is to never do. sqi's rangeexpr.go already documents the design
+# deliberately: "The TEXT is what the value carries; the integers are expanded
+# only when an operation needs them" (avoiding the cost of expanding a
+# potentially huge range just to store a value nothing may ever read). This
+# entry documents the resulting text divergence rather than chasing an
+# undocumented algorithm.
+
+# range_expr(string) text: sqi keeps "1-10:2" verbatim, the reference reports
+# "1-9:2" (end corrected to the actual last generated value) — see the shared
+# explanation above.
+range_expr | string :: range_expr("1-10:2")

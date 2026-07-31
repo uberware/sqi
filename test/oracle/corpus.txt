@@ -9,29 +9,30 @@
 # separator because every other candidate appears inside real cases: spaces are
 # everywhere, and "|" is a union in the target type ("int | string").
 #
-# SCOPE: expressions that sub-projects A, B1, B2 and B3 actually implement —
+# SCOPE: expressions that sub-projects A, B1, B2, B3 and C1 actually implement —
 # scalar operators, the coercion matrix, comparison chains, conditionals,
 # and/or, list literals and their type inference, list operators, subscripts,
-# slices, and list comprehensions. Three constructs remain deliberately out of
-# scope, each for its own reason:
+# slices, list comprehensions, and C1's general, validation, math and list
+# functions. The string, regular-expression, repr_* and path families are
+# sub-projects C2, C3 and C4 and are not here yet.
 #
-# - functions/methods/properties — the registry is empty until sub-project C,
-#   so a call has nothing to compare.
-# - range_expr — the corpus format is a target type and an expression with no
-#   symbol table, and nothing constructs a range_expr value until C's
-#   range_expr(). (Detailed further below.)
-# - subscript/slice — the reference mis-infers their static type under any
-#   supplied target (reported upstream as openjd-rs#291), so all such cases
-#   are baselined; see baseline.txt for the evidence.
+# TARGET TYPES MUST BE UNIONS FOR ANY CASE CONTAINING A CALL, A SUBSCRIPT OR A
+# SLICE, and this is not a style preference. The reference implementation
+# applies the supplied target_type to a construct's OPERANDS as well as to its
+# result — reported upstream as openjd-rs#291, and observed here on call
+# arguments, subscript receivers and indices, slice bounds, and the operand
+# and/or discards. So "floor(3.7)" with the target "int" fails there, because
+# the target lands on the 3.7. Give the target a member for every operand and
+# the pushdown becomes harmless:
 #
-# range_expr is a special case worth stating explicitly rather than leaving
-# for someone to discover: this corpus format is a target type plus a bare
-# expression with NO symbol table, and nothing in the grammar constructs a
-# range_expr value on its own — the only way to produce one is a call to
-# sub-project C's range_expr() function. Until that function exists there is
-# no expression this corpus can write that evaluates to a range_expr, so that
-# part of the type system has zero differential coverage. This is a known,
-# accepted gap, not an oversight.
+#   floor(3.7)               int | float
+#   sum([1,2,3])             int | list[int]
+#   range(5)                 list[int] | int
+#   'hello'[1:3]             string | int | nulltype
+#
+# A case written with the obvious single target produces a divergence that
+# looks real and is not. If you add a case and it diverges, check the target
+# before reaching for baseline.txt.
 #
 # A handful of cases are in deliberately and are expected to diverge. They earn
 # their place by DOCUMENTING a gap or a disagreement rather than leaving it
@@ -289,3 +290,133 @@ list[float]	[x * 1.5 for x in [2, 4]]
 list[string]	[s for s in ['a', 'b']]
 list[list[int]]	[[x] for x in [1, 2]]
 list[list[int]]	[[y for y in [1, 2]] for x in ['a', 'b']]
+
+# ── sub-project C1: general conversions ──────────────────────────────────────
+int | list[int]	len([1, 2, 3])
+int | list[nulltype]	len([])
+int | string	len("hello")
+int | string	len("héllo")
+int | string	len("")
+int | list[nulltype]	[].len()
+int | list[int]	[1, 2, 3].len()
+bool	bool(true)
+bool | nulltype	bool(null)
+bool | int	bool(0)
+bool | int	bool(3)
+bool | float	bool(0.0)
+bool | float	bool(0.5)
+bool | string	bool("1")
+bool | string	bool("true")
+bool | string	bool("on")
+bool | string	bool("yes")
+bool | string	bool("0")
+bool | string	bool("false")
+bool | string	bool("off")
+bool | string	bool("no")
+bool | string	bool("YES")
+bool | string	bool("False")
+string | bool	string(true)
+string | nulltype	string(null)
+string | int	string(42)
+string | float	string(1.5)
+string | float	string(2.0)
+string	string("hi")
+string | list[int]	string([1, 2])
+string | list[string]	string(["a", "b"])
+string | list[nulltype]	string([])
+string | list[list[int]]	string([[1], [2]])
+string | list[bool]	string([true, false])
+int | float	int(5.0)
+int | string	int("42")
+int | string	int("-42")
+int	int(5)
+float | int	float(5)
+float	float(1.5)
+float | string	float("1.5")
+float | string	float("2")
+range_expr | string	range_expr("1-3")
+range_expr | string	range_expr("1,3,5-7")
+range_expr | string	range_expr("1-10:2")
+range_expr | list[int]	range_expr([1, 2, 3])
+range_expr | list[int]	range_expr([1, 3, 5])
+range_expr | list[int]	range_expr([5, 1, 2])
+range_expr | list[int]	range_expr([7])
+range_expr | list[int]	range_expr([1, 2, 4, 5])
+range_expr | list[int]	range_expr([1, 2, 3, 7, 9, 11])
+range_expr | list[int]	range_expr([-3, -2, -1])
+list[int] | string | range_expr	list(range_expr("1-5"))
+list[int] | string | range_expr	list(range_expr("1-10:3"))
+list[int] | string | range_expr	list(range_expr("1,5,9"))
+int | string | range_expr	len(range_expr("1-10"))
+string | range_expr	string(range_expr("1-5:2"))
+
+# ── sub-project C1: math ─────────────────────────────────────────────────────
+int	abs(-5)
+int	abs(5)
+int	abs(0)
+float	abs(-2.5)
+float	abs(2.5)
+int	floor(3)
+int | float	floor(3.7)
+int | float	floor(-3.2)
+int | float	floor(3.0)
+int	ceil(3)
+int | float	ceil(3.2)
+int | float	ceil(-3.7)
+int | float	round(0.5)
+int | float	round(1.5)
+int | float	round(2.5)
+int | float	round(2.4)
+int | float	round(-1.5)
+float | int	round(3.14159, 2)
+float | int	round(3.5, 2)
+int | float	round(1234.5, -1)
+int	min(3, 7)
+float	min(3.5, 7.5)
+float | int	min(1, 2.0)
+int	min(5, 3, 7)
+int | list[int]	min([3, 1, 2])
+float | list[float]	min([3.0, 1.0])
+int	max(3, 7)
+int	max(5, 3, 7)
+int | list[int]	max([3, 1, 2])
+float | list[float]	max([3.0, 1.0])
+int | list[nulltype]	sum([])
+int | list[int]	sum([1, 2, 3])
+float | list[float]	sum([1.5, 2.5])
+int | string | range_expr	min(range_expr("3-9"))
+int | string | range_expr	max(range_expr("3-9"))
+int | string | range_expr	sum(range_expr("1-4"))
+
+# ── sub-project C1: list functions ───────────────────────────────────────────
+list[int] | int	range(5)
+list[int] | int	range(0)
+list[int] | int	range(1, 5)
+list[int] | int	range(0, 10, 2)
+list[int] | int	range(5, 0, -1)
+list[int] | list[list[int]]	flatten([[1, 2], [3]])
+list[int] | list[list[int]]	flatten([[1], [], [2]])
+list[int]	flatten([1, 2])
+list[nulltype]	flatten([])
+list[string] | list[list[string]]	flatten([["a"], ["b"]])
+list[int]	sorted([3, 1, 2])
+list[string]	sorted(["b", "a", "c"])
+list[float]	sorted([3.5, 1.5])
+list[bool]	sorted([true, false])
+list[int]	reversed([1, 2, 3])
+list[nulltype]	reversed([])
+list[int]	unique([2, 1, 2, 3, 1])
+list[string]	unique(["a", "b", "a"])
+list[nulltype]	unique([])
+bool | list[bool]	any([false, true])
+bool | list[bool]	any([false, false])
+bool | list[nulltype]	any([])
+bool | list[bool]	all([true, true])
+bool | list[bool]	all([true, false])
+bool | list[nulltype]	all([])
+
+# ── sub-project C1: validation and composition ───────────────────────────────
+int | bool	5 if 1 > 0 else fail("unreachable")
+string | list[string] | list[list[string]]	string(flatten([["-e", "A=1"], ["-e", "B=2"]]))
+int | list[int]	min([len("abcd"), 3])
+list[int] | int	sorted(range(5, 0, -1))
