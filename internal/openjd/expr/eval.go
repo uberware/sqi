@@ -86,6 +86,23 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 // COMPUTE a value pass TAny to their operands: propagating a string target into
 // "Param.Count + 1" would concatenate its operands into "11" rather than adding
 // them.
+//
+// Two conventions coexist for the depth ARGUMENT a descent passes to this
+// function, and both are intentional. evalUnary, evalBinary, evalCompare,
+// evalLogical, evalCond, evalIndex and evalSlice pass depth straight through,
+// so each AST level costs exactly the one unit counted above. The Access arm
+// below, evalCall's receiver and argument descents (call.go), and every
+// descent in comp.go instead pass depth+1, so a chain of Access, Call or
+// comprehension nodes costs TWO units per level rather than one — an "Access
+// chain" ~5,000 deep reaches maxEvalDepth where a subscript chain needs
+// ~10,000. This was not unified when Access, Call and the comprehension were
+// added, and is left as found rather than fixed here: the effect is strictly
+// CONSERVATIVE (it can only reject a legal-depth expression earlier, never let
+// one past the point where the Go stack would actually be at risk — see the
+// measurements above), and unifying it touches three files' worth of already
+// well-tested recursion accounting for a correctness property nothing
+// currently depends on. Revisit if sub-project E's own configurable depth
+// limit makes the discrepancy user-visible.
 func evalNode(n Node, src string, syms Symbols, target Type, depth int) (Value, error) {
 	if depth >= maxEvalDepth {
 		return Value{}, errorAt(src, n.Pos(), "this expression is nested too deeply to evaluate")

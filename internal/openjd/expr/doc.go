@@ -97,13 +97,12 @@
 //     branches. Every member is indexed and the results combined, so
 //     "Param.Range[:][0]" is an int and "([1, 2] if Param.Flag else
 //     [3.0])[0]" a float; the operation is rejected only when some member
-//     genuinely cannot be indexed. list[T] also
-//     has its own operators: concatenation ("+"), repetition ("*" by an int,
-//     section 2.1.3) and membership ("in"/"not in"). What is still missing is
-//     list comprehensions (section 1.3.7) — "[x for x in [1]]" fails to
-//     parse — along with every function and method call; both are
-//     sub-project B3's. Subscript and slice have NO differential coverage
-//     against the OpenJD reference implementation (make test-expr-oracle),
+//     genuinely cannot be indexed. list[T] also has its own operators:
+//     concatenation ("+"), repetition ("*" by an int, section 2.1.3) and
+//     membership ("in"/"not in") — and, as of this wave, list comprehensions
+//     (section 1.3.7) too; see the comprehension bullet below for what that
+//     does and does not cover. Subscript and slice have NO differential
+//     coverage against the OpenJD reference implementation (make test-expr-oracle),
 //     though: verified directly against it under every target tried (int,
 //     list[int], float, string, and even a matching type), the reference
 //     mis-infers a subscript's or slice's own static result type whenever
@@ -113,13 +112,82 @@
 //     known reference defect). So subscript and slice are checked by this
 //     package's own tests and the conformance fixtures only.
 //
-//   - Function and method calls are not implemented. "len(x)" and "x.upper()"
-//     fail, and comprehensions (section 1.3.7) do not parse either — that is
-//     sub-project B3's call and method syntax (sections 1.3.3, 1.2.4). The
-//     ~100-function library and the type-variable binding a call site needs
-//     are sub-project C's; the type-variable codes (CodeVarT and friends) and
-//     the matcher's binding of them already live here in shape.go, ready for
-//     C's signatures to use.
+//   - List comprehensions (section 1.3.7) are complete, parse and eval:
+//     "[x for x in [1, 2, 3] if x > 1]" evaluates. The loop variable's binding
+//     follows the section's own shadowing rule — "a loop variable that shadows
+//     an existing binding is an error" — checked against the CALLER's symbol
+//     table (comp.go's evalListComp), on top of the parser's own
+//     <UserIdentifier> casing rule that already keeps a loop variable from
+//     colliding with a spec-defined symbol like Param. The shadowing check is
+//     only as precise as the caller's table: this package carries no scope
+//     information of its own, so a caller that binds a name which is not
+//     actually IN SCOPE at this particular expression — a "let" bound
+//     somewhere else in the template, say — will produce a false rejection.
+//     Real scope tracking is sub-project E's, where template integration
+//     threads an actual scope through. The iterable and the filter are both
+//     parsed at the OR level (parser.go's parseOr), not the full
+//     <ConditionalExpr> section 1.1.2's own grammar names for them, because
+//     that grammar is ambiguous there: parseConditional consumes a bare "if"
+//     expecting an "else" to follow it, so "[x for x in y if c]" would fail
+//     hunting for one. A conditional in either position therefore needs
+//     parentheses — "[x for x in (a if b else c)]" — which is exactly how
+//     Python resolves the same ambiguity (comp_for and comp_if both take an
+//     or_test, not a full conditional). A STRING IS DELIBERATELY NOT
+//     ITERABLE: the spec never defines iterating one, and section 2.1.2
+//     already gives "in" over a string a different meaning, a substring test,
+//     so "[c for c in 'abc']" is a "cannot be iterated" error rather than a
+//     list of characters. Rejected outright, each with its own parser error:
+//     a second "for" clause and a second "if" filter (Python's
+//     multi-generator and multi-filter forms) and a generator expression
+//     ("(x for x in y)"). A dict or set comprehension ("{k: k for k in y}",
+//     "{x for x in y}") is rejected earlier still, IN THE LEXER — "{" is not
+//     a token this grammar defines at all, so there is no parser production
+//     to reject it in; it never reaches one. The comprehension is a SECOND
+//     way to do unbounded total work in a single expression, alongside B2's
+//     nested-repetition growth: nesting one comprehension inside another's
+//     element expression multiplies the inner work by the outer iteration
+//     count at every level, the same shape of growth "[[0]*10000000]*10"
+//     already had. checkElementCount (limits.go's maxElements) bounds one
+//     comprehension's own RESULT, not the cumulative work of producing every
+//     nested level along the way — the configurable limits that would
+//     (sections 1.3.9 and 1.3.10) are still sub-project E's, unchanged from
+//     every earlier wave.
+//
+//   - Function, method and property calls now PARSE AND RESOLVE —
+//     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
+//     unsupported syntax — but the registry they resolve through,
+//     functionShapes (call.go), is DELIBERATELY EMPTY: every function,
+//     method and property of section 2.2's roughly 100-function library is
+//     sub-project C's, so every call fails at RUNTIME with "unknown
+//     function", a real diagnostic rather than a parse error —
+//     "len([1])" reports `unknown function "len"`, not a syntax error.
+//     TestFunctionShapes_IsEmpty pins the registry at zero entries for
+//     exactly this reason: it would be easy to "finish" this sub-project by
+//     quietly registering one. Uniform function call syntax (section 1.3.3)
+//     makes "x.f(a)" resolve through the same callFunction as "f(x, a)",
+//     with the receiver prepended to the argument list — EXCEPT that section
+//     1.2.4 suppresses implicit coercion on a method receiver specifically, a
+//     call-site property this package does implement (callFunction's
+//     methodStyle) but that is UNOBSERVABLE against an empty registry:
+//     nothing here has a signature to accept or reject a receiver by.
+//     TestReceiverCoercionRestriction (call_internal_test.go) covers it by
+//     registering a function locally under the test build for exactly that
+//     reason — sub-project C must not be the first place this restriction is
+//     exercised. Property syntax (section 1.3.3) is sugar for a call to
+//     __property_p__, dispatched through the same empty registry, so a
+//     property access fails the identical way a call does. A dotted name
+//     that reaches a method or property call is split by LONGEST-PREFIX
+//     resolution against the caller's own symbol table (resolve.go's
+//     resolveName): "Param.Name.upper()" tries "Param.Name.upper" as a bound
+//     symbol first, then "Param.Name", stopping at the first prefix the
+//     caller's table actually binds. This package hardcodes no namespaces of
+//     its own — the caller's table is authoritative, exactly as it is for the
+//     comprehension shadowing check above — so a caller that binds both
+//     "a.b" and "a.b.c" gets "a.b.c" resolved to the SYMBOL rather than to a
+//     property "c" of "a.b". The ~100-function library and the type-variable
+//     binding a call site needs are sub-project C's; the type-variable codes
+//     (CodeVarT and friends) and the matcher's binding of them already live
+//     here in shape.go, ready for C's signatures to use.
 //
 //   - path and range_expr exist as types — TPath and TRangeExpr participate
 //     in Type, coercion and cross-type equality, and a declared parameter can
@@ -239,25 +307,35 @@
 //     "\a". This is a deliberate reading of the table over the prose, not a
 //     deferral to a later sub-project.
 //
-// A target type propagates into a sub-expression from exactly three node
+// A target type propagates into a sub-expression from exactly four node
 // kinds, and nowhere else — a rule not answerable from outside the package,
 // so it is spelled out here rather than left to be inferred from eval.go:
 //
 //	Cond, the chosen branch (or both, under an unknown condition)  forwards the target
 //	Logical ("and"/"or"), both operands                            forwards the target
 //	ListLit, each element (through listElemTarget)                 forwards the target
+//	ListComp, the element expression (through listElemTarget)      forwards the target
+//	ListComp, its iterable; its filter                             always TAny; always TBool
 //	Unary / Binary / Compare, all operands                         always TAny instead
 //	Index / Slice, the receiver being indexed or sliced             always TAny instead
 //	Index's own index; Slice's start/stop/step                     always TInt instead
+//	Call, its receiver and every argument                          always TAny instead
+//	Access, the receiver being accessed                             always TAny instead
 //
-// The three "forwards" rows compute a value that literally IS one of the
-// sub-expression's values, so the caller's target applies to it directly.
-// Everything else COMPUTES a new value from its operands, so forwarding the
-// target would leak context across an operator boundary — a string target
-// reaching into "Param.Count + 1" would concatenate its operands into "11"
-// rather than add them — and a subscript's own index or a slice's bound is
-// fixed at TInt regardless of the target because that position must already
-// be an int no matter what the whole expression is being coerced to.
+// The four "forwards" rows compute a value that literally IS one of the
+// sub-expression's values, so the caller's target applies to it directly —
+// ListComp's element expression joins ListLit's for the same reason: each of
+// a comprehension's produced elements IS the element expression's value, one
+// per iteration, exactly as each of a literal's elements is. Everything else
+// COMPUTES a new value from its operands, so forwarding the target would leak
+// context across an operator or call boundary — a string target reaching
+// into "Param.Count + 1" would concatenate its operands into "11" rather than
+// add them — and a subscript's own index or a slice's bound is fixed at TInt
+// regardless of the target because that position must already be an int no
+// matter what the whole expression is being coerced to. A call's return type
+// is fixed by the signature callFunction selects, not by the caller's target,
+// so a target reaching into an argument would let the CALLER'S context change
+// which overload the callee resolves to.
 //
 //   - This package imports internal/openjd/intrange for range_expr's own
 //     grammar, section 3.4.1.1.1's <IntRangeExpr>. internal/openjd expands
@@ -273,8 +351,14 @@
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
 //     EXPR/job_templates group is 140/209 passing, 69 fixtures baselined
-//     (make test-conformance), and the differential oracle test has 127/158
-//     cases agreeing with the reference implementation, 31 baselined
+//     (make test-conformance), including ten .invalid fixtures that pass only
+//     because a construct this comment describes as rejected — the
+//     comprehension shadowing check, or a parser/lexer rejection of a form
+//     Python allows — does in fact reject it; TestConformance_B3ProtectedFixtures
+//     asserts those ten by name so a swap (one starting to pass for the wrong
+//     reason while another silently regresses) cannot hide inside an
+//     unchanged aggregate score. The differential oracle test has 135/169
+//     cases agreeing with the reference implementation, 34 baselined
 //     divergences (make test-expr-oracle). Most baselined divergences are the
 //     reference's own bugs, adjudicated against the spec text and recorded
 //     one by one in test/oracle/baseline.txt — that file, not this comment,
