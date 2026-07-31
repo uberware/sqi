@@ -35,7 +35,6 @@ func TestEvalCall_Errors(t *testing.T) {
 		{"unknown symbol with segments", "Param.Nope.upper()", "unknown symbol"},
 		{"dunder call", "__add__(1, 2)", "not directly callable"},
 		{"dunder method", "Param.Name.__property_stem__", "not directly callable"},
-		{"calling a literal", "5(1)", "cannot be called"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -45,6 +44,41 @@ func TestEvalCall_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSubs) {
 				t.Fatalf("Eval(%q) error = %q, want it to mention %q", tc.src, err.Error(), tc.wantSubs)
+			}
+		})
+	}
+}
+
+// TestEvalCall_NonFunctionCallee covers Call.target's fall-through arm: a
+// callee that is neither a Name nor an Access, so there is no function name to
+// look up at all.
+//
+// It asserts the WHOLE message, not a substring, and that is the point of the
+// test rather than an accident of style. The message used to be built with
+// "%T", which rendered the Go type of the tree node — "a *expr.IntLit cannot be
+// called" — leaking this package's internals into a diagnostic a template
+// author reads, while every other message here names spec types. A substring
+// assertion cannot catch that coming back, because a "%T" satisfies any
+// substring the fixed wording does; only the full string does.
+func TestEvalCall_NonFunctionCallee(t *testing.T) {
+	syms := MapSymbols{"Param.Flag": Bool(true)}
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"an int literal", "5(1)", "col 2: this expression is not a function"},
+		{"a subscript", "[1,2][0](3)", "col 9: this expression is not a function"},
+		{"a conditional", "(1 if Param.Flag else 2)(3)", "col 25: this expression is not a function"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Eval(tc.src, syms, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) = nil error, want %q", tc.src, tc.want)
+			}
+			if got := err.Error(); got != tc.want {
+				t.Fatalf("Eval(%q) error = %q, want exactly %q", tc.src, got, tc.want)
 			}
 		})
 	}

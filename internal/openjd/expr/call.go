@@ -81,7 +81,21 @@ func (n *Call) target(src string, syms Symbols, depth int) (name string, recv Va
 	case *Name:
 		return n.nameTarget(callee, src, syms, depth)
 	}
-	return "", Value{}, false, errorAt(src, n.Offset, "a %T cannot be called", n.Callee)
+	// Every other callee — a literal, a subscript, a conditional — is a value,
+	// and no value in this language is callable.
+	//
+	// The wording names no type at all, deliberately. A "%T" here would render
+	// the Go type of the tree node ("a *expr.IntLit cannot be called"), which is
+	// an implementation detail of this package leaking into a diagnostic a
+	// TEMPLATE AUTHOR reads; every other message in this package names spec
+	// types instead ("a int cannot be subscripted", "unknown property %q on
+	// %s"). The callee's spec type is not available here either — it has not
+	// been evaluated, and evaluating it just to name it in an error would run a
+	// sub-expression for its side effects. So the message describes the
+	// POSITION, and the error's own offset points at the "(" that made it a
+	// call. It matches nameTarget's "%s is not a function" above by design: the
+	// two are the same diagnosis for a named and an unnamed callee.
+	return "", Value{}, false, errorAt(src, n.Offset, "this expression is not a function")
 }
 
 // nameTarget resolves a call whose callee is a dotted name. Four outcomes, one
