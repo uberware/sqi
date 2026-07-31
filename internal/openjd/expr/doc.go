@@ -167,51 +167,73 @@
 //
 //   - Function, method and property calls now PARSE AND RESOLVE —
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
-//     unsupported syntax — but the registry they resolve through,
-//     functionShapes (call.go), is DELIBERATELY EMPTY: every function,
-//     method and property of section 2.2's roughly 100-function library is
-//     sub-project C's, so a call that reaches the registry fails at RUNTIME
-//     with "unknown function", a real diagnostic rather than a parse error —
-//     "len([1])" reports `unknown function "len"`, not a syntax error. (Not
-//     every call reaches it: a dunder callee like "__add__(1, 2)" is
-//     rejected before lookup with "is a specification naming convention and
-//     is not directly callable", and a callee whose whole dotted name
-//     resolves to a symbol — "Param.Name()" when Param.Name is bound — fails
-//     "Param.Name is not a function".) TestFunctionShapes_IsEmpty pins the
-//     registry at zero entries for exactly this reason: it would be easy to
-//     "finish" this sub-project by quietly registering one. Uniform function
-//     call syntax (section 1.3.3) makes "x.f(a)" resolve through the same
+//     unsupported syntax — and the registry they resolve through,
+//     functionShapes (call.go, assembled by funcs.go's mergeFuncs), now holds
+//     its first 22 entries: sub-project C1's general conversions (len, bool,
+//     string, int, float, list, range_expr, fail — funcsconv.go), math
+//     (abs, min, max, sum, floor, ceil, round — funcsmath.go) and list
+//     functions (range, flatten, sorted, reversed, unique, any, all —
+//     funcslist.go). Section 2.2's roughly 100-function library is otherwise
+//     still unregistered: the 31 string functions are C2's, regular
+//     expressions and the repr_* family are C3's, and the path engine —
+//     every path property and function except apply_path_mapping, plus the
+//     section 2.1.5 path operators — is C4's. A call to any of those still
+//     fails at RUNTIME with "unknown function", a real diagnostic rather than
+//     a parse error — "upper([1,2].upper())" reports `unknown function
+//     "upper"`, not a syntax error, exactly as every name did before C1.
+//     (Not every call reaches the registry at all: a dunder callee like
+//     "__add__(1, 2)" is rejected before lookup with "is a specification
+//     naming convention and is not directly callable", and a callee whose
+//     whole dotted name resolves to a symbol — "Param.Name()" when Param.Name
+//     is bound — fails "Param.Name is not a function".) Uniform function call
+//     syntax (section 1.3.3) makes "x.f(a)" resolve through the same
 //     callFunction as "f(x, a)", with the receiver prepended to the argument
 //     list — EXCEPT that section 1.2.4 suppresses implicit coercion on a
 //     method receiver specifically, a call-site property this package does
-//     implement (callFunction's methodStyle) but that is UNOBSERVABLE
-//     against an empty registry: nothing here has a signature to accept or
-//     reject a receiver by. TestReceiverCoercionRestriction
-//     (call_internal_test.go) covers it by registering a function locally
-//     under the test build for exactly that reason — sub-project C must not
-//     be the first place this restriction is exercised. That restriction is
-//     applied to a PROPERTY receiver as well (resolve.go's evalProperty passes
+//     implement (callFunction's methodStyle), and C1's own registry is now
+//     the first place a caller can observe it directly with no test-only
+//     function involved: round's single-argument row is declared over TFloat
+//     alone, so "round(3)" resolves in FUNCTION position by promoting the int
+//     argument to float (returning the int 3, since that row's own return
+//     type is int), while "Param.N.round()" with Param.N bound to that same
+//     int FAILS — "no signature of \"round\" accepts (int)" — because the
+//     receiver never gets the promotion the argument position received,
+//     verified directly against both call forms. TestReceiverCoercionRestriction
+//     (call_internal_test.go) still additionally registers a synthetic
+//     function ("startswith") for the general case, because C1 supplies no
+//     (path, string) overload set to pin the spec's own worked example
+//     against; C2's real string functions will let that test target a
+//     shipped signature instead of one it registers itself. One further
+//     exception already exists in the shipped registry: [].len() and len([])
+//     both resolve and both return 0 (TestLen_EmptyListReceiver) — not
+//     because the receiver restriction was relaxed, but because there is
+//     nothing for it to restrict. list[T]'s receiver-position binding of the
+//     unbound element variable T to nulltype (the empty literal's own type)
+//     converts no value at all; section 1.2.4 suppresses a COERCION on the
+//     receiver, and binding a type variable is not one. That restriction is applied to a
+//     PROPERTY receiver as well (resolve.go's evalProperty passes
 //     methodStyle), which is an adjudication and not an inherited detail:
 //     section 1.3.3 defines "x.p" as method syntax over "__property_p__", and
 //     section 1.2.4 suppresses coercion on the receiver of a method call, so a
-//     property's receiver is not coerced either. It is consequential for
-//     sub-project C's library rather than academic — it decides, for a
+//     property's receiver is not coerced either. It is consequential for the
+//     path engine's properties (C4's) rather than academic — it decides, for a
 //     "__property_stem__(path)", that "Param.S.stem" on a STRING parameter is
 //     an error instead of a silent string-to-path conversion. The reference
 //     implementation agrees, checked directly: "'/a/b.txt'.stem" reports
 //     "'stem' property is not available for string. Available for: path".
 //     TestPropertyReceiverCoercionRestriction pins it with a path receiver
-//     against a "(string)" property signature, which is the only receiver type
-//     where the flag is observable at all — every other type that reaches a
-//     string parameter does so by a conversion overload selection would refuse
-//     anyway, so the test would pass with the restriction switched off.
-//     Property syntax
-//     (section 1.3.3) is sugar for a call to __property_p__, dispatched
-//     through the same empty registry, so a property access fails through
-//     the identical mechanism — but NOT with the identical message: an
-//     unknown-function failure there is deliberately reworded to "unknown
-//     property" (resolve.go's evalProperty) so that a genuine runtime error
-//     inside a property that DOES exist is never relabeled as a missing one.
+//     against a "(string)" property signature registered locally by the test
+//     — C1 registers no properties at all — which is the only receiver type
+//     where the flag is observable in the first place: every other type that
+//     reaches a string parameter does so by a conversion overload selection
+//     would refuse anyway, so the test would pass with the restriction
+//     switched off. Property syntax (section 1.3.3) is sugar for a call to
+//     __property_p__, dispatched through the same registry, so a property
+//     access fails through the identical mechanism today (C1 registers no
+//     property) — but NOT with the identical message: an unknown-function
+//     failure there is deliberately reworded to "unknown property"
+//     (resolve.go's evalProperty) so that a genuine runtime error inside a
+//     property that DOES exist is never relabeled as a missing one.
 //     "Param.Name.stem" (Param.Name bound to a string) reports
 //     `unknown property "stem" on string`, not `unknown function
 //     "__property_stem__"`. A dotted name that reaches a method or property
@@ -223,10 +245,13 @@
 //     its own — the caller's table is authoritative, exactly as it is for the
 //     comprehension shadowing check above — so a caller that binds both
 //     "a.b" and "a.b.c" gets "a.b.c" resolved to the SYMBOL rather than to a
-//     property "c" of "a.b". The ~100-function library and the type-variable
-//     binding a call site needs are sub-project C's; the type-variable codes
-//     (CodeVarT and friends) and the matcher's binding of them already live
-//     here in shape.go, ready for C's signatures to use.
+//     property "c" of "a.b". The rest of the ~100-function library (C2-C4)
+//     and the type-variable binding a call site needs are still to come; the
+//     type-variable codes (CodeVarT and friends) and the matcher's binding of
+//     them already live here in shape.go, and C1's own list[varT] rows —
+//     len(), bool(), string()'s list row, and flatten(), sorted(),
+//     reversed() and unique() from the list-function group — are the first
+//     functions to bind that variable for a genuinely polymorphic signature.
 //
 //   - path and range_expr exist as types — TPath and TRangeExpr participate
 //     in Type, coercion and cross-type equality, and a declared parameter can
@@ -235,8 +260,11 @@
 //     coercion rule, so Eval(src, syms, expr.TPath) returns a path value for
 //     any expression that evaluates to a string. Neither path nor range_expr
 //     has an operator of its own beyond what coercion gives it for free:
-//     path's POSIX/Windows semantics, its URI awareness and its own
-//     operators (section 2.1.5) belong to sub-projects D and E. The
+//     path's POSIX/Windows semantics, its URI awareness, its properties and
+//     functions, and its own operators (section 2.1.5) all belong to
+//     sub-project C4 — RFC 0006 puts the whole family in the function
+//     library. D is narrower than that split once suggested: apply_path_mapping,
+//     the Param/RawParam split, and mapping into typed parameter values. The
 //     range_expr -> list[int] conversion (section 1.2.3) is fully
 //     implemented — coercing a range_expr value to a list[int] target expands
 //     it — and so is section 1.2.5's list/range_expr cross-type equality
@@ -252,21 +280,31 @@
 //     substring test over "1-10" they used to be. The reference implementation
 //     rejects both as well.
 //
-//   - range_expr has real values, but nothing in the language's own grammar
-//     constructs one: no literal syntax, coercion or operator produces a
-//     range_expr from anything else — "nothing coerces to it" still holds.
-//     The only way to get one is expr.RangeExpr(text) directly, or a caller's
-//     symbol table binding a name to a value built that way; parsing and
-//     evaluating an expression never yields a range_expr on its own. That
-//     stays true until sub-project C's range_expr() function or sub-project
-//     E's CHUNK[INT] symbol gives the language a way to construct one itself.
-//     For the same reason, range_expr has NO differential coverage against
-//     the OpenJD reference implementation either: the oracle corpus format
-//     (make test-expr-oracle) is a target type plus a bare expression with no
-//     symbol table, and nothing in the grammar can write a case that
-//     produces a range_expr, so its only check is this package's own tests,
-//     written from the spec's worked table in section 3.4.1.1.1 rather than
-//     from what this code happens to do.
+//   - range_expr has real values, and sub-project C1's range_expr() function
+//     (funcsconv.go) is now the language's own way to construct one — the
+//     first since "nothing coerces to it, and nothing constructs it" was
+//     written. range_expr(string) parses the spec's <IntRangeExpr> grammar
+//     (via internal/openjd/intrange, the same leaf internal/openjd itself
+//     uses) and keeps the source text verbatim rather than canonicalizing it;
+//     range_expr(list[int]) sorts and de-duplicates its input, then builds
+//     the canonical string through canonicalRange (rangeexpr.go) — the same
+//     function this package already used internally to derive a range_expr
+//     from a SLICE of one (slice.go's sliceRangeExpr). Sub-project E's
+//     CHUNK[INT] symbol remains a second,
+//     still-unimplemented way to get one. Because a bare expression can now
+//     construct a range_expr with no symbol table, it also has DIFFERENTIAL
+//     coverage for the first time (make test-expr-oracle, corpus.txt's
+//     range_expr(...) cases) — which is what surfaced a canonicalization gap
+//     rather than closing the topic outright: range_expr(string) keeps
+//     "1-10:2" as entered, while the reference reports the canonical
+//     "1-9:2" (the end corrected to the last value the step actually
+//     produces), and the same gap resurfaces wherever that string is read
+//     back out — string(range_expr(...)) and range_expr as an operand of
+//     "+". range_expr(list[int]) itself is NOT part of the gap: canonicalRange
+//     agrees with the reference on every list-constructed case in the corpus.
+//     All of it is baselined in test/oracle/baseline.txt as a known gap,
+//     deferred to sub-project E along with the rest of section 1.3.4's
+//     pass-through requirements.
 //
 //   - A union target that names a value's own type exactly now admits it
 //     unchanged, list types included: Eval("[1.0, 2.0]", nil,
@@ -326,12 +364,27 @@
 //     "1.100". Section 1.3.4's requirement that a float pass through a
 //     template unchanged, digit for digit, is not implemented here;
 //     Value.String is a rendering for diagnostics and tests, not that
-//     pass-through, and the same underlying gap now shows up for a list too:
-//     Value.String renders a list's string elements unquoted ("[a, b]"),
-//     while the reference implementation's to_string() JSON-quotes them
-//     ("[\"a\", \"b\"]") — confirmed directly against the reference, not just
-//     inferred. Both are sub-project E's to fix, unchanged from sub-project
-//     A.
+//     pass-through. Sub-project C1 gives Value a NARROWER, related mechanism
+//     that must not be confused with it: an optional rendered form (value.go's
+//     fs field), set only by round(x, ndigits) for a positive ndigits, because
+//     RFC 0006 requires round(3.5, 2) to render "3.50" — a form no float64
+//     carries on its own (TestRound_CarryIsRoundOnlyAndDoesNotPropagate). It is
+//     NOT section 1.3.4's pass-through: that needs the original submitted
+//     string, which only template integration has, so a parsed float parameter
+//     still renders through ordinary formatting, digit-for-digit fidelity and
+//     all, remains unimplemented, and extending the carry to cover it is
+//     sub-project E's, unchanged from sub-project A. The same underlying
+//     Value.String gap now shows up for a list too: Value.String renders a
+//     list's string elements unquoted ("[a, b]"), while the reference
+//     implementation's to_string() JSON-quotes them ("[\"a\", \"b\"]") —
+//     confirmed directly against the reference, not just inferred. Sub-project
+//     C1's own string() function (funcsconv.go) does NOT share this gap for a
+//     list argument: RFC 0006 calls that conversion's list row "the JSON string
+//     representation" rather than a diagnostic rendering, so it quotes string
+//     elements — string(["a", "b"]) is "[\"a\", \"b\"]" — while Value.String()
+//     of that same list stays unquoted. Two renderings, two functions, on
+//     purpose (TestString), and only Value.String()'s form is still
+//     sub-project E's to fix.
 //
 //   - Nothing here touches a job template. Parsing a template, binding its
 //     parameters, and interpolating an expression's result back into template
@@ -389,19 +442,30 @@
 //     comparison.
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
-//     EXPR/job_templates group is 140/209 passing, 69 fixtures baselined
-//     (make test-conformance), including ten .invalid fixtures that pass only
-//     because a construct this comment describes as rejected — the
-//     comprehension shadowing check, or a parser/lexer rejection of a form
-//     Python allows — does in fact reject it; TestConformance_B3ProtectedFixtures
-//     asserts those ten by name so a swap (one starting to pass for the wrong
-//     reason while another silently regresses) cannot hide inside an
-//     unchanged aggregate score. The differential oracle test has 135/169
-//     cases agreeing with the reference implementation, 34 baselined
-//     divergences (make test-expr-oracle). Most baselined divergences are the
-//     reference's own bugs, adjudicated against the spec text and recorded
-//     one by one in test/oracle/baseline.txt — that file, not this comment,
-//     is the place to check any individual ruling.
+//     EXPR/job_templates group is 141/209 passing, 68 fixtures baselined
+//     (make test-conformance), including the ten .invalid fixtures
+//     TestConformance_B3ProtectedFixtures asserts by name — a construct this
+//     comment describes as rejected, such as the comprehension shadowing
+//     check or a parser/lexer rejection of a form Python allows, genuinely
+//     does reject it — and the sixteen TestConformance_C1ProtectedFixtures
+//     protects: sub-project C1's own conversion and math functions correctly
+//     REJECTING an invalid argument (an empty list to min/max, an
+//     unrepresentable float-to-int, NaN and infinity into float(), an empty
+//     string or list into range_expr()), so that swap (one starting to pass
+//     for the wrong reason while another silently regresses) cannot hide
+//     inside an unchanged aggregate score either. The differential oracle
+//     test has 279/321 cases
+//     agreeing with the reference implementation, 42 baselined divergences
+//     (make test-expr-oracle) — up from B2's 135/169 now that C1's 22
+//     functions have their own corpus cases (test/oracle/corpus.txt), most of
+//     which agree outright; the new baselined entries are the round(x,
+//     ndigits<=0) int/float divergence and the range_expr(string)
+//     canonicalization gap described above, plus the list-of-strings
+//     rendering gap (Value.String, not string()) recurring through flatten,
+//     sorted and unique. Most baselined divergences are the reference's own
+//     bugs, adjudicated against the spec text and recorded one by one in
+//     test/oracle/baseline.txt — that file, not this comment, is the place to
+//     check any individual ruling.
 //
 // Anything unimplemented FAILS rather than silently misbehaving, with one
 // deliberate exception: the escape sequences named above pass through
