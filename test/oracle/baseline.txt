@@ -445,3 +445,62 @@ int | float :: round(1234.5, -1)
 # "1-9:2" (end corrected to the actual last generated value) — see the shared
 # explanation above.
 range_expr | string :: range_expr("1-10:2")
+
+# ── known gap in sqi: range_expr -> string does not canonicalize ────────────
+#
+# This is the OPPOSITE adjudication from the entry directly above, and the
+# difference is exactly which path is exercised. The entry above
+# (`range_expr | string :: range_expr("1-10:2")`) admits range_expr in its
+# target, so no coercion occurs — the bare VALUE's text is genuinely
+# unspecified by the base spec (3.4.1.1.1 defines only a value set, no
+# re-serialization rule), and RFC 0005's one "canonical form" sentence does
+# not apply to it because that sentence is conditioned on the coercion
+# actually firing.
+#
+# These three entries are the coercion path, where the condition IS met and
+# the spec is explicit, not silent:
+#
+#   - section 1.2.3 (2026-02 Expression-Language.md line 843): "range_expr" ->
+#     "string" "when the target types do not include range_expr (produces
+#     canonical form like '1-5')"
+#   - section 2.1.2 (line 1189): __add__(range_expr, string) -> string —
+#     "range_expr converted to canonical string form"
+#
+# sqi does not canonicalize on either path. Reproduced directly against
+# openjd-model 0.11.1:
+#
+#   string(range_expr("1-10:2"))       sqi: "1-10:2"   reference: "1-9:2"
+#   range_expr("1-10:2") + "!"         sqi: "1-10:2!"  reference: "1-9:2!"
+#   "!" + range_expr("1-10:2")         sqi: "!1-10:2"  reference: "!1-9:2"
+#
+# This is not a missing algorithm — internal/openjd/expr already has one:
+# canonicalRange (rangeexpr.go), applied to range_expr("1-10:2")'s expanded
+# integers ([1,3,5,7,9]), produces exactly "1-9:2", the reference's answer.
+# It is simply not wired into the range_expr -> string coercion (coerceScalar
+# in coerce.go, which calls v.String() and gets the raw payload text back) or
+# into the string operator rows (ops.go's OpAdd, same underlying conversion).
+#
+# Not fixed here: sub-project E owns the definitive interpolated string form
+# for every type, and Value.String()'s own doc comment in value.go already
+# defers this exact question to it — the identical reasoning that put the
+# list-of-strings JSON-quoting gap in this file rather than fixing it in B2.
+# Wiring canonicalRange into range_expr -> string needs to happen ONCE, for
+# every range_expr -> string path together (the coercion, both __add__ rows,
+# and the explicit string() function, which share the same conversion) —
+# doing it piecemeal for one call site here would leave the others
+# inconsistent with whichever one got fixed first.
+
+# range_expr -> string coercion: sqi returns the raw payload "1-10:2", the
+# reference returns the spec-mandated canonical form "1-9:2" — see the shared
+# explanation above. Known gap, deferred to sub-project E.
+string | range_expr :: string(range_expr("1-10:2"))
+
+# range_expr -> string via the "+" operator (range_expr operand): sqi returns
+# "1-10:2!", the reference returns "1-9:2!" — see the shared explanation
+# above. Known gap, deferred to sub-project E.
+string | range_expr :: range_expr("1-10:2") + "!"
+
+# range_expr -> string via the "+" operator (range_expr as the right
+# operand): sqi returns "!1-10:2", the reference returns "!1-9:2" — see the
+# shared explanation above. Known gap, deferred to sub-project E.
+string | range_expr :: "!" + range_expr("1-10:2")

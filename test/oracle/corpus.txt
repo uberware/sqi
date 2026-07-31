@@ -350,6 +350,20 @@ list[int] | string | range_expr	list(range_expr("1,5,9"))
 int | string | range_expr	len(range_expr("1-10"))
 string | range_expr	string(range_expr("1-5:2"))
 
+# range_expr -> string is a NON-DESTRUCTIVE coercion (section 1.2.3) that the
+# spec says "produces canonical form like '1-5'" (2026-02
+# Expression-Language.md line 843), and section 2.1.2's __add__(range_expr,
+# string) row says the same thing explicitly: "range_expr converted to
+# canonical string form" (line 1189). Unlike the bare range_expr VALUE cases
+# above (whose target admits range_expr, so no coercion occurs and the text
+# is genuinely unspecified — see baseline.txt), these three force the
+# coercion by excluding range_expr from the target or by using the string
+# operator, so the spec's "canonical form" wording is in force. sqi does not
+# canonicalize here; see baseline.txt for the known-gap entry.
+string | range_expr	string(range_expr("1-10:2"))
+string | range_expr	range_expr("1-10:2") + "!"
+string | range_expr	"!" + range_expr("1-10:2")
+
 # ── sub-project C1: math ─────────────────────────────────────────────────────
 int	abs(-5)
 int	abs(5)
