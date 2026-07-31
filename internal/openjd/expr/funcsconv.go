@@ -3,8 +3,11 @@
 package expr
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -93,6 +96,77 @@ var convFuncs = map[string][]Shape{
 			return floatValue(v.AsFloat())
 		}},
 	},
+	// Section 2.2.1's string(). The scalar row's union is RFC 0006's own
+	// signature; Value.String() already implements every member of it —
+	// "null" for nulltype, the JSON spellings for bool, formatFloat for float,
+	// the payload text for string, path and range_expr.
+	"string": {
+		{
+			Params: []Type{UnionOf(TBool, TInt, TFloat, TString, TPath, TRangeExpr, TNull)},
+			Ret:    TString,
+			Fn: func(args []Value) (Value, error) {
+				s := args[0].String()
+				if err := checkStringBytes(len(s)); err != nil {
+					return Value{}, err
+				}
+				return String(s), nil
+			},
+		},
+		// RFC 0006 calls this "the JSON string representation", and it is NOT
+		// Value.String(): that renders a list's string elements unquoted
+		// ("[a, b]") as a diagnostic form, which is a known divergence deferred
+		// to sub-project E. This one quotes them ("[\"a\", \"b\"]"), matching
+		// the reference implementation. Two renderings, two functions, on
+		// purpose.
+		{Params: []Type{ListOf(varT)}, Ret: TString, Fn: func(args []Value) (Value, error) {
+			s, err := jsonList(args[0])
+			if err != nil {
+				return Value{}, err
+			}
+			return String(s), nil
+		}},
+	},
+	"list": {
+		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Fn: func(args []Value) (Value, error) {
+			ints, err := rangeInts(args[0])
+			if err != nil {
+				return Value{}, err
+			}
+			vals := make([]Value, len(ints))
+			for i, n := range ints {
+				vals[i] = Int(n)
+			}
+			return List(TInt, vals), nil
+		}},
+	},
+	"range_expr": {
+		{Params: []Type{TString}, Ret: TRangeExpr, Fn: func(args []Value) (Value, error) {
+			return RangeExpr(args[0].AsStr())
+		}},
+		{Params: []Type{ListOf(TInt)}, Ret: TRangeExpr, Fn: func(args []Value) (Value, error) {
+			elems := args[0].AsList()
+			if len(elems) == 0 {
+				return Value{}, errors.New("range_expr() requires at least one value")
+			}
+			ints := make([]int64, len(elems))
+			for i, e := range elems {
+				ints[i] = e.AsInt()
+			}
+			return RangeExpr(rangeText(ints))
+		}},
+	},
+	// fail() needs no special handling anywhere else, and that is worth
+	// knowing rather than rediscovering. With a resolved argument it errors
+	// here; with an unresolved one callFunction returns a placeholder before Fn
+	// runs, because nothing has actually failed while the value is unknown. Its
+	// noreturn return type then collapses out of any union it lands in
+	// (collectUnionMembers, type.go), which is what makes
+	// "x if c else fail(...)" typed x rather than x?.
+	"fail": {
+		{Params: []Type{TString}, Ret: TNoReturn, Fn: func(args []Value) (Value, error) {
+			return Value{}, errors.New(args[0].AsStr())
+		}},
+	},
 }
 
 // pathText returns a path value's text.
@@ -118,4 +192,104 @@ func boolFromString(s string) (Value, error) {
 		return Bool(false), nil
 	}
 	return Value{}, fmt.Errorf("cannot convert %q to bool", s)
+}
+
+// jsonList renders a list as RFC 0006's JSON representation for string().
+//
+// Strings, paths and range expressions are quoted and escaped; numbers,
+// booleans and null are bare; nested lists recurse. The separator is ", "
+// rather than JSON's bare comma, matching the reference implementation, which
+// the differential test compares against character for character.
+func jsonList(v Value) (string, error) {
+	var b strings.Builder
+	if err := writeJSONValue(&b, v); err != nil {
+		return "", err
+	}
+	if err := checkStringBytes(b.Len()); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+// writeJSONValue is jsonList's recursive worker.
+func writeJSONValue(b *strings.Builder, v Value) error {
+	switch v.Type.Code {
+	case CodeList:
+		b.WriteByte('[')
+		for i, elem := range v.AsList() {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if err := writeJSONValue(b, elem); err != nil {
+				return err
+			}
+		}
+		b.WriteByte(']')
+	case CodeString, CodePath, CodeRangeExpr:
+		quoted, err := json.Marshal(v.s)
+		if err != nil {
+			return err
+		}
+		b.Write(quoted)
+	default:
+		// bool, int, float and null all render bare, and Value.String()
+		// already spells each of them the way JSON does.
+		b.WriteString(v.String())
+	}
+	if err := checkStringBytes(b.Len()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rangeText renders integers as canonical <IntRangeExpr> text for
+// range_expr(list[int]).
+//
+// The values are sorted and de-duplicated, then greedily grouped into maximal
+// runs of THREE OR MORE with a constant step; a run of one or two emits its
+// values individually, and a step of 1 omits the ":step" suffix. That is the
+// form the reference implementation produces, verified case by case:
+// [1,2,3] -> "1-3", [1,3,5] -> "1-5:2", [1,3] -> "1,3", [1,2,4,5] ->
+// "1,2,4,5", [1,2,3,7,9,11] -> "1-3,7-11:2", [-3,-2,-1] -> "-3--1".
+//
+// Three is the threshold because two values cannot establish a step: [1,3]
+// written as "1-3:2" would parse back to the same set, but the reference emits
+// "1,3" and the differential test compares the TEXT.
+func rangeText(ints []int64) string {
+	vals := slices.Clone(ints)
+	slices.Sort(vals)
+	vals = slices.Compact(vals)
+
+	var parts []string
+	for i := 0; i < len(vals); {
+		end := runEnd(vals, i)
+		if end-i < 3 {
+			parts = append(parts, strconv.FormatInt(vals[i], 10))
+			i++
+			continue
+		}
+		step := vals[i+1] - vals[i]
+		part := strconv.FormatInt(vals[i], 10) + "-" + strconv.FormatInt(vals[end-1], 10)
+		if step != 1 {
+			part += ":" + strconv.FormatInt(step, 10)
+		}
+		parts = append(parts, part)
+		i = end
+	}
+	return strings.Join(parts, ",")
+}
+
+// runEnd returns the index just past the longest constant-step run starting at
+// i. Values are already sorted and distinct, so a run of at least two always
+// exists and its step is always positive.
+func runEnd(vals []int64, i int) int {
+	if i+1 >= len(vals) {
+		return i + 1
+	}
+	step := vals[i+1] - vals[i]
+	end := i + 2
+	for end < len(vals) && vals[end]-vals[end-1] == step {
+		end++
+	}
+	return end
 }
