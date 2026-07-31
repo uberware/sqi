@@ -9,12 +9,20 @@
 # separator because every other candidate appears inside real cases: spaces are
 # everywhere, and "|" is a union in the target type ("int | string").
 #
-# SCOPE: expressions that sub-projects A, B1 and B2 actually implement —
+# SCOPE: expressions that sub-projects A, B1, B2 and B3 actually implement —
 # scalar operators, the coercion matrix, comparison chains, conditionals,
 # and/or, list literals and their type inference, list operators, subscripts,
-# and slices. Functions, comprehensions, and range expressions belong to
-# later sub-projects and are deliberately absent: adding cases for them now
-# would bury real divergences under known absences.
+# slices, and list comprehensions. Three constructs remain deliberately out of
+# scope, each for its own reason:
+#
+# - functions/methods/properties — the registry is empty until sub-project C,
+#   so a call has nothing to compare.
+# - range_expr — the corpus format is a target type and an expression with no
+#   symbol table, and nothing constructs a range_expr value until C's
+#   range_expr(). (Detailed further below.)
+# - subscript/slice — the reference mis-infers their static type under any
+#   supplied target (reported upstream as openjd-rs#291), so all such cases
+#   are baselined; see baseline.txt for the evidence.
 #
 # range_expr is a special case worth stating explicitly rather than leaving
 # for someone to discover: this corpus format is a target type plus a bare
@@ -268,3 +276,16 @@ bool	[[1]] < [[1.0]]
 bool	['a'] < [1]
 bool	[1] < ['a']
 bool	[1] < [[]]
+
+# ── List comprehensions (spec section 1.3.7) ─────────────────────────────────
+list[int]	[x for x in [1, 2, 3]]
+list[int]	[x * 2 for x in [1, 2, 3]]
+list[int]	[x + 1 for x in [10, 20]]
+list[int]	[x for x in [1, 2, 3] if x > 1]
+list[int]	[x for x in [1, 2, 3] if x > 99]
+list[int]	[x for x in []]
+list[int]	[_i for _i in [4, 5]]
+list[float]	[x * 1.5 for x in [2, 4]]
+list[string]	[s for s in ['a', 'b']]
+list[list[int]]	[[x] for x in [1, 2]]
+list[list[int]]	[[y for y in [1, 2]] for x in ['a', 'b']]

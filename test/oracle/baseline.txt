@@ -293,3 +293,65 @@ list[string] :: [1, 2]
 # real list-literal/target logic instead of the ANY-target bug; the rendering
 # difference is what remains.
 list[string] :: ['a', 'b']
+
+# List-of-strings rendering, via a comprehension: sqi prints unquoted elements
+# ([a, b]), the reference prints JSON-quoted elements (["a", "b"]); both sides
+# agree on the actual values and on the list[string] type. Same gap as the two
+# entries above, not a new one — the comprehension body is the identity
+# function over already-string elements, so the divergence is confined to
+# Value.String()'s rendering, not to comprehension evaluation itself.
+list[string] :: [s for s in ['a', 'b']]
+
+# ── sqi is right: the reference mistypes list comprehensions under a target type ─
+#
+# Both cases below evaluate correctly and produce the expected nested list
+# WITHOUT a target type — reproduced directly against openjd-model 0.11.1:
+#
+#   evaluate_expression("[[x] for x in [1, 2]]")
+#     -> [[1], [2]] : list[list[int]]        (correct)
+#   evaluate_expression("[[y for y in [1, 2]] for x in ['a', 'b']]")
+#     -> [[1, 2], [1, 2]] : list[list[int]]  (correct)
+#
+# Supplying the matching target_type=list[list[int]] makes both fail, and the
+# error's caret position shows why: it does not point at the comprehension
+# body (the expression that actually produces the result), it points at an
+# ELEMENT OF THE INPUT ITERABLE instead —
+#
+#   evaluate_expression("[[x] for x in [1, 2]]", target_type=ExprType("list[list[int]]"))
+#     -> Cannot coerce int to list[int]
+#        [[x] for x in [1, 2]]
+#                       ^          <- caret lands on "1", the iterable's element
+#   evaluate_expression("[[y for y in [1, 2]] for x in ['a', 'b']]",
+#                        target_type=ExprType("list[list[int]]"))
+#     -> Cannot coerce string to list[int]
+#        [[y for y in [1, 2]] for x in ['a', 'b']]
+#                                       ^~~         <- caret lands on 'a', the iterable's element
+#
+# The reference appears to peel one list[] layer off the target (list[int])
+# and check the SOURCE ITERABLE's element type against it, rather than typing
+# the loop BODY expression and coercing the comprehension's result to the
+# target — a `for x in [1, 2]` clause has nothing to do with `list[int]`, and
+# the second case shows the same mechanism confusing an unrelated outer
+# iterable (['a', 'b'] : list[string]) with the target entirely, even though
+# the outer loop variable x is not even referenced in the body.
+#
+# Section 1.3.7 defines comprehension evaluation with no carve-out for a
+# target type, and section 1.3.1 says a target type merely "guides implicit
+# type coercion" of the result — it does not license substituting some other
+# expression's type into the check. sqi evaluates the comprehension body per
+# element and coerces the assembled list to the target afterward, which is
+# what those sections require; the third comprehension case (list[string] ::
+# [s for s in ['a', 'b']] above) does not show this bug only because its loop
+# body is the identity function over an iterable that already matches the
+# target, which happens to sidestep the miscomputation.
+
+# Comprehension under a target type: reference checks the INPUT iterable's
+# element type against the target's peeled element type instead of the loop
+# body's type — see the shared explanation above. Correct absent a target.
+list[list[int]] :: [[x] for x in [1, 2]]
+
+# Comprehension under a target type, nested comprehension whose outer loop
+# variable is unused in the body — see the shared explanation above. The
+# reference's error names the OUTER iterable's element type even though the
+# outer variable never appears in the body. Correct absent a target.
+list[list[int]] :: [[y for y in [1, 2]] for x in ['a', 'b']]
