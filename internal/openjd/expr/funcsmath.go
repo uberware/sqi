@@ -31,6 +31,48 @@ var mathFuncs = map[string][]Shape{
 			return roundIntToDigits(args[0].AsInt(), args[1].AsInt())
 		}},
 	},
+	// RFC 0006 writes abs, min and max with a constrained type variable
+	// ("T in int, float"). Monomorphic rows express that exactly, with no new
+	// machinery: argCost ranks an exact match below a widening one, so abs(-5)
+	// lands on the int row and abs(-2.5) on the float row, and a constrained
+	// variable would only re-derive that ranking by hand.
+	"abs": {
+		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			n := args[0].AsInt()
+			if n == math.MinInt64 {
+				// -MinInt64 is not representable, and Go's unary minus returns
+				// MinInt64 again rather than trapping. Section 2.1.1 already
+				// reports this condition for arithmetic; abs joins it.
+				return Value{}, errIntOverflow
+			}
+			if n < 0 {
+				return Int(-n), nil
+			}
+			return Int(n), nil
+		}},
+		{Params: []Type{TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return floatValue(math.Abs(args[0].AsFloat()))
+		}},
+	},
+	// floor and ceil both return int from EITHER argument type, which is RFC
+	// 0006's signature and not an oversight: their whole purpose is the
+	// destructive conversion int() refuses to perform.
+	"floor": {
+		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return args[0], nil
+		}},
+		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return Int(int64(math.Floor(args[0].AsFloat()))), nil
+		}},
+	},
+	"ceil": {
+		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return args[0], nil
+		}},
+		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return Int(int64(math.Ceil(args[0].AsFloat()))), nil
+		}},
+	},
 }
 
 // roundToDigits implements round(float, int).
