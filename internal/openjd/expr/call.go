@@ -146,10 +146,3 @@ func callFunction(name string, args []Value, methodStyle bool) (Value, error) {
 	}
 	return callShape(s, b, args)
 }
-
-// matchShapesExactFirst is matchShapes with section 1.2.4's receiver
-// restriction. Sub-project B3 Task 7 implements exactFirst; until then it
-// delegates.
-func matchShapesExactFirst(shapes []Shape, args []Type, exactFirst bool) (Shape, bindings, bool) { //nolint:revive // exactFirst is implemented in the next task
-	return matchShapes(shapes, args)
-}

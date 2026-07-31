@@ -219,3 +219,80 @@ func TestEvalProperty_DispatchesThroughTheRegistry(t *testing.T) {
 		t.Fatalf("Eval = %s, want %s", got, want)
 	}
 }
+
+// TestReceiverCoercionRestriction pins specification section 1.2.4: when a
+// function is called as a method, implicit coercion does not apply to the
+// receiver. The spec's own example is startswith(path, string), so this
+// reproduces it with a path receiver against a (string, string) signature.
+//
+// This cannot be observed with the shipped registry, which is empty by design,
+// so the function is registered by the test. Sub-project C must not be the
+// first place this behavior is exercised.
+func TestReceiverCoercionRestriction(t *testing.T) {
+	withTestFunction(t, "startswith", []Shape{{
+		Params: []Type{TString, TString},
+		Ret:    TBool,
+		Fn: func(args []Value) (Value, error) {
+			return Bool(strings.HasPrefix(args[0].AsStr(), args[1].AsStr())), nil
+		},
+	}})
+	syms := MapSymbols{"Param.Dir": Value{Type: TPath, s: "/foo/bar"}}
+
+	// Function position: the path coerces to string, per section 1.2.4's
+	// "coercion applies to all arguments".
+	v, err := Eval("startswith(Param.Dir, '/foo')", syms, TAny)
+	if err != nil {
+		t.Fatalf("function-position call: %v", err)
+	}
+	if got := v.String(); got != "true" {
+		t.Errorf("function-position call = %s, want true", got)
+	}
+
+	// Method position: the receiver does NOT coerce, so no signature matches.
+	_, err = Eval("Param.Dir.startswith('/foo')", syms, TAny)
+	if err == nil {
+		t.Fatal("method-position call on a path = nil error, want no matching signature")
+	}
+	if !strings.Contains(err.Error(), "no signature") {
+		t.Errorf("method-position error = %q, want it to mention no signature", err.Error())
+	}
+
+	// A receiver that already has the parameter's type works in method
+	// position — the restriction removes coercion, not method calls.
+	strSyms := MapSymbols{"Param.S": String("/foo/bar")}
+	v, err = Eval("Param.S.startswith('/foo')", strSyms, TAny)
+	if err != nil {
+		t.Fatalf("method-position call on a string: %v", err)
+	}
+	if got := v.String(); got != "true" {
+		t.Errorf("method-position call on a string = %s, want true", got)
+	}
+
+	// Non-receiver arguments still coerce in method position.
+	pathArg := MapSymbols{"Param.S": String("/foo/bar"), "Param.P": Value{Type: TPath, s: "/foo"}}
+	v, err = Eval("Param.S.startswith(Param.P)", pathArg, TAny)
+	if err != nil {
+		t.Fatalf("method call with a path argument: %v", err)
+	}
+	if got := v.String(); got != "true" {
+		t.Errorf("method call with a path argument = %s, want true", got)
+	}
+}
+
+// TestReceiverRestriction_TypeVariableBinds pins that a type-variable parameter
+// still accepts a receiver: binding is an exact match, so a generic signature
+// is usable in method position.
+func TestReceiverRestriction_TypeVariableBinds(t *testing.T) {
+	withTestFunction(t, "identity", []Shape{{
+		Params: []Type{varT},
+		Ret:    varT,
+		Fn:     func(args []Value) (Value, error) { return args[0], nil },
+	}})
+	v, err := Eval("Param.Dir.identity()", MapSymbols{"Param.Dir": Value{Type: TPath, s: "/x"}}, TAny)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := v.Type.String(), "path"; got != want {
+		t.Fatalf("type = %s, want %s", got, want)
+	}
+}

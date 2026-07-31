@@ -121,7 +121,19 @@ const (
 )
 
 // matchShapes selects the shape for a call with the given argument types, and
-// returns the variable bindings the match produced.
+// returns the variable bindings the match produced. See the doc comment on
+// argCost for how selection ranks candidates.
+func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
+	return matchShapesExactFirst(shapes, args, false)
+}
+
+// matchShapesExactFirst is matchShapes with specification section 1.2.4's
+// method-receiver restriction: when exactFirst is set, argument 0 must already
+// have its parameter's type rather than reaching it by coercion.
+//
+// The restriction belongs to the CALL SITE, not the signature — the same
+// function accepts a coerced first argument in function position and refuses one
+// in method position — which is why Shape.Promote cannot express it.
 //
 // Selection is by COST, not by position. Each argument scores costExact when it
 // already has the declared type, costWiden when it gets there by a conversion
@@ -144,7 +156,7 @@ const (
 // 2.1.1 says the opposite happens: "the int is promoted to float and the float
 // overload is used". Ranking with an inadmissible tier is what produces that,
 // and it is not a separate promotion rule.
-func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
+func matchShapesExactFirst(shapes []Shape, args []Type, exactFirst bool) (Shape, bindings, bool) {
 	best := -1
 	var bestShape Shape
 	var bestBindings bindings
@@ -153,7 +165,7 @@ func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
 			continue
 		}
 		b := bindings{}
-		cost, ok := shapeCost(s, args, b)
+		cost, ok := shapeCostExactFirst(s, args, b, exactFirst)
 		if !ok {
 			continue
 		}
@@ -168,14 +180,22 @@ func matchShapes(shapes []Shape, args []Type) (Shape, bindings, bool) {
 	return bestShape, bestBindings, true
 }
 
-// shapeCost sums the cost of passing each argument to its declared parameter,
-// accumulating type-variable bindings. It reports false as soon as any argument
-// is inadmissible.
-func shapeCost(s Shape, args []Type, b bindings) (int, bool) {
+// shapeCostExactFirst is shapeCost with the receiver restriction applied to
+// argument 0.
+//
+// costExact is the test rather than "no coercion happened", and that is what
+// makes a type-variable parameter still usable in method position: binding a
+// variable scores costExact, so identity(x) works on any receiver, while a
+// (string, string) signature refuses a path receiver because path -> string
+// scores costWiden.
+func shapeCostExactFirst(s Shape, args []Type, b bindings, exactFirst bool) (int, bool) {
 	total := 0
 	for i := range s.Params {
 		cost, ok := argCost(s.Params[i], args[i], b, s.Promote)
 		if !ok {
+			return 0, false
+		}
+		if i == 0 && exactFirst && cost != costExact {
 			return 0, false
 		}
 		total += cost
