@@ -313,8 +313,54 @@ func (*ListComp) node()  {}
 func (*Access) node()    {}
 func (*Call) node()      {}
 
+// loopScope is the chain of comprehension loop variables bound at a node, one
+// link per enclosing ListComp, innermost first.
+//
+// It is a persistent linked list rather than a slice because the walk below is
+// a DFS over an explicit stack: several pending frames hold scopes that share a
+// tail, and a linked list lets a frame keep its own scope without copying.
+// A nil *loopScope is the empty scope, so the zero walkCtx needs no
+// construction.
+type loopScope struct {
+	name   string
+	parent *loopScope
+}
+
+// binds reports whether name is one of the loop variables in scope.
+func (s *loopScope) binds(name string) bool {
+	for ; s != nil; s = s.parent {
+		if s.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// walkCtx is what a node's POSITION in the tree says about it, as opposed to
+// what the node itself says. Both facts here are invisible from the node alone
+// and are exactly what Expression.Names needs to answer the spec's
+// accessed_symbols question.
+type walkCtx struct {
+	// scope are the comprehension loop variables bound at this node. A
+	// comprehension's element expression and filter are inside its own loop
+	// variable's scope; its ITERABLE is not, because the iterable is evaluated
+	// before the variable exists — which is why "[x for x in x]" references an
+	// external x.
+	scope *loopScope
+	// callee is set on the node in a Call's callee position, whose trailing
+	// segment names the function or method rather than a symbol.
+	callee bool
+}
+
+// walkFrame pairs a node with the context it was reached in.
+type walkFrame struct {
+	n   Node
+	ctx walkCtx
+}
+
 // walk calls fn for n and every node beneath it, parents before children and
-// siblings left to right — the same order the recursive version visited in.
+// siblings left to right — the same order the recursive version visited in —
+// passing each node the walkCtx its position gives it.
 //
 // It is ITERATIVE, with an explicit stack, and that is the whole point. The
 // recursive version was the last unbounded recursion in the package: the
@@ -339,54 +385,92 @@ func (*Call) node()      {}
 // left-to-right order fn used to see. Nothing depends on that today (Names
 // sorts its result), which is exactly why it is stated here rather than left
 // to be rediscovered.
-func walk(n Node, fn func(Node)) {
+func walk(n Node, fn func(Node, walkCtx)) {
 	if n == nil {
 		return
 	}
-	stack := []Node{n}
+	stack := []walkFrame{{n: n}}
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		fn(cur)
+		fn(cur.n, cur.ctx)
 		stack = pushChildren(stack, cur)
 	}
 }
 
-// pushChildren appends n's child nodes to a walk stack in REVERSE order, so
+// pushChildren appends f's child frames to a walk stack in REVERSE order, so
 // that popping them yields the leftmost child first. A nil child — an absent
 // slice component, which section 1.3.8 distinguishes from an explicit zero — is
 // skipped rather than pushed, since the caller's fn must never be handed one.
-func pushChildren(stack []Node, n Node) []Node {
-	push := func(children ...Node) {
-		for _, child := range slices.Backward(children) {
-			if child != nil {
-				stack = append(stack, child)
-			}
+func pushChildren(stack []walkFrame, f walkFrame) []walkFrame {
+	for _, child := range slices.Backward(childFrames(f)) {
+		if child.n != nil {
+			stack = append(stack, child)
 		}
 	}
-	switch v := n.(type) {
-	case *Unary:
-		push(v.X)
-	case *Binary:
-		push(v.L, v.R)
-	case *Logical:
-		push(v.L, v.R)
-	case *Cond:
-		push(v.Then, v.If, v.Else)
-	case *Compare:
-		push(v.Operands...)
-	case *ListLit:
-		push(v.Elems...)
-	case *Index:
-		push(v.X, v.Idx)
-	case *Slice:
-		push(v.X, v.Start, v.Stop, v.Step)
-	case *ListComp:
-		push(v.Elem, v.Iter, v.Cond)
-	case *Access:
-		push(v.X)
-	case *Call:
-		push(append([]Node{v.Callee}, v.Args...)...)
-	}
 	return stack
+}
+
+// childFrames returns f's children in source order, each with the context its
+// own position gives it. ListComp and Call are the only two nodes whose
+// children do not all share the parent's context, and each has its own helper
+// saying why.
+func childFrames(f walkFrame) []walkFrame {
+	// A child is never itself a callee unless its parent is a Call, so the flag
+	// is dropped here and re-set only by callFrames.
+	here := walkCtx{scope: f.ctx.scope}
+	at := func(nodes ...Node) []walkFrame {
+		out := make([]walkFrame, len(nodes))
+		for i, n := range nodes {
+			out[i] = walkFrame{n: n, ctx: here}
+		}
+		return out
+	}
+	switch v := f.n.(type) {
+	case *Unary:
+		return at(v.X)
+	case *Binary:
+		return at(v.L, v.R)
+	case *Logical:
+		return at(v.L, v.R)
+	case *Cond:
+		return at(v.Then, v.If, v.Else)
+	case *Compare:
+		return at(v.Operands...)
+	case *ListLit:
+		return at(v.Elems...)
+	case *Index:
+		return at(v.X, v.Idx)
+	case *Slice:
+		return at(v.X, v.Start, v.Stop, v.Step)
+	case *ListComp:
+		return compFrames(v, f.ctx.scope)
+	case *Access:
+		return at(v.X)
+	case *Call:
+		return callFrames(v, f.ctx.scope)
+	}
+	return nil
+}
+
+// compFrames places a comprehension's three children in their real scopes: the
+// loop variable is bound in the element expression and in the filter, and NOT
+// in the iterable, which section 1.3.7 evaluates before the variable exists.
+func compFrames(n *ListComp, scope *loopScope) []walkFrame {
+	inner := walkCtx{scope: &loopScope{name: n.Var, parent: scope}}
+	outer := walkCtx{scope: scope}
+	return []walkFrame{{n: n.Elem, ctx: inner}, {n: n.Iter, ctx: outer}, {n: n.Cond, ctx: inner}}
+}
+
+// callFrames marks the callee, whose trailing segment is a function or method
+// name rather than part of a symbol (section 1.3.3). Arguments are ordinary
+// sub-expressions.
+func callFrames(n *Call, scope *loopScope) []walkFrame {
+	here := walkCtx{scope: scope}
+	out := make([]walkFrame, 0, len(n.Args)+1)
+	out = append(out, walkFrame{n: n.Callee, ctx: walkCtx{scope: scope, callee: true}})
+	for _, a := range n.Args {
+		out = append(out, walkFrame{n: a, ctx: here})
+	}
+	return out
 }

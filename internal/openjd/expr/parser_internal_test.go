@@ -314,6 +314,39 @@ func TestExpression_Names(t *testing.T) {
 			[]string{"Param.A", "Param.B", "Param.C", "Param.D", "Param.E"},
 		},
 		{"keyword attributes are ordinary names", "Param.if", []string{"Param.if"}},
+		// A property chain is part of the symbol: the Recommended Library
+		// Interface's own example is "Param.File.stem collects
+		// {"Param.File.stem"}".
+		{"a trailing property stays in the name", "Param.File.stem", []string{"Param.File.stem"}},
+		// A function or method name is not a symbol at all — the spec puts
+		// those in a separate called_functions set, which this package
+		// deliberately does not build (sub-project D's need).
+		{"a plain function name is not a symbol", "len(Param.Items)", []string{"Param.Items"}},
+		{"a method name is not a symbol", "Param.Name.upper()", []string{"Param.Name"}},
+		{"a method on a deep name keeps every other segment", "a.b.c()", []string{"a.b"}},
+		{"a method on a literal contributes nothing", "[1, 2].len()", nil},
+		{"a parenthesized callee is split the same way", "(Param.F)(1)", []string{"Param"}},
+		{"a call argument is still collected", "len(Param.A) + upper(Param.B)", []string{"Param.A", "Param.B"}},
+		// A comprehension binds its loop variable, so neither it nor anything
+		// rooted at it is external.
+		{"a loop variable is not a symbol", "[x for x in Param.Items]", []string{"Param.Items"}},
+		{"a property of a loop variable is not a symbol", "[x.stem for x in Param.Files]", []string{"Param.Files"}},
+		{"a method call on a loop variable is not a symbol", "[x.upper() for x in Param.Words]", []string{"Param.Words"}},
+		{"a loop variable in a filter is not a symbol", "[x for x in Param.A if x.n > 1]", []string{"Param.A"}},
+		{"a call inside a comprehension body loses only its own name", "[len(x) for x in Param.Items]", []string{"Param.Items"}},
+		// The iterable is evaluated BEFORE the loop variable exists, so a name
+		// there is external even when it spells the loop variable.
+		{"the iterable is outside the binding", "[x for x in x]", []string{"x"}},
+		{"a different loop variable leaves the element external", "[x for y in Param.A]", []string{"Param.A", "x"}},
+		{"nested comprehensions bind independently", "[[y for y in x] for x in Param.M]", []string{"Param.M"}},
+		// The binding does not leak past the comprehension that made it. This
+		// is the one case here where the reference implementation answers
+		// differently — it reports {"Param.A"} alone, as if every loop variable
+		// name were removed from the whole expression — and the spec's
+		// "external symbols" wording is on this side: the trailing "[x]" is a
+		// free reference, exactly as it is in Python, where a comprehension's
+		// scope is its own.
+		{"a name after a comprehension is external again", "[x for x in Param.A] + [x]", []string{"Param.A", "x"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -426,7 +459,7 @@ func TestWalk_DescendsIntoCollectionNodes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			count := 0
-			walk(tc.node, func(Node) { count++ })
+			walk(tc.node, func(Node, walkCtx) { count++ })
 			if count != tc.want {
 				t.Fatalf("walk visited %d nodes, want %d", count, tc.want)
 			}
@@ -463,7 +496,7 @@ func TestWalk_UsesConstantStackDepth(t *testing.T) {
 			root = &Binary{Op: OpAdd, L: root, R: leaf}
 		}
 		deepest := 0
-		walk(root, func(Node) {
+		walk(root, func(Node, walkCtx) {
 			if n := runtime.Callers(0, pcs[:]); n > deepest {
 				deepest = n
 			}
@@ -704,7 +737,7 @@ func TestWalk_DescendsIntoCallAndCompNodes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			count := 0
-			walk(tc.node, func(Node) { count++ })
+			walk(tc.node, func(Node, walkCtx) { count++ })
 			if count != tc.want {
 				t.Fatalf("walk visited %d nodes, want %d", count, tc.want)
 			}

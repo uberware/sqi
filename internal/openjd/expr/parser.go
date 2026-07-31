@@ -2,7 +2,10 @@
 
 package expr
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Expression is a parsed expression, ready to evaluate.
 type Expression struct {
@@ -43,21 +46,64 @@ func (e *Expression) Source() string { return e.src }
 // Root returns the tree's root node.
 func (e *Expression) Root() Node { return e.root }
 
-// Names returns every dotted value reference the expression makes — for
-// example {"Param.Frame", "Task.Param.Chunk"} — sorted and deduplicated.
+// Names returns every EXTERNAL dotted value reference the expression makes —
+// for example {"Param.Frame", "Task.Param.Chunk"} — sorted and deduplicated.
 //
-// This is the spec's accessed_symbols set. Callers use it to decide which
-// symbols an expression needs before evaluating it; sub-project E uses it to
-// scope-check a template's expressions without binding values.
+// This is the spec's accessed_symbols set, which the Recommended Library
+// Interface defines as "the external symbols referenced by the expression as
+// full dotted paths including properties" — so "Param.File.stem" is collected
+// whole, trailing property and all. Callers use it to decide which symbols an
+// expression needs before evaluating it; sub-project E uses it to scope-check a
+// template's expressions without binding values.
+//
+// Two kinds of identifier are therefore NOT names, and are excluded rather than
+// reported:
+//
+//   - A FUNCTION OR METHOD NAME. The spec keeps those in a separate
+//     called_functions set, so the trailing segment of a call's callee is
+//     dropped: "len(Param.Items)" collects {"Param.Items"} and
+//     "Param.Name.upper()" collects {"Param.Name"}, not {"len"} and
+//     {"Param.Name.upper"}. (called_functions itself is not built here. Its
+//     stated use — spotting apply_path_mapping() — belongs to sub-project D,
+//     and an unused second set would only rot.)
+//   - A COMPREHENSION LOOP VARIABLE, and anything rooted at one. Section
+//     1.3.7 binds it inside the comprehension, so it is not external:
+//     "[x for x in Param.Items]" collects {"Param.Items"} and
+//     "[x.stem for x in Param.Files]" collects {"Param.Files"}. The binding
+//     covers the element expression and the filter but NOT the iterable, which
+//     is evaluated before the variable exists — "[x for x in x]" does collect
+//     the iterable's own external {"x"}.
+//
+// Both exclusions matter to the only consumer this set has: a scope check of
+// the form "every name here must be in scope" would otherwise reject every
+// comprehension and every plain function call in the language. Every case
+// above was verified against the reference implementation, which answers
+// identically.
+//
+// One narrowing remains, and it is safe in that direction: a property chain
+// whose receiver is not a bare name — "(Param.File).stem", where the
+// parentheses make the parser build an Access rather than one Name — collects
+// the receiver "Param.File" alone, where the reference collects
+// "Param.File.stem". A scope check sees a name that IS in scope either way.
 func (e *Expression) Names() []string {
 	seen := map[string]bool{}
 	var out []string
-	walk(e.root, func(n Node) {
+	walk(e.root, func(n Node, ctx walkCtx) {
 		name, ok := n.(*Name)
 		if !ok {
 			return
 		}
-		if s := name.String(); !seen[s] {
+		parts := name.Parts
+		if ctx.callee {
+			// The last segment is the function or method being called; what
+			// precedes it, if anything, is the receiver symbol. "len(x)" leaves
+			// nothing, "Param.Name.upper()" leaves "Param.Name".
+			parts = parts[:len(parts)-1]
+		}
+		if len(parts) == 0 || ctx.scope.binds(parts[0]) {
+			return
+		}
+		if s := strings.Join(parts, "."); !seen[s] {
 			seen[s] = true
 			out = append(out, s)
 		}
