@@ -45,8 +45,10 @@ func resolveName(n *Name, syms Symbols) (resolved, bool) {
 }
 
 // evalProperty resolves a property access. Section 1.3.3 defines a property p
-// as the function __property_p__, so this routes into the function registry —
-// which sub-project C fills.
+// as the function __property_p__, so this routes into the function registry.
+// C1 registers no property at all (its four groups are general conversions,
+// validation, math and list functions); the path engine's properties are
+// sub-project C4's.
 //
 // callFunction can fail three ways: the function is not registered at all, no
 // registered signature accepts the receiver, or the matched signature's own

@@ -169,9 +169,11 @@
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
 //     unsupported syntax — and the registry they resolve through,
 //     functionShapes (call.go, assembled by funcs.go's mergeFuncs), now holds
-//     its first 22 entries: sub-project C1's general conversions (len, bool,
-//     string, int, float, list, range_expr, fail — funcsconv.go), math
-//     (abs, min, max, sum, floor, ceil, round — funcsmath.go) and list
+//     its first 22 entries: sub-project C1's four groups — general
+//     conversions (len, bool, string, int, float, list, range_expr —
+//     funcsconv.go), validation (fail, the same file, its own RFC 0006
+//     category despite living beside the conversions in one Go source file),
+//     math (abs, min, max, sum, floor, ceil, round — funcsmath.go), and list
 //     functions (range, flatten, sorted, reversed, unique, any, all —
 //     funcslist.go). Section 2.2's roughly 100-function library is otherwise
 //     still unregistered: the 31 string functions are C2's, regular
@@ -252,6 +254,17 @@
 //     len(), bool(), string()'s list row, and flatten(), sorted(),
 //     reversed() and unique() from the list-function group — are the first
 //     functions to bind that variable for a genuinely polymorphic signature.
+//
+//   - flatten()'s row ORDER is load-bearing — listFuncs (funcslist.go) is the
+//     first table in the package where it is. "flatten([[1],[2]])" matches
+//     BOTH its nested row (list[list[T]] -> list[T]) and its flat row
+//     (list[T] -> list[T]) at cost 0, since [[1],[2]] is simultaneously a
+//     list[list[int]] (T = int) and a list[list[int]] read as list[T] with
+//     T = list[int]; matchShapesExactFirst breaks an exact-cost tie to the
+//     EARLIEST registered shape, not by any property of the argument. The
+//     nested row is listed first for exactly that reason: reversing the two
+//     would make flatten() the identity on every argument, silently, with no
+//     type error to catch it.
 //
 //   - path and range_expr exist as types — TPath and TRangeExpr participate
 //     in Type, coercion and cross-type equality, and a declared parameter can
@@ -449,18 +462,25 @@
 //     check or a parser/lexer rejection of a form Python allows, genuinely
 //     does reject it — and the sixteen TestConformance_C1ProtectedFixtures
 //     protects: sub-project C1's own conversion and math functions correctly
-//     REJECTING an invalid argument (an empty list to min/max, an
+//     REJECTING an invalid argument (an empty list or path into bool(), an
+//     unrecognized string into bool(), an empty list to min/max, an
 //     unrepresentable float-to-int, NaN and infinity into float(), an empty
 //     string or list into range_expr()), so that swap (one starting to pass
 //     for the wrong reason while another silently regresses) cannot hide
 //     inside an unchanged aggregate score either. The differential oracle
 //     test has 279/321 cases
 //     agreeing with the reference implementation, 42 baselined divergences
-//     (make test-expr-oracle) — up from B2's 135/169 now that C1's 22
+//     (make test-expr-oracle) — up from B3's 135/169 now that C1's 22
 //     functions have their own corpus cases (test/oracle/corpus.txt), most of
-//     which agree outright; the new baselined entries are the round(x,
-//     ndigits<=0) int/float divergence and the range_expr(string)
-//     canonicalization gap described above, plus the list-of-strings
+//     which agree outright; the new baselined entries are the range_expr(string)
+//     canonicalization gap described above and one round() case: sqi returns
+//     int for round(x, ndigits) when ndigits <= 0, per RFC 0006's own signature
+//     table, while the reference returns a FLOAT — round(1234.5, -1) is
+//     "1230 : int" here and "1230.0 : float" there. The specification
+//     outranks the reference (it is Beta, 0.x, breaking changes permitted in
+//     minor bumps), so this is adjudicated as the reference's bug and recorded
+//     in test/oracle/baseline.txt, not fixed here to match it. The rest of the
+//     new baselined entries are the list-of-strings
 //     rendering gap (Value.String, not string()) recurring through flatten,
 //     sorted and unique. Most baselined divergences are the reference's own
 //     bugs, adjudicated against the spec text and recorded one by one in

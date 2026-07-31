@@ -21,9 +21,12 @@ import (
 // be passed around — and it is what lets range_expr -> string (section 1.2.3)
 // answer without materializing anything.
 //
-// Nothing in the language produces a range_expr yet: the constructor function
-// range_expr() is sub-project C's and the CHUNK[INT] symbol is sub-project E's.
-// This constructor is how a caller's symbol table supplies one in the meantime.
+// This constructor is also what the language's own range_expr(string) function
+// calls (sub-project C1, funcsconv.go) — the first way an expression can
+// produce a range_expr with no symbol table involved. The CHUNK[INT] symbol
+// remains sub-project E's, still-unimplemented, second way to get one. A
+// caller's symbol table binding a name to a value built by calling this
+// function directly is the third.
 func RangeExpr(text string) (Value, error) {
 	if _, err := intrange.Parse(text); err != nil {
 		return Value{}, fmt.Errorf("invalid range expression %q: %w", text, err)
