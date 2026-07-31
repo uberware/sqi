@@ -295,3 +295,67 @@ func TestConformance_B3ProtectedFixtures(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_C1ProtectedFixtures asserts by NAME that the fixtures
+// sub-project C1 puts at risk still pass.
+//
+// All sixteen are .invalid and all sixteen pass TODAY for the wrong reason:
+// the function they call is not registered, so the expression fails with
+// "unknown function" and the template is rejected. C1 registers bool, int,
+// float, range_expr, min and max, which removes that accidental rejection —
+// each fixture must then be rejected by REAL argument validation instead.
+//
+// The aggregate score cannot see the difference: sixteen regressing while
+// sixteen others start passing leaves it unchanged. Same reason
+// TestConformance_B3ProtectedFixtures exists, at a larger scale.
+func TestConformance_C1ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// bool(): rejects path and list outright, and rejects a string that is
+		// not one of RFC 0006's accepted spellings.
+		"EXPR/job_templates/expr2.2.1--bool-from-list.invalid.yaml":           "bool() rejects a list",
+		"EXPR/job_templates/expr2.2.1--bool-from-path.invalid.yaml":           "bool() rejects a path",
+		"EXPR/job_templates/expr2.2.1--bool-from-string-invalid.invalid.yaml": "bool() rejects an unrecognized string",
+		// float(): no infinity, no NaN, and a string must parse.
+		"EXPR/job_templates/expr2.2.1--float-from-complex.invalid.yaml":        "float() rejects a complex literal",
+		"EXPR/job_templates/expr2.2.1--float-from-empty-string.invalid.yaml":   "float() rejects an empty string",
+		"EXPR/job_templates/expr2.2.1--float-from-inf.invalid.yaml":            "float() rejects infinity",
+		"EXPR/job_templates/expr2.2.1--float-from-nan.invalid.yaml":            "float() rejects NaN",
+		"EXPR/job_templates/expr2.2.1--float-from-string-invalid.invalid.yaml": "float() rejects an unparseable string",
+		// int(): the conversion must be non-destructive.
+		"EXPR/job_templates/expr2.2.1--int-from-empty-string.invalid.yaml":   "int() rejects an empty string",
+		"EXPR/job_templates/expr2.2.1--int-from-float-inexact.invalid.yaml":  "int() rejects a fractional float",
+		"EXPR/job_templates/expr2.2.1--int-from-float-string.invalid.yaml":   "int() rejects a float-shaped string",
+		"EXPR/job_templates/expr2.2.1--int-from-string-invalid.invalid.yaml": "int() rejects an unparseable string",
+		// range_expr(): must contain at least one value.
+		"EXPR/job_templates/expr2.2.1--range-expr-from-empty-list.invalid.yaml":   "range_expr() rejects an empty list",
+		"EXPR/job_templates/expr2.2.1--range-expr-from-empty-string.invalid.yaml": "range_expr() rejects an empty string",
+		// min()/max(): an empty list is an error, with RFC 0006's own wording.
+		"EXPR/job_templates/expr2.2.2--max-empty-list.invalid.yaml": "max() rejects an empty list",
+		"EXPR/job_templates/expr2.2.2--min-empty-list.invalid.yaml": "min() rejects an empty list",
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = conformance.RunExprCase(tc, data)
+	}
+
+	for path, why := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected because %s.", path, why)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (%s): %s", path, why, res.Reason)
+			}
+		})
+	}
+}
