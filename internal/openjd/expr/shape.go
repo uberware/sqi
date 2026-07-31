@@ -400,6 +400,23 @@ func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
 		if elem := param.Params[0]; isTypeVar(elem.Code) {
 			if _, bound := b[elem.Code]; !bound {
 				b[elem.Code] = TNull
+				// costExact, not costWiden, and the difference is only
+				// observable in METHOD position. matchShapesExactFirst
+				// implements section 1.2.4 by requiring argument 0 to score
+				// costExact, so a widening receiver is refused — and binding a
+				// variable that has no binding yet CONVERTS NOTHING. There is
+				// no implicit coercion here for section 1.2.4 to suppress, so
+				// scoring it as one made "[].len()" fail while "len([])"
+				// succeeded: one call, two syntaxes, two answers. The
+				// reference implementation returns 0 for both.
+				//
+				// The carve-out is exactly "the variable is unbound". A
+				// variable another argument already bound to a concrete type
+				// is NOT being bound here — the empty list is reaching that
+				// concrete type through section 1.2.6 rule 6, which is a real
+				// conversion — so that case falls through to costWiden below,
+				// as does a concrete element type.
+				return costExact, true
 			}
 		}
 		return costWiden, true

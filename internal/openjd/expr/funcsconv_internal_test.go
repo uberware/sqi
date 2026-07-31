@@ -71,3 +71,24 @@ func TestLen_Rejects(t *testing.T) {
 }
 
 // mustRangeExpr is defined in ops_internal_test.go and reused here.
+
+// TestLen_EmptyListReceiver pins the section 1.2.4 ruling that an empty list
+// literal is a legal METHOD receiver.
+//
+// Binding an unbound type variable to nulltype converts nothing, so there is no
+// implicit coercion for the receiver restriction to suppress. Before this was
+// ruled, "[].len()" failed while "len([])" succeeded — the same call in two
+// syntaxes disagreeing. The reference implementation returns 0 for both.
+func TestLen_EmptyListReceiver(t *testing.T) {
+	for _, src := range []string{"[].len()", "len([])"} {
+		t.Run(src, func(t *testing.T) {
+			v, err := Eval(src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", src, err)
+			}
+			if got := v.String(); got != "0" {
+				t.Errorf("Eval(%q) = %s, want 0", src, got)
+			}
+		})
+	}
+}

@@ -357,6 +357,48 @@ func TestOrderingAdmissibility(t *testing.T) {
 // (the very divergence this task closes); this asserts it across the
 // conversions promotable actually recognizes, including the list and
 // unresolved-wrapper cases where the two functions could diverge silently.
+// TestArgCostList_EmptyListScoring pins both halves of the empty-list ruling:
+// an unbound variable element costs nothing to bind, a concrete element is
+// reached by section 1.2.6 rule 6's conversion and costs a widening.
+func TestArgCostList_EmptyListScoring(t *testing.T) {
+	tests := []struct {
+		name  string
+		param Type
+		want  int
+	}{
+		{"unbound variable element binds for free", ListOf(varT), costExact},
+		{"concrete element is a widening", ListOf(TInt), costWiden},
+		{"concrete nested element is a widening", ListOf(ListOf(TInt)), costWiden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := bindings{}
+			got, ok := argCost(tc.param, ListOf(TNull), b, promoteDefault)
+			if !ok {
+				t.Fatalf("argCost(%s, list[nulltype]) was inadmissible", tc.param)
+			}
+			if got != tc.want {
+				t.Errorf("argCost(%s, list[nulltype]) = %d, want %d", tc.param, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestArgCostList_BoundVariableStillWidens pins that the free binding applies
+// only to an UNBOUND variable. A variable another argument already bound is
+// not being bound here, so the empty list is reaching a concrete type after
+// substitution and pays the widening.
+func TestArgCostList_BoundVariableStillWidens(t *testing.T) {
+	b := bindings{CodeVarT: TInt}
+	got, ok := argCost(ListOf(varT), ListOf(TNull), b, promoteDefault)
+	if !ok {
+		t.Fatal("argCost(list[T], list[nulltype]) with T bound was inadmissible")
+	}
+	if got != costWiden {
+		t.Errorf("argCost with T already bound = %d, want %d", got, costWiden)
+	}
+}
+
 func TestPromotableUnder_DefaultMatchesPromotable(t *testing.T) {
 	pairs := []struct {
 		from, to Type
