@@ -2,7 +2,10 @@
 
 package expr
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // listFuncs is RFC 0006's list-function group. Its other members are added by a
 // later task of this sub-project.
@@ -40,6 +43,58 @@ var listFuncs = map[string][]Shape{
 		// unambiguous instead of relying on the tie-break twice.
 		{Params: []Type{ListOf(TNull)}, Ret: ListOf(TNull), Fn: func(args []Value) (Value, error) {
 			return args[0], nil
+		}},
+	},
+	// sorted reuses compareValues rather than defining an order of its own.
+	// That function already implements section 1.2.5 for int, float, string,
+	// path, bool and — recursively — list, and it is what the list ordering
+	// operators use; a second comparator here would be a second implementation
+	// of the same section, free to drift from the first. Its refusals come
+	// along too, which is why sorting nulls is an error rather than a no-op.
+	"sorted": {
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: sortedList},
+	},
+	"reversed": {
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: func(args []Value) (Value, error) {
+			in := args[0].AsList()
+			out := make([]Value, len(in))
+			for i, v := range in {
+				out[len(in)-1-i] = v
+			}
+			return rebuildList(args[0], out), nil
+		}},
+	},
+	"unique": {
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: uniqueList},
+	},
+	// any and all are declared over list[bool] and list[nulltype] only. There
+	// is no truthiness in this language — section 1.3.5 requires a conditional's
+	// condition to be a bool outright — so "any([1, 0])" is a type error rather
+	// than a question about zero.
+	"any": {
+		{Params: []Type{ListOf(TNull)}, Ret: TBool, Fn: func([]Value) (Value, error) {
+			return Bool(false), nil
+		}},
+		{Params: []Type{ListOf(TBool)}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			for _, v := range args[0].AsList() {
+				if v.AsBool() {
+					return Bool(true), nil
+				}
+			}
+			return Bool(false), nil
+		}},
+	},
+	"all": {
+		{Params: []Type{ListOf(TNull)}, Ret: TBool, Fn: func([]Value) (Value, error) {
+			return Bool(true), nil
+		}},
+		{Params: []Type{ListOf(TBool)}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			for _, v := range args[0].AsList() {
+				if !v.AsBool() {
+					return Bool(false), nil
+				}
+			}
+			return Bool(true), nil
 		}},
 	},
 }
@@ -169,4 +224,66 @@ func flattenNested(args []Value) (Value, error) {
 		vals = append(vals, inner.AsList()...)
 	}
 	return List(elem, vals), nil
+}
+
+// rebuildList returns a list with the same element type as src and the given
+// elements. The type is copied rather than re-inferred so that reordering or
+// filtering a list never changes what it is a list OF — an empty result of a
+// list[int] stays list[int]'s business, not list[nulltype]'s.
+func rebuildList(src Value, vals []Value) Value {
+	elem := TNull
+	if e, ok := listElem(src.Type); ok {
+		elem = e
+	}
+	return List(elem, vals)
+}
+
+// sortedList returns a new list ordered ascending by section 1.2.5's
+// comparator. The input is cloned first: nothing in this language mutates, and
+// a sort in place would rewrite the caller's list value.
+func sortedList(args []Value) (Value, error) {
+	in := args[0].AsList()
+	out := slices.Clone(in)
+	var sortErr error
+	slices.SortStableFunc(out, func(a, b Value) int {
+		if sortErr != nil {
+			return 0
+		}
+		c, err := compareValues(a, b)
+		if err != nil {
+			sortErr = err
+			return 0
+		}
+		return c
+	})
+	if sortErr != nil {
+		return Value{}, sortErr
+	}
+	return rebuildList(args[0], out), nil
+}
+
+// uniqueList removes duplicates, keeping the first occurrence of each value.
+//
+// Equality is valuesEqual — section 1.2.5's cross-type "==" — and NOT
+// Value.Equal, which is Go identity and would call 5 and 5.0 different values.
+// The comparison is quadratic because Value is not a valid map key (Type
+// contains a slice) and because cross-type equality is not an equivalence a
+// hash could reproduce anyway. maxElements caps the input, so the worst case is
+// bounded.
+func uniqueList(args []Value) (Value, error) {
+	in := args[0].AsList()
+	out := make([]Value, 0, len(in))
+	for _, v := range in {
+		dup := false
+		for _, kept := range out {
+			if valuesEqual(kept, v) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, v)
+		}
+	}
+	return rebuildList(args[0], out), nil
 }
