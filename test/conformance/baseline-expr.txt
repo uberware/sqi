@@ -44,6 +44,18 @@
 # when string repetition ships, this fixture will start FAILING again until
 # a real memory limit lands beside it — expect it, don't be alarmed by it.
 #
+# expr1.3.10--operation-limit-exceeded joins this list for the mirror-image
+# reason, in sub-project C1's task 9: it was correctly rejected only because
+# range() was unimplemented (an "unknown function" error), not because
+# §1.3.10's 10-million-operation limit was enforced — that limit is still
+# sub-project E's. Now that range() is registered, the fixture's triple-nested
+# comprehension over range(300) parses and evaluates to completion instead,
+# so it wrongly PASSES where the spec calls for rejection. Its sibling
+# expr1.3.10--string-operation-limit-exceeded is not affected: it depends on
+# a string method call (.upper()) that is not registered yet, so it is still
+# rejected for a real (if different) reason. Expect this entry to burn down
+# only once an operation counter lands, not before.
+#
 # It is kept separate from baseline.txt because the same fixture IDs appear in
 # both scoring paths, and an EXPR entry there would be reported as orphaned
 # forever.
@@ -113,4 +125,5 @@ EXPR/job_templates/expr-extension-missing.invalid.yaml
 EXPR/job_templates/expr1.1--function-call-expr.yaml
 EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
+EXPR/job_templates/expr1.3.10--operation-limit-exceeded.invalid.yaml
 EXPR/job_templates/expr1.3.11--path-range-expression.yaml

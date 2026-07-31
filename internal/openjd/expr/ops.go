@@ -57,7 +57,9 @@ func shapeUnary(f func(v Value) (Value, error)) func(args []Value) (Value, error
 // lowest total wins regardless of list position. The one place position still
 // matters is an exact tie, which keeps the earliest shape; no operator table
 // here relies on that, since no operator lists two shapes of equal cost for
-// the same argument types.
+// the same argument types. The FUNCTION registry does rely on it: flatten's
+// nested and flat rows tie at cost 0 for a list of lists, and the earliest-wins
+// rule is what keeps flatten from being the identity. See funcslist.go.
 //
 // Sub-projects B2 and C add shapes here and to their own function registry; a
 // list with no matching shape is reported as "unsupported operand types", which
