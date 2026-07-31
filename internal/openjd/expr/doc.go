@@ -136,7 +136,19 @@
 //     ITERABLE: the spec never defines iterating one, and section 2.1.2
 //     already gives "in" over a string a different meaning, a substring test,
 //     so "[c for c in 'abc']" is a "cannot be iterated" error rather than a
-//     list of characters. Rejected outright, each with its own parser error:
+//     list of characters. A UNION iterable follows the same every-member rule
+//     a subscript and a slice already apply to a union receiver: it is
+//     iterable only when EVERY member is, with the members' element types
+//     unified per section 1.2.6. That keeps "range_expr | list[int]" — the
+//     union this package manufactures itself for a slice of a range_expr whose
+//     length is not yet known — iterable as int, while "list[int] | nulltype"
+//     and "range_expr | list[string]" are both rejected rather than silently
+//     typed as their list member. An EMPTY iterable produces "[]" with the
+//     element expression never evaluated, and therefore never type-checked:
+//     "[Bogus for i in Param.Empty]" is "[]", not an unknown-symbol error.
+//     That is deliberate rather than a gap — the spec requires no static check
+//     of a body that never runs, and the reference implementation answers
+//     identically. Rejected outright, each with its own parser error:
 //     a second "for" clause and a second "if" filter (Python's
 //     multi-generator and multi-filter forms) and a generator expression
 //     ("(x for x in y)"). A dict or set comprehension ("{k: k for k in y}",

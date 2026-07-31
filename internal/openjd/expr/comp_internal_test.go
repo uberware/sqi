@@ -40,7 +40,78 @@ func compSyms(t *testing.T) MapSymbols {
 		// indistinguishable from any test built only out of well-formed
 		// lists.
 		"Param.Mixed": List(TFloat, []Value{Int(1), Int(2), Int(3)}),
+		// Union-typed placeholders for TestEvalListComp_UnionIterable. Only
+		// URange's union is one this package manufactures itself (slicing a
+		// range_expr of unknown length, slice.go's sliceResultType); the rest
+		// are bound directly because a conditional with an unknown condition
+		// (eval.go's condResult) is the other producer and cannot express all
+		// of these as compactly.
+		"Param.URange":       Unresolved(TRangeExpr),
+		"Param.IntsOrFloats": Unresolved(UnionOf(ListOf(TInt), ListOf(TFloat))),
+		"Param.ListOrInt":    Unresolved(UnionOf(ListOf(TInt), TInt)),
+		"Param.ListOrNull":   Unresolved(UnionOf(ListOf(TInt), TNull)),
+		"Param.RangeOrWords": Unresolved(UnionOf(TRangeExpr, ListOf(TString))),
 	}
+}
+
+// TestEvalListComp_UnionIterable pins iterableElem's union rule: a union is
+// iterable only when EVERY member is, and its element type is the unification
+// of the members' own.
+//
+// iterableElem used to delegate the whole question to listElem (coerce.go),
+// which SKIPS a union's non-list members. That did not merely accept too much:
+// "range_expr | list[string]" came back as list[string], a WRONG static type
+// for a value that may be a range_expr yielding int at runtime. The obvious
+// repair — refusing every union — is also wrong, and the URange case below is
+// why: this package manufactures "range_expr | list[int]" itself for a slice
+// of a range_expr whose length is not yet known, and that union genuinely is
+// iterable, as int, under both outcomes.
+func TestEvalListComp_UnionIterable(t *testing.T) {
+	syms := compSyms(t)
+	t.Run("accepted", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			src      string
+			wantType string
+		}{
+			{
+				"range_expr | list[int], the union a range_expr slice produces",
+				"[i for i in Param.URange[:]]", "unresolved[list[int]]",
+			},
+			{
+				"list[int] | list[float] unifies elementwise, per section 1.2.6",
+				"[i for i in Param.IntsOrFloats]", "unresolved[list[float]]",
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				v, err := Eval(tc.src, syms, TAny)
+				if err != nil {
+					t.Fatalf("Eval(%q): %v", tc.src, err)
+				}
+				if got := v.Type.String(); got != tc.wantType {
+					t.Fatalf("Eval(%q) type = %s, want %s", tc.src, got, tc.wantType)
+				}
+			})
+		}
+	})
+	t.Run("rejected", func(t *testing.T) {
+		for _, tc := range []struct{ name, src string }{
+			{"a member that is not a collection at all", "[i for i in Param.ListOrInt]"},
+			{"an optional list, which subscript already rejects", "[i for i in Param.ListOrNull]"},
+			{"members whose element types do not unify", "[i for i in Param.RangeOrWords]"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := Eval(tc.src, syms, TAny)
+				if err == nil {
+					t.Fatalf("Eval(%q) = nil error, want it rejected as not iterable", tc.src)
+				}
+				if !strings.Contains(err.Error(), "cannot be iterated") {
+					t.Fatalf("Eval(%q) error = %q, want it to mention %q", tc.src, err.Error(), "cannot be iterated")
+				}
+			})
+		}
+	})
 }
 
 func TestEvalListComp_Values(t *testing.T) {

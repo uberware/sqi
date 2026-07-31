@@ -35,20 +35,63 @@ func (s *scopedSymbols) Lookup(name string) (Value, bool) {
 // 2.1.2 makes "in" on a string a substring test, so treating it as a sequence
 // of characters here would invent semantics.
 //
-// The list case is answered by listElem (coerce.go) rather than re-implemented
-// here: listElem already looks through an unresolved constraint and a union
-// naming one list type across its members — coerce.go consolidated list-element
-// extraction to that one place on purpose, so a second, unguarded reimplementation
-// here would drift (it did: it rejected a union like "list[int] | nulltype" that
-// listElem resolves).
+// A UNION is iterable only when EVERY member is, and its element type is the
+// unification of the members' own. This is the same rule coerce.go states for a
+// union value ("usable only where EVERY member would be") and the same one
+// unionResultType already applies to a subscript's and a slice's union
+// receiver — a union is SOME ONE of its members at runtime, so an operation
+// legal on only some of them is not legal at all.
+//
+// It is stated here rather than delegated to listElem, which answers a
+// different question. listElem SKIPS a union's non-list members, so it calls
+// "list[int] | nulltype" a list and "range_expr | list[string]" a
+// list[string] — the second of those is not loose acceptance but a WRONG
+// INFERRED TYPE, since the value may be a range_expr yielding int. Delegating
+// was a deliberate consolidation, and it was the wrong instrument: what it
+// fixed was the rejection of "range_expr | list[int]", the union this package
+// manufactures itself for a sliced range_expr (sliceResultType), and that case
+// falls out of the every-member rule below anyway — both members yield int.
 func iterableElem(t Type) (Type, bool) {
-	if elem, ok := listElem(t); ok {
-		return elem, true
-	}
-	if unwrapUnresolved(t).Code == CodeRangeExpr {
+	t = unwrapUnresolved(t)
+	switch t.Code {
+	case CodeList:
+		if len(t.Params) == 1 {
+			return t.Params[0], true
+		}
+	case CodeRangeExpr:
+		// Section 1.2.3 converts a range_expr to list[int] losslessly.
 		return TInt, true
+	case CodeUnion:
+		return unionIterableElem(t)
 	}
 	return Type{}, false
+}
+
+// unionIterableElem applies the every-member rule to a union receiver,
+// unifying the members' element types with section 1.2.6's own unification
+// (unifyElemPair) so that "list[int] | list[float]" iterates as float rather
+// than being refused for naming two list types.
+func unionIterableElem(t Type) (Type, bool) {
+	// UnionOf normalizes a union to at least two members, so this is
+	// unreachable through the constructors; it is here because the loop below
+	// would otherwise index an empty slice.
+	if len(t.Params) == 0 {
+		return Type{}, false
+	}
+	acc, ok := iterableElem(t.Params[0])
+	if !ok {
+		return Type{}, false
+	}
+	for _, member := range t.Params[1:] {
+		elem, ok := iterableElem(member)
+		if !ok {
+			return Type{}, false
+		}
+		if acc, ok = unifyElemPair(acc, elem); !ok {
+			return Type{}, false
+		}
+	}
+	return acc, true
 }
 
 // evalListComp evaluates a list comprehension (spec section 1.3.7).
