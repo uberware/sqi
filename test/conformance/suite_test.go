@@ -244,3 +244,54 @@ func TestConformance_Expressions(t *testing.T) {
 		t.Errorf("ORPHANED BASELINE %s matches no live result — remove it from %s", id, exprBaselinePath)
 	}
 }
+
+// TestConformance_B3ProtectedFixtures asserts by NAME that the fixtures
+// sub-project B3 protects still pass.
+//
+// B3 adds comprehension and call syntax and clears no fixture, so its
+// conformance contribution is defensive: ten .invalid fixtures pass today only
+// because the constructs they use do not parse, and each must keep passing for
+// a real reason once they do. The aggregate score cannot see a swap — ten
+// regressing while ten others start passing leaves it unchanged — so these are
+// checked individually.
+func TestConformance_B3ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// Rejected by the comprehension shadowing check (section 1.3.7).
+		"EXPR/job_templates/3.6--let-comprehension-shadows.invalid.yaml":               "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml":           "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-step-let.invalid.yaml":      "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml":    "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml": "shadowing check",
+		// Rejected by the parser or the lexer: unsupported comprehension forms.
+		"EXPR/job_templates/expr1.1--reject-dict-comp.invalid.yaml":       "lexer, no brace token",
+		"EXPR/job_templates/expr1.1--reject-set-comp.invalid.yaml":        "lexer, no brace token",
+		"EXPR/job_templates/expr1.1--reject-generator-expr.invalid.yaml":  "parser, generator expression",
+		"EXPR/job_templates/expr1.1--reject-multi-generator.invalid.yaml": "parser, one for clause",
+		"EXPR/job_templates/expr1.1--reject-multi-if-comp.invalid.yaml":   "parser, one if filter",
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = conformance.RunExprCase(tc, data)
+	}
+
+	for path, why := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected by the %s.", path, why)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (rejected by the %s): %s", path, why, res.Reason)
+			}
+		})
+	}
+}
