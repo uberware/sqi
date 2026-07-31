@@ -113,5 +113,4 @@ EXPR/job_templates/expr-extension-missing.invalid.yaml
 EXPR/job_templates/expr1.1--function-call-expr.yaml
 EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
-EXPR/job_templates/expr1.1--multiline-expr.yaml
 EXPR/job_templates/expr1.3.11--path-range-expression.yaml

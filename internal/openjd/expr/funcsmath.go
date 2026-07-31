@@ -73,6 +73,107 @@ var mathFuncs = map[string][]Shape{
 			return Int(int64(math.Ceil(args[0].AsFloat()))), nil
 		}},
 	},
+	"min": {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return extremumInt(args, true)
+		}},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return extremumFloat(args, true)
+		}},
+		{Params: []Type{TInt, TInt, TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return extremumInt(args, true)
+		}},
+		{Params: []Type{TFloat, TFloat, TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return extremumFloat(args, true)
+		}},
+		{Params: []Type{ListOf(TInt)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return extremumInt(args[0].AsList(), true)
+		}},
+		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return extremumFloat(args[0].AsList(), true)
+		}},
+		// The empty literal's own row. list[nulltype] matches it EXACTLY, so it
+		// beats the list[int] row above (which the empty list reaches only by
+		// section 1.2.6 rule 6's widening) and RFC 0006's wording is what the
+		// user sees.
+		{Params: []Type{ListOf(TNull)}, Ret: TNoReturn, Fn: func([]Value) (Value, error) {
+			return Value{}, emptyListError("min")
+		}},
+		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			ints, err := rangeInts(args[0])
+			if err != nil {
+				return Value{}, err
+			}
+			vals := make([]Value, len(ints))
+			for i, n := range ints {
+				vals[i] = Int(n)
+			}
+			return extremumInt(vals, true)
+		}},
+	},
+	"max": {
+		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return extremumInt(args, false)
+		}},
+		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return extremumFloat(args, false)
+		}},
+		{Params: []Type{TInt, TInt, TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return extremumInt(args, false)
+		}},
+		{Params: []Type{TFloat, TFloat, TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return extremumFloat(args, false)
+		}},
+		{Params: []Type{ListOf(TInt)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return extremumInt(args[0].AsList(), false)
+		}},
+		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			return extremumFloat(args[0].AsList(), false)
+		}},
+		{Params: []Type{ListOf(TNull)}, Ret: TNoReturn, Fn: func([]Value) (Value, error) {
+			return Value{}, emptyListError("max")
+		}},
+		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			ints, err := rangeInts(args[0])
+			if err != nil {
+				return Value{}, err
+			}
+			vals := make([]Value, len(ints))
+			for i, n := range ints {
+				vals[i] = Int(n)
+			}
+			return extremumInt(vals, false)
+		}},
+	},
+	// sum's empty-list row returns 0 rather than erroring — RFC 0006 says so
+	// explicitly, and it is the mathematically empty sum. That is the one place
+	// sum and min/max part company on the same argument.
+	"sum": {
+		{Params: []Type{ListOf(TNull)}, Ret: TInt, Fn: func([]Value) (Value, error) {
+			return Int(0), nil
+		}},
+		{Params: []Type{ListOf(TInt)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			return sumInts(args[0].AsList())
+		}},
+		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+			total := 0.0
+			for _, v := range args[0].AsList() {
+				total += v.AsFloat()
+			}
+			return floatValue(total)
+		}},
+		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+			ints, err := rangeInts(args[0])
+			if err != nil {
+				return Value{}, err
+			}
+			vals := make([]Value, len(ints))
+			for i, n := range ints {
+				vals[i] = Int(n)
+			}
+			return sumInts(vals)
+		}},
+	},
 }
 
 // roundToDigits implements round(float, int).
@@ -127,4 +228,64 @@ func roundIntToDigits(n, ndigits int64) (Value, error) {
 		q--
 	}
 	return Int(q * scale), nil
+}
+
+// emptyListError is RFC 0006's wording for min() and max() over an empty list.
+// It is reached two ways — the dedicated list[nulltype] row for a literal, and
+// the concrete-element rows for a typed list that happens to be empty at
+// runtime — and both must say the same thing.
+func emptyListError(name string) error {
+	return fmt.Errorf("%s() requires a non-empty list", name)
+}
+
+// extremumInt returns the smallest or largest of int values.
+func extremumInt(vals []Value, wantMin bool) (Value, error) {
+	if len(vals) == 0 {
+		return Value{}, emptyListError(extremumName(wantMin))
+	}
+	best := vals[0].AsInt()
+	for _, v := range vals[1:] {
+		n := v.AsInt()
+		if (wantMin && n < best) || (!wantMin && n > best) {
+			best = n
+		}
+	}
+	return Int(best), nil
+}
+
+// extremumFloat is extremumInt for float values.
+func extremumFloat(vals []Value, wantMin bool) (Value, error) {
+	if len(vals) == 0 {
+		return Value{}, emptyListError(extremumName(wantMin))
+	}
+	best := vals[0].AsFloat()
+	for _, v := range vals[1:] {
+		f := v.AsFloat()
+		if (wantMin && f < best) || (!wantMin && f > best) {
+			best = f
+		}
+	}
+	return floatValue(best)
+}
+
+// extremumName names the caller for the empty-list message.
+func extremumName(wantMin bool) string {
+	if wantMin {
+		return "min"
+	}
+	return "max"
+}
+
+// sumInts adds int values through section 2.1.1's checked addition, so a total
+// that leaves int64 is reported rather than wrapped.
+func sumInts(vals []Value) (Value, error) {
+	total := int64(0)
+	for _, v := range vals {
+		next, err := addInt(total, v.AsInt())
+		if err != nil {
+			return Value{}, err
+		}
+		total = next
+	}
+	return Int(total), nil
 }

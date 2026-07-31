@@ -138,3 +138,92 @@ func TestAbs_RejectsTheUnrepresentableMinimum(t *testing.T) {
 		t.Errorf("error = %v, want it to report an overflow", err)
 	}
 }
+
+func TestMinMaxSum(t *testing.T) {
+	syms := MapSymbols{"Param.R": mustRangeExpr(t, "1-4")}
+	tests := []struct {
+		name     string
+		src      string
+		want     string
+		wantType string
+	}{
+		{"min of two ints", "min(3, 7)", "3", "int"},
+		{"min of two floats", "min(3.5, 7.5)", "3.5", "float"},
+		{"min promotes a mixed pair", "min(1, 2.0)", "1.0", "float"},
+		{"min of three ints", "min(5, 3, 7)", "3", "int"},
+		{"min of three floats", "min(5.0, 3.0, 7.0)", "3.0", "float"},
+		{"min of an int list", "min([3, 1, 2])", "1", "int"},
+		{"min of a float list", "min([3.0, 1.0])", "1.0", "float"},
+		{"min of a range_expr", "min(Param.R)", "1", "int"},
+		{"max of two ints", "max(3, 7)", "7", "int"},
+		{"max of three ints", "max(5, 3, 7)", "7", "int"},
+		{"max of an int list", "max([3, 1, 2])", "3", "int"},
+		{"max of a float list", "max([3.0, 1.0])", "3.0", "float"},
+		{"max of a range_expr", "max(Param.R)", "4", "int"},
+		{"sum of an empty list is zero", "sum([])", "0", "int"},
+		{"sum of an int list", "sum([1, 2, 3])", "6", "int"},
+		{"sum of a float list", "sum([1.5, 2.5])", "4.0", "float"},
+		{"sum of a range_expr", "sum(Param.R)", "10", "int"},
+		{"method form", "[3, 1, 2].min()", "1", "int"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestMinMax_EmptyList covers BOTH routes to RFC 0006's wording. The literal
+// matches the dedicated list[nulltype] row; the symbol is typed list[int] and
+// matches the int row, whose Fn must raise the same message. Only the first is
+// reachable from a literal, which is what makes the second easy to miss.
+func TestMinMax_EmptyList(t *testing.T) {
+	syms := MapSymbols{
+		"Param.EmptyInts":   List(TInt, nil),
+		"Param.EmptyFloats": List(TFloat, nil),
+	}
+	tests := []struct {
+		name     string
+		src      string
+		wantSubs string
+	}{
+		{"min of an empty literal", "min([])", "min() requires a non-empty list"},
+		{"max of an empty literal", "max([])", "max() requires a non-empty list"},
+		{"min of an empty typed list", "min(Param.EmptyInts)", "min() requires a non-empty list"},
+		{"max of an empty typed list", "max(Param.EmptyInts)", "max() requires a non-empty list"},
+		{"min of an empty float list", "min(Param.EmptyFloats)", "min() requires a non-empty list"},
+		{"max of an empty float list", "max(Param.EmptyFloats)", "max() requires a non-empty list"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Eval(tc.src, syms, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want an error", tc.src)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Errorf("Eval(%q) error = %v, want it to contain %q", tc.src, err, tc.wantSubs)
+			}
+		})
+	}
+}
+
+// TestSum_ReportsOverflow pins that summing routes through section 2.1.1's
+// checked addition rather than wrapping.
+func TestSum_ReportsOverflow(t *testing.T) {
+	_, err := Eval("sum([9223372036854775807, 1])", MapSymbols{}, TAny)
+	if err == nil {
+		t.Fatal("sum overflowed silently; want an error")
+	}
+	if !strings.Contains(err.Error(), "overflow") {
+		t.Errorf("error = %v, want it to report an overflow", err)
+	}
+}
