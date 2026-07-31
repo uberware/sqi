@@ -110,7 +110,6 @@ EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
 EXPR/job_templates/expr-extension-missing.invalid.yaml
-EXPR/job_templates/expr-with-other-extensions.yaml
 EXPR/job_templates/expr1.1--function-call-expr.yaml
 EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml

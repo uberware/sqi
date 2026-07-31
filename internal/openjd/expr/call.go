@@ -19,21 +19,6 @@ import (
 // is what evalProperty checks before rewording.
 var errUnknownFunction = errors.New("unknown function")
 
-// functionShapes is the function registry: a name mapped to its accepted
-// signatures, in the same Shape form ops.go uses for operators, so type-variable
-// binding and cost-ranked overload selection are shared rather than
-// reimplemented.
-//
-// IT IS DELIBERATELY EMPTY. Sub-project B3 builds the call, method and property
-// machinery; the ~100-function library of specification section 2.2 is
-// sub-project C's, and C adds entries here. A call therefore resolves and then
-// fails with "unknown function", which is a real diagnostic rather than a
-// "not supported" parse error.
-//
-// Properties follow section 1.3.3's convention: the property p is the function
-// __property_p__, registered here under that name.
-var functionShapes = map[string][]Shape{}
-
 // evalCall evaluates a call or a method call (spec section 1.3.3).
 //
 // Uniform function call syntax makes "x.f(a)" equivalent to "f(x, a)", so both

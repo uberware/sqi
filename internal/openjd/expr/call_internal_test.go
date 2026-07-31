@@ -8,15 +8,6 @@ import (
 	"testing"
 )
 
-// TestFunctionShapes_IsEmpty pins sub-project B3's scope: the registry exists
-// and resolves, but every function belongs to sub-project C. If this fails
-// because a function was added, that is scope creep, not progress.
-func TestFunctionShapes_IsEmpty(t *testing.T) {
-	if len(functionShapes) != 0 {
-		t.Fatalf("functionShapes has %d entries, want 0 — functions are sub-project C's", len(functionShapes))
-	}
-}
-
 func TestEvalCall_Errors(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Name": String("shot01"),
@@ -27,9 +18,9 @@ func TestEvalCall_Errors(t *testing.T) {
 		src      string
 		wantSubs string
 	}{
-		{"unknown plain function", "len(Param.List)", `unknown function "len"`},
+		{"unknown plain function", "nosuchfn(Param.List)", `unknown function "nosuchfn"`},
 		{"unknown method", "Param.Name.upper()", `unknown function "upper"`},
-		{"unknown method on a literal", "[1, 2].len()", `unknown function "len"`},
+		{"unknown method on a literal", "[1, 2].nosuchfn()", `unknown function "nosuchfn"`},
 		{"unknown property", "Param.Name.stem", `unknown property "stem"`},
 		{"symbol is not callable", "Param.Name()", "is not a function"},
 		{"unknown symbol with segments", "Param.Nope.upper()", "unknown symbol"},

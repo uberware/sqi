@@ -116,14 +116,15 @@ func TestLanguage(t *testing.T) {
 		// below.
 		{name: "subscript", src: "Param.Name[0]", wantCode: expr.CodeString, want: "s"},
 		// Calls, methods and property access now fully EVALUATE (sub-project
-		// B3, this task): the callee resolves, arguments are evaluated, and
-		// the call reaches the function registry. The registry itself is
-		// empty until sub-project C populates it, so every one of these still
-		// fails, but now with "unknown function" — a real diagnostic about a
-		// missing function, not the generic "cannot evaluate" the evaluator
-		// gives a node kind it has no case for at all.
-		{name: "SUB-PROJECT C: function call", src: "len(Param.Name)", wantErr: `unknown function "len"`},
-		{name: "function calls are sub-project C", src: "len('ab')", wantErr: `unknown function "len"`},
+		// B3): the callee resolves, arguments are evaluated, and the call
+		// reaches the function registry. Sub-project C1 has begun populating
+		// that registry — "len" is registered now (see funcsconv.go) — but a
+		// function no wave has reached yet still fails with "unknown
+		// function", a real diagnostic about a missing function rather than
+		// the generic "cannot evaluate" the evaluator gives a node kind it has
+		// no case for at all.
+		{name: "function call reaches an unregistered name", src: "nosuchfn(Param.Name)", wantErr: `unknown function "nosuchfn"`},
+		{name: "len is registered by sub-project C1", src: "len('ab')", wantCode: expr.CodeInt, want: "2"},
 		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: `unknown function "upper"`},
 		// String repetition (section 2.1.2) now evaluates too — this task's
 		// change, once limits.go's size bound made an unbounded repeat count
