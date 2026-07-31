@@ -177,7 +177,23 @@
 //     reject a receiver by. TestReceiverCoercionRestriction
 //     (call_internal_test.go) covers it by registering a function locally
 //     under the test build for exactly that reason — sub-project C must not
-//     be the first place this restriction is exercised. Property syntax
+//     be the first place this restriction is exercised. That restriction is
+//     applied to a PROPERTY receiver as well (resolve.go's evalProperty passes
+//     methodStyle), which is an adjudication and not an inherited detail:
+//     section 1.3.3 defines "x.p" as method syntax over "__property_p__", and
+//     section 1.2.4 suppresses coercion on the receiver of a method call, so a
+//     property's receiver is not coerced either. It is consequential for
+//     sub-project C's library rather than academic — it decides, for a
+//     "__property_stem__(path)", that "Param.S.stem" on a STRING parameter is
+//     an error instead of a silent string-to-path conversion. The reference
+//     implementation agrees, checked directly: "'/a/b.txt'.stem" reports
+//     "'stem' property is not available for string. Available for: path".
+//     TestPropertyReceiverCoercionRestriction pins it with a path receiver
+//     against a "(string)" property signature, which is the only receiver type
+//     where the flag is observable at all — every other type that reaches a
+//     string parameter does so by a conversion overload selection would refuse
+//     anyway, so the test would pass with the restriction switched off.
+//     Property syntax
 //     (section 1.3.3) is sugar for a call to __property_p__, dispatched
 //     through the same empty registry, so a property access fails through
 //     the identical mechanism — but NOT with the identical message: an

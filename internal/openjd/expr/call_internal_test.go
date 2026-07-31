@@ -313,6 +313,119 @@ func TestReceiverCoercionRestriction(t *testing.T) {
 	}
 }
 
+// TestReceiverRestriction_DisqualifiesAShapeNotTheCall pins the branch that
+// separates "this SHAPE is out" from "this CALL is out": with an OVERLOAD SET,
+// a receiver the restriction disqualifies from one signature must still select
+// another that accepts it exactly.
+//
+// TestReceiverCoercionRestriction covers only the single-signature case, where
+// the two are indistinguishable — the one shape being ruled out is the same
+// event as the call failing. Sub-project C ships overload sets throughout
+// section 2.2's library, so that distinction stops being academic there; this
+// is the test that must exist before it does.
+func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
+	withTestFunction(t, "startswith", []Shape{
+		{
+			Params: []Type{TString, TString},
+			Ret:    TString,
+			Fn:     func([]Value) (Value, error) { return String("string shape"), nil },
+		},
+		{
+			Params: []Type{TPath, TString},
+			Ret:    TString,
+			Fn:     func([]Value) (Value, error) { return String("path shape"), nil },
+		},
+	})
+	syms := MapSymbols{
+		"Param.S":   String("/foo/bar"),
+		"Param.Dir": Value{Type: TPath, s: "/foo/bar"},
+	}
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		// The path receiver cannot reach (string, string) — that is what
+		// TestReceiverCoercionRestriction pins with the string shape alone —
+		// but (path, string) takes it exactly, so the call resolves to that
+		// one rather than failing.
+		{"a path receiver selects the shape that takes it exactly", "Param.Dir.startswith('/foo')", "path shape"},
+		// The string receiver still picks the string shape, so the added
+		// overload has not simply swallowed everything.
+		{"a string receiver still selects the string shape", "Param.S.startswith('/foo')", "string shape"},
+		// In FUNCTION position both are admissible for a path argument, and
+		// the exact match still wins on cost — the restriction changes which
+		// shapes are candidates, not how the winner is ranked.
+		{"function position still prefers the exact shape", "startswith(Param.Dir, '/foo')", "path shape"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, syms, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Fatalf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPropertyReceiverCoercionRestriction pins the ruling that section 1.2.4's
+// receiver restriction reaches a PROPERTY receiver, not just an explicit method
+// call: section 1.3.3 makes "x.p" method syntax over "__property_p__", so
+// evalProperty (resolve.go) dispatches with methodStyle set and the receiver is
+// not coerced on the way in.
+//
+// A path receiver against a "(string)" property signature is the only case
+// where that flag is observable, which is why the test is written this way and
+// not with, say, an int receiver: the restriction removes exactly the
+// conversions overload selection would otherwise have made on the caller's
+// behalf, and path -> string is one of the four the spec names as compatible
+// (shape.go's promotable). Any receiver type that is NOT promotable to string
+// fails identically whether the restriction is applied or not, so a test built
+// on one would pass against the unrestricted code too — which is exactly what
+// TestEvalProperty_RealFailureIsNotRelabeledUnknown's "__property_onlystring__"
+// case looks like it covers but does not.
+func TestPropertyReceiverCoercionRestriction(t *testing.T) {
+	// The premise, asserted rather than assumed: without the restriction, a
+	// path receiver WOULD reach a string parameter. If this ever stops holding
+	// the test below has quietly stopped discriminating anything.
+	if !promotable(TPath, TString) {
+		t.Fatal("promotable(path, string) = false; this test no longer discriminates the receiver restriction")
+	}
+	withTestFunction(t, "__property_shouty__", []Shape{{
+		Params: []Type{TString},
+		Ret:    TString,
+		Fn:     func(args []Value) (Value, error) { return String(strings.ToUpper(args[0].AsStr())), nil },
+	}})
+	syms := MapSymbols{
+		"Param.S":   String("/foo/bar"),
+		"Param.Dir": Value{Type: TPath, s: "/foo/bar"},
+	}
+
+	// A string receiver already has the parameter's type, so the property
+	// resolves.
+	v, err := Eval("Param.S.shouty", syms, TAny)
+	if err != nil {
+		t.Fatalf("string receiver: %v", err)
+	}
+	if got, want := v.String(), "/FOO/BAR"; got != want {
+		t.Errorf("string receiver = %s, want %s", got, want)
+	}
+
+	// A path receiver does not coerce, so no signature accepts it — and the
+	// failure must be the real one, not relabeled "unknown property".
+	_, err = Eval("Param.Dir.shouty", syms, TAny)
+	if err == nil {
+		t.Fatal("path receiver = nil error, want no matching signature")
+	}
+	wantSubs := `no signature of "__property_shouty__" accepts (path)`
+	if !strings.Contains(err.Error(), wantSubs) {
+		t.Fatalf("path receiver error = %q, want it to mention %q", err.Error(), wantSubs)
+	}
+}
+
 // TestReceiverRestriction_TypeVariableBinds pins that a type-variable parameter
 // still accepts a receiver: binding is an exact match, so a generic signature
 // is usable in method position.
