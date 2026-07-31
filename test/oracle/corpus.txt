@@ -433,4 +433,62 @@ bool | list[nulltype]	all([])
 int | bool	5 if 1 > 0 else fail("unreachable")
 string | list[string] | list[list[string]]	string(flatten([["-e", "A=1"], ["-e", "B=2"]]))
 int | list[int]	min([len("abcd"), 3])
+
+# ── coverage recovered from the openjd-rs#291 target pushdown ────────────────
+#
+# Each case below is a TWIN of an entry in baseline.txt. The baselined original
+# keeps its narrow target and stays baselined: it is the evidence for the
+# upstream defect, and it is designed to fail loudly the day that defect is
+# fixed. The twin supplies the union target the rule above describes, which
+# makes the pushdown harmless and turns the case into live differential
+# coverage — coverage sub-project B2 recorded as unobtainable.
+#
+# Do not "consolidate" the two. Deleting an original orphans its baseline
+# entry, which is a hard error, and loses the record of why these targets look
+# strange.
+
+# Subscript twins (baseline target was "any" — unusable on its own, see
+# baseline.txt's shared explanation for the subscript/slice section; the
+# reference also cannot evaluate against a bare "any" target at all, a
+# separate, unrelated limitation documented next to the list-literal cases
+# above). Each twin's target is the actual result type unioned with the
+# receiver's type and int, per the subscript rule.
+int | list[int]	[10, 20, 30][0]
+int | list[int]	[10, 20, 30][2]
+int | list[int]	[10, 20, 30][-1]
+int | list[int]	[10, 20, 30][-3]
+int | list[list[int]] | list[int]	[[1, 2], [3, 4]][1][0]
+string | int	'hello'[0]
+string | int	'hello'[-1]
+
+# Slice twins, same reasoning: receiver type, int and nulltype (an omitted
+# bound is null) join the result type.
+list[int] | int | nulltype	[10, 20, 30, 40, 50][1:4]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][:3]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][2:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][::2]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][::-1]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][0:5:2]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][-3:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][:-2]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][1:99]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][99:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][3:1]
+string | int | nulltype	'hello'[1:3]
+string | int | nulltype	'hello'[::-1]
+string | int | nulltype	'hello'[1:99]
+
+# and/or twins: add the type of the operand the operator discards.
+int | bool	true and 0
+string | bool	false or 'fallback'
+int | nulltype	null or 7
+
+# Comprehension twins: add the element type and the iterable's type. The
+# second case is doubly nested — the outer body is itself a comprehension, so
+# its element type (list[int]) and its iterable's type (list[string]) join
+# the inner comprehension's own element type (int); the inner iterable
+# (list[int]) is already covered by the outer body's element type.
+list[list[int]] | list[int] | int	[[x] for x in [1, 2]]
+list[list[int]] | list[int] | list[string] | int	[[y for y in [1, 2]] for x in ['a', 'b']]
 list[int] | int	sorted(range(5, 0, -1))
