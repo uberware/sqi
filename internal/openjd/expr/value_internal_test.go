@@ -278,3 +278,24 @@ func TestList_AsListPanicsOnNonList(t *testing.T) {
 	}()
 	_ = Int(1).AsList()
 }
+
+// TestValueEqual_IgnoresTheRenderedForm pins invariant 2 of the float carry:
+// two floats with the same number are the same value however they render.
+// Roughly thirty tests across this package compare values with Equal, and a
+// carry that participated would make round(3.5, 2) unequal to 3.5.
+func TestValueEqual_IgnoresTheRenderedForm(t *testing.T) {
+	plain := Float(3.5)
+	carried := floatRendered(3.5, "3.50")
+	if !plain.Equal(carried) {
+		t.Error("Float(3.5) is not Equal to the same number with a rendered form")
+	}
+	if !carried.Equal(plain) {
+		t.Error("Equal is not symmetric across the rendered form")
+	}
+	if carried.String() != "3.50" {
+		t.Errorf("String() = %q, want %q", carried.String(), "3.50")
+	}
+	if plain.String() != "3.5" {
+		t.Errorf("String() = %q, want %q", plain.String(), "3.5")
+	}
+}

@@ -30,6 +30,22 @@ type Value struct {
 	f float64
 	s string
 	l []Value
+
+	// fs is an OPTIONAL rendered form for a float, and the only value in this
+	// struct that is presentation rather than data.
+	//
+	// RFC 0006 requires round(3.5, 2) to produce a value that renders "3.50",
+	// which no float64 can carry. Section 1.3.4 describes the same mechanism
+	// for a different producer — a float parameter submitted as "3.500" keeps
+	// that form until something computes on it — but that needs the original
+	// submitted string, which only template integration has, so it is
+	// sub-project E's and round() is the only producer today.
+	//
+	// Three invariants make it safe. Float() never sets it. Equal ignores it,
+	// so no comparison anywhere changes. And nothing propagates it: an
+	// operation on a float returns through Float()/floatValue() and therefore
+	// drops it, which IS section 1.3.4's rule rather than a shortcut around it.
+	fs string
 }
 
 // Null returns the null value.
@@ -43,6 +59,10 @@ func Int(i int64) Value { return Value{Type: TInt, i: i} }
 
 // Float returns a 64-bit IEEE floating-point value.
 func Float(f float64) Value { return Value{Type: TFloat, f: f} }
+
+// floatRendered returns a float value that renders as the given text instead of
+// through formatFloat. See the fs field for why this exists and what may set it.
+func floatRendered(f float64, s string) Value { return Value{Type: TFloat, f: f, fs: s} }
 
 // String returns a string value.
 func String(s string) Value { return Value{Type: TString, s: s} }
@@ -165,6 +185,9 @@ func (v Value) String() string {
 	case CodeInt:
 		return strconv.FormatInt(v.i, 10)
 	case CodeFloat:
+		if v.fs != "" {
+			return v.fs
+		}
 		return formatFloat(v.f)
 	case CodeString, CodePath, CodeRangeExpr:
 		return v.s
