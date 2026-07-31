@@ -31,13 +31,17 @@ func (m MapSymbols) Lookup(name string) (Value, bool) {
 // TAny as the target to accept the expression's natural result type.
 //
 // The target guides implicit coercion (section 1.3.1). It applies HERE, at the
-// boundary, and inside operator dispatch when a shape is matched — it does NOT
-// propagate into sub-expressions. Section 1.3.1 leaves that open; propagating it
-// would make "Param.Count + 1" against a string target concatenate its operands
-// into "11" rather than adding them. Section 1.3.2's own example of
-// "Count: {{ len(myList) }}" yielding "Count: 5" describes evaluating naturally
-// and converting afterward. List literals (section 1.2.6) and function
-// arguments do take a target inward, and both belong to later sub-projects.
+// boundary, and inside operator dispatch when a shape is matched. It propagates
+// into a sub-expression from exactly four node kinds and no others — the
+// package doc's forwarding table is the single statement of which, and of why
+// each row is what it is; do not restate it here, and consult it rather than
+// this comment when the question is whether some position takes a target.
+// Section 1.3.1 leaves the question open, and the table's governing rule is
+// that a node forwards only when its result literally IS a sub-expression's
+// value: propagating a string target into "Param.Count + 1" would concatenate
+// its operands into "11" rather than adding them, and section 1.3.2's own
+// example of "Count: {{ len(myList) }}" yielding "Count: 5" describes
+// evaluating naturally and converting afterward.
 func (e *Expression) Eval(syms Symbols, target Type) (Value, error) {
 	if syms == nil {
 		syms = MapSymbols(nil)
