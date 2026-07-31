@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -152,7 +151,13 @@ var convFuncs = map[string][]Shape{
 			for i, e := range elems {
 				ints[i] = e.AsInt()
 			}
-			return RangeExpr(rangeText(ints))
+			// canonicalRange assumes its input is already sorted and
+			// de-duplicated — B2 always fed it that way from an expanded
+			// range, and this is the first caller that cannot assume it of
+			// its own input.
+			slices.Sort(ints)
+			ints = slices.Compact(ints)
+			return RangeExpr(canonicalRange(ints))
 		}},
 	},
 	// fail() needs no special handling anywhere else, and that is worth
@@ -240,56 +245,4 @@ func writeJSONValue(b *strings.Builder, v Value) error {
 		return err
 	}
 	return nil
-}
-
-// rangeText renders integers as canonical <IntRangeExpr> text for
-// range_expr(list[int]).
-//
-// The values are sorted and de-duplicated, then greedily grouped into maximal
-// runs of THREE OR MORE with a constant step; a run of one or two emits its
-// values individually, and a step of 1 omits the ":step" suffix. That is the
-// form the reference implementation produces, verified case by case:
-// [1,2,3] -> "1-3", [1,3,5] -> "1-5:2", [1,3] -> "1,3", [1,2,4,5] ->
-// "1,2,4,5", [1,2,3,7,9,11] -> "1-3,7-11:2", [-3,-2,-1] -> "-3--1".
-//
-// Three is the threshold because two values cannot establish a step: [1,3]
-// written as "1-3:2" would parse back to the same set, but the reference emits
-// "1,3" and the differential test compares the TEXT.
-func rangeText(ints []int64) string {
-	vals := slices.Clone(ints)
-	slices.Sort(vals)
-	vals = slices.Compact(vals)
-
-	var parts []string
-	for i := 0; i < len(vals); {
-		end := runEnd(vals, i)
-		if end-i < 3 {
-			parts = append(parts, strconv.FormatInt(vals[i], 10))
-			i++
-			continue
-		}
-		step := vals[i+1] - vals[i]
-		part := strconv.FormatInt(vals[i], 10) + "-" + strconv.FormatInt(vals[end-1], 10)
-		if step != 1 {
-			part += ":" + strconv.FormatInt(step, 10)
-		}
-		parts = append(parts, part)
-		i = end
-	}
-	return strings.Join(parts, ",")
-}
-
-// runEnd returns the index just past the longest constant-step run starting at
-// i. Values are already sorted and distinct, so a run of at least two always
-// exists and its step is always positive.
-func runEnd(vals []int64, i int) int {
-	if i+1 >= len(vals) {
-		return i + 1
-	}
-	step := vals[i+1] - vals[i]
-	end := i + 2
-	for end < len(vals) && vals[end]-vals[end-1] == step {
-		end++
-	}
-	return end
 }

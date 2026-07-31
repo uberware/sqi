@@ -350,14 +350,28 @@ func TestListAndRangeExpr_Reject(t *testing.T) {
 	}
 }
 
-// TestFail covers both routes to RFC 0006's stated outcome, because they run on
-// different machinery and a regression in one would hide behind the other.
+// TestFail covers RFC 0006's stated outcome through each route that produces
+// it, because they run on different machinery and a regression in one would
+// hide behind another.
 //
-// With a RESOLVED argument fail() errors, and condResult suppresses the branch
-// that erred. With an UNRESOLVED argument callFunction returns a placeholder
-// before Fn ever runs — nothing has failed yet under static checking — and
-// UnionOf then drops the noreturn member. Both give the precise type RFC 0006
-// promises: float, not float?.
+// With a RESOLVED fail() argument, Fn itself errors. When that happens inside
+// a conditional whose condition is unresolved, condResult suppresses the
+// branch that erred and returns the OTHER branch's type directly — its
+// "thenErr == nil" / "elseErr == nil" cases below, never touching UnionOf.
+// The "is not reached" and "does not widen the type when the condition is
+// unknown" cases exercise exactly that: precise typing (float, not float?)
+// without ever calling UnionOf, because the erroring branch's type never
+// entered the union in the first place.
+//
+// With an UNRESOLVED fail() argument, callFunction returns a placeholder
+// before Fn ever runs — nothing has failed yet under static checking. Only
+// when BOTH branches of a conditional succeed under an unresolved condition
+// does condResult reach its "thenErr == nil && elseErr == nil" case, which
+// calls UnionOf(thenType, elseType) directly — collectUnionMembers
+// (type.go) is what drops the noreturn member there. The last case below
+// ("the union path...") is the only one that reaches that route; the others
+// would pass even if collectUnionMembers stopped dropping noreturn, because
+// they never reach UnionOf at all.
 func TestFail(t *testing.T) {
 	t.Run("errors with its message when reached", func(t *testing.T) {
 		_, err := Eval(`fail("Count must be positive")`, MapSymbols{}, TAny)
@@ -398,6 +412,27 @@ func TestFail(t *testing.T) {
 		}
 		if got := v.Type.String(); got != "unresolved[noreturn]" {
 			t.Errorf("typed %s, want unresolved[noreturn]", got)
+		}
+	})
+
+	t.Run("the union path drops noreturn when both branches succeed under an unresolved condition", func(t *testing.T) {
+		// Both the condition and fail()'s argument are unresolved: cond.IsUnresolved()
+		// sends evalCond into condResult, and with an unresolved message
+		// callFunction never runs fail's Fn, so BOTH branches evaluate without
+		// error. That is what reaches condResult's "thenErr == nil && elseErr ==
+		// nil" case, the only one that calls UnionOf(thenType, elseType) — and
+		// collectUnionMembers dropping the noreturn member there is what this
+		// test pins.
+		syms := MapSymbols{
+			"Param.Cond": Unresolved(TBool),
+			"Param.Msg":  Unresolved(TString),
+		}
+		v, err := Eval(`1 if Param.Cond else fail(Param.Msg)`, syms, TAny)
+		if err != nil {
+			t.Fatalf("Eval failed: %v", err)
+		}
+		if got := v.Type.String(); got != "unresolved[int]" {
+			t.Errorf("typed %s, want unresolved[int] — noreturn must collapse out of UnionOf's result", got)
 		}
 	})
 
