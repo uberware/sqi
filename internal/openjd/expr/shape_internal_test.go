@@ -357,6 +357,40 @@ func TestOrderingAdmissibility(t *testing.T) {
 // (the very divergence this task closes); this asserts it across the
 // conversions promotable actually recognizes, including the list and
 // unresolved-wrapper cases where the two functions could diverge silently.
+func TestPromotableUnder_DefaultMatchesPromotable(t *testing.T) {
+	pairs := []struct {
+		from, to Type
+	}{
+		{TInt, TFloat},
+		{TFloat, TInt},
+		{TPath, TString},
+		{TString, TPath},
+		{TRangeExpr, TString},
+		{TString, TRangeExpr},
+		{TRangeExpr, ListOf(TInt)},
+		{TRangeExpr, TFloat},
+		{TInt, TString},
+		{TBool, TInt},
+		{ListOf(TInt), ListOf(TFloat)},
+		{ListOf(TFloat), ListOf(TInt)},
+		{ListOf(TNull), ListOf(TString)},
+		{ListOf(TPath), ListOf(TString)},
+		{UnresolvedOf(TInt), TFloat},
+		{TInt, UnresolvedOf(TFloat)},
+		{TInt, TInt},
+	}
+	for _, p := range pairs {
+		t.Run(p.from.String()+"->"+p.to.String(), func(t *testing.T) {
+			want := promotable(p.from, p.to)
+			got := promotableUnder(promoteDefault, p.from, p.to)
+			if got != want {
+				t.Errorf("promotableUnder(promoteDefault, %s, %s) = %v, want %v (promotable)",
+					p.from, p.to, got, want)
+			}
+		})
+	}
+}
+
 // TestArgCostList_EmptyListScoring pins both halves of the empty-list ruling:
 // an unbound variable element costs nothing to bind, a concrete element is
 // reached by section 1.2.6 rule 6's conversion and costs a widening.
@@ -396,39 +430,5 @@ func TestArgCostList_BoundVariableStillWidens(t *testing.T) {
 	}
 	if got != costWiden {
 		t.Errorf("argCost with T already bound = %d, want %d", got, costWiden)
-	}
-}
-
-func TestPromotableUnder_DefaultMatchesPromotable(t *testing.T) {
-	pairs := []struct {
-		from, to Type
-	}{
-		{TInt, TFloat},
-		{TFloat, TInt},
-		{TPath, TString},
-		{TString, TPath},
-		{TRangeExpr, TString},
-		{TString, TRangeExpr},
-		{TRangeExpr, ListOf(TInt)},
-		{TRangeExpr, TFloat},
-		{TInt, TString},
-		{TBool, TInt},
-		{ListOf(TInt), ListOf(TFloat)},
-		{ListOf(TFloat), ListOf(TInt)},
-		{ListOf(TNull), ListOf(TString)},
-		{ListOf(TPath), ListOf(TString)},
-		{UnresolvedOf(TInt), TFloat},
-		{TInt, UnresolvedOf(TFloat)},
-		{TInt, TInt},
-	}
-	for _, p := range pairs {
-		t.Run(p.from.String()+"->"+p.to.String(), func(t *testing.T) {
-			want := promotable(p.from, p.to)
-			got := promotableUnder(promoteDefault, p.from, p.to)
-			if got != want {
-				t.Errorf("promotableUnder(promoteDefault, %s, %s) = %v, want %v (promotable)",
-					p.from, p.to, got, want)
-			}
-		})
 	}
 }

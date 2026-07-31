@@ -392,11 +392,14 @@ func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
 		// type and coerces the empty-list argument to a bogus "list[T]"
 		// value instead of leaving it list[nulltype], corrupting whatever
 		// the shape's Fn inspects. Binding to nulltype is exactly what a
-		// normal argCost(varT, nulltype, b) call would have done; only the
-		// costWiden override (nulltype is a WIDENING match, not exact) is
-		// special about this branch. A variable already bound by another
-		// occurrence is left alone: the empty list is compatible with
-		// whatever that binding resolved to, per the same empty-list rule.
+		// normal argCost(varT, nulltype, b) call would have done, and for
+		// an UNBOUND variable the cost now matches too — see below. The
+		// override is only for the other two paths this branch decides
+		// without ever calling argCost: a variable already bound by another
+		// occurrence is left alone here (the empty list is compatible with
+		// whatever that binding resolved to, per the same empty-list rule),
+		// and a concrete element type reaches this branch at all — both
+		// score costWiden below rather than through a recursive call.
 		if elem := param.Params[0]; isTypeVar(elem.Code) {
 			if _, bound := b[elem.Code]; !bound {
 				b[elem.Code] = TNull
