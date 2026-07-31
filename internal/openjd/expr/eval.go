@@ -88,15 +88,16 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 // them.
 //
 // Two conventions coexist for the depth ARGUMENT a descent passes to this
-// function, and both are intentional. evalUnary, evalBinary, evalCompare,
-// evalLogical, evalCond, evalIndex and evalSlice pass depth straight through,
-// so each AST level costs exactly the one unit counted above. The Access arm
-// below, evalCall's receiver and argument descents (call.go), and every
-// descent in comp.go instead pass depth+1, so a chain of Access, Call or
-// comprehension nodes costs TWO units per level rather than one — an "Access
-// chain" ~5,000 deep reaches maxEvalDepth where a subscript chain needs
-// ~10,000. This was not unified when Access, Call and the comprehension were
-// added, and is left as found rather than fixed here: the effect is strictly
+// function. evalUnary, evalBinary, evalCompare, evalLogical, evalCond,
+// evalListLit, evalIndex and evalSlice pass depth straight through, so each
+// AST level costs exactly the one unit counted above. The Access arm below,
+// evalCall's receiver and argument descents (call.go), and every descent in
+// comp.go instead pass depth+1, so a chain of Access, Call or comprehension
+// nodes costs TWO units per level rather than one — an "Access chain" ~5,000
+// deep reaches maxEvalDepth where a subscript chain needs ~10,000. This split
+// was inherited, not designed: it was not unified when Access, Call and the
+// comprehension were added, and is left as found rather than fixed here now
+// that it has been noticed, because the effect is strictly
 // CONSERVATIVE (it can only reject a legal-depth expression earlier, never let
 // one past the point where the Go stack would actually be at risk — see the
 // measurements above), and unifying it touches three files' worth of already

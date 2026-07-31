@@ -158,26 +158,37 @@
 //     unsupported syntax — but the registry they resolve through,
 //     functionShapes (call.go), is DELIBERATELY EMPTY: every function,
 //     method and property of section 2.2's roughly 100-function library is
-//     sub-project C's, so every call fails at RUNTIME with "unknown
-//     function", a real diagnostic rather than a parse error —
-//     "len([1])" reports `unknown function "len"`, not a syntax error.
-//     TestFunctionShapes_IsEmpty pins the registry at zero entries for
-//     exactly this reason: it would be easy to "finish" this sub-project by
-//     quietly registering one. Uniform function call syntax (section 1.3.3)
-//     makes "x.f(a)" resolve through the same callFunction as "f(x, a)",
-//     with the receiver prepended to the argument list — EXCEPT that section
-//     1.2.4 suppresses implicit coercion on a method receiver specifically, a
-//     call-site property this package does implement (callFunction's
-//     methodStyle) but that is UNOBSERVABLE against an empty registry:
-//     nothing here has a signature to accept or reject a receiver by.
-//     TestReceiverCoercionRestriction (call_internal_test.go) covers it by
-//     registering a function locally under the test build for exactly that
-//     reason — sub-project C must not be the first place this restriction is
-//     exercised. Property syntax (section 1.3.3) is sugar for a call to
-//     __property_p__, dispatched through the same empty registry, so a
-//     property access fails the identical way a call does. A dotted name
-//     that reaches a method or property call is split by LONGEST-PREFIX
-//     resolution against the caller's own symbol table (resolve.go's
+//     sub-project C's, so a call that reaches the registry fails at RUNTIME
+//     with "unknown function", a real diagnostic rather than a parse error —
+//     "len([1])" reports `unknown function "len"`, not a syntax error. (Not
+//     every call reaches it: a dunder callee like "__add__(1, 2)" is
+//     rejected before lookup with "is a specification naming convention and
+//     is not directly callable", and a callee whose whole dotted name
+//     resolves to a symbol — "Param.Name()" when Param.Name is bound — fails
+//     "Param.Name is not a function".) TestFunctionShapes_IsEmpty pins the
+//     registry at zero entries for exactly this reason: it would be easy to
+//     "finish" this sub-project by quietly registering one. Uniform function
+//     call syntax (section 1.3.3) makes "x.f(a)" resolve through the same
+//     callFunction as "f(x, a)", with the receiver prepended to the argument
+//     list — EXCEPT that section 1.2.4 suppresses implicit coercion on a
+//     method receiver specifically, a call-site property this package does
+//     implement (callFunction's methodStyle) but that is UNOBSERVABLE
+//     against an empty registry: nothing here has a signature to accept or
+//     reject a receiver by. TestReceiverCoercionRestriction
+//     (call_internal_test.go) covers it by registering a function locally
+//     under the test build for exactly that reason — sub-project C must not
+//     be the first place this restriction is exercised. Property syntax
+//     (section 1.3.3) is sugar for a call to __property_p__, dispatched
+//     through the same empty registry, so a property access fails through
+//     the identical mechanism — but NOT with the identical message: an
+//     unknown-function failure there is deliberately reworded to "unknown
+//     property" (resolve.go's evalProperty) so that a genuine runtime error
+//     inside a property that DOES exist is never relabeled as a missing one.
+//     "Param.Name.stem" (Param.Name bound to a string) reports
+//     `unknown property "stem" on string`, not `unknown function
+//     "__property_stem__"`. A dotted name that reaches a method or property
+//     call is split by LONGEST-PREFIX resolution against the caller's own
+//     symbol table (resolve.go's
 //     resolveName): "Param.Name.upper()" tries "Param.Name.upper" as a bound
 //     symbol first, then "Param.Name", stopping at the first prefix the
 //     caller's table actually binds. This package hardcodes no namespaces of
