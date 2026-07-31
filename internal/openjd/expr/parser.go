@@ -80,6 +80,16 @@ func (e *Expression) Root() Node { return e.root }
 // above was verified against the reference implementation, which answers
 // identically.
 //
+// It does NOT answer identically once the binding ends. A loop variable is
+// bound to its own comprehension and no further, so a later mention is external
+// again: "[x for x in Param.A] + [x]" collects {"Param.A", "x"}, where the
+// reference collects {"Param.A"} alone, as if the name were removed from the
+// whole expression. The spec is on this side — section 1.3.7 binds the variable
+// inside the comprehension, and the Recommended Library Interface asks for the
+// EXTERNAL symbols — so the divergence is deliberate. It is also the safer
+// direction: a scope check sees the free "x" here and would miss it under the
+// reference's answer.
+//
 // One narrowing remains, and it is safe in that direction: a property chain
 // whose receiver is not a bare name — "(Param.File).stem", where the
 // parentheses make the parser build an Access rather than one Name — collects
