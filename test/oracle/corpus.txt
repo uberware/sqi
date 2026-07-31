@@ -433,6 +433,7 @@ bool | list[nulltype]	all([])
 int | bool	5 if 1 > 0 else fail("unreachable")
 string | list[string] | list[list[string]]	string(flatten([["-e", "A=1"], ["-e", "B=2"]]))
 int | list[int]	min([len("abcd"), 3])
+list[int] | int	sorted(range(5, 0, -1))
 
 # ── coverage recovered from the openjd-rs#291 target pushdown ────────────────
 #
@@ -491,4 +492,3 @@ int | nulltype	null or 7
 # (list[int]) is already covered by the outer body's element type.
 list[list[int]] | list[int] | int	[[x] for x in [1, 2]]
 list[list[int]] | list[int] | list[string] | int	[[y for y in [1, 2]] for x in ['a', 'b']]
-list[int] | int	sorted(range(5, 0, -1))
