@@ -46,22 +46,17 @@ var listFuncs = map[string][]Shape{
 
 // rangeList builds Python's range as a list.
 //
-// The count is computed ARITHMETICALLY and bounded before anything is
-// allocated: checking afterward would be no protection at all, which is the
-// same reason checkElementCount exists in limits.go.
+// The count is computed and bounded before anything is allocated: checking
+// afterward would be no protection at all, which is the same reason
+// checkElementCount exists in limits.go. The arithmetic itself is
+// rangeCount's job, not this function's — see its doc comment for why it
+// works in uint64 rather than int64.
 func rangeList(start, stop, step int64) (Value, error) {
 	if step == 0 {
 		return Value{}, errors.New("range() requires a non-zero step")
 	}
-	var count int64
-	if step > 0 {
-		if stop > start {
-			count = (stop - start + step - 1) / step
-		}
-	} else if stop < start {
-		count = (start - stop - step - 1) / -step
-	}
-	if err := checkElementCount(int(count)); err != nil {
+	count := rangeCount(start, stop, step)
+	if err := checkElementCount(count); err != nil {
 		return Value{}, err
 	}
 	if count == 0 {
@@ -77,6 +72,67 @@ func rangeList(start, stop, step int64) (Value, error) {
 		n += step
 	}
 	return List(TInt, vals), nil
+}
+
+// rangeCount computes range()'s element count as a plain int, clamped so that
+// an astronomically large true count is reported as "too large" by
+// checkElementCount rather than silently wrapping into a small or negative
+// number that looks like a legitimate answer.
+//
+// It works in uint64, not int64, for the SPAN between start and stop: the
+// true span between two arbitrary int64 values can be as large as
+// math.MaxInt64 - math.MinInt64, i.e. 2^64-1, which does not always fit in an
+// int64. Forming it as plain int64 subtraction ("stop - start") can wrap —
+// exactly the defect this replaces, where "range(-9223372036854775807,
+// 9223372036854775807, 9223372036854775807)" silently computed a span of -1
+// and returned an empty list instead of erroring or answering 2. uint64 has
+// exactly enough range (2^64 values) to hold that span exactly, with no
+// wraparound possible, once the DIRECTION is known.
+//
+// The direction is decided first, by a plain signed comparison (step > 0 &&
+// stop > start, or its mirror): comparing two int64 values is always exact
+// regardless of what arithmetic on them might overflow, so this is safe on
+// its own and is what tells us the span is genuinely positive before any
+// subtraction happens. Only inside a proven-nonempty branch is the span
+// itself computed, in uint64.
+//
+// The step's magnitude is taken as "uint64(-step)" even on the step < 0
+// side, and that is safe for step == math.MinInt64 too, which is the one
+// value a plain "-step" cannot represent as a positive int64: Go's signed
+// negation of math.MinInt64 wraps back to math.MinInt64's own bit pattern,
+// and that same bit pattern reinterpreted as uint64 IS math.MinInt64's true
+// magnitude (2^63) — so no separate case is needed for it.
+//
+// The ceiling division (span/mag, plus one for a non-zero remainder) cannot
+// overflow uint64 either: the quotient is at most span, and the one case
+// that could push a +1 over uint64's own top (mag == 1 with span already at
+// 2^64-1) can never have a nonzero remainder to trigger that +1, since
+// anything mod 1 is 0.
+func rangeCount(start, stop, step int64) int {
+	var span, mag uint64
+	switch {
+	case step > 0 && stop > start:
+		span = uint64(stop) - uint64(start) //nolint:gosec // G115: deliberate reinterpretation, not a bounds bug — see the doc comment above
+		mag = uint64(step)
+	case step < 0 && stop < start:
+		span = uint64(start) - uint64(stop) //nolint:gosec // G115: deliberate reinterpretation, not a bounds bug — see the doc comment above
+		mag = uint64(-step)
+	default:
+		return 0
+	}
+	count := span / mag
+	if span%mag != 0 {
+		count++
+	}
+	if count > maxElements {
+		// Clamped rather than converted: at this magnitude, int(count) could
+		// itself wrap to a small or negative number, which would slip past
+		// checkElementCount's bound check the exact way this function exists
+		// to prevent. maxElements+1 is a safe, small sentinel that is
+		// unambiguously over the bound.
+		return maxElements + 1
+	}
+	return int(count)
 }
 
 // flattenNested concatenates a list of lists into one list.
@@ -100,7 +156,13 @@ func flattenNested(args []Value) (Value, error) {
 		}
 	}
 	if total == 0 {
-		return List(TNull, nil), nil
+		// elem, not TNull: an outer list of empty (but concretely typed) inner
+		// lists — "flatten([[1, 2][2:2]])" — must still report list[int], not
+		// the more permissive list[nulltype] that would mask a downstream type
+		// error. elem is already TNull here when the argument itself derives
+		// no element type (e.g. flatten([]), whose own type is list[nulltype]),
+		// so this does not change that case.
+		return List(elem, nil), nil
 	}
 	vals := make([]Value, 0, total)
 	for _, inner := range outer {
