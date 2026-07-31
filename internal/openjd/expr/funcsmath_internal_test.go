@@ -227,3 +227,59 @@ func TestSum_ReportsOverflow(t *testing.T) {
 		t.Errorf("error = %v, want it to report an overflow", err)
 	}
 }
+
+// TestMinMax_EmptyList_SelectsNoReturnRow pins the REAL behavior behind
+// TestMinMax_EmptyList's error text, which a defect could satisfy by accident:
+// a prior revision of shape.go's argCostList scored list[nulltype] against
+// EVERY concrete-element list row (list[int], list[float], and the dedicated
+// list[nulltype] row itself) as the same cost-1 widen, so the three rows tied
+// and matchShapesExactFirst's earliest-wins tiebreak picked list[int] — never
+// the dedicated noreturn row. That was invisible from the error text alone
+// because extremumInt independently raises the identical RFC 0006 wording for
+// an empty []Value. Asserting on the matched Shape's Ret — TNoReturn only the
+// dedicated row declares — is the only way to tell the two rows apart.
+func TestMinMax_EmptyList_SelectsNoReturnRow(t *testing.T) {
+	for _, name := range []string{"min", "max"} {
+		t.Run(name, func(t *testing.T) {
+			shape, _, ok := matchShapes(mathFuncs[name], []Type{ListOf(TNull)})
+			if !ok {
+				t.Fatalf("%s([]) matched no shape", name)
+			}
+			if !shape.Ret.Equal(TNoReturn) {
+				t.Errorf("%s([]) matched a shape returning %s, want %s (the dedicated list[nulltype] row)",
+					name, shape.Ret, TNoReturn)
+			}
+		})
+	}
+}
+
+// TestSum_EmptyListIsOrderIndependent pins that sum([]) returns int because
+// its list[nulltype] row wins ON COST against the list[int]/list[float] rows
+// (shape.go's argCostList scores list[nulltype] vs list[nulltype] as an exact
+// match now, cost 0, against those rows' cost-1 widen) — not because it
+// happens to be registered first. Reordering the rows must not change the
+// result; if it did, the selection would be a position-dependent tie rather
+// than a real cost win, which is exactly the defect this guards against.
+func TestSum_EmptyListIsOrderIndependent(t *testing.T) {
+	original := mathFuncs["sum"]
+	reordered := make([]Shape, len(original))
+	copy(reordered, original)
+	// Move the list[nulltype] row (index 0) to the end, so a position-based
+	// tiebreak would hand the match to list[int] (now first) instead.
+	reordered = append(reordered[1:], reordered[0])
+
+	shape, _, ok := matchShapes(reordered, []Type{ListOf(TNull)})
+	if !ok {
+		t.Fatal("sum([]) matched no shape after reordering")
+	}
+	if !shape.Ret.Equal(TInt) {
+		t.Fatalf("sum([]) matched a shape returning %s after reordering, want %s", shape.Ret, TInt)
+	}
+	v, err := shape.Fn(nil)
+	if err != nil {
+		t.Fatalf("sum([]) shape.Fn failed: %v", err)
+	}
+	if got := v.String(); got != "0" {
+		t.Errorf("sum([]) = %s, want 0", got)
+	}
+}

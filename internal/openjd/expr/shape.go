@@ -386,6 +386,19 @@ func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
 	// first list[T] parameter B2 registers would reject "[]" outright
 	// without this.
 	if arg.Params[0].Code == CodeNull {
+		// list[nulltype] vs list[nulltype] is an exact match that argCost's own
+		// param.Equal(arg) would have caught had the list-descent above not
+		// intercepted the pair first — argCost never reaches its own
+		// param.Equal check for a list/list pair, because THIS function
+		// decides list arguments unconditionally. Catching it here, before the
+		// type-variable carve-out below, is what makes the dedicated
+		// list[nulltype] row for min([])/max([]) actually win the tie against
+		// list[int]/list[float] (both of which only reach nulltype's argument
+		// by the costWiden fallthrough further down) rather than losing it to
+		// whichever concrete-element row happens to be registered first.
+		if param.Params[0].Code == CodeNull {
+			return costExact, true
+		}
 		// When the parameter's element is itself a type variable (B2's
 		// concatLists/repeatList shapes), it must still bind — otherwise
 		// callShape later substitutes the UNBOUND variable into the param

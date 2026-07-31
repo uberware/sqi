@@ -92,10 +92,19 @@ var mathFuncs = map[string][]Shape{
 		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
 			return extremumFloat(args[0].AsList(), true)
 		}},
-		// The empty literal's own row. list[nulltype] matches it EXACTLY, so it
-		// beats the list[int] row above (which the empty list reaches only by
-		// section 1.2.6 rule 6's widening) and RFC 0006's wording is what the
-		// user sees.
+		// The empty literal's own row. list[nulltype] matches it EXACTLY (cost
+		// 0, via shape.go's argCostList), while the list[int] row above only
+		// reaches the empty argument by section 1.2.6 rule 6's widening (cost
+		// 1) — so this row wins outright ON COST, not by tying and falling
+		// back to registration order, and RFC 0006's wording is what the user
+		// sees. A prior revision of argCostList scored every concrete element
+		// type — including a param whose own element was CodeNull — as the
+		// same cost-1 widen, which tied this row with list[int]/list[float]
+		// and let the earlier-registered list[int] row win the tie instead;
+		// the fix in shape.go's argCostList carves out list[nulltype] vs
+		// list[nulltype] as the exact match it always should have been. See
+		// TestMinMax_EmptyList_SelectsNoReturnRow, which asserts on the
+		// returned Shape itself so this cannot regress silently again.
 		{Params: []Type{ListOf(TNull)}, Ret: TNoReturn, Fn: func([]Value) (Value, error) {
 			return Value{}, emptyListError("min")
 		}},
@@ -148,6 +157,13 @@ var mathFuncs = map[string][]Shape{
 	// sum's empty-list row returns 0 rather than erroring — RFC 0006 says so
 	// explicitly, and it is the mathematically empty sum. That is the one place
 	// sum and min/max part company on the same argument.
+	//
+	// This row wins against list[int]/list[float] below ON COST (shape.go's
+	// argCostList scores list[nulltype] vs list[nulltype] as an exact match,
+	// cost 0, against those rows' cost-1 widen), not because it happens to be
+	// registered first — TestSum_EmptyListIsOrderIndependent pins that
+	// reordering these rows does not change the result, which is what a
+	// position-dependent tie would have let happen.
 	"sum": {
 		{Params: []Type{ListOf(TNull)}, Ret: TInt, Fn: func([]Value) (Value, error) {
 			return Int(0), nil
