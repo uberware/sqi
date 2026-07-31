@@ -385,6 +385,30 @@ int | float	round(-1.5)
 float | int	round(3.14159, 2)
 float | int	round(3.5, 2)
 int | float	round(1234.5, -1)
+
+# The float->int narrowing boundary class (C1 review, CRITICAL 1/2, IMPORTANT
+# 3): a magnitude outside int64's representable range must error rather than
+# return whatever a raw "int64(f)" conversion happens to produce, which is
+# architecture-dependent on the exact same input (math.MaxInt64 on arm64,
+# math.MinInt64 on amd64, measured on this source before the fix).
+int | float	floor(1e30)
+int | float	ceil(1e30)
+int | float	round(1e30)
+int | float	floor(9223372036854775807.0)
+int | float	floor(9223372036854775808.0)
+int | float	floor(-9223372036854775808.0)
+int | float	ceil(-9223372036854775808.0)
+int	round(9223372036854775807, -1)
+int	round(9223372036854775806, -1)
+
+# roundToDigits's negative-ndigits branch used to compute its scale via
+# math.Pow(10, 400), which overflows to +Inf; f/Inf gives 0 and 0*Inf gives
+# NaN, whose narrowing to int64 was 0 on arm64 but math.MinInt64 on amd64 for
+# this exact expression. sqi's own contract (RFC 0006: round(x, ndigits <= 0)
+# -> int) diverges from the reference here the same way round(1234.5, -1)
+# above already does — see baseline.txt.
+int | float	round(3.5, -400)
+
 int	min(3, 7)
 float	min(3.5, 7.5)
 float | int	min(1, 2.0)

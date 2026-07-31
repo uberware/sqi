@@ -18,6 +18,35 @@ func TestMergeFuncs_CombinesGroups(t *testing.T) {
 	}
 }
 
+// TestFunctionShapes_RegistersC1sTwentyTwoNames pins the registry's actual
+// contents. TestFunctionShapes_IsEmpty (pre-C1) asserted the registry had
+// nothing in it yet; it was correctly deleted once C1 populated the table,
+// but nothing took its place, so a future edit that dropped an entry from
+// convFuncs, mathFuncs or listFuncs — or a group that quietly stopped being
+// passed to mergeFuncs in funcs.go — would only be caught by whichever
+// per-group tests happen to exercise that one name, not by anything asserting
+// the registry as a whole.
+func TestFunctionShapes_RegistersC1sTwentyTwoNames(t *testing.T) {
+	want := []string{
+		// funcsconv.go: general conversions, plus fail (validation).
+		"len", "bool", "int", "float", "string", "list", "range_expr", "fail",
+		// funcsmath.go: math.
+		"round", "abs", "floor", "ceil", "min", "max", "sum",
+		// funcslist.go: list functions.
+		"range", "flatten", "sorted", "reversed", "unique", "any", "all",
+	}
+	if len(functionShapes) != len(want) {
+		t.Fatalf("functionShapes has %d entries, want %d: %v", len(functionShapes), len(want), want)
+	}
+	for _, name := range want {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := functionShapes[name]; !ok {
+				t.Errorf("functionShapes is missing %q", name)
+			}
+		})
+	}
+}
+
 func TestMergeFuncs_PanicsOnDuplicateName(t *testing.T) {
 	defer func() {
 		r := recover()

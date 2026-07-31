@@ -8,8 +8,10 @@ import (
 	"strconv"
 )
 
-// mathFuncs is RFC 0006's math-function group. Its other members are added by
-// later tasks of this sub-project.
+// mathFuncs is RFC 0006's math-function group: abs, min, max, sum, floor,
+// ceil, round. A later sub-project never edits this table — C2, C3 and C4 add
+// their own groups in their own files (funcsstr.go, funcsre.go, funcsrepr.go,
+// funcspath.go) and their own entry in funcs.go's mergeFuncs call.
 var mathFuncs = map[string][]Shape{
 	// Section 2.2.3's round(). Three rows, and the two-argument row's return
 	// type is a union because RFC 0006 makes it depend on the VALUE of ndigits:
@@ -22,7 +24,11 @@ var mathFuncs = map[string][]Shape{
 	// outranks the reference; see test/oracle/baseline.txt.
 	"round": {
 		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
-			return Int(int64(math.RoundToEven(args[0].AsFloat()))), nil
+			n, err := floatToInt(math.RoundToEven(args[0].AsFloat()))
+			if err != nil {
+				return Value{}, err
+			}
+			return Int(n), nil
 		}},
 		{Params: []Type{TFloat, TInt}, Ret: UnionOf(TInt, TFloat), Fn: func(args []Value) (Value, error) {
 			return roundToDigits(args[0].AsFloat(), args[1].AsInt())
@@ -62,7 +68,11 @@ var mathFuncs = map[string][]Shape{
 			return args[0], nil
 		}},
 		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
-			return Int(int64(math.Floor(args[0].AsFloat()))), nil
+			n, err := floatToInt(math.Floor(args[0].AsFloat()))
+			if err != nil {
+				return Value{}, err
+			}
+			return Int(n), nil
 		}},
 	},
 	"ceil": {
@@ -70,7 +80,11 @@ var mathFuncs = map[string][]Shape{
 			return args[0], nil
 		}},
 		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
-			return Int(int64(math.Ceil(args[0].AsFloat()))), nil
+			n, err := floatToInt(math.Ceil(args[0].AsFloat()))
+			if err != nil {
+				return Value{}, err
+			}
+			return Int(n), nil
 		}},
 	},
 	"min": {
@@ -113,11 +127,7 @@ var mathFuncs = map[string][]Shape{
 			if err != nil {
 				return Value{}, err
 			}
-			vals := make([]Value, len(ints))
-			for i, n := range ints {
-				vals[i] = Int(n)
-			}
-			return extremumInt(vals, true)
+			return extremumInts(ints, true)
 		}},
 	},
 	"max": {
@@ -147,11 +157,7 @@ var mathFuncs = map[string][]Shape{
 			if err != nil {
 				return Value{}, err
 			}
-			vals := make([]Value, len(ints))
-			for i, n := range ints {
-				vals[i] = Int(n)
-			}
-			return extremumInt(vals, false)
+			return extremumInts(ints, false)
 		}},
 	},
 	// sum's empty-list row returns 0 rather than erroring — RFC 0006 says so
@@ -183,13 +189,31 @@ var mathFuncs = map[string][]Shape{
 			if err != nil {
 				return Value{}, err
 			}
-			vals := make([]Value, len(ints))
-			for i, n := range ints {
-				vals[i] = Int(n)
-			}
-			return sumInts(vals)
+			return sumInt64s(ints)
 		}},
 	},
+}
+
+// floatToInt narrows a float64 to an int64, guarding the one case Go leaves
+// implementation-defined: converting a value outside int64's representable
+// range. Measured on this same source, "int64(f)" for such an f returns
+// math.MaxInt64 on arm64 and math.MinInt64 on amd64 — a silently wrong answer
+// that differs by build architecture rather than erroring, where section
+// 2.1.1 requires an integer overflow to be reported. abs's int row (above)
+// already guards its own single unrepresentable case (-MinInt64) the same
+// way; this is the shared version for round, floor and ceil, which can land
+// on any float value at all rather than one fixed one.
+//
+// Both bounds are exactly representable as float64 (2^63 and -2^63), so the
+// comparison is exact. This deliberately does NOT use toInt's (coerce.go)
+// "float64(i) != f" round-trip test: floor, ceil and round exist precisely to
+// discard a fraction, so that test would reject the very input these
+// functions are meant to accept.
+func floatToInt(f float64) (int64, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return 0, errIntOverflow
+	}
+	return int64(f), nil
 }
 
 // roundToDigits implements round(float, int).
@@ -217,8 +241,27 @@ func roundToDigits(f float64, ndigits int64) (Value, error) {
 		}
 		return floatRendered(out.AsFloat(), strconv.FormatFloat(out.AsFloat(), 'f', int(ndigits), 64)), nil
 	}
-	scale := math.Pow(10, float64(-ndigits))
-	return Int(int64(math.RoundToEven(f/scale) * scale)), nil
+	// Built the same bounded way roundIntToDigits builds its own scale below,
+	// rather than math.Pow(10, float64(-ndigits)): for a large enough
+	// -ndigits (round(3.5, -400)) Pow overflows to +Inf, f/Inf is 0, and
+	// 0*Inf is NaN — which int64(NaN) then narrows to 0 on arm64 but
+	// math.MinInt64 on amd64, sqi's primary deployment arch, silently. The
+	// loop catches the same condition before it ever produces an Inf: past
+	// that point f/scale is 0 for any representable f, which is round-to-even
+	// at that resolution's actual answer, computed directly rather than
+	// discovered via NaN.
+	scale := 1.0
+	for range -ndigits {
+		if scale > math.MaxFloat64/10 {
+			return Int(0), nil
+		}
+		scale *= 10
+	}
+	n, err := floatToInt(math.RoundToEven(f/scale) * scale)
+	if err != nil {
+		return Value{}, err
+	}
+	return Int(n), nil
 }
 
 // roundIntToDigits implements round(int, int). An int is already whole, so a
@@ -243,7 +286,17 @@ func roundIntToDigits(n, ndigits int64) (Value, error) {
 	case r < -half || (r == -half && q%2 != 0):
 		q--
 	}
-	return Int(q * scale), nil
+	// q*scale, not Int(q*scale) directly: the multiplication itself can leave
+	// int64's range even though both the accumulation loop above and the
+	// half-adjustment just before it were individually guarded — measured for
+	// "round(9223372036854775807, -1)" and "round(9223372036854775806, -1)",
+	// both of which silently returned the wrong, sign-flipped
+	// -9223372036854775806 before this used the checked multiply.
+	out, err := mulInt(q, scale)
+	if err != nil {
+		return Value{}, err
+	}
+	return Int(out), nil
 }
 
 // emptyListError is RFC 0006's wording for min() and max() over an empty list.
@@ -262,6 +315,25 @@ func extremumInt(vals []Value, wantMin bool) (Value, error) {
 	best := vals[0].AsInt()
 	for _, v := range vals[1:] {
 		n := v.AsInt()
+		if (wantMin && n < best) || (!wantMin && n > best) {
+			best = n
+		}
+	}
+	return Int(best), nil
+}
+
+// extremumInts is extremumInt for already-unboxed int64 values, used by
+// min/max's range_expr rows. rangeInts (rangeexpr.go) hands back a plain
+// []int64; boxing it into []Value only to immediately unbox it again inside
+// extremumInt would cost a real allocation for nothing — measured at half a
+// gigabyte extra on a ten-million-value range — so this operates on the slice
+// rangeInts already produced instead.
+func extremumInts(ints []int64, wantMin bool) (Value, error) {
+	if len(ints) == 0 {
+		return Value{}, emptyListError(extremumName(wantMin))
+	}
+	best := ints[0]
+	for _, n := range ints[1:] {
 		if (wantMin && n < best) || (!wantMin && n > best) {
 			best = n
 		}
@@ -298,6 +370,22 @@ func sumInts(vals []Value) (Value, error) {
 	total := int64(0)
 	for _, v := range vals {
 		next, err := addInt(total, v.AsInt())
+		if err != nil {
+			return Value{}, err
+		}
+		total = next
+	}
+	return Int(total), nil
+}
+
+// sumInt64s is sumInts for already-unboxed int64 values, for the same reason
+// extremumInts exists: sum's range_expr row would otherwise box rangeInts's
+// []int64 into []Value purely to hand it straight to sumInts and discard the
+// boxed form.
+func sumInt64s(ints []int64) (Value, error) {
+	total := int64(0)
+	for _, n := range ints {
+		next, err := addInt(total, n)
 		if err != nil {
 			return Value{}, err
 		}

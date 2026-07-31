@@ -75,6 +75,25 @@ func rangeInts(v Value) ([]int64, error) {
 	return expandRanges(ranges, total), nil
 }
 
+// rangeExprValues expands a range_expr to its integers as a boxed []Value,
+// for the one caller that actually needs the boxed form: list(range_expr)
+// (funcsconv.go) becomes a list[int], so boxing there is the RESULT, not
+// throwaway work. min, max and sum's own range_expr rows (funcsmath.go) used
+// to box the same way and then immediately unbox again inside their reducer —
+// discarding the []Value they had just built — so those now work from
+// rangeInts's []int64 directly instead of calling this at all.
+func rangeExprValues(v Value) ([]Value, error) {
+	ints, err := rangeInts(v)
+	if err != nil {
+		return nil, err
+	}
+	vals := make([]Value, len(ints))
+	for i, n := range ints {
+		vals[i] = Int(n)
+	}
+	return vals, nil
+}
+
 // expandOneRange expands a range expression with exactly ONE sub-range, which
 // needs neither of the two things the general path below does.
 //

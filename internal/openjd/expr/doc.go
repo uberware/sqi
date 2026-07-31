@@ -168,7 +168,7 @@
 //   - Function, method and property calls now PARSE AND RESOLVE —
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
 //     unsupported syntax — and the registry they resolve through,
-//     functionShapes (call.go, assembled by funcs.go's mergeFuncs), now holds
+//     functionShapes (funcs.go, assembled by its own mergeFuncs), now holds
 //     its first 22 entries: sub-project C1's four groups — general
 //     conversions (len, bool, string, int, float, list, range_expr —
 //     funcsconv.go), validation (fail, the same file, its own RFC 0006

@@ -12,8 +12,12 @@ import (
 )
 
 // convFuncs is RFC 0006's general-function group: the conversions between
-// scalar types, plus len. Its other members and the validation function fail
-// are added by later tasks of this sub-project.
+// scalar types, plus len. fail (this same file, its own RFC 0006 category
+// despite living beside the conversions here) rounds out sub-project C1's
+// share of the table. A later sub-project never edits this table — C2, C3 and
+// C4 add their own groups in their own files (funcsstr.go, funcsre.go,
+// funcsrepr.go, funcspath.go) and their own entry in funcs.go's mergeFuncs
+// call.
 var convFuncs = map[string][]Shape{
 	"len": {
 		{Params: []Type{ListOf(varT)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
@@ -127,13 +131,9 @@ var convFuncs = map[string][]Shape{
 	},
 	"list": {
 		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Fn: func(args []Value) (Value, error) {
-			ints, err := rangeInts(args[0])
+			vals, err := rangeExprValues(args[0])
 			if err != nil {
 				return Value{}, err
-			}
-			vals := make([]Value, len(ints))
-			for i, n := range ints {
-				vals[i] = Int(n)
 			}
 			return List(TInt, vals), nil
 		}},

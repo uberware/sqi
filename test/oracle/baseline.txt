@@ -396,6 +396,13 @@ list[list[int]] :: [[y for y in [1, 2]] for x in ['a', 'b']]
 # 1230 : int per RFC 0006's signature table — see the shared explanation above.
 int | float :: round(1234.5, -1)
 
+# Same widen-to-float divergence, at the far end of the negative-ndigits
+# range this time: -400 pushes roundToDigits's internal scale past what
+# float64 can represent, and the correctly-rounded answer at that resolution
+# is 0 either way. The reference reports 0.0 : float; sqi reports 0 : int per
+# RFC 0006's signature table — see the shared explanation above.
+int | float :: round(3.5, -400)
+
 # ── sqi is right: range_expr(string) preserves the input text, the reference
 #    re-derives an undocumented "corrected" form ─────────────────────────────
 #

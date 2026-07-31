@@ -7,8 +7,11 @@ import (
 	"slices"
 )
 
-// listFuncs is RFC 0006's list-function group. Its other members are added by a
-// later task of this sub-project.
+// listFuncs is RFC 0006's list-function group: range, flatten, sorted,
+// reversed, unique, any, all. A later sub-project never edits this table — C2,
+// C3 and C4 add their own groups in their own files (funcsstr.go, funcsre.go,
+// funcsrepr.go, funcspath.go) and their own entry in funcs.go's mergeFuncs
+// call.
 //
 // Note the group is distinct from the CONVERSION named list() in funcsconv.go,
 // which turns a range_expr into a list[int]. mergeFuncs panics on a duplicate
@@ -35,12 +38,24 @@ var listFuncs = map[string][]Shape{
 		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: func(args []Value) (Value, error) {
 			return args[0], nil
 		}},
-		// RFC 0006 lists list[nulltype] separately, and it is not redundant
-		// with the row above: an empty list matches THIS row exactly (see the
-		// argCostList note in mathFuncs' min table — list[nulltype] against a
-		// list[nulltype] parameter scores costExact) while reaching the
-		// list[T] row only by widening, so naming it keeps the selection
-		// unambiguous instead of relying on the tie-break twice.
+		// RFC 0006 lists list[nulltype] separately, and the row stays for
+		// spec fidelity, but this comment used to wrongly claim it is reached
+		// the same way the min table's list[nulltype] row is (that reasoning
+		// IS correct there, because min's rivals are list[int]/list[float],
+		// concrete types that cost 1 to widen into). Here the sibling is
+		// list[varT] — an unbound type variable — and argCostList's own
+		// carve-out scores an empty argument as an EXACT match (cost 0)
+		// against a variable just as much as against this row's own
+		// list[nulltype] parameter. So an empty list literal TIES the two
+		// rows at cost 0, and matchShapesExactFirst resolves that tie to the
+		// EARLIEST shape — the list[varT] row above, never this one. The tie
+		// is harmless today only because both rows return args[0] unchanged
+		// and both Ret substitute to list[nulltype] for an empty argument, so
+		// it is unobservable which row actually ran. It would stop being
+		// harmless the moment a later wave gave THIS row a different Fn or
+		// Ret from its list[varT] sibling: registered in this order, the
+		// list[varT] row would still win the tie and this row's behavior
+		// would never run.
 		{Params: []Type{ListOf(TNull)}, Ret: ListOf(TNull), Fn: func(args []Value) (Value, error) {
 			return args[0], nil
 		}},

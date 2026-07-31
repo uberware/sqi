@@ -283,3 +283,121 @@ func TestSum_EmptyListIsOrderIndependent(t *testing.T) {
 		t.Errorf("sum([]) = %s, want 0", got)
 	}
 }
+
+// TestFloorCeilRound_RejectAnUnrepresentableFloat pins that floor, ceil and a
+// bare round(float) report an integer overflow for a magnitude outside
+// int64's range, rather than the architecture-dependent wrong answer Go's raw
+// "int64(f)" conversion gives for such a value: measured on the same source,
+// math.MaxInt64 on arm64 and math.MinInt64 on amd64 for the exact same input.
+// floatToInt (funcsmath.go) is the shared guard all three (and roundToDigits's
+// non-positive-ndigits branch, covered separately below) now go through.
+func TestFloorCeilRound_RejectAnUnrepresentableFloat(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"floor of a magnitude past int64's max", "floor(1e30)"},
+		{"ceil of a magnitude past int64's max", "ceil(1e30)"},
+		{"bare round of a magnitude past int64's max", "round(1e30)"},
+		{"floor of the largest representable int64 magnitude as a float", "floor(9223372036854775807.0)"},
+		{"floor exactly at the upper bound, 2^63", "floor(9223372036854775808.0)"},
+		{"ceil of a magnitude past int64's min", "ceil(-1e30)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want an overflow error", tc.src)
+			}
+			if !strings.Contains(err.Error(), "overflow") {
+				t.Errorf("Eval(%q) error = %v, want it to report an overflow", tc.src, err)
+			}
+		})
+	}
+}
+
+// TestFloorCeilRound_AcceptTheExactBoundary pins the other side of the same
+// guard: both bounds floatToInt checks (-2^63 and just under +2^63) are
+// exactly representable as float64, so a value sitting exactly on the
+// in-range side must still succeed rather than being caught by an off-by-one
+// in the comparison.
+func TestFloorCeilRound_AcceptTheExactBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"floor at exactly -2^63, the lowest in-range value", "floor(-9223372036854775808.0)", "-9223372036854775808"},
+		{"ceil at exactly -2^63", "ceil(-9223372036854775808.0)", "-9223372036854775808"},
+		{"round at exactly -2^63", "round(-9223372036854775808.0)", "-9223372036854775808"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRoundIntToDigits_RejectsMultiplyOverflow pins that the final q*scale
+// multiplication in roundIntToDigits (funcsmath.go) is checked. Both cases are
+// plain int64 literals — no float involved — and both used to return the
+// same wrong, sign-flipped -9223372036854775806 on every architecture: the
+// half-adjustment and the scale accumulation were each individually guarded,
+// but the multiplication that combines them was not.
+func TestRoundIntToDigits_RejectsMultiplyOverflow(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"rounding the maximum int64 down a digit overflows", "round(9223372036854775807, -1)"},
+		{"one below the maximum overflows the same way", "round(9223372036854775806, -1)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want an overflow error", tc.src)
+			}
+			if !strings.Contains(err.Error(), "overflow") {
+				t.Errorf("Eval(%q) error = %v, want it to report an overflow", tc.src, err)
+			}
+		})
+	}
+}
+
+// TestRoundToDigits_NegativeNdigitsBeyondFloatRange pins roundToDigits's
+// negative-ndigits branch against math.Pow(10, 400) silently overflowing to
+// +Inf: f/Inf gives 0, and 0*Inf gives NaN, whose narrowing to int64 used to
+// be 0 on arm64 but math.MinInt64 on amd64 — sqi's primary deployment arch —
+// for the exact same source. The fix bounds the scale accumulation the same
+// way roundIntToDigits already bounds its own, so this now computes 0
+// directly rather than discovering it through a NaN.
+func TestRoundToDigits_NegativeNdigitsBeyondFloatRange(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"a positive value rounds to 0 at an astronomically coarse place", "round(3.5, -400)"},
+		{"a negative value rounds to 0 the same way", "round(-3.5, -400)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != "0" {
+				t.Errorf("Eval(%q) = %s, want 0", tc.src, got)
+			}
+			if got := v.Type.String(); got != "int" {
+				t.Errorf("Eval(%q) typed %s, want int", tc.src, got)
+			}
+		})
+	}
+}
