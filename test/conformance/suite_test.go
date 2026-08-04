@@ -359,3 +359,54 @@ func TestConformance_C1ProtectedFixtures(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_C2ProtectedFixtures asserts by NAME that the fixtures
+// sub-project C2 puts at risk still pass.
+//
+// All seven are .invalid and all seven pass TODAY for the wrong reason: the
+// string function they call is not registered, so the expression fails with
+// "unknown function" and the template is rejected. C2 registers all 31 string
+// functions, which removes that accidental rejection — each fixture must then
+// be rejected by REAL argument validation instead.
+//
+// The aggregate score cannot see the difference: seven regressing while seven
+// others start passing leaves it unchanged. Same reason
+// TestConformance_C1ProtectedFixtures exists.
+func TestConformance_C2ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// The empty-substring rule: RFC 0006 states it for these five.
+		"EXPR/job_templates/expr2.2.4--count-empty-substring.invalid.yaml":  "count() rejects an empty substring",
+		"EXPR/job_templates/expr2.2.4--find-empty-substring.invalid.yaml":   "find() rejects an empty substring",
+		"EXPR/job_templates/expr2.2.4--replace-empty-old.invalid.yaml":      "replace() rejects an empty old",
+		"EXPR/job_templates/expr2.2.4--split-empty-separator.invalid.yaml":  "split() rejects an empty separator",
+		"EXPR/job_templates/expr2.2.4--rsplit-empty-separator.invalid.yaml": "rsplit() rejects an empty separator",
+		// index/rindex raise when the substring is absent; find/rfind do not.
+		"EXPR/job_templates/expr2.2.4--index-not-found.invalid.yaml":  "index() rejects a missing substring",
+		"EXPR/job_templates/expr2.2.4--rindex-not-found.invalid.yaml": "rindex() rejects a missing substring",
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = conformance.RunExprCase(tc, data)
+	}
+
+	for path, why := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected because %s.", path, why)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (%s): %s", path, why, res.Reason)
+			}
+		})
+	}
+}

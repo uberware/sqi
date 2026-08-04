@@ -51,10 +51,15 @@
 # sub-project E's. Now that range() is registered, the fixture's triple-nested
 # comprehension over range(300) parses and evaluates to completion instead,
 # so it wrongly PASSES where the spec calls for rejection. Its sibling
-# expr1.3.10--string-operation-limit-exceeded is not affected: it depends on
-# a string method call (.upper()) that is not registered yet, so it is still
-# rejected for a real (if different) reason. Expect this entry to burn down
-# only once an operation counter lands, not before.
+# expr1.3.10--string-operation-limit-exceeded was noted at the time as not
+# affected, because it depends on a string method call (.upper()) that was not
+# registered yet, so it was still rejected for a real (if different) reason —
+# that prediction has now come true: sub-project C2's string-function wave
+# registers .upper(), so this sibling's comprehension now also parses and
+# evaluates to completion instead of failing on an unknown function, and it
+# too wrongly PASSES where the spec calls for rejection. Both entries burn
+# down together only once an operation counter lands, which is still
+# sub-project E's.
 #
 # It is kept separate from baseline.txt because the same fixture IDs appear in
 # both scoring paths, and an EXPR entry there would be reported as orphaned
@@ -122,8 +127,7 @@ EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
 EXPR/job_templates/expr-extension-missing.invalid.yaml
-EXPR/job_templates/expr1.1--function-call-expr.yaml
-EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
 EXPR/job_templates/expr1.3.10--operation-limit-exceeded.invalid.yaml
+EXPR/job_templates/expr1.3.10--string-operation-limit-exceeded.invalid.yaml
 EXPR/job_templates/expr1.3.11--path-range-expression.yaml
