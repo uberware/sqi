@@ -521,7 +521,7 @@
 //     each must be rejected by REAL argument validation instead, so that
 //     swap (one starting to pass for the wrong reason while another silently
 //     regresses) cannot hide inside an unchanged aggregate score either. The
-//     differential oracle test has 406/468 cases
+//     differential oracle test has 407/469 cases
 //     agreeing with the reference implementation, 62 baselined divergences
 //     (make test-expr-oracle) — up from B3's 135/169, then C1's 279/321 now
 //     that C1's 22 functions had their own corpus cases, and now C2's 31
