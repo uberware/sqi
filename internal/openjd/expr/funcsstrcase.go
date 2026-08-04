@@ -12,9 +12,8 @@ import (
 )
 
 // strCaseFuncs is the first of sub-project C2's four groups: RFC 0006 section
-// 2.2.4's case transforms and, once Task 2 lands, its classification
-// predicates. The two share this file because they share isAlnumRune and the
-// casers below.
+// 2.2.4's case transforms and its classification predicates. The two share
+// this file because they share isAlnumRune and the casers below.
 var strCaseFuncs = map[string][]Shape{
 	"upper": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
@@ -34,6 +33,71 @@ var strCaseFuncs = map[string][]Shape{
 	"title": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
 			return boundedString(titleString(args[0].AsStr()))
+		}},
+	},
+	// RFC 0006 says only "True if all characters are digits and string is
+	// non-empty", so the digit set is undefined by the specification and every
+	// candidate answers differently: Python's isdigit is Unicode ('²' is a
+	// digit), Go's unicode.IsDigit is category Nd ('٣' is, '²' is not), and the
+	// reference implementation is ASCII-only.
+	//
+	// ASCII wins for a reason beyond matching the reference: it preserves the
+	// obvious idiom. Under a Unicode definition isdigit('٣') is true while
+	// int('٣') still fails, so guarding a conversion with isdigit would
+	// silently stop working on exactly the inputs the guard exists for.
+	"isdigit": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			return Bool(allRunes(args[0].AsStr(), func(r rune) bool { return r >= '0' && r <= '9' })), nil
+		}},
+	},
+	"isalpha": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			return Bool(allRunes(args[0].AsStr(), unicode.IsLetter)), nil
+		}},
+	},
+	// isalnum COMPOSES from isalpha and isdigit, and that is a deliberate
+	// divergence from the reference implementation, which answers
+	// isalnum('٣') true while answering both isdigit('٣') and isalpha('٣')
+	// false. RFC 0006 defines none of the three, so the reference's own
+	// self-contradiction is the strongest evidence available about which
+	// reading to take: a family that composes is defensible, one that does not
+	// is a bug. Baselined in test/oracle/baseline.txt with that reason.
+	"isalnum": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			return Bool(allRunes(args[0].AsStr(), isAlnumRune)), nil
+		}},
+	},
+	"isspace": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			return Bool(allRunes(args[0].AsStr(), unicode.IsSpace)), nil
+		}},
+	},
+	// isupper and islower are NOT allRunes over IsUpper/IsLower. RFC 0006
+	// defines them over CASED characters — "all cased characters are uppercase
+	// and there is at least one cased character" — so an uncased rune neither
+	// satisfies nor breaks the test. isupper("ABC1") is true because a digit is
+	// uncased; isupper("1") is false because nothing in it is cased at all.
+	"isupper": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			return Bool(allCased(args[0].AsStr(), unicode.IsUpper)), nil
+		}},
+	},
+	"islower": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			return Bool(allCased(args[0].AsStr(), unicode.IsLower)), nil
+		}},
+	},
+	// isascii is the ONE predicate RFC 0006 declares true on the empty string:
+	// "all characters are ASCII (U+0000-U+007F), OR string is empty". The other
+	// six require non-empty. That asymmetry is the specification's, not a slip.
+	"isascii": {
+		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			for _, r := range args[0].AsStr() {
+				if r > unicode.MaxASCII {
+					return Bool(false), nil
+				}
+			}
+			return Bool(true), nil
 		}},
 	},
 }
@@ -140,4 +204,39 @@ func boundedString(s string) (Value, error) {
 		return Value{}, err
 	}
 	return String(s), nil
+}
+
+// allRunes reports whether every rune of s satisfies pred AND s is non-empty,
+// which is RFC 0006's shape for isdigit, isalpha, isalnum and isspace. isascii
+// does not use it: it is the one predicate true on the empty string.
+func allRunes(s string, pred func(rune) bool) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !pred(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// allCased reports whether every CASED rune of s satisfies pred and at least
+// one cased rune exists — RFC 0006's rule for isupper and islower.
+//
+// "Cased" includes titlecase, which is why isupper("ǲ") is false rather than
+// true: U+01F2 is a cased rune that is not uppercase, so it fails pred instead
+// of being skipped. Confirmed against the reference implementation.
+func allCased(s string, pred func(rune) bool) bool {
+	seen := false
+	for _, r := range s {
+		if !unicode.IsUpper(r) && !unicode.IsLower(r) && !unicode.IsTitle(r) {
+			continue
+		}
+		seen = true
+		if !pred(r) {
+			return false
+		}
+	}
+	return seen
 }
