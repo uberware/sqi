@@ -19,11 +19,11 @@ func TestEvalCall_Errors(t *testing.T) {
 		wantSubs string
 	}{
 		{"unknown plain function", "nosuchfn(Param.List)", `unknown function "nosuchfn"`},
-		{"unknown method", "Param.Name.upper()", `unknown function "upper"`},
+		{"unknown method", "Param.Name.nosuchmethod()", `unknown function "nosuchmethod"`},
 		{"unknown method on a literal", "[1, 2].nosuchfn()", `unknown function "nosuchfn"`},
 		{"unknown property", "Param.Name.stem", `unknown property "stem"`},
 		{"symbol is not callable", "Param.Name()", "is not a function"},
-		{"unknown symbol with segments", "Param.Nope.upper()", "unknown symbol"},
+		{"unknown symbol with segments", "Param.Nope.nosuchmethod()", "unknown symbol"},
 		{"dunder call", "__add__(1, 2)", "not directly callable"},
 		{"dunder method", "Param.Name.__property_stem__", "not directly callable"},
 	}

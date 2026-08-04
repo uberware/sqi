@@ -10,8 +10,9 @@ import (
 
 // mathFuncs is RFC 0006's math-function group: abs, min, max, sum, floor,
 // ceil, round. A later sub-project never edits this table — C2, C3 and C4 add
-// their own groups in their own files (funcsstr.go, funcsre.go, funcsrepr.go,
-// funcspath.go) and their own entry in funcs.go's mergeFuncs call.
+// their own groups in their own files (funcsstrcase.go, funcsstrfind.go,
+// funcsstrsplit.go, funcsstrpad.go, funcsre.go, funcsrepr.go, funcspath.go)
+// and their own entry in funcs.go's mergeFuncs call.
 var mathFuncs = map[string][]Shape{
 	// Section 2.2.3's round(). Three rows, and the two-argument row's return
 	// type is a union because RFC 0006 makes it depend on the VALUE of ndigits:

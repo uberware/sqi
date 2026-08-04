@@ -13,10 +13,11 @@ package expr
 // The table is assembled from one map per RFC 0006 category rather than written
 // as a single literal, because the function library is delivered in waves —
 // sub-project C1 registers the general, validation, math and list groups; C2
-// adds strings, C3 regular expressions and the repr_* family, C4 the path
-// engine and its properties and functions. A wave adds a file and one argument
-// here, and never edits a table another wave owns.
-var functionShapes = mergeFuncs(convFuncs, mathFuncs, listFuncs)
+// adds the string library across four files (case and classification, trim and
+// search, split and join, padding), C3 regular expressions and the repr_*
+// family, C4 the path engine and its properties and functions. A wave adds a
+// file and one argument here, and never edits a table another wave owns.
+var functionShapes = mergeFuncs(convFuncs, mathFuncs, listFuncs, strCaseFuncs)
 
 // mergeFuncs folds the per-category tables into one registry.
 //

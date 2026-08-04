@@ -15,7 +15,8 @@ import (
 // scalar types, plus len. fail (this same file, its own RFC 0006 category
 // despite living beside the conversions here) rounds out sub-project C1's
 // share of the table. A later sub-project never edits this table — C2, C3 and
-// C4 add their own groups in their own files (funcsstr.go, funcsre.go,
+// C4 add their own groups in their own files (funcsstrcase.go,
+// funcsstrfind.go, funcsstrsplit.go, funcsstrpad.go, funcsre.go,
 // funcsrepr.go, funcspath.go) and their own entry in funcs.go's mergeFuncs
 // call.
 var convFuncs = map[string][]Shape{

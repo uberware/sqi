@@ -125,7 +125,7 @@ func TestLanguage(t *testing.T) {
 		// no case for at all.
 		{name: "function call reaches an unregistered name", src: "nosuchfn(Param.Name)", wantErr: `unknown function "nosuchfn"`},
 		{name: "len is registered by sub-project C1", src: "len('ab')", wantCode: expr.CodeInt, want: "2"},
-		{name: "SUB-PROJECT C: method call", src: "Param.Name.upper()", wantErr: `unknown function "upper"`},
+		{name: "SUB-PROJECT C: method call", src: "Param.Name.nosuchmethod()", wantErr: `unknown function "nosuchmethod"`},
 		// String repetition (section 2.1.2) now evaluates too — this task's
 		// change, once limits.go's size bound made an unbounded repeat count
 		// safe — no longer belongs in the "not yet implemented" group above,
