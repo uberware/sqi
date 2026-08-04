@@ -253,27 +253,21 @@ func TestEvalProperty_DispatchesThroughTheRegistry(t *testing.T) {
 
 // TestReceiverCoercionRestriction pins specification section 1.2.4: when a
 // function is called as a method, implicit coercion does not apply to the
-// receiver. The spec's own example is startswith(path, string), so this
-// reproduces it with a path receiver against a (string, string) signature.
+// receiver. The spec's own example is startswith(path, string), and this now
+// exercises the SHIPPED startswith from funcsstrfind.go rather than a
+// signature the test registers itself.
 //
-// C1 shipped no (path, string) overload set to pin the spec's own worked
+// C1 shipped no (string, string) overload set to pin the spec's own worked
 // example against — round(), C1's own function with a receiver-restriction
 // interaction, only demonstrates the restriction for a single-signature
 // int/float promotion (see doc.go), not the startswith(path, string) case
-// the spec names — so the function is still registered by the test rather
+// the spec names — so the function used to be registered by the test rather
 // than resolved through functionShapes. This is no longer the ONLY place the
 // restriction is exercised end to end: doc.go documents round(3) succeeding
 // in function position while Param.N.round() fails in method position
-// against the real shipped registry. C2's real string functions will let
-// this test target a shipped signature instead of one it registers itself.
+// against the real shipped registry. Sub-project C2's string library shipped
+// a real startswith, which is what this test now targets.
 func TestReceiverCoercionRestriction(t *testing.T) {
-	withTestFunction(t, "startswith", []Shape{{
-		Params: []Type{TString, TString},
-		Ret:    TBool,
-		Fn: func(args []Value) (Value, error) {
-			return Bool(strings.HasPrefix(args[0].AsStr(), args[1].AsStr())), nil
-		},
-	}})
 	syms := MapSymbols{"Param.Dir": Value{Type: TPath, s: "/foo/bar"}}
 
 	// Function position: the path coerces to string, per section 1.2.4's
@@ -327,8 +321,17 @@ func TestReceiverCoercionRestriction(t *testing.T) {
 // event as the call failing. Sub-project C ships overload sets throughout
 // section 2.2's library, so that distinction stops being academic there; this
 // is the test that must exist before it does.
+//
+// Unlike its sibling above, this one KEEPS a synthetic, test-registered
+// function rather than targeting a shipped one: it needs a two-row overload
+// set with a (path, string) row, and the shipped startswith deliberately has
+// no such row — RFC 0006 gives it the string signature only, and a path
+// argument is meant to reach it by coercion in FUNCTION position, not by a
+// dedicated path overload. So the synthetic function here is named
+// "prefixed", not "startswith", to avoid colliding with the real registry
+// entry sub-project C2 ships.
 func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
-	withTestFunction(t, "startswith", []Shape{
+	withTestFunction(t, "prefixed", []Shape{
 		{
 			Params: []Type{TString, TString},
 			Ret:    TString,
@@ -353,14 +356,14 @@ func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
 		// TestReceiverCoercionRestriction pins with the string shape alone —
 		// but (path, string) takes it exactly, so the call resolves to that
 		// one rather than failing.
-		{"a path receiver selects the shape that takes it exactly", "Param.Dir.startswith('/foo')", "path shape"},
+		{"a path receiver selects the shape that takes it exactly", "Param.Dir.prefixed('/foo')", "path shape"},
 		// The string receiver still picks the string shape, so the added
 		// overload has not simply swallowed everything.
-		{"a string receiver still selects the string shape", "Param.S.startswith('/foo')", "string shape"},
+		{"a string receiver still selects the string shape", "Param.S.prefixed('/foo')", "string shape"},
 		// In FUNCTION position both are admissible for a path argument, and
 		// the exact match still wins on cost — the restriction changes which
 		// shapes are candidates, not how the winner is ranked.
-		{"function position still prefers the exact shape", "startswith(Param.Dir, '/foo')", "path shape"},
+		{"function position still prefers the exact shape", "prefixed(Param.Dir, '/foo')", "path shape"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
