@@ -38,6 +38,8 @@ func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 		"isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower", "isascii",
 		// funcsstrfind.go: trim and affix.
 		"strip", "lstrip", "rstrip", "removeprefix", "removesuffix",
+		// funcsstrfind.go: search and replace.
+		"startswith", "endswith", "count", "find", "rfind", "index", "rindex", "replace",
 	}
 	if len(functionShapes) != len(want) {
 		t.Fatalf("functionShapes has %d entries, want %d: %v", len(functionShapes), len(want), want)
