@@ -169,20 +169,60 @@
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
 //     unsupported syntax — and the registry they resolve through,
 //     functionShapes (funcs.go, assembled by its own mergeFuncs), now holds
-//     its first 22 entries: sub-project C1's four groups — general
-//     conversions (len, bool, string, int, float, list, range_expr —
-//     funcsconv.go), validation (fail, the same file, its own RFC 0006
-//     category despite living beside the conversions in one Go source file),
-//     math (abs, min, max, sum, floor, ceil, round — funcsmath.go), and list
-//     functions (range, flatten, sorted, reversed, unique, any, all —
-//     funcslist.go). Section 2.2's roughly 100-function library is otherwise
-//     still unregistered: the 31 string functions are C2's, regular
-//     expressions and the repr_* family are C3's, and the path engine —
-//     every path property and function except apply_path_mapping, plus the
-//     section 2.1.5 path operators — is C4's. A call to any of those still
-//     fails at RUNTIME with "unknown function", a real diagnostic rather than
-//     a parse error — "upper([1,2].upper())" reports `unknown function
-//     "upper"`, not a syntax error, exactly as every name did before C1.
+//     53 entries: sub-project C1's four groups — general conversions (len,
+//     bool, string, int, float, list, range_expr — funcsconv.go), validation
+//     (fail, the same file, its own RFC 0006 category despite living beside
+//     the conversions in one Go source file), math (abs, min, max, sum,
+//     floor, ceil, round — funcsmath.go), and list functions (range, flatten,
+//     sorted, reversed, unique, any, all — funcslist.go) — and sub-project
+//     C2's string library, across four files: case transforms and
+//     classification (upper, lower, capitalize, title, isdigit, isalpha,
+//     isalnum, isspace, isupper, islower, isascii — funcsstrcase.go), trim,
+//     affix and search/replace (strip, lstrip, rstrip, removeprefix,
+//     removesuffix, startswith, endswith, count, find, rfind, index, rindex,
+//     replace — funcsstrfind.go), split, rsplit and join (funcsstrsplit.go)
+//     and padding (ljust, rjust, center, zfill — funcsstrpad.go). Section
+//     2.2's roughly 100-function library is otherwise still unregistered:
+//     regular expressions and the repr_* family are C3's, and the path
+//     engine — every path property and function except apply_path_mapping,
+//     plus the section 2.1.5 path operators — is C4's. A call to any of
+//     those still fails at RUNTIME with "unknown function", a real
+//     diagnostic rather than a parse error — "re_match('shot(\d+)',
+//     'shot010')" reports `unknown function "re_match"`, not a syntax error,
+//     exactly as every name did before C1.
+//
+//     THREE of C2's rulings look like bugs when tried by hand, and are not.
+//     RFC 0006 defines none of the three, so each is adjudicated here and
+//     recorded in test/oracle/baseline.txt where it diverges from the
+//     reference.
+//
+//     isdigit() is ASCII-ONLY, so isdigit('٣') is false — verified directly,
+//     and it matches the reference, preserving the guard-then-convert idiom:
+//     under a Unicode definition isdigit('٣') would be true while int('٣')
+//     still fails. isalnum() then COMPOSES from isalpha and isdigit, which
+//     DIVERGES from the reference: sqi answers isalnum('٣') false, since
+//     isalpha('٣') and isdigit('٣') are both false, while the reference
+//     answers isalnum('٣') true on that same input — a self-contradiction
+//     RFC 0006 gives no basis to follow, so the reference's own
+//     inconsistency, not agreement with it, is the adjudication (recorded in
+//     test/oracle/baseline.txt).
+//
+//     capitalize('ﬁne day') is "FIne day", not "Fine day" — verified
+//     directly, and the reference agrees, so this is NOT a baselined
+//     divergence. upper() and lower() apply FULL Unicode case mapping via
+//     golang.org/x/text/cases, which expands the ﬁ ligature to two uppercase
+//     letters, and capitalize is RFC 0006's "Capitalize first character,
+//     lowercase rest" read literally, so the first rune is uppercased rather
+//     than titlecased. Python answers "Fine day" only because it titlecases
+//     the first character instead.
+//
+//     title() breaks words on isalnum's OWN predicate, so title('a_b c') is
+//     "A_B C" (an underscore separates two words) while title('a1b c') is
+//     "A1b C" (a digit does not) — both verified directly. Using the
+//     reference's Unicode notion of a word boundary while isalnum stays
+//     ASCII-only would put two conflicting definitions of "alphanumeric" in
+//     one file, so title('²x y') is the one baselined divergence that ruling
+//     produces (test/oracle/baseline.txt).
 //     (Not every call reaches the registry at all: a dunder callee like
 //     "__add__(1, 2)" is rejected before lookup with "is a specification
 //     naming convention and is not directly callable", and a callee whose
@@ -201,11 +241,11 @@
 //     int FAILS — "no signature of \"round\" accepts (int)" — because the
 //     receiver never gets the promotion the argument position received,
 //     verified directly against both call forms. TestReceiverCoercionRestriction
-//     (call_internal_test.go) still additionally registers a synthetic
-//     function ("startswith") for the general case, because C1 supplies no
-//     (path, string) overload set to pin the spec's own worked example
-//     against; C2's real string functions will let that test target a
-//     shipped signature instead of one it registers itself. One further
+//     (call_internal_test.go) now targets the SHIPPED startswith from
+//     funcsstrfind.go rather than a synthetic function it registers itself —
+//     C1 had to register one because it shipped no (path, string) overload
+//     set for the spec's own worked example to point at, and C2's string
+//     library supplies one. One further
 //     exception already exists in the shipped registry: [].len() and len([])
 //     both resolve and both return 0 (TestLen_EmptyListReceiver) — not
 //     because the receiver restriction was relaxed, but because there is
@@ -247,7 +287,7 @@
 //     its own — the caller's table is authoritative, exactly as it is for the
 //     comprehension shadowing check above — so a caller that binds both
 //     "a.b" and "a.b.c" gets "a.b.c" resolved to the SYMBOL rather than to a
-//     property "c" of "a.b". The rest of the ~100-function library (C2-C4)
+//     property "c" of "a.b". The rest of the ~100-function library (C3-C4)
 //     and the type-variable binding a call site needs are still to come; the
 //     type-variable codes (CodeVarT and friends) and the matcher's binding of
 //     them already live here in shape.go, and C1's own list[varT] rows —
