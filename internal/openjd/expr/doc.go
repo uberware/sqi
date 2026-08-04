@@ -189,7 +189,12 @@
 //     those still fails at RUNTIME with "unknown function", a real
 //     diagnostic rather than a parse error — "re_match('shot(\d+)',
 //     'shot010')" reports `unknown function "re_match"`, not a syntax error,
-//     exactly as every name did before C1.
+//     exactly as every name did before C1. (Not every call reaches the
+//     registry at all: a dunder callee like "__add__(1, 2)" is rejected
+//     before lookup with "is a specification naming convention and is not
+//     directly callable", and a callee whose whole dotted name resolves to a
+//     symbol — "Param.Name()" when Param.Name is bound — fails "Param.Name is
+//     not a function".)
 //
 //     THREE of C2's rulings look like bugs when tried by hand, and are not.
 //     RFC 0006 defines none of the three, so each is adjudicated here and
@@ -223,18 +228,15 @@
 //     ASCII-only would put two conflicting definitions of "alphanumeric" in
 //     one file, so title('²x y') is the one baselined divergence that ruling
 //     produces (test/oracle/baseline.txt).
-//     (Not every call reaches the registry at all: a dunder callee like
-//     "__add__(1, 2)" is rejected before lookup with "is a specification
-//     naming convention and is not directly callable", and a callee whose
-//     whole dotted name resolves to a symbol — "Param.Name()" when Param.Name
-//     is bound — fails "Param.Name is not a function".) Uniform function call
-//     syntax (section 1.3.3) makes "x.f(a)" resolve through the same
-//     callFunction as "f(x, a)", with the receiver prepended to the argument
-//     list — EXCEPT that section 1.2.4 suppresses implicit coercion on a
-//     method receiver specifically, a call-site property this package does
-//     implement (callFunction's methodStyle), and C1's own registry is now
-//     the first place a caller can observe it directly with no test-only
-//     function involved: round's single-argument row is declared over TFloat
+//
+//     Uniform function call syntax (section 1.3.3) makes "x.f(a)" resolve
+//     through the same callFunction as "f(x, a)", with the receiver
+//     prepended to the argument list — EXCEPT that section 1.2.4 suppresses
+//     implicit coercion on a method receiver specifically, a call-site
+//     property this package does implement (callFunction's methodStyle), and
+//     C1's own registry is now the first place a caller can observe it
+//     directly with no test-only function involved: round's single-argument
+//     row is declared over TFloat
 //     alone, so "round(3)" resolves in FUNCTION position by promoting the int
 //     argument to float (returning the int 3, since that row's own return
 //     type is int), while "Param.N.round()" with Param.N bound to that same
@@ -499,37 +501,49 @@
 //     comparison.
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
-//     EXPR/job_templates group is 141/209 passing, 68 fixtures baselined
+//     EXPR/job_templates group is 142/209 passing, 67 fixtures baselined
 //     (make test-conformance), including the ten .invalid fixtures
 //     TestConformance_B3ProtectedFixtures asserts by name — a construct this
 //     comment describes as rejected, such as the comprehension shadowing
 //     check or a parser/lexer rejection of a form Python allows, genuinely
-//     does reject it — and the sixteen TestConformance_C1ProtectedFixtures
+//     does reject it — the sixteen TestConformance_C1ProtectedFixtures
 //     protects: sub-project C1's own conversion and math functions correctly
 //     REJECTING an invalid argument (an empty list or path into bool(), an
 //     unrecognized string into bool(), an empty list to min/max, an
 //     unrepresentable float-to-int, NaN and infinity into float(), an empty
-//     string or list into range_expr()), so that swap (one starting to pass
-//     for the wrong reason while another silently regresses) cannot hide
-//     inside an unchanged aggregate score either. The differential oracle
-//     test has 279/321 cases
-//     agreeing with the reference implementation, 42 baselined divergences
-//     (make test-expr-oracle) — up from B3's 135/169 now that C1's 22
-//     functions have their own corpus cases (test/oracle/corpus.txt), most of
-//     which agree outright; the new baselined entries are the range_expr(string)
+//     string or list into range_expr()) — and the seven
+//     TestConformance_C2ProtectedFixtures protects: sub-project C2's own
+//     string functions correctly REJECTING an invalid argument (an empty
+//     substring into count/find/replace, an empty separator into
+//     split/rsplit, a missing substring into index/rindex), now that
+//     registering the 31 string functions removed the accidental
+//     "unknown function" rejection those same fixtures used to pass under —
+//     each must be rejected by REAL argument validation instead, so that
+//     swap (one starting to pass for the wrong reason while another silently
+//     regresses) cannot hide inside an unchanged aggregate score either. The
+//     differential oracle test has 406/468 cases
+//     agreeing with the reference implementation, 62 baselined divergences
+//     (make test-expr-oracle) — up from B3's 135/169, then C1's 279/321 now
+//     that C1's 22 functions had their own corpus cases, and now C2's 31
+//     string functions have theirs too (test/oracle/corpus.txt), most of
+//     which agree outright; the baselined entries include the range_expr(string)
 //     canonicalization gap described above and one round() case: sqi returns
 //     int for round(x, ndigits) when ndigits <= 0, per RFC 0006's own signature
 //     table, while the reference returns a FLOAT — round(1234.5, -1) is
 //     "1230 : int" here and "1230.0 : float" there. The specification
 //     outranks the reference (it is Beta, 0.x, breaking changes permitted in
 //     minor bumps), so this is adjudicated as the reference's bug and recorded
-//     in test/oracle/baseline.txt, not fixed here to match it. The rest of the
-//     new baselined entries are the list-of-strings
-//     rendering gap (Value.String, not string()) recurring through flatten,
-//     sorted and unique. Most baselined divergences are the reference's own
-//     bugs, adjudicated against the spec text and recorded one by one in
-//     test/oracle/baseline.txt — that file, not this comment, is the place to
-//     check any individual ruling.
+//     in test/oracle/baseline.txt, not fixed here to match it. Also included
+//     are the list-of-strings rendering gap (Value.String, not string())
+//     recurring through flatten, sorted and unique, split and rsplit, and
+//     two of C2's own rulings argued
+//     above — isalnum's composition (isalnum('٣')) and title's ASCII-only
+//     word boundary (title('²x y')) — while capitalize's ligature expansion
+//     is NOT baselined, since the reference agrees with it outright. Most
+//     baselined divergences are the reference's own bugs, adjudicated against
+//     the spec text and recorded one by one in test/oracle/baseline.txt —
+//     that file, not this comment, is the place to check any individual
+//     ruling.
 //
 // Anything unimplemented FAILS rather than silently misbehaving, with one
 // deliberate exception: the escape sequences named above pass through
