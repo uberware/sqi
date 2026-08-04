@@ -3,8 +3,8 @@
 package expr
 
 import (
+	"fmt"
 	"testing"
-	"unicode"
 )
 
 // TestCaseTransforms covers the four case functions. The non-ASCII rows are the
@@ -38,6 +38,19 @@ func TestCaseTransforms(t *testing.T) {
 		{"title lowers the rest", `title('HELLO WORLD')`, "Hello World"},
 		{"title mixed case", `title('mcDONALD')`, "Mcdonald"},
 		{"title on empty", `title('')`, ""},
+		// The case that discriminates per-rune casing (what titleString does)
+		// from casing a whole word run in one transform: Greek sigma is
+		// context-sensitive full-Unicode case mapping. Lowering "Σ" in
+		// isolation (per rune, no preceding cased letter in view) answers
+		// medial sigma "σ"; lowering it as part of a wider substring — e.g.
+		// the two-rune "ΒΣ" — answers final sigma "ς" instead, because "Σ" is
+		// then preceded by a cased letter and at the end of the input. The
+		// reference implementation (openjd-model 0.11.1) answers title('ΑΒΣ')
+		// = "Αβσ" — medial — so per-rune casing is not just faster than a
+		// substring rewrite here, it is the only reading that matches the
+		// reference. If this ever flips to "Αβς", titleString was rewritten
+		// to case whole word runs and silently changed behavior.
+		{"title final sigma stays medial", `title('ΑΒΣ')`, "Αβσ"},
 		{"method form", `'hello world'.title()`, "Hello World"},
 		{"a path argument coerces in function position", `upper(Param.Dir)`, "/FOO/BAR"},
 	}
@@ -121,15 +134,37 @@ func TestClassificationPredicates(t *testing.T) {
 }
 
 // TestIsAlnum_ComposesFromIsAlphaAndIsDigit is the invariant the divergence
-// above buys. It is asserted over runes rather than by spot-checking, so a
-// future edit to any one of the three predicates cannot break the relation
-// without failing here.
+// above buys. It is asserted over runes rather than by spot-checking, and it
+// evaluates isalpha(), isdigit() and isalnum() THROUGH the registry with Eval
+// — not by reimplementing the predicates' logic locally — so a future edit to
+// any one of the SHIPPED predicates cannot break the relation without failing
+// here.
+//
+// An earlier version of this test compared isAlnumRune against a local
+// unicode.IsLetter call and a local "r >= '0' && r <= '9'" check — copies of
+// the predicates, not the predicates themselves — so it was only ever
+// comparing isAlnumRune against itself. Verified by mutation: temporarily
+// changing the registered isdigit predicate (strCaseFuncs["isdigit"]) to
+// unicode.IsDigit made isdigit('٣') true while isalpha('٣') and isAlnumRune
+// stayed false, genuinely breaking the isalnum == isalpha || isdigit
+// invariant — and the OLD version of this test still passed, because it
+// never called the registered isdigit at all. This version fails under that
+// same mutation, as it must.
 func TestIsAlnum_ComposesFromIsAlphaAndIsDigit(t *testing.T) {
+	predicate := func(t *testing.T, fn string, r rune) bool {
+		t.Helper()
+		v, err := Eval(fmt.Sprintf("%s(%q)", fn, string(r)), MapSymbols{}, TAny)
+		if err != nil {
+			t.Fatalf("Eval(%s(%q)) failed: %v", fn, r, err)
+		}
+		return v.AsBool()
+	}
 	for _, r := range []rune{'a', 'Z', '0', '9', '²', '٣', '_', ' ', 'é', '½', '①'} {
-		alpha := unicode.IsLetter(r)
-		digit := r >= '0' && r <= '9'
-		if got := isAlnumRune(r); got != (alpha || digit) {
-			t.Errorf("isAlnumRune(%q) = %v, want %v (isalpha=%v isdigit=%v)", r, got, alpha || digit, alpha, digit)
+		alpha := predicate(t, "isalpha", r)
+		digit := predicate(t, "isdigit", r)
+		alnum := predicate(t, "isalnum", r)
+		if alnum != (alpha || digit) {
+			t.Errorf("isalnum(%q) = %v, want %v (isalpha=%v isdigit=%v)", r, alnum, alpha || digit, alpha, digit)
 		}
 	}
 }
