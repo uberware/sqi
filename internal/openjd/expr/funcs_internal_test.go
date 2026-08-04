@@ -36,6 +36,8 @@ func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 		// funcsstrcase.go: string case transforms and classification.
 		"upper", "lower", "capitalize", "title",
 		"isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower", "isascii",
+		// funcsstrfind.go: trim and affix.
+		"strip", "lstrip", "rstrip", "removeprefix", "removesuffix",
 	}
 	if len(functionShapes) != len(want) {
 		t.Fatalf("functionShapes has %d entries, want %d: %v", len(functionShapes), len(want), want)
