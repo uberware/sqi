@@ -243,9 +243,13 @@
 //     verified directly against both call forms. TestReceiverCoercionRestriction
 //     (call_internal_test.go) now targets the SHIPPED startswith from
 //     funcsstrfind.go rather than a synthetic function it registers itself —
-//     C1 had to register one because it shipped no (path, string) overload
-//     set for the spec's own worked example to point at, and C2's string
-//     library supplies one. One further
+//     the spec's own worked example is startswith(path, string), which
+//     exercises the restriction by COERCION: the receiver must fail to
+//     coerce into a (string, string) signature for the restriction to be
+//     observable at all. C1 had to register one because it shipped no
+//     (string, string) overload for a path receiver to be refused by; C2's
+//     string library supplies one, so a path receiver now genuinely fails to
+//     match it. One further
 //     exception already exists in the shipped registry: [].len() and len([])
 //     both resolve and both return 0 (TestLen_EmptyListReceiver) — not
 //     because the receiver restriction was relaxed, but because there is
