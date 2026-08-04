@@ -18,9 +18,7 @@ var (
 	// separate because the two map onto separate conformance fixtures
 	// (expr2.2.4--replace-empty-old vs expr2.2.4--split-empty-separator) and
 	// because "substring" is the wrong word for a separator. Declared here so
-	// funcsstrsplit.go (Task 5) can consume it without a second sentinel;
-	// unused within this file until that lands.
-	//nolint:unused // consumed by funcsstrsplit.go's split/rsplit, added next (sub-project C2 Task 5)
+	// funcsstrsplit.go (Task 5) can consume it without a second sentinel.
 	errEmptySeparator = errors.New("the separator must not be empty")
 	// errSubstringNotFound is index and rindex's failure. find and rfind
 	// return -1 for the same condition; only the index pair raises.

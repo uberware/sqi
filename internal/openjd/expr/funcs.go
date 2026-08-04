@@ -17,7 +17,7 @@ package expr
 // search, split and join, padding), C3 regular expressions and the repr_*
 // family, C4 the path engine and its properties and functions. A wave adds a
 // file and one argument here, and never edits a table another wave owns.
-var functionShapes = mergeFuncs(convFuncs, mathFuncs, listFuncs, strCaseFuncs, strFindFuncs)
+var functionShapes = mergeFuncs(convFuncs, mathFuncs, listFuncs, strCaseFuncs, strFindFuncs, strSplitFuncs)
 
 // mergeFuncs folds the per-category tables into one registry.
 //
