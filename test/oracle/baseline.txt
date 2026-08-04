@@ -511,3 +511,137 @@ string | range_expr :: range_expr("1-10:2") + "!"
 # operand): sqi returns "!1-10:2", the reference returns "!1-9:2" — see the
 # shared explanation above. Known gap, deferred to sub-project E.
 string | range_expr :: "!" + range_expr("1-10:2")
+
+# ── sqi is right: isalnum composes, the reference contradicts itself ─────────
+#
+# The reference answers isalnum('٣') true while answering BOTH isdigit('٣') and
+# isalpha('٣') false. That is not a rule, it is a contradiction: its isdigit is
+# ASCII-only while its isalnum is Unicode-aware. RFC 0006 defines neither term,
+# so its own inconsistency is the strongest evidence available about which
+# reading to take. sqi's family composes — isalnum == isalpha || isdigit — for
+# every rune, pinned by TestIsAlnum_ComposesFromIsAlphaAndIsDigit.
+
+# isalnum on a Unicode-numeric, non-ASCII-digit rune: see the explanation above.
+bool | string :: isalnum('٣')
+
+# ── sqi is right: title's word boundary uses isalnum's own predicate ─────────
+#
+# Consequence of the ruling above. title() needs an alphanumeric predicate to
+# find word boundaries; the reference uses its Unicode notion there while its
+# isalnum uses another. Adopting that would put two conflicting definitions of
+# "alphanumeric" in one file. Affects only characters that are Unicode-numeric
+# without being ASCII digits.
+
+# title's word boundary on the same rune: see the explanation above.
+string :: title('²x y')
+
+# List-of-strings rendering, via split(): sqi prints unquoted elements
+# ([a, b, c]), the reference prints JSON-quoted elements (["a", "b", "c"]);
+# both sides agree on the actual values and on the list[string] type. Same gap
+# as the flatten()/sorted()/unique()/comprehension entries above, not a new
+# one — split() partitions the input string, so the divergence is confined to
+# Value.String()'s rendering, not to split() itself. Deferred to sub-project E
+# per value.go's own comment on Value.String().
+list[string] | string :: split('a b c')
+
+# List-of-strings rendering, via split() on runs of whitespace: see the
+# explanation above. Same gap, not a new one.
+list[string] | string :: split('a b  c')
+
+# List-of-strings rendering, via split() with leading/trailing whitespace
+# stripped: see the explanation above. Same gap, not a new one.
+list[string] | string :: split('  a b  ')
+
+# List-of-strings rendering, via split() with an explicit separator: see the
+# explanation above. Same gap, not a new one.
+list[string] | string :: split('a,b,c', ',')
+
+# List-of-strings rendering, via split() with an empty field in the middle:
+# see the explanation above. Same gap, not a new one.
+list[string] | string :: split('a,b,,c', ',')
+
+# List-of-strings rendering, via split() on an empty string: sqi's value here
+# is a ONE-ELEMENT list holding a single empty string — verified directly
+# against Value.AsList(), not inferred from the render — identical to the
+# reference's [""]. Value.String() joins that one element with nothing (no
+# separator appears between fewer than two elements, and the element itself
+# is invisible), so the render LOOKS like an empty list ([]) when it is not.
+# This is the same rendering gap as the entries above, at its most misleading
+# edge case, not a semantic difference — do not mistake this for split()
+# returning zero elements.
+list[string] | string :: split('', ',')
+
+# List-of-strings rendering, via split() with maxsplit=1: see the explanation
+# above. Same gap, not a new one.
+list[string] | string | int :: split('a,b,c', ',', 1)
+
+# List-of-strings rendering, via split() with maxsplit=0 (no split performed,
+# the whole string is the one element): see the explanation above. Same gap,
+# not a new one.
+list[string] | string | int :: split('a,b,c', ',', 0)
+
+# List-of-strings rendering, via split() with a maxsplit larger than the
+# number of separators present: see the explanation above. Same gap, not a
+# new one.
+list[string] | string | int :: split('a,b,c', ',', 100)
+
+# List-of-strings rendering, via rsplit() on runs of whitespace: see the
+# explanation above. Same gap, not a new one.
+list[string] | string :: rsplit('  a b  ')
+
+# List-of-strings rendering, via rsplit() with an explicit separator: see the
+# explanation above. Same gap, not a new one.
+list[string] | string :: rsplit('a,b,c', ',')
+
+# List-of-strings rendering, via rsplit() with maxsplit=1 (splitting from the
+# right): see the explanation above. Same gap, not a new one.
+list[string] | string | int :: rsplit('a b c', ' ', 1)
+
+# ── the reference is wrong: a negative maxsplit discards the string ──────────
+#
+# RFC 0006 documents maxsplit as "at most maxsplit times" and defines nothing
+# below zero, so unlimited — Python's rule — is the only reading with support.
+# The reference returns an EMPTY LIST, discarding the input entirely. Reported
+# in expr-tracker.md's upstream ledger.
+
+# Negative maxsplit: see the shared explanation above.
+list[string] | string | int :: split('a,b,c', ',', -1)
+
+# Negative maxsplit, rsplit direction: see the shared explanation above.
+list[string] | string | int :: rsplit('a b c', ' ', -1)
+
+# ── the reference is wrong: it PANICS or miscounts on an out-of-range width ──
+#
+# A width at or below the current length is a no-op in sqi, since RFC 0006
+# declares no error condition for it and inventing a rejection would add a rule
+# the specification does not have.
+#
+# The reference instead:
+#   ljust('ab', -3)   -> "Expression operation count (72057594037927938)
+#                         exceeded limit (10000000)" — the negative width
+#                         reinterpreted as unsigned
+#   center('ab', -3)  -> the same operation-count error
+#   zfill('ab', -3)   -> a Rust PANIC, "capacity overflow"
+# A panic is not a considered behavior, and it is the strongest evidence
+# available that the reference is not authoritative on out-of-range arguments.
+# It also has no string-size bound at all: zfill('a', 20000000) builds a 20 MB
+# string there. All of it is in expr-tracker.md's upstream ledger.
+#
+# NOT listed here: ljust('a', 100000000), where the reference panics with
+# "Formatting argument out of range" (openjd-expr-0.2.1/src/functions/
+# string.rs:374) and sqi returns errTooLarge. Both sides FAIL, and agree()
+# treats two failures as agreement without comparing messages, so that case is
+# green and belongs only in the corpus.
+#
+# These cases are only runnable at all because scripts/expr-oracle.py catches
+# BaseException — pyo3 surfaces a Rust panic as PanicException, which a
+# narrower except would let kill the whole run.
+
+# Negative width, ljust direction: see the shared explanation above.
+string | int :: ljust('ab', -3)
+
+# Negative width, center direction: see the shared explanation above.
+string | int :: center('ab', -3)
+
+# Negative width, zfill direction: see the shared explanation above.
+string | int :: zfill('ab', -3)

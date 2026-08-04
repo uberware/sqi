@@ -9,12 +9,13 @@
 # separator because every other candidate appears inside real cases: spaces are
 # everywhere, and "|" is a union in the target type ("int | string").
 #
-# SCOPE: expressions that sub-projects A, B1, B2, B3 and C1 actually implement —
-# scalar operators, the coercion matrix, comparison chains, conditionals,
-# and/or, list literals and their type inference, list operators, subscripts,
-# slices, list comprehensions, and C1's general, validation, math and list
-# functions. The string, regular-expression, repr_* and path families are
-# sub-projects C2, C3 and C4 and are not here yet.
+# SCOPE: expressions that sub-projects A, B1, B2, B3, C1 and C2 actually
+# implement — scalar operators, the coercion matrix, comparison chains,
+# conditionals, and/or, list literals and their type inference, list
+# operators, subscripts, slices, list comprehensions, C1's general,
+# validation, math and list functions, and C2's 31 string functions. The
+# regular-expression, repr_* and path families are sub-projects C3 and C4 and
+# are not here yet.
 #
 # TARGET TYPES MUST BE UNIONS FOR ANY CASE CONTAINING A CALL, A SUBSCRIPT OR A
 # SLICE, and this is not a style preference. The reference implementation
@@ -516,3 +517,158 @@ int | nulltype	null or 7
 # (list[int]) is already covered by the outer body's element type.
 list[list[int]] | list[int] | int	[[x] for x in [1, 2]]
 list[list[int]] | list[int] | list[string] | int	[[y for y in [1, 2]] for x in ['a', 'b']]
+
+# ── C2: string case transforms (spec section 2.2.4) ──────────────────────────
+string	upper('hello')
+string	lower('HeLLo')
+string	upper('straße')
+string	upper('ﬁ')
+string	lower('İ')
+string	upper('ǳ')
+string	capitalize('hELLO')
+string	capitalize('')
+string	capitalize('ﬁne day')
+string	capitalize('éA')
+string	title('hello world')
+string	title("they're ok")
+string	title('a1b c')
+string	title('1st place')
+string	title('a_b c')
+string	title('3d-max shot')
+string	title('HELLO WORLD')
+string	title('mcDONALD')
+string	title('²x y')
+string	'hello world'.title()
+
+# ── C2: string classification ────────────────────────────────────────────────
+bool | string	isdigit('123')
+bool | string	isdigit('²')
+bool | string	isdigit('٣')
+bool | string	isdigit('12a')
+bool | string	isdigit('')
+bool | string	isalpha('abc')
+bool | string	isalpha('é')
+bool | string	isalpha('a1')
+bool | string	isalnum('a1')
+bool | string	isalnum('٣')
+bool | string	isalnum('a_b')
+bool | string	isspace('  ')
+bool | string	isspace(' a ')
+bool | string	isspace('')
+bool | string	isupper('ABC')
+bool | string	isupper('ABC1')
+bool | string	isupper('1')
+bool | string	isupper('ǲ')
+bool | string	islower('abc1')
+bool | string	islower('ǳ')
+bool | string	isascii('a b')
+bool | string	isascii('é')
+bool | string	isascii('')
+
+# ── C2: trim and affix ───────────────────────────────────────────────────────
+string	strip('  a  ')
+string	strip('   ')
+string	lstrip('  a  ')
+string	rstrip('  a  ')
+string	strip('xxayx', 'xy')
+string	lstrip('xxayx', 'xy')
+string	rstrip('xxayx', 'xy')
+string	strip('abc', '')
+string	removeprefix('abcdef', 'abc')
+string	removeprefix('abcdef', 'z')
+string	removeprefix('abc', '')
+string	removesuffix('abcdef', 'def')
+string	removesuffix('abcdef', 'z')
+string	'  a  '.strip()
+
+# ── C2: search and replace ───────────────────────────────────────────────────
+bool | string	startswith('abcdef', 'abc')
+bool | string	startswith('abcdef', 'z')
+bool | string	startswith('abc', '')
+bool | string	endswith('abcdef', 'def')
+bool | string	endswith('abc', '')
+int | string	count('banana', 'a')
+int | string	count('aaaa', 'aa')
+int | string	count('abc', 'z')
+int | string	count('', 'a')
+int | string	find('hello', 'l')
+int | string	find('abc', 'z')
+int | string	find('', 'a')
+int | string	find('héllo', 'l')
+int | string	rfind('hello', 'l')
+int | string	rfind('naïve', 'e')
+int | string	index('hello', 'l')
+int | string	rindex('abcabc', 'b')
+int | string	count('abc', '')
+int | string	find('abc', '')
+int | string	index('abc', 'z')
+int | string	rindex('abc', 'z')
+string	replace('aaa', 'a', 'b')
+string	replace('aaa', 'a', 'bb')
+string	replace('aaa', 'a', '')
+string	replace('abc', 'z', 'y')
+string	replace('a.b.c', '.', '/')
+string	replace('hello', '', 'x')
+
+# ── C2: split, rsplit and join ───────────────────────────────────────────────
+list[string] | string	split('a b c')
+list[string] | string	split('a b  c')
+list[string] | string	split('  a b  ')
+list[string] | string	split('   ')
+list[string] | string	split('a,b,c', ',')
+list[string] | string	split('a,b,,c', ',')
+list[string] | string	split('', ',')
+list[string] | string | int	split('a,b,c', ',', 1)
+list[string] | string | int	split('a,b,c', ',', 0)
+list[string] | string | int	split('a,b,c', ',', -1)
+list[string] | string | int	split('a,b,c', ',', 100)
+list[string] | string	rsplit('  a b  ')
+list[string] | string	rsplit('a,b,c', ',')
+list[string] | string | int	rsplit('a b c', ' ', 1)
+list[string] | string | int	rsplit('a b c', ' ', -1)
+list[string] | string	split('a,b', '')
+string | list[string]	join(['a', 'b', 'c'], ',')
+string | list[string]	join(['a', 'b'], '')
+string | list[string]	join(['a'], ',')
+string | list[string]	join(split('a;b;c', ';'), ',')
+
+# The list-returning split()/rsplit() cases above are baselined for the known
+# list-of-strings rendering gap (Value.String() prints unquoted elements; see
+# baseline.txt). These verify the same semantics through a result type the
+# rendering gap cannot touch — int or plain string — so split()/rsplit() still
+# get real differential coverage rather than 12 green-by-baseline no-ops.
+int | list[string] | string	len(split('', ','))
+int | list[string] | string	len(split('   '))
+int | list[string] | string	len(split('a,b,,c', ','))
+string | list[string]	join(split('a,b,,c', ','), '|')
+string | list[string]	join(split('  a b  '), '|')
+string | list[string] | int	join(split('a,b,c', ',', 1), '|')
+string | list[string] | int	join(rsplit('a b c', ' ', 1), '|')
+string | list[string]	join(rsplit('a,b,c', ','), '|')
+string | list[string] | int	join(split('a,b,c', ',', 9223372036854775807), '|')
+
+# ── C2: padding ──────────────────────────────────────────────────────────────
+string | int	ljust('ab', 5)
+string | int	rjust('ab', 5)
+string | int	center('ab', 7)
+string | int	center('abc', 4)
+string | int	center('é', 5)
+string | int	ljust('abcd', 2)
+string | int	ljust('ab', 2)
+string | int	ljust('ab', -3)
+string | int	center('ab', -3)
+string | int	zfill('ab', -3)
+string | int	zfill('42', 5)
+string | int	zfill('é', 3)
+string | int	zfill('-10', 4)
+string | int	zfill('+7', 5)
+string | int	zfill('-', 4)
+string | int	zfill('', 3)
+string | int	zfill(42, 5)
+string | int	zfill(-1, 3)
+string | float | int	zfill(1.5, 6)
+string | float | int	zfill(-1.5, 7)
+string | float | int	zfill(2.0, 6)
+string | int	'42'.zfill(5)
+string | int	(42).zfill(5)
+string | int	ljust('a', 100000000)
