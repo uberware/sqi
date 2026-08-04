@@ -48,6 +48,9 @@ func TestTrimAndAffix(t *testing.T) {
 			if got := v.String(); got != tc.want {
 				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
 			}
+			if got := v.Type.String(); got != "string" {
+				t.Errorf("Eval(%q) typed %s, want string", tc.src, got)
+			}
 		})
 	}
 }
@@ -60,30 +63,35 @@ func TestTrimAndAffix(t *testing.T) {
 // instead of 2 — a plausible-looking wrong answer that no ASCII test can see.
 func TestSearchFunctions(t *testing.T) {
 	tests := []struct {
-		name string
-		src  string
-		want string
+		name     string
+		src      string
+		want     string
+		wantType string
 	}{
-		{"startswith yes", `startswith('abcdef', 'abc')`, "true"},
-		{"startswith no", `startswith('abcdef', 'z')`, "false"},
-		{"startswith empty is true", `startswith('abc', '')`, "true"},
-		{"endswith yes", `endswith('abcdef', 'def')`, "true"},
-		{"endswith empty is true", `endswith('abc', '')`, "true"},
-		{"count simple", `count('banana', 'a')`, "3"},
-		{"count is non-overlapping", `count('aaaa', 'aa')`, "2"},
-		{"count absent", `count('abc', 'z')`, "0"},
-		{"count in an empty string", `count('', 'a')`, "0"},
-		{"find present", `find('hello', 'l')`, "2"},
-		{"find absent", `find('abc', 'z')`, "-1"},
-		{"find in an empty string", `find('', 'a')`, "-1"},
-		{"rfind present", `rfind('hello', 'l')`, "3"},
-		{"rfind absent", `rfind('abc', 'z')`, "-1"},
-		{"index present", `index('hello', 'l')`, "2"},
-		{"rindex present", `rindex('abcabc', 'b')`, "4"},
-		{"find counts codepoints not bytes", `find('héllo', 'l')`, "2"},
-		{"rfind counts codepoints not bytes", `rfind('naïve', 'e')`, "4"},
-		{"index counts codepoints not bytes", `index('héllo', 'l')`, "2"},
-		{"method form", `'hello'.find('l')`, "2"},
+		{"startswith yes", `startswith('abcdef', 'abc')`, "true", "bool"},
+		{"startswith no", `startswith('abcdef', 'z')`, "false", "bool"},
+		{"startswith empty is true", `startswith('abc', '')`, "true", "bool"},
+		{"endswith yes", `endswith('abcdef', 'def')`, "true", "bool"},
+		// endswith's FALSE path, the twin of "startswith no" above — until
+		// this row, nothing in the unit table or the oracle corpus exercised
+		// endswith returning false for a non-matching suffix.
+		{"endswith no", `endswith('abcdef', 'z')`, "false", "bool"},
+		{"endswith empty is true", `endswith('abc', '')`, "true", "bool"},
+		{"count simple", `count('banana', 'a')`, "3", "int"},
+		{"count is non-overlapping", `count('aaaa', 'aa')`, "2", "int"},
+		{"count absent", `count('abc', 'z')`, "0", "int"},
+		{"count in an empty string", `count('', 'a')`, "0", "int"},
+		{"find present", `find('hello', 'l')`, "2", "int"},
+		{"find absent", `find('abc', 'z')`, "-1", "int"},
+		{"find in an empty string", `find('', 'a')`, "-1", "int"},
+		{"rfind present", `rfind('hello', 'l')`, "3", "int"},
+		{"rfind absent", `rfind('abc', 'z')`, "-1", "int"},
+		{"index present", `index('hello', 'l')`, "2", "int"},
+		{"rindex present", `rindex('abcabc', 'b')`, "4", "int"},
+		{"find counts codepoints not bytes", `find('héllo', 'l')`, "2", "int"},
+		{"rfind counts codepoints not bytes", `rfind('naïve', 'e')`, "4", "int"},
+		{"index counts codepoints not bytes", `index('héllo', 'l')`, "2", "int"},
+		{"method form", `'hello'.find('l')`, "2", "int"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,6 +101,9 @@ func TestSearchFunctions(t *testing.T) {
 			}
 			if got := v.String(); got != tc.want {
 				t.Errorf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
 			}
 		})
 	}

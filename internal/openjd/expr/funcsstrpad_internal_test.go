@@ -77,16 +77,24 @@ func TestPadding_BoundsWidth(t *testing.T) {
 		name    string
 		src     string
 		wantErr bool
+		// checkInt, when true, checks wantInt against the SUCCESSFUL result's
+		// value — not merely that Eval returned no error. Without this, "at
+		// the limit" could not catch a regression in padWidth that reported
+		// no-padding-needed at the boundary: ljust would then silently
+		// return "a" instead of padding to 10000000, and an error-only
+		// assertion would still pass.
+		checkInt bool
+		wantInt  int64
 	}{
-		{"at the limit", `len(ljust('a', 10000000))`, false},
-		{"one past the limit", `ljust('a', 10000001)`, true},
-		{"a width at the int64 ceiling", `ljust('a', 9223372036854775807)`, true},
-		{"zfill past the limit", `zfill('a', 10000001)`, true},
-		{"center past the limit", `center('a', 10000001)`, true},
+		{"at the limit", `len(ljust('a', 10000000))`, false, true, 10_000_000},
+		{"one past the limit", `ljust('a', 10000001)`, true, false, 0},
+		{"a width at the int64 ceiling", `ljust('a', 9223372036854775807)`, true, false, 0},
+		{"zfill past the limit", `zfill('a', 10000001)`, true, false, 0},
+		{"center past the limit", `center('a', 10000001)`, true, false, 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
 			switch {
 			case tc.wantErr && err == nil:
 				t.Fatalf("Eval(%q) succeeded; want it refused as too large", tc.src)
@@ -94,6 +102,8 @@ func TestPadding_BoundsWidth(t *testing.T) {
 				t.Errorf("Eval(%q) = %v, want it to wrap errTooLarge", tc.src, err)
 			case !tc.wantErr && err != nil:
 				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			case !tc.wantErr && tc.checkInt && v.AsInt() != tc.wantInt:
+				t.Errorf("Eval(%q) = %d, want %d", tc.src, v.AsInt(), tc.wantInt)
 			}
 		})
 	}
