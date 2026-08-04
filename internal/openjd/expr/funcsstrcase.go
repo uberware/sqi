@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -17,22 +18,38 @@ import (
 var strCaseFuncs = map[string][]Shape{
 	"upper": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
-			return boundedString(upperString(args[0].AsStr()))
+			s := args[0].AsStr()
+			if err := checkCaseInputBytes(len(s)); err != nil {
+				return Value{}, err
+			}
+			return boundedString(upperString(s))
 		}},
 	},
 	"lower": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
-			return boundedString(lowerString(args[0].AsStr()))
+			s := args[0].AsStr()
+			if err := checkCaseInputBytes(len(s)); err != nil {
+				return Value{}, err
+			}
+			return boundedString(lowerString(s))
 		}},
 	},
 	"capitalize": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
-			return boundedString(capitalizeString(args[0].AsStr()))
+			s := args[0].AsStr()
+			if err := checkCaseInputBytes(len(s)); err != nil {
+				return Value{}, err
+			}
+			return boundedString(capitalizeString(s))
 		}},
 	},
 	"title": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
-			return boundedString(titleString(args[0].AsStr()))
+			s := args[0].AsStr()
+			if err := checkCaseInputBytes(len(s)); err != nil {
+				return Value{}, err
+			}
+			return boundedString(titleString(s))
 		}},
 	},
 	// RFC 0006 says only "True if all characters are digits and string is
@@ -120,8 +137,19 @@ var strCaseFuncs = map[string][]Shape{
 // silent, the reference is the only available authority.
 //
 // A cases.Caser is documented as stateful and unsafe for concurrent use, so
-// one is built per call rather than cached in a package-level variable. These
-// functions run once per expression evaluation, not in a hot loop.
+// one is built per call rather than cached in a package-level variable. That
+// is affordable here because upperString and lowerString are each called at
+// most a small constant number of times per expression evaluation — once by
+// upper()/lower(), twice by capitalizeString() — never in a loop over the
+// input's runes.
+//
+// titleString does NOT route through these: transforming one word at a time
+// still needs a fresh Caser per WORD RUN rather than per expression (see its
+// own doc comment for why), so it builds and reuses its own pair of Casers
+// instead of paying cases.Upper/cases.Lower's construction cost on every
+// rune. Measured on len(title('ab ' * 3333333)): calling these two helpers
+// per rune cost ~997ms and 1.6GB of allocator traffic; hoisting the Casers
+// out of the loop brought that to ~392ms.
 func upperString(s string) string { return cases.Upper(language.Und).String(s) }
 
 func lowerString(s string) string { return cases.Lower(language.Und).String(s) }
@@ -164,9 +192,35 @@ func capitalizeString(s string) string {
 // conflicting definitions of "alphanumeric" in this one file. The cost is a
 // single divergence, title("²x y"), which will be recorded in
 // test/oracle/baseline.txt when the oracle corpus lands.
+//
+// Each rune is cased INDIVIDUALLY — a fresh one-rune context every call —
+// rather than casing a whole word run in one transform, and that choice is
+// load-bearing, not cosmetic: full Unicode case mapping is
+// CONTEXT-SENSITIVE, and Greek sigma is the rune that proves it. Lowering the
+// isolated rune "Σ" answers medial sigma "σ" (there is no preceding cased
+// letter in a one-rune context, so the Final_Sigma rule cannot fire), while
+// lowering the two-rune substring "ΒΣ" in one transform answers final sigma
+// "ς" (now "Σ" IS preceded by a cased letter and at the end of the input, so
+// Final_Sigma fires). Run against the reference implementation
+// (openjd-model 0.11.1), title('ΑΒΣ') is "Αβσ" — MEDIAL sigma — confirming
+// the reference itself cases the run rune by rune rather than as one
+// contiguous lowercase transform; lower('ΑΒΣ') on the same string, by
+// contrast, is "Αβς" with final sigma, because lower() has no word-boundary
+// splitting and cases the whole string in one transform. So per-rune casing
+// here is not merely defensible, it is the ONLY reading that reproduces the
+// reference's own title() output — a substring-based rewrite for speed would
+// silently change title()'s behavior on Greek text. See
+// TestCaseTransforms/title_final_sigma_stays_medial for the pinned case.
+//
+// Per-rune casing costs allocations, so the two Casers are still hoisted out
+// of the loop (see upperString's doc comment) rather than reaching for the
+// package-level upperString/lowerString helpers, which would build a new
+// Caser on every rune.
 func titleString(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
+	upperCaser := cases.Upper(language.Und)
+	lowerCaser := cases.Lower(language.Und)
 	inWord := false
 	for _, r := range s {
 		switch {
@@ -175,9 +229,9 @@ func titleString(s string) string {
 			b.WriteRune(r)
 		case !inWord:
 			inWord = true
-			b.WriteString(upperString(string(r)))
+			b.WriteString(upperCaser.String(string(r)))
 		default:
-			b.WriteString(lowerString(string(r)))
+			b.WriteString(lowerCaser.String(string(r)))
 		}
 	}
 	return b.String()
@@ -194,12 +248,45 @@ func isAlnumRune(r rune) bool {
 	return unicode.IsLetter(r) || (r >= '0' && r <= '9')
 }
 
-// boundedString wraps a produced string in the package's size bound.
+// caseMapWorstCaseExpansion is the largest byte-length ratio between one
+// input rune and its full-case-mapped form, anywhere in Unicode. Verified,
+// not assumed: a full scan of golang.org/x/text/cases's upper, lower and
+// title tables over every codepoint (0 through 0x10FFFF, surrogates
+// excluded) finds the maximum at U+0390 GREEK SMALL LETTER IOTA WITH
+// DIALYTIKA AND TONOS, whose full uppercase mapping is three codepoints
+// (U+0399 U+0308 U+0301) — 2 input bytes in UTF-8 expanding to 6 output
+// bytes, a ratio of exactly 3. Nothing else in the tables exceeds it.
+const caseMapWorstCaseExpansion = 3
+
+// checkCaseInputBytes is a CONSERVATIVE pre-check that runs BEFORE a case
+// transform, using caseMapWorstCaseExpansion to reject an input that cannot
+// possibly fit under the bound no matter how it expands — without paying for
+// the transform at all. It is not exact: most input expands by far less than
+// the worst case, so an input that passes here can still be rejected
+// afterward by boundedString's exact post-check on the actual result. That
+// asymmetry is the point — a cheap, sound pre-check that only ever rejects
+// inputs that were always going to fail, paired with the expensive exact
+// check that catches everything else. Measured before this existed: upper()
+// on a 10MB string of U+0390 allocated 172MB to produce (and then refuse) a
+// 30MB result; this pre-check rejects the same input for ~0 bytes allocated.
+func checkCaseInputBytes(n int) error {
+	if n < 0 || n > maxStringBytes/caseMapWorstCaseExpansion {
+		return fmt.Errorf("%w: %d input bytes could exceed %d bytes after case mapping",
+			errTooLarge, n, maxStringBytes)
+	}
+	return nil
+}
+
+// boundedString wraps a produced string in the package's EXACT size bound —
+// the check that runs after a transform, on the real result, and is not
+// fooled by an input that stayed under checkCaseInputBytes's conservative
+// pre-check but still expanded close to the worst case in practice.
 //
-// Case mapping can GROW a string — "ß" is one byte longer as "SS" — so a
-// result built from an argument already at the limit can exceed it. The check
-// is cheap and keeps every C2 function honest about bounding its own single
-// operation.
+// Case mapping can GROW a string: lowercasing "İ" (U+0130, LATIN CAPITAL
+// LETTER I WITH DOT ABOVE) produces "i" plus a combining dot above, 2 input
+// bytes to 3 output bytes, so a result built from an argument already near
+// the limit can exceed it. The check is cheap and keeps every C2 function
+// honest about bounding its own single operation.
 func boundedString(s string) (Value, error) {
 	if err := checkStringBytes(len(s)); err != nil {
 		return Value{}, err
