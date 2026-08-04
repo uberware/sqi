@@ -162,8 +162,8 @@ func capitalizeString(s string) string {
 // its own isdigit() is ASCII-only, which is the self-contradiction the design
 // rules against; adopting it for word boundaries alone would put two
 // conflicting definitions of "alphanumeric" in this one file. The cost is a
-// single baselined divergence, title("²x y"), recorded in
-// test/oracle/baseline.txt.
+// single divergence, title("²x y"), which will be recorded in
+// test/oracle/baseline.txt when the oracle corpus lands.
 func titleString(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
