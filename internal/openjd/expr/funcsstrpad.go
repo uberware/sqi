@@ -66,8 +66,8 @@ const (
 // a harmless no-op rather than an error: RFC 0006 declares no error condition
 // for it, so inventing a rejection would be adding a rule the specification does
 // not have. (The reference implementation instead panics with "capacity
-// overflow" for zfill and reports a nonsense operation count for center — see
-// test/oracle/baseline.txt.)
+// overflow" for zfill and reports a nonsense operation count for center; that
+// will be recorded in test/oracle/baseline.txt when the oracle corpus lands.)
 //
 // The bound goes through checkRepeat, not through len(s)+n compared afterward:
 // width is an arbitrary int64 straight from the expression, so at MaxInt64 the
