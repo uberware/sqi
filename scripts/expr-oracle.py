@@ -77,8 +77,20 @@ def evaluate(case: dict, ExprType, evaluate_expression) -> dict:  # noqa: N803
     try:
         target = ExprType(case["target"])
         value = evaluate_expression(case["src"], target_type=target)
-    except Exception as exc:  # noqa: BLE001 - every failure mode is a datum
+    except BaseException as exc:  # noqa: BLE001 - see comment below
         result["ok"] = False
+        # BaseException, not Exception, and deliberately.
+        #
+        # The reference implementation is a compiled Rust crate behind pyo3, and
+        # it PANICS rather than raising on several inputs — zfill with a
+        # negative width ("capacity overflow") and ljust with a large width
+        # ("Formatting argument out of range") are both in the corpus. pyo3
+        # surfaces a panic as PanicException, which derives from BaseException,
+        # so a narrower except lets one bad case kill the interpreter loop and
+        # silently drop every case after it.
+        #
+        # Catching it turns a panic into an ordinary error line the Go side can
+        # compare and baseline.
         # Only the first line: the reference appends a source-caret excerpt that
         # says nothing Go's own message would say, and messages are never
         # compared for equality anyway.
