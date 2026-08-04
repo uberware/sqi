@@ -82,7 +82,8 @@ func stringList(parts []string) (Value, error) {
 // RFC 0006 leaves room for — it documents maxsplit as "at most maxsplit times"
 // and defines no behavior below zero. The reference implementation returns an
 // EMPTY LIST for maxsplit = -1, discarding the whole string; that is a defect,
-// recorded in test/oracle/baseline.txt with the reference's own output.
+// which will be recorded in test/oracle/baseline.txt with the reference's own
+// output when the oracle corpus lands.
 func splitSep(s, sep string, maxsplit int64, fromRight bool) (Value, error) {
 	if sep == "" {
 		return Value{}, errEmptySeparator

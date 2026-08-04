@@ -15,7 +15,8 @@ import (
 //   - split('   ') with no separator is [], because the whitespace form strips
 //     the ends before splitting.
 //   - a NEGATIVE maxsplit means unlimited. The reference answers [] instead,
-//     which is a defect; two baselined divergences record it.
+//     which is a defect; it will be recorded as a baselined divergence once
+//     the oracle corpus lands.
 func TestSplitAndJoin(t *testing.T) {
 	tests := []struct {
 		name string
@@ -33,10 +34,15 @@ func TestSplitAndJoin(t *testing.T) {
 		{"split with maxsplit zero", `split('a,b,c', ',', 0)`, "[a,b,c]"},
 		{"split with a negative maxsplit is unlimited", `split('a,b,c', ',', -1)`, "[a, b, c]"},
 		{"split with maxsplit past the end", `split('a,b,c', ',', 100)`, "[a, b, c]"},
+		// splitSep clamps maxsplit to the separator count before any int
+		// arithmetic runs, specifically so int(maxsplit)+1 cannot overflow.
+		// MaxInt64 pins that clamp against the worst case a template could send.
+		{"split with maxsplit at MaxInt64 does not overflow", `split('a,b,c', ',', 9223372036854775807)`, "[a, b, c]"},
 		{"rsplit on whitespace", `rsplit('  a b  ')`, "[a, b]"},
 		{"rsplit on a separator", `rsplit('a,b,c', ',')`, "[a, b, c]"},
 		{"rsplit with maxsplit takes from the right", `rsplit('a b c', ' ', 1)`, "[a b, c]"},
 		{"rsplit with a negative maxsplit is unlimited", `rsplit('a b c', ' ', -1)`, "[a, b, c]"},
+		{"rsplit with maxsplit at MaxInt64 does not overflow", `rsplit('a b c', ' ', 9223372036854775807)`, "[a, b, c]"},
 		{"join", `join(['a', 'b', 'c'], ',')`, "a,b,c"},
 		{"join with an empty separator", `join(['a', 'b'], '')`, "ab"},
 		{"join a single element", `join(['a'], ',')`, "a"},
@@ -83,14 +89,23 @@ func TestSplit_RejectsAnEmptySeparator(t *testing.T) {
 	}
 }
 
-// TestJoin_SelectsEmptyListRow pins that [].join(sep) reaches the
-// list[nulltype] row and returns "" rather than failing to match.
+// TestJoin_AcceptsAnEmptyList pins that [].join(sep) RESOLVES and returns "",
+// in both function and method form.
 //
-// It exists because row ORDER was load-bearing in C1's flatten() and nothing
-// warned about it: [] scores costExact against BOTH list[nulltype] and
-// list[string] would-be rivals, and matchShapesExactFirst breaks an exact tie
-// to the earliest shape. This asserts the outcome is right regardless.
-func TestJoin_SelectsEmptyListRow(t *testing.T) {
+// An empty list literal types as list[nulltype], so a registry carrying only
+// a list[string] join row would reject it outright; the list[nulltype] row
+// exists to make the call resolve at all.
+//
+// This test cannot and does not pin WHICH row runs: joinValues short-circuits
+// an empty list to String("") before any row-specific logic executes, and the
+// list[nulltype] row also returns String("") directly, so every candidate row
+// produces byte-identical output for this input. Which overload the matcher
+// actually selected is not observable here.
+//
+// Consequently: if a later wave ever gives the list[nulltype] row behavior
+// that diverges from its siblings, it must add a test that can tell the rows
+// apart, because this one structurally cannot.
+func TestJoin_AcceptsAnEmptyList(t *testing.T) {
 	for _, src := range []string{`join([], ',')`, `[].join(',')`} {
 		t.Run(src, func(t *testing.T) {
 			v, err := Eval(src, MapSymbols{}, TAny)

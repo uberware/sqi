@@ -61,7 +61,8 @@ var strCaseFuncs = map[string][]Shape{
 	// false. RFC 0006 defines none of the three, so the reference's own
 	// self-contradiction is the strongest evidence available about which
 	// reading to take: a family that composes is defensible, one that does not
-	// is a bug. Baselined in test/oracle/baseline.txt with that reason.
+	// is a bug. Will be baselined in test/oracle/baseline.txt with that reason
+	// when the oracle corpus lands.
 	"isalnum": {
 		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
 			return Bool(allRunes(args[0].AsStr(), isAlnumRune)), nil
