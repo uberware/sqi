@@ -13,11 +13,20 @@ import (
 // repr_json. See funcsreprshell.go for why the shell quoting functions live
 // apart from these.
 //
-// ROW ORDER IS LOAD-BEARING in both tables. Each pairs a type-variable
-// catch-all with specific nulltype, range_expr and path rows, and
-// matchShapesExactFirst breaks an exact tie to the EARLIEST shape — so the
-// specific rows must come first or they never run. This is C1's flatten hazard
-// for the third time; TestReprData_SpecificRowsBeatTheVariableRow pins it.
+// Each table pairs a type-variable catch-all with specific nulltype,
+// range_expr and path rows, which LOOKS like C1's flatten hazard a third
+// time — matchShapesExactFirst breaks an exact cost tie to the EARLIEST
+// shape, so a specific row ahead of a catch-all matters when the two can tie.
+// Here they cannot: row order is declared this way for spec fidelity (RFC
+// 0006 calls out null/range_expr/path by name), but pyRepr and jsonRepr each
+// switch on v.Type.Code directly, so the catch-all's Fn renders
+// CodeNull/CodePath/CodeRangeExpr exactly the same way the dedicated rows do
+// — reordering the rows was tried during development and every test still
+// passed. TestReprData_RendersSpecificTypes pins the OUTPUT, not the row
+// order, and says so in its own doc: that test structurally CANNOT tell the
+// rows apart. If a future change ever gives the catch-all branch behavior
+// that diverges from the dedicated rows (for example, by narrowing that
+// switch), it must add a test that can — this one can't.
 var reprDataFuncs = map[string][]Shape{
 	"repr_py": {
 		{Params: []Type{TNull}, Ret: TString, Fn: func([]Value) (Value, error) {

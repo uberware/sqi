@@ -110,6 +110,10 @@ func TestReprData_RendersSpecificTypes(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Dir":    Value{Type: TPath, s: "/a/b"},
 		"Param.Frames": Value{Type: TRangeExpr, s: "1-10"},
+		"Param.Dirs": List(TPath, []Value{
+			{Type: TPath, s: "/a"},
+			{Type: TPath, s: "/b"},
+		}),
 	}
 	tests := []struct{ src, want string }{
 		{`repr_py(null)`, "None"},
@@ -118,6 +122,11 @@ func TestReprData_RendersSpecificTypes(t *testing.T) {
 		{`repr_json(Param.Dir)`, `"/a/b"`},
 		{`repr_py(Param.Frames)`, "'1-10'"},
 		{`repr_json(Param.Frames)`, `"1-10"`},
+		// Previously untested registered row: repr_json's list[path] shape
+		// (it has no dedicated list[path] row of its own — this exercises
+		// the varT catch-all rendering a list of paths via jsonRepr's
+		// CodeList case, each element through the CodePath case).
+		{`repr_json(Param.Dirs)`, `["/a", "/b"]`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {
