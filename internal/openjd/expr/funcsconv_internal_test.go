@@ -446,3 +446,30 @@ func TestFail(t *testing.T) {
 		}
 	})
 }
+
+// TestStringList_DoesNotHTMLEscape pins a defect found while planning
+// sub-project C3.
+//
+// Go's json.Marshal escapes "<", ">" and "&" as < and friends, because its
+// default output is intended to be safe to embed in HTML. Nothing else in this
+// problem domain does that: the reference implementation and Python's
+// json.dumps both leave those characters literal, and RFC 0006 calls this row
+// "the JSON string representation" without qualification.
+func TestStringList_DoesNotHTMLEscape(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`string(['a<b>'])`, `["a<b>"]`},
+		{`string(['x&y'])`, `["x&y"]`},
+		{`string(['a<b>c&d'])`, `["a<b>c&d"]`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}

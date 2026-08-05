@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -232,11 +233,21 @@ func writeJSONValue(b *strings.Builder, v Value) error {
 		}
 		b.WriteByte(']')
 	case CodeString, CodePath, CodeRangeExpr:
-		quoted, err := json.Marshal(v.s)
-		if err != nil {
+		// json.Marshal would escape "<", ">" and "&" as < and friends —
+		// its default is chosen to be safe inside an HTML document, which is
+		// not this context. Neither the reference implementation nor Python's
+		// json.dumps does that, and RFC 0006 asks for "the JSON string
+		// representation" without qualification, so escaping turns a faithful
+		// rendering into a surprising one. An Encoder with SetEscapeHTML(false)
+		// is the supported way to turn it off; it appends a newline, which is
+		// trimmed.
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(v.s); err != nil {
 			return err
 		}
-		b.Write(quoted)
+		b.Write(bytes.TrimRight(buf.Bytes(), "\n"))
 	default:
 		// bool, int, float and null all render bare, and Value.String()
 		// already spells each of them the way JSON does.
