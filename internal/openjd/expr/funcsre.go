@@ -5,8 +5,10 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // errGroupReference is RFC 0006's rule that re_sub's replacement is literal
@@ -50,7 +52,7 @@ var reFuncs = map[string][]Shape{
 	},
 	"re_escape": {
 		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
-			quoted := regexp.QuoteMeta(args[0].AsStr())
+			quoted := reEscape(args[0].AsStr())
 			if err := checkStringBytes(len(quoted)); err != nil {
 				return Value{}, err
 			}
@@ -59,13 +61,53 @@ var reFuncs = map[string][]Shape{
 	},
 	"re_split": {
 		{Params: []Type{TString, TString}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
-			return reSplit(args[0].AsStr(), args[1].AsStr(), -1)
+			return reSplit(args[0].AsStr(), args[1].AsStr(), reSplitUnlimited)
 		}},
 		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
 			return reSplit(args[0].AsStr(), args[1].AsStr(), args[2].AsInt())
 		}},
 	},
 }
+
+// pySpecialChars is Python's own set of characters re.escape treats as
+// special (Lib/re/__init__.py's _special_chars_map): the regex
+// metacharacters PLUS the five ASCII whitespace bytes that matter under
+// re.VERBOSE, which re.escape escapes unconditionally, not only in verbose
+// mode. Go's regexp.QuoteMeta escapes only "\.+*?()|[]{}^$" — it misses "-",
+// "&", "~" and "#", none of which are regexp.QuoteMeta metacharacters in
+// Go's own dialect, but "-" IS one everywhere it can appear: inside a
+// character class. re_escape('a-z') fed back into a class, "[" + ... + "]",
+// must produce a class holding the three literal characters 'a', '-' and
+// 'z', not the RANGE a-z — measured: re_search('b', '[' + re_escape('a-z') +
+// ']') must not match, and with regexp.QuoteMeta's escaping it did.
+const pySpecialChars = "()[]{}?*+-|^$\\.&~# \t\n\r\v\f"
+
+// reEscape is RFC 0006's re_escape: "escape regex metacharacters for literal
+// matching". The specification names no algorithm, but the two engines
+// named elsewhere for the dialect agree on one — Python's re.escape and the
+// reference both escape the same set, pySpecialChars — so that is what this
+// reproduces rather than Go's narrower regexp.QuoteMeta.
+func reEscape(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < utf8.RuneSelf && strings.ContainsRune(pySpecialChars, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// reSplitUnlimited is what the two-argument re_split shape (no maxsplit
+// given) passes for "unlimited splits". It has to be a sentinel distinct
+// from every maxsplit a template can actually pass: RFC 0006 says "at most
+// maxsplit times", and a NEGATIVE maxsplit now means Python's re.split rule
+// — no split at all, not unlimited — so -1 can no longer double as the
+// unlimited marker the way it used to before that ruling. math.MaxInt64 is
+// never clamped down to by any real string length, so it always takes the
+// "no explicit limit" path in reSplit below.
+const reSplitUnlimited int64 = math.MaxInt64
 
 // compilePattern translates and compiles, so no caller ever hands Go a raw
 // spec-dialect pattern.
@@ -232,20 +274,35 @@ func rejectGroupReferences(repl string) error {
 
 func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 
-// reSplit backs re_split. A negative maxsplit means unlimited, matching Go's
-// own Split convention and C2's split().
+// reSplit backs re_split. RFC 0006 documents maxsplit as "at most maxsplit
+// times" and defines nothing below zero; Python's re.split — the function
+// RFC 0006's dialect is built against — returns the string UNSPLIT for a
+// negative maxsplit, and that is the ruling here too: a negative maxsplit
+// means NO split at all.
+//
+// This deliberately DIFFERS FROM — do not "fix" one to match the other —
+// C2's split()/rsplit() (funcsstrfind.go), where a negative maxsplit DOES
+// mean unlimited. That is correct there because those functions follow
+// str.split's own convention, a different Python method with a different
+// rule for the same-shaped argument. The reference discards the string
+// entirely for a negative re_split maxsplit ("[]"), which is wrong under any
+// reading of the spec text and is baselined as the reference's own bug.
 func reSplit(s, pattern string, maxsplit int64) (Value, error) {
 	re, err := compilePattern(pattern)
 	if err != nil {
 		return Value{}, err
 	}
-	// Bounded even in the "unlimited" case: Go's own -1 sentinel would let a
-	// zero-width pattern split into maxStringBytes+1 parts before the size is
-	// ever checked. maxElements+1 lets the engine itself stop at the bound,
-	// so the existing checkElementCount call below reports the overflow
-	// rather than merely observing it after an unbounded split already ran.
+	if maxsplit < 0 {
+		return List(TString, []Value{String(s)}), nil
+	}
+	// Bounded even in the unlimited case (maxsplit == reSplitUnlimited): Go's
+	// own -1 sentinel to Split would let a zero-width pattern split into
+	// maxStringBytes+1 parts before the size is ever checked. maxElements+1
+	// lets the engine itself stop at the bound, so the existing
+	// checkElementCount call below reports the overflow rather than merely
+	// observing it after an unbounded split already ran.
 	n := maxElements + 1
-	if maxsplit >= 0 {
+	if maxsplit < int64(maxElements) {
 		// Go counts RESULT PARTS where RFC 0006 counts SPLITS, so the limit is
 		// one higher. maxsplit is clamped to the string length first: it
 		// arrives as an arbitrary int64 and could otherwise overflow int.

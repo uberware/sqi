@@ -35,8 +35,25 @@ func TestRegexFunctions(t *testing.T) {
 		{"re_sub replaces every match", `re_sub('frame_001', '\d+', '002')`, "frame_002", "string"},
 		{"re_sub with no match", `re_sub('abc', '\d', 'x')`, "abc", "string"},
 		{"re_escape quotes metacharacters", `re_escape('file[1].txt')`, `file\[1\]\.txt`, "string"},
+		// Code-review finding: regexp.QuoteMeta does not escape "-", which
+		// only means something special inside a character class — but that
+		// is exactly the context re_escape's own doc example
+		// (re_escape("file[1].txt")) puts its output in when reused as a
+		// literal. Python's re.escape and the reference both escape it.
+		{"re_escape quotes the dash, which QuoteMeta misses", `re_escape('a-z')`, `a\-z`, "string"},
+		// The dash quoted above actually neutralizes the range when spliced
+		// back into a class: 'b' sits between 'a' and 'z' but must NOT
+		// match, since the class now holds the three literal characters
+		// 'a', '-' and 'z', not the range a-z.
+		{"escaped dash stops it from forming a range in a class", `re_search('b', '[' + re_escape('a-z') + ']')`, "null", "nulltype"},
 		{"re_split on a pattern", `re_split('a1b2c', '\d')`, "[a, b, c]", "list[string]"},
 		{"re_split with maxsplit", `re_split('a1b2c', '\d', 1)`, "[a, b2c]", "list[string]"},
+		// RFC 0006: "at most maxsplit times", nothing defined below zero.
+		// Python's re.split returns the string UNSPLIT for a negative
+		// maxsplit, and that is the ruling here — deliberately DIFFERENT
+		// from C2's split()/rsplit(), where negative means unlimited
+		// because that is str.split's own rule (see reSplit's doc).
+		{"negative maxsplit means no split at all", `re_split('a1b2c', '\d', -1)`, "[a1b2c]", "list[string]"},
 		{"unicode digit class", `re_search('٣', '\d')`, "[٣]", "list[string]"},
 		{"method form", `'hello123'.re_search('\d+')`, "[123]", "list[string]"},
 	}
