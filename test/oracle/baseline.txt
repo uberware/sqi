@@ -781,20 +781,29 @@ list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 # reading the rule is merely silent on — the two are different claims, and
 # only the first is true here.
 #
-# \w's case is not fixed by the same code path as the other five: its
-# expansion is a UNION ending in a bare literal character ("_"), unlike \d,
-# \D and \s (whose expansions end in a class or property) and \W/\S (which
-# go through classBodyWithout's own dash-escaping fix instead — see the
-# "[a\W-c]"/"[0\W-9]" entries below). sqi used to translate "[\w-a]" into
-# "[\p{L}\p{N}_-a]", where Go reads "_-a" as the RANGE U+005F..U+0061 —
-# silently matching the backtick, which is neither a word character nor "a"
-# under any reading of the source (an earlier code-review finding, fixed by
+# \w's case is not fixed by the same code path as the other five, though it
+# ends up protected the same way \d, \D and \s are: unicodeWordSet is
+# deliberately ordered "\p{L}_\p{N}", so \w's in-class expansion ends in a
+# property escape ("\p{N}"), not a bare literal — measured directly,
+# translatePattern("[\w-a]") gives "[\p{L}_\p{N}-a]" today, and Go's own
+# class-range rule refuses to start a range after "\p{N}" the same way it
+# does after \d/\D/\s's own trailing property or class (\W/\S get their
+# protection a different way, from classBodyWithout's dash-escaping fix
+# instead — see the "[a\W-c]"/"[0\W-9]" entries below). sqi used to
+# translate "[\w-a]" into "[\p{L}\p{N}_-a]" — "_" LAST instead of
+# sandwiched — where Go reads "_-a" as the RANGE U+005F..U+0061 — silently
+# matching the backtick, which is neither a word character nor "a" under
+# any reading of the source (an earlier code-review finding, fixed by
 # moving "_" to the middle of the set, between the two \p{...} escapes, so
-# it can never abut source text on either side). That fix stopped the
-# silent wrong match; it did not, and was never meant to, make sqi refuse
-# the shape the way Python and the reference do. Closing the family — for
-# all six shorthands, refusing a bare "-" immediately adjacent to any of
-# them — is deferred to a later sub-project.
+# it can never be the first or last byte of what gets spliced in and can
+# never abut source text on either side — see unicodeWordSet's own doc in
+# repattern.go). The ordering is load-bearing, not incidental: putting "_"
+# back at either edge — alphabetizing the set, say — would re-create an
+# accidental range on that side and reopen this exact defect. That fix
+# stopped the silent wrong match; it did not, and was never meant to, make
+# sqi refuse the shape the way Python and the reference do. Closing the
+# family — for all six shorthands, refusing a bare "-" immediately
+# adjacent to any of them — is deferred to a later sub-project.
 #
 # [\w-a] compiles as \w's set unioned with "-" and "a": sqi returns null (no
 # match) for the backtick, which is in none of those three members; the
