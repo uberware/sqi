@@ -32,6 +32,8 @@ func TestReprPy(t *testing.T) {
 		{"list", `repr_py(['a', 'b'])`, "['a', 'b']"},
 		{"int list", `repr_py([1, 2])`, "[1, 2]"},
 		{"empty list", `repr_py([])`, "[]"},
+		{"c1 control uses the two-digit \\x tier", `repr_py('\x85')`, `'\x85'`},
+		{"astral non-printable uses the eight-digit capital \\U tier", `repr_py('\U000f0000')`, `'\U000f0000'`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,6 +73,9 @@ func TestReprJSON(t *testing.T) {
 		{"float", `repr_json(1.5)`, "1.5"},
 		{"list", `repr_json(['a', 'b'])`, `["a", "b"]`},
 		{"empty list", `repr_json([])`, "[]"},
+		{"backspace uses the named \\b escape", `repr_json('\x08')`, `"\b"`},
+		{"form feed uses the named \\f escape", `repr_json('\x0c')`, `"\f"`},
+		{"del has no named escape", `repr_json('\x7f')`, `"\u007f"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,15 +90,23 @@ func TestReprJSON(t *testing.T) {
 	}
 }
 
-// TestReprData_SpecificRowsBeatTheVariableRow is the third appearance of C1's
-// flatten hazard.
+// TestReprData_RendersSpecificTypes pins the OUTPUT repr_py and repr_json
+// produce for null, path and range_expr — not which Shape row produces it.
 //
-// repr_py and repr_json each pair a list[varT]-style catch-all with specific
-// nulltype, range_expr and path rows. matchShapesExactFirst breaks an exact
-// cost tie to the EARLIEST shape, so if the catch-all were registered first the
-// specific rows would never execute and null would render as its generic form
-// rather than "None"/"null".
-func TestReprData_SpecificRowsBeatTheVariableRow(t *testing.T) {
+// repr_py and repr_json each pair a type-variable catch-all with specific
+// nulltype, range_expr and path rows, which looks like C1's flatten hazard
+// (matchShapesExactFirst breaks an exact cost tie to the EARLIEST shape). It
+// is not observable here: pyRepr and jsonRepr each switch on v.Type.Code
+// directly, so the catch-all's Fn renders CodeNull/CodePath/CodeRangeExpr
+// exactly the same way the dedicated rows do. Reordering the rows so the
+// catch-all runs first was tried during development and this test kept
+// passing — confirmed by re-running it with the rows swapped, not asserted.
+//
+// Consequently: if a later change ever gives pyRepr/jsonRepr's catch-all
+// branch behavior that diverges from the dedicated null/path/range_expr
+// rows (for example, by narrowing that switch), it must add a test that can
+// tell the rows apart, because this one structurally cannot.
+func TestReprData_RendersSpecificTypes(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Dir":    Value{Type: TPath, s: "/a/b"},
 		"Param.Frames": Value{Type: TRangeExpr, s: "1-10"},
@@ -113,7 +126,7 @@ func TestReprData_SpecificRowsBeatTheVariableRow(t *testing.T) {
 				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
 			}
 			if got := v.String(); got != tc.want {
-				t.Errorf("Eval(%q) = %q, want %q — has a variable row been registered before the specific ones?", tc.src, got, tc.want)
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
 			}
 		})
 	}

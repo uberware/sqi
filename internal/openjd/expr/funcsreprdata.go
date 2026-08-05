@@ -102,13 +102,37 @@ func pyQuote(s string) string {
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
-		case r < 0x20 || r == 0x7f:
+		case !unicode.IsPrint(r) && r < 0x100:
+			// Python's repr uses a two-hex-digit \xXX escape for every
+			// non-printable code point below U+0100 — not just the C0
+			// controls and DEL, but also the C1 controls (U+0080..U+009F)
+			// and the handful of Latin-1 Supplement non-printables (U+00A0
+			// NBSP, U+00AD SOFT HYPHEN). Measured against python3's repr().
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case r < utf8.RuneSelf || unicode.IsPrint(r):
-			// Python's repr leaves printable non-ASCII literal.
-			b.WriteRune(r)
-		default:
+		case !unicode.IsPrint(r) && r <= 0xFFFF:
+			// U+0100..U+FFFF: four hex digits.
 			fmt.Fprintf(&b, `\u%04x`, r)
+		case !unicode.IsPrint(r):
+			// Above the Basic Multilingual Plane, Python switches to a
+			// CAPITAL \U escape with eight hex digits. %04x for these runes
+			// would silently emit MORE than four digits — r=0x10000 in hex
+			// is "10000", five digits, so a naive \u escape would render
+			// five-plus digits after the \u, which is not a valid Python
+			// string escape at all. This tier cannot be folded into the \u
+			// one above it for that reason.
+			fmt.Fprintf(&b, `\U%08x`, r)
+		default:
+			// Printable — ASCII or otherwise — is left exactly as it reads.
+			//
+			// Go's unicode.IsPrint and Python's str.isprintable() disagree
+			// on a small number of BMP code points (observed: U+0897,
+			// U+1B4E, U+1B4F, U+2FFC..U+2FFF and similar combining marks
+			// and ideographic description characters), because the two
+			// standard libraries bundle different Unicode Character
+			// Database versions. That is version skew between the two
+			// implementations, not a bug in this function — do not chase
+			// it.
+			b.WriteRune(r)
 		}
 	}
 	b.WriteByte(quote)
@@ -148,7 +172,16 @@ func jsonRepr(v Value) string {
 }
 
 // jsonQuote is json.dumps' string escaping: ASCII-only output, with every
-// non-ASCII rune as \uXXXX and astral runes as a surrogate pair.
+// non-ASCII rune as a generic four-hex-digit escape and astral runes as a
+// surrogate pair of them.
+//
+// json.dumps' escaped set is every code point OUTSIDE the printable ASCII
+// range space (U+0020) through tilde (U+007E) — not just the C0 controls
+// (U+0000..U+001F). That includes DEL (U+007F), which has no named escape
+// and so gets the generic four-hex-digit form, and two of the C0 controls
+// that DO have named escapes json.dumps prefers over the generic form:
+// U+0008 BACKSPACE and U+000C FORM FEED. Measured against python3's
+// json.dumps().
 func jsonQuote(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
@@ -158,13 +191,17 @@ func jsonQuote(s string) string {
 			b.WriteString(`\"`)
 		case r == '\\':
 			b.WriteString(`\\`)
+		case r == '\b':
+			b.WriteString(`\b`)
+		case r == '\f':
+			b.WriteString(`\f`)
 		case r == '\n':
 			b.WriteString(`\n`)
 		case r == '\r':
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
-		case r < 0x20:
+		case r < 0x20 || r == 0x7f:
 			fmt.Fprintf(&b, `\u%04x`, r)
 		case r < utf8.RuneSelf:
 			b.WriteRune(r)
