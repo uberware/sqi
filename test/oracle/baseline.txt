@@ -675,6 +675,22 @@ list[string] | string | nulltype :: re_search('ab', r'(?<n>a)b')
 # above.
 list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
 
+# Intersection-rule refusal, negated form: [^[:alpha:]] is the idiomatic
+# spelling, not a corner case, and a POSITIONAL check used to miss it (only
+# "[[:" at the very start was caught). sqi now rejects it wherever "[:...:]"
+# appears in the class; the reference reads it the same literal way as
+# [[:alpha:]] above — negated, over the same set {':','a','l','p','h'} — so
+# 'a' IS a member and the negation excludes it: null (no match), not an
+# error. See the shared explanation above.
+list[string] | string | nulltype :: re_search('a', r'[^[:alpha:]]')
+
+# Intersection-rule refusal, POSIX class not the first member: same
+# positional-check gap as the negated form above, the other spelling that
+# used to sail through untranslated. The reference again reads it literally —
+# a positive class over {'a',':','l','p','h'} — so 'a' matches. See the
+# shared explanation above.
+list[string] | string | nulltype :: re_search('a', r'[a[:alpha:]]')
+
 # ── sqi is right: [^\Wa] asks for set subtraction RE2 cannot express ─────────
 #
 # A negated class containing \W alongside an ordinary character reads as "word
@@ -690,6 +706,36 @@ list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
 # [^\Wa] set-subtraction refusal: sqi rejects, the reference silently reports
 # no match. See the shared explanation above.
 list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
+
+# ── sqi is right: \w next to a dash no longer forms an accidental range ──────
+#
+# \w's expansion is a UNION ending in a bare literal character ("_"), unlike
+# \d, \D and \s, whose expansions end in a class or property. sqi used to
+# translate "[\w-a]" into "[\p{L}\p{N}_-a]", where Go reads "_-a" as the
+# RANGE U+005F..U+0061 — silently matching the backtick, which is neither a
+# word character nor "a" under any reading of the source (code-review
+# finding, fixed by moving "_" to the middle of the set, between the two
+# \p{...} escapes, so it can never abut source text on either side).
+#
+# Neither Python's re nor the reference will parse this shape at all: Python
+# raises "bad character range \w-a", the reference "regex parse error:
+# invalid range boundary, must be a literal". sqi's fix does not reproduce
+# that refusal — it makes \w's own set-membership immune to what follows it,
+# so "[\w-a]" compiles and matches exactly the union its text implies (a word
+# character, or "-", or "a"), which is a well-defined reading neither
+# reference engine offers, not a guess. RFC 0006 defines the dialect only as
+# the two engines' intersection and says nothing about this specific
+# adjacency, so there is no spec text this contradicts; not fixing this at
+# all would leave a construct that compiles and matches WRONG, which is worse
+# than a sound reading the intersection is merely silent on.
+#
+# [\w-a] compiles as \w's set unioned with "-" and "a": sqi returns the
+# match, the reference refuses to parse the pattern at all.
+list[string] | string | nulltype :: re_search('`', r'[\w-a]')
+
+# [\w-a] on a word character alongside the extra literal member: same
+# divergence as the entry above, from the other side of the union.
+list[string] | string | nulltype :: re_search('a', r'[\w-a]')
 
 # ── sqi is right: repr_sh follows shlex.quote, not the reference's own mix ───
 #
@@ -777,3 +823,25 @@ list[string] | string :: re_split('a1b2c', '\d')
 # List-of-strings rendering, via re_split() with maxsplit=1: see the
 # explanation above. Same gap, not a new one.
 list[string] | string | int :: re_split('a1b2c', '\d', 1)
+
+# ── sqi is right: re_split's negative maxsplit discards the string, too ──────
+#
+# A DIFFERENT rule from the split()/rsplit() negative-maxsplit entries above,
+# reached by the same reference bug — do not fold this into that shared
+# explanation, and do not "fix" one function to match the other. C2's
+# split()/rsplit() follow str.split's own convention, where a negative
+# maxsplit means UNLIMITED; re_split follows RFC 0006's regex-function text
+# ("at most maxsplit times", nothing defined below zero) and Python's
+# re.split, where a negative maxsplit means NO split — the whole string comes
+# back as its own one-element list. The reference returns an EMPTY LIST for
+# re_split too, discarding the input entirely, which is wrong under either
+# reading of "at most maxsplit times": zero matches its rule (the string is
+# an available zero-split outcome, not a null result), and it does not match
+# str.split's convention either, since re_split does not follow that one.
+# Reported in expr-tracker.md's upstream ledger alongside the split()/
+# rsplit() case.
+
+# Negative maxsplit, re_split direction: sqi returns the string unsplit
+# ("['a1b2c']") per Python's re.split rule; the reference discards it
+# ("[]"). See the shared explanation above.
+list[string] | string | int :: re_split('a1b2c', '\d', -1)
