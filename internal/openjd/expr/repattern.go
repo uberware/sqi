@@ -32,7 +32,25 @@ var (
 const unicodeSpaceSet = `\t\n\v\f\r\x{0085}\x{2028}\x{2029}\p{Zs}`
 
 // unicodeWordSet is the same thing for \w: letters, numbers and underscore.
-const unicodeWordSet = `\p{L}\p{N}_`
+//
+// The underscore sits BETWEEN the two \p{...} escapes on purpose, not at
+// either end. \d, \D and \s are safe as class CONTENTS because their
+// expansions end in a class or property, so a "-" the SOURCE places next to
+// the escape stays literal; \w is the one shorthand whose union includes a
+// bare literal character, and a bare literal at either edge of this string can
+// combine with adjacent source text into an unintended range. Putting "_" at
+// the end let "[\w-a]" translate to "[\p{L}\p{N}_-a]", where Go reads "_-a" as
+// the range U+005F..U+0061 — silently matching the backtick, which is neither
+// a word character nor "a" under any reading of the source; putting it at the
+// FRONT merely moves the hazard to the other side ("[!-\w]" would then read
+// "!-_" as the range U+0021..U+005F). Sandwiched, "_" can never be the first
+// or last byte of what gets spliced in, so it can never directly abut
+// whatever sits next to the \w escape on either side — verified for both
+// directions in TestTranslatePattern_WordShorthandAdjacentDash. Python and the
+// reference both reject the shapes this used to mismatch on outright ("bad
+// character range \w-a" / "regex parse error"); Go instead now either matches
+// correctly or fails to compile, never silently wrong.
+const unicodeWordSet = `\p{L}_\p{N}`
 
 // translatePattern converts a pattern written in RFC 0006's dialect into an
 // equivalent pattern for Go's regexp package, or rejects it.
@@ -110,11 +128,11 @@ func translatePattern(pattern string) (string, error) {
 // nothing caps how many shorthands one class can hold — see
 // TestTranslatePattern_NegatedShorthandInPositiveClass. The delimiter scan
 // itself is split into scanClassBody purely to keep this function under the
-// repo's complexity cap.
+// repo's complexity cap; scanClassBody is also where a POSIX bracket
+// expression such as "[:alpha:]" gets refused, wherever it appears within the
+// class — see that function's own comment for why the check has to live
+// there rather than here.
 func scanClass(out *strings.Builder, pattern string, i int) (int, error) {
-	if strings.HasPrefix(pattern[i:], "[[:") {
-		return 0, fmt.Errorf("%w: POSIX character classes such as [[:alpha:]] are not in the Python/Rust intersection", errUnsupportedRegex)
-	}
 	body, negated, consumed, err := scanClassBody(pattern, i)
 	if err != nil {
 		return 0, err
@@ -141,6 +159,20 @@ func scanClass(out *strings.Builder, pattern string, i int) (int, error) {
 // with "^", and how many EXTRA bytes were consumed beyond the "[". Split out
 // of scanClass solely to keep that function's cyclomatic complexity under the
 // repo's cap.
+//
+// It also refuses a POSIX bracket expression — "[:alpha:]" and friends —
+// WHEREVER it appears in the class, not only when it opens one. The check
+// used to be scanClass testing only strings.HasPrefix(pattern[i:], "[[:"),
+// which is POSITIONAL: it caught "[[:alpha:]]" but not "[^[:alpha:]]" (the
+// idiomatic negated spelling, and the common case, not a corner one) or
+// "[a[:alpha:]]", both of which used to sail through untranslated into Go,
+// which — unlike Python's `re`, which reads "[:...:]" as literal characters —
+// gives POSIX classes their special meaning nested inside a bracket
+// expression. Scanning for "[:" as part of the same byte-by-byte walk that
+// already finds the class's members catches it at any position, and does so
+// without the false positive an escaped bracket would otherwise cause:
+// "\[" is consumed whole by the backslash arm above this check, so the
+// literal "[" it produces is never seen by the "[:" test that follows.
 func scanClassBody(pattern string, i int) (body string, negated bool, consumed int, err error) {
 	j := i + 1
 	if j < len(pattern) && pattern[j] == '^' {
@@ -159,6 +191,9 @@ func scanClassBody(pattern string, i int) (body string, negated bool, consumed i
 			b.WriteString(pattern[j : j+2])
 			j++
 			continue
+		}
+		if strings.HasPrefix(pattern[j:], "[:") {
+			return "", false, 0, fmt.Errorf("%w: POSIX character classes such as [[:alpha:]] are not in the Python/Rust intersection", errUnsupportedRegex)
 		}
 		if pattern[j] == ']' {
 			closed = true

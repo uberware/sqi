@@ -40,6 +40,9 @@ func TestTranslatePattern_Rejects(t *testing.T) {
 		{"negated unicode property", `\P{Nd}`, `\P{`},
 		{"rust named group", `(?<n>a)`, "named group"},
 		{"posix class", `[[:alpha:]]`, "POSIX"},
+		{"posix class, digit name", `[[:digit:]]`, "POSIX"},
+		{"posix class, negated form", `[^[:alpha:]]`, "POSIX"},
+		{"posix class, not the first member", `[a[:alpha:]]`, "POSIX"},
 		{"negated class with W", `[^\Wa]`, `\W`},
 		{"negated class with S", `[^\Sa]`, `\S`},
 		{"unclosed class with content", `[abc`, "never closed"},
@@ -110,9 +113,9 @@ func TestTranslatePattern_UnicodeShorthands(t *testing.T) {
 		{"D outside", `\D`, `\P{Nd}`},
 		{"d inside", `[\dx]`, `[\p{Nd}x]`},
 		{"D inside", `[\Dx]`, `[\P{Nd}x]`},
-		{"w outside", `\w`, `[\p{L}\p{N}_]`},
-		{"w inside", `[\wx]`, `[\p{L}\p{N}_x]`},
-		{"W outside", `\W`, `[^\p{L}\p{N}_]`},
+		{"w outside", `\w`, `[\p{L}_\p{N}]`},
+		{"w inside", `[\wx]`, `[\p{L}_\p{N}x]`},
+		{"W outside", `\W`, `[^\p{L}_\p{N}]`},
 		{"s outside", `\s`, `[` + unicodeSpaceSet + `]`},
 		{"s inside", `[\sx]`, `[` + unicodeSpaceSet + `x]`},
 		{"S outside", `\S`, `[^` + unicodeSpaceSet + `]`},
@@ -360,7 +363,7 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 // every alternation-producing class, not just its match behavior: a wrong
 // bracket placement can compile and even match every probe character in
 // TestTranslatePattern_NegatedShorthandInPositiveClass correctly by
-// coincidence (as "[\W^a]" mistranslated to "(?:[^\p{L}\p{N}_]|[^a])" did —
+// coincidence (as "[\W^a]" mistranslated to "(?:[^\p{L}_\p{N}]|[^a])" did —
 // it only diverges from the correct translation on inputs neither test
 // suite happened to probe until this one was written), while still being
 // the wrong regex. Every string here was verified independently: compiled
@@ -372,17 +375,27 @@ func TestTranslatePattern_AlternationText(t *testing.T) {
 		pattern string
 		want    string
 	}{
-		{"single W plus a member", `[\Wa]`, `(?:[^\p{L}\p{N}_]|[a])`},
+		{"single W plus a member", `[\Wa]`, `(?:[^\p{L}_\p{N}]|[a])`},
 		{"single S plus a member", `[\Sx]`, `(?:[^` + unicodeSpaceSet + `]|[x])`},
-		{"W and S together, nothing left over", `[\W\S]`, `(?:[^\p{L}\p{N}_]|[^` + unicodeSpaceSet + `])`},
-		{"W and S together plus an ordinary member", `[\W\Sx]`, `(?:[^\p{L}\p{N}_]|[^` + unicodeSpaceSet + `]|[x])`},
-		{"S before W: branch order follows source order", `[\S\W]`, `(?:[^` + unicodeSpaceSet + `]|[^\p{L}\p{N}_])`},
-		{"leading ] literal plus W", `[]\W]`, `(?:[^\p{L}\p{N}_]|[]])`},
-		{"escaped ] plus W", `[\W\]]`, `(?:[^\p{L}\p{N}_]|[\]])`},
-		{"W plus a translated escape in the remainder", `[\W\d]`, `(?:[^\p{L}\p{N}_]|[\p{Nd}])`},
-		{"caret after a dropped W is escaped, not left as the negation marker", `[\W^a]`, `(?:[^\p{L}\p{N}_]|[\^a])`},
+		{"W and S together, nothing left over", `[\W\S]`, `(?:[^\p{L}_\p{N}]|[^` + unicodeSpaceSet + `])`},
+		{"W and S together plus an ordinary member", `[\W\Sx]`, `(?:[^\p{L}_\p{N}]|[^` + unicodeSpaceSet + `]|[x])`},
+		{"S before W: branch order follows source order", `[\S\W]`, `(?:[^` + unicodeSpaceSet + `]|[^\p{L}_\p{N}])`},
+		{"leading ] literal plus W", `[]\W]`, `(?:[^\p{L}_\p{N}]|[]])`},
+		{"escaped ] plus W", `[\W\]]`, `(?:[^\p{L}_\p{N}]|[\]])`},
+		{"W plus a translated escape in the remainder", `[\W\d]`, `(?:[^\p{L}_\p{N}]|[\p{Nd}])`},
+		{"caret after a dropped W is escaped, not left as the negation marker", `[\W^a]`, `(?:[^\p{L}_\p{N}]|[\^a])`},
 		{"caret after a dropped S is escaped", `[\S^a]`, `(?:[^` + unicodeSpaceSet + `]|[\^a])`},
-		{"a lone caret left behind is escaped rather than emitting the uncompilable []", `[\W^]`, `(?:[^\p{L}\p{N}_]|[\^])`},
+		{"a lone caret left behind is escaped rather than emitting the uncompilable []", `[\W^]`, `(?:[^\p{L}_\p{N}]|[\^])`},
+		// A shorthand repeated with itself: classNeedsAlternation collapses
+		// every occurrence of a given shorthand to the SAME one branch (see
+		// its own doc), so nothing is left over and the alternation holds a
+		// single branch. This guards a live panic: if classBodyWithout ever
+		// dropped only the FIRST occurrence instead of every one, the second
+		// \W/\S would reach writeSetEscape as class CONTENTS with negate
+		// true, which panics by construction (writeSetEscape's own doc) —
+		// and nothing else in the suite would go red first.
+		{"W repeated with itself collapses to one branch", `[\W\W]`, `(?:[^\p{L}_\p{N}])`},
+		{"S repeated with itself collapses to one branch", `[\S\S]`, `(?:[^` + unicodeSpaceSet + `])`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -398,6 +411,100 @@ func TestTranslatePattern_AlternationText(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTranslatePattern_WordShorthandAdjacentDash covers the code-review
+// finding that \w's expansion, unlike \d, \D and \s, used to END IN A BARE
+// LITERAL character ("_"), so a naive translation let an adjacent "-" in the
+// SOURCE form an unintended character RANGE with it: "[\w-a]" used to
+// translate its set into "[\p{L}\p{N}_-a]", where Go reads "_-a" as the
+// range U+005F..U+0061 — matching the backtick, which is neither a word
+// character nor "a" under any reading of the source. Verified directly
+// against Python's re: it and the reference both REJECT "[\w-a]" outright
+// ("bad character range \w-a"; the reference: "regex parse error").
+//
+// The fix (unicodeWordSet's own doc) moves the underscore into the MIDDLE of
+// the set, between the two \p{...} property escapes, so it can never be the
+// first or last character spliced in and therefore can never directly abut
+// whatever SOURCE text sits next to the \w escape, on either side — checked
+// here in both directions, not only the trailing one the finding named.
+func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
+	t.Run("translated text", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			pattern string
+			want    string
+		}{
+			{"dash then a", `[\w-a]`, `[\p{L}_\p{N}-a]`},
+			{"trailing dash stays literal by position alone", `[\w-]`, `[\p{L}_\p{N}-]`},
+			{"escaped dash then a", `[\w\-a]`, `[\p{L}_\p{N}\-a]`},
+			{"ordinary range after \\w is unaffected", `[\wa-c]`, `[\p{L}_\p{N}a-c]`},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := translatePattern(tc.pattern)
+				if err != nil {
+					t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+				}
+				if got != tc.want {
+					t.Errorf("translatePattern(%q) = %q, want %q", tc.pattern, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("match behavior", func(t *testing.T) {
+		tests := []struct {
+			pattern string
+			input   string
+			want    bool
+		}{
+			// The critical case: "[\w-a]" must NOT match the backtick.
+			// U+0060 is neither a word character nor "a" under any reading
+			// of the source, but the pre-fix translation matched it via the
+			// accidental "_-a" range.
+			{`^[\w-a]$`, "`", false},
+			{`^[\w-a]$`, "a", true},
+			{`^[\w-a]$`, "-", true},
+			{`^[\w-a]$`, "_", true},
+			{`^[\w-]$`, "-", true},
+			{`^[\w-]$`, "`", false},
+			{`^[\w\-a]$`, "-", true},
+			{`^[\w\-a]$`, "`", false},
+			{`^[\wa-c]$`, "b", true},
+			{`^[\wa-c]$`, "-", false},
+		}
+		for _, tc := range tests {
+			t.Run(tc.pattern+"_on_"+tc.input, func(t *testing.T) {
+				translated, err := translatePattern(tc.pattern)
+				if err != nil {
+					t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+				}
+				re, err := regexp.Compile(translated)
+				if err != nil {
+					t.Fatalf("translated %q to %q, which does not compile: %v", tc.pattern, translated, err)
+				}
+				if got := re.MatchString(tc.input); got != tc.want {
+					t.Errorf("%q (translated %q) on %q = %v, want %v", tc.pattern, translated, tc.input, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// "[a-\w]" is the mirror direction: a literal immediately before \w.
+	// Both Python and the reference reject it outright. sqi's scanner does
+	// not special-case this — it still fails, but via Go's own compile-time
+	// rejection of "-\p{...}" as an invalid class range starter, reached
+	// through compilePattern rather than translatePattern's own scanner. The
+	// sandwiched set order (unicodeWordSet's own doc) keeps this failing
+	// safe rather than silently matching wrong, the same as the trailing
+	// direction above — verified directly, not merely assumed from the
+	// trailing case.
+	t.Run("literal before backslash-w still fails safe, not silently wrong", func(t *testing.T) {
+		if _, err := compilePattern(`[a-\w]`); err == nil {
+			t.Fatal(`compilePattern("[a-\\w]") succeeded; want an error`)
+		}
+	})
 }
 
 // TestTranslatePattern_NestedClassIsNeverEmitted pins the failure this whole
