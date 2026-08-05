@@ -72,7 +72,7 @@ func translatePattern(pattern string) (string, error) {
 		c := pattern[i]
 		switch c {
 		case '\\':
-			n, err := scanEscape(&out, pattern, i, false, false)
+			n, err := scanEscape(&out, pattern, i, false)
 			if err != nil {
 				return "", err
 			}
@@ -103,9 +103,14 @@ func translatePattern(pattern string) (string, error) {
 // translated in place (writeOrdinaryClass). But if a POSITIVE class contains
 // \W or \S — a negated union, which Go cannot union with anything else — the
 // whole class is rebuilt as an alternation of its parts
-// (writeClassAlternation). See TestTranslatePattern_NegatedShorthandInPositiveClass
-// for why that is sound. The delimiter scan itself is split into
-// scanClassBody purely to keep this function under the repo's complexity cap.
+// (writeClassAlternation): one branch per DISTINCT negated shorthand present,
+// plus one more for any ordinary members left over. That is sound because
+// each alternative matches exactly one character, so there is no
+// leftmost-match ambiguity, and alternation takes any number of branches, so
+// nothing caps how many shorthands one class can hold — see
+// TestTranslatePattern_NegatedShorthandInPositiveClass. The delimiter scan
+// itself is split into scanClassBody purely to keep this function under the
+// repo's complexity cap.
 func scanClass(out *strings.Builder, pattern string, i int) (int, error) {
 	if strings.HasPrefix(pattern[i:], "[[:") {
 		return 0, fmt.Errorf("%w: POSIX character classes such as [[:alpha:]] are not in the Python/Rust intersection", errUnsupportedRegex)
@@ -115,17 +120,17 @@ func scanClass(out *strings.Builder, pattern string, i int) (int, error) {
 		return 0, err
 	}
 
-	negUnion, err := classNeedsAlternation(body, negated)
+	branches, err := classNeedsAlternation(body, negated)
 	if err != nil {
 		return 0, err
 	}
-	if negUnion == "" {
+	if len(branches) == 0 {
 		if err := writeOrdinaryClass(out, body, negated); err != nil {
 			return 0, err
 		}
 		return consumed, nil
 	}
-	if err := writeClassAlternation(out, body, negUnion); err != nil {
+	if err := writeClassAlternation(out, body, branches); err != nil {
 		return 0, err
 	}
 	return consumed, nil
@@ -171,7 +176,7 @@ func scanClassBody(pattern string, i int) (body string, negated bool, consumed i
 // shape scanClass takes when the body holds no \W or \S needing alternation.
 func writeOrdinaryClass(out *strings.Builder, body string, negated bool) error {
 	var inner strings.Builder
-	if err := translateClassBody(&inner, body, negated); err != nil {
+	if err := translateClassBody(&inner, body); err != nil {
 		return err
 	}
 	out.WriteByte('[')
@@ -183,62 +188,97 @@ func writeOrdinaryClass(out *strings.Builder, body string, negated bool) error {
 	return nil
 }
 
-// writeClassAlternation writes the alternation form: the negated union
-// classNeedsAlternation pulled out, then everything else as an ordinary
-// class, provided anything else remains.
-func writeClassAlternation(out *strings.Builder, body, negUnion string) error {
-	rest, err := classBodyWithout(body, negUnion)
+// writeClassAlternation writes the alternation form: one branch per distinct
+// negated shorthand classNeedsAlternation found, in first-occurrence order,
+// then everything else as an ordinary class, provided anything else remains.
+func writeClassAlternation(out *strings.Builder, body string, branches []string) error {
+	rest, err := classBodyWithout(body)
 	if err != nil {
 		return err
 	}
 	out.WriteString("(?:")
-	out.WriteString(negUnion)
+	for idx, branch := range branches {
+		if idx > 0 {
+			out.WriteByte('|')
+		}
+		out.WriteString(branch)
+	}
 	if rest != "" {
 		out.WriteString("|[")
-		out.WriteString(rest)
+		out.WriteString(escapeLeadingCaret(rest))
 		out.WriteByte(']')
 	}
 	out.WriteByte(')')
 	return nil
 }
 
-// classNeedsAlternation reports the bracketed negated set a positive class must
-// be rebuilt around, or "" when the class translates in place.
+// escapeLeadingCaret escapes a leading "^" so a remainder stays a literal
+// class member rather than being read as the class's negation marker.
+//
+// A "^" is only ever literal inside a class when it did NOT start the class
+// — but writeClassAlternation builds a BRAND NEW class out of part of the
+// original body, and dropping the shorthand ahead of a "^" can promote that
+// "^" into first position for the first time. Go compiles the result WITHOUT
+// ERROR and silently negates instead of matching literally:
+// translatePattern(`[\W^a]`) must not become "(?:[^\p{L}\p{N}_]|[^a])" —
+// that means "not a word char, or anything that is not a", not the intended
+// "not a word char, or ^, or a". See the "caret after a dropped ..." cases in
+// TestTranslatePattern_AlternationText and
+// TestTranslatePattern_NegatedShorthandInPositiveClass.
+func escapeLeadingCaret(s string) string {
+	if strings.HasPrefix(s, "^") {
+		return `\^` + s[1:]
+	}
+	return s
+}
+
+// classNeedsAlternation reports the bracketed negated sets a positive class
+// must be rebuilt around — one per DISTINCT \W/\S shorthand present, in
+// first-occurrence order — or nil when the class translates in place.
+//
+// Every occurrence of a given shorthand collapses to the SAME one branch:
+// "[\W\W]" still produces a single \W branch. That is what lets
+// classBodyWithout drop every occurrence of a shorthand unconditionally,
+// once classNeedsAlternation has decided it is present at all.
 //
 // A NEGATED class containing \W or \S is rejected rather than rebuilt: that
 // asks for word characters MINUS something, which is set subtraction, and RE2
 // has no such operator.
-func classNeedsAlternation(body string, negated bool) (string, error) {
+func classNeedsAlternation(body string, negated bool) ([]string, error) {
+	var branches []string
+	sawW, sawS := false, false
 	for i := 0; i+1 < len(body); i++ {
 		if body[i] != '\\' {
 			continue
 		}
-		set := ""
-		switch body[i+1] {
-		case 'W':
-			set = "[^" + unicodeWordSet + "]"
-		case 'S':
-			set = "[^" + unicodeSpaceSet + "]"
-		default:
-			i++
+		c := body[i+1]
+		i++ // always skip the escaped byte, matched or not, to keep stride
+		if c != 'W' && c != 'S' {
 			continue
 		}
 		if negated {
-			return "", fmt.Errorf(`%w: \%c inside a negated character class needs set subtraction, which Go's engine cannot express`, errUnsupportedRegex, body[i+1])
+			return nil, fmt.Errorf(`%w: \%c inside a negated character class needs set subtraction, which Go's engine cannot express`, errUnsupportedRegex, c)
 		}
-		return set, nil
+		switch {
+		case c == 'W' && !sawW:
+			sawW = true
+			branches = append(branches, "[^"+unicodeWordSet+"]")
+		case c == 'S' && !sawS:
+			sawS = true
+			branches = append(branches, "[^"+unicodeSpaceSet+"]")
+		}
 	}
-	return "", nil
+	return branches, nil
 }
 
 // translateClassBody rewrites the members of a class that stays a class.
-func translateClassBody(out *strings.Builder, body string, negated bool) error {
+func translateClassBody(out *strings.Builder, body string) error {
 	for i := 0; i < len(body); i++ {
 		if body[i] != '\\' {
 			out.WriteByte(body[i])
 			continue
 		}
-		n, err := scanEscape(out, body, i, true, negated)
+		n, err := scanEscape(out, body, i, true)
 		if err != nil {
 			return err
 		}
@@ -247,21 +287,25 @@ func translateClassBody(out *strings.Builder, body string, negated bool) error {
 	return nil
 }
 
-// classBodyWithout returns the class members other than the one negated
-// shorthand that classNeedsAlternation pulled out, already translated.
-func classBodyWithout(body, pulled string) (string, error) {
-	drop := byte('W')
-	if strings.Contains(pulled, unicodeSpaceSet) {
-		drop = 'S'
-	}
+// classBodyWithout returns the class members other than every \W/\S
+// occurrence classNeedsAlternation already turned into an alternation
+// branch, already translated.
+//
+// It drops every \W and every \S unconditionally, without checking which
+// ones classNeedsAlternation actually pulled out — safe because
+// classNeedsAlternation scans this SAME body first and a branch exists for
+// every distinct shorthand present in it, so nothing is left un-accounted
+// for; dropping an occurrence that happens not to exist is a no-op.
+func classBodyWithout(body string) (string, error) {
 	var out strings.Builder
 	for i := 0; i < len(body); i++ {
 		if body[i] == '\\' && i+1 < len(body) {
-			if body[i+1] == drop {
+			c := body[i+1]
+			if c == 'W' || c == 'S' {
 				i++
 				continue
 			}
-			n, err := scanEscape(&out, body, i, true, false)
+			n, err := scanEscape(&out, body, i, true)
 			if err != nil {
 				return "", err
 			}
@@ -282,7 +326,7 @@ func classBodyWithout(body, pulled string) (string, error) {
 // \W, \s and \S to their Go equivalents (the switch below, via
 // writeSetEscape), rewrites \uHHHH and \UHHHHHHHH into Go's \x{...} spelling
 // (scanFixedHex), and otherwise passes the escape through unchanged.
-func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegated bool) (int, error) {
+func scanEscape(out *strings.Builder, pattern string, i int, inClass bool) (int, error) {
 	if i+1 >= len(pattern) {
 		return 0, fmt.Errorf("%w: the pattern ends with a trailing backslash", errUnsupportedRegex)
 	}
@@ -290,7 +334,7 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegat
 	// Rejections must fire before any Unicode shorthand translation below —
 	// split out to keep scanEscape's own complexity under the repo's cap
 	// without disturbing that ordering.
-	if err := rejectUnsupportedEscape(pattern, i, c, inClass, classNegated); err != nil {
+	if err := rejectUnsupportedEscape(pattern, i, c); err != nil {
 		return 0, err
 	}
 	switch c {
@@ -327,13 +371,19 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegat
 
 // rejectUnsupportedEscape reports the refusals that must fire before any
 // Unicode shorthand is translated: the anchors, property escapes,
-// backreferences, brace escapes and negated-shorthand-inside-a-class cases.
-// Extracted from scanEscape solely to keep that function's cyclomatic
-// complexity under the repo's cap (adding the six shorthand translation arms
-// pushed it back over, as it did once before for the same reason — see
-// negatedClassShorthandErr). Returns nil when c names no rejection, in which
-// case scanEscape's own switch decides what to do with it.
-func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegated bool) error {
+// backreferences and brace escapes. Extracted from scanEscape solely to keep
+// that function's cyclomatic complexity under the repo's cap. Returns nil
+// when c names no rejection, in which case scanEscape's own switch decides
+// what to do with it.
+//
+// This does NOT reject \W or \S inside a class — that is entirely
+// scanClass's concern now, via classNeedsAlternation: a negated class
+// containing either is rejected there directly, and a positive class's \W/\S
+// never reaches scanEscape at all (translateClassBody only ever runs on a
+// body classNeedsAlternation has already confirmed holds neither — see
+// scanClass — and classBodyWithout drops every \W/\S itself before calling
+// scanEscape). So there is nothing left for this function to catch here.
+func rejectUnsupportedEscape(pattern string, i int, c byte) error {
 	switch {
 	case c == 'z' || c == 'Z':
 		return fmt.Errorf(`%w: the end-of-string anchor \%c is not in the Python/Rust intersection; use $`, errUnsupportedRegex, c)
@@ -343,19 +393,6 @@ func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegate
 		return fmt.Errorf(`%w: backreferences such as \%c are not supported`, errUnsupportedRegex, c)
 	case (c == 'x' || c == 'u' || c == 'U') && strings.HasPrefix(pattern[i+2:], "{"):
 		return fmt.Errorf(`%w: the brace escape \%c{...} is Rust-only; use \xHH, \uHHHH or \UHHHHHHHH`, errUnsupportedRegex, c)
-	case (c == 'W' || c == 'S') && inClass:
-		// By the time scanEscape sees a \W or \S with inClass true, scanClass's
-		// classNeedsAlternation has already handled both LEGAL shapes: a
-		// negated class (rejected there, with its own message, before ever
-		// reaching here) and a positive class's first \W/\S (pulled out into
-		// the alternation by classBodyWithout and never passed to scanEscape
-		// at all). So this arm fires only for what classNeedsAlternation does
-		// NOT catch: a SECOND \W or \S left in a positive class's remainder,
-		// where classNegated is always false. It remains the backstop against
-		// ever reaching writeSetEscape with a negated set inside a class — a
-		// combination that function cannot express as class contents and
-		// panics on.
-		return negatedClassShorthandErr(c, classNegated)
 	}
 	return nil
 }
@@ -364,22 +401,20 @@ func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegate
 // contents when it is contributing to an enclosing class.
 //
 // A NEGATED set is only ever reached outside a class, and that is enforced by
-// the caller rather than assumed here: whenever scanEscape's own switch would
-// otherwise reach the \W or \S arm with inClass true, rejectUnsupportedEscape
-// has already returned an error for it first (see that function's inClass
-// case) — every \W/\S that reaches scanEscape from inside a class is, by
-// scanClass's construction, one classNeedsAlternation did NOT already pull
-// out (the one it does pull out is excluded from the call entirely, by
-// translateClassBody never running when the body holds one and by
-// classBodyWithout skipping the one it dropped), so it is always the
-// disallowed extra. The reason the invariant matters regardless of how it
-// ends up enforced: there IS no way to write a negated set as class CONTENTS
-// — so if this were ever reached with inClass and negate both true it would
-// emit the positive set and silently invert the match. It panics instead.
+// construction rather than by a runtime check: scanEscape's \W/\S arms are
+// only ever exercised with inClass true from two call sites,
+// translateClassBody and classBodyWithout, and NEITHER can hand them a real
+// \W/\S — translateClassBody only ever runs on a body classNeedsAlternation
+// has already confirmed holds no \W/\S (see scanClass), and classBodyWithout
+// drops every \W/\S itself before it ever calls scanEscape. The reason the
+// invariant matters regardless of how it ends up enforced: there IS no way to
+// write a negated set as class CONTENTS — so if this were ever reached with
+// inClass and negate both true it would emit the positive set and silently
+// invert the match. It panics instead.
 func writeSetEscape(out *strings.Builder, set string, inClass, negate bool) {
 	if inClass {
 		if negate {
-			panic("expr: negated shorthand reached writeSetEscape inside a class; scanEscape should have refused it")
+			panic("expr: negated shorthand reached writeSetEscape inside a class; scanClass should have excluded it")
 		}
 		out.WriteString(set)
 		return
@@ -390,20 +425,6 @@ func writeSetEscape(out *strings.Builder, set string, inClass, negate bool) {
 	}
 	out.WriteString(set)
 	out.WriteByte(']')
-}
-
-// negatedClassShorthandErr explains why a \W or \S that reaches scanEscape
-// inside a class cannot be honored there — split out of scanEscape to keep it
-// under the complexity cap without disturbing the arm ordering Tasks 2 and 3
-// extend. classNegated is always false when this is called as
-// rejectUnsupportedEscape's backstop for a second \W/\S in a positive class's
-// remainder (see that call site); a genuinely negated class is rejected
-// earlier, by classNeedsAlternation, using its own message.
-func negatedClassShorthandErr(c byte, classNegated bool) error {
-	if classNegated {
-		return fmt.Errorf(`%w: \%c inside a negated character class needs set subtraction, which Go's engine cannot express`, errUnsupportedRegex, c)
-	}
-	return fmt.Errorf(`%w: a character class may contain at most one of \W or \S`, errUnsupportedRegex)
 }
 
 // scanGroup handles the group opener starting at pattern[i]. It returns how

@@ -42,6 +42,10 @@ func TestTranslatePattern_Rejects(t *testing.T) {
 		{"posix class", `[[:alpha:]]`, "POSIX"},
 		{"negated class with W", `[^\Wa]`, `\W`},
 		{"negated class with S", `[^\Sa]`, `\S`},
+		{"unclosed class with content", `[abc`, "never closed"},
+		{"unclosed class, nothing after the bracket", `[`, "never closed"},
+		{"unclosed class holding only the literal-] convention", `[]`, "never closed"},
+		{"unclosed negated class holding only the literal-] convention", `[^]`, "never closed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,10 +271,12 @@ func TestTranslatePattern_RejectsMalformedUnicodeEscape(t *testing.T) {
 // becomes an alternation instead. That is sound here because each alternative
 // matches exactly one character, so there is no leftmost-match ambiguity, and
 // "(?:...)" is an atom just as a class is, so a following quantifier still
-// binds to the whole thing.
+// binds to the whole thing. Alternation takes any number of branches, so a
+// class may hold BOTH \W and \S — one branch per distinct shorthand present,
+// plus one more for any ordinary members left over.
 //
 // The negated form "[^\Wa]" is a different problem — word characters MINUS a,
-// i.e. set subtraction — and is rejected in Task 1.
+// i.e. set subtraction — and is rejected directly by classNeedsAlternation.
 func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -287,17 +293,52 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 		{"S class matches non-space", `^[\Sx]$`, "q", true},
 		{"S class matches the extra member", `^[\Sx]$`, "x", true},
 		{"S class rejects a space", `^[\Sx]$`, " ", false},
+		// \W and \S together: every character is either not-a-word-char or
+		// not-a-space-char (no character is BOTH a word char and a space
+		// char), so the union covers everything — a degenerate but correct
+		// result, and the case the class used to be refused for outright.
+		{"W and S together matches a word char, via the S branch", `^[\W\S]$`, "a", true},
+		{"W and S together matches a space char, via the W branch", `^[\W\S]$`, " ", true},
+		{"W and S together matches ordinary punctuation", `^[\W\S]$`, "!", true},
+		// A third, ordinary member alongside two shorthands: doesn't change
+		// what matches here (\W|\S already covers everything), but proves the
+		// extra branch is wired in — TestTranslatePattern_AlternationText pins
+		// that it is actually present in the output.
+		{"W, S and an ordinary member together", `^[\W\Sx]$`, "x", true},
+		// Order of appearance in the source reverses the branch order in the
+		// translation (pinned by TestTranslatePattern_AlternationText); match
+		// behavior is unaffected either way.
+		{"S before W still matches both directions", `^[\S\W]$`, "a", true},
+		// A remainder starting with "]" via the leading-]-is-literal
+		// convention, alongside a shorthand.
+		{"leading ] literal plus W matches the bracket", `^[]\W]$`, "]", true},
+		{"leading ] literal plus W matches non-word", `^[]\W]$`, "!", true},
+		{"leading ] literal plus W rejects a word char", `^[]\W]$`, "a", false},
+		// The same shape spelled with an escaped "\]" instead of the
+		// leading-] convention — same meaning, different source syntax.
+		{"escaped ] plus W matches the bracket", `^[\W\]]$`, "]", true},
+		{"escaped ] plus W rejects a word char", `^[\W\]]$`, "a", false},
+		// A remainder containing a TRANSLATED escape (\d -> \p{Nd}), not a
+		// bare literal — exercises classBodyWithout's call into scanEscape.
+		{"W plus d matches a digit via the remainder", `^[\W\d]$`, "3", true},
+		{"W plus d matches non-word via the W branch", `^[\W\d]$`, "!", true},
+		{"W plus d rejects a non-digit word char", `^[\W\d]$`, "a", false},
+		// The critical case: a literal "^" that was NOT first in the source
+		// can be promoted to first position once the shorthand ahead of it is
+		// dropped. Escaped, it stays literal; unescaped, Go would read it as
+		// the class's negation marker and invert the whole match.
+		{"caret after a dropped W stays literal, matches the caret", `^[\W^a]$`, "^", true},
+		{"caret after a dropped W stays literal, matches the other member", `^[\W^a]$`, "a", true},
+		{"caret after a dropped W stays literal, rejects an unlisted word char", `^[\W^a]$`, "b", false},
+		{"caret after a dropped W stays literal, rejects a digit", `^[\W^a]$`, "3", false},
+		{"caret after a dropped S stays literal, matches the caret", `^[\S^a]$`, "^", true},
+		{"caret after a dropped S stays literal, rejects a space", `^[\S^a]$`, " ", false},
+		// The degenerate case: dropping \W leaves ONLY a caret behind. Before
+		// this fix the remainder was the bare, uncompilable "[^]"; now it is
+		// the one-member literal class "[\^]".
+		{"W with nothing but a caret left behind matches the caret", `^[\W^]$`, "^", true},
+		{"W with nothing but a caret left behind rejects a word char", `^[\W^]$`, "a", false},
 	}
-	// A class may hold at most ONE negated shorthand: the rewrite spends its
-	// single alternation on that one, and there is no way to express a second
-	// negated set as class contents. Refusing is the only honest outcome —
-	// falling through would emit the POSITIVE set and turn \S into \s with no
-	// error.
-	t.Run("both W and S in one class is refused", func(t *testing.T) {
-		if _, err := translatePattern(`[\W\S]`); err == nil {
-			t.Fatal(`translatePattern("[\\W\\S]") succeeded; want a refusal`)
-		}
-	})
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			translated, err := translatePattern(tc.pattern)
@@ -315,12 +356,59 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 	}
 }
 
+// TestTranslatePattern_AlternationText pins the exact translated TEXT of
+// every alternation-producing class, not just its match behavior: a wrong
+// bracket placement can compile and even match every probe character in
+// TestTranslatePattern_NegatedShorthandInPositiveClass correctly by
+// coincidence (as "[\W^a]" mistranslated to "(?:[^\p{L}\p{N}_]|[^a])" did —
+// it only diverges from the correct translation on inputs neither test
+// suite happened to probe until this one was written), while still being
+// the wrong regex. Every string here was verified independently: compiled
+// with regexp.Compile and checked against the pattern's OWN meaning across a
+// probe set, not merely copied from whatever this package currently emits.
+func TestTranslatePattern_AlternationText(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{"single W plus a member", `[\Wa]`, `(?:[^\p{L}\p{N}_]|[a])`},
+		{"single S plus a member", `[\Sx]`, `(?:[^` + unicodeSpaceSet + `]|[x])`},
+		{"W and S together, nothing left over", `[\W\S]`, `(?:[^\p{L}\p{N}_]|[^` + unicodeSpaceSet + `])`},
+		{"W and S together plus an ordinary member", `[\W\Sx]`, `(?:[^\p{L}\p{N}_]|[^` + unicodeSpaceSet + `]|[x])`},
+		{"S before W: branch order follows source order", `[\S\W]`, `(?:[^` + unicodeSpaceSet + `]|[^\p{L}\p{N}_])`},
+		{"leading ] literal plus W", `[]\W]`, `(?:[^\p{L}\p{N}_]|[]])`},
+		{"escaped ] plus W", `[\W\]]`, `(?:[^\p{L}\p{N}_]|[\]])`},
+		{"W plus a translated escape in the remainder", `[\W\d]`, `(?:[^\p{L}\p{N}_]|[\p{Nd}])`},
+		{"caret after a dropped W is escaped, not left as the negation marker", `[\W^a]`, `(?:[^\p{L}\p{N}_]|[\^a])`},
+		{"caret after a dropped S is escaped", `[\S^a]`, `(?:[^` + unicodeSpaceSet + `]|[\^a])`},
+		{"a lone caret left behind is escaped rather than emitting the uncompilable []", `[\W^]`, `(?:[^\p{L}\p{N}_]|[\^])`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := translatePattern(tc.pattern)
+			if err != nil {
+				t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+			}
+			if got != tc.want {
+				t.Errorf("translatePattern(%q) = %q, want %q", tc.pattern, got, tc.want)
+			}
+			if _, err := regexp.Compile(got); err != nil {
+				t.Errorf("translatePattern(%q) = %q, which does not compile: %v", tc.pattern, got, err)
+			}
+		})
+	}
+}
+
 // TestTranslatePattern_NestedClassIsNeverEmitted pins the failure this whole
 // scanner exists to prevent. Go compiles "[[\p{L}]]" WITHOUT ERROR and matches
 // something other than intended, so a translation that emitted a nested class
 // would ship a silently wrong matcher. No output may contain "[[".
 func TestTranslatePattern_NestedClassIsNeverEmitted(t *testing.T) {
-	for _, p := range []string{`[\wx]`, `[\sx]`, `[\dx]`, `[\Wa]`, `[\Sx]`, `[\w\s\d]`} {
+	for _, p := range []string{
+		`[\wx]`, `[\sx]`, `[\dx]`, `[\Wa]`, `[\Sx]`, `[\w\s\d]`,
+		`[\W\S]`, `[\W\Sx]`, `[\W^a]`, `[\W^]`, `[]\W]`, `[\W\]]`,
+	} {
 		t.Run(p, func(t *testing.T) {
 			got, err := translatePattern(p)
 			if err != nil {
