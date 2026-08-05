@@ -57,7 +57,9 @@ const unicodeWordSet = `\p{L}\p{N}_`
 // fails silently. That single fact is why this is a scanner and not a
 // strings.ReplaceAll.
 //
-// Tasks 2 and 3 add the translation half; this file starts as validation only.
+// The translation half is now partly in place: the Unicode shorthands (\d,
+// \D, \w, \W, \s, \S) are rewritten by scanEscape below. Translating \u and
+// \U into a Go-compatible escape is Task 3's remaining scope.
 func translatePattern(pattern string) (string, error) {
 	if pattern == "" {
 		return "", errEmptyPattern
@@ -103,8 +105,13 @@ func translatePattern(pattern string) (string, error) {
 // translation to out. It returns how many EXTRA bytes it consumed beyond the
 // backslash.
 //
-// Task 2 replaces the shorthand arm and Task 3 the \u/\U arm; this version
-// rejects and passes through.
+// It rejects the constructs outside the Python/Rust intersection
+// (rejectUnsupportedEscape), rewrites the six Unicode shorthands \d, \D, \w,
+// \W, \s and \S to their Go equivalents (the switch below, via
+// writeSetEscape), and otherwise passes the escape through unchanged. \u and
+// \U translation is still Task 3's: today their Rust-only brace form
+// (\u{...}, \U{...}) is rejected and their plain form passes through
+// unchanged rather than becoming a Go-compatible escape.
 func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegated bool) (int, error) {
 	if i+1 >= len(pattern) {
 		return 0, fmt.Errorf("%w: the pattern ends with a trailing backslash", errUnsupportedRegex)
@@ -159,13 +166,13 @@ func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegate
 	case (c == 'x' || c == 'u' || c == 'U') && strings.HasPrefix(pattern[i+2:], "{"):
 		return fmt.Errorf(`%w: the brace escape \%c{...} is Rust-only; use \xHH, \uHHHH or \UHHHHHHHH`, errUnsupportedRegex, c)
 	case (c == 'W' || c == 'S') && inClass:
-		// Reaching here means a NEGATED shorthand inside a class that
-		// scanClass did not lift into an alternation — either the class is
-		// itself negated (set subtraction, which RE2 cannot express) or it
-		// already spent its one alternation on the other shorthand. Both are
-		// refusals. This must NOT fall through to writeSetEscape: that
-		// function cannot express a negated set as class contents, so it would
-		// emit the POSITIVE set and silently turn \S into \s.
+		// Today this refuses EVERY \W or \S found inside a character class,
+		// negated or not, first occurrence or not: there is no
+		// alternation-lifting yet to make room for one permitted occurrence
+		// (that is Task 4's work). Until then, this is the first guard
+		// against ever reaching writeSetEscape with a negated set inside a
+		// class — a combination that function cannot express as class
+		// contents and panics on as a backstop.
 		return negatedClassShorthandErr(c, classNegated)
 	}
 	return nil
@@ -174,13 +181,14 @@ func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegate
 // writeSetEscape emits a union shorthand: bracketed when it stands alone, bare
 // contents when it is contributing to an enclosing class.
 //
-// A NEGATED set is only ever reached outside a class, and that is enforced by
-// the caller rather than assumed here: scanEscape refuses \W and \S inside any
-// class, and scanClass lifts the one permitted occurrence into an alternation
-// before the members are translated. The reason the invariant matters is that
-// there IS no way to write a negated set as class CONTENTS — so if this were
-// ever reached with inClass and negate both true it would emit the positive
-// set and silently invert the match. It panics instead.
+// A NEGATED set is only ever reached outside a class today, and that is
+// enforced by the caller rather than assumed here: rejectUnsupportedEscape
+// refuses \W and \S inside ANY class unconditionally (Task 4 will relax this
+// to allow one lifted occurrence into an alternation). The reason the
+// invariant matters regardless of how it ends up enforced: there IS no way to
+// write a negated set as class CONTENTS — so if this were ever reached with
+// inClass and negate both true it would emit the positive set and silently
+// invert the match. It panics instead.
 func writeSetEscape(out *strings.Builder, set string, inClass, negate bool) {
 	if inClass {
 		if negate {
