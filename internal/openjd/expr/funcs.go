@@ -20,7 +20,7 @@ package expr
 var functionShapes = mergeFuncs(
 	convFuncs, mathFuncs, listFuncs,
 	strCaseFuncs, strFindFuncs, strSplitFuncs, strPadFuncs,
-	reFuncs,
+	reFuncs, reprShellFuncs,
 )
 
 // mergeFuncs folds the per-category tables into one registry.
