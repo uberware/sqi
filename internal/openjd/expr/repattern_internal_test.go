@@ -258,3 +258,77 @@ func TestTranslatePattern_RejectsMalformedUnicodeEscape(t *testing.T) {
 		})
 	}
 }
+
+// TestTranslatePattern_NegatedShorthandInPositiveClass covers the one place the
+// scanner rewrites an entire enclosing construct.
+//
+// "[\Wa]" means "not a word character, or the letter a". Go's engine cannot
+// build a class that UNIONS a negated set with more members, so the class
+// becomes an alternation instead. That is sound here because each alternative
+// matches exactly one character, so there is no leftmost-match ambiguity, and
+// "(?:...)" is an atom just as a class is, so a following quantifier still
+// binds to the whole thing.
+//
+// The negated form "[^\Wa]" is a different problem — word characters MINUS a,
+// i.e. set subtraction — and is rejected in Task 1.
+func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    bool
+	}{
+		{"W class matches non-word", `^[\Wa]$`, "!", true},
+		{"W class matches the extra member", `^[\Wa]$`, "a", true},
+		{"W class rejects other word chars", `^[\Wa]$`, "b", false},
+		{"W class rejects digits", `^[\Wa]$`, "3", false},
+		{"quantifier still binds", `^[\Wa]+$`, "!a!a", true},
+		{"quantifier rejects a non-member", `^[\Wa]+$`, "!ab", false},
+		{"S class matches non-space", `^[\Sx]$`, "q", true},
+		{"S class matches the extra member", `^[\Sx]$`, "x", true},
+		{"S class rejects a space", `^[\Sx]$`, " ", false},
+	}
+	// A class may hold at most ONE negated shorthand: the rewrite spends its
+	// single alternation on that one, and there is no way to express a second
+	// negated set as class contents. Refusing is the only honest outcome —
+	// falling through would emit the POSITIVE set and turn \S into \s with no
+	// error.
+	t.Run("both W and S in one class is refused", func(t *testing.T) {
+		if _, err := translatePattern(`[\W\S]`); err == nil {
+			t.Fatal(`translatePattern("[\\W\\S]") succeeded; want a refusal`)
+		}
+	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			translated, err := translatePattern(tc.pattern)
+			if err != nil {
+				t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+			}
+			re, err := regexp.Compile(translated)
+			if err != nil {
+				t.Fatalf("translated %q to %q, which does not compile: %v", tc.pattern, translated, err)
+			}
+			if got := re.MatchString(tc.input); got != tc.want {
+				t.Errorf("%q (translated %q) on %q = %v, want %v", tc.pattern, translated, tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTranslatePattern_NestedClassIsNeverEmitted pins the failure this whole
+// scanner exists to prevent. Go compiles "[[\p{L}]]" WITHOUT ERROR and matches
+// something other than intended, so a translation that emitted a nested class
+// would ship a silently wrong matcher. No output may contain "[[".
+func TestTranslatePattern_NestedClassIsNeverEmitted(t *testing.T) {
+	for _, p := range []string{`[\wx]`, `[\sx]`, `[\dx]`, `[\Wa]`, `[\Sx]`, `[\w\s\d]`} {
+		t.Run(p, func(t *testing.T) {
+			got, err := translatePattern(p)
+			if err != nil {
+				t.Fatalf("translatePattern(%q) failed: %v", p, err)
+			}
+			if strings.Contains(got, "[[") {
+				t.Errorf("translatePattern(%q) = %q, which nests a character class", p, got)
+			}
+		})
+	}
+}

@@ -59,44 +59,216 @@ const unicodeWordSet = `\p{L}\p{N}_`
 //
 // The translation half is now fully in place: the Unicode shorthands (\d,
 // \D, \w, \W, \s, \S) and the \u/\U fixed-width Unicode escapes are all
-// rewritten by scanEscape below.
+// rewritten by scanEscape below, and a positive class holding \W or \S is
+// rebuilt into an alternation by scanClass — the one rewrite that replaces a
+// whole enclosing construct rather than a single escape.
 func translatePattern(pattern string) (string, error) {
 	if pattern == "" {
 		return "", errEmptyPattern
 	}
 	var out strings.Builder
 	out.Grow(len(pattern) * 2)
-	inClass := false
-	classNegated := false
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
-		switch {
-		case c == '\\':
-			n, err := scanEscape(&out, pattern, i, inClass, classNegated)
+		switch c {
+		case '\\':
+			n, err := scanEscape(&out, pattern, i, false, false)
 			if err != nil {
 				return "", err
 			}
 			i += n
-		case !inClass && c == '(':
+		case '(':
 			n, err := scanGroup(&out, pattern, i)
 			if err != nil {
 				return "", err
 			}
 			i += n
-		case !inClass && c == '[':
-			if strings.HasPrefix(pattern[i:], "[[:") {
-				return "", fmt.Errorf("%w: POSIX character classes such as [[:alpha:]] are not in the Python/Rust intersection", errUnsupportedRegex)
+		case '[':
+			n, err := scanClass(&out, pattern, i)
+			if err != nil {
+				return "", err
 			}
-			inClass = true
-			classNegated = strings.HasPrefix(pattern[i+1:], "^")
-			out.WriteByte(c)
-		case inClass && c == ']':
-			inClass = false
-			classNegated = false
-			out.WriteByte(c)
+			i += n
 		default:
 			out.WriteByte(c)
 		}
+	}
+	return out.String(), nil
+}
+
+// scanClass translates one character class, from its "[" to its matching "]".
+// It returns how many EXTRA bytes it consumed beyond the "[".
+//
+// Two shapes come out. Ordinarily the class stays a class and its members are
+// translated in place (writeOrdinaryClass). But if a POSITIVE class contains
+// \W or \S — a negated union, which Go cannot union with anything else — the
+// whole class is rebuilt as an alternation of its parts
+// (writeClassAlternation). See TestTranslatePattern_NegatedShorthandInPositiveClass
+// for why that is sound. The delimiter scan itself is split into
+// scanClassBody purely to keep this function under the repo's complexity cap.
+func scanClass(out *strings.Builder, pattern string, i int) (int, error) {
+	if strings.HasPrefix(pattern[i:], "[[:") {
+		return 0, fmt.Errorf("%w: POSIX character classes such as [[:alpha:]] are not in the Python/Rust intersection", errUnsupportedRegex)
+	}
+	body, negated, consumed, err := scanClassBody(pattern, i)
+	if err != nil {
+		return 0, err
+	}
+
+	negUnion, err := classNeedsAlternation(body, negated)
+	if err != nil {
+		return 0, err
+	}
+	if negUnion == "" {
+		if err := writeOrdinaryClass(out, body, negated); err != nil {
+			return 0, err
+		}
+		return consumed, nil
+	}
+	if err := writeClassAlternation(out, body, negUnion); err != nil {
+		return 0, err
+	}
+	return consumed, nil
+}
+
+// scanClassBody scans from the "[" at pattern[i] to its matching "]",
+// returning the raw (untranslated) member bytes, whether the class opened
+// with "^", and how many EXTRA bytes were consumed beyond the "[". Split out
+// of scanClass solely to keep that function's cyclomatic complexity under the
+// repo's cap.
+func scanClassBody(pattern string, i int) (body string, negated bool, consumed int, err error) {
+	j := i + 1
+	if j < len(pattern) && pattern[j] == '^' {
+		negated = true
+		j++
+	}
+	var b strings.Builder
+	// A "]" as the first member is a literal, per both Python and Rust.
+	if j < len(pattern) && pattern[j] == ']' {
+		b.WriteByte(']')
+		j++
+	}
+	closed := false
+	for ; j < len(pattern); j++ {
+		if pattern[j] == '\\' && j+1 < len(pattern) {
+			b.WriteString(pattern[j : j+2])
+			j++
+			continue
+		}
+		if pattern[j] == ']' {
+			closed = true
+			break
+		}
+		b.WriteByte(pattern[j])
+	}
+	if !closed {
+		return "", false, 0, fmt.Errorf("%w: the character class is never closed", errUnsupportedRegex)
+	}
+	return b.String(), negated, j - i, nil
+}
+
+// writeOrdinaryClass writes a class whose members translate in place: the
+// shape scanClass takes when the body holds no \W or \S needing alternation.
+func writeOrdinaryClass(out *strings.Builder, body string, negated bool) error {
+	var inner strings.Builder
+	if err := translateClassBody(&inner, body, negated); err != nil {
+		return err
+	}
+	out.WriteByte('[')
+	if negated {
+		out.WriteByte('^')
+	}
+	out.WriteString(inner.String())
+	out.WriteByte(']')
+	return nil
+}
+
+// writeClassAlternation writes the alternation form: the negated union
+// classNeedsAlternation pulled out, then everything else as an ordinary
+// class, provided anything else remains.
+func writeClassAlternation(out *strings.Builder, body, negUnion string) error {
+	rest, err := classBodyWithout(body, negUnion)
+	if err != nil {
+		return err
+	}
+	out.WriteString("(?:")
+	out.WriteString(negUnion)
+	if rest != "" {
+		out.WriteString("|[")
+		out.WriteString(rest)
+		out.WriteByte(']')
+	}
+	out.WriteByte(')')
+	return nil
+}
+
+// classNeedsAlternation reports the bracketed negated set a positive class must
+// be rebuilt around, or "" when the class translates in place.
+//
+// A NEGATED class containing \W or \S is rejected rather than rebuilt: that
+// asks for word characters MINUS something, which is set subtraction, and RE2
+// has no such operator.
+func classNeedsAlternation(body string, negated bool) (string, error) {
+	for i := 0; i+1 < len(body); i++ {
+		if body[i] != '\\' {
+			continue
+		}
+		set := ""
+		switch body[i+1] {
+		case 'W':
+			set = "[^" + unicodeWordSet + "]"
+		case 'S':
+			set = "[^" + unicodeSpaceSet + "]"
+		default:
+			i++
+			continue
+		}
+		if negated {
+			return "", fmt.Errorf(`%w: \%c inside a negated character class needs set subtraction, which Go's engine cannot express`, errUnsupportedRegex, body[i+1])
+		}
+		return set, nil
+	}
+	return "", nil
+}
+
+// translateClassBody rewrites the members of a class that stays a class.
+func translateClassBody(out *strings.Builder, body string, negated bool) error {
+	for i := 0; i < len(body); i++ {
+		if body[i] != '\\' {
+			out.WriteByte(body[i])
+			continue
+		}
+		n, err := scanEscape(out, body, i, true, negated)
+		if err != nil {
+			return err
+		}
+		i += n
+	}
+	return nil
+}
+
+// classBodyWithout returns the class members other than the one negated
+// shorthand that classNeedsAlternation pulled out, already translated.
+func classBodyWithout(body, pulled string) (string, error) {
+	drop := byte('W')
+	if strings.Contains(pulled, unicodeSpaceSet) {
+		drop = 'S'
+	}
+	var out strings.Builder
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' && i+1 < len(body) {
+			if body[i+1] == drop {
+				i++
+				continue
+			}
+			n, err := scanEscape(&out, body, i, true, false)
+			if err != nil {
+				return "", err
+			}
+			i += n
+			continue
+		}
+		out.WriteByte(body[i])
 	}
 	return out.String(), nil
 }
@@ -172,13 +344,17 @@ func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegate
 	case (c == 'x' || c == 'u' || c == 'U') && strings.HasPrefix(pattern[i+2:], "{"):
 		return fmt.Errorf(`%w: the brace escape \%c{...} is Rust-only; use \xHH, \uHHHH or \UHHHHHHHH`, errUnsupportedRegex, c)
 	case (c == 'W' || c == 'S') && inClass:
-		// Today this refuses EVERY \W or \S found inside a character class,
-		// negated or not, first occurrence or not: there is no
-		// alternation-lifting yet to make room for one permitted occurrence
-		// (that is Task 4's work). Until then, this is the first guard
-		// against ever reaching writeSetEscape with a negated set inside a
-		// class — a combination that function cannot express as class
-		// contents and panics on as a backstop.
+		// By the time scanEscape sees a \W or \S with inClass true, scanClass's
+		// classNeedsAlternation has already handled both LEGAL shapes: a
+		// negated class (rejected there, with its own message, before ever
+		// reaching here) and a positive class's first \W/\S (pulled out into
+		// the alternation by classBodyWithout and never passed to scanEscape
+		// at all). So this arm fires only for what classNeedsAlternation does
+		// NOT catch: a SECOND \W or \S left in a positive class's remainder,
+		// where classNegated is always false. It remains the backstop against
+		// ever reaching writeSetEscape with a negated set inside a class — a
+		// combination that function cannot express as class contents and
+		// panics on.
 		return negatedClassShorthandErr(c, classNegated)
 	}
 	return nil
@@ -187,14 +363,19 @@ func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegate
 // writeSetEscape emits a union shorthand: bracketed when it stands alone, bare
 // contents when it is contributing to an enclosing class.
 //
-// A NEGATED set is only ever reached outside a class today, and that is
-// enforced by the caller rather than assumed here: rejectUnsupportedEscape
-// refuses \W and \S inside ANY class unconditionally (Task 4 will relax this
-// to allow one lifted occurrence into an alternation). The reason the
-// invariant matters regardless of how it ends up enforced: there IS no way to
-// write a negated set as class CONTENTS — so if this were ever reached with
-// inClass and negate both true it would emit the positive set and silently
-// invert the match. It panics instead.
+// A NEGATED set is only ever reached outside a class, and that is enforced by
+// the caller rather than assumed here: whenever scanEscape's own switch would
+// otherwise reach the \W or \S arm with inClass true, rejectUnsupportedEscape
+// has already returned an error for it first (see that function's inClass
+// case) — every \W/\S that reaches scanEscape from inside a class is, by
+// scanClass's construction, one classNeedsAlternation did NOT already pull
+// out (the one it does pull out is excluded from the call entirely, by
+// translateClassBody never running when the body holds one and by
+// classBodyWithout skipping the one it dropped), so it is always the
+// disallowed extra. The reason the invariant matters regardless of how it
+// ends up enforced: there IS no way to write a negated set as class CONTENTS
+// — so if this were ever reached with inClass and negate both true it would
+// emit the positive set and silently invert the match. It panics instead.
 func writeSetEscape(out *strings.Builder, set string, inClass, negate bool) {
 	if inClass {
 		if negate {
@@ -211,9 +392,13 @@ func writeSetEscape(out *strings.Builder, set string, inClass, negate bool) {
 	out.WriteByte(']')
 }
 
-// negatedClassShorthandErr explains why \W or \S cannot appear inside a
-// character class, split out of scanEscape to keep it under the complexity
-// cap without disturbing the arm ordering Tasks 2 and 3 extend.
+// negatedClassShorthandErr explains why a \W or \S that reaches scanEscape
+// inside a class cannot be honored there — split out of scanEscape to keep it
+// under the complexity cap without disturbing the arm ordering Tasks 2 and 3
+// extend. classNegated is always false when this is called as
+// rejectUnsupportedEscape's backstop for a second \W/\S in a positive class's
+// remainder (see that call site); a genuinely negated class is rejected
+// earlier, by classNeedsAlternation, using its own message.
 func negatedClassShorthandErr(c byte, classNegated bool) error {
 	if classNegated {
 		return fmt.Errorf(`%w: \%c inside a negated character class needs set subtraction, which Go's engine cannot express`, errUnsupportedRegex, c)
