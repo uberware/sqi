@@ -343,9 +343,10 @@ func translateClassBody(out *strings.Builder, body string) error {
 // meaning of a metacharacter that becomes newly adjacent once the shorthand
 // between it and its neighbor is gone. dashesAdjacentToDroppedShorthand
 // finds every bare "-" that sat immediately next to a dropped occurrence, on
-// either side, and this function escapes exactly those; a "-" untouched by a
-// drop, including one that is genuinely trailing ("[\W-]", "[a\W-]"), is
-// left exactly as it would otherwise be, still a literal by position.
+// either side, and this function escapes exactly those — including a "-"
+// that is genuinely trailing ("[\W-]", "[a\W-]"): "\-" and a bare "-"
+// denote the same literal, so escaping is always safe, and deciding
+// whether a given dash is trailing is not worth a separate rule.
 func classBodyWithout(body string) (string, error) {
 	escapeDash := dashesAdjacentToDroppedShorthand(body)
 	var out strings.Builder

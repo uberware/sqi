@@ -740,45 +740,39 @@ list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 # The fix (classBodyWithout's own doc, via dashesAdjacentToDroppedShorthand)
 # escapes any "-" that sat immediately next to a dropped occurrence, so the
 # class reads as sqi's own permissive union instead — for "[a\W-c]":
-# {not-a-word-char} ∪ {a} ∪ {-} ∪ {c}, which does NOT contain "b". Neither
-# Python's re nor the reference will parse "[a\W-c]" or "[0\W-9]" at all —
-# both raise "bad character range" / "regex parse error" — so this sits in
-# the same family as the \w-adjacent-dash entries below: sqi's fix does not
-# reproduce that refusal, it makes the splice safe instead, which is a
-# well-defined reading neither reference engine offers, not a guess.
-#
-# [a\W-c] no longer matches "b": sqi returns null (no match, "b" is in none
-# of the union's four members), the reference refuses to parse the pattern
-# at all.
-list[string] | string | nulltype :: re_search('b', r'[a\W-c]')
-
-# [a\W-c] on the ordinary member the class always meant to hold: sqi matches
-# 'a', the reference refuses to parse the pattern at all.
-list[string] | string | nulltype :: re_search('a', r'[a\W-c]')
-
-# [0\W-9] no longer matches "5": same divergence as the [a\W-c] entry above,
-# with digits either side of the dropped shorthand instead of letters.
-list[string] | string | nulltype :: re_search('5', r'[0\W-9]')
-
-# [0\W-9] on the ordinary member the class always meant to hold: sqi
-# matches '0', the reference refuses to parse the pattern at all.
-list[string] | string | nulltype :: re_search('0', r'[0\W-9]')
+# {not-a-word-char} ∪ {a} ∪ {-} ∪ {c}, which does NOT contain "b". That
+# ruling covers the MATCH SET only: it says the fix is sound once sqi
+# accepts "[a\W-c]" or "[0\W-9]" at all. Whether sqi should accept either
+# pattern in the first place is a separate, still-open question — neither
+# Python's re nor the reference parses "[a\W-c]" or "[0\W-9]", so sqi
+# accepting them is a gap in the intersection rule's enforcement, not a
+# ruling in sqi's favour. That question is filed below, under "sqi
+# under-enforces the intersection", alongside the rest of the
+# shorthand-adjacent-to-dash family — see the corpus entries there.
 
 # ── sqi under-enforces the intersection: a shorthand adjacent to "-" ─────────
 #
 # This is NOT an affirmative ruling in sqi's favour, unlike the headings
 # above and below it — a future reader must not take the question as
 # settled. It is an unenforced corner of the intersection rule, shared by
-# every one of the six Unicode shorthands (\d, \D, \s, \S, \w, \W), of which
-# only \w happens to be corpused in full.
+# every one of the six Unicode shorthands (\d, \D, \s, \S, \w, \W), of
+# which \w is corpused in full below, \W is corpused for its mid-class form
+# only ("[a\W-c]", "[0\W-9]" below — its leading form "[\W-a]" is not), and
+# the rest are asserted only by direct measurement.
 #
 # Measured directly: sqi already ACCEPTS "[\d-a]", "[\D-a]", "[\s-a]",
 # "[\S-a]", "[\W-a]" and "[\w-a]", every one of them with plain union
 # semantics (the shorthand's own set, plus a literal "-", plus a literal
-# "a") — none of the six forms an accidental range, because in every case
-# the token immediately before the "-" is a class or property escape, not a
-# bare literal, so Go's own class-range rule refuses to start a range there
-# and falls back to reading the "-" literally. Neither Python's re nor the
+# "a") — none of the six forms an accidental range, but not for one uniform
+# reason. "\d", "\D" and "\s" expand IN PLACE to a property or class (e.g.
+# "[\p{N}-a]"), so the token immediately before the "-" is a class or
+# property escape and Go's own class-range rule refuses to start a range
+# there, falling back to reading the "-" literally. "\W" and "\S" are
+# different: classNeedsAlternation LIFTS them out of the class entirely
+# (see the "[a\W-c]"/"[0\W-9]" entries below), so nothing at all precedes
+# the "-" in the rebuilt class — the dash is safe there only because
+# dashesAdjacentToDroppedShorthand (classBodyWithout's own fix) escapes it,
+# not because of Go's class-range rule. Neither Python's re nor the
 # reference accepts ANY of the six: both raise "bad character range" /
 # "regex parse error" on all of them, without exception. RFC 0006 defines
 # the accepted dialect as the two engines' intersection and states no
@@ -790,8 +784,8 @@ list[string] | string | nulltype :: re_search('0', r'[0\W-9]')
 # \w's case is not fixed by the same code path as the other five: its
 # expansion is a UNION ending in a bare literal character ("_"), unlike \d,
 # \D and \s (whose expansions end in a class or property) and \W/\S (which
-# go through classBodyWithout's own dash-escaping fix instead — see
-# corpus.txt's "[a\W-c]" cases). sqi used to translate "[\w-a]" into
+# go through classBodyWithout's own dash-escaping fix instead — see the
+# "[a\W-c]"/"[0\W-9]" entries below). sqi used to translate "[\w-a]" into
 # "[\p{L}\p{N}_-a]", where Go reads "_-a" as the RANGE U+005F..U+0061 —
 # silently matching the backtick, which is neither a word character nor "a"
 # under any reading of the source (an earlier code-review finding, fixed by
@@ -810,6 +804,23 @@ list[string] | string | nulltype :: re_search('`', r'[\w-a]')
 # [\w-a] on a word character alongside the extra literal member: sqi matches
 # 'a', the reference refuses to parse the pattern at all.
 list[string] | string | nulltype :: re_search('a', r'[\w-a]')
+
+# [a\W-c] no longer matches "b": sqi returns null (no match, "b" is in none
+# of the union's four members), the reference refuses to parse the pattern
+# at all.
+list[string] | string | nulltype :: re_search('b', r'[a\W-c]')
+
+# [a\W-c] on the ordinary member the class always meant to hold: sqi matches
+# 'a', the reference refuses to parse the pattern at all.
+list[string] | string | nulltype :: re_search('a', r'[a\W-c]')
+
+# [0\W-9] no longer matches "5": same divergence as the [a\W-c] entry above,
+# with digits either side of the dropped shorthand instead of letters.
+list[string] | string | nulltype :: re_search('5', r'[0\W-9]')
+
+# [0\W-9] on the ordinary member the class always meant to hold: sqi
+# matches '0', the reference refuses to parse the pattern at all.
+list[string] | string | nulltype :: re_search('0', r'[0\W-9]')
 
 # ── sqi is right: repr_sh follows shlex.quote, not the reference's own mix ───
 #
