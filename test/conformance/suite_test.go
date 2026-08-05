@@ -410,3 +410,70 @@ func TestConformance_C2ProtectedFixtures(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_C3ProtectedFixtures asserts by NAME that the fixtures
+// sub-project C3 puts at risk still pass.
+//
+// All sixteen are .invalid and all sixteen pass TODAY for the wrong reason: the
+// regex function they call is not registered, so the expression fails with
+// "unknown function" and the template is rejected. C3 registers all six regex
+// functions, which removes that accidental rejection — each fixture must then
+// be rejected by the pattern scanner (repattern.go) or by re_sub's replacement
+// check instead.
+//
+// This is the scanner's real acceptance test: it maps every construct RFC 0006
+// excludes onto a fixture that must refuse it. The aggregate score cannot see
+// the difference, which is why the names are written out.
+func TestConformance_C3ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// Constructs Go rejects natively, but which the scanner refuses first
+		// so the diagnostic names the construct the spec names.
+		"EXPR/job_templates/expr2.2.5--re-backreference.invalid.yaml": "backreferences are not supported",
+		"EXPR/job_templates/expr2.2.5--re-lookahead.invalid.yaml":     "lookahead is not supported",
+		"EXPR/job_templates/expr2.2.5--re-lookbehind.invalid.yaml":    "lookbehind is not supported",
+		"EXPR/job_templates/expr2.2.5--re-named-backref.invalid.yaml": "named backreferences are not supported",
+		// Anchors Go would otherwise accept (\z) or reject with its own
+		// wording (\Z).
+		"EXPR/job_templates/expr2.2.5--re-backslash-lower-z.invalid.yaml": `\z is not in the Python/Rust intersection`,
+		"EXPR/job_templates/expr2.2.5--re-backslash-upper-Z.invalid.yaml": `\Z is not in the Python/Rust intersection`,
+		// The empty-pattern rule, stated once in RFC 0006 and tested four ways.
+		"EXPR/job_templates/expr2.2.5--re-search-empty-pattern.invalid.yaml":         "re_search rejects an empty pattern",
+		"EXPR/job_templates/expr2.2.5--re-split-empty-pattern.invalid.yaml":          "re_split rejects an empty pattern",
+		"EXPR/job_templates/expr2.2.5--re-split-maxsplit-empty-pattern.invalid.yaml": "re_split with maxsplit rejects an empty pattern",
+		"EXPR/job_templates/expr2.2.5--re-sub-empty-pattern.invalid.yaml":            "re_sub rejects an empty pattern",
+		// Patterns that are malformed in any dialect.
+		"EXPR/job_templates/expr2.2.5--re-split-invalid-pattern.invalid.yaml":          "re_split rejects an unparseable pattern",
+		"EXPR/job_templates/expr2.2.5--re-split-maxsplit-invalid-pattern.invalid.yaml": "re_split with maxsplit rejects an unparseable pattern",
+		// re_sub's replacement is literal text; all four group-reference
+		// spellings are errors.
+		"EXPR/job_templates/expr2.2.5--re-sub-group-ref.invalid.yaml":              `re_sub rejects \1`,
+		"EXPR/job_templates/expr2.2.5--re-sub-named-group-ref.invalid.yaml":        `re_sub rejects \g<1>`,
+		"EXPR/job_templates/expr2.2.5--re-sub-dollar-group-ref.invalid.yaml":       "re_sub rejects $1",
+		"EXPR/job_templates/expr2.2.5--re-sub-dollar-brace-group-ref.invalid.yaml": "re_sub rejects ${1}",
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = conformance.RunExprCase(tc, data)
+	}
+
+	for path, why := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected because %s.", path, why)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (%s): %s", path, why, res.Reason)
+			}
+		})
+	}
+}

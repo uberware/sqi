@@ -104,7 +104,6 @@ EXPR/job_templates/2.16--list-list-int-too-short.invalid.yaml
 EXPR/job_templates/2.9--bool-param-float-invalid.invalid.yaml
 EXPR/job_templates/2.9--bool-param-int-invalid.invalid.yaml
 EXPR/job_templates/2.9--bool-param-string-invalid.invalid.yaml
-EXPR/job_templates/3.6--let-bindings.yaml
 EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
 EXPR/job_templates/3.6--let-empty-list.invalid.yaml
 EXPR/job_templates/3.6--let-host-context-symbols.yaml
