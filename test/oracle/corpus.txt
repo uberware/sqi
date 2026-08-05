@@ -752,6 +752,29 @@ string | list[string] | nulltype	join(re_search('-', r'[\w-]'), '|')
 string | list[string] | nulltype	join(re_search('-', r'[\w\-a]'), '|')
 string | list[string] | nulltype	join(re_search('b', r'[\wa-c]'), '|')
 
+# Constructs sqi accepts and BOTH Python's re and the reference refuse to
+# parse: the same shape as \w above, but for \W/\S once scanClass has lifted
+# them into an alternation. Dropping the lifted shorthand from a positive
+# class used to SPLICE its former neighbours into a character range the
+# source never wrote — "[a\W-c]" translated to a Go range a..c that silently
+# MATCHED "b", and "[0\W-9]" matched "5" the same way, even though neither
+# character is in any reading of the source (code-review finding). The fix
+# escapes the "-" that becomes newly adjacent once the shorthand between it
+# and its other neighbour is dropped, so the class reads as the union the
+# source text implies — {not-a-word-char} ∪ {a} ∪ {-} ∪ {c} — instead.
+list[string] | string | nulltype	re_search('b', r'[a\W-c]')
+list[string] | string | nulltype	re_search('a', r'[a\W-c]')
+list[string] | string | nulltype	re_search('5', r'[0\W-9]')
+list[string] | string | nulltype	re_search('0', r'[0\W-9]')
+
+# Rendering-immune companions for \W/\S next to a dash in positions where sqi
+# and the reference already agree (a trailing dash, legal in both engines,
+# and a class with no dash at all): wrapped in join() so the pre-existing
+# list-of-strings rendering gap above cannot mask them.
+string | list[string] | nulltype	join(re_search('-', r'[\W-]'), '|')
+string | list[string] | nulltype	join(re_search('-', r'[a\W-]'), '|')
+string | list[string] | nulltype	join(re_search('c', r'[a\Wc]'), '|')
+
 # ── C3: shell quoting (spec section 2.2.6) ───────────────────────────────────
 string	repr_sh('hello')
 string	repr_sh('a/b_c-d.e')

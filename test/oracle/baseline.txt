@@ -670,25 +670,37 @@ list[string] | string | nulltype :: re_search('3', r'\p{Nd}')
 list[string] | string | nulltype :: re_search('ab', r'(?<n>a)b')
 
 # Intersection-rule refusal: [[:alpha:]] POSIX character classes are not in
-# the Python/Rust intersection; sqi rejects, the reference matches (reading it
-# as a literal class over ':', 'a', 'l', 'p', 'h'). See the shared explanation
-# above.
+# the Python/Rust intersection; sqi rejects. The reference matches, but NOT
+# because it reads "[:alpha:]" literally: it is Rust, and Rust's regex crate
+# implements REAL POSIX bracket expressions, so [[:alpha:]] is the class of
+# alphabetic characters and 'a' is a member of it. Python's re has no
+# POSIX-class support at all and instead reads "[:...:]" as ordinary literal
+# characters — the two engines disagree on what the construct MEANS, not
+# merely on whether it compiles, which is exactly why it sits outside the
+# intersection. See the shared explanation above.
 list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
 
 # Intersection-rule refusal, negated form: [^[:alpha:]] is the idiomatic
 # spelling, not a corner case, and a POSITIONAL check used to miss it (only
 # "[[:" at the very start was caught). sqi now rejects it wherever "[:...:]"
-# appears in the class; the reference reads it the same literal way as
-# [[:alpha:]] above — negated, over the same set {':','a','l','p','h'} — so
-# 'a' IS a member and the negation excludes it: null (no match), not an
-# error. See the shared explanation above.
+# appears in the class. The reference applies the REAL negated POSIX class —
+# not-alphabetic, per the shared explanation above — so 'a' (which IS
+# alphabetic) is excluded: null (no match), not an error. Measured directly on
+# a string the two mechanisms actually distinguish: re_search(':',
+# r'[^[:alpha:]]') returns [':'] from the reference, which only a genuine
+# negated POSIX class makes possible.
 list[string] | string | nulltype :: re_search('a', r'[^[:alpha:]]')
 
 # Intersection-rule refusal, POSIX class not the first member: same
 # positional-check gap as the negated form above, the other spelling that
-# used to sail through untranslated. The reference again reads it literally —
-# a positive class over {'a',':','l','p','h'} — so 'a' matches. See the
-# shared explanation above.
+# used to sail through untranslated. The reference matches because it applies
+# the REAL POSIX class again — the class is 'a' unioned with alphabetic, and
+# 'a' is a member of both. It is NOT a literal reading: under a literal
+# reading of "[a[:alpha:]]", 'a' alone does not match at all — verified
+# directly against Python, which returns None here — because Python's own
+# bracket-nesting rule closes the class at the FIRST "]", leaving a second,
+# literal "]" the pattern also requires, so no 1-character string can ever
+# satisfy it. See the shared explanation above.
 list[string] | string | nulltype :: re_search('a', r'[a[:alpha:]]')
 
 # ── sqi is right: [^\Wa] asks for set subtraction RE2 cannot express ─────────
@@ -707,34 +719,96 @@ list[string] | string | nulltype :: re_search('a', r'[a[:alpha:]]')
 # no match. See the shared explanation above.
 list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 
-# ── sqi is right: \w next to a dash no longer forms an accidental range ──────
+# ── sqi is right: \W/\S next to a dash no longer forms an accidental range ───
 #
-# \w's expansion is a UNION ending in a bare literal character ("_"), unlike
-# \d, \D and \s, whose expansions end in a class or property. sqi used to
-# translate "[\w-a]" into "[\p{L}\p{N}_-a]", where Go reads "_-a" as the
-# RANGE U+005F..U+0061 — silently matching the backtick, which is neither a
-# word character nor "a" under any reading of the source (code-review
-# finding, fixed by moving "_" to the middle of the set, between the two
-# \p{...} escapes, so it can never abut source text on either side).
+# \W and \S are the two shorthands scanClass must LIFT out of a positive
+# class into an alternation branch, because Go cannot union a negated set
+# with more members (classNeedsAlternation's own doc). Doing so DROPS the
+# shorthand's bytes from the class body (classBodyWithout), and dropping it
+# SPLICES its two former neighbours together — if one of them was a literal
+# "-", the splice could form a character RANGE the source never wrote.
+# "[a\W-c]" used to translate to "(?:[^\p{L}_\p{N}]|[a-c])", where Go reads
+# "a-c" as the range a..c and silently MATCHES "b"; "[0\W-9]" matched "5" the
+# same way. Neither character is a member under ANY reading of the source —
+# the source's own "-" sat between "\W" and "c" (or "0" and "9"), never
+# between the two literals that ended up flanking the range (code-review
+# finding). This is the same defect SHAPE escapeLeadingCaret already guards
+# on this same rebuilt class, for "^" instead of a range: dropping the
+# shorthand can promote an adjacent metacharacter into a new, unintended
+# meaning.
 #
-# Neither Python's re nor the reference will parse this shape at all: Python
-# raises "bad character range \w-a", the reference "regex parse error:
-# invalid range boundary, must be a literal". sqi's fix does not reproduce
-# that refusal — it makes \w's own set-membership immune to what follows it,
-# so "[\w-a]" compiles and matches exactly the union its text implies (a word
-# character, or "-", or "a"), which is a well-defined reading neither
-# reference engine offers, not a guess. RFC 0006 defines the dialect only as
-# the two engines' intersection and says nothing about this specific
-# adjacency, so there is no spec text this contradicts; not fixing this at
-# all would leave a construct that compiles and matches WRONG, which is worse
-# than a sound reading the intersection is merely silent on.
+# The fix (classBodyWithout's own doc, via dashesAdjacentToDroppedShorthand)
+# escapes any "-" that sat immediately next to a dropped occurrence, so the
+# class reads as sqi's own permissive union instead — for "[a\W-c]":
+# {not-a-word-char} ∪ {a} ∪ {-} ∪ {c}, which does NOT contain "b". Neither
+# Python's re nor the reference will parse "[a\W-c]" or "[0\W-9]" at all —
+# both raise "bad character range" / "regex parse error" — so this sits in
+# the same family as the \w-adjacent-dash entries below: sqi's fix does not
+# reproduce that refusal, it makes the splice safe instead, which is a
+# well-defined reading neither reference engine offers, not a guess.
 #
-# [\w-a] compiles as \w's set unioned with "-" and "a": sqi returns the
-# match, the reference refuses to parse the pattern at all.
+# [a\W-c] no longer matches "b": sqi returns null (no match, "b" is in none
+# of the union's four members), the reference refuses to parse the pattern
+# at all.
+list[string] | string | nulltype :: re_search('b', r'[a\W-c]')
+
+# [a\W-c] on the ordinary member the class always meant to hold: sqi matches
+# 'a', the reference refuses to parse the pattern at all.
+list[string] | string | nulltype :: re_search('a', r'[a\W-c]')
+
+# [0\W-9] no longer matches "5": same divergence as the [a\W-c] entry above,
+# with digits either side of the dropped shorthand instead of letters.
+list[string] | string | nulltype :: re_search('5', r'[0\W-9]')
+
+# [0\W-9] on the ordinary member the class always meant to hold: sqi
+# matches '0', the reference refuses to parse the pattern at all.
+list[string] | string | nulltype :: re_search('0', r'[0\W-9]')
+
+# ── sqi under-enforces the intersection: a shorthand adjacent to "-" ─────────
+#
+# This is NOT an affirmative ruling in sqi's favour, unlike the headings
+# above and below it — a future reader must not take the question as
+# settled. It is an unenforced corner of the intersection rule, shared by
+# every one of the six Unicode shorthands (\d, \D, \s, \S, \w, \W), of which
+# only \w happens to be corpused in full.
+#
+# Measured directly: sqi already ACCEPTS "[\d-a]", "[\D-a]", "[\s-a]",
+# "[\S-a]", "[\W-a]" and "[\w-a]", every one of them with plain union
+# semantics (the shorthand's own set, plus a literal "-", plus a literal
+# "a") — none of the six forms an accidental range, because in every case
+# the token immediately before the "-" is a class or property escape, not a
+# bare literal, so Go's own class-range rule refuses to start a range there
+# and falls back to reading the "-" literally. Neither Python's re nor the
+# reference accepts ANY of the six: both raise "bad character range" /
+# "regex parse error" on all of them, without exception. RFC 0006 defines
+# the accepted dialect as the two engines' intersection and states no
+# adjacency rule at all, so sqi accepting a shape neither engine of that
+# intersection accepts is a gap in the RULE's enforcement, not a sound
+# reading the rule is merely silent on — the two are different claims, and
+# only the first is true here.
+#
+# \w's case is not fixed by the same code path as the other five: its
+# expansion is a UNION ending in a bare literal character ("_"), unlike \d,
+# \D and \s (whose expansions end in a class or property) and \W/\S (which
+# go through classBodyWithout's own dash-escaping fix instead — see
+# corpus.txt's "[a\W-c]" cases). sqi used to translate "[\w-a]" into
+# "[\p{L}\p{N}_-a]", where Go reads "_-a" as the RANGE U+005F..U+0061 —
+# silently matching the backtick, which is neither a word character nor "a"
+# under any reading of the source (an earlier code-review finding, fixed by
+# moving "_" to the middle of the set, between the two \p{...} escapes, so
+# it can never abut source text on either side). That fix stopped the
+# silent wrong match; it did not, and was never meant to, make sqi refuse
+# the shape the way Python and the reference do. Closing the family — for
+# all six shorthands, refusing a bare "-" immediately adjacent to any of
+# them — is deferred to a later sub-project.
+#
+# [\w-a] compiles as \w's set unioned with "-" and "a": sqi returns null (no
+# match) for the backtick, which is in none of those three members; the
+# reference refuses to parse the pattern at all.
 list[string] | string | nulltype :: re_search('`', r'[\w-a]')
 
-# [\w-a] on a word character alongside the extra literal member: same
-# divergence as the entry above, from the other side of the union.
+# [\w-a] on a word character alongside the extra literal member: sqi matches
+# 'a', the reference refuses to parse the pattern at all.
 list[string] | string | nulltype :: re_search('a', r'[\w-a]')
 
 # ── sqi is right: repr_sh follows shlex.quote, not the reference's own mix ───
