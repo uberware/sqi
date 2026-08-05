@@ -645,3 +645,135 @@ string | int :: center('ab', -3)
 
 # Negative width, zfill direction: see the shared explanation above.
 string | int :: zfill('ab', -3)
+
+# ── sqi is right: the intersection rule rejects what one engine alone accepts ─
+#
+# RFC 0006 states the accepted regular-expression syntax is the INTERSECTION of
+# Python's `re` and Rust's `regex`, then gives explicit not-supported lists. The
+# reference enforces only those lists, so it accepts constructs that Python's
+# `re` rejects outright or reads differently. Python's `re` rejects `\p{...}`
+# Unicode property escapes and the `(?<name>...)` named-group spelling outright
+# (Python spells named groups `(?P<name>...)`), and it reads `[[:alpha:]]` as a
+# literal character class matching `:`, `a`, `l`, `p`, `h` — a different pattern
+# matching different strings, with no error on either engine. sqi enforces the
+# rule and rejects all three, so a template that validates under sqi validates
+# on a Python-based implementation too, which is the stated purpose of
+# specifying an intersection.
+
+# Intersection-rule refusal: \p{...} Unicode property escapes are Rust-only;
+# sqi rejects, the reference matches. See the shared explanation above.
+list[string] | string | nulltype :: re_search('3', r'\p{Nd}')
+
+# Intersection-rule refusal: the (?<name>...) named-group spelling is Rust-only
+# (Python spells it (?P<name>...)); sqi rejects, the reference matches. See the
+# shared explanation above.
+list[string] | string | nulltype :: re_search('ab', r'(?<n>a)b')
+
+# Intersection-rule refusal: [[:alpha:]] POSIX character classes are not in
+# the Python/Rust intersection; sqi rejects, the reference matches (reading it
+# as a literal class over ':', 'a', 'l', 'p', 'h'). See the shared explanation
+# above.
+list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
+
+# ── sqi is right: [^\Wa] asks for set subtraction RE2 cannot express ─────────
+#
+# A negated class containing \W alongside an ordinary character reads as "word
+# characters MINUS 'a'" — set subtraction, which RE2 (and therefore Go's
+# regexp package) has no operator for. sqi rejects it with a message naming the
+# construct; the reference's RE2-backed engine has the identical limitation but
+# resolves it by treating the whole class as never matching rather than
+# refusing to compile, so it returns null (no match) for a pattern that is not
+# well-formed in the dialect at all. This is a stated compliance gap, narrowed
+# during design from "any bracket" to negated brackets only — [\Wa] (no
+# negation) is rewritten as an alternation and works.
+
+# [^\Wa] set-subtraction refusal: sqi rejects, the reference silently reports
+# no match. See the shared explanation above.
+list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
+
+# ── sqi is right: repr_sh follows shlex.quote, not the reference's own mix ───
+#
+# RFC 0006 says repr_sh "follows the behavior of Python's shlex.quote". It does
+# here: shlex.quote wraps a string containing a single quote in single quotes
+# and escapes each embedded single quote as '"'"' (close the quote, emit a
+# literal single quote inside double quotes, reopen the quote). The reference
+# produces different text — a strategy splicing double- and single-quoted
+# segments together. That output is shell-equivalent and safe; it is simply
+# not the named algorithm.
+
+# repr_sh quoting: sqi gives 'it'"'"'s' (shlex.quote's algorithm), the
+# reference gives "it's" (a different, but shell-safe, quoting strategy). See
+# the shared explanation above.
+string :: repr_sh("it's")
+
+# ── sqi is right: repr_py follows Python's repr, not the reference's escape ──
+#
+# RFC 0006 says repr_py "follows the behavior of" Python's repr(). Python's
+# repr() prefers a single-quoted string and switches to double quotes when the
+# string contains a single quote and no double quote, giving "it's" with no
+# escaping needed. The reference instead always single-quotes and escapes the
+# embedded quote, giving 'it\'s' — valid Python, but not what repr() itself
+# produces for this input.
+
+# repr_py quoting: sqi gives "it's" (Python repr()'s own quote-switching
+# rule), the reference gives 'it\'s' (escape instead of switching). See the
+# shared explanation above.
+string :: repr_py("it's")
+
+# ── known gap in sqi: list-of-strings rendering, C3 regex functions ─────────
+#
+# The pre-existing gap already baselined above for list literals, coercion,
+# comprehensions, flatten(), sorted(), unique() and C2's split()/rsplit(): sqi
+# prints list[string] elements unquoted, the reference JSON-quotes them. Both
+# sides agree on the actual values, the order, and the list[string] (or
+# list[list[string]]) type in every case below — re_search(), re_match(),
+# re_findall() and re_split() are simply the first C3 functions to return a
+# list of strings. Not a new gap, and not evidence the regex semantics
+# themselves disagree: the rendering-immune companions in corpus.txt that wrap
+# these same calls in len(...) or join(..., '|') return an int or a plain
+# string and agree with the reference exactly, which is what actually verifies
+# the underlying matching, grouping and splitting.
+
+# List-of-strings rendering, via re_search() with one capture group: see the
+# explanation above. Same gap, not a new one.
+list[string] | string | nulltype :: re_search('asset_v042_final.abc', '_v(\d+)')
+
+# List-of-strings rendering, via re_search() with no capture groups (the whole
+# match is the sole element): see the explanation above. Same gap, not a new
+# one.
+list[string] | string | nulltype :: re_search('hello123', '\d+')
+
+# List-of-strings rendering, via re_search() matching a non-ASCII Unicode
+# digit: see the explanation above. Same gap, not a new one.
+list[string] | string | nulltype :: re_search('٣', '\d')
+
+# List-of-strings rendering, via re_search() with two capture groups: see the
+# explanation above. Same gap, not a new one.
+list[string] | string | nulltype :: re_search('shot010_v003', 'shot(\d+)_v(\d+)')
+
+# List-of-strings rendering, via re_match() anchored at the start with a
+# capture group: see the explanation above. Same gap, not a new one.
+list[string] | string | nulltype :: re_match('v042_final', 'v(\d+)')
+
+# List-of-strings rendering, via re_findall() with one capture group per match
+# (findall returns the group, not the whole match): see the explanation above.
+# Same gap, not a new one.
+list[string] | string :: re_findall('shot010_shot020_shot035', 'shot(\d+)')
+
+# List-of-strings rendering, via re_findall() with no capture groups (findall
+# returns the whole match per element): see the explanation above. Same gap,
+# not a new one.
+list[string] | string :: re_findall('shot010_shot020_shot035', 'shot\d+')
+
+# List-of-strings rendering, via re_findall() with two capture groups per
+# match (each element is itself a list[string]): see the explanation above.
+# Same gap, not a new one.
+list[list[string]] | list[string] | string :: re_findall('v1.2 and v4.5', 'v(\d+)\.(\d+)')
+
+# List-of-strings rendering, via re_split() with no maxsplit: see the
+# explanation above. Same gap, not a new one.
+list[string] | string :: re_split('a1b2c', '\d')
+
+# List-of-strings rendering, via re_split() with maxsplit=1: see the
+# explanation above. Same gap, not a new one.
+list[string] | string | int :: re_split('a1b2c', '\d', 1)

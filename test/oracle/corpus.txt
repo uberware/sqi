@@ -9,13 +9,13 @@
 # separator because every other candidate appears inside real cases: spaces are
 # everywhere, and "|" is a union in the target type ("int | string").
 #
-# SCOPE: expressions that sub-projects A, B1, B2, B3, C1 and C2 actually
+# SCOPE: expressions that sub-projects A, B1, B2, B3, C1, C2 and C3 actually
 # implement — scalar operators, the coercion matrix, comparison chains,
 # conditionals, and/or, list literals and their type inference, list
 # operators, subscripts, slices, list comprehensions, C1's general,
-# validation, math and list functions, and C2's 31 string functions. The
-# regular-expression, repr_* and path families are sub-projects C3 and C4 and
-# are not here yet.
+# validation, math and list functions, C2's 31 string functions, and C3's
+# regular-expression and repr_* families. The path family is sub-project C4
+# and is not here yet.
 #
 # TARGET TYPES MUST BE UNIONS FOR ANY CASE CONTAINING A CALL, A SUBSCRIPT OR A
 # SLICE, and this is not a style preference. The reference implementation
@@ -673,3 +673,104 @@ string | float | int	zfill(2.0, 6)
 string | int	'42'.zfill(5)
 string | int	(42).zfill(5)
 string | int	ljust('a', 100000000)
+
+# ── C3: regular expressions (spec section 2.2.5) ─────────────────────────────
+list[string] | string | nulltype	re_search('asset_v042_final.abc', '_v(\d+)')
+list[string] | string | nulltype	re_search('hello123', '\d+')
+list[string] | string | nulltype	re_search('abc', 'z')
+list[string] | string | nulltype	re_search('٣', '\d')
+list[string] | string | nulltype	re_search('shot010_v003', 'shot(\d+)_v(\d+)')
+list[string] | string | nulltype	re_match('v042_final', 'v(\d+)')
+list[string] | string | nulltype	re_match('asset_v042', 'v(\d+)')
+list[string] | string	re_findall('shot010_shot020_shot035', 'shot(\d+)')
+list[string] | string	re_findall('shot010_shot020_shot035', 'shot\d+')
+list[list[string]] | list[string] | string	re_findall('v1.2 and v4.5', 'v(\d+)\.(\d+)')
+string	re_sub('frame_001', '\d+', '002')
+string	re_sub('abc', '\d', 'x')
+string	re_escape('file[1].txt')
+string	re_escape('a.b*c')
+list[string] | string	re_split('a1b2c', '\d')
+list[string] | string | int	re_split('a1b2c', '\d', 1)
+
+# Rendering-immune companions. Every case above that returns list[string] hits
+# the pre-existing list-of-strings rendering gap and is baselined for it, which
+# would leave the regex semantics untested. These return an int or a plain
+# string, so the gap cannot mask them.
+int | list[string] | string	len(re_findall('shot010_shot020_shot035', 'shot(\d+)'))
+int | list[string] | string	len(re_findall('abc', '\d'))
+int | list[string] | string	len(re_split('a1b2c', '\d'))
+string | list[string]	join(re_findall('shot010_shot020', 'shot(\d+)'), '|')
+string | list[string]	join(re_split('a1b2c', '\d'), '|')
+string | list[string] | int	join(re_split('a1b2c', '\d', 1), '|')
+string | list[string] | nulltype	join(re_search('asset_v042', '_v(\d+)'), '|')
+
+# Patterns the scanner refuses. Both sides error on most of these, and agree()
+# treats two failures as agreement without comparing messages.
+list[string] | string | nulltype	re_search('abc', '')
+list[string] | string | nulltype	re_search('hello', r'llo\z')
+list[string] | string | nulltype	re_search('foobar', r'foo(?=bar)')
+list[string] | string | nulltype	re_search('foobar', r'(?<=foo)bar')
+list[string] | string | nulltype	re_search('abc', r'(?P<n>a)(?P=n)')
+list[string] | string	re_split('hello', '')
+string	re_sub('hello', '', 'x')
+string	re_sub('frame_001', '\d+', '$1')
+string	re_sub('frame_001', '\d+', r'\1')
+string	re_sub('frame_001', '\d+', r'\g<1>')
+
+# Constructs sqi refuses under the intersection RULE and the reference accepts.
+list[string] | string | nulltype	re_search('3', r'\p{Nd}')
+list[string] | string | nulltype	re_search('ab', r'(?<n>a)b')
+list[string] | string | nulltype	re_search('a', r'[[:alpha:]]')
+list[string] | string | nulltype	re_search('aa', r'(a)\1')
+list[string] | string | nulltype	re_search('a!', r'[^\Wa]')
+
+# ── C3: shell quoting (spec section 2.2.6) ───────────────────────────────────
+string	repr_sh('hello')
+string	repr_sh('a/b_c-d.e')
+string	repr_sh('')
+string	repr_sh('hello world')
+string	repr_sh('plain $HOME')
+string	repr_sh('a;b')
+string	repr_sh("it's")
+string	repr_sh('café')
+string | list[string]	repr_sh(['echo', 'hello world'])
+string	repr_cmd('hello')
+string	repr_cmd('a & b')
+string	repr_cmd('a ^ b')
+string	repr_cmd('100%')
+string	repr_cmd('hello!')
+string | list[string]	repr_cmd(['echo', 'hello & world'])
+string	repr_pwsh('hello')
+string | int	repr_pwsh(42)
+string | int	repr_pwsh(-1)
+string | float	repr_pwsh(1.5)
+string | bool	repr_pwsh(true)
+string | bool	repr_pwsh(false)
+string | list[string]	repr_pwsh(['a', 'b'])
+string | list[int]	repr_pwsh([1, 2])
+
+# ── C3: serialization (spec section 2.2.6) ───────────────────────────────────
+string	repr_py('abc')
+string	repr_py("it's")
+string	repr_py('café')
+string | nulltype	repr_py(null)
+string | bool	repr_py(true)
+string | bool	repr_py(false)
+string | int	repr_py(42)
+string | float	repr_py(1.5)
+string | float	repr_py(1.0)
+string | list[string]	repr_py(['a', 'b'])
+string | list[int]	repr_py([1, 2])
+string	repr_json('abc')
+string	repr_json('café')
+string	repr_json('a<b>c&d')
+string | nulltype	repr_json(null)
+string | bool	repr_json(true)
+string | int	repr_json(42)
+string | float	repr_json(1.5)
+string | list[string]	repr_json(['a', 'b'])
+string | list[int]	repr_json([1, 2])
+
+# The C1 defect Task 8 fixed: Go's json.Marshal HTML-escapes these, nothing
+# else does. This case would have caught it.
+string | list[string]	string(['a<b>c&d'])
