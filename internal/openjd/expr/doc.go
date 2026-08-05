@@ -169,32 +169,41 @@
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
 //     unsupported syntax — and the registry they resolve through,
 //     functionShapes (funcs.go, assembled by its own mergeFuncs), now holds
-//     53 entries: sub-project C1's four groups — general conversions (len,
+//     64 entries: sub-project C1's four groups — general conversions (len,
 //     bool, string, int, float, list, range_expr — funcsconv.go), validation
 //     (fail, the same file, its own RFC 0006 category despite living beside
 //     the conversions in one Go source file), math (abs, min, max, sum,
 //     floor, ceil, round — funcsmath.go), and list functions (range, flatten,
-//     sorted, reversed, unique, any, all — funcslist.go) — and sub-project
-//     C2's string library, across four files: case transforms and
-//     classification (upper, lower, capitalize, title, isdigit, isalpha,
-//     isalnum, isspace, isupper, islower, isascii — funcsstrcase.go), trim,
-//     affix and search/replace (strip, lstrip, rstrip, removeprefix,
-//     removesuffix, startswith, endswith, count, find, rfind, index, rindex,
-//     replace — funcsstrfind.go), split, rsplit and join (funcsstrsplit.go)
-//     and padding (ljust, rjust, center, zfill — funcsstrpad.go). Section
-//     2.2's roughly 100-function library is otherwise still unregistered:
-//     regular expressions and the repr_* family are C3's, and the path
-//     engine — every path property and function except apply_path_mapping,
-//     plus the section 2.1.5 path operators — is C4's. A call to any of
-//     those still fails at RUNTIME with "unknown function", a real
-//     diagnostic rather than a parse error — "re_match('shot(\d+)',
-//     'shot010')" reports `unknown function "re_match"`, not a syntax error,
-//     exactly as every name did before C1. (Not every call reaches the
-//     registry at all: a dunder callee like "__add__(1, 2)" is rejected
-//     before lookup with "is a specification naming convention and is not
-//     directly callable", and a callee whose whole dotted name resolves to a
-//     symbol — "Param.Name()" when Param.Name is bound — fails "Param.Name is
-//     not a function".)
+//     sorted, reversed, unique, any, all — funcslist.go) — sub-project C2's
+//     string library, across four files: case transforms and classification
+//     (upper, lower, capitalize, title, isdigit, isalpha, isalnum, isspace,
+//     isupper, islower, isascii — funcsstrcase.go), trim, affix and
+//     search/replace (strip, lstrip, rstrip, removeprefix, removesuffix,
+//     startswith, endswith, count, find, rfind, index, rindex, replace —
+//     funcsstrfind.go), split, rsplit and join (funcsstrsplit.go) and padding
+//     (ljust, rjust, center, zfill — funcsstrpad.go) — and, as of this wave,
+//     sub-project C3's two hard-grammar families across four more files:
+//     regular expressions (re_match, re_search, re_findall, re_sub,
+//     re_escape, re_split — funcsre.go, behind its own translated dialect in
+//     repattern.go — see the regex bullet below) and repr_* (repr_sh,
+//     repr_cmd, repr_pwsh — funcsreprshell.go — and repr_py, repr_json —
+//     funcsreprdata.go — see the repr_* bullet below). Section 2.2's roughly
+//     100-function library is otherwise still unregistered: the path engine —
+//     every path property and function except apply_path_mapping, plus the
+//     section 2.1.5 path operators — is C4's, the only group left. A call to
+//     any of those still fails at RUNTIME with "unknown function", a real
+//     diagnostic rather than a parse error — "with_suffix('/foo/bar.txt',
+//     '.png')" reports `unknown function "with_suffix"`, not a syntax error,
+//     exactly as every name did before C1. This example is deliberately a
+//     path function rather than a regex or repr_* one: this same worked
+//     example named re_match before C2 shipped and repr_* before C3 shipped,
+//     going stale each time a wave registered the very name it was pointing
+//     at — the path engine is the only family left for a future wave not to
+//     repeat that. (Not every call reaches the registry at all: a dunder
+//     callee like "__add__(1, 2)" is rejected before lookup with "is a
+//     specification naming convention and is not directly callable", and a
+//     callee whose whole dotted name resolves to a symbol — "Param.Name()"
+//     when Param.Name is bound — fails "Param.Name is not a function".)
 //
 //     THREE of C2's rulings look like bugs when tried by hand, and are not.
 //     RFC 0006 defines none of the three, so each is adjudicated here and
@@ -293,13 +302,91 @@
 //     its own — the caller's table is authoritative, exactly as it is for the
 //     comprehension shadowing check above — so a caller that binds both
 //     "a.b" and "a.b.c" gets "a.b.c" resolved to the SYMBOL rather than to a
-//     property "c" of "a.b". The rest of the ~100-function library (C3-C4)
-//     and the type-variable binding a call site needs are still to come; the
-//     type-variable codes (CodeVarT and friends) and the matcher's binding of
-//     them already live here in shape.go, and C1's own list[varT] rows —
-//     len(), bool(), string()'s list row, and flatten(), sorted(),
-//     reversed() and unique() from the list-function group — are the first
-//     functions to bind that variable for a genuinely polymorphic signature.
+//     property "c" of "a.b". The rest of the ~100-function library (C4, the
+//     path engine) and the type-variable binding a call site needs are still
+//     to come; the type-variable codes (CodeVarT and friends) and the
+//     matcher's binding of them already live here in shape.go, and C1's own
+//     list[varT] rows — len(), bool(), string()'s list row, and flatten(),
+//     sorted(), reversed() and unique() from the list-function group — are
+//     the first functions to bind that variable for a genuinely polymorphic
+//     signature.
+//
+//     FIVE of C3's rulings look like bugs when tried by hand, and are not.
+//     RFC 0006 defines none of them precisely enough to settle by reading
+//     alone, so each was verified directly against Go's regexp package,
+//     Python's re module and the reference implementation, and is recorded
+//     here and in test/oracle/baseline.txt where it diverges from the
+//     reference.
+//
+//     The accepted regex dialect is NARROWER than the reference's. RFC 0006
+//     defines the dialect as "the intersection of Python's re module and
+//     Rust's regex crate", and sqi enforces that STATED RULE rather than
+//     merely the spec's own explicit list of rejected constructs, so
+//     re_search('3', r'\p{Nd}'), re_search('ab', r'(?<n>a)b') and
+//     re_search('a', r'[[:alpha:]]') are all rejected — verified directly —
+//     even though the reference accepts all three. Checked against real
+//     Python's re module directly, not just against the spec text: it
+//     rejects \p{Nd} ("bad escape \p") and (?<n>a) ("unknown extension ?<n")
+//     outright, matching sqi, but it does not reject [[:alpha:]] at all — it
+//     reads the whole bracket expression LITERALLY, as a class holding the
+//     characters '[', ':', 'a', 'l', 'p', 'h' followed by a literal ']', so
+//     "a" alone does not match it and "a]" does. That is a different
+//     rejection from sqi's (sqi refuses to compile the pattern at all; Python
+//     compiles it into something that matches almost nothing anyone
+//     intended), which is exactly why RFC 0006 excludes POSIX classes from
+//     the intersection rather than leaving them to either engine's own
+//     reading.
+//
+//     \W and \S inside a NEGATED character class are rejected — a STATED
+//     COMPLIANCE GAP, not an oversight: re_search('a!', r'[^\Wa]') errors
+//     with "\W inside a negated character class needs set subtraction, which
+//     Go's engine cannot express", verified directly, because "not a word
+//     character, minus 'a'" is set subtraction and RE2 (which backs Go's
+//     regexp, and the reference's own engine) has no operator for it — the
+//     reference itself does not reject this pattern, but silently returns
+//     null (no match) for every input, which is not a well-formed reading of
+//     the dialect either; see test/oracle/baseline.txt. Inside a POSITIVE
+//     class the same shorthand works, by REWRITING the class into an
+//     alternation rather than emitting it in place — re_search('a!',
+//     r'[\Wa]') matches, verified directly — and a class may hold any number
+//     of \W/\S occurrences this way, each distinct shorthand becoming its own
+//     alternation branch (scanClass, classNeedsAlternation).
+//
+//     \d, \w and \s are UNICODE, not Go's ASCII-only defaults — every pattern
+//     is translated by translatePattern (repattern.go) before it ever reaches
+//     Go's engine, and that translation is what makes them Unicode: verified
+//     directly, re_search('٣', '\d') matches the Arabic-Indic digit ٣, which
+//     Go's own \d does not.
+//
+//     repr_sh and repr_py follow the PYTHON FUNCTIONS RFC 0006 names them
+//     after — shlex.quote and repr respectively — which produce different
+//     TEXT from the reference implementation for the same input, verified
+//     directly: repr_sh("it's") is 'it'"'"'s' here (shlex.quote's
+//     close-quote/literal-quote/reopen-quote splice) and "it's" there (a
+//     different, but shell-safe, quoting strategy); repr_py("it's") is
+//     "it's" here (Python repr()'s own quote-switching rule: prefer a single
+//     quote, switch to double when the string holds a single quote and no
+//     double) and 'it\'s' there (always single-quote, escape instead of
+//     switching). repr_sh's difference is TEXTUAL ONLY — both forms are
+//     shell-equivalent and safe, unlike a hypothetical quoting bug, which is
+//     why this file lives apart from the serialization functions next door
+//     (funcsreprshell.go's own comment). Both divergences are baselined in
+//     test/oracle/baseline.txt as the reference's own bug: RFC 0006 names the
+//     Python function, and sqi's output is what that function actually
+//     produces.
+//
+//     repr_json does NOT share writeJSONValue, string()'s list-rendering
+//     helper (funcsconv.go) — string(list) and repr_json genuinely differ on
+//     non-ASCII input, in the reference too, verified directly against both:
+//     string(['café']) is ["café"] (non-ASCII left literal, matching the
+//     reference exactly) while repr_json('café') is "caf\u00e9" (ASCII-only
+//     output with a generic four-hex-digit escape, matching Python's
+//     json.dumps default ensure_ascii behavior, which the reference also
+//     matches). RFC 0006 calls string()'s list row "the JSON string
+//     representation" with no ensure_ascii qualification and separately names
+//     repr_json after json.dumps, whose DEFAULT is ensure_ascii=True — two
+//     different specified behaviors landing in two different functions on
+//     purpose, not a missed opportunity to share code.
 //
 //   - flatten()'s row ORDER is load-bearing — listFuncs (funcslist.go) is the
 //     first table in the package where it is. "flatten([[1],[2]])" matches
@@ -501,7 +588,7 @@
 //     comparison.
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
-//     EXPR/job_templates group is 142/209 passing, 67 fixtures baselined
+//     EXPR/job_templates group is 143/209 passing, 66 fixtures baselined
 //     (make test-conformance), including the ten .invalid fixtures
 //     TestConformance_B3ProtectedFixtures asserts by name — a construct this
 //     comment describes as rejected, such as the comprehension shadowing
@@ -511,7 +598,7 @@
 //     REJECTING an invalid argument (an empty list or path into bool(), an
 //     unrecognized string into bool(), an empty list to min/max, an
 //     unrepresentable float-to-int, NaN and infinity into float(), an empty
-//     string or list into range_expr()) — and the seven
+//     string or list into range_expr()) — the seven
 //     TestConformance_C2ProtectedFixtures protects: sub-project C2's own
 //     string functions correctly REJECTING an invalid argument (an empty
 //     substring into count/find/replace, an empty separator into
@@ -520,30 +607,48 @@
 //     "unknown function" rejection those same fixtures used to pass under —
 //     each must be rejected by REAL argument validation instead, so that
 //     swap (one starting to pass for the wrong reason while another silently
-//     regresses) cannot hide inside an unchanged aggregate score either. The
-//     differential oracle test has 407/469 cases
-//     agreeing with the reference implementation, 62 baselined divergences
-//     (make test-expr-oracle) — up from B3's 135/169, then C1's 279/321 now
-//     that C1's 22 functions had their own corpus cases, and now C2's 31
-//     string functions have theirs too (test/oracle/corpus.txt), most of
-//     which agree outright; the baselined entries include the range_expr(string)
-//     canonicalization gap described above and one round() case: sqi returns
-//     int for round(x, ndigits) when ndigits <= 0, per RFC 0006's own signature
-//     table, while the reference returns a FLOAT — round(1234.5, -1) is
-//     "1230 : int" here and "1230.0 : float" there. The specification
-//     outranks the reference (it is Beta, 0.x, breaking changes permitted in
-//     minor bumps), so this is adjudicated as the reference's bug and recorded
-//     in test/oracle/baseline.txt, not fixed here to match it. Also included
-//     are the list-of-strings rendering gap (Value.String, not string())
-//     recurring through flatten, sorted and unique, split and rsplit, and
-//     two of C2's own rulings argued
-//     above — isalnum's composition (isalnum('٣')) and title's ASCII-only
-//     word boundary (title('²x y')) — while capitalize's ligature expansion
-//     is NOT baselined, since the reference agrees with it outright. Most
-//     baselined divergences are the reference's own bugs, adjudicated against
-//     the spec text and recorded one by one in test/oracle/baseline.txt —
-//     that file, not this comment, is the place to check any individual
-//     ruling.
+//     regresses) cannot hide inside an unchanged aggregate score either — and
+//     the sixteen TestConformance_C3ProtectedFixtures protects: sub-project
+//     C3's own regex scanner and re_sub replacement check correctly REJECTING
+//     an unsupported construct (an empty pattern, \z, lookahead, lookbehind, a
+//     named backreference, and re_sub's four group-reference spellings) for
+//     the RIGHT reason now — the pattern scanner or the replacement check,
+//     not "unknown function" — rather than merely failing to parse as before
+//     C3. C3 also CLEARED one fixture outright, 3.6--let-bindings.yaml, which
+//     needed only functions already registered by that point (len, sum,
+//     string, repr_py); its sibling 3.6--let-host-context-symbols.yaml stays
+//     baselined because it needs the "/" path operator, C4's. The
+//     differential oracle test has 473/551 cases agreeing with the reference
+//     implementation, 78 baselined divergences (make test-expr-oracle) — up
+//     from B3's 135/169, then C1's 279/321 now that C1's 22 functions had
+//     their own corpus cases, C2's 407/469 once its 31 string functions had
+//     theirs, and now C3's regex and repr_* functions have theirs too
+//     (test/oracle/corpus.txt), most of which agree outright; the baselined
+//     entries include the range_expr(string) canonicalization gap described
+//     above and one round() case: sqi returns int for round(x, ndigits) when
+//     ndigits <= 0, per RFC 0006's own signature table, while the reference
+//     returns a FLOAT — round(1234.5, -1) is "1230 : int" here and "1230.0 :
+//     float" there. The specification outranks the reference (it is Beta,
+//     0.x, breaking changes permitted in minor bumps), so this is adjudicated
+//     as the reference's bug and recorded in test/oracle/baseline.txt, not
+//     fixed here to match it. Also included are the list-of-strings rendering
+//     gap (Value.String, not string()) recurring through flatten, sorted and
+//     unique, split and rsplit, and now C3's own regex functions
+//     (re_search, re_match, re_findall, re_split all return list[string] or
+//     list[list[string]]); two of C2's own rulings argued above — isalnum's
+//     composition (isalnum('٣')) and title's ASCII-only word boundary
+//     (title('²x y')) — while capitalize's ligature expansion is NOT
+//     baselined, since the reference agrees with it outright; and three of
+//     C3's own rulings argued above — the intersection-rule refusals
+//     (\p{Nd}, (?<n>a), [[:alpha:]]), the [^\W...] set-subtraction gap, and
+//     repr_sh/repr_py's textual differences from the reference — while
+//     \d/\w/\s's Unicode semantics are NOT baselined, since they are exactly
+//     what the oracle is checking agreement on, and repr_json's non-ASCII
+//     escaping is NOT baselined either, since the reference matches it
+//     exactly. Most baselined divergences are the reference's own bugs,
+//     adjudicated against the spec text and recorded one by one in
+//     test/oracle/baseline.txt — that file, not this comment, is the place to
+//     check any individual ruling.
 //
 // Anything unimplemented FAILS rather than silently misbehaving, with one
 // deliberate exception: the escape sequences named above pass through
