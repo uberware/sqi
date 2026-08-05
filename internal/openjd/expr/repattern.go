@@ -18,6 +18,22 @@ var (
 	errUnsupportedRegex = errors.New("unsupported regular expression feature")
 )
 
+// unicodeSpaceSet is the CONTENTS of a character class matching Unicode's
+// White_Space property, which is what RFC 0006 means by \s.
+//
+// It is written out because \p{White_Space} does NOT work: Go's regexp
+// supports Unicode categories and scripts, not properties, and rejects that
+// escape outright — measured during design. \p{Zs} covers the space
+// separators; the rest of White_Space is the C0 controls U+0009-U+000D plus
+// U+0085, U+2028 and U+2029.
+//
+// TestUnicodeSpaceSet_MatchesWhiteSpace checks every member and three
+// non-members, so a drift from the real property fails loudly.
+const unicodeSpaceSet = `\t\n\v\f\r\x{0085}\x{2028}\x{2029}\p{Zs}`
+
+// unicodeWordSet is the same thing for \w: letters, numbers and underscore.
+const unicodeWordSet = `\p{L}\p{N}_`
+
 // translatePattern converts a pattern written in RFC 0006's dialect into an
 // equivalent pattern for Go's regexp package, or rejects it.
 //
@@ -94,15 +110,54 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegat
 		return 0, fmt.Errorf("%w: the pattern ends with a trailing backslash", errUnsupportedRegex)
 	}
 	c := pattern[i+1]
+	// Rejections must fire before any Unicode shorthand translation below —
+	// split out to keep scanEscape's own complexity under the repo's cap
+	// without disturbing that ordering.
+	if err := rejectUnsupportedEscape(pattern, i, c, inClass, classNegated); err != nil {
+		return 0, err
+	}
+	switch c {
+	// The Unicode shorthand rewrites. \d and \D map to a single negatable
+	// property, so one spelling works in both positions. \w and \s are UNIONS,
+	// so outside a class they need their own brackets and inside one they must
+	// contribute only their contents.
+	case 'd':
+		out.WriteString(`\p{Nd}`)
+	case 'D':
+		out.WriteString(`\P{Nd}`)
+	case 'w':
+		writeSetEscape(out, unicodeWordSet, inClass, false)
+	case 'W':
+		writeSetEscape(out, unicodeWordSet, inClass, true)
+	case 's':
+		writeSetEscape(out, unicodeSpaceSet, inClass, false)
+	case 'S':
+		writeSetEscape(out, unicodeSpaceSet, inClass, true)
+	default:
+		out.WriteByte('\\')
+		out.WriteByte(c)
+	}
+	return 1, nil
+}
+
+// rejectUnsupportedEscape reports the refusals that must fire before any
+// Unicode shorthand is translated: the anchors, property escapes,
+// backreferences, brace escapes and negated-shorthand-inside-a-class cases.
+// Extracted from scanEscape solely to keep that function's cyclomatic
+// complexity under the repo's cap (adding the six shorthand translation arms
+// pushed it back over, as it did once before for the same reason — see
+// negatedClassShorthandErr). Returns nil when c names no rejection, in which
+// case scanEscape's own switch decides what to do with it.
+func rejectUnsupportedEscape(pattern string, i int, c byte, inClass, classNegated bool) error {
 	switch {
 	case c == 'z' || c == 'Z':
-		return 0, fmt.Errorf(`%w: the end-of-string anchor \%c is not in the Python/Rust intersection; use $`, errUnsupportedRegex, c)
+		return fmt.Errorf(`%w: the end-of-string anchor \%c is not in the Python/Rust intersection; use $`, errUnsupportedRegex, c)
 	case c == 'p' || c == 'P':
-		return 0, fmt.Errorf(`%w: the Unicode property escape \%c{...} is Rust-only; Python's re rejects it`, errUnsupportedRegex, c)
+		return fmt.Errorf(`%w: the Unicode property escape \%c{...} is Rust-only; Python's re rejects it`, errUnsupportedRegex, c)
 	case c >= '1' && c <= '9':
-		return 0, fmt.Errorf(`%w: backreferences such as \%c are not supported`, errUnsupportedRegex, c)
+		return fmt.Errorf(`%w: backreferences such as \%c are not supported`, errUnsupportedRegex, c)
 	case (c == 'x' || c == 'u' || c == 'U') && strings.HasPrefix(pattern[i+2:], "{"):
-		return 0, fmt.Errorf(`%w: the brace escape \%c{...} is Rust-only; use \xHH, \uHHHH or \UHHHHHHHH`, errUnsupportedRegex, c)
+		return fmt.Errorf(`%w: the brace escape \%c{...} is Rust-only; use \xHH, \uHHHH or \UHHHHHHHH`, errUnsupportedRegex, c)
 	case (c == 'W' || c == 'S') && inClass:
 		// Reaching here means a NEGATED shorthand inside a class that
 		// scanClass did not lift into an alternation — either the class is
@@ -111,11 +166,35 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegat
 		// refusals. This must NOT fall through to writeSetEscape: that
 		// function cannot express a negated set as class contents, so it would
 		// emit the POSITIVE set and silently turn \S into \s.
-		return 0, negatedClassShorthandErr(c, classNegated)
+		return negatedClassShorthandErr(c, classNegated)
 	}
-	out.WriteByte('\\')
-	out.WriteByte(c)
-	return 1, nil
+	return nil
+}
+
+// writeSetEscape emits a union shorthand: bracketed when it stands alone, bare
+// contents when it is contributing to an enclosing class.
+//
+// A NEGATED set is only ever reached outside a class, and that is enforced by
+// the caller rather than assumed here: scanEscape refuses \W and \S inside any
+// class, and scanClass lifts the one permitted occurrence into an alternation
+// before the members are translated. The reason the invariant matters is that
+// there IS no way to write a negated set as class CONTENTS — so if this were
+// ever reached with inClass and negate both true it would emit the positive
+// set and silently invert the match. It panics instead.
+func writeSetEscape(out *strings.Builder, set string, inClass, negate bool) {
+	if inClass {
+		if negate {
+			panic("expr: negated shorthand reached writeSetEscape inside a class; scanEscape should have refused it")
+		}
+		out.WriteString(set)
+		return
+	}
+	out.WriteByte('[')
+	if negate {
+		out.WriteByte('^')
+	}
+	out.WriteString(set)
+	out.WriteByte(']')
 }
 
 // negatedClassShorthandErr explains why \W or \S cannot appear inside a
