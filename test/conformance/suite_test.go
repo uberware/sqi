@@ -418,34 +418,84 @@ func TestConformance_C2ProtectedFixtures(t *testing.T) {
 // regex function they call is not registered, so the expression fails with
 // "unknown function" and the template is rejected. C3 registers all six regex
 // functions, which removes that accidental rejection — each fixture must then
-// be rejected by the pattern scanner (repattern.go) or by re_sub's replacement
-// check instead.
+// be rejected for real.
 //
-// This is the scanner's real acceptance test: it maps every construct RFC 0006
-// excludes onto a fixture that must refuse it. The aggregate score cannot see
-// the difference, which is why the names are written out.
+// WHAT THIS TEST ACTUALLY GUARANTEES, and what it does not: it asserts
+// res.Passed, i.e. that the fixture is STILL rejected overall. It cannot
+// assert WHICH mechanism rejected it, because conformance.Result blanks
+// Reason on a pass (exprcase.go; pinned by exprcase_test.go's "Reason = ""
+// want it empty on a pass" case) — there is no reason string available here
+// to assert against for a passing .invalid fixture. So for any entry where a
+// SECOND, independent mechanism also rejects the same input, deleting the
+// purpose-built check that entry names would NOT turn this test red.
+//
+// Nine of the sixteen have no such gap: \z (Go's regexp.Compile accepts \z on
+// its own — only our scanner's rejection catches it), all four empty-pattern
+// fixtures (Go's regexp.Compile("") succeeds), and all four re_sub
+// group-reference fixtures (Go's ReplaceAllLiteralString never expands "$1"
+// or "\1" — that is the entire point of calling it "Literal" — so nothing but
+// rejectGroupReferences catches these). Deleting the check named in any of
+// those nine entries' "why" string DOES turn this test red, for the reason
+// the string states.
+//
+// The other seven do not, for two different reasons:
+//   - re-backreference, re-lookahead, re-lookbehind, re-named-backref,
+//     re-split-invalid-pattern, re-split-maxsplit-invalid-pattern: Go's own
+//     regexp.Compile independently rejects all six constructs (measured:
+//     "invalid escape sequence", "invalid or unsupported Perl syntax",
+//     "invalid named capture", "missing closing ]" respectively). Deleting
+//     our purpose-built rejection for any of these six only degrades the
+//     diagnostic to Go's own wording — this test would not notice, and does
+//     not, by design: see the "lookahead" case in the vacuity-check section
+//     of task-9-report.md.
+//   - re-backslash-upper-Z is NOT a Go backstop and its "why" string says so:
+//     the fixture is byte-for-byte identical to re-backslash-lower-z
+//     (confirmed by diff and md5 — task-9-report.md, Fix Round 1) and its
+//     content is r"llo\z", lowercase, so it is rejected by the SAME \z rule
+//     that protects the lower-z entry, not by any \Z-specific logic. Nothing
+//     in the vendored 2023-09 EXPR suite exercises \Z at all; our rejection
+//     of \Z is pinned only by TestTranslatePattern_Rejects's "upper Z
+//     anchor" case in repattern_internal_test.go.
+//
+// This is the scanner's real acceptance test for the nine fully-pinned
+// entries, and only a rejection floor for the other seven: those seven
+// confirm the template is still refused, without confirming refusal still
+// comes from the mechanism each entry names.
 func TestConformance_C3ProtectedFixtures(t *testing.T) {
 	protected := map[string]string{
-		// Constructs Go rejects natively, but which the scanner refuses first
-		// so the diagnostic names the construct the spec names.
+		// Go's own regexp.Compile independently rejects all four of these —
+		// see the docstring above. The scanner refuses them FIRST only so the
+		// diagnostic names the construct the spec names, not because nothing
+		// else would catch them; deleting the scanner's own check here would
+		// NOT turn this test red.
 		"EXPR/job_templates/expr2.2.5--re-backreference.invalid.yaml": "backreferences are not supported",
 		"EXPR/job_templates/expr2.2.5--re-lookahead.invalid.yaml":     "lookahead is not supported",
 		"EXPR/job_templates/expr2.2.5--re-lookbehind.invalid.yaml":    "lookbehind is not supported",
 		"EXPR/job_templates/expr2.2.5--re-named-backref.invalid.yaml": "named backreferences are not supported",
-		// Anchors Go would otherwise accept (\z) or reject with its own
-		// wording (\Z).
+		// \z: Go accepts this anchor natively, so only OUR rejection catches
+		// it — this entry DOES pin the scanner.
 		"EXPR/job_templates/expr2.2.5--re-backslash-lower-z.invalid.yaml": `\z is not in the Python/Rust intersection`,
-		"EXPR/job_templates/expr2.2.5--re-backslash-upper-Z.invalid.yaml": `\Z is not in the Python/Rust intersection`,
-		// The empty-pattern rule, stated once in RFC 0006 and tested four ways.
+		// NAMED upper-Z, but byte-for-byte identical to the fixture above:
+		// its content is r"llo\z", lowercase, so it tests \z, not \Z, and is
+		// rejected by the same \z rule. It does NOT pin \Z-specific
+		// rejection — see the docstring above.
+		"EXPR/job_templates/expr2.2.5--re-backslash-upper-Z.invalid.yaml": `fixture is a byte-for-byte duplicate of re-backslash-lower-z.invalid.yaml and tests \z, not \Z; rejected by the same \z rule, not by any \Z-specific logic`,
+		// The empty-pattern rule, stated once in RFC 0006 and tested four
+		// ways. Go's regexp.Compile("") succeeds, so all four DO pin our own
+		// check.
 		"EXPR/job_templates/expr2.2.5--re-search-empty-pattern.invalid.yaml":         "re_search rejects an empty pattern",
 		"EXPR/job_templates/expr2.2.5--re-split-empty-pattern.invalid.yaml":          "re_split rejects an empty pattern",
 		"EXPR/job_templates/expr2.2.5--re-split-maxsplit-empty-pattern.invalid.yaml": "re_split with maxsplit rejects an empty pattern",
 		"EXPR/job_templates/expr2.2.5--re-sub-empty-pattern.invalid.yaml":            "re_sub rejects an empty pattern",
-		// Patterns that are malformed in any dialect.
+		// Patterns malformed in any dialect: Go's regexp.Compile rejects "["
+		// natively ("missing closing ]"), so these two do NOT pin our own
+		// scanner either.
 		"EXPR/job_templates/expr2.2.5--re-split-invalid-pattern.invalid.yaml":          "re_split rejects an unparseable pattern",
 		"EXPR/job_templates/expr2.2.5--re-split-maxsplit-invalid-pattern.invalid.yaml": "re_split with maxsplit rejects an unparseable pattern",
 		// re_sub's replacement is literal text; all four group-reference
-		// spellings are errors.
+		// spellings are errors. Go's ReplaceAllLiteralString never expands
+		// "$1" or "\1", so nothing but our own rejectGroupReferences check
+		// catches these; all four DO pin it.
 		"EXPR/job_templates/expr2.2.5--re-sub-group-ref.invalid.yaml":              `re_sub rejects \1`,
 		"EXPR/job_templates/expr2.2.5--re-sub-named-group-ref.invalid.yaml":        `re_sub rejects \g<1>`,
 		"EXPR/job_templates/expr2.2.5--re-sub-dollar-group-ref.invalid.yaml":       "re_sub rejects $1",
