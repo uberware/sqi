@@ -57,9 +57,9 @@ const unicodeWordSet = `\p{L}\p{N}_`
 // fails silently. That single fact is why this is a scanner and not a
 // strings.ReplaceAll.
 //
-// The translation half is now partly in place: the Unicode shorthands (\d,
-// \D, \w, \W, \s, \S) are rewritten by scanEscape below. Translating \u and
-// \U into a Go-compatible escape is Task 3's remaining scope.
+// The translation half is now fully in place: the Unicode shorthands (\d,
+// \D, \w, \W, \s, \S) and the \u/\U fixed-width Unicode escapes are all
+// rewritten by scanEscape below.
 func translatePattern(pattern string) (string, error) {
 	if pattern == "" {
 		return "", errEmptyPattern
@@ -108,10 +108,8 @@ func translatePattern(pattern string) (string, error) {
 // It rejects the constructs outside the Python/Rust intersection
 // (rejectUnsupportedEscape), rewrites the six Unicode shorthands \d, \D, \w,
 // \W, \s and \S to their Go equivalents (the switch below, via
-// writeSetEscape), and otherwise passes the escape through unchanged. \u and
-// \U translation is still Task 3's: today their Rust-only brace form
-// (\u{...}, \U{...}) is rejected and their plain form passes through
-// unchanged rather than becoming a Go-compatible escape.
+// writeSetEscape), rewrites \uHHHH and \UHHHHHHHH into Go's \x{...} spelling
+// (scanFixedHex), and otherwise passes the escape through unchanged.
 func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegated bool) (int, error) {
 	if i+1 >= len(pattern) {
 		return 0, fmt.Errorf("%w: the pattern ends with a trailing backslash", errUnsupportedRegex)
@@ -124,6 +122,14 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass, classNegat
 		return 0, err
 	}
 	switch c {
+	// \u and \U: the two escapes the specification REQUIRES that Go's regexp
+	// cannot parse at all (see scanFixedHex). Ordered ahead of the Unicode
+	// shorthand rewrites below since both groups are translations, not
+	// rejections, and this pair was the last one Task 3 added.
+	case 'u':
+		return scanFixedHex(out, pattern, i, 4)
+	case 'U':
+		return scanFixedHex(out, pattern, i, 8)
 	// The Unicode shorthand rewrites. \d and \D map to a single negatable
 	// property, so one spelling works in both positions. \w and \s are UNIONS,
 	// so outside a class they need their own brackets and inside one they must
@@ -241,4 +247,40 @@ func scanGroup(out *strings.Builder, pattern string, i int) (int, error) {
 	}
 	out.WriteByte('(')
 	return 0, nil
+}
+
+// scanFixedHex translates \uHHHH and \UHHHHHHHH into Go's \x{...} spelling.
+//
+// Go's regexp has neither escape, so passing them through would produce
+// "invalid escape sequence" from the engine rather than a working pattern —
+// and the specification names both as supported, so refusing them is not an
+// option either.
+//
+// This is the mirror image of rejectUnsupportedEscape's brace-escape case,
+// not a contradiction of it: \x{...}/\u{...}/\U{...} is Rust-only brace
+// syntax, outside the Python/Rust intersection, so the scanner refuses it on
+// INPUT. That says nothing about what Go itself accepts — \x{HHHH} is exactly
+// how Go spells a codepoint escape, so it is what this function EMITS. The
+// rejection governs what a template may write; this emission governs what
+// Go's engine is handed.
+func scanFixedHex(out *strings.Builder, pattern string, i, digits int) (int, error) {
+	start := i + 2
+	if start+digits > len(pattern) {
+		return 0, fmt.Errorf(`%w: \%c needs %d hexadecimal digits`, errUnsupportedRegex, pattern[i+1], digits)
+	}
+	hex := pattern[start : start+digits]
+	for j := range len(hex) {
+		if !isHexDigit(hex[j]) {
+			return 0, fmt.Errorf(`%w: \%c needs %d hexadecimal digits, found %q`, errUnsupportedRegex, pattern[i+1], digits, hex)
+		}
+	}
+	out.WriteString(`\x{`)
+	out.WriteString(hex)
+	out.WriteByte('}')
+	return 1 + digits, nil
+}
+
+// isHexDigit reports whether b is one of 0-9, a-f or A-F.
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
 }

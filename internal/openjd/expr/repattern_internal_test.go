@@ -193,3 +193,68 @@ func TestUnicodeSpaceSet_MatchesWhiteSpace(t *testing.T) {
 		}
 	}
 }
+
+// TestTranslatePattern_UnicodeEscapes covers the escapes RFC 0006 REQUIRES but
+// Go cannot parse. Both Python and Rust accept \uHHHH and \UHHHHHHHH; Go's
+// regexp has no \u escape at all and rejects them — measured during design.
+//
+// Note the asymmetry with the rejection tests: \u{41} is REFUSED (Rust-only
+// brace syntax) while \u0041 is TRANSLATED, and the translation emits the
+// very \x{...} spelling the input is not allowed to use. That is deliberate:
+// the rejection governs what a template may contain, the emission governs
+// what Go is handed.
+func TestTranslatePattern_UnicodeEscapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{"four-digit", `\u0041`, `\x{0041}`},
+		{"eight-digit", `\U0001F600`, `\x{0001F600}`},
+		{"inside a class", `[\u0041x]`, `[\x{0041}x]`},
+		{"two-digit hex is left alone", `\xE9`, `\xE9`},
+		{"escaped backslash then u is literal", `\\u0041`, `\\u0041`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := translatePattern(tc.pattern)
+			if err != nil {
+				t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+			}
+			if got != tc.want {
+				t.Errorf("translatePattern(%q) = %q, want %q", tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTranslatePattern_UnicodeEscapesMatch(t *testing.T) {
+	for _, tc := range []struct{ pattern, input string }{
+		{`^\u0041$`, "A"},
+		{`^\U0001F600$`, "\U0001F600"},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			translated, err := translatePattern(tc.pattern)
+			if err != nil {
+				t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+			}
+			re, err := regexp.Compile(translated)
+			if err != nil {
+				t.Fatalf("translated %q to %q, which does not compile: %v", tc.pattern, translated, err)
+			}
+			if !re.MatchString(tc.input) {
+				t.Errorf("%q (translated %q) did not match %q", tc.pattern, translated, tc.input)
+			}
+		})
+	}
+}
+
+func TestTranslatePattern_RejectsMalformedUnicodeEscape(t *testing.T) {
+	for _, p := range []string{`\u00`, `\U0001`, `\uZZZZ`} {
+		t.Run(p, func(t *testing.T) {
+			if _, err := translatePattern(p); err == nil {
+				t.Errorf("translatePattern(%q) accepted a malformed escape", p)
+			}
+		})
+	}
+}
