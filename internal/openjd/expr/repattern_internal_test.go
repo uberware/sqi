@@ -507,6 +507,103 @@ func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 	})
 }
 
+// TestTranslatePattern_AlternationAdjacentDash covers the code-review finding
+// that dropping a lifted \W/\S shorthand SPLICES its two former neighbors
+// together, and if one of them is a literal "-" the splice can form a
+// character RANGE the source never wrote: "[a\W-c]" used to translate to
+// "(?:[^\p{L}_\p{N}]|[a-c])", which Go reads as the range a..c and silently
+// MATCHES "b" — outside every reading of the source, since the "-" sat
+// between "\W" and "c" in the original text, never between "a" and "c".
+// Verified directly: both Python's re ("bad character range \W-c") and the
+// reference ("regex parse error") refuse to parse "[a\W-c]" and "[0\W-9]"
+// outright, so there is no reading of the source under which "b" or "5" is a
+// member.
+//
+// The fix (classBodyWithout's own doc, via dashesAdjacentToDroppedShorthand)
+// escapes any "-" that sat immediately next to a dropped occurrence, so the
+// remainder reads as sqi's own permissive union — {not-a-word-char} ∪ {a} ∪
+// {-} ∪ {c} for "[a\W-c]" — rather than a spliced range.
+func TestTranslatePattern_AlternationAdjacentDash(t *testing.T) {
+	t.Run("translated text", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			pattern string
+			want    string
+		}{
+			{"dash between W and a following member", `[a\W-c]`, `(?:[^\p{L}_\p{N}]|[a\-c])`},
+			{"dash between W and a following digit", `[0\W-9]`, `(?:[^\p{L}_\p{N}]|[0\-9])`},
+			{"trailing dash after W alone stays literal by position", `[\W-]`, `(?:[^\p{L}_\p{N}]|[\-])`},
+			{"trailing dash after W plus a member stays literal by position", `[a\W-]`, `(?:[^\p{L}_\p{N}]|[a\-])`},
+			{"no dash at all is unaffected", `[a\Wc]`, `(?:[^\p{L}_\p{N}]|[ac])`},
+			{"dash between a member and S", `[a\S-c]`, `(?:[^` + unicodeSpaceSet + `]|[a\-c])`},
+			{"dash before the dropped shorthand, mirror direction", `[a-\Wc]`, `(?:[^\p{L}_\p{N}]|[a\-c])`},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := translatePattern(tc.pattern)
+				if err != nil {
+					t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+				}
+				if got != tc.want {
+					t.Errorf("translatePattern(%q) = %q, want %q", tc.pattern, got, tc.want)
+				}
+				if _, err := regexp.Compile(got); err != nil {
+					t.Errorf("translatePattern(%q) = %q, which does not compile: %v", tc.pattern, got, err)
+				}
+			})
+		}
+	})
+
+	t.Run("match behavior", func(t *testing.T) {
+		tests := []struct {
+			pattern string
+			input   string
+			want    bool
+		}{
+			// The critical cases: neither pattern may match a character that
+			// only exists because "a"/"0" and "c"/"9" got spliced into a range.
+			{`^[a\W-c]$`, "b", false},
+			{`^[a\W-c]$`, "a", true},
+			{`^[a\W-c]$`, "c", true},
+			{`^[a\W-c]$`, "-", true},
+			{`^[a\W-c]$`, "!", true},  // not-a-word-char branch
+			{`^[a\W-c]$`, "d", false}, // ordinary word char, not in {a,-,c}, not non-word
+			{`^[0\W-9]$`, "5", false},
+			{`^[0\W-9]$`, "0", true},
+			{`^[0\W-9]$`, "9", true},
+			{`^[0\W-9]$`, "-", true},
+			// Trailing dash: must keep matching the literal "-".
+			{`^[\W-]$`, "-", true},
+			{`^[\W-]$`, "!", true},
+			{`^[\W-]$`, "a", false},
+			{`^[a\W-]$`, "-", true},
+			{`^[a\W-]$`, "a", true},
+			{`^[a\W-]$`, "!", true},
+			{`^[a\W-]$`, "b", false},
+			// No dash at all: unaffected by the fix.
+			{`^[a\Wc]$`, "c", true},
+			{`^[a\Wc]$`, "a", true},
+			{`^[a\Wc]$`, "!", true},
+			{`^[a\Wc]$`, "b", false},
+		}
+		for _, tc := range tests {
+			t.Run(tc.pattern+"_on_"+tc.input, func(t *testing.T) {
+				translated, err := translatePattern(tc.pattern)
+				if err != nil {
+					t.Fatalf("translatePattern(%q) failed: %v", tc.pattern, err)
+				}
+				re, err := regexp.Compile(translated)
+				if err != nil {
+					t.Fatalf("translated %q to %q, which does not compile: %v", tc.pattern, translated, err)
+				}
+				if got := re.MatchString(tc.input); got != tc.want {
+					t.Errorf("%q (translated %q) on %q = %v, want %v", tc.pattern, translated, tc.input, got, tc.want)
+				}
+			})
+		}
+	})
+}
+
 // TestTranslatePattern_NestedClassIsNeverEmitted pins the failure this whole
 // scanner exists to prevent. Go compiles "[[\p{L}]]" WITHOUT ERROR and matches
 // something other than intended, so a translation that emitted a nested class

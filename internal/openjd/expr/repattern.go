@@ -331,7 +331,23 @@ func translateClassBody(out *strings.Builder, body string) error {
 // classNeedsAlternation scans this SAME body first and a branch exists for
 // every distinct shorthand present in it, so nothing is left un-accounted
 // for; dropping an occurrence that happens not to exist is a no-op.
+//
+// Dropping a lifted shorthand SPLICES its two former neighbors together,
+// and if one of them is a literal "-" the splice can form a character RANGE
+// the source never wrote: "[a\W-c]" drops "\W" and used to leave "a-c"
+// behind, which Go reads as the range a..c even though the source's "-" sat
+// between "\W" and "c", never between "a" and "c" — measured to silently
+// MATCH "b", which is outside every reading of the source (code-review
+// finding). This is the same defect SHAPE escapeLeadingCaret already guards
+// for "^" on this same rebuilt class — an in-class rewrite changing the
+// meaning of a metacharacter that becomes newly adjacent once the shorthand
+// between it and its neighbor is gone. dashesAdjacentToDroppedShorthand
+// finds every bare "-" that sat immediately next to a dropped occurrence, on
+// either side, and this function escapes exactly those; a "-" untouched by a
+// drop, including one that is genuinely trailing ("[\W-]", "[a\W-]"), is
+// left exactly as it would otherwise be, still a literal by position.
 func classBodyWithout(body string) (string, error) {
+	escapeDash := dashesAdjacentToDroppedShorthand(body)
 	var out strings.Builder
 	for i := 0; i < len(body); i++ {
 		if body[i] == '\\' && i+1 < len(body) {
@@ -347,9 +363,54 @@ func classBodyWithout(body string) (string, error) {
 			i += n
 			continue
 		}
+		if body[i] == '-' && escapeDash[i] {
+			out.WriteString(`\-`)
+			continue
+		}
 		out.WriteByte(body[i])
 	}
 	return out.String(), nil
+}
+
+// dashesAdjacentToDroppedShorthand walks body's tokens — each an ordinary
+// byte or a two-byte backslash-escape pair — and returns the byte offset of
+// every bare literal "-" token that sits immediately before or after a \W or
+// \S occurrence. Those are exactly the dashes classBodyWithout must escape:
+// once the shorthand between such a dash and whatever sits on its OTHER side
+// is dropped, an un-escaped "-" there would read as a range operator over
+// text the source never placed on both sides of it. A "-" that is itself
+// part of an escape pair (e.g. "\-") is never a candidate, because the token
+// walk only ever records "-" as a standalone token when it was not consumed
+// as the second byte of a preceding backslash pair.
+func dashesAdjacentToDroppedShorthand(body string) map[int]bool {
+	type token struct {
+		start   int
+		text    string
+		dropped bool
+	}
+	var tokens []token
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' && i+1 < len(body) {
+			c := body[i+1]
+			tokens = append(tokens, token{start: i, text: body[i : i+2], dropped: c == 'W' || c == 'S'})
+			i++
+			continue
+		}
+		tokens = append(tokens, token{start: i, text: body[i : i+1]})
+	}
+	escape := make(map[int]bool)
+	for idx, tok := range tokens {
+		if !tok.dropped {
+			continue
+		}
+		if idx > 0 && tokens[idx-1].text == "-" {
+			escape[tokens[idx-1].start] = true
+		}
+		if idx+1 < len(tokens) && tokens[idx+1].text == "-" {
+			escape[tokens[idx+1].start] = true
+		}
+	}
+	return escape
 }
 
 // scanEscape handles the backslash escape starting at pattern[i], writing its
