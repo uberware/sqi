@@ -94,6 +94,12 @@ func TestReprPwsh(t *testing.T) {
 		{"list becomes an array literal", `repr_pwsh(['a', 'b'])`, "@('a', 'b')"},
 		{"int list", `repr_pwsh([1, 2])`, "@(1, 2)"},
 		{"empty list", `repr_pwsh([])`, "@()"},
+		// Code-review finding: pwshElement's default branch used to quote
+		// sqi's own list rendering ("[a]") as a single PowerShell STRING,
+		// giving repr_pwsh([['a'],['b']]) = "@('[a]', '[b]')" — a nested
+		// list of text, not a nested array. A nested list must become a
+		// nested "@(...)" array literal instead.
+		{"nested list becomes a nested array literal", `repr_pwsh([['a'], ['b']])`, "@(@('a'), @('b'))"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,11 +120,23 @@ func TestReprShell_PathAndRange(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Dir":    Value{Type: TPath, s: "/a b/c"},
 		"Param.Frames": Value{Type: TRangeExpr, s: "1-10"},
+		"Param.Dirs": List(TPath, []Value{
+			{Type: TPath, s: "/a b"},
+			{Type: TPath, s: "/c"},
+		}),
 	}
 	tests := []struct{ src, want string }{
 		{`repr_sh(Param.Dir)`, "'/a b/c'"},
 		{`repr_pwsh(Param.Dir)`, "'/a b/c'"},
 		{`repr_pwsh(Param.Frames)`, "'1-10'"},
+		// Previously untested registered row: repr_sh's list[path] shape.
+		{`repr_sh(Param.Dirs)`, "'/a b' /c"},
+		// Previously untested registered row, and the one that matters most:
+		// repr_cmd has no dedicated path row at all. Calling it on a path
+		// relies entirely on promoteDefault's path -> string coercion
+		// (section 1.2.3) running before Fn sees the argument — nothing
+		// exercised that path until this test.
+		{`repr_cmd(Param.Dir)`, `"/a b/c"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {

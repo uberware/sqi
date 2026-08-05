@@ -119,6 +119,14 @@ func pwshQuote(s string) string {
 }
 
 // pwshElement renders one member of a PowerShell array literal.
+//
+// CodeList gets its OWN case rather than falling to the default: without it,
+// a nested list renders as sqi's own "[a, b]" text quoted as a single
+// PowerShell STRING — repr_pwsh([['a'],['b']]) used to give
+// "@('[a]', '[b]')" — a nested list of TEXT, not a nested array, and not
+// runnable PowerShell for anything that expects array elements. Recursing
+// through pwshElement instead builds a nested "@(...)" literal, matching how
+// the top-level ListOf(varT) row itself is built.
 func pwshElement(v Value) string {
 	switch v.Type.Code {
 	case CodeBool:
@@ -130,6 +138,12 @@ func pwshElement(v Value) string {
 		return v.String()
 	case CodeNull:
 		return "$null"
+	case CodeList:
+		parts := make([]string, len(v.AsList()))
+		for i, elem := range v.AsList() {
+			parts[i] = pwshElement(elem)
+		}
+		return "@(" + strings.Join(parts, ", ") + ")"
 	default:
 		return pwshQuote(v.String())
 	}
