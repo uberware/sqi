@@ -96,13 +96,22 @@ func reFind(s, pattern string, anchored bool) (Value, error) {
 	if len(loc) == 0 || (anchored && loc[0] != 0) {
 		return Value{Type: TNull}, nil
 	}
-	groups := re.FindStringSubmatch(s)
-	if err := checkElementCount(len(groups)); err != nil {
+	// loc holds one (start, end) BYTE-OFFSET pair per group, in the same
+	// order FindStringSubmatch would return the strings themselves — a
+	// non-participating group's pair is (-1, -1). Deriving the strings from
+	// these offsets directly avoids a second regex pass over s.
+	n := len(loc) / 2
+	if err := checkElementCount(n); err != nil {
 		return Value{}, err
 	}
-	vals := make([]Value, len(groups))
-	for i, g := range groups {
-		vals[i] = String(g)
+	vals := make([]Value, n)
+	for i := range n {
+		start, end := loc[2*i], loc[2*i+1]
+		if start < 0 {
+			vals[i] = String("")
+		} else {
+			vals[i] = String(s[start:end])
+		}
 	}
 	return List(TString, vals), nil
 }
@@ -113,7 +122,11 @@ func reFindAll(s, pattern string) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	matches := re.FindAllStringSubmatch(s, -1)
+	// Bounded at the point of allocation: a zero-width pattern can match at
+	// every byte position, so an unbounded -1 here would build up to
+	// maxStringBytes+1 submatch slices before checkElementCount below ever
+	// runs. maxElements+1 lets the engine itself stop at the bound.
+	matches := re.FindAllStringSubmatch(s, maxElements+1)
 	if err := checkElementCount(len(matches)); err != nil {
 		return Value{}, err
 	}
@@ -131,6 +144,16 @@ func reFindAll(s, pattern string) (Value, error) {
 		}
 		return List(TString, vals), nil
 	default:
+		// This branch builds ONE inner list PER MATCH, so the quantity that
+		// matters is the PRODUCT len(matches)*groups, not len(matches) alone
+		// — a pattern with a large capturing-group count can hold
+		// len(matches) small while the product is still enormous.
+		// checkRepeat guards that product itself, before any inner list is
+		// allocated; see its own doc for why forming the product first and
+		// checking the result is not a check at all.
+		if _, err := checkRepeat(groups, int64(len(matches)), maxElements); err != nil {
+			return Value{}, err
+		}
 		for _, m := range matches {
 			inner := make([]Value, groups)
 			for g := 1; g <= groups; g++ {
@@ -143,8 +166,18 @@ func reFindAll(s, pattern string) (Value, error) {
 }
 
 // reSub backs re_sub. The replacement is LITERAL: RFC 0006 states that group
-// references are errors, so this rejects all four spellings and then uses Go's
-// literal replacement, which does not expand "$1" either.
+// references are errors, so this rejects all four spellings and then uses
+// Go's literal replacement, which does not expand "$1" either.
+//
+// The output size is bounded ARITHMETICALLY, before any replacement is ever
+// built. re.FindAllStringIndex allocates only byte-offset pairs, so counting
+// matches and summing their matched-byte lengths is cheap regardless of what
+// repl is. re.ReplaceAllLiteralString, by contrast, materializes the whole
+// result first — and a pattern that matches zero-width at every position, on
+// a string already at maxStringBytes, times a multi-KB repl, would allocate
+// gigabytes before a check on the RESULT could ever run. That is the same
+// hazard replaceAll (funcsstrfind.go) already guards against for plain
+// string replacement.
 func reSub(s, pattern, repl string) (Value, error) {
 	if err := rejectGroupReferences(repl); err != nil {
 		return Value{}, err
@@ -153,10 +186,29 @@ func reSub(s, pattern, repl string) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	out := re.ReplaceAllLiteralString(s, repl)
-	if err := checkStringBytes(len(out)); err != nil {
+	// Bounded even while only counting: an unbounded -1 here would let a
+	// zero-width pattern enumerate maxStringBytes+1 matches before anything
+	// downstream could object.
+	locs := re.FindAllStringIndex(s, maxElements+1)
+	if err := checkElementCount(len(locs)); err != nil {
 		return Value{}, err
 	}
+	var matchedBytes int
+	for _, loc := range locs {
+		matchedBytes += loc[1] - loc[0]
+	}
+	// checkRepeat guards the multiplication itself, not just its result — see
+	// its own doc for why forming len(repl)*len(locs) directly and checking
+	// afterward is not a check at all.
+	replTotal, err := checkRepeat(len(repl), int64(len(locs)), maxStringBytes)
+	if err != nil {
+		return Value{}, err
+	}
+	outLen := int64(len(s)-matchedBytes) + replTotal
+	if err := checkStringBytes(int(outLen)); err != nil {
+		return Value{}, err
+	}
+	out := re.ReplaceAllLiteralString(s, repl)
 	return String(out), nil
 }
 
@@ -187,7 +239,12 @@ func reSplit(s, pattern string, maxsplit int64) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	n := -1
+	// Bounded even in the "unlimited" case: Go's own -1 sentinel would let a
+	// zero-width pattern split into maxStringBytes+1 parts before the size is
+	// ever checked. maxElements+1 lets the engine itself stop at the bound,
+	// so the existing checkElementCount call below reports the overflow
+	// rather than merely observing it after an unbounded split already ran.
+	n := maxElements + 1
 	if maxsplit >= 0 {
 		// Go counts RESULT PARTS where RFC 0006 counts SPLITS, so the limit is
 		// one higher. maxsplit is clamped to the string length first: it

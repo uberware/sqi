@@ -4,7 +4,9 @@ package expr
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestRegexFunctions covers RFC 0006's six regex functions. Every expected
@@ -121,5 +123,57 @@ func TestReSub_DollarIsLiteralOtherwise(t *testing.T) {
 	}
 	if got := v.String(); got != "a$b" {
 		t.Errorf(`re_sub('a1b', '\d', '$') = %q, want "a$b"`, got)
+	}
+}
+
+// TestReSub_BoundsBeforeAllocating pins the code-review finding that reSub
+// must bound its OUTPUT SIZE arithmetically before building the replaced
+// string, not after.
+//
+// The exploit shape is the one from review: a pattern that matches
+// zero-width at every position (so roughly len(s)+1 matches) times a repl
+// long enough that the naive product is many gigabytes, even though s and
+// repl are each, individually, unremarkable. Naively,
+// re.ReplaceAllLiteralString would build that whole product — here, roughly
+// 200,001 matches times a 32KB repl, on the order of 6GB — before any check
+// on the RESULT could run. (s does not need to be at the full maxStringBytes
+// for this to demonstrate the bug: growing repl costs the BROKEN path
+// everything and the FIXED path nothing, since the fixed path never touches
+// repl's bytes until after the arithmetic bound already passed — only its
+// length. A smaller s keeps this test's normal run fast without weakening
+// what it proves.)
+//
+// Asserting only that an error comes back is not enough: that would also
+// pass on the broken (check-after-allocate) code, given a machine with room
+// to actually build several gigabytes. The timeout is what makes this test
+// prove the allocation never happens — correct code rejects this by pure
+// arithmetic in well under a second (measured: ~0.5s under -race); code that
+// builds the oversized string first measurably blows past the deadline
+// (measured against the pre-fix code: ~8s+ and still climbing at this size,
+// tens of seconds at maxStringBytes) even though the final answer, if it
+// ever arrived, would be the same error.
+func TestReSub_BoundsBeforeAllocating(t *testing.T) {
+	s := strings.Repeat("a", 200_000)
+	repl := strings.Repeat("x", 32_768)
+
+	done := make(chan struct{})
+	var v Value
+	var err error
+	go func() {
+		defer close(done)
+		v, err = reSub(s, `x*`, repl)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("reSub did not return within 8s; it is likely building the oversized replacement before checking its size, rather than bounding the size arithmetically first")
+	}
+
+	if err == nil {
+		t.Fatalf("reSub(...) = %v, <nil>; want a too-large error", v)
+	}
+	if !errors.Is(err, errTooLarge) {
+		t.Errorf("reSub(...) = %v, want it to wrap errTooLarge", err)
 	}
 }
