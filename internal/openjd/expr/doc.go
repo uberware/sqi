@@ -524,7 +524,11 @@
 //     divergence is baselined. A caller that wanted the old string result must
 //     ask for one (a string target, or string()).
 //
-//     SIX RULINGS look like bugs when tried by hand and are not. Each was
+//     THE RULINGS BELOW look like bugs when tried by hand and are not. (The
+//     heading used to give a count, and no reading of what follows ever
+//     produced it: named rulings and a "smaller divergences" block are two
+//     different lists, and the number could only ever be right for one of
+//     them.) Each was
 //     adjudicated against third_party/openjd-specifications/ and, where it
 //     diverges from the reference, recorded case by case in
 //     test/oracle/baseline.txt — that file, not this comment, is the place to
@@ -541,6 +545,25 @@
 //     that differ only in the case of a path literal expand into the same
 //     tasks on one flavor and different tasks on another. Determinism and
 //     host-independence outrank imitating one platform's filesystem.
+//
+//     as_posix IS FLAVOR-AWARE: it replaces the FLAVOR'S OWN separator with
+//     "/", so it is the IDENTITY under POSIX and on a URI, and a "\" -> "/"
+//     rewrite only under Windows. path('/renders/shot_a\b.exr').as_posix() is
+//     therefore unchanged, verified. The unconditional backslash rewrite it
+//     replaced was refuted by this engine's own values rather than by a
+//     preference between readings: under POSIX a backslash is an ordinary
+//     filename character, so that same path's parts are ["/", "renders",
+//     "shot_a\b.exr"] and its name is "shot_a\b.exr", while as_posix answered
+//     "/renders/shot_a/b.exr" — a different path with different parts. It also
+//     rewrote a URI object key ("s3://bucket/a\b" to the DIFFERENT key
+//     "s3://bucket/a/b"), contradicting the "a URI NORMALIZES NOTHING" rule
+//     three paragraphs up. CPython settles the direction: PurePath.as_posix()
+//     is str(self).replace(self.parser.sep, '/'), and RFC 0006 line 857 names
+//     as_posix among the functions that "match Python's pathlib API" — the same
+//     clause that settles stem/suffix below. The reference agrees with the OLD
+//     behavior and has the identical contradiction (its parts keep the
+//     backslash too), so this is a baselined divergence, argued case by case in
+//     test/oracle/baseline.txt.
 //
 //     with_number REPLACES THE LAST MATCH, per RFC 0006 line 822 — "searches
 //     the filename stem from the end for these patterns and replaces the last
@@ -811,8 +834,8 @@
 //     "repr_sh(out)" reports `no signature of "repr_sh" accepts (unresolved)`
 //     — measured. That is the scope-blindness class the baseline file's own
 //     header describes, and it burns down in sub-project E, not here. The
-//     differential oracle test has 892/1051 cases agreeing with the reference
-//     implementation, 159 baselined divergences (make test-expr-oracle) — up
+//     differential oracle test has 891/1052 cases agreeing with the reference
+//     implementation, 161 baselined divergences (make test-expr-oracle) — up
 //     from B3's 135/169, then C1's 279/321 now that C1's 22 functions had
 //     their own corpus cases, C2's 407/469 once its 31 string functions had
 //     theirs, C3's 473/551 with its regex and repr_* functions, and now C4's
@@ -820,6 +843,7 @@
 //     in BOTH numbers comes from: the path corpus is large and its divergences
 //     are the reference's, argued family by family in the C4 section of
 //     test/oracle/baseline.txt (its non-normalizing "/" and "+", its
+//     flavor-blind as_posix, its
 //     pre-current-pathlib stem/suffix split, its with_number hash-swallow, its
 //     inconsistent trailing-slash consumption on a relative_to base, and its
 //     treatment of a bare "scheme://" as a wildcard authority). The baselined

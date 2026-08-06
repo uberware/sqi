@@ -1022,7 +1022,12 @@ string | path	as_posix(path('a/b'))
 string | path	as_posix(path('s3://b/d'))
 string | path	as_posix(path('//a/b'))
 string | path	as_posix(path('.'))
+# The two backslash rows are as_posix's flavor-awareness, and they are here
+# BECAUSE they diverge: sqi replaces the FLAVOR'S separator (so as_posix is the
+# identity under POSIX and on a URI), the reference replaces every backslash
+# unconditionally. See baseline.txt for the ruling.
 string | path	as_posix(path('/a/\\b'))
+string | path	as_posix(path('s3://b/a\\b'))
 # is_absolute needs the target bool | path: with a bare bool — or bool |
 # string — openjd-rs#291's pushdown poisons the path() call inside and every
 # case fails with "No matching signature for is_absolute(string)".

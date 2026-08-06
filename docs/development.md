@@ -270,7 +270,7 @@ on the 0.x line, where breaking changes are permitted in minor bumps. The
 specification outranks it. When the two disagree, read
 `third_party/openjd-specifications/` and decide; do not change sqi to match the
 reference. **Most** baselined entries are cases where **the reference is
-wrong** — the corpus currently scores 892/1051 agreeing with 159 baselined
+wrong** — the corpus currently scores 891/1052 agreeing with 161 baselined
 divergences, and each one's reasoning is argued in `test/oracle/baseline.txt`,
 which is the authority on any individual ruling (an earlier revision of this
 paragraph said "three of the five", a count that went stale several waves ago

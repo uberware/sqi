@@ -4,6 +4,7 @@ package expr
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,70 @@ func TestAsPosix_ConvertsWindowsSeparators(t *testing.T) {
 	}
 	if got := v.String(); got != "C:/renders/project" {
 		t.Errorf("as_posix = %q, want %q", got, "C:/renders/project")
+	}
+}
+
+// TestAsPosix_IsFlavorAware pins the final fix wave's ruling: as_posix replaces
+// THE FLAVOR'S OWN separator with "/", so it is the IDENTITY under POSIX and
+// on a URI, and a "\" -> "/" rewrite only under Windows.
+//
+// The original implementation rewrote every backslash unconditionally, and the
+// decisive argument against it is sqi's own internal contradiction rather than
+// a preference: under POSIX a backslash is an ordinary filename character, so
+// path('/a/\b/c').parts is ["/", "a", `\b`, "c"] and .name is "c" — and
+// as_posix() answered "/a/b/c", a path with different parts and a different
+// name. One value cannot be both. The same rewrite silently renamed an S3
+// object key, which contradicts this package's own "a URI NORMALIZES NOTHING"
+// ruling.
+//
+// CPython settles the direction: PurePath.as_posix() is
+// str(self).replace(self.parser.sep, '/') — the FLAVOR's separator — so it is
+// the identity for PurePosixPath (measured: PurePosixPath('/a\\b/c').as_posix()
+// is "/a\b/c"). RFC 0006 line 857 names as_posix among the functions that
+// "match Python's pathlib API", which is the same clause baseline.txt already
+// cites to rule against the reference for stem/suffix. The RFC table row
+// "return string with forward slashes" summarizes the Windows case, which is
+// the only case where a separator has to change at all.
+//
+// THE REFERENCE DISAGREES (measured at openjd-model 0.11.1: as_posix on
+// path('/a/\b') answers "/a//b"), so this is a baselined oracle divergence —
+// while the reference's OWN parts for that same path keep the backslash as an
+// ordinary component, which is the identical contradiction, in the reference.
+func TestAsPosix_IsFlavorAware(t *testing.T) {
+	tests := []struct {
+		src    string
+		flavor PathFormat
+		want   string
+	}{
+		// POSIX: a backslash is an ordinary filename character and survives.
+		{`path('/renders/shot_a\\b.exr').as_posix()`, PathPOSIX, `/renders/shot_a\b.exr`},
+		{`path('/a/\\b/c').as_posix()`, PathPOSIX, `/a/\b/c`},
+		{`path('/a/b').as_posix()`, PathPOSIX, "/a/b"},
+		// The contradiction the ruling closes: as_posix must agree with the
+		// parts and the name of the very same value.
+		{`join(path('/a/\\b/c').parts, '|')`, PathPOSIX, `/|a|\b|c`},
+		{`path('/a/\\b/c').name`, PathPOSIX, "c"},
+		// A URI is identity under EVERY flavor: its component text is an
+		// opaque object key, and "a\b" and "a/b" are different objects.
+		{`path('s3://bucket/a\\b').as_posix()`, PathPOSIX, `s3://bucket/a\b`},
+		{`path('s3://bucket/a\\b').as_posix()`, PathWindows, `s3://bucket/a\b`},
+		{`path('s3://bucket/a/b').as_posix()`, PathWindows, "s3://bucket/a/b"},
+		// Windows is the one flavor where a separator genuinely changes,
+		// because "\" is what String() renders there.
+		{`path('C:/renders/project').as_posix()`, PathWindows, "C:/renders/project"},
+		{`path('C:\\a\\b').as_posix()`, PathWindows, "C:/a/b"},
+		{`path('\\\\srv\\share\\x').as_posix()`, PathWindows, "//srv/share/x"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(tc.flavor))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) under %v = %q, want %q", tc.src, tc.flavor, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -306,6 +371,99 @@ func TestPathParts_Roundtrip(t *testing.T) {
 			t.Errorf("roundtrip %q: parts %q rebuilt to %q, want %q",
 				in, p.parts(), rebuilt.String(), p.String())
 		}
+	}
+}
+
+// TestBoundedPath_EnforcesTheByteBound pins the ONLY enforcement point the
+// whole path family has for limits.go's maxStringBytes — and it was completely
+// untested until the final fix wave: deleting the checkStringBytes call from
+// boundedPath left this package's tests, the conformance suite and the oracle
+// all green. Every path-producing operation in funcspath.go and ops.go routes
+// its result through this one function, so an unenforced bound there is an
+// unbounded path value everywhere.
+//
+// The gap matters more than its size suggests because this program has already
+// shipped an after-the-fact bound once, on C3's reSub, for the same reason: a
+// limit nothing exercises is a limit nobody notices the absence of.
+//
+// The bound is checked AT the limit and one past it, matching
+// TestWithNumber_PaddingCap's rule that a bound tested "near" its value is not
+// tested at all, and then once more through a REAL path-producing expression,
+// so the enforcement is pinned where a caller can reach it and not only in
+// isolation.
+func TestBoundedPath_EnforcesTheByteBound(t *testing.T) {
+	if _, err := boundedPath(strings.Repeat("a", maxStringBytes), PathPOSIX); err != nil {
+		t.Errorf("a path text of exactly maxStringBytes must be accepted: %v", err)
+	}
+	_, err := boundedPath(strings.Repeat("a", maxStringBytes+1), PathPOSIX)
+	if err == nil {
+		t.Fatal("boundedPath accepted a path text one byte past maxStringBytes")
+	}
+	if !errors.Is(err, errTooLarge) {
+		t.Errorf("boundedPath over the bound = %v, want it to wrap errTooLarge", err)
+	}
+
+	// Through the "/" operator: both operands are individually legal (the
+	// repetition lands exactly on maxStringBytes), and only the JOINED text
+	// crosses the bound — which is the shape that makes boundedPath the right
+	// place for the check rather than the constructor alone.
+	src := fmt.Sprintf(`path('/a') / ('b' * %d)`, maxStringBytes)
+	if _, err := Eval(src, MapSymbols{}, TAny); err == nil {
+		t.Error("a join whose result exceeds maxStringBytes succeeded; the bound is not enforced")
+	} else if !errors.Is(err, errTooLarge) {
+		t.Errorf("the oversized join failed with %v, want it to wrap errTooLarge", err)
+	}
+}
+
+// TestPathFromParts_HeadIsARootOnlyWhenItIsNOTHINGElse pins the second half of
+// pathFromParts's head classification, which nothing exercised: a head token is
+// treated as a root only when parsing it alone yields a non-empty root AND NO
+// leftover components.
+//
+// Dropping the "&& len(probe.comps) == 0" clause stays green everywhere except
+// here, and it silently DROPS a component: path(['/a', 'b']) parses "/a" to
+// root "/" plus component "a", credits the whole token as the root, and answers
+// "/b" — the "a" gone, with no error. The list handed to path() is not
+// guaranteed to have come from parts(), so a head that is a root PLUS something
+// else must be treated as ordinary components, exactly as a plain "a" is.
+func TestPathFromParts_HeadIsARootOnlyWhenItIsNOTHINGElse(t *testing.T) {
+	tests := []struct {
+		src    string
+		flavor PathFormat
+		want   string
+	}{
+		// The regression case: a head that is a root AND a component.
+		{`path(['/a', 'b'])`, PathPOSIX, "/a/b"},
+		{`path(['/a/b', 'c'])`, PathPOSIX, "/a/b/c"},
+		{`path(['//a', 'b'])`, PathPOSIX, "//a/b"},
+		// The half that must keep working: a head that is a root and NOTHING
+		// else really is the root.
+		{`path(['/', 'a', 'b'])`, PathPOSIX, "/a/b"},
+		{`path(['//', 'a'])`, PathPOSIX, "//a"},
+		// A head that is no root at all stays an ordinary component.
+		{`path(['a', 'b'])`, PathPOSIX, "a/b"},
+		// The same distinction under Windows, where a bare drive is a root
+		// with no separator and a drive-plus-component is not.
+		{`path(['C:', 'a'])`, PathWindows, `C:a`},
+		// A drive PLUS a component in the head is not a root, so both tokens
+		// stay ordinary components — and String()'s middle branch then
+		// prepends "." because the first component is itself drive-shaped,
+		// which is what keeps the text re-parsing to the same value. The
+		// answer is not "C:\a\b", and it is not the "C:\b" the missing guard
+		// produces either; it is the third thing, and only the guard gets
+		// there.
+		{`path(['C:\\a', 'b'])`, PathWindows, `.\C:\a\b`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(tc.flavor))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) under %v = %q, want %q", tc.src, tc.flavor, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -25,7 +25,7 @@ var (
 	// string here, including one containing a separator, fabricating a path
 	// component that did not exist in the input — measured against the
 	// reference at openjd-model 0.11.1, which rejects all three.
-	errInvalidName = errors.New("invalid replacement name")
+	errInvalidName = errors.New("a replacement name must be non-empty, must not be \".\", and must not contain a separator")
 	// errEmptyStemHasSuffix backs with_stem specifically: CPython's own
 	// with_stem forbids an empty replacement stem when the receiver's
 	// existing suffix is non-empty (there would be nothing left to name the
@@ -68,7 +68,7 @@ var pathFuncs = map[string][]Shape{
 	},
 	"as_posix": {
 		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
-			return String(strings.ReplaceAll(pathText(args[0]), `\`, "/")), nil
+			return String(asPosix(pathOf(args[0]))), nil
 		}},
 	},
 	"is_absolute": {
@@ -212,6 +212,45 @@ var pathFuncs = map[string][]Shape{
 			return boundedPath(pathFromParts(remaining, p.flavor).String(), p.flavor)
 		}},
 	},
+}
+
+// asPosix renders p with its separators written as "/".
+//
+// IT IS FLAVOR-AWARE, and that is the whole content of the function: it
+// replaces THE FLAVOR'S OWN canonical separator, reusing pathval.go's single
+// per-flavor definition rather than hard-coding a third render-side encoding of
+// it beside String()'s. Under POSIX that separator already IS "/", so this is
+// the identity; under Windows it is "\", so this is the "\" -> "/" rewrite the
+// RFC's table row describes; on a URI it is the identity under every flavor,
+// because a URI's body is "/"-separated already and everything else in it is
+// opaque object-key text.
+//
+// The original implementation rewrote EVERY backslash unconditionally, and the
+// argument that settles it is this package's own internal contradiction rather
+// than a preference between two readings. A backslash is an ordinary POSIX
+// filename character and parsePath treats it as one, so path('/a/\b/c') has
+// parts ["/", "a", `\b`, "c"] and name "c" — while as_posix() answered
+// "/a/b/c", which has different parts and a different name. One value cannot be
+// both. The same rewrite turned the S3 key "a\b" into the different key "a/b",
+// contradicting the "a URI NORMALIZES NOTHING" rule stated in splitURI and in
+// doc.go.
+//
+// CPython settles the direction: PurePath.as_posix() is
+// str(self).replace(self.parser.sep, '/'), the flavor's separator, so
+// PurePosixPath('/a\\b/c').as_posix() is "/a\b/c" (measured). RFC 0006 line 857
+// names as_posix among the functions that "match Python's pathlib API" — the
+// same clause test/oracle/baseline.txt already cites to rule against the
+// reference for stem/suffix — and the RFC table's "return string with forward
+// slashes" summarizes the Windows case, the only one in which a separator has
+// to change at all. The reference implementation agrees with the OLD behavior
+// (measured at openjd-model 0.11.1), so this is a baselined divergence; the
+// reference's own parts for that path keep the backslash as an ordinary
+// component, so the contradiction above is present in the reference too.
+func asPosix(p parsedPath) string {
+	if p.isURI {
+		return p.String()
+	}
+	return strings.ReplaceAll(p.String(), string(pathCanonicalSeparator(p.flavor)), "/")
 }
 
 // boundedPath builds a path value with its text bounded before it is stored.

@@ -1018,6 +1018,47 @@ int | list[string] | path :: len(path('s3://bucket/').parts)
 # trailing empty component its render kept. See the explanation above.
 bool | path | list[string] | string :: path(path('s3://bucket/').parts) == path('s3://bucket/')
 
+# ── sqi is right: as_posix replaces the FLAVOR'S separator, not every "\" ────
+#
+# RFC 0006 line 857: "Path functions match Python's `pathlib` API
+# (`with_suffix`, `with_stem`, `as_posix`)" — the same clause the stem/suffix
+# section below cites to rule against the reference, naming as_posix outright.
+# CPython's implementation is one line:
+#
+#     def as_posix(self): return str(self).replace(self.parser.sep, '/')
+#
+# It replaces THE FLAVOR'S OWN separator, so it is the IDENTITY for
+# PurePosixPath — measured: PurePosixPath('/a\\b/c').as_posix() is "/a\b/c" —
+# and a "\" -> "/" rewrite only for PureWindowsPath. The RFC's table row
+# ("return string with forward slashes") is a summary of that Windows case, the
+# only one in which a separator has to change at all, not a contrary rule.
+#
+# The reference replaces every backslash under every format. Under its POSIX
+# format that corrupts values a backslash is a perfectly ordinary character in:
+# a legal POSIX filename ("shot_a\b.exr" becomes two components' worth of text)
+# and, worse, a URI object key, where "s3://bucket/a\b" and "s3://bucket/a/b"
+# name DIFFERENT objects in a store.
+#
+# What settles it is not a preference between two readings but an internal
+# contradiction, and the reference has it too: measured at openjd-model 0.11.1,
+# the reference's own parts for path('/a/\b/c') are ["/", "a", "\b", "c"] —
+# the backslash kept as an ordinary component — while its as_posix answers
+# "/a//b/c", a path with different parts. One value cannot be both. sqi's
+# engine makes the same two claims, so it had the same contradiction until this
+# was fixed; the fix is to make as_posix agree with parts, not the reverse. It
+# also restores agreement with sqi's own "a URI NORMALIZES NOTHING" ruling
+# recorded further up this file.
+
+# as_posix under POSIX: sqi is the identity (a backslash is an ordinary POSIX
+# filename character, and sqi's own parts say so), the reference rewrites it to
+# "/a//b". See the explanation above.
+string | path :: as_posix(path('/a/\\b'))
+
+# The URI half of the same ruling, and the consequential one: sqi leaves the
+# object key "a\b" alone, the reference rewrites it to the DIFFERENT key "a/b".
+# See the explanation above.
+string | path :: as_posix(path('s3://b/a\\b'))
+
 # ── sqi is right: stem/suffix follow CURRENT pathlib, the reference follows ──
 # ── the pre-3.14 rule ───────────────────────────────────────────────────────
 #
