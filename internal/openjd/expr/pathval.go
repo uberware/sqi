@@ -89,7 +89,21 @@ func parsePath(text string, f PathFormat) parsedPath {
 	f = f.resolve()
 	if root, rest, ok := splitURI(text); ok {
 		p := parsedPath{root: root, isURI: true, flavor: f}
-		if rest != "" {
+		// The test is "was there a separator closing the authority", NOT "is
+		// the path portion non-empty", and the difference is the whole point.
+		// splitURI reports rest == "" for two DIFFERENT inputs: "s3://b",
+		// where no separator follows the authority and there is no path
+		// portion at all, and "s3://b/", where one does and the path portion
+		// is empty. Only the first has no component; the second has exactly
+		// one, the empty string — the same component "s3://b/d/" already
+		// carries, produced by the same trailing separator. Testing rest
+		// instead collapsed the two, which is normalization the specification
+		// forbids for a URI's path portion, and it meant a bucket URI lost its
+		// separator at CONSTRUCTION (Path re-parses), so appending an object
+		// key produced "s3://bkey". splitURI returns the whole text as the
+		// root in the no-separator case, so comparing lengths distinguishes
+		// them without a fourth return value.
+		if len(root) < len(text) {
 			p.comps = strings.Split(rest, "/")
 		}
 		return p

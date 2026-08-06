@@ -9,13 +9,22 @@
 # separator because every other candidate appears inside real cases: spaces are
 # everywhere, and "|" is a union in the target type ("int | string").
 #
-# SCOPE: expressions that sub-projects A, B1, B2, B3, C1, C2 and C3 actually
-# implement — scalar operators, the coercion matrix, comparison chains,
-# conditionals, and/or, list literals and their type inference, list
+# SCOPE: expressions that sub-projects A, B1, B2, B3, C1, C2, C3 and C4
+# actually implement — scalar operators, the coercion matrix, comparison
+# chains, conditionals, and/or, list literals and their type inference, list
 # operators, subscripts, slices, list comprehensions, C1's general,
-# validation, math and list functions, C2's 31 string functions, and C3's
-# regular-expression and repr_* families. The path family is sub-project C4
-# and is not here yet.
+# validation, math and list functions, C2's 31 string functions, C3's
+# regular-expression and repr_* families, and C4's path engine: path()
+# construction, the six properties, every path function, and the "/" and "+"
+# operators.
+#
+# NO WINDOWS PATH CASE BELONGS HERE. The reference implementation evaluates
+# the path family under ITS OWN path_format, which is POSIX, so a Windows case
+# would diverge because of the flavor rather than because of anything under
+# test. The Windows flavor is pinned instead by the CPython differentials in
+# internal/openjd/expr/pathval_internal_test.go and by
+# TestPathOperators_Windows. A URI is NOT a flavor — it is detected from the
+# text under any path_format — so URI cases below are genuinely measured.
 #
 # TARGET TYPES MUST BE UNIONS FOR ANY CASE CONTAINING A CALL, A SUBSCRIPT OR A
 # SLICE, and this is not a style preference. The reference implementation
@@ -825,3 +834,429 @@ string | list[int]	repr_json([1, 2])
 # The C1 defect Task 8 fixed: Go's json.Marshal HTML-escapes these, nothing
 # else does. This case would have caught it.
 string | list[string]	string(['a<b>c&d'])
+
+# ── C4: path() construction, POSIX text (spec section 2.1.5, RFC 0006) ───────
+#
+# EVERY case below is POSIX-evaluable. The reference implementation's path
+# family runs under ITS OWN path_format, which is POSIX, so a Windows-flavored
+# case would diverge because of the flavor rather than because of anything
+# under test. Windows is pinned by the CPython differential in
+# internal/openjd/expr/pathval_internal_test.go and by
+# TestPathOperators_Windows instead, and is deliberately absent here. A URI is
+# NOT a flavor — it is detected from the text under any path_format — so URI
+# cases below are genuinely measured against the reference.
+path | string	path('/a/b/c')
+path | string	path('a/b/c')
+path | string	path('')
+path | string	path('.')
+path | string	path('..')
+path | string	path('/')
+path | string	path('//')
+path | string	path('///')
+path | string	path('////')
+path | string	path('//a')
+path | string	path('//a/b')
+path | string	path('///a')
+path | string	path('/a//b')
+path | string	path('/a/./b')
+path | string	path('/a/../b')
+path | string	path('/a/b/')
+path | string	path('/a/b//')
+path | string	path('./a/b')
+path | string	path('../a')
+path | string	path('.hidden')
+path | string	path('a.tar.gz')
+path | string	path('/a b/c d')
+path | string	path('/á/ß/日本')
+path | string	path('C:/a/b')
+path | string	path('a:b')
+path | string	path('\\a\\b')
+path | string	path('/a/\\b')
+path | string	path('...')
+path | string	path('/./.')
+path | string	path('/..')
+
+# path()'s list row, which is what makes the specification's stated roundtrip
+# path(p.parts) == p work. The head element is CLASSIFIED as a root or as an
+# ordinary component, so both shapes are exercised.
+path | list[string]	path(['a', 'b'])
+path | list[string]	path(['/', 'a', 'b'])
+path | list[string]	path(['//', 'a'])
+path | list[string]	path(['s3://bucket', 'd', 'f'])
+path | list[string]	path([''])
+path | list[string]	path(['a'])
+path | list[string]	path(['/'])
+path | list[nulltype]	path([])
+bool | path | list[string] | string	path(path('/a/b/c').parts) == path('/a/b/c')
+bool | path | list[string] | string	path(path('a/b').parts) == path('a/b')
+bool | path | list[string] | string	path(path('//a/b').parts) == path('//a/b')
+bool | path | list[string] | string	path(path('s3://b/d/f').parts) == path('s3://b/d/f')
+
+# URI text. Everything after the authority is opaque: repeated separators, "."
+# and ".." segments and a trailing slash all survive, which is the exact
+# opposite of the filesystem flavors.
+path | string	path('s3://bucket/dir/file.exr')
+path | string	path('s3://bucket')
+path | string	path('s3://bucket/')
+path | string	path('s3://bucket//')
+path | string	path('s3://bucket/') + 'key'
+path | string	path('s3://bucket') + 'key'
+path | string	path('s3://bucket/') / 'key'
+string | path	path('s3://bucket/').name
+path | string	path('s3://bucket/').parent
+string | list[string] | path	join(path('s3://bucket/').parts, '|')
+int | list[string] | path	len(path('s3://bucket/').parts)
+string | list[string] | path	join(path('s3://bucket//').parts, '|')
+bool | path | list[string] | string	path(path('s3://bucket/').parts) == path('s3://bucket/')
+bool | path | string	path('s3://bucket/') == path('s3://bucket')
+path | string	path('s3://bucket/dir/')
+path | string	path('s3://b/d//x')
+path | string	path('s3://b/./d')
+path | string	path('s3://b/../d')
+path | string	path('file:///a/b')
+path | string	path('http://host/p')
+path | string	path('s3+v2://b/d')
+path | string	path('S3://B/D')
+path | string	path('x://b/d')
+path | string	path('1s://b/d')
+path | string	path('mailto:x@y')
+path | string	path('s3:/b/d')
+path | string	path('s3://')
+
+# ── C4: the six path properties (RFC 0006) ───────────────────────────────────
+string | path	path('/a/b/c.tar.gz').name
+string | path	path('/a/b/c.tar.gz').stem
+string | path	path('/a/b/c.tar.gz').suffix
+string | path	path('/a/b/c.txt').name
+string | path	path('/a/b/c.txt').stem
+string | path	path('/a/b/c.txt').suffix
+string | path	path('/').name
+string | path	path('/').stem
+string | path	path('/').suffix
+string | path	path('//').name
+string | path	path('.').name
+string | path	path('a').name
+string | path	path('a').stem
+string | path	path('a').suffix
+string | path	path('/a/.hidden').name
+string | path	path('/a/.hidden').stem
+string | path	path('/a/.hidden').suffix
+string | path	path('/a/..').name
+string | path	path('/a/..').stem
+string | path	path('/a/..').suffix
+string | path	path('/a/...').stem
+string | path	path('/a/...').suffix
+string | path	path('/a/..b').stem
+string | path	path('/a/..b').suffix
+string | path	path('/a/..b.c').stem
+string | path	path('/a/..b.c').suffix
+string | path	path('/a/b.').stem
+string | path	path('/a/b.').suffix
+string | path	path('/a/.').name
+string | path	path('s3://b/d/f.txt').name
+string | path	path('s3://b/d/f.txt').stem
+string | path	path('s3://b/d/f.txt').suffix
+string | path	path('s3://b/d/').name
+string | path	path('s3://b').name
+path | string	path('/a/b/c').parent
+path | string	path('/a/b/c').parent.parent
+path | string	path('/a/b/c').parent.parent.parent
+path | string	path('/').parent
+path | string	path('//').parent
+path | string	path('.').parent
+path | string	path('a').parent
+path | string	path('a/b').parent
+path | string	path('..').parent
+path | string	path('//a/b').parent
+path | string	path('s3://b/d/f').parent
+path | string	path('s3://b/d/').parent
+path | string	path('s3://b').parent
+string | path	path('/a/b/c.txt').parent.name
+
+# parts and suffixes return list[string], which hits the known list-of-strings
+# rendering gap already baselined for list literals, flatten(), sorted(),
+# split() and the C3 regex family. Each is paired with a RENDERING-IMMUNE
+# companion — join(..., '|') or len(...) — whose result is a plain string or
+# an int, and it is those companions that actually verify the underlying
+# values, order and count.
+list[string] | path	path('/a/b/c').parts
+list[string] | path	path('s3://b/d/f').parts
+list[string] | path	path('c.tar.gz').suffixes
+list[string] | path	path('a').suffixes
+string | list[string] | path	join(path('/a/b/c').parts, '|')
+string | list[string] | path	join(path('a/b').parts, '|')
+string | list[string] | path	join(path('/').parts, '|')
+string | list[string] | path	join(path('//').parts, '|')
+string | list[string] | path	join(path('.').parts, '|')
+string | list[string] | path	join(path('').parts, '|')
+string | list[string] | path	join(path('//a/b').parts, '|')
+string | list[string] | path	join(path('///a/b').parts, '|')
+string | list[string] | path	join(path('/a/b/').parts, '|')
+string | list[string] | path	join(path('/a/../b').parts, '|')
+string | list[string] | path	join(path('/a/./b').parts, '|')
+string | list[string] | path	join(path('s3://b/d/f').parts, '|')
+string | list[string] | path	join(path('s3://b/d/').parts, '|')
+string | list[string] | path	join(path('s3://b').parts, '|')
+string | list[string] | path	join(path('s3://b/d//x').parts, '|')
+string | list[string] | path	join(path('c.tar.gz').suffixes, '|')
+string | list[string] | path	join(path('.hidden').suffixes, '|')
+string | list[string] | path	join(path('a').suffixes, '|')
+string | list[string] | path	join(path('a.').suffixes, '|')
+string | list[string] | path	join(path('..a.b').suffixes, '|')
+string | list[string] | path	join(path('...').suffixes, '|')
+string | list[string] | path	join(path('/').suffixes, '|')
+string | list[string] | path	join(path('s3://b/d/f.tar.gz').suffixes, '|')
+int | list[string] | path	len(path('/a/b/c').parts)
+int | list[string] | path	len(path('a/b/c').parts)
+int | list[string] | path	len(path('/').parts)
+int | list[string] | path	len(path('.').parts)
+int | list[string] | path	len(path('s3://b/d/f').parts)
+int | list[string] | path	len(path('c.tar.gz').suffixes)
+int | list[string] | path	len(path('a').suffixes)
+int | list[string] | path	len(path('.hidden').suffixes)
+
+# ── C4: as_posix and is_absolute ─────────────────────────────────────────────
+string | path	as_posix(path('/a/b'))
+string | path	path('/a/b').as_posix()
+string | path	as_posix(path('a/b'))
+string | path	as_posix(path('s3://b/d'))
+string | path	as_posix(path('//a/b'))
+string | path	as_posix(path('.'))
+string | path	as_posix(path('/a/\\b'))
+# is_absolute needs the target bool | path: with a bare bool — or bool |
+# string — openjd-rs#291's pushdown poisons the path() call inside and every
+# case fails with "No matching signature for is_absolute(string)".
+bool | path	is_absolute(path('/a'))
+bool | path	is_absolute(path('a'))
+bool | path	is_absolute(path('.'))
+bool | path	is_absolute(path(''))
+bool | path	is_absolute(path('..'))
+bool | path	is_absolute(path('/'))
+bool | path	is_absolute(path('//'))
+bool | path	is_absolute(path('//a'))
+bool | path	is_absolute(path('///a'))
+bool | path	is_absolute(path('//a/b'))
+bool | path	is_absolute(path('s3://b/d'))
+bool | path	is_absolute(path('s3://b'))
+bool | path	is_absolute(path('C:/a'))
+bool | path	path('/a').is_absolute()
+bool | path	path('a').is_absolute()
+
+# ── C4: with_name, with_stem, with_suffix ────────────────────────────────────
+path | string	path('/a/b.txt').with_name('c.png')
+path | string	path('/a/b.txt').with_name('c')
+path | string	path('a').with_name('b')
+path | string	path('/a/b.txt').with_name('..')
+path | string	path('/a/b.txt').with_name('.c')
+path | string	path('/a/b.txt').with_name('C:')
+path | string	path('/').with_name('c')
+path | string	path('.').with_name('c')
+path | string	path('/a/b.txt').with_name('')
+path | string	path('/a/b.txt').with_name('.')
+path | string	path('/a/b.txt').with_name('c/d')
+path | string	path('/a/b.txt').with_name('c\\d')
+path | string	path('s3://b/d/f.txt').with_name('g.png')
+path | string	path('s3://b').with_name('g')
+path | string	with_name(path('/a/b.txt'), 'c.png')
+path | string	path('/a/b.tar.gz').with_stem('c')
+path | string	path('/a/b.txt').with_stem('c')
+path | string	path('/a/b').with_stem('c')
+path | string	path('/a/b.txt').with_stem('')
+path | string	path('/a/b').with_stem('')
+path | string	path('/a/.hidden').with_stem('x')
+path | string	path('/a/b.txt').with_stem('c.d')
+path | string	path('/').with_stem('c')
+path | string	path('s3://b/d/f.txt').with_stem('g')
+path | string	path('/a/b.txt').with_suffix('.png')
+path | string	path('/a/b.txt').with_suffix('')
+path | string	path('/a/b').with_suffix('.png')
+path | string	path('/a/b.tar.gz').with_suffix('.zip')
+path | string	path('/a/.hidden').with_suffix('.txt')
+path | string	path('/a/b.txt').with_suffix('png')
+path | string	path('/a/b.txt').with_suffix('.')
+path | string	path('/a/b.txt').with_suffix('.a/b')
+path | string	path('/a/b.txt').with_suffix('..a')
+path | string	path('/').with_suffix('png')
+path | string	path('/').with_suffix('.png')
+path | string	path('/').with_suffix('')
+path | string	path('s3://b/d/f.txt').with_suffix('.exr')
+
+# ── C4: with_number, both rows (RFC 0006 "Frame Number Substitution") ────────
+string | int	with_number('file_003.exr', 7)
+string | int	with_number('file_003.exr', 72)
+string | int	with_number('file', 7)
+string | int	with_number('file.exr', 7)
+string | int	with_number('shot01_####.exr', 72)
+string | int	with_number('file_%04d.exr', 72)
+string | int	with_number('file_%d.exr', 0)
+string | int	with_number('a.tar.gz', 72)
+string | int	with_number('file.001', 72)
+string | int	with_number('file.v2.003.exr', 72)
+string | int	with_number('f_%d_abc_###.exr', 42)
+string | int	with_number('file_%04d_003.exr', 72)
+string | int	with_number('a12_b34.exr', 7)
+string | int	with_number('file_003.exr', -1)
+string | int	with_number('...', 3)
+# The hash-then-digit family: sqi replaces the LAST MATCH, the reference lets
+# a hash run swallow the rest of the stem. The rows that AGREE are here too,
+# deliberately, so a later change that overcorrects toward the reference fails
+# on those as well instead of silently trading one set for the other.
+string | int	with_number('###003', 7)
+string | int	with_number('#003', 7)
+string | int	with_number('##003', 7)
+string | int	with_number('####003', 7)
+string | int	with_number('##a3', 7)
+string | int	with_number('a###5', 9)
+string | int	with_number('12##34', 7)
+string | int	with_number('##b##', 7)
+string | int	with_number('3###', 7)
+string | int	with_number('#3#', 7)
+string | int	with_number('%04d3', 7)
+string | int	with_number('##%04d', 7)
+string | int	with_number('##a', 7)
+# Padding width, at the cap and past it in both notations.
+string | int	with_number('f_%032d.exr', 1)
+string | int	with_number('f_%033d.exr', 1)
+string | int	with_number('f_%099d.exr', 1)
+string | int	with_number('f_%0999999999999999999999d.exr', 1)
+path | string | int	path('/r/f_003.exr').with_number(72)
+path | string | int	path('/r/shot_003').with_number(72)
+path | string | int	path('/r/a.tar.gz').with_number(72)
+path | string | int	path('/r/f_%04d.exr').with_number(7)
+path | string | int	path('/r/f_####.exr').with_number(7)
+path | string | int	path('/r/f_%d.exr').with_number(0)
+path | string | int	path('/r/f_003.exr').with_number(-1)
+path | string | int	path('/r/file.001').with_number(72)
+path | string | int	path('/r/...').with_number(3)
+path | string | int	path('/').with_number(3)
+path | string | int	path('/r/f_%032d.exr').with_number(1)
+path | string | int	path('/r/f_%033d.exr').with_number(1)
+path | string | int	path('s3://b/d/f_003.exr').with_number(72)
+path | string | int	with_number(path('/r/f_003.exr'), 72)
+
+# ── C4: is_relative_to and relative_to ───────────────────────────────────────
+bool | path | string	path('/a/b/c').is_relative_to(path('/a'))
+bool | path | string	path('/a/b/c').is_relative_to(path('/a/b'))
+bool | path | string	path('/a/b/c').is_relative_to(path('/a/b/c'))
+bool | path | string	path('/a/b/c').is_relative_to(path('/x'))
+bool | path | string	path('/a/b').is_relative_to(path('/a/b/c'))
+bool | path | string	path('/a/b').is_relative_to(path('/'))
+bool | path | string	path('/ab/c').is_relative_to(path('/a'))
+bool | path | string	path('a/b').is_relative_to(path('a'))
+bool | path | string	path('/a/b').is_relative_to(path('a'))
+bool | path | string	path('a/b').is_relative_to(path('/a'))
+bool | path | string	path('/a/b').is_relative_to(path('.'))
+bool | path | string	path('/').is_relative_to(path('.'))
+bool | path | string	path('a/b').is_relative_to(path('.'))
+bool | path | string	path('a/b').is_relative_to(path(''))
+bool | path | string	path('.').is_relative_to(path('.'))
+bool | path | string	path('s3://b/d').is_relative_to(path('.'))
+bool | path | string	path('//a/b').is_relative_to(path('//a'))
+bool | path | string	path('//a/b').is_relative_to(path('/a'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b/d'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://c/d'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b'))
+bool | path | string	is_relative_to(path('/a/b'), path('/a'))
+path | string	path('/a/b/c').relative_to(path('/a'))
+path | string	path('/a/b/c').relative_to(path('/a/b'))
+path | string	path('/a/b/c').relative_to(path('/a/b/c'))
+path | string	path('/a/b/c').relative_to(path('/'))
+path | string	path('/a/b/c').relative_to(path('/x'))
+path | string	path('a/b/c').relative_to(path('a'))
+path | string	path('/a/b').relative_to(path('a'))
+path | string	path('//a/b/c').relative_to(path('//a'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b/d'))
+path | string	path('/a/b').relative_to(path('.'))
+path | string	path('a/b').relative_to(path('.'))
+path | string	path('s3://b/d').relative_to(path('.'))
+path | string	relative_to(path('/a/b'), path('/a'))
+string | path	path('/a/b/c').relative_to(path('/a')).name
+
+# ── C4: the / and + path operators (spec section 2.1.5) ──────────────────────
+path | string	path('/a/b') / 'c'
+path | string	path('/a/b') / path('c')
+path | string	path('/a/b') / '/c'
+path | string	path('/a/b/') / 'c'
+path | string	path('/a/b') / 'c/d'
+path | string	path('/a') / 'b' / 'c'
+path | string	path('a/b') / 'c'
+path | string	path('..') / 'c'
+path | string	path('/a/b') / '..'
+path | string	path('/a') / '//b'
+path | string	path('/a') / '///b'
+path | string	path('/a/b') / ''
+path | string	path('/a/b') / '.'
+path | string	path('/a/b') / 'c/'
+path | string	path('/a/b') / 'd/./e'
+path | string	path('/a/b') / 'd//e'
+path | string	path('') / 'b'
+path | string	path('.') / 'b'
+path | string	path('//') / 'x'
+path | string	path('/') / 'x'
+path | string	path('///') / 'x'
+path | string	path('/a') / '.hidden'
+path | string	path('/a') / 'b c'
+path | string	path('s3://bucket/dir/') / 'file'
+path | string	path('s3://b/d') / 'f'
+path | string	path('s3://b/d//') / 'f'
+path | string	path('s3://b/d///') / 'f'
+path | string	path('s3://b') / 'f'
+path | string	path('s3://b/') / 'f'
+path | string	path('/a/b') / 's3://x/y'
+path | string	path('/a/b') / path('s3://x/y')
+path | string	path('s3://b/d') / '/abs'
+path | string	path('s3://b/d/') / 'a/'
+path | string	path('s3://b/d/') / 'a//b'
+path | string	path('/a/b') + 'x'
+path | string	path('/a') / 'b' + '_c.png'
+path | string	path('/a/b') + ''
+path | string	path('/a/b') + '/c'
+path | string	path('/') + 'x'
+path | string	path('/a/b') + 'x' + 'y'
+path | string	path('/a') + '/'
+path | string	path('/a') + '.txt'
+path | string	path('.') + 'x'
+path | string	path('s3://b/d/') + 'x'
+path | string	path('s3://b/d') + '/x'
+path | string	path('/a/b') + path('c')
+string | path	'x' + path('/a')
+path | string	'/a' / path('b')
+path | string | int	path('a') / 1
+path | string | int	path('a') + 1
+int | path | string	1 / path('a')
+
+# Chained: an operator result feeding a property, a function and a comparison.
+string | path	(path('/a/b') / 'c.txt').name
+string | path	(path('/a/b') / 'c.txt').suffix
+string | path	(path('/a/b') / 'c.txt').stem
+path | string	(path('/a/b') / 'c.txt').parent
+path | string	(path('/a/b') / 'c.txt').with_suffix('.exr')
+path | string | int	(path('/a/b') / 'f_003.exr').with_number(7)
+string | list[string] | path	join((path('s3://b/d/') / 'f').parts, '|')
+string | list[string] | path	join((path('/a/b') / 'c').parts, '|')
+string | list[string] | path	join((path('s3://b/d/') / 'a/').parts, '|')
+bool | path | string	is_absolute(path('/a') / 'b')
+bool | path | string	is_absolute(path('a') / 'b')
+bool | path | string	(path('/a') / 'b').is_relative_to(path('/a'))
+path | string	(path('/a') / 'b').relative_to(path('/a'))
+string | path	as_posix(path('/a') / 'b')
+
+# Paths against the rest of the language: comparison, coercion to string, len,
+# and a path inside a list.
+bool | path | string	(path('/a') / 'b') == path('/a/b')
+bool | path | string	path('/a/b') == '/a/b'
+bool | path | string	path('/a/b') != path('/a/c')
+bool | path | string	path('/a/b') == path('/a/b/')
+bool | path | string	path('/A') == path('/a')
+bool | path | string	path('/a') < path('/b')
+bool | path | string	path('/b') > path('/a')
+bool | string | path	'/a' < path('/b')
+string | path	string(path('/a/b'))
+string | path	string(path('s3://b/d/'))
+int | path	len(path('/a/b'))
+int | path	len(path('.'))
+string | list[path] | path	join([path('/a'), path('/b')], ',')
+string | list[path] | path	join([path('/a') / 'x'], ',')
+string | path	upper(path('/a/b'))
+string | path	'prefix ' + path('/a/b')

@@ -939,3 +939,360 @@ list[string] | string | int :: re_split('a1b2c', '\d', 1)
 # ("['a1b2c']") per Python's re.split rule; the reference discards it
 # ("[]"). See the shared explanation above.
 list[string] | string | int :: re_split('a1b2c', '\d', -1)
+
+# ═══ C4: the path family ═════════════════════════════════════════════════════
+#
+# Everything below is a path case. The reference implementation's path family
+# evaluates under ITS OWN path_format, which is POSIX, so the corpus carries no
+# Windows case at all and none of these entries is a flavor disagreement; a URI
+# is not a flavor (it is detected from the text under any path_format), so the
+# URI entries below ARE genuine measurements.
+
+# ── sqi is right: a POSIX "//" root survives path(p.parts) ───────────────────
+#
+# POSIX.1-2017 section 4.13 makes exactly two leading slashes implementation-
+# defined, and CPython's PurePosixPath keeps "//" as its own root: PurePosix
+# Path("//", "a") is PurePosixPath("//a") and PurePosixPath(*PurePosixPath(
+# "//a/b").parts) is PurePosixPath("//a/b"). The reference collapses the pair
+# to a single slash when rebuilding from parts, which breaks RFC 0006 line
+# 767's own stated guarantee ("supporting patterns like path(p.parts) == p for
+# roundtrip operations") for every "//" path. sqi keeps it; the sqi answers
+# below are CPython's, verified on python3 3.14.6.
+
+# Reconstructing from parts: sqi gives "//a" (CPython's PurePosixPath("//",
+# "a")), the reference collapses it to "/a". See the explanation above.
+path | list[string] :: path(['//', 'a'])
+
+# The roundtrip itself for a "//" path: sqi holds it (true), the reference
+# breaks it (false) because its path(parts) collapsed the root. See the
+# explanation above.
+bool | path | list[string] | string :: path(path('//a/b').parts) == path('//a/b')
+
+# ── sqi is right: path([]) is Path(), which is "." ───────────────────────────
+#
+# Two specification rules meet here. RFC 0006 line 755 defines the list row as
+# "Construct path from components (like Path(*parts) in Python)", and Path()
+# with no components is PurePosixPath("."). Expression-Language line 846 makes
+# list[nulltype] implicitly convertible to list[T] for any T, which is what
+# lets the empty literal reach that row at all — the same rule that makes
+# [].join(sep) resolve, already relied on by C2's join. The reference has no
+# list[nulltype] row and rejects the call outright.
+
+# The empty-list constructor: sqi returns "." per Path(*[]), the reference
+# reports "No matching signature for path(list[nulltype])". See the
+# explanation above.
+path | list[nulltype] :: path([])
+
+# ── sqi is right: a URI keeps the empty component a trailing slash leaves ────
+#
+# Expression-Language section 1.2.1 says a URI's path portion is parsed "without
+# any normalization — consecutive slashes, `.`, and `..` segments are preserved
+# verbatim", and its own worked example gives path("s3://bucket/a//b/c").parts
+# as ["s3://bucket", "a", "", "b", "c"], so an empty component is a component.
+# "s3://bucket/" therefore has parts ["s3://bucket", ""], exactly as
+# "s3://bucket/dir/" has ["s3://bucket", "dir", ""].
+#
+# THE REFERENCE CONTRADICTS ITSELF HERE, which is what makes this a defect
+# rather than a second reading. It renders "s3://bucket/" with the slash
+# intact, reports its parts as ["s3://bucket"] WITHOUT the empty component, and
+# reports "s3://bucket//" as ["s3://bucket", "", ""] — so one trailing slash
+# yields no component and two yield two. Its own parts consequently break RFC
+# 0006 line 767's path(p.parts) == p guarantee for this shape.
+#
+# sqi answered "s3://bucket" for the render until this task, which was a real
+# defect of its own (found by this corpus, fixed here): a path Value is
+# normalized at construction, so path("s3://bucket/") + "key" produced
+# "s3://bucketkey" — a different and entirely legitimate-looking bucket. The
+# render now agrees with the reference and only parts disagree.
+
+# A URI's trailing slash in parts: sqi keeps the empty component
+# ("s3://bucket|"), the reference drops it. See the explanation above.
+string | list[string] | path :: join(path('s3://bucket/').parts, '|')
+
+# The same disagreement counted rather than rendered: sqi 2 parts, reference 1.
+# See the explanation above.
+int | list[string] | path :: len(path('s3://bucket/').parts)
+
+# The roundtrip that the reference's own parts break: sqi holds path(p.parts)
+# == p (true), the reference does not (false), because its parts lost the
+# trailing empty component its render kept. See the explanation above.
+bool | path | list[string] | string :: path(path('s3://bucket/').parts) == path('s3://bucket/')
+
+# ── sqi is right: stem/suffix follow CURRENT pathlib, the reference follows ──
+# ── the pre-3.14 rule ───────────────────────────────────────────────────────
+#
+# Expression-Language section 2.3.1 says these properties "match Python's
+# pathlib.PurePath behavior" and links the current pathlib documentation.
+# CPython 3.14 REWROTE the rule, and sqi implements the new one:
+#
+#     suffix:   name = self.name.lstrip('.'); i = name.rfind('.'); ...
+#     stem:     i = name.rfind('.'); stem = name[:i]
+#               if stem.lstrip('.'): return stem   # else the whole name
+#
+# The whole LEADING RUN of dots is stripped before the split, and a trailing
+# dot IS a suffix. Older pathlib guarded only a single leading dot (0 < i <
+# len(name) - 1), which gives ".", ".b" for "..b" and "b.", "" for "b.". The
+# reference reproduces the OLD rule exactly. Measured on python3 3.14.6, whose
+# pathlib source is quoted above verbatim.
+
+# "..b" under the leading-dot-run rule: sqi (and pathlib 3.14) give the stem as
+# the whole name, the reference splits at the second dot. See the explanation
+# above.
+string | path :: path('/a/..b').stem
+
+# The suffix half of the same "..b" case: sqi (and pathlib 3.14) report no
+# suffix, the reference reports ".b". See the explanation above.
+string | path :: path('/a/..b').suffix
+
+# A trailing dot IS a suffix separator to pathlib 3.14 — stem "b" — and is not
+# to the reference, which reports the stem as "b.". See the explanation above.
+string | path :: path('/a/b.').stem
+
+# The suffix half of the trailing-dot case: sqi (and pathlib 3.14) report ".",
+# the reference reports nothing. See the explanation above.
+string | path :: path('/a/b.').suffix
+
+# The suffixes property reached by the same trailing-dot rule: sqi reports
+# ["."], the reference reports []. Wrapped in join() so this compares the
+# VALUES rather than the list-of-strings rendering below. See the explanation
+# above.
+string | list[string] | path :: join(path('a.').suffixes, '|')
+
+# ── known gap in sqi: list-of-strings rendering, path properties ─────────────
+#
+# The pre-existing gap already baselined above for list literals, coercion,
+# comprehensions, flatten(), sorted(), unique(), C2's split()/rsplit() and C3's
+# regex family: sqi prints list[string] elements unquoted, the reference
+# JSON-quotes them. Both sides agree on the values, their order and the
+# list[string] type in every case below — parts and suffixes are simply the
+# first PROPERTIES to return a list of strings. Every one of them has a
+# rendering-immune companion in corpus.txt wrapping the same property in
+# join(..., '|') or len(...), and those companions agree with the reference
+# exactly, which is what actually verifies the component split.
+
+# List-of-strings rendering, via .parts on an absolute POSIX path: see the
+# explanation above. Same gap, not a new one.
+list[string] | path :: path('/a/b/c').parts
+
+# List-of-strings rendering, via .parts on a URI (the scheme+authority is the
+# first element): see the explanation above. Same gap, not a new one.
+list[string] | path :: path('s3://b/d/f').parts
+
+# List-of-strings rendering, via .suffixes on a multi-suffix name: see the
+# explanation above. Same gap, not a new one.
+list[string] | path :: path('c.tar.gz').suffixes
+
+# ── sqi is right: with_number replaces the LAST MATCH, not the tail ──────────
+#
+# RFC 0006 line 822 (Expression-Language section 2.3.2, "Frame Number
+# Substitution"): the function "searches the filename stem from the end for
+# these patterns and replaces the last match" — the last MATCH, a bounded run
+# of one placeholder kind, not everything from where that match starts to the
+# end of the stem. sqi scans the stem for every candidate (a printf specifier,
+# a '#' run, a digit run) and replaces the last one by start position, so a
+# '#' run followed by digits is TWO candidates and only the digits are
+# replaced.
+#
+# The reference lets a '#' run swallow the remainder of the stem, which in one
+# of the rows below DESTROYS a literal character that was in the input:
+# with_number("##a3", 7) comes back "07" there, and the "a" is simply gone.
+# That is a reference defect against its own specification's wording, not a
+# second valid reading of it, and it was adjudicated as such during C4 Task 8's
+# review. Do not change sqi to match it. corpus.txt deliberately also carries
+# the rows where the two AGREE ("##b##", "3###", "#3#", "%04d3", "##%04d"), so
+# a later change that overcorrects toward the reference fails on those instead
+# of silently trading one set of answers for the other.
+
+# Hash run then digits: sqi replaces only the digit run ("###007"), the
+# reference swallows the hashes too ("007"). See the explanation above.
+string | int :: with_number('###003', 7)
+
+# One hash then digits: sqi "#007", the reference "7". See the explanation
+# above.
+string | int :: with_number('#003', 7)
+
+# Two hashes then digits: sqi "##007", the reference "07". See the explanation
+# above.
+string | int :: with_number('##003', 7)
+
+# Four hashes then digits: sqi "####007", the reference "0007". See the
+# explanation above.
+string | int :: with_number('####003', 7)
+
+# The row where the reference DESTROYS input: sqi "##a7" keeps the literal "a",
+# the reference answers "07" without it. See the explanation above.
+string | int :: with_number('##a3', 7)
+
+# A leading literal before the hash run: sqi "a###9" replaces only the trailing
+# digit, the reference "a009" replaces the hashes. See the explanation above.
+string | int :: with_number('a###5', 9)
+
+# Digits, hashes, digits: sqi replaces only the LAST candidate ("12##07"), the
+# reference swallows from the hash run onward ("1207"). See the explanation
+# above.
+string | int :: with_number('12##34', 7)
+
+# A hash run with a NON-digit and no candidate after it: sqi "07a" keeps the
+# trailing "a", the reference drops it ("07"). The same swallow rule as the
+# rows above, on the shape C4 Task 8 left unmeasured. See the explanation
+# above.
+string | int :: with_number('##a', 7)
+
+# ── sqi is right: an oversized %0Nd width is an error ────────────────────────
+#
+# RFC 0006 line 831: "The maximum padding width is 32 characters; wider printf
+# or hash patterns are an error." A width literal too large even to parse as an
+# integer is unambiguously wider than 32, so sqi fails it with the same
+# errPaddingTooWide sentinel as the ordinary width-33 case. The reference
+# accepts it silently and applies NO padding at all — a second defect in the
+# same family as the hash-swallow rows above. corpus.txt carries "%032d" and
+# "%033d" beside this one, and the two sides agree on both, so this entry is
+# about the overflow specifically and not about where the cap sits.
+
+# An unparseable %0Nd width: sqi errors per RFC 0006 line 831, the reference
+# returns "f_1.exr" unpadded. See the explanation above.
+string | int :: with_number('f_%0999999999999999999999d.exr', 1)
+
+# ── sqi is right: a relative path IS relative to "." ─────────────────────────
+#
+# Expression-Language names the rule outright — "matching uses
+# PurePath.is_relative_to()" — and CPython answers True: path(".") is the last
+# element of PurePosixPath("a/b").parents, so PurePosixPath("a/b").
+# is_relative_to(".") is True and .relative_to(".") returns PurePosixPath(
+# "a/b"). The reference answers false, and errors from relative_to, for every
+# receiver against ".", relative ones included. Measured on python3 3.14.6.
+#
+# The ABSOLUTE direction of the same question was a genuine sqi defect this
+# corpus found and this task fixed: an unguarded prefix test over parts() made
+# every path relative to the part-less ".", so path("/a/b").relative_to(path(
+# ".")) answered "/a/b" — a "relative" result that is absolute. sqi now agrees
+# with CPython and the reference on those rows, and they are in corpus.txt as
+# agreements rather than here.
+
+# A relative receiver against ".": sqi true (CPython's answer), the reference
+# false. See the explanation above.
+bool | path | string :: path('a/b').is_relative_to(path('.'))
+
+# The same question with the empty string, which parses to "." on both sides:
+# sqi true, the reference false. See the explanation above.
+bool | path | string :: path('a/b').is_relative_to(path(''))
+
+# relative_to's half of the same rule: sqi returns "a/b" as CPython does, the
+# reference refuses. See the explanation above.
+path | string :: path('a/b').relative_to(path('.'))
+
+# ── sqi is right: "/" and "+" re-normalize their result ──────────────────────
+#
+# The reference's path() normalizes (path("/a/b/") is "/a/b", path("/a/./b") is
+# "/a/b", path("a//b") is "a/b") but its "/" and "+" store the joined TEXT raw
+# and never re-parse it. It then contradicts itself about the value it built:
+# path("/a/b") / "c/" renders "/a/b/c/" while reporting that same value's
+# .parts as ["/", "a", "b", "c"] and its .name as "c".
+#
+# CPython normalizes (PurePosixPath("/a/b") / "." is PurePosixPath("/a/b")),
+# Expression-Language section 2.1.5 says the join matches pathlib, and in this
+# engine a path Value is normalized BY CONSTRUCTION — Value.Path re-parses — so
+# a non-normalizing join would break the path(p.parts) == p guarantee the whole
+# path engine is built on. Ruled a reference defect during C4 Task 9; sqi
+# normalizes. Every sqi answer below was verified against CPython 3.14.6.
+
+# Three leading slashes on the child: sqi "/b" (PurePosixPath collapses three
+# or more), the reference keeps "///b" verbatim. See the explanation above.
+path | string :: path('/a') / '///b'
+
+# An empty child: sqi leaves the parent alone, the reference appends a trailing
+# separator. See the explanation above.
+path | string :: path('/a/b') / ''
+
+# A "." child: sqi drops the no-op segment, the reference keeps "/a/b/.". See
+# the explanation above.
+path | string :: path('/a/b') / '.'
+
+# A child with a trailing separator: sqi "/a/b/c", the reference "/a/b/c/".
+# See the explanation above.
+path | string :: path('/a/b') / 'c/'
+
+# An interior "." segment in the child: sqi drops it, the reference keeps
+# "/a/b/d/./e". See the explanation above.
+path | string :: path('/a/b') / 'd/./e'
+
+# Consecutive separators inside the child: sqi collapses them, the reference
+# keeps "/a/b/d//e". See the explanation above.
+path | string :: path('/a/b') / 'd//e'
+
+# An empty parent: sqi "b", the reference "./b" — the parent's "." is a render
+# of the empty path, not a component, and CPython agrees with sqi. See the
+# explanation above.
+path | string :: path('') / 'b'
+
+# A "." parent, the same case reached through explicit text: sqi "b", the
+# reference "./b". See the explanation above.
+path | string :: path('.') / 'b'
+
+# ── sqi is right: a POSIX "//" parent keeps both slashes through a join ──────
+#
+# A separate ruling from the normalization family above, and a separate root
+# shape: POSIX.1-2017 section 4.13's exactly-two-slashes root. CPython gives
+# PurePosixPath("//") / "x" as PurePosixPath("//x"); the reference answers
+# "/x", collapsing the root it would itself have preserved in path("//").
+# Measured on python3 3.14.6.
+
+# A "//"-rooted parent: sqi "//x" (CPython's answer), the reference "/x". See
+# the explanation above.
+path | string :: path('//') / 'x'
+
+# ── sqi is right: a trailing slash on the JOIN'S CHILD is not a part ─────────
+#
+# NOT the same defect as the join-normalization family above, and it was
+# checked rather than assumed: for a URI the reference is internally consistent
+# here (its .parts reports the trailing "" too), so the self-contradiction that
+# convicted the family above is absent.
+#
+# Expression-Language section 2.1.5's worked example is decisive on its own:
+# path("s3://bucket/dir/") / "file" produces "s3://bucket/dir/file", and a
+# trailing slash is consumed by the join "matching pathlib behavior". A
+# trailing slash on the child is therefore not a component either, so
+# path("s3://b/d/") / "a/" is "s3://b/d/a". Adjudicated in sqi's favor during
+# C4 Task 9's review. Note this rules on a trailing slash the JOIN consumes;
+# the one a URI carries through path() alone is a component, and is kept — see
+# the "s3://bucket/" entries higher up.
+
+# A child with a trailing slash: sqi consumes it per section 2.1.5, the
+# reference keeps "s3://b/d/a/". See the explanation above.
+path | string :: path('s3://b/d/') / 'a/'
+
+# The same rule with a child carrying interior repeated separators too: sqi
+# "s3://b/d/a/b", the reference "s3://b/d/a//b". See the explanation above.
+path | string :: path('s3://b/d/') / 'a//b'
+
+# The joined value's parts, which is where the reference is self-consistent and
+# the two simply disagree about whether the child's trailing slash was a
+# component: sqi "s3://b|d|a", the reference "s3://b|d|a|". See the explanation
+# above.
+string | list[string] | path :: join((path('s3://b/d/') / 'a/').parts, '|')
+
+# ── sqi is right: "+" re-normalizes too ─────────────────────────────────────
+#
+# The append operator has the same non-normalizing behavior in the reference as
+# the join does, for the same reason and with the same ruling — see the "/" and
+# "+" explanation above. It gets its own entry because it is the "+" row rather
+# than the "/" row that produces it.
+
+# A bare separator appended: sqi re-parses and drops the trailing separator,
+# the reference stores "/a/" raw. See the explanation above.
+path | string :: path('/a') + '/'
+
+# ── sqi is right: path + path is typed path ──────────────────────────────────
+#
+# The VALUE agrees ("/a/bc" on both sides); only the TYPE differs, which is why
+# this case earns a corpus line of its own — the harness compares the type as
+# well as the rendered text. RFC 0006's overload table has no __add__(path,
+# path) row, so the pair reaches __add__(path, string) through Expression-
+# Language section 1.2.3's path -> string coercion at cost 1, which beats the
+# (string, string) row at cost 2. The declared return type of the row that wins
+# is path. The reference picked the string row.
+
+# path + path: sqi types the result path per the section 2.1.5 overload table,
+# the reference types it string. Same text either way. See the explanation
+# above.
+path | string :: path('/a/b') + path('c')

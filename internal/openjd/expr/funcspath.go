@@ -326,6 +326,22 @@ func pathSeparators(p parsedPath) string {
 // whatever is left of p's parts after that prefix, valid only when ok.
 func relativeParts(p, other parsedPath) (remaining []string, ok bool) {
 	pp, op := p.parts(), other.parts()
+	// An ANCHORLESS other is the one case a prefix test over parts() gets
+	// wrong on its own. path(".") has no parts at all, so its (empty) part
+	// list is trivially a prefix of every path's — including an absolute
+	// one's, which would make path("/a/b").is_relative_to(path(".")) true and
+	// path("/a/b").relative_to(path(".")) answer "/a/b", a "relative" result
+	// that is absolute. CPython says False here, because is_relative_to is
+	// "other == self or other in self.parents" and an absolute path's parents
+	// run down to "/" and never reach "."; the reference implementation agrees,
+	// and the specification names PurePath.is_relative_to() as the rule. When
+	// other DOES have parts, its first one is its anchor and the prefix test
+	// already compares the anchors, so this guard is needed only for the empty
+	// case — and it must not reject it outright, since two anchorless paths
+	// really are comparable ("a/b" IS relative to ".").
+	if other.root == "" && p.root != "" {
+		return nil, false
+	}
 	if len(op) > len(pp) {
 		return nil, false
 	}

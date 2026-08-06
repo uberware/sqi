@@ -343,6 +343,58 @@ func TestPathWithFunctions(t *testing.T) {
 	}
 }
 
+// TestPathRelativeTo_AnchorlessOther pins is_relative_to and relative_to
+// against a receiver-less "." — the one shape where a plain prefix test over
+// parts() gives the wrong answer.
+//
+// path('.') has NO parts at all, so an unguarded prefix test says every path is
+// relative to it, including an absolute one. CPython disagrees, and so does the
+// reference implementation: PurePosixPath('/a/b').is_relative_to('.') is False,
+// because is_relative_to is "other == self or other in self.parents" and an
+// absolute path's parents run down to "/", never to ".". The Expression-Language
+// specification names that function outright ("matching uses
+// PurePath.is_relative_to()", section on path mapping rules), and relative_to
+// inherited the same defect in a louder form: it answered path('/a/b') for
+// path('/a/b').relative_to(path('.')) — a "relative" result that is absolute.
+//
+// The rows where BOTH paths are anchorless stay true, which is CPython's answer
+// and the reason the guard tests the anchors rather than simply rejecting an
+// empty other. The reference says false for those too; it is wrong there, and
+// that disagreement is baselined in test/oracle/baseline.txt.
+func TestPathRelativeTo_AnchorlessOther(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('/a/b').is_relative_to(path('.'))`, "false"},
+		{`path('/').is_relative_to(path('.'))`, "false"},
+		{`path('//a').is_relative_to(path('.'))`, "false"},
+		{`path('s3://b/d').is_relative_to(path('.'))`, "false"},
+		{`path('a/b').is_relative_to(path('.'))`, "true"},
+		{`path('a/b').is_relative_to(path(''))`, "true"},
+		{`path('.').is_relative_to(path('.'))`, "true"},
+		{`path('a/b').relative_to(path('.'))`, "a/b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+	for _, src := range []string{
+		`path('/a/b').relative_to(path('.'))`,
+		`path('s3://b/d').relative_to(path('.'))`,
+	} {
+		t.Run(src, func(t *testing.T) {
+			if _, err := Eval(src, MapSymbols{}, TAny); !errors.Is(err, errNotRelative) {
+				t.Errorf("Eval(%q) error = %v, want %v", src, err, errNotRelative)
+			}
+		})
+	}
+}
+
 // TestPathWithFunctions_Reject pins the three error conditions. All three
 // behave the same way in Python and in the reference — measured during design —
 // so any divergence here is a bug rather than an adjudication.

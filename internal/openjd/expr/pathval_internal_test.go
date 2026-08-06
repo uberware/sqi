@@ -382,6 +382,16 @@ func TestParsePath_URI(t *testing.T) {
 		{"s3://bucket/dir/", "s3://bucket/dir/", []string{"s3://bucket", "dir", ""}},
 		{"s3://bucket", "s3://bucket", []string{"s3://bucket"}},
 		{"https://h/x/y", "https://h/x/y", []string{"https://h", "x", "y"}},
+		// Task 11: a trailing slash IMMEDIATELY after the authority is the same
+		// empty component the "s3://bucket/dir/" row above already pins, and it
+		// was being discarded — see TestParsePath_URITrailingSlashAfterAuthority
+		// for what that cost.
+		{"s3://bucket/", "s3://bucket/", []string{"s3://bucket", ""}},
+		{"s3://bucket//", "s3://bucket//", []string{"s3://bucket", "", ""}},
+		// The negative that keeps the fix honest: no separator after the
+		// authority at all means no path portion and therefore no component,
+		// however the authority itself ends.
+		{"s3://", "s3://", []string{"s3://"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
@@ -400,6 +410,56 @@ func TestParsePath_URI(t *testing.T) {
 				if !p.isAbsolute() {
 					t.Errorf("parsePath(%q, %v).isAbsolute() = false; a URI is always absolute", tc.in, f)
 				}
+			}
+		})
+	}
+}
+
+// TestParsePath_URITrailingSlashAfterAuthority pins the consequences of the
+// empty component a bare "s3://bucket/" carries, which parsePath used to
+// discard.
+//
+// splitURI reports the SAME rest ("") for two different inputs — "s3://bucket",
+// where there is no separator after the authority at all, and "s3://bucket/",
+// where there is one with nothing after it — and parsePath's `if rest != ""`
+// guard then collapsed the two into one value. That is normalization, which
+// the specification forbids for the path portion of a URI ("consecutive
+// slashes, `.`, and `..` segments are preserved verbatim", Expression-Language
+// section 1.2.1), and it made this file's own rules disagree with each other:
+// "s3://bucket/dir/" kept its trailing empty component while "s3://bucket/"
+// lost it, though a trailing separator produced both.
+//
+// It was not cosmetic. Path values are normalized by construction (Value.Path
+// re-parses), so the loss happened at construction and every later operation
+// saw the shortened text: appending an object key to a bucket URI produced
+// "s3://bucketkey", a different and legitimate-looking bucket.
+//
+// The reference implementation renders "s3://bucket/" too, and disagrees only
+// about that value's parts, where it contradicts itself — it reports
+// ["s3://bucket"] for "s3://bucket/" but ["s3://bucket", "", ""] for
+// "s3://bucket//", and its own parts therefore break the specification's
+// path(p.parts) == p roundtrip for the first. See test/oracle/baseline.txt.
+func TestParsePath_URITrailingSlashAfterAuthority(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('s3://bucket/')`, "s3://bucket/"},
+		{`path('s3://bucket')`, "s3://bucket"},
+		{`path('s3://bucket/') + 'key'`, "s3://bucket/key"},
+		{`path('s3://bucket') + 'key'`, "s3://bucketkey"},
+		{`path('s3://bucket/') / 'key'`, "s3://bucket/key"},
+		{`path('s3://bucket/').name`, ""},
+		{`path('s3://bucket/').parent`, "s3://bucket"},
+		{`join(path('s3://bucket/').parts, '|')`, "s3://bucket|"},
+		{`path(path('s3://bucket/').parts) == path('s3://bucket/')`, "true"},
+		{`path('s3://bucket/') == path('s3://bucket')`, "false"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
 			}
 		})
 	}
