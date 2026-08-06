@@ -2,7 +2,10 @@
 
 package expr
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 // Symbols resolves the dotted names an expression references — Param.Frame,
 // Task.Param.Chunk, Session.WorkingDirectory and the like.
@@ -42,14 +45,12 @@ func (m MapSymbols) Lookup(name string) (Value, bool) {
 // its operands into "11" rather than adding them, and section 1.3.2's own
 // example of "Count: {{ len(myList) }}" yielding "Count: 5" describes
 // evaluating naturally and converting afterward.
-func (e *Expression) Eval(syms Symbols, target Type) (Value, error) {
-	if syms == nil {
-		syms = MapSymbols(nil)
-	}
+func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, error) {
+	ec := newEvalCtx(e.src, syms, opts)
 	// The target is threaded inward for the node kinds that forward it (see
 	// evalNode); the boundary coercion below still applies to the result of the
 	// whole expression, whether or not any node consumed the target.
-	v, err := evalNode(e.root, e.src, syms, target, 0)
+	v, err := evalNode(e.root, ec, target, 0)
 	if err != nil {
 		return Value{}, err
 	}
@@ -64,12 +65,81 @@ func (e *Expression) Eval(syms Symbols, target Type) (Value, error) {
 
 // Eval parses and evaluates src in one step. Prefer Parse plus Expression.Eval
 // when the same expression is evaluated more than once.
-func Eval(src string, syms Symbols, target Type) (Value, error) {
+func Eval(src string, syms Symbols, target Type, opts ...Option) (Value, error) {
 	e, err := Parse(src)
 	if err != nil {
 		return Value{}, err
 	}
-	return e.Eval(syms, target)
+	return e.Eval(syms, target, opts...)
+}
+
+// PathFormat selects the semantics the path type uses during evaluation.
+//
+// The specification makes this an evaluator setting rather than a property of
+// the host, and that distinction is load-bearing here: sqi parses templates
+// server-side, so deriving it from the running machine would let one template
+// expand into different tasks depending on which OS submitted it.
+type PathFormat int
+
+const (
+	// PathPOSIX is Python's PurePosixPath. It is the DEFAULT, which differs
+	// from the specification's own default of host-native on purpose — the
+	// spec itself names POSIX as what TEMPLATE scope wants, "to ensure
+	// consistent behavior regardless of the submission machine's OS", and
+	// template parsing is exactly that scope.
+	PathPOSIX PathFormat = iota
+	// PathWindows is Python's PureWindowsPath.
+	PathWindows
+	// PathNative is the specification's own default: the host's semantics.
+	// Nothing in sqi selects it yet; sub-project E does, for host contexts.
+	PathNative
+)
+
+// resolve turns PathNative into a real flavor. Everything downstream sees
+// POSIX or Windows and never has to ask again.
+func (f PathFormat) resolve() PathFormat {
+	if f != PathNative {
+		return f
+	}
+	if runtime.GOOS == "windows" {
+		return PathWindows
+	}
+	return PathPOSIX
+}
+
+// Option configures one evaluation.
+//
+// It is variadic so that existing three-argument calls keep compiling, and so
+// sub-project E can add the section 1.3.9 and 1.3.10 limits through the same
+// channel rather than changing the signature a second time.
+type Option func(*evalCtx)
+
+// WithPathFormat selects the path semantics for this evaluation.
+func WithPathFormat(f PathFormat) Option {
+	return func(ec *evalCtx) { ec.pathFormat = f.resolve() }
+}
+
+// evalCtx is the state one evaluation threads through every node.
+//
+// It bundles what used to be two parameters on seventeen functions. The point
+// is not brevity: sub-project E must thread operation and memory counters the
+// same way, and a struct absorbs those as fields instead of as another sweep
+// over every signature.
+type evalCtx struct {
+	src        string
+	syms       Symbols
+	pathFormat PathFormat
+}
+
+func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
+	if syms == nil {
+		syms = MapSymbols(nil)
+	}
+	ec := evalCtx{src: src, syms: syms, pathFormat: PathPOSIX}
+	for _, o := range opts {
+		o(&ec)
+	}
+	return ec
 }
 
 // evalNode dispatches on node type, counting one level of evaluation recursion
@@ -108,11 +178,11 @@ func Eval(src string, syms Symbols, target Type) (Value, error) {
 // well-tested recursion accounting for a correctness property nothing
 // currently depends on. Revisit if sub-project E's own configurable depth
 // limit makes the discrepancy user-visible.
-func evalNode(n Node, src string, syms Symbols, target Type, depth int) (Value, error) {
+func evalNode(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if depth >= maxEvalDepth {
-		return Value{}, errorAt(src, n.Pos(), "this expression is nested too deeply to evaluate")
+		return Value{}, errorAt(ec.src, n.Pos(), "this expression is nested too deeply to evaluate")
 	}
-	return evalDispatch(n, src, syms, target, depth+1)
+	return evalDispatch(n, ec, target, depth+1)
 }
 
 // evalDispatch is evalNode's type switch, split out so that the depth check and
@@ -123,41 +193,41 @@ func evalNode(n Node, src string, syms Symbols, target Type, depth int) (Value, 
 // *ListComp as a fifteenth case here pushed the switch itself over cyclop's
 // cap, so the literals (which need none of this function's parameters beyond
 // n) move out rather than the cap moving up.
-func evalDispatch(n Node, src string, syms Symbols, target Type, depth int) (Value, error) {
+func evalDispatch(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if v, ok := evalLiteral(n); ok {
 		return v, nil
 	}
 	switch v := n.(type) {
 	case *Name:
-		return evalName(v, src, syms, depth)
+		return evalName(v, ec, depth)
 	case *Unary:
-		return evalUnary(v, src, syms, depth)
+		return evalUnary(v, ec, depth)
 	case *Binary:
-		return evalBinary(v, src, syms, depth)
+		return evalBinary(v, ec, depth)
 	case *Compare:
-		return evalCompare(v, src, syms, depth)
+		return evalCompare(v, ec, depth)
 	case *Logical:
-		return evalLogical(v, src, syms, target, depth)
+		return evalLogical(v, ec, target, depth)
 	case *Cond:
-		return evalCond(v, src, syms, target, depth)
+		return evalCond(v, ec, target, depth)
 	case *ListLit:
-		return evalListLit(v, src, syms, target, depth)
+		return evalListLit(v, ec, target, depth)
 	case *Index:
-		return evalIndex(v, src, syms, depth)
+		return evalIndex(v, ec, depth)
 	case *Slice:
-		return evalSlice(v, src, syms, depth)
+		return evalSlice(v, ec, depth)
 	case *ListComp:
-		return evalListComp(v, src, syms, target, depth)
+		return evalListComp(v, ec, target, depth)
 	case *Call:
-		return evalCall(v, src, syms, depth)
+		return evalCall(v, ec, depth)
 	case *Access:
-		recv, err := evalNode(v.X, src, syms, TAny, depth+1)
+		recv, err := evalNode(v.X, ec, TAny, depth+1)
 		if err != nil {
 			return Value{}, err
 		}
-		return evalProperty(recv, v.Attr, src, v.Offset, depth)
+		return evalProperty(recv, v.Attr, ec, v.Offset, depth)
 	}
-	return Value{}, errorAt(src, n.Pos(), "internal error: cannot evaluate %T", n)
+	return Value{}, errorAt(ec.src, n.Pos(), "internal error: cannot evaluate %T", n)
 }
 
 // evalLiteral evaluates a leaf literal node. ok is false for any other node
@@ -181,34 +251,34 @@ func evalLiteral(n Node) (v Value, ok bool) {
 // evalName evaluates a dotted name: a symbol, optionally followed by property
 // accesses. See resolveName for why the split happens here rather than in the
 // parser.
-func evalName(n *Name, src string, syms Symbols, depth int) (Value, error) {
-	r, ok := resolveName(n, syms)
+func evalName(n *Name, ec evalCtx, depth int) (Value, error) {
+	r, ok := resolveName(n, ec.syms)
 	if !ok {
 		// Name the longest candidate: it is what the author wrote, and a
 		// shorter prefix would misreport which part is unknown.
-		return Value{}, errorAt(src, n.Offset, "unknown symbol %q", n.String())
+		return Value{}, errorAt(ec.src, n.Offset, "unknown symbol %q", n.String())
 	}
-	return evalProperties(r.Val, r.Rest, src, n.Offset, depth)
+	return evalProperties(r.Val, r.Rest, ec, n.Offset, depth)
 }
 
-func evalUnary(n *Unary, src string, syms Symbols, depth int) (Value, error) {
-	x, err := evalNode(n.X, src, syms, TAny, depth)
+func evalUnary(n *Unary, ec evalCtx, depth int) (Value, error) {
+	x, err := evalNode(n.X, ec, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	out, err := applyUnary(n.Op, x)
 	if err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	return out, nil
 }
 
-func evalBinary(n *Binary, src string, syms Symbols, depth int) (Value, error) {
-	l, err := evalNode(n.L, src, syms, TAny, depth)
+func evalBinary(n *Binary, ec evalCtx, depth int) (Value, error) {
+	l, err := evalNode(n.L, ec, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	r, err := evalNode(n.R, src, syms, TAny, depth)
+	r, err := evalNode(n.R, ec, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -216,7 +286,7 @@ func evalBinary(n *Binary, src string, syms Symbols, depth int) (Value, error) {
 	if err != nil {
 		// n.Offset is the operator's own position, so the error blames the "+"
 		// rather than the start of the expression.
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	return out, nil
 }
@@ -228,13 +298,13 @@ func evalBinary(n *Binary, src string, syms Symbols, depth int) (Value, error) {
 // operands unevaluated. An unknown link stops it the same way; the spec states
 // this rule only for a conditional expression, but a comparison chain
 // short-circuits for the same reason and so needs the same treatment.
-func evalCompare(n *Compare, src string, syms Symbols, depth int) (Value, error) {
-	left, err := evalNode(n.Operands[0], src, syms, TAny, depth)
+func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
+	left, err := evalNode(n.Operands[0], ec, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	for i, op := range n.Ops {
-		right, err := evalNode(n.Operands[i+1], src, syms, TAny, depth)
+		right, err := evalNode(n.Operands[i+1], ec, TAny, depth)
 		if err != nil {
 			return Value{}, err
 		}
@@ -243,7 +313,7 @@ func evalCompare(n *Compare, src string, syms Symbols, depth int) (Value, error)
 			// n.OpOffsets[i] is THIS link's own operator, not the chain's
 			// first one (n.Offset) — a chain of three or more operators must
 			// blame whichever link actually failed.
-			return Value{}, wrapAt(src, n.OpOffsets[i], err)
+			return Value{}, wrapAt(ec.src, n.OpOffsets[i], err)
 		}
 		// A link whose operands are not all known yields an unknown bool, so the
 		// chain's outcome is unknown too. Stop here: the remaining operands
@@ -253,7 +323,7 @@ func evalCompare(n *Compare, src string, syms Symbols, depth int) (Value, error)
 			return Unresolved(TBool), nil
 		}
 		if out.Type.Code != CodeBool {
-			return Value{}, wrapAt(src, n.OpOffsets[i],
+			return Value{}, wrapAt(ec.src, n.OpOffsets[i],
 				fmt.Errorf("comparison operator %s did not produce a bool: %s", op, out.Type))
 		}
 		if !out.AsBool() {
@@ -272,13 +342,13 @@ func evalCompare(n *Compare, src string, syms Symbols, depth int) (Value, error)
 // so the result is a placeholder over both types. The spec states this rule only
 // for a conditional expression, but and/or short-circuit for the same reason and
 // so need the same treatment.
-func evalLogical(n *Logical, src string, syms Symbols, target Type, depth int) (Value, error) {
-	left, err := evalNode(n.L, src, syms, target, depth)
+func evalLogical(n *Logical, ec evalCtx, target Type, depth int) (Value, error) {
+	left, err := evalNode(n.L, ec, target, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	if left.IsUnresolved() {
-		right, err := evalNode(n.R, src, syms, target, depth)
+		right, err := evalNode(n.R, ec, target, depth)
 		if err != nil {
 			// The left operand is still reachable at runtime, so the expression
 			// as a whole can still produce a value: report its type rather than
@@ -293,7 +363,7 @@ func evalLogical(n *Logical, src string, syms Symbols, target Type, depth int) (
 	case n.Op == OpOr && truthy(left):
 		return left, nil
 	}
-	return evalNode(n.R, src, syms, target, depth)
+	return evalNode(n.R, ec, target, depth)
 }
 
 // truthy implements section 2.1.6's falsiness rule: ONLY null and false are
@@ -319,26 +389,26 @@ func truthy(v Value) bool {
 //
 // When the condition is not yet known, the evaluator cannot tell which branch
 // will run, so both are evaluated and their types combined. See condResult.
-func evalCond(n *Cond, src string, syms Symbols, target Type, depth int) (Value, error) {
-	cond, err := evalNode(n.If, src, syms, TBool, depth)
+func evalCond(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
+	cond, err := evalNode(n.If, ec, TBool, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	if cond.IsUnresolved() {
 		if !includes(cond.Type, CodeBool) {
-			return Value{}, errorAt(src, n.If.Pos(),
+			return Value{}, errorAt(ec.src, n.If.Pos(),
 				"the condition of a conditional expression must be a bool, found %s", cond.Type)
 		}
-		return condResult(n, src, syms, target, depth)
+		return condResult(n, ec, target, depth)
 	}
 	if cond.Type.Code != CodeBool {
-		return Value{}, errorAt(src, n.If.Pos(),
+		return Value{}, errorAt(ec.src, n.If.Pos(),
 			"the condition of a conditional expression must be a bool, found %s", cond.Type)
 	}
 	if cond.AsBool() {
-		return evalNode(n.Then, src, syms, target, depth)
+		return evalNode(n.Then, ec, target, depth)
 	}
-	return evalNode(n.Else, src, syms, target, depth)
+	return evalNode(n.Else, ec, target, depth)
 }
 
 // condResult evaluates both branches of a conditional whose condition is not yet
@@ -348,9 +418,9 @@ func evalCond(n *Cond, src string, syms Symbols, target Type, depth int) (Value,
 // its error is suppressed and the other branch's type stands alone. Only when
 // BOTH fail is there a real error, and then it names both — a reader cannot tell
 // which branch was meant.
-func condResult(n *Cond, src string, syms Symbols, target Type, depth int) (Value, error) {
-	thenVal, thenErr := evalNode(n.Then, src, syms, target, depth)
-	elseVal, elseErr := evalNode(n.Else, src, syms, target, depth)
+func condResult(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
+	thenVal, thenErr := evalNode(n.Then, ec, target, depth)
+	elseVal, elseErr := evalNode(n.Else, ec, target, depth)
 	switch {
 	case thenErr == nil && elseErr == nil:
 		return Unresolved(UnionOf(thenVal.Type, elseVal.Type)), nil
@@ -359,6 +429,6 @@ func condResult(n *Cond, src string, syms Symbols, target Type, depth int) (Valu
 	case elseErr == nil:
 		return Unresolved(elseVal.Type), nil
 	}
-	return Value{}, errorAt(src, n.Offset,
+	return Value{}, errorAt(ec.src, n.Offset,
 		"both branches of this conditional expression fail: %v; and %v", thenErr, elseErr)
 }

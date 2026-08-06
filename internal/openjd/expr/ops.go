@@ -290,7 +290,11 @@ func applyBinary(op Op, l, r Value) (Value, error) {
 	if l.IsUnresolved() || r.IsUnresolved() {
 		return unresolvedResult(s, b), nil
 	}
-	return callShape(s, b, []Value{l, r})
+	// A zero-value evalCtx is safe here: no row of binaryShapes ever sets
+	// FnCtx (only two function-library rows do — path(string) and
+	// path(list[string]), reached through callFunction, not an operator), so
+	// callShape never actually reads it for this call site.
+	return callShape(evalCtx{}, s, b, []Value{l, r})
 }
 
 // applyUnary dispatches a prefix operator.
@@ -302,7 +306,9 @@ func applyUnary(op Op, v Value) (Value, error) {
 	if v.IsUnresolved() {
 		return unresolvedResult(s, b), nil
 	}
-	return callShape(s, b, []Value{v})
+	// See applyBinary's comment on the zero-value evalCtx: no row of
+	// unaryShapes ever sets FnCtx either.
+	return callShape(evalCtx{}, s, b, []Value{v})
 }
 
 // unresolvedResult is the whole reason a Shape declares a return type.
@@ -326,7 +332,7 @@ func unresolvedResult(s Shape, b bindings) Value {
 // runs it. The shape may have been selected at a widening cost rather than an
 // exact one, so an argument can still need converting — that is where section
 // 2.1.1's int-to-float promotion actually happens.
-func callShape(s Shape, b bindings, args []Value) (Value, error) {
+func callShape(ec evalCtx, s Shape, b bindings, args []Value) (Value, error) {
 	for i := range args {
 		want := substitute(s.Params[i], b)
 		if args[i].Type.Equal(want) {
@@ -337,6 +343,9 @@ func callShape(s Shape, b bindings, args []Value) (Value, error) {
 			return Value{}, err
 		}
 		args[i] = converted
+	}
+	if s.FnCtx != nil {
+		return s.FnCtx(ec, args)
 	}
 	return s.Fn(args)
 }

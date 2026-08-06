@@ -101,14 +101,14 @@ func unionIterableElem(t Type) (Type, bool) {
 // resolved path (runComp's coerce call) and the unresolved one (unresolvedComp),
 // exactly as evalListLit's target flows into both of its own. The filter gets
 // TBool and the iterable gets TAny.
-func evalListComp(n *ListComp, src string, syms Symbols, target Type, depth int) (Value, error) {
-	iter, err := evalNode(n.Iter, src, syms, TAny, depth+1)
+func evalListComp(n *ListComp, ec evalCtx, target Type, depth int) (Value, error) {
+	iter, err := evalNode(n.Iter, ec, TAny, depth+1)
 	if err != nil {
 		return Value{}, err
 	}
 	elemType, ok := iterableElem(iter.Type)
 	if !ok {
-		return Value{}, errorAt(src, n.Iter.Pos(), "a %s cannot be iterated", iter.Type)
+		return Value{}, errorAt(ec.src, n.Iter.Pos(), "a %s cannot be iterated", iter.Type)
 	}
 	// Section 1.3.7: "A loop variable that shadows an existing binding is an
 	// error." The <UserIdentifier> rule the parser enforces already prevents
@@ -118,19 +118,19 @@ func evalListComp(n *ListComp, src string, syms Symbols, target Type, depth int)
 	// This is only as precise as the caller's table: expr has no scope
 	// information, so a caller that binds names which are not actually in
 	// scope at this expression will produce a false rejection. See doc.go.
-	if _, bound := syms.Lookup(n.Var); bound {
-		return Value{}, errorAt(src, n.VarOffset,
+	if _, bound := ec.syms.Lookup(n.Var); bound {
+		return Value{}, errorAt(ec.src, n.VarOffset,
 			"the loop variable %q shadows an existing binding", n.Var)
 	}
 
 	elemTarget := listElemTarget(target)
 	if iter.IsUnresolved() {
-		return unresolvedComp(n, src, syms, elemTarget, elemType, depth)
+		return unresolvedComp(n, ec, elemTarget, elemType, depth)
 	}
 
 	items, err := iterItems(iter)
 	if err != nil {
-		return Value{}, wrapAt(src, n.Iter.Pos(), err)
+		return Value{}, wrapAt(ec.src, n.Iter.Pos(), err)
 	}
 	// This reads as running AFTER iterItems, but iterItems itself allocates
 	// nothing new to check retroactively here: a list's items are the value's
@@ -141,9 +141,9 @@ func evalListComp(n *ListComp, src string, syms Symbols, target Type, depth int)
 	// "before any allocation" contract, applied to the allocations that are
 	// actually downstream of this line.
 	if err := checkElementCount(len(items)); err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
-	return runComp(n, src, syms, elemTarget, elemType, items, depth)
+	return runComp(n, ec, elemTarget, elemType, items, depth)
 }
 
 // unresolvedComp handles an iterable with no value: the body is type-checked
@@ -155,14 +155,15 @@ func evalListComp(n *ListComp, src string, syms Symbols, target Type, depth int)
 // produces, is no longer decidable) — elemType is the iterable's element type
 // either way, computed once by evalListComp and threaded through rather than
 // re-derived from whatever partial results runComp happened to collect.
-func unresolvedComp(n *ListComp, src string, syms Symbols, elemTarget, elemType Type, depth int) (Value, error) {
-	scoped := &scopedSymbols{parent: syms, name: n.Var, val: Unresolved(elemType)}
+func unresolvedComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, depth int) (Value, error) {
+	scoped := ec
+	scoped.syms = &scopedSymbols{parent: ec.syms, name: n.Var, val: Unresolved(elemType)}
 	if n.Cond != nil {
-		if err := checkCompFilter(n, src, scoped, depth); err != nil {
+		if err := checkCompFilter(n, scoped, depth); err != nil {
 			return Value{}, err
 		}
 	}
-	v, err := evalNode(n.Elem, src, scoped, elemTarget, depth+1)
+	v, err := evalNode(n.Elem, scoped, elemTarget, depth+1)
 	if err != nil {
 		return Value{}, err
 	}
@@ -178,7 +179,7 @@ func unresolvedComp(n *ListComp, src string, syms Symbols, elemTarget, elemType 
 		// list[int] target, say — is reported here exactly as coerce() would
 		// report it on the resolved path, rather than silently accepted
 		// because there is no concrete value yet to check against the target.
-		return Value{}, wrapAt(src, n.Elem.Pos(), cerr)
+		return Value{}, wrapAt(ec.src, n.Elem.Pos(), cerr)
 	}
 	return Unresolved(ListOf(elem)), nil
 }
@@ -190,14 +191,15 @@ func unresolvedComp(n *ListComp, src string, syms Symbols, elemTarget, elemType 
 // result a placeholder, because which elements survive is unknown. That
 // mirrors how evalCond and evalCompare treat an unresolved condition, right
 // down to reusing the same must-be-a-bool check (see evalCompFilter).
-func runComp(n *ListComp, src string, syms Symbols, elemTarget, elemType Type, items []Value, depth int) (Value, error) {
+func runComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, items []Value, depth int) (Value, error) {
 	out := make([]Value, 0, len(items))
 	types := make([]Type, 0, len(items))
 	unresolved := false
 	for _, item := range items {
-		scoped := &scopedSymbols{parent: syms, name: n.Var, val: item}
+		scoped := ec
+		scoped.syms = &scopedSymbols{parent: ec.syms, name: n.Var, val: item}
 		if n.Cond != nil {
-			keep, known, err := evalCompFilter(n, src, scoped, depth)
+			keep, known, err := evalCompFilter(n, scoped, depth)
 			if err != nil {
 				return Value{}, err
 			}
@@ -209,7 +211,7 @@ func runComp(n *ListComp, src string, syms Symbols, elemTarget, elemType Type, i
 				continue
 			}
 		}
-		v, err := evalNode(n.Elem, src, scoped, elemTarget, depth+1)
+		v, err := evalNode(n.Elem, scoped, elemTarget, depth+1)
 		if err != nil {
 			return Value{}, err
 		}
@@ -221,14 +223,14 @@ func runComp(n *ListComp, src string, syms Symbols, elemTarget, elemType Type, i
 		types = append(types, v.Type)
 	}
 	if unresolved {
-		return unresolvedComp(n, src, syms, elemTarget, elemType, depth)
+		return unresolvedComp(n, ec, elemTarget, elemType, depth)
 	}
 	elem := elemTarget
 	if elem.Code == CodeAny {
 		var ok bool
 		elem, ok = unifyElemTypes(types)
 		if !ok {
-			return Value{}, errorAt(src, n.Offset,
+			return Value{}, errorAt(ec.src, n.Offset,
 				"the elements this comprehension produces have incompatible types: %s", joinTypes(types))
 		}
 	}
@@ -236,7 +238,7 @@ func runComp(n *ListComp, src string, syms Symbols, elemTarget, elemType Type, i
 	for i, v := range out {
 		c, err := coerce(v, elem)
 		if err != nil {
-			return Value{}, wrapAt(src, n.Elem.Pos(), err)
+			return Value{}, wrapAt(ec.src, n.Elem.Pos(), err)
 		}
 		converted[i] = c
 	}
@@ -249,20 +251,20 @@ func runComp(n *ListComp, src string, syms Symbols, elemTarget, elemType Type, i
 // that COULD be a bool defers the decision, but one that could never be a bool
 // (section 1.2.2's "any" placeholder for an untyped "let" binding, say) is
 // rejected immediately rather than silently deferred forever.
-func evalCompFilter(n *ListComp, src string, syms Symbols, depth int) (keep, known bool, err error) {
-	c, err := evalNode(n.Cond, src, syms, TBool, depth+1)
+func evalCompFilter(n *ListComp, ec evalCtx, depth int) (keep, known bool, err error) {
+	c, err := evalNode(n.Cond, ec, TBool, depth+1)
 	if err != nil {
 		return false, false, err
 	}
 	if c.IsUnresolved() {
 		if !includes(c.Type, CodeBool) {
-			return false, false, errorAt(src, n.Cond.Pos(),
+			return false, false, errorAt(ec.src, n.Cond.Pos(),
 				"a comprehension filter must be a bool, found %s", c.Type)
 		}
 		return false, false, nil
 	}
 	if c.Type.Code != CodeBool {
-		return false, false, errorAt(src, n.Cond.Pos(),
+		return false, false, errorAt(ec.src, n.Cond.Pos(),
 			"a comprehension filter must be a bool, found %s", c.Type)
 	}
 	return c.AsBool(), true, nil
@@ -273,13 +275,13 @@ func evalCompFilter(n *ListComp, src string, syms Symbols, depth int) (keep, kno
 // includes rather than an exact code match — the same question evalCond asks of
 // an unresolved condition — so a filter whose declared type is "any" or a union
 // naming bool among other members is accepted rather than rejected outright.
-func checkCompFilter(n *ListComp, src string, syms Symbols, depth int) error {
-	c, err := evalNode(n.Cond, src, syms, TBool, depth+1)
+func checkCompFilter(n *ListComp, ec evalCtx, depth int) error {
+	c, err := evalNode(n.Cond, ec, TBool, depth+1)
 	if err != nil {
 		return err
 	}
 	if !includes(c.Type, CodeBool) {
-		return errorAt(src, n.Cond.Pos(),
+		return errorAt(ec.src, n.Cond.Pos(),
 			"a comprehension filter must be a bool, found %s", c.Type)
 	}
 	return nil

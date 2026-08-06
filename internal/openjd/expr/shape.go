@@ -40,6 +40,17 @@ type Shape struct {
 	// Fn computes the result. It is called only with arguments that matched
 	// Params, so it may use the payload accessors without checking.
 	Fn func(args []Value) (Value, error)
+	// FnCtx is Fn for the few implementations that need the evaluation's
+	// settings rather than only their arguments.
+	//
+	// Exactly two rows use it — path(string) and path(list[string]) — because
+	// constructing a path is the only operation that has to CHOOSE a flavor.
+	// Every other path operation reads the flavor off its receiver. Adding a
+	// parameter to Fn instead would have changed 64 rows that do not need it;
+	// RetOf is the existing precedent for an optional alternative field.
+	//
+	// A Shape sets Fn or FnCtx, never both.
+	FnCtx func(ec evalCtx, args []Value) (Value, error)
 	// Promote narrows which conversions this shape's parameters will accept to
 	// admit an argument of a different type. The zero value accepts every
 	// lossless conversion coerce.go allows, which is right for most operators

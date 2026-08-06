@@ -167,7 +167,7 @@ func evalRaw(t *testing.T, src string, syms Symbols, target Type) (Value, error)
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", src, err)
 	}
-	return evalNode(e.root, e.src, syms, target, 0)
+	return evalNode(e.root, newEvalCtx(e.src, syms, nil), target, 0)
 }
 
 // TestEvalListComp_TargetFlowsInward pins that the element expression is an

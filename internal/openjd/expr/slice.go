@@ -13,36 +13,36 @@ import (
 // rejected — in deliberate contrast to a subscript, where an out-of-bounds index
 // is an error — negative indices count from the end, and a step of zero is an
 // error.
-func evalSlice(n *Slice, src string, syms Symbols, depth int) (Value, error) {
-	recv, err := evalNode(n.X, src, syms, TAny, depth)
+func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
+	recv, err := evalNode(n.X, ec, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	start, startOK, err := sliceComponent(n.Start, src, syms, depth)
+	start, startOK, err := sliceComponent(n.Start, ec, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	stop, stopOK, err := sliceComponent(n.Stop, src, syms, depth)
+	stop, stopOK, err := sliceComponent(n.Stop, ec, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	step, stepOK, err := sliceComponent(n.Step, src, syms, depth)
+	step, stepOK, err := sliceComponent(n.Step, ec, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	result, err := sliceResultType(recv.Type, step)
 	if err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	if recv.IsUnresolved() || !startOK || !stopOK || !stepOK {
 		return Unresolved(result), nil
 	}
 	if step != nil && *step == 0 {
-		return Value{}, errorAt(src, n.Step.Pos(), "a slice step cannot be 0")
+		return Value{}, errorAt(ec.src, n.Step.Pos(), "a slice step cannot be 0")
 	}
 	out, err := sliceValue(recv, start, stop, step)
 	if err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	return out, nil
 }
@@ -51,16 +51,16 @@ func evalSlice(n *Slice, src string, syms Symbols, depth int) (Value, error) {
 // nil) when the component is ABSENT, which is not the same as zero: section
 // 1.3.8's defaults depend on the sign of the step. ok is false when the
 // component has no value yet.
-func sliceComponent(n Node, src string, syms Symbols, depth int) (val *int64, ok bool, err error) {
+func sliceComponent(n Node, ec evalCtx, depth int) (val *int64, ok bool, err error) {
 	if n == nil {
 		return nil, true, nil
 	}
-	v, err := evalNode(n, src, syms, TInt, depth)
+	v, err := evalNode(n, ec, TInt, depth)
 	if err != nil {
 		return nil, false, err
 	}
 	if !isIntish(v) {
-		return nil, false, errorAt(src, n.Pos(),
+		return nil, false, errorAt(ec.src, n.Pos(),
 			"a slice component must be an int, found %s", v.Type)
 	}
 	if v.IsUnresolved() {

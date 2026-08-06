@@ -4,6 +4,7 @@ package expr
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -812,5 +813,50 @@ func TestEval_RecursionWithinTheBoundStillEvaluates(t *testing.T) {
 	// so the deepest legal NESTED expression must evaluate too.
 	if _, err := evalSrc(t, strings.Repeat("[", 50)+"1"+strings.Repeat("]", 50), nil); err != nil {
 		t.Errorf("Eval of a 50-deep list literal = %v, want it to evaluate", err)
+	}
+}
+
+// TestEvalOptions_DefaultAndOverride pins the option plumbing before anything
+// consumes it.
+//
+// The default is POSIX and NOT the specification's own default of host-native.
+// sqi parses templates server-side, so a host-native default would let the same
+// template expand into different tasks depending on which OS submitted it —
+// a failure that surfaces only in a mixed-OS deployment. Sub-project E selects
+// native explicitly for host contexts.
+func TestEvalOptions_DefaultAndOverride(t *testing.T) {
+	if got := newEvalCtx("", nil, nil).pathFormat; got != PathPOSIX {
+		t.Errorf("default pathFormat = %v, want PathPOSIX", got)
+	}
+	opts := []Option{WithPathFormat(PathWindows)}
+	if got := newEvalCtx("", nil, opts).pathFormat; got != PathWindows {
+		t.Errorf("WithPathFormat(PathWindows) gave %v", got)
+	}
+}
+
+// TestPathNative_ResolvesToARealFlavour pins that native is a selector, not a
+// third code path: everything downstream sees POSIX or Windows.
+func TestPathNative_ResolvesToARealFlavour(t *testing.T) {
+	got := PathNative.resolve()
+	if got != PathPOSIX && got != PathWindows {
+		t.Fatalf("PathNative.resolve() = %v, want POSIX or Windows", got)
+	}
+	if runtime.GOOS == "windows" && got != PathWindows {
+		t.Errorf("on windows, PathNative.resolve() = %v, want PathWindows", got)
+	}
+	if runtime.GOOS != "windows" && got != PathPOSIX {
+		t.Errorf("off windows, PathNative.resolve() = %v, want PathPOSIX", got)
+	}
+}
+
+// TestEvalOptions_ExistingCallSitesUnchanged is the whole point of making the
+// option variadic: the three-argument form must keep compiling and behaving.
+func TestEvalOptions_ExistingCallSites(t *testing.T) {
+	v, err := Eval(`1 + 1`, MapSymbols{}, TAny)
+	if err != nil {
+		t.Fatalf("Eval three-arg form failed: %v", err)
+	}
+	if got := v.String(); got != "2" {
+		t.Errorf("Eval(`1 + 1`) = %s, want 2", got)
 	}
 }

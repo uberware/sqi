@@ -16,13 +16,13 @@ import (
 // without one the elements' own types are unified by section 1.2.6's rules and
 // then coerced to the result. This is one of the three places a target flows
 // INWARD (see evalNode).
-func evalListLit(n *ListLit, src string, syms Symbols, target Type, depth int) (Value, error) {
+func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) {
 	elemTarget := listElemTarget(target)
 	vals := make([]Value, 0, len(n.Elems))
 	types := make([]Type, 0, len(n.Elems))
 	unresolved := false
 	for _, node := range n.Elems {
-		v, err := evalNode(node, src, syms, elemTarget, depth)
+		v, err := evalNode(node, ec, elemTarget, depth)
 		if err != nil {
 			return Value{}, err
 		}
@@ -31,7 +31,7 @@ func evalListLit(n *ListLit, src string, syms Symbols, target Type, depth int) (
 		// separate from the empty-list rule, which gives "[]" the element type
 		// nulltype without any element being null.
 		if v.IsNull() {
-			return Value{}, errorAt(src, node.Pos(), "null cannot be an element of a list")
+			return Value{}, errorAt(ec.src, node.Pos(), "null cannot be an element of a list")
 		}
 		if v.IsUnresolved() {
 			unresolved = true
@@ -45,12 +45,12 @@ func evalListLit(n *ListLit, src string, syms Symbols, target Type, depth int) (
 		var ok bool
 		elem, ok = unifyElemTypes(types)
 		if !ok {
-			return Value{}, errorAt(src, n.Offset,
+			return Value{}, errorAt(ec.src, n.Offset,
 				"the elements of this list have incompatible types: %s", joinTypes(types))
 		}
 	}
 	if err := checkElementCount(len(vals)); err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	// An element with no value means the list has no complete payload, so the
 	// whole literal is a placeholder of the inferred type. Its elements were
@@ -62,7 +62,7 @@ func evalListLit(n *ListLit, src string, syms Symbols, target Type, depth int) (
 	for i, v := range vals {
 		coerced, err := coerce(v, elem)
 		if err != nil {
-			return Value{}, wrapAt(src, n.Elems[i].Pos(), err)
+			return Value{}, wrapAt(ec.src, n.Elems[i].Pos(), err)
 		}
 		out[i] = coerced
 	}
@@ -161,22 +161,22 @@ func isPathStringPair(a, b Type) bool {
 //
 // An index out of bounds is an ERROR here, in deliberate contrast to a slice,
 // whose bounds are clamped (section 2.1.8).
-func evalIndex(n *Index, src string, syms Symbols, depth int) (Value, error) {
-	recv, err := evalNode(n.X, src, syms, TAny, depth)
+func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
+	recv, err := evalNode(n.X, ec, TAny, depth)
 	if err != nil {
 		return Value{}, err
 	}
-	idx, err := evalNode(n.Idx, src, syms, TInt, depth)
+	idx, err := evalNode(n.Idx, ec, TInt, depth)
 	if err != nil {
 		return Value{}, err
 	}
 	if !isIntish(idx) {
-		return Value{}, errorAt(src, n.Idx.Pos(),
+		return Value{}, errorAt(ec.src, n.Idx.Pos(),
 			"a subscript index must be an int, found %s", idx.Type)
 	}
 	elem, err := indexResultType(recv.Type)
 	if err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	// Either operand missing means the result is typed but has no value. A
 	// bounds check is impossible and must NOT be attempted: whether the index
@@ -186,7 +186,7 @@ func evalIndex(n *Index, src string, syms Symbols, depth int) (Value, error) {
 	}
 	out, err := indexValue(recv, idx.AsInt())
 	if err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	return out, nil
 }

@@ -25,8 +25,8 @@ var errUnknownFunction = errors.New("unknown function")
 // forms end in callFunction with the receiver prepended. The two are NOT
 // interchangeable, though: section 1.2.4 suppresses coercion on a method
 // receiver, so which form was written has to reach callFunction.
-func evalCall(n *Call, src string, syms Symbols, depth int) (Value, error) {
-	name, recv, methodStyle, err := n.target(src, syms, depth)
+func evalCall(n *Call, ec evalCtx, depth int) (Value, error) {
+	name, recv, methodStyle, err := n.target(ec, depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -35,36 +35,36 @@ func evalCall(n *Call, src string, syms Symbols, depth int) (Value, error) {
 		args = append(args, recv)
 	}
 	for _, a := range n.Args {
-		v, err := evalNode(a, src, syms, TAny, depth+1)
+		v, err := evalNode(a, ec, TAny, depth+1)
 		if err != nil {
 			return Value{}, err
 		}
 		args = append(args, v)
 	}
-	out, err := callFunction(name, args, methodStyle)
+	out, err := callFunction(ec, name, args, methodStyle)
 	if err != nil {
-		return Value{}, wrapAt(src, n.Offset, err)
+		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
 	return out, nil
 }
 
 // target works out what a call is calling: the function name, the receiver when
 // the call was written in method position, and whether it was.
-func (n *Call) target(src string, syms Symbols, depth int) (name string, recv Value, methodStyle bool, err error) {
+func (n *Call) target(ec evalCtx, depth int) (name string, recv Value, methodStyle bool, err error) {
 	switch callee := n.Callee.(type) {
 	case *Access:
 		// "[1,2].len()" — the receiver is not a name.
 		if isDunder(callee.Attr) {
-			return "", Value{}, false, errorAt(src, callee.Offset,
+			return "", Value{}, false, errorAt(ec.src, callee.Offset,
 				"%q is a specification naming convention and is not directly callable", callee.Attr)
 		}
-		v, err := evalNode(callee.X, src, syms, TAny, depth+1)
+		v, err := evalNode(callee.X, ec, TAny, depth+1)
 		if err != nil {
 			return "", Value{}, false, err
 		}
 		return callee.Attr, v, true, nil
 	case *Name:
-		return n.nameTarget(callee, src, syms, depth)
+		return n.nameTarget(callee, ec, depth)
 	}
 	// Every other callee — a literal, a subscript, a conditional — is a value,
 	// and no value in this language is callable.
@@ -80,39 +80,39 @@ func (n *Call) target(src string, syms Symbols, depth int) (name string, recv Va
 	// POSITION, and the error's own offset points at the "(" that made it a
 	// call. It matches nameTarget's "%s is not a function" above by design: the
 	// two are the same diagnosis for a named and an unnamed callee.
-	return "", Value{}, false, errorAt(src, n.Offset, "this expression is not a function")
+	return "", Value{}, false, errorAt(ec.src, n.Offset, "this expression is not a function")
 }
 
 // nameTarget resolves a call whose callee is a dotted name. Four outcomes, one
 // per shape the resolver can report.
-func (*Call) nameTarget(callee *Name, src string, syms Symbols, depth int) (name string, recv Value, methodStyle bool, err error) {
-	r, ok := resolveName(callee, syms)
+func (*Call) nameTarget(callee *Name, ec evalCtx, depth int) (name string, recv Value, methodStyle bool, err error) {
+	r, ok := resolveName(callee, ec.syms)
 	if !ok {
 		if len(callee.Parts) == 1 {
 			// A bare identifier that is not a symbol is a function name.
 			fn := callee.Parts[0]
 			if isDunder(fn) {
-				return "", Value{}, false, errorAt(src, callee.Offset,
+				return "", Value{}, false, errorAt(ec.src, callee.Offset,
 					"%q is a specification naming convention and is not directly callable", fn)
 			}
 			return fn, Value{}, false, nil
 		}
-		return "", Value{}, false, errorAt(src, callee.Offset, "unknown symbol %q", callee.String())
+		return "", Value{}, false, errorAt(ec.src, callee.Offset, "unknown symbol %q", callee.String())
 	}
 	if len(r.Rest) == 0 {
 		// The whole name is a symbol, and no value in this language is
 		// callable.
-		return "", Value{}, false, errorAt(src, callee.Offset,
+		return "", Value{}, false, errorAt(ec.src, callee.Offset,
 			"%s is not a function", r.Prefix)
 	}
 	// Every segment but the last is a property; the last is the method.
-	cur, err := evalProperties(r.Val, r.Rest[:len(r.Rest)-1], src, callee.Offset, depth)
+	cur, err := evalProperties(r.Val, r.Rest[:len(r.Rest)-1], ec, callee.Offset, depth)
 	if err != nil {
 		return "", Value{}, false, err
 	}
 	method := r.Rest[len(r.Rest)-1]
 	if isDunder(method) {
-		return "", Value{}, false, errorAt(src, callee.Offset,
+		return "", Value{}, false, errorAt(ec.src, callee.Offset,
 			"%q is a specification naming convention and is not directly callable", method)
 	}
 	return method, cur, true, nil
@@ -125,7 +125,11 @@ func (*Call) nameTarget(callee *Name, src string, syms Symbols, depth int) (name
 // "path('/x').startswith('/')" fails where "startswith(path('/x'), '/')"
 // succeeds. That is a property of the CALL SITE, not of the signature, which is
 // why it cannot be expressed with Shape.Promote.
-func callFunction(name string, args []Value, methodStyle bool) (Value, error) {
+//
+// ec is threaded through to callShape so that a shape's optional FnCtx (see
+// Shape.FnCtx, shape.go) can read the evaluation's settings — path(string) and
+// path(list[string]) are the only two rows that need it.
+func callFunction(ec evalCtx, name string, args []Value, methodStyle bool) (Value, error) {
 	shapes, ok := functionShapes[name]
 	if !ok {
 		return Value{}, fmt.Errorf("%w %q", errUnknownFunction, name)
@@ -143,5 +147,5 @@ func callFunction(name string, args []Value, methodStyle bool) (Value, error) {
 			return unresolvedResult(s, b), nil
 		}
 	}
-	return callShape(s, b, args)
+	return callShape(ec, s, b, args)
 }
