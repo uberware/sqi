@@ -27,7 +27,8 @@ func TestMergeFuncs_CombinesGroups(t *testing.T) {
 // adding to the table; the count belongs in the list below, not in the name.
 // C1 registered 22 names; C2's string library brought the total to 53; C3's
 // regular-expression group brought it to 59, its shell-quoting group brought
-// it to 62, and its serialization group brings it to 64.
+// it to 62, and its serialization group brought it to 64; C4's path
+// constructor and predicates bring it to 67.
 func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 	want := []string{
 		// funcsconv.go: general conversions, plus fail (validation).
@@ -53,6 +54,8 @@ func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 		"repr_sh", "repr_cmd", "repr_pwsh",
 		// funcsreprdata.go: serialization.
 		"repr_py", "repr_json",
+		// funcspath.go: path construction and predicates.
+		"path", "as_posix", "is_absolute",
 	}
 	if len(functionShapes) != len(want) {
 		t.Fatalf("functionShapes has %d entries, want %d: %v", len(functionShapes), len(want), want)

@@ -46,6 +46,17 @@ type Value struct {
 	// operation on a float returns through Float()/floatValue() and therefore
 	// drops it, which IS section 1.3.4's rule rather than a shortcut around it.
 	fs string
+
+	// pf is the path flavor for a CodePath value.
+	//
+	// It rides on the value so that every path operation after construction —
+	// properties, "/", "with_*" — reads the flavor from its receiver rather
+	// than from the evaluator. That is what keeps Shape.FnCtx to the two rows
+	// that genuinely have to choose one.
+	//
+	// The zero value is PathPOSIX, which is also the evaluator's default, so a
+	// path Value built by a caller without setting it behaves as POSIX.
+	pf PathFormat
 }
 
 // Null returns the null value.
@@ -66,6 +77,15 @@ func floatRendered(f float64, s string) Value { return Value{Type: TFloat, f: f,
 
 // String returns a string value.
 func String(s string) Value { return Value{Type: TString, s: s} }
+
+// Path returns a path value with the given flavor, normalized on the way in.
+func Path(text string, f PathFormat) Value {
+	p := parsePath(text, f)
+	return Value{Type: TPath, s: p.String(), pf: p.flavor}
+}
+
+// pathOf re-parses a path value into its structure.
+func pathOf(v Value) parsedPath { return parsePath(pathText(v), v.pf) }
 
 // List returns a list value with the given element type and elements.
 //

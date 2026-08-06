@@ -21,6 +21,7 @@ var functionShapes = mergeFuncs(
 	convFuncs, mathFuncs, listFuncs,
 	strCaseFuncs, strFindFuncs, strSplitFuncs, strPadFuncs,
 	reFuncs, reprShellFuncs, reprDataFuncs,
+	pathFuncs,
 )
 
 // mergeFuncs folds the per-category tables into one registry.
