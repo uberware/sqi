@@ -190,7 +190,25 @@ for line in sys.stdin.read().split("\n"):
 	if len(lines) != len(corpus) {
 		t.Fatalf("python returned %d lines for %d inputs", len(lines), len(corpus))
 	}
+	skipped := 0
 	for i, in := range corpus {
+		if strings.HasPrefix(in, `\\?\UNC\`) {
+			// DOCUMENTED, DELIBERATE, BOUNDED divergence — not a defect.
+			// pathlib gives the literal prefix "\\?\UNC\" its own
+			// start-at-offset-8 parsing (see parseWindows's doc comment);
+			// this file does not implement that branch, by design, as part
+			// of this wave's stated extended-length/device-path omission.
+			// Every input under this prefix is EXPECTED to disagree with
+			// Python, so it is excluded from the pass/fail assertions below
+			// rather than producing 318 "failures" that would bury a real
+			// regression in noise. It still ran through parsePath above
+			// (nothing here skips construction, only comparison), and it
+			// stays IN the corpus specifically so a change that widens or
+			// narrows this divergence is visible in the "skipped" count
+			// logged below, not silently absent from the input set.
+			skipped++
+			continue
+		}
 		f := strings.SplitN(lines[i], "\t", 3)
 		wantStr, wantAbs := f[0], f[2] == "True"
 		var wantParts []string
@@ -208,18 +226,35 @@ for line in sys.stdin.read().split("\n"):
 			t.Errorf("parsePath(%q, Windows).isAbsolute() = %v, python %v", in, got, wantAbs)
 		}
 	}
+	t.Logf("compared %d inputs (%d skipped as the documented \\\\?\\UNC\\ omission)", len(corpus)-skipped, skipped)
 }
 
 func pathCorpusWindows() []string {
 	leads := []string{
 		"", `C:`, `C:\`, `C:/`, `\`, `/`, `\\srv\share\`, `\\srv\share`,
-		// Fix-round additions: a share-less UNC, a UNC with a bare trailing
+		// Fix-round-1 additions: a share-less UNC, a UNC with a bare trailing
 		// separator (no share), and all-separator strings — none of these
 		// shapes were reachable from the original 8 leads, and each exposed
 		// a real defect the 848-input corpus could not catch: isAbsolute()
 		// misclassifying a share-less UNC, and the UNC root builder
 		// fabricating a separator that was never in the input.
 		`\\srv`, `\\srv\`, `\\`, `\\\`, `\\\\`,
+		// Fix-round-2 additions (the coordinator's own leads, reproduced
+		// verbatim): a two-character "?." server (the root-synthesis
+		// substring-exclusion bug — three inequalities let "?." itself
+		// through); a raw ":\" root (isAbsolute's rendered-string prefix
+		// test disagreeing with a shape-based proxy, independent of any
+		// parsed root shape); a leading "." before a colon-bearing component
+		// (String()'s missing "." disambiguation prefix, and its forward-
+		// slash twin); and non-ASCII, digit, and punctuation drive letters
+		// (byte- vs rune-indexed drive detection — Python's ntpath accepts
+		// any single code point before ':', not just ASCII letters).
+		`\\?.\`, `\:\a`, `.\a:b`, `./c:`, `é:`, `£:`, `1:`, `::`, ` :`,
+		// An explicit "\\?\UNC\..." lead: the ONE shape this task
+		// deliberately does not port (see parseWindows's doc comment) —
+		// included so the differential can show this is the ONLY remaining
+		// mismatch category, not merely untested.
+		`\\?\UNC\srv\share\`, `\\?\UNC\srv\share`, `\\?\UNC\srv`,
 	}
 	segs := []string{"a", "b", ".", "..", "x.txt"}
 	var out []string

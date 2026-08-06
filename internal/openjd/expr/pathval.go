@@ -2,7 +2,10 @@
 
 package expr
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // parsedPath is a path split into a root and its components.
 //
@@ -60,16 +63,44 @@ func parsePath(text string, f PathFormat) parsedPath {
 	return p
 }
 
-// String renders the path back to text.
+// String renders the path back to text, porting pathlib's own
+// _format_parsed_parts exactly (drv/root here are already combined into
+// p.root, so "drv or root" below reads as "p.root != \"\""):
+//
+//	if drv or root:
+//	    return drv + root + sep.join(tail)
+//	elif tail and splitdrive(tail[0])[0]:
+//	    return '.' + sep + sep.join(tail)
+//	else:
+//	    return sep.join(tail) or '.'
+//
+// The middle branch is the one worth calling out: a relative path (no root
+// at all) whose FIRST component itself looks like a drive specifier — e.g.
+// comps == ["a:b"], which parsePath produces from the text ".\a:b" once the
+// leading "." is normalized away — gets a "." PREPENDED on render, so the
+// text round-trips as ".\a:b" rather than the bare "a:b" a naive join would
+// produce. That distinction is not decorative: re-parsing "a:b" itself
+// yields drive "a:" plus component "b" — a DIFFERENT path — so omitting the
+// "." silently corrupts the one case where doing so changes meaning. Only
+// tail[0] (not any later component) is tested, matching the reference: a
+// LATER colon-bearing component never needs disambiguating, since it can't
+// be mistaken for a leading drive once it isn't in the leading position.
 func (p parsedPath) String() string {
-	if p.root == "" && len(p.comps) == 0 {
-		return "."
-	}
 	sep := "/"
 	if p.flavor == PathWindows {
 		sep = `\`
 	}
-	return p.root + strings.Join(p.comps, sep)
+	switch {
+	case p.root != "":
+		return p.root + strings.Join(p.comps, sep)
+	case p.flavor == PathWindows && len(p.comps) > 0 && driveColonLen(p.comps[0]) > 0:
+		return "." + sep + strings.Join(p.comps, sep)
+	default:
+		if len(p.comps) == 0 {
+			return "."
+		}
+		return strings.Join(p.comps, sep)
+	}
 }
 
 // parts is the specification's p.parts: the root, when there is one, followed
@@ -93,14 +124,31 @@ func (p parsedPath) parts() []string {
 //     as-is. The whole server+share is ONE component.
 //
 // Both separators are accepted on input and "\" is emitted, matching pathlib.
-// Extended-length ("\\?\") and device paths are deliberately not handled: an
-// input beginning with "\\?\" or "\\.\" is parsed as an ordinary UNC root
-// (server "?" or "."), not specially recognized — except that splitRootWindows
-// happens to inherit pathlib's own refusal to synthesize a root for one,
-// since that refusal is baked into the same four-segment check used for a
-// genuine UNC share (see splitRootWindows). There is no doc.go entry for the
-// extended-length/device-path omission yet — that lands in this wave's
-// documentation task — so this comment is the omission's only record for now.
+//
+// Extended-length ("\\?\") and device paths are DELIBERATELY not handled,
+// and this paragraph says plainly what that means rather than gesturing at
+// it. pathlib gives the specific literal prefix "\\?\UNC\" its own
+// start-at-offset-8 parsing (splitting a FURTHER server+share out of what
+// follows), so "\\?\UNC\srv\share" is ONE opaque root
+// ("\\?\UNC\srv\share\") to Python. We do not implement offset-8 parsing at
+// all, so that exact input instead runs through the ordinary offset-2 UNC
+// algorithm below and comes out server="?", share="UNC", with "srv" and
+// "share" demoted to ordinary path COMPONENTS — a different split, not
+// merely a different rendering. This is the one extended-length/device shape
+// known to diverge; it is not implemented on purpose, and doing so would
+// require porting the offset-8/six-segment branches CPython carries
+// alongside the offset-2 ones this file already ports.
+//
+// A plain "\\?\" or "\\.\" WITHOUT the literal "UNC\" that follows never hits
+// Python's offset-8 branch either — Python's own splitroot only special-cases
+// the exact "\\?\UNC\" prefix, so "\\?\a" and "\\.\a" already run through the
+// SAME offset-2 algorithm on the reference side that this file ports, and the
+// two sides agree on them without any device-path-specific code here (see
+// synthesizeUNCRoot's non-empty/non-"?"/non-"."/non-"?." exclusion, which is
+// the reference's OWN generic rule, not something this file added for
+// devices specifically). There is no doc.go entry for the "\\?\UNC\" omission
+// yet — that lands in this wave's documentation task — so this paragraph is
+// its only record for now.
 func parseWindows(text string) parsedPath {
 	p := parsedPath{flavor: PathWindows}
 	s := strings.ReplaceAll(text, "/", `\`)
@@ -146,11 +194,12 @@ func splitRootWindows(p string) (drive, root, rest string) {
 	case strings.HasPrefix(p, `\`):
 		// Relative path with root, e.g. "\Windows" — no drive, no UNC.
 		return "", p[:1], p[1:]
-	case hasDriveColon(p):
-		if len(p) > 2 && p[2] == '\\' {
-			return p[:2], p[2:3], p[3:]
+	case driveColonLen(p) > 0:
+		n := driveColonLen(p)
+		if len(p) > n && p[n] == '\\' {
+			return p[:n], p[n : n+1], p[n+1:]
 		}
-		return p[:2], "", p[2:]
+		return p[:n], "", p[n:]
 	default:
 		return "", "", p
 	}
@@ -170,66 +219,119 @@ func splitRootWindows(p string) (drive, root, rest string) {
 // everything pathlib would synthesize, and synthesizing a second one is
 // exactly fix-round IMPORTANT 2's fabricated-separator bug.
 //
-// segs[2] excludes "?" and "." (the "\\?\" extended-length and "\\.\" device
-// prefixes — both deliberately unhandled, see parseWindows's doc comment) and
-// "" (an EMPTY server, which arises from extra collapsed leading backslashes
-// like "\\\a" — not a real share pair either). Only a genuine, non-reserved,
-// non-empty server name earns the synthesized root.
+// segs[2] is excluded when it is "?" or "." (the "\\?\" extended-length and
+// "\\.\" device prefixes — both deliberately unhandled, see parseWindows's
+// doc comment) or "" (an EMPTY server, which arises from extra collapsed
+// leading backslashes like "\\\a" — not a real share pair either). CPython's
+// own exclusion is `drv_parts[2] not in '?.'`, a SUBSTRING test against the
+// two-character string "?.", not per-character membership — and a substring
+// test admits FOUR values, not three: "", "?", "." AND "?." itself (every
+// substring "?." has, including itself). Three explicit inequalities
+// (!= "?" && != "." && != "") is a plausible-looking but WRONG translation:
+// it lets segs[2] == "?." itself through, which is exactly backwards — the
+// two-character server name "?." (e.g. "\\?.\share") must stay excluded,
+// same as "?" and "." alone. strings.Contains reproduces the substring test
+// directly instead of re-deriving its member list by hand.
 func synthesizeUNCRoot(p string) (drive, root, rest string) {
 	if !strings.HasSuffix(p, `\`) {
 		segs := strings.Split(p, `\`)
-		if len(segs) == 4 && segs[2] != "?" && segs[2] != "." && segs[2] != "" {
+		if len(segs) == 4 && !strings.Contains("?.", segs[2]) { //nolint:gocritic // args are intentionally reversed: "?." is CPython's own literal exclusion set, segs[2] is what's tested against it — see the doc comment above
 			return p, `\`, ""
 		}
 	}
 	return p, "", ""
 }
 
-// hasDriveColon reports whether s begins with a Windows drive specifier: ANY
-// single byte followed by ':'. Python's ntpath.splitdrive (which
+// driveColonLen reports the BYTE length of a Windows drive specifier prefix
+// at the start of s — ANY single Unicode code point followed by ':' — or 0
+// if s does not begin with one. Python's ntpath.splitdrive (which
 // PureWindowsPath uses under the hood) is not restricted to ASCII letters —
 // PureWindowsPath("1:\\a"), PureWindowsPath("::\\a") and even
 // PureWindowsPath(" :\\a") are all drive-rooted, so a letters-only check
 // would silently misclassify those as ordinary relative paths.
+//
+// The return value is a BYTE count, not a fixed 2, because the leading code
+// point can be multi-byte in UTF-8: "é:\a" is drive-rooted to Python
+// (PureWindowsPath("é:\\a").is_absolute() is True), but 'é' alone is 2 bytes,
+// so indexing s[1] (the second BYTE) lands on the ':' 's ONE byte too early —
+// on the continuation byte of 'é' — and never finds the colon at all. There
+// is no risk of a false match in the other direction: ':' (0x3A) is outside
+// the 0x80-0xBF continuation-byte range, so it can never be mistaken for
+// part of a multi-byte rune; the hazard is purely the false NEGATIVE from
+// checking the wrong byte position, not a false positive from checking the
+// right one.
 //
 // This predicate is Windows-drive-specific ONLY. It must NOT be reused to
 // detect a URI scheme (Task 4): the specification's own grammar requires a
 // URI scheme to start with a LETTER, which is a stricter and unrelated rule.
 // As of this task the two checks share no code — keep it that way rather
 // than widening a future scheme check by accident.
-func hasDriveColon(s string) bool {
-	return len(s) >= 2 && s[1] == ':'
+func driveColonLen(s string) int {
+	if s == "" {
+		return 0
+	}
+	r, n := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError && n <= 1 {
+		return 0
+	}
+	if len(s) <= n || s[n] != ':' {
+		return 0
+	}
+	return n + 1
 }
 
 // isAbsolute reports the specification's p.is_absolute().
 //
-// A URI is ALWAYS absolute, which the spec states outright. On Windows the
-// rule is NOT uniform across anchor shapes:
-//   - A UNC root ("\\server...") is absolute unconditionally — Python treats
-//     any "\\server" root as absolute whether or not a share or trailing
-//     separator follows (PureWindowsPath("\\srv").is_absolute() is True).
-//   - A drive root is absolute only WITH a trailing separator ("C:\", not
-//     "C:") — a bare drive is relative to that drive's current directory.
-//   - The rooted-relative anchor ("\" alone, no drive and no UNC) is never
-//     absolute.
+// A URI is ALWAYS absolute, which the spec states outright. For POSIX, a raw
+// leading "/" is absolute, matching pathlib's own POSIX fast path (it tests
+// the raw text directly rather than going through isabs, as an optimization
+// pathlib documents in its own source — the result is identical either way).
 //
-// The UNC and drive cases are told apart by the root's own shape (a UNC root
-// always starts with "\\"; a drive root always contains ":"), so no extra
-// field is needed to remember which branch of parseWindows produced it.
+// For Windows the rule is PurePath.is_absolute() -> self.parser.isabs(self),
+// where "self" is coerced to its RENDERED string (str(self), i.e. what our
+// String() produces) before ntpath.isabs ever runs. This is NOT a test of
+// the parsed root/drive's SHAPE — an earlier version of this function tried
+// to derive the rule from root shape (UNC prefix, contains ":", etc.) and
+// that derivation was wrong, because the reference rule was never about
+// shape. It is a literal prefix match on the first three CHARACTERS (Unicode
+// code points, not bytes — same multi-byte hazard as driveColonLen) of the
+// rendered string:
+//
+//	s = s[:3].replace('/', '\\')
+//	return s.startswith(':\\', 1) or s.startswith('\\\\')
+//
+// This textual test does not care WHY those three characters are what they
+// are. parsedPath{root: `\`, comps: [":", "a"]}.String() renders "\:\a",
+// whose first three characters are '\', ':', '\' — which SATISFIES the
+// colon-backslash-at-index-1 branch even though "\:\a" has no drive and no
+// UNC anchor at all; Python agrees (PureWindowsPath("\\:\\a").is_absolute()
+// is True). Any shape-based rule inevitably disagrees with cases like this
+// one, by construction.
 func (p parsedPath) isAbsolute() bool {
 	switch {
 	case p.isURI:
 		return true
 	case p.flavor == PathWindows:
-		switch {
-		case strings.HasPrefix(p.root, `\\`):
-			return true
-		case strings.Contains(p.root, ":"):
-			return strings.HasSuffix(p.root, `\`)
-		default:
-			return false
-		}
+		return windowsIsAbsPrefix(p.String())
 	default:
 		return p.root == "/"
 	}
+}
+
+// windowsIsAbsPrefix is the direct port of ntpath.isabs's prefix test; see
+// isAbsolute's doc comment for what it tests and why.
+func windowsIsAbsPrefix(s string) bool {
+	r := []rune(s)
+	if len(r) > 3 {
+		r = r[:3]
+	}
+	for i, c := range r {
+		if c == '/' {
+			r[i] = '\\'
+		}
+	}
+	if len(r) >= 3 && r[1] == ':' && r[2] == '\\' {
+		return true
+	}
+	return len(r) >= 2 && r[0] == '\\' && r[1] == '\\'
 }
