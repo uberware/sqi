@@ -2,7 +2,23 @@
 
 package expr
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
+
+var (
+	// errEmptyName backs with_name and with_stem on a path that has no final
+	// component — "/" is the usual case. Python raises here too.
+	errEmptyName = errors.New("the path has an empty name")
+	// errInvalidSuffix backs with_suffix on a suffix that is neither empty nor
+	// dot-prefixed. "png" is an error; ".png" and "" are not.
+	errInvalidSuffix = errors.New("an extension must be empty or start with a dot")
+	// errNotRelative backs relative_to. is_relative_to answers false for the
+	// same condition rather than failing — the specification defines the pair
+	// that way on purpose.
+	errNotRelative = errors.New("the path is not relative to the other path")
+)
 
 // pathFuncs is sub-project C4's group: RFC 0006's path properties and path
 // functions. apply_path_mapping is NOT here — it is sub-project D's, because it
@@ -86,6 +102,68 @@ var pathFuncs = map[string][]Shape{
 			return stringList(pathOf(args[0]).parts())
 		}},
 	},
+	// with_name and with_stem both replace the final component and both error
+	// the same way on a path that has none — "/" is the usual case — so they
+	// share errEmptyName rather than each defining their own.
+	"with_name": {
+		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+			p := pathOf(args[0])
+			if p.name() == "" {
+				return Value{}, errEmptyName
+			}
+			p.comps[len(p.comps)-1] = args[1].AsStr()
+			return boundedPath(p.String(), p.flavor)
+		}},
+	},
+	"with_stem": {
+		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+			p := pathOf(args[0])
+			if p.name() == "" {
+				return Value{}, errEmptyName
+			}
+			_, suffix := splitStemSuffix(p.name())
+			p.comps[len(p.comps)-1] = args[1].AsStr() + suffix
+			return boundedPath(p.String(), p.flavor)
+		}},
+	},
+	// with_suffix replaces the suffix; "" removes it, and anything else that
+	// does not start with a dot is errInvalidSuffix. It also errors on an
+	// empty name for the same reason with_name and with_stem do — there is no
+	// final component to carry the new suffix — which the brief's error list
+	// does not spell out by name but which follows from reusing name() the
+	// same way its siblings do: without the guard, replacing the (absent)
+	// last component would index an empty comps slice.
+	"with_suffix": {
+		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+			suffix := args[1].AsStr()
+			if suffix != "" && !strings.HasPrefix(suffix, ".") {
+				return Value{}, errInvalidSuffix
+			}
+			p := pathOf(args[0])
+			if p.name() == "" {
+				return Value{}, errEmptyName
+			}
+			stem, _ := splitStemSuffix(p.name())
+			p.comps[len(p.comps)-1] = stem + suffix
+			return boundedPath(p.String(), p.flavor)
+		}},
+	},
+	"is_relative_to": {
+		{Params: []Type{TPath, TPath}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+			_, ok := relativeParts(pathOf(args[0]), pathOf(args[1]))
+			return Bool(ok), nil
+		}},
+	},
+	"relative_to": {
+		{Params: []Type{TPath, TPath}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+			p := pathOf(args[0])
+			remaining, ok := relativeParts(p, pathOf(args[1]))
+			if !ok {
+				return Value{}, errNotRelative
+			}
+			return boundedPath(pathFromParts(remaining, p.flavor).String(), p.flavor)
+		}},
+	},
 }
 
 // boundedPath builds a path value with its text bounded before it is stored.
@@ -135,4 +213,25 @@ func pathFromParts(parts []string, f PathFormat) parsedPath {
 		return parsedPath{root: probe.root, comps: append([]string{}, tail...), flavor: f, isURI: probe.isURI}
 	}
 	return parsedPath{comps: append([]string{}, parts...), flavor: f}
+}
+
+// relativeParts backs relative_to and is_relative_to. Both compare parts()
+// element-wise rather than reasoning about root/comps separately, which is
+// what makes a URI fall out for free: its scheme+authority is just the first
+// element of parts(), so a prefix match over parts is already a prefix match
+// over the full URI without any URI-specific code here.
+//
+// ok is true when other's parts are a full prefix of p's; remaining is
+// whatever is left of p's parts after that prefix, valid only when ok.
+func relativeParts(p, other parsedPath) (remaining []string, ok bool) {
+	pp, op := p.parts(), other.parts()
+	if len(op) > len(pp) {
+		return nil, false
+	}
+	for i, part := range op {
+		if pp[i] != part {
+			return nil, false
+		}
+	}
+	return pp[len(op):], true
 }

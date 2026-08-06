@@ -28,8 +28,8 @@ func TestMergeFuncs_CombinesGroups(t *testing.T) {
 // C1 registered 22 names; C2's string library brought the total to 53; C3's
 // regular-expression group brought it to 59, its shell-quoting group brought
 // it to 62, and its serialization group brought it to 64; C4's path
-// constructor and predicates bring it to 67, and its six path properties
-// bring it to 73.
+// constructor and predicates bring it to 67, its six path properties bring
+// it to 73, and its with-functions and relative-to bring it to 78.
 func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 	want := []string{
 		// funcsconv.go: general conversions, plus fail (validation).
@@ -60,6 +60,8 @@ func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 		// funcspath.go: path properties.
 		"__property_name__", "__property_stem__", "__property_suffix__",
 		"__property_suffixes__", "__property_parent__", "__property_parts__",
+		// funcspath.go: with-functions and relative-to.
+		"with_name", "with_stem", "with_suffix", "is_relative_to", "relative_to",
 	}
 	if len(functionShapes) != len(want) {
 		t.Fatalf("functionShapes has %d entries, want %d: %v", len(functionShapes), len(want), want)

@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -314,5 +315,56 @@ func TestPathProperty_ReceiverIsNotCoerced(t *testing.T) {
 	_, err := Eval(`'/a/b.txt'.stem`, MapSymbols{}, TAny)
 	if err == nil {
 		t.Fatal("'/a/b.txt'.stem succeeded; a string receiver must not coerce to path")
+	}
+}
+
+func TestPathWithFunctions(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('/projects/shot01/render.exr').with_name('output.png')`, "/projects/shot01/output.png"},
+		{`path('/projects/shot01/render.exr').with_stem('final')`, "/projects/shot01/final.exr"},
+		{`path('/projects/shot01/render.exr').with_suffix('.png')`, "/projects/shot01/render.png"},
+		{`path('/projects/shot01/render.exr').with_suffix('')`, "/projects/shot01/render"},
+		{`path('/a/b').relative_to(path('/a'))`, "b"},
+		{`path('/a/b/c').relative_to(path('/a'))`, "b/c"},
+		{`path('/a/b').is_relative_to(path('/a'))`, "true"},
+		{`path('/a/b').is_relative_to(path('/x'))`, "false"},
+		{`path('s3://b/x/y').is_relative_to(path('s3://b/x'))`, "true"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_Reject pins the three error conditions. All three
+// behave the same way in Python and in the reference — measured during design —
+// so any divergence here is a bug rather than an adjudication.
+func TestPathWithFunctions_Reject(t *testing.T) {
+	tests := []struct {
+		src     string
+		wantErr error
+	}{
+		{`path('/').with_name('x')`, errEmptyName},
+		{`path('/').with_stem('x')`, errEmptyName},
+		{`path('/a/b.txt').with_suffix('png')`, errInvalidSuffix},
+		{`path('/a/b').relative_to(path('/x'))`, errNotRelative},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want %v", tc.src, tc.wantErr)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("Eval(%q) = %v, want it to wrap %v", tc.src, err, tc.wantErr)
+			}
+		})
 	}
 }
