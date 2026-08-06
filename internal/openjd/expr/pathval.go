@@ -383,6 +383,30 @@ func trimTrailingEmptyComps(comps []string) []string {
 	return comps[:end]
 }
 
+// trimLeadingEmptyComps is the OTHER half of the same rule, not a second rule:
+// where trimTrailingEmptyComps consumes the separator run at the END of a left
+// operand, this consumes the run at the START of what follows a boundary. Both
+// exist because one run of separator characters sits BETWEEN two values and
+// belongs to neither, which is what section 2.1.5 already says for "/" ("a
+// trailing slash on the left operand is consumed by the join") and what
+// relativeParts needs on both sides of a base it has just stripped.
+//
+// The consequence it exists for is not cosmetic: relative_to builds its result
+// out of the components remaining after the base, and a LEADING empty
+// component renders as a leading separator, so "s3://b//d" relative to
+// "s3://b" would answer "/d" — an ABSOLUTE result from the one function whose
+// job is to remove an anchor, which then silently discards whatever base it is
+// later joined onto. A trailing empty needs no such treatment there: the
+// remainder is re-parsed as an ordinary relative path, and every flavor's
+// parser already drops a trailing separator.
+func trimLeadingEmptyComps(comps []string) []string {
+	start := 0
+	for start < len(comps) && comps[start] == "" {
+		start++
+	}
+	return comps[start:]
+}
+
 // parseWindows splits a Windows path into its anchor and components.
 //
 // Three anchor shapes exist and they are NOT interchangeable:

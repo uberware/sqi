@@ -1248,10 +1248,14 @@ path | string :: path('//') / 'x'
 # here (its .parts reports the trailing "" too), so the self-contradiction that
 # convicted the family above is absent.
 #
-# Expression-Language section 2.1.5's worked example is decisive on its own:
-# path("s3://bucket/dir/") / "file" produces "s3://bucket/dir/file", and a
-# trailing slash is consumed by the join "matching pathlib behavior". A
-# trailing slash on the child is therefore not a component either, so
+# Section 2.1.5's worked example — path("s3://bucket/dir/") / "file" produces
+# "s3://bucket/dir/file" — is NOT decisive on its own, and an earlier revision
+# of this reason wrongly said it was: that example rules on a trailing slash on
+# the LEFT operand, and these cases are about one on the CHILD. What settles
+# them is the general clause beside it, "a trailing slash is consumed by the
+# join, matching pathlib behavior", which is stated of the join rather than of
+# one operand — the worked example is then an instance of it rather than its
+# whole content. A trailing slash on the child is therefore not a component, so
 # path("s3://b/d/") / "a/" is "s3://b/d/a". Adjudicated in sqi's favor during
 # C4 Task 9's review. Note this rules on a trailing slash the JOIN consumes;
 # the one a URI carries through path() alone is a component, and is kept — see
@@ -1296,3 +1300,177 @@ path | string :: path('/a') + '/'
 # the reference types it string. Same text either way. See the explanation
 # above.
 path | string :: path('/a/b') + path('c')
+
+# ── sqi is right: the base's trailing slash is consumed CONSISTENTLY ─────────
+#
+# Section 2.1.5 rules that "a trailing slash on the left operand is consumed by
+# the join (matching pathlib behavior)", and the base of is_relative_to /
+# relative_to is an operand of exactly that kind — RFC 0006 states the URI case
+# outright ("For URIs, checks prefix match on the full URI"; relative_to
+# "strips the matching prefix"), so an operator-written prefix "s3://renders/"
+# must match the objects under it. sqi consumes that trailing empty component
+# on the base and therefore answers the SELF case the same way it answers every
+# other: path("s3://b") is relative to the base path("s3://b/"), because that
+# base IS path("s3://b").
+#
+# The reference consumes the same slash everywhere else — it agrees with sqi on
+# all ten corpus rows where the receiver has something after the base — and
+# then does not consume it here, which makes its own answers inconsistent
+# rather than differently-ruled. Note it is not reaching the decision purely
+# textually either: it correctly answers false for "s3://bb/d" against the base
+# "s3://b", which a string-prefix test would call true.
+
+# The base's trailing slash consumed, self case: sqi true, the reference false
+# even though it consumes the same slash for every deeper receiver. See the
+# explanation above.
+bool | path | string :: path('s3://b').is_relative_to(path('s3://b/'))
+
+# relative_to's half of the same row: sqi strips the whole base and answers ".",
+# the reference refuses. See the explanation above.
+path | string :: path('s3://b').relative_to(path('s3://b/'))
+
+# ── sqi is right: relative_to returns a normalized path, not raw text ────────
+#
+# A path Value in this engine is normalized by construction (Value.Path
+# re-parses), and relative_to's declared return type is path, not string — so
+# the remainder comes back as an ordinary relative path under the receiver's
+# flavor, whose parser drops a trailing separator. The reference returns "d/",
+# which re-parses to the same value; path("d/") == path("d") on BOTH sides, so
+# the two agree about the value and disagree only about which text renders it.
+# Same family as the join/append non-normalization entries above.
+
+# The remainder's own trailing separator: sqi renders "d", the reference "d/",
+# and the two paths are equal. See the explanation above.
+path | string :: path('s3://b/d/').relative_to(path('s3://b'))
+
+# ── sqi is right: a bare "scheme://" is an EMPTY authority, not a wildcard ────
+#
+# Expression-Language section 1.2.1 makes the scheme and authority "an opaque
+# prefix", and section 2.3.1's own worked example puts the WHOLE prefix in
+# parts[0] ("s3://bucket"). path("s3://").parts is ["s3://"] on both sides —
+# measured — so the base's sole part is "s3://" and the receiver's first part
+# is "s3://b", and those are not equal. An opaque identifier is not a container
+# of its own substrings, which is the entire reason the specification calls it
+# opaque.
+#
+# The reference reports these as prefix matches, contradicting the parts it
+# itself computes for the same two values — the same shape as its
+# join-versus-parts contradiction baselined above. It is not applying a plain
+# string-prefix rule either (it answers false for "s3://bb/d" against
+# "s3://b"), so this is not a coherent alternative reading, and the practical
+# consequence of the reference's answer is that a base naming NO bucket matches
+# every bucket in the scheme.
+
+# An empty authority as a base: sqi false (the authorities differ), the
+# reference true. See the explanation above.
+bool | path | string :: path('s3://b/d').is_relative_to(path('s3://'))
+
+# relative_to's half of the same row: sqi refuses, the reference strips "s3://"
+# textually and returns "b/d". See the explanation above.
+path | string :: path('s3://b/d').relative_to(path('s3://'))
+
+# The bucket itself against an empty authority: sqi false, the reference true.
+# See the explanation above.
+bool | path | string :: path('s3://b').is_relative_to(path('s3://'))
+
+# relative_to's half of that row: sqi refuses, the reference returns "b". See
+# the explanation above.
+path | string :: path('s3://b').relative_to(path('s3://'))
+
+# ── sqi is right: with_* follows CURRENT pathlib too ─────────────────────────
+#
+# The FUNCTION half of the stem/suffix ruling explained further up: with_stem,
+# with_suffix and with_number all reach the same splitStemSuffix the properties
+# do, so CPython 3.14's leading-dot-run rule (name.lstrip('.') before the
+# split, and a trailing dot IS a suffix) reaches them too, and the reference's
+# pre-3.14 rule diverges in the same direction. EVERY sqi answer below was
+# measured against python3 3.14.6 directly — PurePosixPath('/a/..b')
+# .with_stem('x') is '/a/x', .with_suffix('.x') is '/a/..b.x', .with_suffix('')
+# is '/a/..b', PurePosixPath('/a/b.').with_stem('x') is '/a/x.', .with_suffix(
+# '.x') is '/a/b.x', .with_suffix('') is '/a/b' — not derived from the property
+# rule and assumed to carry over.
+#
+# Note the third row: this is the one place in the whole path family where the
+# REFERENCE ERRORS and sqi returns a value. Its pre-3.14 split makes '..b' a
+# stem of '.' plus a suffix of '.b', so removing the suffix leaves the name '.'
+# and its own with_name rejects that; under the current rule there is no suffix
+# to remove and the name is unchanged, which is what CPython does.
+
+# with_stem on a leading-dot-run name: sqi (and pathlib 3.14) treat '..b' as
+# all stem, the reference splits it. See the explanation above.
+path | string :: path('/a/..b').with_stem('x')
+
+# with_suffix on the same name: sqi appends, the reference replaces its
+# imagined '.b'. See the explanation above.
+path | string :: path('/a/..b').with_suffix('.x')
+
+# Removing a suffix that the current rule says is not there: sqi leaves the
+# name alone, the reference ERRORS because its split leaves the invalid name
+# '.'. See the explanation above.
+path | string :: path('/a/..b').with_suffix('')
+
+# with_number on the same name: sqi appends to the whole name as the stem, the
+# reference splits first. See the explanation above.
+path | string | int :: path('/a/..b').with_number(7)
+
+# with_stem on a trailing-dot name: sqi keeps the '.' suffix ('/a/x.'), the
+# reference does not see one. See the explanation above.
+path | string :: path('/a/b.').with_stem('x')
+
+# with_suffix on a trailing-dot name: sqi replaces the '.' suffix, the
+# reference appends after it. See the explanation above.
+path | string :: path('/a/b.').with_suffix('.x')
+
+# Removing a trailing-dot suffix: sqi removes it, the reference leaves it. See
+# the explanation above.
+path | string :: path('/a/b.').with_suffix('')
+
+# with_number on a trailing-dot name: sqi treats '.' as the suffix and appends
+# within the stem, the reference appends after the dot. See the explanation
+# above.
+path | string | int :: path('/a/b.').with_number(7)
+
+# The string row of with_number reaching the same rule for a leading dot run:
+# sqi '..b_0007', the reference '._0007.b'. See the explanation above.
+string | int :: with_number('..b', 7)
+
+# The string row for a trailing dot: sqi 'b_0007.', the reference 'b._0007'.
+# See the explanation above.
+string | int :: with_number('b.', 7)
+
+# ── sqi is right: the same with_* rule on relative and URI receivers ─────────
+#
+# Same ruling as the with_* block above (CPython 3.14's leading-dot-run and
+# trailing-dot rules, which sqi implements and the reference predates) — these
+# rows exist because the receiver shape is different, not the rule: a RELATIVE
+# receiver with no directory at all, and a URI receiver, both of which reach
+# splitStemSuffix by a different path through funcspath.go than the absolute
+# POSIX receivers above. Measured against python3 3.14.6:
+# PurePosixPath('a.').with_suffix('.x') is 'a.x', .with_stem('x') is 'x.',
+# PurePosixPath('..b').with_suffix('.x') is '..b.x'.
+
+# with_suffix on a relative trailing-dot name: sqi replaces the '.' suffix, the
+# reference appends after it. See the explanation above.
+path | string :: path('a.').with_suffix('.x')
+
+# with_stem on a relative trailing-dot name: sqi keeps the '.' suffix, the
+# reference drops it. See the explanation above.
+path | string :: path('a.').with_stem('x')
+
+# with_suffix on a relative leading-dot-run name: sqi appends, the reference
+# replaces its imagined '.b'. See the explanation above.
+path | string :: path('..b').with_suffix('.x')
+
+# The same leading-dot-run rule reached through a URI receiver, where the name
+# is a URI component rather than a filesystem one: sqi appends, the reference
+# replaces. See the explanation above.
+path | string :: path('s3://b/..c').with_suffix('.x')
+
+# Removing a trailing-dot suffix on a URI receiver: sqi removes it, the
+# reference leaves it. See the explanation above.
+path | string :: path('s3://b/d.').with_suffix('')
+
+# The suffixes property for a bare trailing dot: sqi reports ['.'], the
+# reference reports []. Wrapped in join() so this compares the VALUES rather
+# than the list-of-strings rendering gap. See the explanation above.
+string | list[string] | path :: join(path('b.').suffixes, '|')

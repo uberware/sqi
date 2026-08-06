@@ -1260,3 +1260,119 @@ string | list[path] | path	join([path('/a'), path('/b')], ',')
 string | list[path] | path	join([path('/a') / 'x'], ',')
 string | path	upper(path('/a/b'))
 string | path	'prefix ' + path('/a/b')
+
+# ── C4: the boundary separator between a base and what follows it ────────────
+#
+# is_relative_to and relative_to take a BASE, and section 2.1.5 already rules
+# that a trailing slash on an operand of that kind is consumed ("a trailing
+# slash on the left operand is consumed by the join, matching pathlib
+# behavior"). RFC 0006 states the URI half of these two functions outright —
+# "For URIs, checks prefix match on the full URI", and for relative_to "strips
+# the matching prefix" — so an operator-written prefix such as "s3://renders/"
+# has to match the objects under it, WITHOUT weakening the parse rule that
+# keeps a URI's empty components (path('s3://b/').parts is ["s3://b", ""]).
+#
+# Both sides of the boundary are covered because both were broken: the base's
+# trailing empties decide whether the prefix matches at all, and the
+# remainder's LEADING empties decide whether the result is even relative —
+# path('s3://b//d').relative_to(path('s3://b')) answered "/d" before this
+# task, an absolute path out of the one function whose job is to remove an
+# anchor. The is_absolute() rows below pin that as a property rather than as a
+# rendering.
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://b/'))
+path | string	path('s3://b/d').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b/'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b/d/'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b/d/'))
+bool | path | string	path('s3://b/').is_relative_to(path('s3://b'))
+path | string	path('s3://b/').relative_to(path('s3://b'))
+bool | path | string	path('s3://b/').is_relative_to(path('s3://b/'))
+path | string	path('s3://b/').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b').is_relative_to(path('s3://b/'))
+path | string	path('s3://b').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b//').is_relative_to(path('s3://b'))
+path | string	path('s3://b//').relative_to(path('s3://b'))
+bool | path | string	path('s3://b//').is_relative_to(path('s3://b/'))
+path | string	path('s3://b//').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b//d').is_relative_to(path('s3://b'))
+path | string	path('s3://b//d').relative_to(path('s3://b'))
+bool | path | string	path('s3://b//d').is_relative_to(path('s3://b/'))
+path | string	path('s3://b//d').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/d//').is_relative_to(path('s3://b/d'))
+path | string	path('s3://b/d//').relative_to(path('s3://b/d'))
+bool | path | string	path('s3://b/d/').is_relative_to(path('s3://b'))
+path | string	path('s3://b/d/').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b//').relative_to(path('s3://b')))
+bool | path | string	is_absolute(path('s3://b//d').relative_to(path('s3://b')))
+bool | path | string	is_absolute(path('s3://b/d').relative_to(path('s3://b/')))
+# Consuming the boundary must not degrade the prefix test into a TEXTUAL one:
+# a longer authority and a longer component are still not matches, on both
+# sides.
+bool | path | string	path('s3://bb/d').is_relative_to(path('s3://b'))
+bool | path | string	path('s3://bb/d').is_relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/dd').is_relative_to(path('s3://b/d'))
+bool | path | string	path('s3://b/dd').is_relative_to(path('s3://b/d/'))
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://c/'))
+# A bare "scheme://" base: an EMPTY authority, which the opaque-prefix rule
+# makes a different authority from every non-empty one.
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://'))
+path | string	path('s3://b/d').relative_to(path('s3://'))
+bool | path | string	path('s3://b').is_relative_to(path('s3://'))
+path | string	path('s3://b').relative_to(path('s3://'))
+bool | path | string	path('s3://').is_relative_to(path('s3://'))
+path | string	path('s3://').relative_to(path('s3://'))
+# The filesystem flavors reach the same rule trivially, because their parsers
+# drop a trailing separator before parts() ever sees it.
+bool | path | string	path('/a/b').is_relative_to(path('/a/'))
+path | string	path('/a/b').relative_to(path('/a/'))
+path | string	path('/a/b/').relative_to(path('/a'))
+
+# ── C4: the with_* half of the stem/suffix rule ──────────────────────────────
+#
+# The PROPERTY surface of the pathlib-3.14 leading-dot-run rule is pinned
+# above; this is the FUNCTION surface, which reaches the same splitStemSuffix
+# through with_stem, with_suffix and with_number and diverges from the
+# reference for the same reason and in the same direction.
+path | string	path('/a/..b').with_stem('x')
+path | string	path('/a/..b').with_suffix('.x')
+path | string	path('/a/..b').with_suffix('')
+path | string	path('/a/..b').with_stem('')
+path | string | int	path('/a/..b').with_number(7)
+path | string	path('/a/b.').with_stem('x')
+path | string	path('/a/b.').with_suffix('.x')
+path | string	path('/a/b.').with_suffix('')
+path | string	path('/a/b.').with_stem('')
+path | string | int	path('/a/b.').with_number(7)
+path | string	path('/a/...').with_stem('x')
+path | string	path('/a/...').with_suffix('.x')
+path | string	path('/a/...').with_suffix('')
+path | string | int	path('/a/...').with_number(7)
+path | string	path('/a/..b.c').with_stem('x')
+path | string	path('/a/..b.c').with_suffix('.x')
+path | string	path('/a/..b.c').with_suffix('')
+path | string | int	path('/a/..b.c').with_number(7)
+path | string	path('/a/..').with_stem('x')
+path | string	path('/a/..').with_suffix('.x')
+path | string	path('/a/..').with_suffix('')
+path | string	path('/a/.hidden').with_suffix('')
+path | string | int	path('/a/.hidden').with_number(7)
+string | int	with_number('..b', 7)
+string | int	with_number('b.', 7)
+string | int	with_number('..b.c', 7)
+path | string	path('a.').with_suffix('.x')
+path | string	path('a.').with_stem('x')
+path | string	path('..b').with_suffix('.x')
+path | string	path('/a/..b').with_name('x')
+path | string	path('/a/b.').with_name('x')
+path | string	path('s3://b/..c').with_suffix('.x')
+path | string	path('s3://b/d.').with_suffix('')
+path | string | int	path('/a/..').with_number(7)
+string | int	with_number('...', 7)
+string | int	with_number('.hidden', 7)
+string | list[string] | path	join(path('..b').suffixes, '|')
+string | list[string] | path	join(path('b.').suffixes, '|')
+string | list[string] | path	join(path('..b.c').suffixes, '|')
+string | list[string] | path	join(path('.hidden.tar.gz').suffixes, '|')
+string | path	path('/a/.hidden.tar.gz').stem
+string | path	path('/a/.hidden.tar.gz').suffix

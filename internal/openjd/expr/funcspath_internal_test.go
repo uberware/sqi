@@ -395,6 +395,80 @@ func TestPathRelativeTo_AnchorlessOther(t *testing.T) {
 	}
 }
 
+// TestPathRelativeTo_URIBoundarySlash pins the separator run that sits at the
+// boundary between a URI base and the part of a path that follows it.
+//
+// A base is an operand of the same kind section 2.1.5 already rules on for "/":
+// "a trailing slash on the left operand is consumed by the join (matching
+// pathlib behavior)". RFC 0006 states the URI case of these two functions
+// directly — "For URIs, checks prefix match on the full URI" and, for
+// relative_to, "strips the matching prefix" — so a base written the way an
+// operator writes a prefix, "s3://renders/", has to match the objects under it.
+//
+// That has to hold at the same time as the OTHER specification rule, which the
+// URI parse fix in this same task established: a URI's path portion is
+// preserved verbatim, so an empty component IS a component and
+// path("s3://b/").parts is ["s3://b", ""]. The two only conflict if the prefix
+// test treats the boundary's own separators as significant. It does not, on
+// either side of the boundary:
+//
+//   - the base's TRAILING empty components are consumed, which is what makes
+//     path("s3://b/") and path("s3://b") the same base;
+//   - the remainder's LEADING empty components are consumed, which is what
+//     keeps the result a RELATIVE path. Without it path("s3://b//d")
+//     .relative_to(path("s3://b")) answers "/d" and path("s3://b//")
+//     .relative_to(path("s3://b")) answers "/" — absolute results from a
+//     function whose whole job is to remove an anchor, which then silently
+//     discard whatever base they are later joined onto. That is the same
+//     defect shape as the anchorless-"." one above, reached through a URI.
+//
+// Every expectation below is the reference implementation's own answer except
+// the last two, which are baselined in test/oracle/baseline.txt with the
+// reasoning: the reference reaches its prefix decision textually, so it calls
+// path("s3://b") NOT relative to the base "s3://b/" even though it consumes
+// that same trailing slash everywhere else, and it treats the empty authority
+// "s3://" as a prefix of every s3 authority, which the opaque-prefix rule
+// forbids.
+func TestPathRelativeTo_URIBoundarySlash(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('s3://b/d').is_relative_to(path('s3://b/'))`, "true"},
+		{`path('s3://b/d').relative_to(path('s3://b/'))`, "d"},
+		{`path('s3://b/d/f').relative_to(path('s3://b/'))`, "d/f"},
+		{`path('s3://b/d/f').relative_to(path('s3://b/d/'))`, "f"},
+		{`path('s3://b/').relative_to(path('s3://b'))`, "."},
+		{`path('s3://b//').relative_to(path('s3://b'))`, "."},
+		{`path('s3://b//').relative_to(path('s3://b/'))`, "."},
+		{`path('s3://b/d//').relative_to(path('s3://b/d'))`, "."},
+		{`path('s3://b//d').relative_to(path('s3://b'))`, "d"},
+		{`path('s3://b//d').relative_to(path('s3://b/'))`, "d"},
+		// The point of consuming the remainder's leading empties, stated as a
+		// property rather than as a rendering: a relative_to result is never
+		// absolute.
+		{`is_absolute(path('s3://b//').relative_to(path('s3://b')))`, "false"},
+		{`is_absolute(path('s3://b//d').relative_to(path('s3://b')))`, "false"},
+		// Consuming the boundary must not degrade the prefix test into a
+		// TEXTUAL one: a longer authority and a longer component are still not
+		// matches.
+		{`path('s3://bb/d').is_relative_to(path('s3://b'))`, "false"},
+		{`path('s3://b/dd').is_relative_to(path('s3://b/d'))`, "false"},
+		// The two rows where sqi and the reference part company; see the doc
+		// comment and baseline.txt.
+		{`path('s3://b').is_relative_to(path('s3://b/'))`, "true"},
+		{`path('s3://b/d').is_relative_to(path('s3://'))`, "false"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPathWithFunctions_Reject pins the three error conditions. All three
 // behave the same way in Python and in the reference — measured during design —
 // so any divergence here is a bug rather than an adjudication.

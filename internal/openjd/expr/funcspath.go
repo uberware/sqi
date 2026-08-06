@@ -325,7 +325,21 @@ func pathSeparators(p parsedPath) string {
 // ok is true when other's parts are a full prefix of p's; remaining is
 // whatever is left of p's parts after that prefix, valid only when ok.
 func relativeParts(p, other parsedPath) (remaining []string, ok bool) {
-	pp, op := p.parts(), other.parts()
+	// The separator run at the boundary between the base and what follows it
+	// belongs to the boundary and to neither side, which is section 2.1.5's own
+	// rule for "/" ("a trailing slash on the left operand is consumed by the
+	// join") applied to the operand these two functions call a base. Both
+	// halves are the SAME rule and both reuse pathval.go's pair rather than
+	// re-deriving anything here: trimTrailingEmptyComps on the base is what
+	// makes the operator-written prefix "s3://renders/" match the objects under
+	// it, as RFC 0006's "For URIs, checks prefix match on the full URI"
+	// requires; trimLeadingEmptyComps on the remainder is what keeps the result
+	// RELATIVE (see that function's doc comment for the absolute-result defect
+	// it closes).
+	//
+	// Only a URI ever carries an empty component to trim — both filesystem
+	// parsers drop them — so for POSIX and Windows both calls are no-ops.
+	pp, op := p.parts(), trimTrailingEmptyComps(other.parts())
 	// An ANCHORLESS other is the one case a prefix test over parts() gets
 	// wrong on its own. path(".") has no parts at all, so its (empty) part
 	// list is trivially a prefix of every path's — including an absolute
@@ -350,5 +364,5 @@ func relativeParts(p, other parsedPath) (remaining []string, ok bool) {
 			return nil, false
 		}
 	}
-	return pp[len(op):], true
+	return trimLeadingEmptyComps(pp[len(op):]), true
 }
