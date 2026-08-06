@@ -43,11 +43,14 @@ type Shape struct {
 	// FnCtx is Fn for the few implementations that need the evaluation's
 	// settings rather than only their arguments.
 	//
-	// Exactly two rows use it — path(string) and path(list[string]) — because
-	// constructing a path is the only operation that has to CHOOSE a flavor.
-	// Every other path operation reads the flavor off its receiver. Adding a
-	// parameter to Fn instead would have changed 64 rows that do not need it;
-	// RetOf is the existing precedent for an optional alternative field.
+	// The rule for which rows use it is not a tally, it is a question: does
+	// this row have to CHOOSE a flavor at construction time? All three of
+	// path()'s rows do — path(string), path(list[string]) and
+	// path(list[nulltype]) — because constructing a path is the only
+	// operation that ever has to decide one; every other path operation reads
+	// the flavor off its receiver. Adding a parameter to Fn instead would have
+	// changed every OTHER row, which does not need it; RetOf is the existing
+	// precedent for an optional alternative field.
 	//
 	// A Shape sets Fn or FnCtx, never both.
 	FnCtx func(ec evalCtx, args []Value) (Value, error)

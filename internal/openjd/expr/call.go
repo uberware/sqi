@@ -127,8 +127,9 @@ func (*Call) nameTarget(callee *Name, ec evalCtx, depth int) (name string, recv 
 // why it cannot be expressed with Shape.Promote.
 //
 // ec is threaded through to callShape so that a shape's optional FnCtx (see
-// Shape.FnCtx, shape.go) can read the evaluation's settings — path(string) and
-// path(list[string]) are the only two rows that need it.
+// Shape.FnCtx, shape.go) can read the evaluation's settings — path()'s rows
+// are the only ones that need it, because constructing a path is the only
+// operation that has to choose a flavor.
 func callFunction(ec evalCtx, name string, args []Value, methodStyle bool) (Value, error) {
 	shapes, ok := functionShapes[name]
 	if !ok {

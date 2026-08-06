@@ -291,9 +291,10 @@ func applyBinary(op Op, l, r Value) (Value, error) {
 		return unresolvedResult(s, b), nil
 	}
 	// A zero-value evalCtx is safe here: no row of binaryShapes ever sets
-	// FnCtx (only two function-library rows do — path(string) and
-	// path(list[string]), reached through callFunction, not an operator), so
-	// callShape never actually reads it for this call site.
+	// FnCtx (only path()'s rows do, reached through callFunction, not an
+	// operator, because constructing a path is the only operation that has to
+	// choose a flavor — see Shape.FnCtx), so callShape never actually reads it
+	// for this call site.
 	return callShape(evalCtx{}, s, b, []Value{l, r})
 }
 

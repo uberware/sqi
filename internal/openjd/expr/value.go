@@ -51,8 +51,8 @@ type Value struct {
 	//
 	// It rides on the value so that every path operation after construction —
 	// properties, "/", "with_*" — reads the flavor from its receiver rather
-	// than from the evaluator. That is what keeps Shape.FnCtx to the two rows
-	// that genuinely have to choose one.
+	// than from the evaluator. That is what confines Shape.FnCtx to the rows
+	// that genuinely have to choose one — path()'s, and nothing else.
 	//
 	// The zero value is PathPOSIX, which is also the evaluator's default, so a
 	// path Value built by a caller without setting it behaves as POSIX.
