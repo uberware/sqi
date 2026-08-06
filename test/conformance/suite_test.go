@@ -527,3 +527,99 @@ func TestConformance_C3ProtectedFixtures(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_C4ProtectedFixtures asserts by NAME that the fixtures
+// sub-project C4 puts at risk still pass.
+//
+// All four are .invalid, and all four passed BEFORE C4 for the wrong reason:
+// path() was not registered, so the expression failed with "unknown function"
+// and the template was rejected. C4 registers the path constructor, the six
+// path properties, the with-functions, relative_to and with_number, which
+// removes that accidental rejection — each fixture must then be rejected by
+// REAL argument validation instead.
+//
+// The aggregate score cannot see the difference: four regressing while four
+// others start passing leaves it unchanged. Same reason
+// TestConformance_C3ProtectedFixtures exists.
+//
+// WHAT THIS TEST ACTUALLY GUARANTEES, and what it does not — the correction
+// C3's docstring had to be given after the fact, applied here up front. It
+// asserts res.Passed, i.e. that the fixture is STILL rejected overall; it
+// cannot assert WHICH mechanism rejected it, because conformance.Result blanks
+// Reason on a pass (exprcase.go, pinned by exprcase_test.go). So an entry pins
+// a specific check only where no second, independent mechanism rejects the
+// same input. Unlike C3's list, ALL FOUR entries here were verified to have no
+// such second mechanism: each named check was weakened on its own, this test
+// was run, and it failed naming that one fixture and no other. What differs
+// between them is WHOSE code each one pins:
+//
+//   - relative-to-not-relative and with-number-padding-too-wide pin C4's own
+//     code. path("/a/b").relative_to(path("/a")) and
+//     path("/out/file_%09d.exr").with_number(1) both evaluate cleanly, so the
+//     only things rejecting these two fixtures' inputs are errNotRelative and
+//     errPaddingTooWide. Verified by returning args[0] instead of
+//     errNotRelative, and by clamping the width instead of returning
+//     errPaddingTooWide.
+//
+//   - method-no-receiver-coercion does NOT pin C4. It pins section 1.2.4's
+//     receiver restriction, which is sub-project B3's (matchShapesExactFirst
+//     in shape.go, reached from callFunction's methodStyle flag). Measured:
+//     the same call written as a plain function,
+//     startswith(path("/foo/bar"), "/foo"), evaluates to true — path -> string
+//     coercion exists, and only the exact-first rule refuses it on a receiver.
+//     Verified by forcing methodStyle false at the call site. C4 is what makes
+//     this entry LIVE, not what makes it pass.
+//
+//   - bool-from-path does NOT pin C4 either. It pins C1's bool() path row
+//     ("Cannot convert path to bool"), and it is ALREADY asserted by
+//     TestConformance_C1ProtectedFixtures with that row as its stated reason.
+//     It is repeated here because C1 listed it while path() was still unknown,
+//     which made C1's assertion vacuous until C4 shipped; this entry records
+//     that the same assertion is now live. It is covered twice on purpose.
+//     Verified by making that row return Bool(true).
+//
+// Note the floor all four share: deleting C4's path() registration outright
+// would restore an "unknown function" rejection and leave every one of them
+// passing. This is a rejection floor against C4's ARRIVAL, not a pin on
+// path() continuing to exist.
+func TestConformance_C4ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// C4's own errNotRelative: the same call with a genuinely relative
+		// other path evaluates fine, so nothing else rejects this input.
+		"EXPR/job_templates/expr2.2.6--relative-to-not-relative.invalid.yaml": "relative_to rejects a path that is not relative to the other path",
+		// C4's own errPaddingTooWide: the same call with %09d instead of
+		// %099d evaluates fine, so nothing else rejects this one either.
+		"EXPR/job_templates/expr2.3.2--with-number-padding-too-wide.invalid.yaml": "with_number rejects a padding width beyond the maximum",
+		// Rejected by section 1.2.4's receiver restriction — B3's code, not
+		// C4's. See the docstring above.
+		"EXPR/job_templates/expr1.2.4--method-no-receiver-coercion.invalid.yaml": "section 1.2.4 forbids coercing a path receiver to string for a string method",
+		// Rejected by C1's bool() path row, not by C4's code, and also listed
+		// in TestConformance_C1ProtectedFixtures. See the docstring above.
+		"EXPR/job_templates/expr2.2.1--bool-from-path.invalid.yaml": "bool() rejects a path",
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = conformance.RunExprCase(tc, data)
+	}
+
+	for path, why := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected because %s.", path, why)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (%s): %s", path, why, res.Reason)
+			}
+		})
+	}
+}

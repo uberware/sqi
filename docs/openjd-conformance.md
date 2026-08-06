@@ -130,7 +130,7 @@ parameter value ever existing — the same static type checking `internal/openjd
 performs everywhere else. A name introduced by a `let:` block binds untyped,
 since this path does not track `let` scoping or evaluate a binding's
 right-hand side to learn its real type. As of this measurement it scores
-**134 / 209 pass, 75 baselined** in `test/conformance/baseline-expr.txt`. A
+**145 / 209 pass, 64 baselined** in `test/conformance/baseline-expr.txt`. A
 fixture that is invalid for a reason this path cannot see — a runtime-only
 condition, or a `let` binding whose real type would have caught it — still
 parses and evaluates fine, is accepted, and therefore fails and is baselined
@@ -239,7 +239,7 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **134 / 209 pass, 75 baselined** |
+| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **145 / 209 pass, 64 baselined** |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
