@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -246,6 +247,103 @@ func (p parsedPath) suffixes() []string {
 		out = append(out, "."+s)
 	}
 	return out
+}
+
+// anchorParts splits p's root into the drive and the root separator that
+// CPython's own join reasons about separately. It is the ONE distinction
+// parsedPath.root deliberately erases — it stores the two already combined,
+// because every other operation in this file needs the anchor only as a
+// whole — so this is the only place that has to take them apart again.
+//
+// Only the Windows flavor can produce a drive, and the split there is
+// delegated to splitRootWindows, the existing CPython port, rather than
+// re-derived beside it.
+//
+// A URI's scheme+authority is reported as a ROOT and never as a drive, which
+// is not a detail: pathJoin lets a rootless child INHERIT its parent's drive,
+// and a URI authority must never be inherited that way.
+func (p parsedPath) anchorParts() (drive, root string) {
+	if p.isURI || p.flavor != PathWindows {
+		return "", p.root
+	}
+	d, r, _ := splitRootWindows(p.root)
+	return d, r
+}
+
+// pathJoin combines a parent with a child: RFC 0006 section 2.1.5's "/",
+// applied at the structural level. The result is BUILT out of the two parsed
+// paths and rendered by String(), which is the single formula that already
+// knows how each root shape joins its components — a bare Windows drive takes
+// no separator after it, a URI always uses "/" whatever the flavor says.
+// Nothing here concatenates text or picks a separator; doing either is how
+// this wave's earlier joinParts broke bare drives.
+//
+// The rule is CPython's own ntpath.join/posixpath.join, restated over the
+// parsed shape rather than over strings:
+//
+//   - a child carrying a root of its own anchors the result, inheriting the
+//     parent's drive when it has none — so "C:/a" / "/x" is "C:\x". For POSIX
+//     and URI, which have no drives at all, this IS section 2.1.5's "if the
+//     right operand is an absolute path, it replaces the left operand
+//     entirely";
+//   - a child with a DIFFERENT drive and no root discards the parent outright
+//     ("C:/a" / "D:b" is "D:b"). The SAME drive spelled in another case keeps
+//     the child's spelling and then appends, which is ntpath.join's own
+//     behavior ("C:/a" / "c:b" is "c:\a\b");
+//   - anything else is an ordinary relative child: its components are
+//     appended.
+//
+// isAbsolute() is deliberately NOT the test, even though section 2.1.5 words
+// the rule that way. Under Windows a child can anchor the result without
+// being absolute — "/x" and "D:b" are both is_absolute() == false — so a rule
+// keyed on that predicate silently DROPS their anchor and answers "C:\a\x"
+// and "C:\a\b". The reference implementation's path family is POSIX-only and
+// cannot adjudicate any of this; the Windows expectations are CPython's, and
+// are pinned by TestPathOperators_Windows.
+func pathJoin(parent, child parsedPath) parsedPath {
+	// A URI child replaces the parent whole. It is handled before the anchor
+	// split so that its authority can never be treated as a root the parent's
+	// drive gets prepended to.
+	if child.isURI {
+		return child
+	}
+	pDrive, pRoot := parent.anchorParts()
+	cDrive, cRoot := child.anchorParts()
+	switch {
+	case cRoot != "":
+		if cDrive == "" {
+			cDrive = pDrive
+		}
+		return parsedPath{root: cDrive + cRoot, comps: child.comps, flavor: parent.flavor}
+	case cDrive != "" && !strings.EqualFold(cDrive, pDrive):
+		return child
+	case cDrive != "":
+		pDrive = cDrive
+	}
+	return parsedPath{
+		root:   pDrive + pRoot,
+		comps:  slices.Concat(trimTrailingEmptyComps(parent.comps), child.comps),
+		flavor: parent.flavor,
+		isURI:  parent.isURI,
+	}
+}
+
+// trimTrailingEmptyComps drops the empty components a trailing separator
+// leaves behind, which is section 2.1.5's "a trailing slash on the left
+// operand is consumed by the join".
+//
+// Only a URI ever has one to drop: both filesystem flavors discard a trailing
+// separator while parsing, so their component lists never end in "". The
+// whole trailing RUN goes rather than a single component, matching the
+// reference implementation, which answers "s3://b/d///" / "f" with
+// "s3://b/d/f" while keeping an INTERIOR run intact ("s3://b/d//x" is
+// unchanged by parsing and by joining).
+func trimTrailingEmptyComps(comps []string) []string {
+	end := len(comps)
+	for end > 0 && comps[end-1] == "" {
+		end--
+	}
+	return comps[:end]
 }
 
 // parseWindows splits a Windows path into its anchor and components.

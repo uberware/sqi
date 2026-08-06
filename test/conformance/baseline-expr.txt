@@ -126,7 +126,5 @@ EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
 EXPR/job_templates/expr-extension-missing.invalid.yaml
-EXPR/job_templates/expr1.1--method-call-expr.yaml
 EXPR/job_templates/expr1.3.10--operation-limit-exceeded.invalid.yaml
 EXPR/job_templates/expr1.3.10--string-operation-limit-exceeded.invalid.yaml
-EXPR/job_templates/expr1.3.11--path-range-expression.yaml

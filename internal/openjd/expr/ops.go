@@ -69,6 +69,17 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(addInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a + b }))},
 		{Params: []Type{TString, TString}, Ret: TString, Fn: shapeBinary(concatStrings)},
+		// RFC 0006 section 2.1.5's __add__(p: path, suffix: string) -> path.
+		//
+		// This row is what makes "P + 'x'" a PATH rather than the string it
+		// used to be: it matches EXACTLY (cost 0) where the (string, string)
+		// row above matches only by coercing the path operand to string (cost
+		// 1, section 1.2.3's path -> string rule). The reverse pair is
+		// unaffected — "'x' + P" still takes the string row, because
+		// string -> path is not a conversion the matcher will make to select
+		// an overload (promotable, coerce.go) — and so is "'a' + 'b'", which
+		// the string row still matches at cost 0.
+		{Params: []Type{TPath, TString}, Ret: TPath, Fn: shapeBinary(appendToPath)},
 		// Section 2.1.3: range_expr + range_expr -> list[int]. range_expr
 		// promotes losslessly to BOTH list[int] and string (coercibleConditional,
 		// coerce.go), and the generic list shape below cannot admit a bare
@@ -169,6 +180,18 @@ var binaryShapes = map[Op][]Shape{
 	OpDiv: {
 		{Params: []Type{TInt, TInt}, Ret: TFloat, Fn: shapeBinary(divInts)},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(divFloats)},
+		// RFC 0006 section 2.1.5's two path-join rows. Both are registered
+		// even though the (path, path) one would be reached from the (path,
+		// string) row anyway by section 1.2.3's path -> string coercion: an
+		// exact row is what the specification's table lists, it costs nothing
+		// to match, and it does not depend on that coercion staying in place.
+		//
+		// Neither row admits an int on either side, which is what keeps
+		// "path('a') / 1" and "1 / path('a')" errors: int -> string is a
+		// coercion but not a promotion, so it cannot be used to SELECT an
+		// overload (see matchShapesExactFirst, shape.go).
+		{Params: []Type{TPath, TString}, Ret: TPath, Fn: shapeBinary(joinPaths)},
+		{Params: []Type{TPath, TPath}, Ret: TPath, Fn: shapeBinary(joinPaths)},
 	},
 	// Floor-dividing two floats yields an int — __floordiv__(float, float) -> int.
 	OpFloorDiv: {
@@ -579,6 +602,49 @@ func concatStrings(l, r Value) (Value, error) {
 		return Value{}, err
 	}
 	return String(l.AsStr() + r.AsStr()), nil
+}
+
+// joinPaths implements RFC 0006 section 2.1.5's "/" for both of its rows.
+//
+// The right operand's text is re-parsed under the LEFT operand's flavor. That
+// is where a binary path operator's flavor has to come from — a path Value
+// carries its own (Value.pf), and the evaluator's setting is reachable only
+// from a Shape.FnCtx row, which by design is path()'s alone. Re-parsing the
+// right operand under the left's flavor also means the two rows need no
+// separate code: a path right operand contributes nothing but its text.
+//
+// The join itself is pathJoin's (pathval.go), and the rendering is String()'s;
+// boundedPath re-parses the rendered text, which is what normalizes the result
+// and bounds its size, exactly as every other path-producing function does.
+func joinPaths(l, r Value) (Value, error) {
+	parent := pathOf(l)
+	joined := pathJoin(parent, parsePath(pathOperandText(r), parent.flavor))
+	return boundedPath(joined.String(), joined.flavor)
+}
+
+// appendToPath implements section 2.1.5's __add__(p: path, suffix: string) ->
+// path: the suffix is appended with NO separator and the result is re-parsed,
+// so "path('/a/b') + 'x'" is the path "/a/bx".
+//
+// The specification's table describes this as appending to the last
+// COMPONENT, and for every path that has one the two readings agree. They part
+// company on a path that has none, where appending to the rendered text is the
+// reading that matches the reference implementation: "path('/') + 'x'" is
+// "/x", not an empty-name error.
+func appendToPath(l, r Value) (Value, error) {
+	p := pathOf(l)
+	return boundedPath(p.String()+r.AsStr(), p.flavor)
+}
+
+// pathOperandText reads a path operator's right operand, which the (path,
+// string) and (path, path) rows deliver under two different type codes: AsStr
+// panics on a path and pathText panics on a string, so neither accessor alone
+// can serve both rows.
+func pathOperandText(v Value) string {
+	if v.Type.Code == CodePath {
+		return pathText(v)
+	}
+	return v.AsStr()
 }
 
 // containsString implements __contains__(a, b) for "b in a". The expression's

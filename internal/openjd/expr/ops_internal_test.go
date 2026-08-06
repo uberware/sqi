@@ -1207,3 +1207,250 @@ func TestRangeExprEquality_SelfEquality(t *testing.T) {
 		})
 	}
 }
+
+// TestPathOperators covers RFC 0006 section 2.1.5.
+//
+// The absolute-right-operand row is pathlib's rule and is easy to miss: a
+// relative child is appended, but an ABSOLUTE child replaces the left operand
+// entirely.
+func TestPathOperators(t *testing.T) {
+	tests := []struct{ src, want, wantType string }{
+		{`path('/a/b') / 'c'`, "/a/b/c", "path"},
+		{`path('/a/b') / path('c')`, "/a/b/c", "path"},
+		{`path('/a/b') / '/c'`, "/c", "path"},
+		{`path('/a/b/') / 'c'`, "/a/b/c", "path"},
+		{`path('s3://bucket/dir/') / 'file'`, "s3://bucket/dir/file", "path"},
+		{`path('/a/b') + 'x'`, "/a/bx", "path"},
+		{`path('/a') / 'b' + '_c.png'`, "/a/b_c.png", "path"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestPathPlus_BeatsTheCoercedStringRow is the guard on a behavior CHANGE.
+//
+// Before this task, "P + 'x'" evaluated to the STRING "/a/bx", because
+// __add__(string, string) accepts a path by coercion. RFC 0006 requires a path.
+// A test asserting only the text would pass on the old behavior, so this
+// asserts the type — and asserts it through a symbol as well as a literal,
+// since a symbol is how a real template supplies a path.
+func TestPathPlus_BeatsTheCoercedStringRow(t *testing.T) {
+	syms := MapSymbols{"Param.Dir": Path("/a/b", PathPOSIX)}
+	for _, src := range []string{`path('/a/b') + 'x'`, `Param.Dir + 'x'`} {
+		v, err := Eval(src, syms, TAny)
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", src, err)
+		}
+		if got := v.Type.String(); got != "path" {
+			t.Errorf("Eval(%q) typed %s, want path — the coerced string row won", src, got)
+		}
+	}
+}
+
+// TestPathOperators_POSIXEdges pins the shapes the brief's happy path does not
+// reach, every one of them probed against the reference implementation first.
+//
+// The result of a join is a path VALUE, and every path value in this package is
+// normalized on construction (Value.Path re-parses), so the join normalizes too:
+// "P / ”", "P / '.'" and "P / 'c/'" all collapse. CPython agrees
+// (PurePosixPath('/a/b') / '.' is PurePosixPath('/a/b')). The reference
+// implementation at openjd-model 0.11.1 does NOT — it renders "/a/b/",
+// "/a/b/." and "/a/b/c/" respectively, while simultaneously reporting the
+// SAME joined value's .parts and .name as if it had normalized. That is a
+// reference defect (its own two views of one value disagree), and RFC 0006
+// says this family matches pathlib, so these follow pathlib. See
+// task-9-report.md.
+func TestPathOperators_POSIXEdges(t *testing.T) {
+	tests := []struct{ src, want, wantType string }{
+		{`path('/a/b') / ''`, "/a/b", "path"},
+		{`path('/a/b') / '.'`, "/a/b", "path"},
+		{`path('/a/b') / '..'`, "/a/b/..", "path"},
+		{`path('/a/b') / 'c/d'`, "/a/b/c/d", "path"},
+		{`path('/a/b') / 'c/'`, "/a/b/c", "path"},
+		{`path('/a') / 'b' / 'c' / 'd'`, "/a/b/c/d", "path"},
+		{`path('a/b') / 'c'`, "a/b/c", "path"},
+		{`path('') / 'b'`, "b", "path"},
+		{`path('.') / 'b'`, "b", "path"},
+		{`path('..') / 'c'`, "../c", "path"},
+		// A "//" root is absolute to CPython and to the reference, so the
+		// child replaces the parent. Three or more slashes collapse to one.
+		{`path('/a') / '//b'`, "//b", "path"},
+		{`path('/a') / '///b'`, "/b", "path"},
+		{`path('/a/b') + ''`, "/a/b", "path"},
+		{`path('/a/b') + '/c'`, "/a/b/c", "path"},
+		{`path('/') + 'x'`, "/x", "path"},
+		{`path('/a/b') + 'x' + 'y'`, "/a/bxy", "path"},
+		// A path on the RIGHT of "+" has no row of its own in RFC 0006's
+		// table, so it reaches __add__(path, string) by the section 1.2.3
+		// path -> string coercion, at a lower cost than the (string, string)
+		// row: the result is a PATH. The reference answers the same text as a
+		// string, having picked the (string, string) row instead.
+		{`path('/a/b') + path('c')`, "/a/bc", "path"},
+		// A string on the LEFT keeps the (string, string) row, since
+		// string -> path is not a promotion the matcher will make.
+		{`'x' + path('/a')`, "x/a", "string"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestPathOperators_URI pins the one join rule RFC 0006 states outright and
+// that no filesystem flavor can exercise: "A trailing slash on the left
+// operand is consumed by the join". Only a URI can carry one this far — both
+// filesystem flavors drop a trailing separator during parsing — and the
+// reference consumes a whole trailing RUN of them, not just one.
+func TestPathOperators_URI(t *testing.T) {
+	tests := []struct{ src, want, wantType string }{
+		{`path('s3://b/d') / 'f'`, "s3://b/d/f", "path"},
+		{`path('s3://b/d/') / 'f'`, "s3://b/d/f", "path"},
+		{`path('s3://b/d//') / 'f'`, "s3://b/d/f", "path"},
+		{`path('s3://b/d///') / 'f'`, "s3://b/d/f", "path"},
+		// Interior empty components are opaque and survive, which is the
+		// whole point of the URI flavor.
+		{`path('s3://b/d//x') / 'f'`, "s3://b/d//x/f", "path"},
+		// UNRESOLVED — the specification and the reference disagree here, and
+		// this pins the SPECIFICATION's reading. Section 2.1.5 says "for URI
+		// paths, joining a relative child is equivalent to
+		// path(p.parts + child.parts)": the child is a PATH, parsed under the
+		// evaluator's flavor, so its own trailing separator and its own
+		// repeated separators are normalized away before it ever becomes URI
+		// components. The reference joins the child's TEXT instead and answers
+		// "s3://b/d/a/" and "s3://b/d/a//b" — and unlike its other
+		// non-normalizing join answers this is NOT the same defect, since a
+		// URI parse would preserve those separators even if the reference
+		// re-parsed its own result. Flagged in task-9-report.md for the final
+		// review; reversing the ruling means parsing a URI parent's child as
+		// URI segments rather than as a path.
+		{`path('s3://b/d/') / 'a/'`, "s3://b/d/a", "path"},
+		{`path('s3://b/d/') / 'a//b'`, "s3://b/d/a/b", "path"},
+		{`path('s3://b/d/') + 'x'`, "s3://b/d/x", "path"},
+		// A URI is always absolute, so it replaces whatever is on the left.
+		{`path('/a/b') / 's3://x/y'`, "s3://x/y", "path"},
+		{`path('/a/b') / path('s3://x/y')`, "s3://x/y", "path"},
+		// ... and an absolute filesystem child replaces a URI parent.
+		{`path('s3://b/d') / '/abs'`, "/abs", "path"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestPathOperators_Windows is the flavor the reference implementation cannot
+// answer for — its path family is POSIX-only — so every expectation here is
+// CPython's, read from PureWindowsPath on the machine this was written on,
+// which is the same source parseWindows and splitRootWindows were ported from.
+//
+// The four cases that matter are the ones a rule keyed on is_absolute() alone
+// gets wrong, because a Windows child can anchor itself WITHOUT being
+// absolute:
+//   - "/x" has a root but no drive, so it keeps the parent's drive;
+//   - "D:b" has a drive but no root, and a DIFFERENT drive discards the parent;
+//   - "C:b" on the same drive is an ordinary relative child;
+//   - "c:b" is the same drive spelled differently, and the child's spelling wins.
+func TestPathOperators_Windows(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('C:/a') / 'b'`, `C:\a\b`},
+		{`path('C:/a') / '/x'`, `C:\x`},
+		{`path('C:/a') / 'D:b'`, `D:b`},
+		{`path('C:/a') / 'C:b'`, `C:\a\b`},
+		{`path('C:/a') / 'c:b'`, `c:\a\b`},
+		{`path('C:/a') / 'C:/x'`, `C:\x`},
+		{`path('C:') / 'b'`, `C:b`},
+		{`path('C:/a') / '//host/share'`, `\\host\share\`},
+		{`path('C:/a') / '//host/share/x'`, `\\host\share\x`},
+		{`path('//srv/share') / 'b'`, `\\srv\share\b`},
+		{`path('//srv/share') / '/x'`, `\\srv\share\x`},
+		{`path('a') / 'b'`, `a\b`},
+		{`path('C:/a') / '..'`, `C:\a\..`},
+		{`path('C:/a') / ''`, `C:\a`},
+		{`path('C:/a') + 'x'`, `C:\ax`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(PathWindows))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != "path" {
+				t.Errorf("Eval(%q) typed %s, want path", tc.src, got)
+			}
+		})
+	}
+}
+
+// TestPathOperators_Unsupported pins the operand pairs RFC 0006's table does
+// NOT list. Each one is an error in the reference implementation too, and each
+// stays an error only because string -> path and int -> string are not
+// promotions the shape matcher will make to SELECT an overload.
+func TestPathOperators_Unsupported(t *testing.T) {
+	for _, src := range []string{
+		`'/a' / path('b')`,
+		`1 / path('a')`,
+		`path('a') / 1`,
+		`path('a') + 1`,
+	} {
+		t.Run(src, func(t *testing.T) {
+			if _, err := Eval(src, MapSymbols{}, TAny); err == nil {
+				t.Fatalf("Eval(%q) succeeded, want an unsupported-operand error", src)
+			}
+		})
+	}
+}
+
+// TestPathOperators_Unresolved checks the path a template takes before its
+// parameter values exist: no implementation runs, so the result type is read
+// off the matched shape.
+func TestPathOperators_Unresolved(t *testing.T) {
+	syms := MapSymbols{"Param.Dir": Unresolved(TPath)}
+	for _, src := range []string{`Param.Dir / 'c'`, `Param.Dir + 'x'`} {
+		v, err := Eval(src, syms, TAny)
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", src, err)
+		}
+		if !v.IsUnresolved() {
+			t.Fatalf("Eval(%q) = %v, want an unresolved value", src, v)
+		}
+		c, ok := unresolvedConstraint(v.Type)
+		if !ok || c.String() != "path" {
+			t.Errorf("Eval(%q) constrained to %v (ok=%v), want path", src, c, ok)
+		}
+	}
+}
