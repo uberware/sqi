@@ -211,7 +211,16 @@ for line in sys.stdin.read().split("\n"):
 }
 
 func pathCorpusWindows() []string {
-	leads := []string{"", `C:`, `C:\`, `C:/`, `\`, `/`, `\\srv\share\`, `\\srv\share`}
+	leads := []string{
+		"", `C:`, `C:\`, `C:/`, `\`, `/`, `\\srv\share\`, `\\srv\share`,
+		// Fix-round additions: a share-less UNC, a UNC with a bare trailing
+		// separator (no share), and all-separator strings — none of these
+		// shapes were reachable from the original 8 leads, and each exposed
+		// a real defect the 848-input corpus could not catch: isAbsolute()
+		// misclassifying a share-less UNC, and the UNC root builder
+		// fabricating a separator that was never in the input.
+		`\\srv`, `\\srv\`, `\\`, `\\\`, `\\\\`,
+	}
 	segs := []string{"a", "b", ".", "..", "x.txt"}
 	var out []string
 	for _, lead := range leads {
