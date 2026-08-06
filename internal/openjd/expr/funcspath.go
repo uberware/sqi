@@ -269,30 +269,27 @@ func isValidReplacementName(name string, p parsedPath) bool {
 	return name != "" && name != "." && !strings.ContainsAny(name, pathSeparators(p))
 }
 
-// windowsSeparatorChars are the characters parseWindows treats as
-// interchangeable separators — it normalizes "/" to "\" via
-// strings.ReplaceAll before splitting on "\", so both count. Extracted here
-// as the one definition, so argument validation can check the SAME set
-// parseWindows already encodes rather than hand-writing a second one that
-// could drift out of sync with it.
-const windowsSeparatorChars = `/\`
-
 // pathSeparators reports which characters separate components for p's
-// shape: "/" for POSIX and for a URI — POSIX parsing and splitURI's own
-// component split both use only "/" — or windowsSeparatorChars for a
-// non-URI Windows-flavor path, matching parseWindows's own normalization.
-// Measured against the reference (fix round 1): it is POSIX-only for these
-// functions and accepts a backslash outright, including on a
-// drive-looking receiver like "C:/a/b" — POSIX parsing never treats ':'
-// specially, so the drive does not switch the flavor. A URI stays
-// "/"-only even when the evaluator's chosen flavor is Windows, because
-// parsePath's isURI branch never reaches parseWindows in the first place;
-// validation must not either.
+// shape, deferring to pathval.go's pathSeparatorChars — the SAME definition
+// parsePath's POSIX branch and parseWindows themselves split on — rather
+// than a second hand-written set here. Fix round 2: an earlier version of
+// this function carried its own windowsSeparatorChars constant that only
+// this validator read, which was still the "two formulas that happen to
+// agree today" shape the whole wave has been fixing, just moved rather than
+// closed.
+//
+// A URI's body is always "/"-only regardless of flavor — splitURI hard-codes
+// "/" for its own component split and never calls pathSeparatorChars at
+// all, so this checks p.isURI itself before consulting it. Measured against
+// the reference (fix round 1): it is POSIX-only for these functions and
+// accepts a backslash outright, including on a drive-looking receiver like
+// "C:/a/b" — POSIX parsing never treats ':' specially, so the drive does not
+// switch the flavor.
 func pathSeparators(p parsedPath) string {
-	if !p.isURI && p.flavor == PathWindows {
-		return windowsSeparatorChars
+	if p.isURI {
+		return "/"
 	}
-	return "/"
+	return pathSeparatorChars(p.flavor)
 }
 
 // relativeParts backs relative_to and is_relative_to. Both compare parts()

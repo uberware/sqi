@@ -25,6 +25,59 @@ type parsedPath struct {
 	isURI  bool // read by isAbsolute since Task 3; set starting Task 4 (URI flavor)
 }
 
+// pathSeparatorChars is the set of characters that separate path components
+// under flavor f: "/" alone for POSIX, or "/" and "\" together for Windows.
+// This is the ONE place "what is a separator" is answered for a flavor —
+// parsePath's POSIX branch and parseWindows below both consult it (via
+// pathCanonicalSeparator and normalizeSeparators) to find component
+// boundaries, and funcspath.go's isValidReplacementName consults it
+// directly to reject a with_name/with_stem/with_suffix replacement that
+// contains one. Parser and validator sharing this definition matters
+// because they must never independently drift the way an earlier fix
+// round's joinParts (a second copy of String()'s join rule) and
+// splitStemSuffix (a second copy of suffixes()'s leading-dot handling) did.
+//
+// A URI's body is always "/"-only regardless of flavor — splitURI never
+// calls this function at all, it hard-codes "/" for its own component
+// split below — so a caller that must handle both shapes
+// (isValidReplacementName) checks p.isURI itself before consulting this.
+func pathSeparatorChars(f PathFormat) string {
+	if f.resolve() == PathWindows {
+		return `/\`
+	}
+	return "/"
+}
+
+// pathCanonicalSeparator is the ONE character parseWindows normalizes every
+// OTHER character in pathSeparatorChars(f) to, before splitting on it: "\"
+// for Windows. For POSIX it is "/", the only separator POSIX has, so
+// normalizing to it is a no-op — parsePath's POSIX branch still splits on
+// this value rather than a second hard-coded "/", so both flavors' splits
+// read the same source.
+func pathCanonicalSeparator(f PathFormat) byte {
+	if f.resolve() == PathWindows {
+		return '\\'
+	}
+	return '/'
+}
+
+// normalizeSeparators rewrites every character in pathSeparatorChars(f) to
+// f's canonical separator, so a downstream split on that ONE character finds
+// every component boundary regardless of which separator character produced
+// it. parseWindows is the caller that actually needs this — it accepts "/"
+// on input but represents an anchor, and renders output, using "\" alone;
+// for POSIX it is a no-op, since POSIX has only one separator to begin with.
+func normalizeSeparators(text string, f PathFormat) string {
+	seps := pathSeparatorChars(f)
+	canon := rune(pathCanonicalSeparator(f))
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(seps, r) {
+			return canon
+		}
+		return r
+	}, text)
+}
+
 // parsePath splits text into a root and components under the given flavor.
 //
 // Normalization is Python's, and it is deliberately not uniform: consecutive
@@ -60,7 +113,7 @@ func parsePath(text string, f PathFormat) parsedPath {
 		}
 		rest = trimmed
 	}
-	for c := range strings.SplitSeq(rest, "/") {
+	for c := range strings.SplitSeq(rest, string(pathCanonicalSeparator(f))) {
 		if c == "" || c == "." {
 			continue
 		}
@@ -233,10 +286,10 @@ func (p parsedPath) suffixes() []string {
 // its only record for now.
 func parseWindows(text string) parsedPath {
 	p := parsedPath{flavor: PathWindows}
-	s := strings.ReplaceAll(text, "/", `\`)
+	s := normalizeSeparators(text, PathWindows)
 	drive, root, rest := splitRootWindows(s)
 	p.root = drive + root
-	for c := range strings.SplitSeq(rest, `\`) {
+	for c := range strings.SplitSeq(rest, string(pathCanonicalSeparator(PathWindows))) {
 		if c == "" || c == "." {
 			continue
 		}
