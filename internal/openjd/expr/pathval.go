@@ -291,7 +291,19 @@ func (p parsedPath) anchorParts() (drive, root string) {
 //     the child's spelling and then appends, which is ntpath.join's own
 //     behavior ("C:/a" / "c:b" is "c:\a\b");
 //   - anything else is an ordinary relative child: its components are
-//     appended.
+//     appended — and if the parent's drive does not already end in ":" or a
+//     separator, an explicit separator is inserted before the first appended
+//     component. That last clause is ntpath.join's own final block and it is
+//     NOT optional: a bare UNC or device drive ("\\srv", "\\.\dev") is the one
+//     anchor shape that carries no separator of its own, so without it the
+//     components glue straight onto the server name and "path('//nas') /
+//     'renders'" quietly addresses the host "nasrenders". Fix round 1 — the
+//     original version of this function reasoned that String() already knows
+//     how a root joins its components, which is true (it is a faithful port of
+//     _format_parsed_parts, "drv + root + sep.join(tail)") and yet incomplete:
+//     String() ASSUMES the anchor it is handed already carries its separator,
+//     an assumption pathlib can make because its own join is textual and
+//     re-parsed, and this structural join can not.
 //
 // isAbsolute() is deliberately NOT the test, even though section 2.1.5 words
 // the rule that way. Under Windows a child can anchor the result without
@@ -320,9 +332,20 @@ func pathJoin(parent, child parsedPath) parsedPath {
 	case cDrive != "":
 		pDrive = cDrive
 	}
+	comps := slices.Concat(trimTrailingEmptyComps(parent.comps), child.comps)
+	// ntpath.join's final block: a drive that is neither colon- nor
+	// separator-terminated (a bare UNC or device drive such as "\\srv") needs
+	// an explicit separator before the first appended component, because
+	// String() will not insert one. See the doc comment above; a bare "\\"
+	// anchor already ends in a separator, so the test is on the last character
+	// rather than on the drive's shape.
+	if pRoot == "" && pDrive != "" && len(comps) > 0 &&
+		!strings.ContainsAny(pDrive[len(pDrive)-1:], `:/\`) {
+		pRoot = string(pathCanonicalSeparator(parent.flavor))
+	}
 	return parsedPath{
 		root:   pDrive + pRoot,
-		comps:  slices.Concat(trimTrailingEmptyComps(parent.comps), child.comps),
+		comps:  comps,
 		flavor: parent.flavor,
 		isURI:  parent.isURI,
 	}
@@ -569,6 +592,17 @@ func isSchemeByte(b byte) bool {
 // the raw text directly rather than going through isabs, as an optimization
 // pathlib documents in its own source — the result is identical either way).
 //
+// The POSIX branch tests root != "" and NOT root == "/", which is fix round
+// 1's correction and is a restatement of the paragraph above rather than a
+// patch to it: a POSIX root is "", "/" or "//" (parsePath keeps POSIX.1-2017
+// section 4.13's exactly-two-slashes root as its own, as CPython does), and it
+// is non-empty in exactly the cases the raw text began with "/". The == "/"
+// form silently excluded that third root shape, so every "//..." path — which
+// CPython and the reference implementation both call absolute — reported
+// itself relative. Pinned by TestParsePath_POSIXDoubleSlashIsAbsolute, and by
+// the is_absolute column TestParsePath_POSIXMatchesPython gained at the same
+// time; the differential's earlier silence on this is why it survived.
+//
 // For Windows the rule is PurePath.is_absolute() -> self.parser.isabs(self),
 // where "self" is coerced to its RENDERED string (str(self), i.e. what our
 // String() produces) before ntpath.isabs ever runs. This is NOT a test of
@@ -596,7 +630,7 @@ func (p parsedPath) isAbsolute() bool {
 	case p.flavor == PathWindows:
 		return windowsIsAbsPrefix(p.String())
 	default:
-		return p.root == "/"
+		return p.root != ""
 	}
 }
 

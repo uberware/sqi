@@ -65,12 +65,19 @@ func TestParsePath_POSIXMatchesPython(t *testing.T) {
 	// "if not line: continue" would silently swallow that one real input and
 	// desync every line thereafter, which is a bug in the harness, not in the
 	// path engine: it produces the same off-by-one for any implementation.
+	// is_absolute is compared as well as str and parts, and its ABSENCE here
+	// is what let the POSIX "//" root report itself relative for three tasks
+	// (isAbsolute tested the parsed root against "/" while its doc comment
+	// claimed pathlib's raw startswith("/") rule, so the exactly-two-slashes
+	// root fell through). The Windows differential below always compared it;
+	// this one did not, and the corpus has contained "//b" — via an empty
+	// first segment — the whole time.
 	script := `
 import sys
 from pathlib import PurePosixPath as P
 for line in sys.stdin.read().split("\n"):
     p = P(line)
-    print(str(p) + "\t" + "\x1f".join(p.parts))
+    print(str(p) + "\t" + "\x1f".join(p.parts) + "\t" + str(p.is_absolute()))
 `
 	out := runPython(t, script, strings.Join(corpus, "\n"))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
@@ -78,12 +85,13 @@ for line in sys.stdin.read().split("\n"):
 		t.Fatalf("python returned %d lines for %d inputs", len(lines), len(corpus))
 	}
 	for i, in := range corpus {
-		fields := strings.SplitN(lines[i], "\t", 2)
+		fields := strings.SplitN(lines[i], "\t", 3)
 		wantStr := fields[0]
 		var wantParts []string
 		if fields[1] != "" {
 			wantParts = strings.Split(fields[1], "\x1f")
 		}
+		wantAbs := fields[2] == "True"
 		p := parsePath(in, PathPOSIX)
 		if got := p.String(); got != wantStr {
 			t.Errorf("parsePath(%q).String() = %q, python %q", in, got, wantStr)
@@ -92,6 +100,41 @@ for line in sys.stdin.read().split("\n"):
 		if strings.Join(got, "\x1f") != strings.Join(wantParts, "\x1f") {
 			t.Errorf("parsePath(%q).parts() = %q, python %q", in, got, wantParts)
 		}
+		if gotAbs := p.isAbsolute(); gotAbs != wantAbs {
+			t.Errorf("parsePath(%q).isAbsolute() = %v, python %v", in, gotAbs, wantAbs)
+		}
+	}
+}
+
+// TestParsePath_POSIXDoubleSlashIsAbsolute pins the POSIX.1-2017 section 4.13
+// root — exactly two leading slashes, which CPython keeps as its own "//" root
+// rather than collapsing — as ABSOLUTE.
+//
+// Every one of these reported itself relative until fix round 1: isAbsolute's
+// POSIX branch compared the parsed root against "/" exactly, so the one root
+// shape that is neither "" nor "/" fell through to false. CPython
+// (PurePosixPath("//a").is_absolute()) and the reference implementation
+// (is_absolute(path("//a")), probed at openjd-model 0.11.1) both answer true.
+// The negatives are here for the same reason the positives are: a predicate
+// that answered true for everything would satisfy the list above on its own.
+func TestParsePath_POSIXDoubleSlashIsAbsolute(t *testing.T) {
+	absolute := []string{
+		"//", "//a", "//a/b", "//a/", "//.", "//..", "//./a", "//../a", "//?/a",
+		"//a//b", "//a///b", "/", "/a", "///a",
+	}
+	for _, in := range absolute {
+		t.Run("absolute "+in, func(t *testing.T) {
+			if !parsePath(in, PathPOSIX).isAbsolute() {
+				t.Errorf("parsePath(%q, POSIX).isAbsolute() = false, want true", in)
+			}
+		})
+	}
+	for _, in := range []string{"", ".", "..", "a", "a/b", "./a", "../a", "a//b"} {
+		t.Run("relative "+in, func(t *testing.T) {
+			if parsePath(in, PathPOSIX).isAbsolute() {
+				t.Errorf("parsePath(%q, POSIX).isAbsolute() = true, want false", in)
+			}
+		})
 	}
 }
 

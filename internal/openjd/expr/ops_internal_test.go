@@ -1394,6 +1394,22 @@ func TestPathOperators_Windows(t *testing.T) {
 		{`path('C:/a') / '//host/share'`, `\\host\share\`},
 		{`path('C:/a') / '//host/share/x'`, `\\host\share\x`},
 		{`path('//srv/share') / 'b'`, `\\srv\share\b`},
+		// A BARE UNC server, with no share — the anchor shape the original
+		// table omitted, and the one that broke. Its drive ("\\srv") carries
+		// no separator of its own, so the components glued straight onto the
+		// server name and "path('//nas') / 'renders'" silently addressed a
+		// DIFFERENT host ("\\nasrenders"). ntpath.join's final block inserts
+		// the separator; see pathJoin. The trailing separator CPython leaves
+		// on two of these is not a typo: "\\srv\b" re-parses as a
+		// server+share pair, which pathlib credits with a root.
+		{`path('//nas') / 'renders' / 'shot01'`, `\\nas\renders\shot01`},
+		{`path('//srv') / 'b'`, `\\srv\b\`},
+		{`path('//srv') / 'x/y'`, `\\srv\x\y`},
+		{`path('//./dev') / 'b'`, `\\.\dev\b`},
+		{`path('//?./name') / 'b'`, `\\?.\name\b`},
+		// A bare "\\" anchor already ENDS in a separator, so the same block
+		// must not add a second one.
+		{`path('//') / 'x'`, `\\x`},
 		{`path('//srv/share') / '/x'`, `\\srv\share\x`},
 		{`path('a') / 'b'`, `a\b`},
 		{`path('C:/a') / '..'`, `C:\a\..`},
