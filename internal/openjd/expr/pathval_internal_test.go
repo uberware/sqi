@@ -229,6 +229,65 @@ for line in sys.stdin.read().split("\n"):
 	t.Logf("compared %d inputs (%d skipped as the documented \\\\?\\UNC\\ omission)", len(corpus)-skipped, skipped)
 }
 
+// TestParsePath_URI pins the opacity rule. Every expectation was produced by
+// running the reference implementation during design.
+//
+// Each row is something the filesystem flavors would normalize away. If the
+// URI branch is ever skipped, these are what catch it — and they catch it
+// loudly, where a match-behavior test on a normalized path would not.
+func TestParsePath_URI(t *testing.T) {
+	tests := []struct {
+		in    string
+		want  string
+		parts []string
+	}{
+		{"s3://bucket/dir/file.obj", "s3://bucket/dir/file.obj", []string{"s3://bucket", "dir", "file.obj"}},
+		{"s3://bucket/a//b/c", "s3://bucket/a//b/c", []string{"s3://bucket", "a", "", "b", "c"}},
+		{"s3://bucket/a/./b", "s3://bucket/a/./b", []string{"s3://bucket", "a", ".", "b"}},
+		{"s3://bucket/dir/", "s3://bucket/dir/", []string{"s3://bucket", "dir", ""}},
+		{"s3://bucket", "s3://bucket", []string{"s3://bucket"}},
+		{"https://h/x/y", "https://h/x/y", []string{"https://h", "x", "y"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			// The flavor argument must not matter for a URI.
+			for _, f := range []PathFormat{PathPOSIX, PathWindows} {
+				p := parsePath(tc.in, f)
+				if !p.isURI {
+					t.Fatalf("parsePath(%q, %v) did not detect a URI", tc.in, f)
+				}
+				if got := p.String(); got != tc.want {
+					t.Errorf("parsePath(%q, %v).String() = %q, want %q", tc.in, f, got, tc.want)
+				}
+				if got := strings.Join(p.parts(), "|"); got != strings.Join(tc.parts, "|") {
+					t.Errorf("parsePath(%q, %v).parts() = %q, want %q", tc.in, f, p.parts(), tc.parts)
+				}
+				if !p.isAbsolute() {
+					t.Errorf("parsePath(%q, %v).isAbsolute() = false; a URI is always absolute", tc.in, f)
+				}
+			}
+		})
+	}
+}
+
+// TestParsePath_URIDetection pins the specification's own regex boundary. A
+// string that merely contains "://" is not a URI, and a scheme must start with
+// a letter.
+func TestParsePath_URIDetection(t *testing.T) {
+	uris := []string{"s3://b", "https://h", "a+b.c-d://x", "S3://b"}
+	notURIs := []string{"/a/b", "a/b", "://x", "1s://x", "a:/b", "a//b", "/x://y"}
+	for _, s := range uris {
+		if !parsePath(s, PathPOSIX).isURI {
+			t.Errorf("parsePath(%q) should be a URI", s)
+		}
+	}
+	for _, s := range notURIs {
+		if parsePath(s, PathPOSIX).isURI {
+			t.Errorf("parsePath(%q) should NOT be a URI", s)
+		}
+	}
+}
+
 func pathCorpusWindows() []string {
 	leads := []string{
 		"", `C:`, `C:\`, `C:/`, `\`, `/`, `\\srv\share\`, `\\srv\share`,

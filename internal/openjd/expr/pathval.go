@@ -33,9 +33,15 @@ type parsedPath struct {
 // filesystem is wrong in the presence of symlinks. The empty string is ".".
 func parsePath(text string, f PathFormat) parsedPath {
 	f = f.resolve()
+	if root, rest, ok := splitURI(text); ok {
+		p := parsedPath{root: root, isURI: true, flavor: f}
+		if rest != "" {
+			p.comps = strings.Split(rest, "/")
+		}
+		return p
+	}
 	p := parsedPath{flavor: f}
 	rest := text
-	// Task 4 inserts the URI branch ahead of both.
 	if f == PathWindows {
 		return parseWindows(text)
 	}
@@ -86,6 +92,12 @@ func parsePath(text string, f PathFormat) parsedPath {
 // LATER colon-bearing component never needs disambiguating, since it can't
 // be mistaken for a leading drive once it isn't in the leading position.
 func (p parsedPath) String() string {
+	if p.isURI {
+		if len(p.comps) == 0 {
+			return p.root
+		}
+		return p.root + "/" + strings.Join(p.comps, "/")
+	}
 	sep := "/"
 	if p.flavor == PathWindows {
 		sep = `\`
@@ -278,6 +290,55 @@ func driveColonLen(s string) int {
 		return 0
 	}
 	return n + 1
+}
+
+// splitURI recognizes the specification's URI form and splits off the opaque
+// scheme+authority prefix.
+//
+// The pattern is the spec's own: ^[a-zA-Z][a-zA-Z0-9+.-]*://
+//
+// Everything after the authority is kept VERBATIM. Consecutive slashes, "."
+// and ".." segments and a trailing slash all survive, because a URI path
+// component is an opaque identifier — "a//b" and "a/b" may name different
+// objects in a store. This is the exact opposite of the filesystem flavors,
+// and getting it wrong is silent, which is why the URI tests pin each case
+// that a filesystem path would normalize away.
+//
+// This deliberately does NOT reuse driveColonLen: that predicate accepts ANY
+// code point before ':' (matching ntpath.splitdrive), but a URI scheme must
+// start with an ASCII LETTER per the spec's own grammar — a stricter and
+// unrelated rule that gets its own predicate below.
+func splitURI(text string) (root, rest string, ok bool) {
+	if text == "" || !isSchemeStart(text[0]) {
+		return "", "", false
+	}
+	i := 1
+	for i < len(text) && isSchemeByte(text[i]) {
+		i++
+	}
+	if !strings.HasPrefix(text[i:], "://") {
+		return "", "", false
+	}
+	authStart := i + 3
+	rel := strings.Index(text[authStart:], "/")
+	if rel < 0 {
+		return text, "", true
+	}
+	return text[:authStart+rel], text[authStart+rel+1:], true
+}
+
+// isSchemeStart reports whether b may begin a URI scheme: an ASCII letter,
+// per ^[a-zA-Z] in the specification's own regex. Unlike driveColonLen, this
+// is intentionally NOT Unicode-aware and NOT digit/symbol-permissive — a
+// scheme's first character is strictly narrower than the rest of it.
+func isSchemeStart(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// isSchemeByte reports whether b may appear after the first character of a
+// URI scheme: [a-zA-Z0-9+.-], matching the specification's regex tail.
+func isSchemeByte(b byte) bool {
+	return isSchemeStart(b) || (b >= '0' && b <= '9') || b == '+' || b == '.' || b == '-'
 }
 
 // isAbsolute reports the specification's p.is_absolute().
