@@ -289,8 +289,16 @@ func (p parsedPath) anchorParts() (drive, root string) {
 // paths and rendered by String(), which is the single formula that already
 // knows how each root shape joins its components — a bare Windows drive takes
 // no separator after it, a URI always uses "/" whatever the flavor says.
-// Nothing here concatenates text or picks a separator; doing either is how
-// this wave's earlier joinParts broke bare drives.
+//
+// It picks a separator in EXACTLY ONE place — the ntpath.join final block in
+// the third bullet below, which supplies the root a bare UNC or device drive
+// does not carry — and nowhere else; every other separator in the result comes
+// from String(). That distinction is the whole point, and an earlier version
+// of this comment overstated it into "nothing here concatenates text or picks
+// a separator", which stopped being true the moment that block was added and
+// then contradicted the code three paragraphs below it. Concatenating the two
+// paths as TEXT, or choosing a separator anywhere else, is still how this
+// wave's earlier joinParts broke bare drives.
 //
 // The rule is CPython's own ntpath.join/posixpath.join, restated over the
 // parsed shape rather than over strings:
@@ -326,6 +334,22 @@ func (p parsedPath) anchorParts() (drive, root string) {
 // and "C:\a\b". The reference implementation's path family is POSIX-only and
 // cannot adjudicate any of this; the Windows expectations are CPython's, and
 // are pinned by TestPathOperators_Windows.
+//
+// ONE KNOWN DIVERGENCE FROM CPYTHON, deliberate and left as it is. A UNC child
+// that names an anchor and nothing else anchors the result here and discards
+// the parent's tail: path("//srv/share/x") / "//srv/share" is "\\srv\share\",
+// where CPython answers "\\srv\share\x" — its ntpath.splitroot credits
+// "\\srv\share" with no root, so its join treats the child as drive-only and
+// appends the parent's remaining components. sqi's splitRootWindows also
+// applies pathlib's own root-SYNTHESIS heuristic (synthesizeUNCRoot, ported
+// from PurePath._parse_path), under which a complete server+share pair does
+// carry a root, so the first switch arm above fires and the child anchors.
+// Section 2.1.5 says an absolute right operand replaces the left entirely, and
+// "//srv/share" is_absolute() is true in BOTH engines — so the spec-faithful
+// answer is arguably sqi's, and changing it would mean deleting a heuristic
+// this file ports from CPython precisely to keep parts() and roots correct
+// elsewhere. Recorded rather than reconciled; it is measured in the C4
+// path-engine bullet of doc.go too.
 func pathJoin(parent, child parsedPath) parsedPath {
 	// A URI child replaces the parent whole. It is handled before the anchor
 	// split so that its authority can never be treated as a root the parent's
@@ -440,9 +464,17 @@ func trimLeadingEmptyComps(comps []string) []string {
 // two sides agree on them without any device-path-specific code here (see
 // synthesizeUNCRoot's non-empty/non-"?"/non-"."/non-"?." exclusion, which is
 // the reference's OWN generic rule, not something this file added for
-// devices specifically). There is no doc.go entry for the "\\?\UNC\" omission
-// yet — that lands in this wave's documentation task — so this paragraph is
-// its only record for now.
+// devices specifically). Measured: PureWindowsPath("//?/a/b").parts and
+// PureWindowsPath("//./a/b").parts are ("\\\\?\\a\\", "b") and
+// ("\\\\.\\a\\", "b"), which is what this file produces; only the literal
+// "\\?\UNC\" prefix diverges. That omission now has a doc.go entry of its own
+// (the C4 path-engine bullet), so this paragraph is no longer its only record.
+//
+// Reserved DEVICE NAMES ("NUL", "CON", "AUX") are a separate thing and are
+// not special-cased here either — nor are they in pathlib, whose PURE paths
+// treat them as ordinary component text. path("NUL").name is "NUL". Nothing
+// in the specification asks for more, and only a filesystem-touching path
+// (which this engine is not) could act on the difference.
 func parseWindows(text string) parsedPath {
 	p := parsedPath{flavor: PathWindows}
 	s := normalizeSeparators(text, PathWindows)
@@ -590,6 +622,18 @@ func driveColonLen(s string) int {
 // code point before ':' (matching ntpath.splitdrive), but a URI scheme must
 // start with an ASCII LETTER per the spec's own grammar — a stricter and
 // unrelated rule that gets its own predicate below.
+//
+// A ONE-LETTER SCHEME IS LEGAL under that grammar, and the grammar is applied
+// before any flavor is consulted, so a Windows drive letter followed by "//"
+// is a URI here: path("C:") + "//b" is the URI "C://b", with parts ["C://b"]
+// and is_absolute() true, under EVERY path_format including Windows. This is
+// the spec's own regex read literally — it writes [a-zA-Z][a-zA-Z0-9+.-]*,
+// with a star and not a plus — and the alternative (special-casing a
+// single-letter scheme so a drive wins) would be sqi inventing a rule the
+// specification does not have, on a shape no real template produces: a bare
+// drive appended to a text that starts with two separators. It is left as
+// written, recorded here and in doc.go, rather than "fixed" by guesswork. If
+// upstream ever narrows the scheme grammar, narrow isSchemeStart with it.
 func splitURI(text string) (root, rest string, ok bool) {
 	if text == "" || !isSchemeStart(text[0]) {
 		return "", "", false

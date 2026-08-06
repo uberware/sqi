@@ -135,16 +135,33 @@ fixture that is invalid for a reason this path cannot see — a runtime-only
 condition, or a `let` binding whose real type would have caught it — still
 parses and evaluates fine, is accepted, and therefore fails and is baselined
 — that is deliberate reporting, the same principle as the not-applicable rows
-below, not a defect to chase down here. One entry that is NOT on the baseline
-list — it currently passes — is worth calling out because it is easy to
-misread the other way:
-`expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) currently passes,
-but not because section 1.3.9's memory limit is enforced — it isn't, this
-package has no memory limit at all yet. It passes because string repetition
-(`__mul__(string, int)`) is itself unimplemented, so the expression is
-rejected for an unrelated reason that happens to produce the right verdict;
-expect this entry to start failing again once string repetition ships, until
-a real memory limit lands beside it.
+below, not a defect to chase down here. Three fixtures that are NOT on the
+baseline list — they currently pass — are worth calling out, because each
+passes for a reason narrower than the rule it exists to test.
+
+`expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) passes, but not
+because section 1.3.9's memory limit is enforced — it isn't; the spec's
+*configurable* limit is still sub-project E's. It passes because
+`internal/openjd/expr` carries a hard, non-configurable safety bound
+(`limits.go`'s `maxStringBytes`, 10,000,000 bytes, applied by `checkRepeat`),
+and that bound rejects the expression. **String repetition is implemented** and
+has been since sub-project B2 — `ops.go`'s `OpMul` table registers
+`{TString, TInt} -> repeatString`, and `'a' * 3` evaluates to `"aaa"`. An
+earlier revision of this paragraph said the fixture passed because
+`__mul__(string, int)` was unimplemented and predicted the entry would start
+failing once repetition shipped; repetition shipped, the entry kept passing,
+and the stated mechanism was wrong. The conclusion is unchanged: this is not a
+section 1.3.9 pass, because a hard per-operation ceiling is not a memory
+budget — an expression that stays just under it repeatedly still allocates
+without bound.
+
+`7.3--apply-path-mapping-in-job-name.invalid.yaml` and
+`7.3--apply-path-mapping-in-timeout.invalid.yaml` pass because
+`apply_path_mapping` is an **unknown function**, not because either fixture's
+actual rule — that the function is available in host context only — is
+checked. Sub-project D registers it, and both will regress the moment it does.
+See the header of `test/conformance/baseline-expr.txt`, which records the
+forward hazard in full.
 
 The path is deleted the moment EXPR is registered for real:
 `TestConformance_EXPRNotRegistered` fails the build if `openjd.LookupExtension("EXPR")`

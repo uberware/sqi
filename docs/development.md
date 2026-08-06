@@ -269,9 +269,26 @@ Python namespace, it is a thin re-export layer over a compiled Rust crate
 on the 0.x line, where breaking changes are permitted in minor bumps. The
 specification outranks it. When the two disagree, read
 `third_party/openjd-specifications/` and decide; do not change sqi to match the
-reference. Three of the five currently baselined entries are cases where **the
-reference is wrong** — it mishandles `and`/`or` when a target type is supplied,
-returning the operand section 2.1.6 says to discard.
+reference. **Most** baselined entries are cases where **the reference is
+wrong** — the corpus currently scores 892/1051 agreeing with 159 baselined
+divergences, and each one's reasoning is argued in `test/oracle/baseline.txt`,
+which is the authority on any individual ruling (an earlier revision of this
+paragraph said "three of the five", a count that went stale several waves ago
+and is corrected here rather than re-pinned). Two have been reported upstream:
+[openjd-rs#291](https://github.com/OpenJobDescription/openjd-rs/issues/291) (a
+`target_type` inherited by operands that must not have it, including the
+operand `and`/`or` discards per section 2.1.6) and
+[#290 item 6](https://github.com/OpenJobDescription/openjd-rs/issues/290#issuecomment-5125365894)
+(a `path` as the **left** operand of an ordering operator inverts the
+comparison).
+
+**The oracle cannot see the Windows path flavor at all.** The reference's path
+family is POSIX-only — it accepts a backslash in a replacement name and never
+switches on a drive letter — so `test/oracle/corpus.txt` carries no
+Windows-flavor case, and every Windows expectation in `internal/openjd/expr` is
+pinned by that package's own unit tests against CPython's `PureWindowsPath`
+instead. URI behavior *is* oracle-measurable, because a URI is detected under
+the reference's POSIX format too.
 
 `OPENJD_MODEL_VERSION` in the `Makefile` pins the reference. It is pinned
 deliberately: unpinned, an upstream release could turn this red with no sqi

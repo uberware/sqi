@@ -169,7 +169,7 @@
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
 //     unsupported syntax — and the registry they resolve through,
 //     functionShapes (funcs.go, assembled by its own mergeFuncs), now holds
-//     64 entries: sub-project C1's four groups — general conversions (len,
+//     79 entries: sub-project C1's four groups — general conversions (len,
 //     bool, string, int, float, list, range_expr — funcsconv.go), validation
 //     (fail, the same file, its own RFC 0006 category despite living beside
 //     the conversions in one Go source file), math (abs, min, max, sum,
@@ -187,19 +187,41 @@
 //     re_escape, re_split — funcsre.go, behind its own translated dialect in
 //     repattern.go — see the regex bullet below) and repr_* (repr_sh,
 //     repr_cmd, repr_pwsh — funcsreprshell.go — and repr_py, repr_json —
-//     funcsreprdata.go — see the repr_* bullet below). Section 2.2's roughly
-//     100-function library is otherwise still unregistered: the path engine —
-//     every path property and function except apply_path_mapping, plus the
-//     section 2.1.5 path operators — is C4's, the only group left. A call to
-//     any of those still fails at RUNTIME with "unknown function", a real
-//     diagnostic rather than a parse error — "with_suffix('/foo/bar.txt',
-//     '.png')" reports `unknown function "with_suffix"`, not a syntax error,
-//     exactly as every name did before C1. This example is deliberately a
-//     path function rather than a regex or repr_* one: this same worked
-//     example named re_match before C2 shipped and repr_* before C3 shipped,
-//     going stale each time a wave registered the very name it was pointing
-//     at — the path engine is the only family left for a future wave not to
-//     repeat that. (Not every call reaches the registry at all: a dunder
+//     funcsreprdata.go — see the repr_* bullet below) — and, as of this wave,
+//     sub-project C4's path engine, all of it in funcspath.go over the
+//     three-flavor pure-path engine in pathval.go: construction and predicates
+//     (path, as_posix, is_absolute), the six properties, which are registered
+//     under their __property_*__ spellings and so are six of the 79
+//     (__property_name__, __property_stem__, __property_suffix__,
+//     __property_suffixes__, __property_parent__, __property_parts__), the
+//     with_* family and the relative pair (with_name, with_stem, with_suffix,
+//     is_relative_to, relative_to), and with_number, whose substitution
+//     scanner lives in pathnumber.go. Section 2.1.5's "/" and "+" path
+//     operators ship in the same wave but are operator-table rows (ops.go),
+//     not registry entries, so they are not among the 79 — see the path
+//     bullet below for all of it.
+//
+//     Section 2.2's roughly 100-function library now has exactly ONE name
+//     left unregistered: apply_path_mapping, sub-project D's, because it
+//     needs the session's path-mapping rules this package has no access to.
+//     A call to it still fails at RUNTIME with "unknown function", a real
+//     diagnostic rather than a parse error — "apply_path_mapping('/mnt/share')"
+//     reports `unknown function "apply_path_mapping"`, not a syntax error,
+//     verified directly, exactly as every name did before C1.
+//
+//     THAT WORKED EXAMPLE MUST NAME A FUNCTION FROM A SUB-PROJECT THAT HAS
+//     NOT SHIPPED, or it goes stale — and it now has, three times. It named
+//     re_match until C2 shipped, repr_* until C3 shipped, and with_suffix
+//     until C4 shipped: "with_suffix('/foo/bar.txt', '.png')" no longer
+//     reports an unknown function at all but `no signature of "with_suffix"
+//     accepts (string, string)`, verified directly — a different mechanism
+//     (overload selection, and the receiver-restriction paragraph below),
+//     which is exactly the misreading a stale example invites.
+//     apply_path_mapping is the LAST name available: when D registers it,
+//     no unregistered library function is left, and this example must be
+//     rewritten against something that is not a library function — or
+//     deleted — rather than re-pointed a fourth time.
+//     (Not every call reaches the registry at all: a dunder
 //     callee like "__add__(1, 2)" is rejected before lookup with "is a
 //     specification naming convention and is not directly callable", and a
 //     callee whose whole dotted name resolves to a symbol — "Param.Name()"
@@ -309,9 +331,8 @@
 //     its own — the caller's table is authoritative, exactly as it is for the
 //     comprehension shadowing check above — so a caller that binds both
 //     "a.b" and "a.b.c" gets "a.b.c" resolved to the SYMBOL rather than to a
-//     property "c" of "a.b". The rest of the ~100-function library (C4, the
-//     path engine) and the type-variable binding a call site needs are still
-//     to come; the type-variable codes (CodeVarT and friends) and the
+//     property "c" of "a.b". Only apply_path_mapping (sub-project D's) is left
+//     of the ~100-function library; the type-variable codes (CodeVarT and friends) and the
 //     matcher's binding of them already live here in shape.go, and C1's own
 //     list[varT] rows — len(), bool(), string()'s list row, and flatten(),
 //     sorted(), reversed() and unique() from the list-function group — are
@@ -411,13 +432,15 @@
 //     be typed as either. path has no literal syntax of its own, but a value
 //     IS produced by evaluation: string -> path is section 1.2.3's own
 //     coercion rule, so Eval(src, syms, expr.TPath) returns a path value for
-//     any expression that evaluates to a string. Neither path nor range_expr
-//     has an operator of its own beyond what coercion gives it for free:
-//     path's POSIX/Windows semantics, its URI awareness, its properties and
-//     functions, and its own operators (section 2.1.5) all belong to
-//     sub-project C4 — RFC 0006 puts the whole family in the function
-//     library. D is narrower than that split once suggested: apply_path_mapping,
-//     the Param/RawParam split, and mapping into typed parameter values. The
+//     any expression that evaluates to a string. path now has semantics of its
+//     own on top of that — its three flavors, its URI awareness, its properties
+//     and functions, and section 2.1.5's "/" and "+" — all delivered by
+//     sub-project C4 and described in the path-engine bullet below. RFC 0006
+//     puts the whole family in the function library, which is why C4 owns it
+//     and D does not; D is narrower than that split once suggested:
+//     apply_path_mapping, the Param/RawParam split, and mapping into typed
+//     parameter values. range_expr, by contrast, still has no operator of its
+//     own beyond what coercion gives it for free. The
 //     range_expr -> list[int] conversion (section 1.2.3) is fully
 //     implemented — coercing a range_expr value to a list[int] target expands
 //     it — and so is section 1.2.5's list/range_expr cross-type equality
@@ -458,6 +481,154 @@
 //     All of it is baselined in test/oracle/baseline.txt as a known gap,
 //     deferred to sub-project E along with the rest of section 1.3.4's
 //     pass-through requirements.
+//
+//   - THE PATH ENGINE (sub-project C4) is complete except apply_path_mapping:
+//     three flavors, every path property and function RFC 0006 defines, and
+//     section 2.1.5's "/" and "+" operators. A path value here is PURE — no
+//     filesystem is touched, nothing is resolved or stat'ed — and it is
+//     NORMALIZED BY CONSTRUCTION, because Value.Path re-parses its text. That
+//     is what makes RFC 0006 line 767's own guarantee, path(p.parts) == p,
+//     hold for every shape, and it is why "/" and "+" re-normalize their
+//     results where the reference implementation stores the joined text raw.
+//
+//     path_format is an EVALUATION option (WithPathFormat, eval.go), not a
+//     property of the host, and its default here is POSIX — which differs from
+//     the specification's own default of host-native, deliberately. sqi parses
+//     templates SERVER-SIDE, so a host-derived default would let one template
+//     expand into different tasks depending on which machine submitted it; the
+//     spec itself names POSIX as what TEMPLATE scope wants, "to ensure
+//     consistent behavior regardless of the submission machine's OS", and
+//     template parsing is exactly that scope. PathNative exists and resolves to
+//     the running GOOS, but nothing in sqi selects it yet — sub-project E does,
+//     for host contexts. Verified with no option at all: path('C:/a') renders
+//     "C:/a" and its is_absolute() is false (a drive letter means nothing to
+//     POSIX), while WithPathFormat(PathWindows) gives "C:\a" and true.
+//
+//     A URI IS NOT A FLAVOR. It is detected from the text under every
+//     path_format, by the spec's own scheme grammar, and a URI NORMALIZES
+//     NOTHING: consecutive slashes, "." segments and a trailing slash all
+//     survive, because a URI path component is an opaque identifier and "a//b"
+//     and "a/b" may name different objects in a store. Verified:
+//     path('s3://bucket/a//b/./c') renders back verbatim under both filesystem
+//     flavors, and its parts are ["s3://bucket", "a", "", "b", ".", "c"] — the
+//     empty component and the "." are real components, where a POSIX or
+//     Windows path would have collapsed both.
+//
+//     "+" NOW RETURNS A PATH where it used to return a string. Before this
+//     wave a path operand simply coerced to string and the (string, string)
+//     row answered; RFC 0006's section 2.1.5 table declares __add__(path, string)
+//     with a path return, so "path('/a/b') + 'c'" is the path "/a/bc",
+//     verified. path + path reaches that same row through section 1.2.3's
+//     path -> string coercion at cost 1, beating the (string, string) row at
+//     cost 2, so it is typed path too — the reference types it string, and the
+//     divergence is baselined. A caller that wanted the old string result must
+//     ask for one (a string target, or string()).
+//
+//     SIX RULINGS look like bugs when tried by hand and are not. Each was
+//     adjudicated against third_party/openjd-specifications/ and, where it
+//     diverges from the reference, recorded case by case in
+//     test/oracle/baseline.txt — that file, not this comment, is the place to
+//     check an individual row.
+//
+//     PATH COMPARISON IS BYTE-EXACT AND CASE-SENSITIVE FOR EVERY FLAVOR,
+//     WINDOWS INCLUDED. path('C:/A') == path('c:/a') is FALSE here under
+//     WithPathFormat(PathWindows); CPython's PureWindowsPath casefolds and
+//     answers True (measured). The specification is silent, and the reference
+//     agrees with sqi. This was raised twice during the sub-project and kept
+//     both times, for the same reason path_format defaults to POSIX: an
+//     expression evaluated server-side must not answer differently because of
+//     a host convention, and a case-folding equality would make two templates
+//     that differ only in the case of a path literal expand into the same
+//     tasks on one flavor and different tasks on another. Determinism and
+//     host-independence outrank imitating one platform's filesystem.
+//
+//     with_number REPLACES THE LAST MATCH, per RFC 0006 line 822 — "searches
+//     the filename stem from the end for these patterns and replaces the last
+//     match". A match is one bounded run of ONE placeholder kind (a printf
+//     specifier, a '#' run, a digit run), not everything from where a run
+//     starts to the end of the stem, so "##a3" holds TWO candidates and only
+//     the digits are replaced: with_number('##a3', 7) is "##a7", verified. The
+//     reference lets a '#' run swallow the remainder of the stem and answers
+//     "07", DESTROYING the literal "a" the caller wrote — a defect against its
+//     own specification's wording, not a second reading of it. Do not change
+//     sqi to match it; corpus.txt deliberately also carries the rows where the
+//     two agree, so an overcorrection fails there rather than trading one set
+//     of answers for another silently.
+//
+//     stem, suffix AND suffixes FOLLOW CURRENT CPython pathlib, which rewrote
+//     them to strip the whole LEADING DOT RUN before splitting (and therefore
+//     to treat a TRAILING dot as a suffix); the reference implements the older
+//     rule, which guarded only a single leading dot. So path('a.').stem is "a"
+//     with suffix "." and suffixes ["."], and path('/a/..b').stem is "..b"
+//     with no suffix — all verified here, and measured directly against
+//     CPython. The same splitStemSuffix backs with_stem, with_suffix and
+//     with_number, so the rule reaches those too. THE VERSION BOUNDARY: 3.12
+//     still has the old rule and 3.14 has the new one, measured on
+//     python3.12 and python3.14 side by side; 3.13 was not installed and was
+//     NOT tested, so the boundary is somewhere in (3.12, 3.14] and this
+//     comment does not name a single version. RFC 0006 says "matches Python
+//     pathlib.PurePath behavior" and links the CURRENT documentation, which is
+//     what settles it in favor of the current rule rather than the reference's.
+//
+//     A TRAILING EMPTY COMPONENT ON THE BASE of relative_to/is_relative_to is
+//     CONSUMED. Section 2.1.5 rules that "a trailing slash on the left operand
+//     is consumed by the join (matching pathlib behavior)", and the base of
+//     these two functions is an operand of exactly that kind, so an
+//     operator-written prefix like "s3://renders/" must match the objects
+//     under it. Parsing, meanwhile, PRESERVES an empty component verbatim
+//     (Expression-Language lines 754-755) — the URI rule above. Those two
+//     rules are both right and together they produce a COHERENCE ARTIFACT
+//     worth stating outright, because it looks like a bug: path('s3://b//') ==
+//     path('s3://b') is FALSE (their parts differ: ["s3://b", "", ""] against
+//     ["s3://b"]), and yet each IS relative to the other and relative_to
+//     returns "." in BOTH directions — all four verified. Equality compares
+//     the parsed values; relative_to consumes a boundary run on the base
+//     before comparing. The reference consumes the same run everywhere the
+//     receiver has something after the base, and then does not consume it in
+//     the self case, which makes its answers internally inconsistent rather
+//     than differently ruled.
+//
+//     THE REFERENCE'S PATH FAMILY IS POSIX-ONLY, so it cannot adjudicate the
+//     Windows flavor at all: it accepts a backslash as a replacement name, and
+//     never switches on a drive even for a drive-looking receiver like
+//     "C:/a/b" (both measured). Every Windows expectation in this engine is
+//     therefore pinned by this package's own unit tests against CPython's
+//     PureWindowsPath, NOT by make test-expr-oracle, and the corpus carries no
+//     Windows-flavor case at all. URI behavior IS oracle-measurable, because a
+//     URI is detected under the reference's POSIX format too, and the corpus
+//     covers it heavily.
+//
+//     THREE SMALLER DIVERGENCES, each deliberate, each recorded beside the
+//     code that produces it rather than only here:
+//
+//     The "\\?\UNC\" extended-length prefix is NOT parsed. pathlib gives that
+//     one literal prefix its own start-at-offset-8 parsing, splitting a
+//     further server+share out of what follows, so "\\?\UNC\srv\share\x" is
+//     ONE opaque root plus "x" to Python; here it runs through the ordinary
+//     offset-2 UNC algorithm and comes out with root "\\?\UNC\" and "srv",
+//     "share", "x" as ordinary components — a different split, not merely a
+//     different rendering, and the only extended-length or device shape known
+//     to diverge (a plain "\\?\a\b" or "\\.\a\b" agrees with CPython, measured
+//     both ways). Reserved device NAMES ("NUL", "CON") are not special-cased
+//     either, and neither are they by pathlib's PURE paths. See parseWindows.
+//
+//     path('//srv/share/x') / '//srv/share' ANCHORS here, giving
+//     "\\srv\share\", where CPython keeps the parent's "x" and answers
+//     "\\srv\share\x" (measured). sqi is arguably the more spec-faithful side:
+//     section 2.1.5 says an absolute right operand replaces the left entirely,
+//     and "//srv/share" is_absolute() is true in both engines. The mechanical
+//     cause is that splitRootWindows also ports pathlib's root-SYNTHESIS
+//     heuristic, which ntpath.splitroot does not have, so a complete
+//     server+share pair carries a root here and the join's anchor arm fires.
+//     See pathJoin.
+//
+//     path('C:') + '//b' YIELDS A URI, "C://b", with parts ["C://b"] and
+//     is_absolute() true, under every path_format including Windows — because
+//     the spec's own scheme grammar, ^[a-zA-Z][a-zA-Z0-9+.-]*://, accepts a
+//     ONE-LETTER scheme (a star, not a plus) and URI detection runs before any
+//     flavor is consulted. Special-casing a single-letter scheme so a drive
+//     wins would be sqi inventing a rule the specification does not have, on a
+//     shape no real template produces. See splitURI.
 //
 //   - A union target that names a value's own type exactly now admits it
 //     unchanged, list types included: Eval("[1.0, 2.0]", nil,
@@ -595,7 +766,7 @@
 //     comparison.
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
-//     EXPR/job_templates group is 143/209 passing, 66 fixtures baselined
+//     EXPR/job_templates group is 145/209 passing, 64 fixtures baselined
 //     (make test-conformance), including the ten .invalid fixtures
 //     TestConformance_B3ProtectedFixtures asserts by name — a construct this
 //     comment describes as rejected, such as the comprehension shadowing
@@ -621,16 +792,37 @@
 //     named backreference, and re_sub's four group-reference spellings) for
 //     the RIGHT reason now — the pattern scanner or the replacement check,
 //     not "unknown function" — rather than merely failing to parse as before
-//     C3. C3 also CLEARED one fixture outright, 3.6--let-bindings.yaml, which
-//     needed only functions already registered by that point (len, sum,
-//     string, repr_py); its sibling 3.6--let-host-context-symbols.yaml stays
-//     baselined because it needs the "/" path operator, C4's. The
-//     differential oracle test has 473/551 cases agreeing with the reference
-//     implementation, 78 baselined divergences (make test-expr-oracle) — up
+//     C3 — and the four TestConformance_C4ProtectedFixtures protects, all
+//     .invalid and all of which passed before C4 for the wrong reason
+//     ("unknown function", because path() itself was unregistered):
+//     relative_to's own errNotRelative, with_number's own errPaddingTooWide,
+//     section 1.2.4's receiver restriction refusing to coerce a path receiver
+//     into a string method, and C1's bool() path row. Note what that test can
+//     and cannot promise — it asserts the fixture is still REJECTED, not which
+//     mechanism rejected it, so an entry pins a specific check only where no
+//     second mechanism rejects the same input; its own docstring says so, and
+//     all four were verified to have none. C3 also CLEARED one fixture
+//     outright, 3.6--let-bindings.yaml, which needed only functions already
+//     registered by that point (len, sum, string, repr_py). Its sibling
+//     3.6--let-host-context-symbols.yaml is STILL baselined, but no longer for
+//     the reason an earlier revision of this comment gave: it does not fail
+//     for want of the "/" path operator any more (C4 shipped that), it fails
+//     because this scoring path binds a "let" name untyped, so
+//     "repr_sh(out)" reports `no signature of "repr_sh" accepts (unresolved)`
+//     — measured. That is the scope-blindness class the baseline file's own
+//     header describes, and it burns down in sub-project E, not here. The
+//     differential oracle test has 892/1051 cases agreeing with the reference
+//     implementation, 159 baselined divergences (make test-expr-oracle) — up
 //     from B3's 135/169, then C1's 279/321 now that C1's 22 functions had
 //     their own corpus cases, C2's 407/469 once its 31 string functions had
-//     theirs, and now C3's regex and repr_* functions have theirs too
-//     (test/oracle/corpus.txt), most of which agree outright; the baselined
+//     theirs, C3's 473/551 with its regex and repr_* functions, and now C4's
+//     path family (test/oracle/corpus.txt), which is where most of the growth
+//     in BOTH numbers comes from: the path corpus is large and its divergences
+//     are the reference's, argued family by family in the C4 section of
+//     test/oracle/baseline.txt (its non-normalizing "/" and "+", its
+//     pre-current-pathlib stem/suffix split, its with_number hash-swallow, its
+//     inconsistent trailing-slash consumption on a relative_to base, and its
+//     treatment of a bare "scheme://" as a wildcard authority). The baselined
 //     entries include the range_expr(string) canonicalization gap described
 //     above and one round() case: sqi returns int for round(x, ndigits) when
 //     ndigits <= 0, per RFC 0006's own signature table, while the reference
@@ -640,9 +832,11 @@
 //     as the reference's bug and recorded in test/oracle/baseline.txt, not
 //     fixed here to match it. Also included are the list-of-strings rendering
 //     gap (Value.String, not string()) recurring through flatten, sorted and
-//     unique, split and rsplit, and now C3's own regex functions
-//     (re_search, re_match, re_findall, re_split all return list[string] or
-//     list[list[string]]); two of C2's own rulings argued above — isalnum's
+//     unique, split and rsplit, C3's own regex functions (re_search, re_match,
+//     re_findall, re_split all return list[string] or list[list[string]]) and
+//     now C4's list-valued path properties (parts, suffixes) — the corpus
+//     wraps those in join() wherever it means to compare the VALUES rather
+//     than that rendering; two of C2's own rulings argued above — isalnum's
 //     composition (isalnum('٣')) and title's ASCII-only word boundary
 //     (title('²x y')) — while capitalize's ligature expansion is NOT
 //     baselined, since the reference agrees with it outright; and three of
@@ -652,7 +846,11 @@
 //     \d/\w/\s's Unicode semantics are NOT baselined, since they are exactly
 //     what the oracle is checking agreement on, and repr_json's non-ASCII
 //     escaping is NOT baselined either, since the reference matches it
-//     exactly. Most baselined divergences are the reference's own bugs,
+//     exactly. C4 adds the same shape: its rulings above are baselined where
+//     they diverge, while case-SENSITIVE path comparison is NOT — the
+//     reference agrees with sqi there, and it is CPython's PureWindowsPath
+//     that disagrees with both, which the oracle cannot see at all because the
+//     reference's path family is POSIX-only. Most baselined divergences are the reference's own bugs,
 //     adjudicated against the spec text and recorded one by one in
 //     test/oracle/baseline.txt — that file, not this comment, is the place to
 //     check any individual ruling.

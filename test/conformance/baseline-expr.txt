@@ -38,11 +38,38 @@
 # Note for sub-project E: expr1.3.9--memory-limit-exceeded
 # ({{ 'a' * 100000000 }}) left this list in task 15 too, but NOT because a
 # memory limit is enforced — §1.3.9's memory-bounded evaluation does not
-# exist yet. It is rejected because string repetition (__mul__(string, int))
-# is itself unimplemented, deferred along with the operation limits that
-# would make unbounded allocation safe. The verdict is correct today, but
-# when string repetition ships, this fixture will start FAILING again until
-# a real memory limit lands beside it — expect it, don't be alarmed by it.
+# exist yet. THE MECHANISM THIS NOTE USED TO GIVE WAS WRONG, and is corrected
+# here rather than quietly rewritten: it said the fixture was rejected because
+# string repetition (__mul__(string, int)) was unimplemented, and predicted
+# the fixture would start FAILING once repetition shipped. Repetition shipped
+# in sub-project B2 — ops.go's OpMul table registers {TString, TInt} ->
+# repeatString, and 'a' * 3 is "aaa" — and the fixture kept passing, because
+# what actually rejects it is limits.go's hard, non-configurable
+# maxStringBytes bound (10,000,000 bytes, applied by checkRepeat). The
+# conclusion the old note reached still holds: this is not a §1.3.9 pass. A
+# fixed per-operation ceiling is not a memory budget — an expression that
+# stays just under it repeatedly still allocates without bound — so the
+# configurable §1.3.9 limit remains sub-project E's, and this fixture will
+# only be passing for the RIGHT reason once E lands it.
+#
+# Note for sub-project D — apply_path_mapping, a forward hazard of exactly the
+# kind the range() paragraph below warned about, recorded before it lands:
+#
+#   EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml
+#   EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml
+#
+# Both are NOT on this list — they pass today — and both pass FOR THE WRONG
+# REASON. Each is invalid because apply_path_mapping is available in host
+# context only and neither a job name nor a timeout is host context; this
+# scoring path cannot see placement at all, so what actually rejects them is
+# `unknown function "apply_path_mapping"`. Sub-project C4 registered the whole
+# path family EXCEPT that one function, deliberately, so the accident survives
+# into D. The moment D registers apply_path_mapping, both expressions will
+# parse and evaluate to completion and both fixtures will start FAILING —
+# expect 145 -> 143 — and both must then be ADDED to this list, until
+# sub-project E evaluates templates with real context tracking and can reject
+# them for their own rule. Do not treat the regression as a defect in D's
+# implementation; it is this scoring path's blind spot becoming visible.
 #
 # expr1.3.10--operation-limit-exceeded joins this list for the mirror-image
 # reason, in sub-project C1's task 9: it was correctly rejected only because
