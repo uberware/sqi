@@ -109,3 +109,118 @@ func TestWithNumber_PaddingCap(t *testing.T) {
 		}
 	}
 }
+
+// TestWithNumber_PaddingCap_WidthOverflowsInt pins fix round 1's Important
+// finding: a %0Nd width literal so large it overflows strconv.Atoi (as
+// opposed to merely exceeding maxNumberPadding) must still surface as
+// errPaddingTooWide, not the raw *strconv.NumError the earlier version of
+// printfReplacement returned unwrapped. A width that doesn't fit in an int at
+// all necessarily exceeds 32, so folding the overflow into the same sentinel
+// is correct, not just convenient. The reference silently ACCEPTS this input
+// with no padding at all (with_number("f_%0999999999999999999999d", 1) is
+// "f_1" there) — a second reference defect against RFC 0006 line 831's
+// "wider printf or hash patterns are an error" rule, in the same family as
+// the hash-then-digit one in TestWithNumber_HashThenDigits. sqi erroring is
+// correct; only the error's shape was wrong before this fix.
+func TestWithNumber_PaddingCap_WidthOverflowsInt(t *testing.T) {
+	src := `path('/r/f_%0999999999999999999999d.exr').with_number(1)`
+	_, err := Eval(src, MapSymbols{}, TAny)
+	if err == nil {
+		t.Fatalf("Eval(%q) succeeded; a width literal that overflows int must be refused", src)
+	}
+	if !errors.Is(err, errPaddingTooWide) {
+		t.Errorf("Eval(%q) = %v, want it to wrap errPaddingTooWide, not leak strconv's raw error", src, err)
+	}
+}
+
+// TestWithNumber_HashThenDigits pins fix round 1's refuted Critical: a hash
+// run immediately followed by a digit run (or a non-digit, non-hash
+// character) is TWO independent candidates, and withNumber replaces only the
+// LAST one — never everything from the last match to the end of the stem.
+//
+// RFC 0006 line 822 says with_number "searches the filename stem from the
+// end for these patterns and replaces the last match found" — a match, not a
+// suffix of the stem starting at a match. The reference implementation
+// (openjd-model 0.11.1) disagrees: it lets a hash run swallow the rest of the
+// stem, which for "##a3" DESTROYS the literal "a" that was in the input
+// (reference: "07"; sqi, matching the spec text: "##a7"). This was reviewed
+// and adjudicated in sqi's favor — the reference is wrong here, sqi is not —
+// so every "sqi" value below is pinned as CORRECT, not as a known divergence
+// to eventually match. Task 11's oracle baseline needs an entry for each row
+// that disagrees with the reference; see the "reference" column in the
+// comments and this task's report for the exact values to record.
+func TestWithNumber_HashThenDigits(t *testing.T) {
+	tests := []struct {
+		src, want string
+	}{
+		// Hash run then digit run: the digit run is the later (rightmost)
+		// candidate, so only it is replaced; the hash run is untouched
+		// literal text, same as any other prefix.
+		// reference: "007"
+		{`with_number('###003', 7)`, "###007"},
+		// reference: "007"
+		{`with_number('#003', 7)`, "#007"},
+		// reference: "007"
+		{`with_number('##003', 7)`, "##007"},
+		// reference: "007"
+		{`with_number('####003', 7)`, "####007"},
+		// Hash run, then a non-digit, non-hash character, then a digit run:
+		// same rule — only the trailing digit run is the last candidate.
+		// reference: "a007"
+		{`with_number('a###5', 9)`, "a###9"},
+		// Digit run, then hash run, then digit run: the LAST digit run is
+		// the last candidate; the leading digit run and the hash run are
+		// both untouched.
+		// reference: "1207"
+		{`with_number('12##34', 7)`, "12##07"},
+		// Hash run immediately followed by a non-digit, non-hash character
+		// with NO further digit run after it: the hash run itself is then
+		// the last (and only) candidate, same as "shot_####" with no
+		// trailing digits.
+		{`with_number('##a3', 7)`, "##a7"},
+		{`with_number('##a', 7)`, "07a"},
+		// Cases where sqi and the reference already AGREE, included so a
+		// later change that "fixes" sqi toward the reference on the
+		// disagreeing rows above fails loudly here too if it goes too far.
+		{`with_number('##b##', 7)`, "##b07"},
+		{`with_number('3###', 7)`, "3007"},
+		{`with_number('#3#', 7)`, "#37"},
+		{`with_number('%04d3', 7)`, "%04d7"},
+		{`with_number('##%04d', 7)`, "##0007"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithNumber_WindowsFlavor pins that the path row's reconstruction goes
+// through withName under the Windows flavor too, same as every other with_*
+// function since Task 7. The reference is POSIX-only for path functions (see
+// this package's other Windows-flavor tests, and CLAUDE.md's note on the
+// oracle), so it cannot adjudicate these — they are pinned by test alone, not
+// measured against the reference.
+func TestWithNumber_WindowsFlavor(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('C:/shot_003.exr').with_number(72)`, `C:\shot_072.exr`},
+		{`path('C:/a.tar.gz').with_number(72)`, `C:\a.tar_0072.gz`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(PathWindows))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) under PathWindows = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}

@@ -34,6 +34,23 @@ const maxNumberPadding = 32
 // keeps that embedding rule in ONE place rather than something withNumber
 // would otherwise have to re-derive as "skip digits already inside a printf
 // match".
+//
+// A hash run immediately followed by a digit run — "###003", "##a3" — is TWO
+// candidates, not one: "#+" stops at the first non-'#' character, so it
+// never reaches into the digits (or letters) that follow, and the LAST
+// candidate (the digit run, when there is one) is what withNumber replaces,
+// per RFC 0006 line 822's "replaces the last match found" — a match, not
+// "the match through the end of the stem". with_number("###003", 7) is
+// therefore "###007": the "###" is untouched literal text, exactly as if it
+// were any other prefix like "shot01_####". The reference implementation
+// (openjd-model 0.11.1) disagrees — it lets a hash run consume the rest of
+// the stem, so with_number("##a3", 7) comes back "07" there, DESTROYING the
+// literal "a" that was in the input — which is a reference defect against
+// its own specification's "replaces the last match found" wording, not a
+// second valid reading of it. Confirmed adjudicated in sqi's favor during
+// Task 8 review; do not "fix" this file to match the reference. See
+// TestWithNumber_HashThenDigits and this task's report for the full
+// side-by-side.
 var numberPattern = regexp.MustCompile(`%(0\d+)?d|#+|\d+`)
 
 // withNumber implements RFC 0006's with_number frame-number substitution on
@@ -103,9 +120,17 @@ func numberReplacement(candidate string, n int64) (string, error) {
 
 // printfReplacement renders n for a printf-style candidate. candidate is
 // either the bare "%d" (no padding at all) or "%0Nd" for some digit string
-// N, which numberPattern guarantees is well-formed — slicing off the
-// leading "%" and trailing "d" recovers exactly the captured width text
-// with no further parsing needed.
+// N, which numberPattern guarantees contains only digits — but NOT that
+// those digits fit in an int: "%0999999999999999999999d" is a well-formed
+// match whose width literal overflows strconv.Atoi. That overflow is itself
+// proof the requested width exceeds maxNumberPadding (32), so it is reported
+// as errPaddingTooWide rather than leaking Atoi's raw *NumError — a caller
+// matching on the sentinel via errors.Is must see it regardless of which of
+// the two ways "too wide" was detected. The reference silently ACCEPTS this
+// input with no padding at all, which given RFC 0006 line 831's explicit
+// "wider printf or hash patterns are an error" is a second reference defect
+// in the same neighborhood as the hash-then-digit one above; sqi erroring
+// here is correct, only the error VALUE was wrong before this fix.
 func printfReplacement(candidate string, n int64) (string, error) {
 	digits := candidate[1 : len(candidate)-1]
 	if digits == "" {
@@ -113,7 +138,7 @@ func printfReplacement(candidate string, n int64) (string, error) {
 	}
 	width, err := strconv.Atoi(digits)
 	if err != nil {
-		return "", err
+		return "", errPaddingTooWide
 	}
 	if width > maxNumberPadding {
 		return "", errPaddingTooWide
