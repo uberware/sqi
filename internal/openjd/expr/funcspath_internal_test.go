@@ -368,3 +368,106 @@ func TestPathWithFunctions_Reject(t *testing.T) {
 		})
 	}
 }
+
+// TestPathWithFunctions_ArgumentValidation is fix round 1: with_name,
+// with_stem and with_suffix originally accepted ANY replacement text,
+// including one containing a separator, fabricating a path component that
+// did not exist in the input. Every expectation here is the reference's
+// actual output at openjd-model 0.11.1, measured by the reviewer during fix
+// round 1 — not adjudicated, not derived from Python alone.
+func TestPathWithFunctions_ArgumentValidation(t *testing.T) {
+	tests := []struct{ src, want string }{
+		// CRITICAL 1: with_name validates its argument, but ".." is legal —
+		// only exact equality to "." is rejected, not a leading dot run.
+		{`path('/a/b.txt').with_name('..')`, "/a/.."},
+		// CRITICAL 2 (positive branch): with_stem on a receiver whose own
+		// suffix is EMPTY is exactly with_name — no suffix to preserve.
+		{`path('/data/backup.tar.gz').with_stem('x')`, "/data/x.gz"},
+		// Separators are flavor-dependent: backslash is not a POSIX
+		// separator, so it survives untouched under the default (POSIX)
+		// flavor — including when the receiver happens to look
+		// drive-rooted, because POSIX parsing never treats ':' specially,
+		// so the drive does not switch the flavor. Measured directly
+		// against the reference.
+		{`path('a/b').with_name('c\\d')`, `a/c\d`},
+		{`path('C:/a/b').with_name('c\\d')`, `C:/a/c\d`},
+		// Cross-validation extras (reasoned from the rule, not the
+		// reference): a leading-dot-RUN replacement is legal, a
+		// multi-extension replacement name is ordinary, and a non-ASCII
+		// replacement round-trips untouched.
+		{`path('/a/b.txt').with_name('..hidden')`, "/a/..hidden"},
+		{`path('/a/b.txt').with_name('archive.tar.gz')`, "/a/archive.tar.gz"},
+		{`path('/a/b.txt').with_name('café')`, "/a/café"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_ArgumentValidation_Reject is fix round 1's error
+// side, including the two ordering cases the review's Important finding
+// raised and the reference then REFUTED: suffix-format validation runs
+// BEFORE the receiver's empty-name check, opposite of Python 3.14, and that
+// is deliberate — see the ordering comment on the with_suffix registration.
+func TestPathWithFunctions_ArgumentValidation_Reject(t *testing.T) {
+	tests := []struct {
+		src     string
+		wantErr error
+	}{
+		// CRITICAL 1.
+		{`path('/a/b.txt').with_name('a/b')`, errInvalidName},
+		{`path('/a/b.txt').with_name('')`, errInvalidName},
+		{`path('/a/b.txt').with_name('.')`, errInvalidName},
+		// CRITICAL 2.
+		{`path('/a/b').with_stem('')`, errInvalidName},
+		{`path('/a/b').with_stem('.')`, errInvalidName},
+		{`path('/a/b.txt').with_stem('')`, errEmptyStemHasSuffix},
+		{`path('/a/b.txt').with_stem('a/b')`, errInvalidName},
+		// CRITICAL 3.
+		{`path('/a/b.txt').with_suffix('.')`, errInvalidSuffix},
+		{`path('/a/b.txt').with_suffix('.a/b')`, errInvalidSuffix},
+		// Ordering, refuted by the reference: suffix format wins over the
+		// receiver's empty name, not the other way around.
+		{`path('/').with_suffix('png')`, errInvalidSuffix},
+		{`path('/').with_suffix('.png')`, errEmptyName},
+		// Cross-validation extra: a replacement that is only separators.
+		{`path('/a/b.txt').with_name('/')`, errInvalidName},
+		{`path('/a/b.txt').with_name('//')`, errInvalidName},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want %v", tc.src, tc.wantErr)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("Eval(%q) = %v, want it to wrap %v", tc.src, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_WindowsSeparator has NO reference answer — the
+// reference is POSIX-only for these functions (measured: it accepts a
+// backslash outright, see TestPathWithFunctions_ArgumentValidation above).
+// Under the Windows flavor this package parses BOTH "/" and "\" as
+// separators (parseWindows itself normalizes "/" to "\" before splitting on
+// it), so a replacement name containing either must be rejected there even
+// though the identical text is legal under POSIX.
+func TestPathWithFunctions_WindowsSeparator(t *testing.T) {
+	_, err := Eval(`path('a/b').with_name('c\\d')`, MapSymbols{}, TAny, WithPathFormat(PathWindows))
+	if err == nil {
+		t.Fatal(`with_name('c\d') under the Windows flavor succeeded; want errInvalidName`)
+	}
+	if !errors.Is(err, errInvalidName) {
+		t.Errorf(`with_name('c\d') under the Windows flavor = %v, want it to wrap errInvalidName`, err)
+	}
+}

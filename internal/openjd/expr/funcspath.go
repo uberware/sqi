@@ -12,12 +12,28 @@ var (
 	// component — "/" is the usual case. Python raises here too.
 	errEmptyName = errors.New("the path has an empty name")
 	// errInvalidSuffix backs with_suffix on a suffix that is neither empty nor
-	// dot-prefixed. "png" is an error; ".png" and "" are not.
-	errInvalidSuffix = errors.New("an extension must be empty or start with a dot")
+	// dot-prefixed, is exactly ".", or contains a separator. "png" and "."
+	// are errors; ".png" and "" are not.
+	errInvalidSuffix = errors.New("an extension must be empty or a dot followed by one or more non-separator characters")
 	// errNotRelative backs relative_to. is_relative_to answers false for the
 	// same condition rather than failing — the specification defines the pair
 	// that way on purpose.
 	errNotRelative = errors.New("the path is not relative to the other path")
+	// errInvalidName backs with_name (and, through withName, with_stem and
+	// with_suffix) on a replacement that is empty, exactly ".", or contains a
+	// separator. Fix round 1: the original implementation accepted any
+	// string here, including one containing a separator, fabricating a path
+	// component that did not exist in the input — measured against the
+	// reference at openjd-model 0.11.1, which rejects all three.
+	errInvalidName = errors.New("invalid replacement name")
+	// errEmptyStemHasSuffix backs with_stem specifically: CPython's own
+	// with_stem forbids an empty replacement stem when the receiver's
+	// existing suffix is non-empty (there would be nothing left to name the
+	// file besides the suffix). A receiver with NO suffix does not hit this
+	// at all — with_stem("") on such a receiver is exactly with_name(""),
+	// which fails errInvalidName instead, for the ordinary "empty name"
+	// reason.
+	errEmptyStemHasSuffix = errors.New("the path has a non-empty suffix, so the replacement stem cannot be empty")
 )
 
 // pathFuncs is sub-project C4's group: RFC 0006's path properties and path
@@ -102,50 +118,58 @@ var pathFuncs = map[string][]Shape{
 			return stringList(pathOf(args[0]).parts())
 		}},
 	},
-	// with_name and with_stem both replace the final component and both error
-	// the same way on a path that has none — "/" is the usual case — so they
-	// share errEmptyName rather than each defining their own.
+	// with_name validates its argument through withName — see that function's
+	// doc comment for the shared rule with_stem and with_suffix also run
+	// their replacement text through, rather than each checking separately.
 	"with_name": {
 		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
-			p := pathOf(args[0])
-			if p.name() == "" {
-				return Value{}, errEmptyName
-			}
-			p.comps[len(p.comps)-1] = args[1].AsStr()
-			return boundedPath(p.String(), p.flavor)
+			return withName(pathOf(args[0]), args[1].AsStr())
 		}},
 	},
+	// with_stem keeps the receiver's existing suffix and swaps only the
+	// stem, porting CPython pathlib's own with_stem algorithm exactly: when
+	// the receiver's suffix is EMPTY this is just with_name(stem); when it
+	// is not, an empty replacement stem is rejected outright
+	// (errEmptyStemHasSuffix — there would be nothing left to name the file
+	// besides the suffix) rather than silently producing a bare-suffix name;
+	// otherwise the replacement is stem+suffix, run through the SAME
+	// withName with_name uses, so a value with_name would reject (a
+	// separator, ".") is rejected here too rather than independently
+	// re-derived.
 	"with_stem": {
 		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
-			if p.name() == "" {
-				return Value{}, errEmptyName
-			}
 			_, suffix := splitStemSuffix(p.name())
-			p.comps[len(p.comps)-1] = args[1].AsStr() + suffix
-			return boundedPath(p.String(), p.flavor)
+			stem := args[1].AsStr()
+			if suffix == "" {
+				return withName(p, stem)
+			}
+			if stem == "" {
+				return Value{}, errEmptyStemHasSuffix
+			}
+			return withName(p, stem+suffix)
 		}},
 	},
-	// with_suffix replaces the suffix; "" removes it, and anything else that
-	// does not start with a dot is errInvalidSuffix. It also errors on an
-	// empty name for the same reason with_name and with_stem do — there is no
-	// final component to carry the new suffix — which the brief's error list
-	// does not spell out by name but which follows from reusing name() the
-	// same way its siblings do: without the guard, replacing the (absent)
-	// last component would index an empty comps slice.
+	// with_suffix replaces the suffix; "" removes it. A non-empty suffix
+	// must start with a dot, be more than the bare dot alone, and contain no
+	// separator, or it is errInvalidSuffix.
+	//
+	// That FORMAT check runs before anything else — including the
+	// receiver's own empty-name check — and the ordering is DELIBERATE, not
+	// incidental: path('/').with_suffix('png') is "invalid suffix", not
+	// "empty name", per the reference at openjd-model 0.11.1, even though
+	// '/' has no final component either. Python 3.14 checks empty-name
+	// first; the reference does not, and fix round 1 confirmed this by
+	// measurement — do not reorder these to match Python.
 	"with_suffix": {
 		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
 			suffix := args[1].AsStr()
-			if suffix != "" && !strings.HasPrefix(suffix, ".") {
+			p := pathOf(args[0])
+			if suffix != "" && (!strings.HasPrefix(suffix, ".") || len(suffix) <= 1 || strings.ContainsAny(suffix, pathSeparators(p))) {
 				return Value{}, errInvalidSuffix
 			}
-			p := pathOf(args[0])
-			if p.name() == "" {
-				return Value{}, errEmptyName
-			}
 			stem, _ := splitStemSuffix(p.name())
-			p.comps[len(p.comps)-1] = stem + suffix
-			return boundedPath(p.String(), p.flavor)
+			return withName(p, stem+suffix)
 		}},
 	},
 	"is_relative_to": {
@@ -213,6 +237,62 @@ func pathFromParts(parts []string, f PathFormat) parsedPath {
 		return parsedPath{root: probe.root, comps: append([]string{}, tail...), flavor: f, isURI: probe.isURI}
 	}
 	return parsedPath{comps: append([]string{}, parts...), flavor: f}
+}
+
+// withName implements with_name's replacement after both of its checks: the
+// receiver must have a final component (errEmptyName), and name must be a
+// legal replacement (errInvalidName, via isValidReplacementName). with_stem
+// and with_suffix funnel their own computed replacement text through this
+// SAME function rather than re-checking validity themselves, so the three
+// with_* functions can never validate a replacement two different ways —
+// exactly the "second formula beside an existing one" shape this wave's
+// three earlier Criticals all had.
+func withName(p parsedPath, name string) (Value, error) {
+	if p.name() == "" {
+		return Value{}, errEmptyName
+	}
+	if !isValidReplacementName(name, p) {
+		return Value{}, errInvalidName
+	}
+	p.comps[len(p.comps)-1] = name
+	return boundedPath(p.String(), p.flavor)
+}
+
+// isValidReplacementName reports whether name is legal as with_name's
+// argument. This is CPython pathlib's own rule, reproduced exactly by the
+// openjd-model reference (measured, fix round 1): empty, exactly ".", or
+// containing a separator are invalid. ".." is explicitly NOT invalid — only
+// exact equality to "." is checked, not "starts with a dot run" — and
+// neither is a drive-looking string like "C:" under POSIX, where ':' is not
+// a separator at all.
+func isValidReplacementName(name string, p parsedPath) bool {
+	return name != "" && name != "." && !strings.ContainsAny(name, pathSeparators(p))
+}
+
+// windowsSeparatorChars are the characters parseWindows treats as
+// interchangeable separators — it normalizes "/" to "\" via
+// strings.ReplaceAll before splitting on "\", so both count. Extracted here
+// as the one definition, so argument validation can check the SAME set
+// parseWindows already encodes rather than hand-writing a second one that
+// could drift out of sync with it.
+const windowsSeparatorChars = `/\`
+
+// pathSeparators reports which characters separate components for p's
+// shape: "/" for POSIX and for a URI — POSIX parsing and splitURI's own
+// component split both use only "/" — or windowsSeparatorChars for a
+// non-URI Windows-flavor path, matching parseWindows's own normalization.
+// Measured against the reference (fix round 1): it is POSIX-only for these
+// functions and accepts a backslash outright, including on a
+// drive-looking receiver like "C:/a/b" — POSIX parsing never treats ':'
+// specially, so the drive does not switch the flavor. A URI stays
+// "/"-only even when the evaluator's chosen flavor is Windows, because
+// parsePath's isURI branch never reaches parseWindows in the first place;
+// validation must not either.
+func pathSeparators(p parsedPath) string {
+	if !p.isURI && p.flavor == PathWindows {
+		return windowsSeparatorChars
+	}
+	return "/"
 }
 
 // relativeParts backs relative_to and is_relative_to. Both compare parts()
