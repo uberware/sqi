@@ -128,3 +128,103 @@ func runPython(t *testing.T, script, stdin string) string {
 	}
 	return string(out)
 }
+
+// TestParsePath_Windows pins PureWindowsPath. Every expectation came from
+// running python3 during design.
+//
+// The drive-RELATIVE row is the one that matters most: "C:a\b" is NOT absolute,
+// and its anchor is "C:" with no separator. Getting that wrong makes
+// is_absolute() lie about the most common Windows path shape after "C:\".
+func TestParsePath_Windows(t *testing.T) {
+	tests := []struct {
+		in    string
+		want  string
+		parts []string
+		abs   bool
+	}{
+		{`C:\a\b`, `C:\a\b`, []string{`C:\`, "a", "b"}, true},
+		{`C:/a/b`, `C:\a\b`, []string{`C:\`, "a", "b"}, true},
+		{`C:a\b`, `C:a\b`, []string{`C:`, "a", "b"}, false},
+		{`C:/`, `C:\`, []string{`C:\`}, true},
+		{`\\srv\share\x`, `\\srv\share\x`, []string{`\\srv\share\`, "x"}, true},
+		{`\a`, `\a`, []string{`\`, "a"}, false},
+		{`a/b`, `a\b`, []string{"a", "b"}, false},
+		{`a`, `a`, []string{"a"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			p := parsePath(tc.in, PathWindows)
+			if got := p.String(); got != tc.want {
+				t.Errorf("parsePath(%q, Windows).String() = %q, want %q", tc.in, got, tc.want)
+			}
+			if got := strings.Join(p.parts(), "|"); got != strings.Join(tc.parts, "|") {
+				t.Errorf("parsePath(%q, Windows).parts() = %q, want %q", tc.in, p.parts(), tc.parts)
+			}
+			if got := p.isAbsolute(); got != tc.abs {
+				t.Errorf("parsePath(%q, Windows).isAbsolute() = %v, want %v", tc.in, got, tc.abs)
+			}
+		})
+	}
+}
+
+// TestParsePath_WindowsMatchesPython is the real proof for this flavor. The
+// oracle cannot reach it — the reference evaluates with its own path_format —
+// so this differential is the ONLY automated check on Windows semantics, and it
+// runs on Linux against Python rather than on Windows against anything.
+func TestParsePath_WindowsMatchesPython(t *testing.T) {
+	corpus := pathCorpusWindows()
+	// Unlike an earlier draft of this script, blank input lines are NOT
+	// skipped: pathCorpusWindows's "" lead produces exactly one blank line,
+	// and (as TestParsePath_POSIXMatchesPython's harness comment explains) a
+	// "if not line: continue" swallows that one real input and desyncs every
+	// line thereafter, turning every later row into a false mismatch.
+	script := `
+import sys
+from pathlib import PureWindowsPath as W
+for line in sys.stdin.read().split("\n"):
+    p = W(line)
+    print(str(p) + "\t" + "\x1f".join(p.parts) + "\t" + str(p.is_absolute()))
+`
+	out := runPython(t, script, strings.Join(corpus, "\n"))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != len(corpus) {
+		t.Fatalf("python returned %d lines for %d inputs", len(lines), len(corpus))
+	}
+	for i, in := range corpus {
+		f := strings.SplitN(lines[i], "\t", 3)
+		wantStr, wantAbs := f[0], f[2] == "True"
+		var wantParts []string
+		if f[1] != "" {
+			wantParts = strings.Split(f[1], "\x1f")
+		}
+		p := parsePath(in, PathWindows)
+		if got := p.String(); got != wantStr {
+			t.Errorf("parsePath(%q, Windows).String() = %q, python %q", in, got, wantStr)
+		}
+		if got := strings.Join(p.parts(), "\x1f"); got != strings.Join(wantParts, "\x1f") {
+			t.Errorf("parsePath(%q, Windows).parts() = %q, python %q", in, p.parts(), wantParts)
+		}
+		if got := p.isAbsolute(); got != wantAbs {
+			t.Errorf("parsePath(%q, Windows).isAbsolute() = %v, python %v", in, got, wantAbs)
+		}
+	}
+}
+
+func pathCorpusWindows() []string {
+	leads := []string{"", `C:`, `C:\`, `C:/`, `\`, `/`, `\\srv\share\`, `\\srv\share`}
+	segs := []string{"a", "b", ".", "..", "x.txt"}
+	var out []string
+	for _, lead := range leads {
+		out = append(out, lead)
+		for _, s1 := range segs {
+			out = append(out, lead+s1)
+			for _, s2 := range segs {
+				out = append(out, lead+s1+`\`+s2)
+				out = append(out, lead+s1+"/"+s2)
+				out = append(out, lead+s1+`\\`+s2)
+				out = append(out, lead+s1+`\`+s2+`\`)
+			}
+		}
+	}
+	return out
+}
