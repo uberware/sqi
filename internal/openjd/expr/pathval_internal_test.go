@@ -14,30 +14,50 @@ import (
 // The rules are not uniform and that is the point: "//" collapses, "." is
 // dropped, a trailing "/" is dropped, but ".." is KEPT — pathlib does not
 // resolve it because doing so is wrong in the presence of symlinks.
+//
+// THE abs COLUMN IS NOT DECORATION, and its absence is the exact asymmetry that
+// hid a bug for three tasks: TestParsePath_Windows below has always asserted
+// is_absolute and this table did not, so the POSIX "//" root — POSIX.1-2017
+// section 4.13's own, which CPython keeps rather than collapsing — reported
+// itself RELATIVE with nothing to notice. The differential below gained the
+// same column at the same time, and pathCorpusPOSIX gained the "//", "///" and
+// "////" leads that make the shape reachable on purpose rather than by
+// accident.
 func TestParsePath_POSIX(t *testing.T) {
 	tests := []struct {
 		in    string
 		want  string
 		parts []string
+		abs   bool
 	}{
-		{"/a/b", "/a/b", []string{"/", "a", "b"}},
-		{"a/b", "a/b", []string{"a", "b"}},
-		{"a//b", "a/b", []string{"a", "b"}},
-		{"a/./b", "a/b", []string{"a", "b"}},
-		{"a/../b", "a/../b", []string{"a", "..", "b"}},
-		{"/a/b/", "/a/b", []string{"/", "a", "b"}},
-		{"a/b//", "a/b", []string{"a", "b"}},
-		{"/", "/", []string{"/"}},
-		{".", ".", []string{}},
-		{"", ".", []string{}},
-		{"a", "a", []string{"a"}},
-		{"a/b/..", "a/b/..", []string{"a", "b", ".."}},
+		{"/a/b", "/a/b", []string{"/", "a", "b"}, true},
+		{"a/b", "a/b", []string{"a", "b"}, false},
+		{"a//b", "a/b", []string{"a", "b"}, false},
+		{"a/./b", "a/b", []string{"a", "b"}, false},
+		{"a/../b", "a/../b", []string{"a", "..", "b"}, false},
+		{"/a/b/", "/a/b", []string{"/", "a", "b"}, true},
+		{"a/b//", "a/b", []string{"a", "b"}, false},
+		{"/", "/", []string{"/"}, true},
+		{".", ".", []string{}, false},
+		{"", ".", []string{}, false},
+		{"a", "a", []string{"a"}, false},
+		{"a/b/..", "a/b/..", []string{"a", "b", ".."}, false},
+		// The three anchor shapes the table never named. Exactly two leading
+		// slashes is its OWN root and is preserved; three or more collapse to
+		// one; all of them are absolute.
+		{"//a/b", "//a/b", []string{"//", "a", "b"}, true},
+		{"///a/b", "/a/b", []string{"/", "a", "b"}, true},
+		{"////a/b", "/a/b", []string{"/", "a", "b"}, true},
+		{"//", "//", []string{"//"}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
 			p := parsePath(tc.in, PathPOSIX)
 			if got := p.String(); got != tc.want {
 				t.Errorf("parsePath(%q).String() = %q, want %q", tc.in, got, tc.want)
+			}
+			if got := p.isAbsolute(); got != tc.abs {
+				t.Errorf("parsePath(%q).isAbsolute() = %v, want %v", tc.in, got, tc.abs)
 			}
 			got := p.parts()
 			if len(got) != len(tc.parts) {
@@ -140,10 +160,21 @@ func TestParsePath_POSIXDoubleSlashIsAbsolute(t *testing.T) {
 
 // pathCorpusPOSIX generates the inputs both the table and the differential run
 // over: roots, separators, dot segments and trailing slashes in combination.
+//
+// THE ANCHOR LEADS ARE EXPLICIT, and the reason is the asymmetry with
+// pathCorpusWindows that hid the "//" is_absolute bug for three tasks. That
+// corpus carries 25 hand-added leads covering every Windows anchor shape by
+// name; this one carried two ("" and "/"), so "//", "///" and "///a" were
+// reachable only INCIDENTALLY — through an empty first segment, which is a
+// coincidence of the segment list rather than a decision — and "////a" was not
+// reachable at all. The multi-slash leads below make POSIX's three anchor
+// shapes (none, "/", and POSIX.1-2017 section 4.13's own "//") deliberate
+// inputs, crossed with every segment combination the same way the Windows
+// corpus crosses its own.
 func pathCorpusPOSIX() []string {
 	segs := []string{"a", "b", ".", "..", "", "x.txt", ".hidden", "a.tar.gz"}
 	var out []string
-	for _, lead := range []string{"", "/"} {
+	for _, lead := range []string{"", "/", "//", "///", "////"} {
 		for _, s1 := range segs {
 			out = append(out, lead+s1)
 			for _, s2 := range segs {

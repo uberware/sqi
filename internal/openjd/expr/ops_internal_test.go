@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -1427,6 +1428,49 @@ func TestPathOperators_Windows(t *testing.T) {
 			}
 			if got := v.Type.String(); got != "path" {
 				t.Errorf("Eval(%q) typed %s, want path", tc.src, got)
+			}
+		})
+	}
+}
+
+// TestPathJoin_URIAuthorityIsNeverInheritedAsADrive pins the guard
+// anchorParts's own doc comment names as the thing that "must never happen",
+// and which nothing exercised until the final fix wave: a URI's
+// scheme+authority is reported as a ROOT, never as a drive, because pathJoin
+// lets a rootless child INHERIT its parent's drive.
+//
+// Dropping the "p.isURI ||" clause stays green everywhere else. Under
+// PathWindows, path('C://b') / 'x' then runs the authority "C://b" through
+// splitRootWindows, which reads "C:" as a drive, and the join answers "C:/x" —
+// the bucket gone, replaced by a drive letter that came from the scheme.
+//
+// The only way to reach a URI whose authority is ALSO drive-shaped is the
+// one-letter scheme the specification's own grammar admits
+// (^[a-zA-Z][a-zA-Z0-9+.-]*:// — a star, not a plus). That behavior is settled
+// and stays; see splitURI. The point here is that the settled behavior is what
+// makes the guard reachable at all, so it is exactly the case worth pinning.
+func TestPathJoin_URIAuthorityIsNeverInheritedAsADrive(t *testing.T) {
+	tests := []struct {
+		src    string
+		flavor PathFormat
+		want   string
+	}{
+		{`path('C://b') / 'x'`, PathWindows, "C://b/x"},
+		{`path('C://b') / 'x'`, PathPOSIX, "C://b/x"},
+		{`path('C://b/d') / 'x'`, PathWindows, "C://b/d/x"},
+		// A multi-letter scheme reaches the same arm and always did — kept so
+		// the drive-shaped row above is visibly the SAME rule and not a
+		// special case.
+		{`path('s3://b') / 'x'`, PathWindows, "s3://b/x"},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s under %v", tc.src, tc.flavor), func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(tc.flavor))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) under %v = %q, want %q", tc.src, tc.flavor, got, tc.want)
 			}
 		})
 	}
