@@ -113,6 +113,98 @@ func pathCorpusPOSIX() []string {
 	return out
 }
 
+// TestPathName_StemSuffixMatchesPython is the differential
+// TestPathProperties's hand-picked rows should have been backed by from the
+// start: stem, suffix and suffixes operate on the final path COMPONENT only
+// ("name" below), independent of any root or separator, so this drives
+// splitStemSuffix and parsedPath.suffixes directly over a generated corpus of
+// names rather than routing through parsePath/Eval.
+//
+// fix-round 1 found 13 mismatches in a 147-name version of this corpus: a
+// name with TWO OR MORE leading dots followed by dot-free content
+// ("..a", "...a", "....txt") kept every leading dot as part of the stem
+// correctly, but a name with two or more leading dots followed by ANOTHER
+// dot ("..a.b") did not — splitStemSuffix took strings.LastIndex over the
+// UNSTRIPPED name and guarded only i <= 0, which catches a single leading
+// dot at index 0 but not a run of two or more, where the last dot sits at
+// index >= 1 and slips past the guard. suffixes() (three lines below in
+// pathval.go) already had the right pattern — strings.TrimLeft the ENTIRE
+// leading run before splitting — and splitStemSuffix now shares it via
+// splitLeadingDots rather than deciding independently, which is what a
+// previous task in this wave had to fix for exactly this failure shape (two
+// formulas that agree on most inputs and diverge on one).
+func TestPathName_StemSuffixMatchesPython(t *testing.T) {
+	corpus := pathNameCorpus()
+	script := `
+import sys
+from pathlib import PurePosixPath as P
+for line in sys.stdin.read().split("\n"):
+    p = P(line)
+    print(p.stem + "\t" + p.suffix + "\t" + "\x1f".join(p.suffixes))
+`
+	out := runPython(t, script, strings.Join(corpus, "\n"))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != len(corpus) {
+		t.Fatalf("python returned %d lines for %d inputs", len(lines), len(corpus))
+	}
+	mismatches := 0
+	for i, name := range corpus {
+		fields := strings.SplitN(lines[i], "\t", 3)
+		wantStem, wantSuffix := fields[0], fields[1]
+		var wantSuffixes []string
+		if fields[2] != "" {
+			wantSuffixes = strings.Split(fields[2], "\x1f")
+		}
+		stem, suffix := splitStemSuffix(name)
+		if stem != wantStem || suffix != wantSuffix {
+			t.Errorf("splitStemSuffix(%q) = (%q, %q), python (%q, %q)", name, stem, suffix, wantStem, wantSuffix)
+			mismatches++
+		}
+		gotSuffixes := parsedPath{comps: []string{name}}.suffixes()
+		if strings.Join(gotSuffixes, "\x1f") != strings.Join(wantSuffixes, "\x1f") {
+			t.Errorf("suffixes(%q) = %q, python %q", name, gotSuffixes, wantSuffixes)
+			mismatches++
+		}
+	}
+	t.Logf("name corpus: %d names, %d mismatches", len(corpus), mismatches)
+}
+
+// pathNameCorpus generates final path COMPONENTS (never containing "/") for
+// TestPathName_StemSuffixMatchesPython: 0-4 leading dots crossed with
+// dot-free content, single and multiple extensions, trailing dots, all-dot
+// names (a lead crossed with empty content) and non-ASCII.
+//
+// The bare single-dot name "." is deliberately EXCLUDED, not merely
+// untested: pathlib treats a lone "." as its "no name at all" sentinel
+// (PurePosixPath(".").stem is "", not "."), which is a special case of
+// name() being empty, not of splitStemSuffix's dot-counting — and this
+// package's own parsePath already enforces that a single "." can never
+// become a STORED component (it is dropped during normalization, unlike
+// ".." or "..." which are kept), so splitStemSuffix can never actually be
+// called with "." as an argument through any real property. Pinning an
+// expectation for it here would test an input the function's contract does
+// not cover, not a real gap.
+func pathNameCorpus() []string {
+	leads := []string{"", ".", "..", "...", "...."}
+	bodies := []string{
+		"", "a", "abc", "x1", "é",
+		"a.txt", "a.tar.gz", "a.b.c.d", "café.tar.gz",
+		"a.", "a..", "a...",
+	}
+	var out []string
+	seen := map[string]bool{".": true}
+	for _, lead := range leads {
+		for _, body := range bodies {
+			n := lead + body
+			if !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
 // runPython runs a script with stdin and returns stdout, skipping the test when
 // python3 is unavailable. A SKIP here verifies nothing, so it says so loudly.
 func runPython(t *testing.T, script, stdin string) string {

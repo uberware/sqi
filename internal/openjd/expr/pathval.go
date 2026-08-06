@@ -133,36 +133,61 @@ func (p parsedPath) name() string {
 	return p.comps[len(p.comps)-1]
 }
 
+// splitLeadingDots is the ONE place stem, suffix and suffixes agree on where
+// a name's leading run of dots ends, so they cannot independently drift out
+// of sync the way splitStemSuffix and suffixes() did before fix-round 1 (see
+// splitStemSuffix's doc comment for what that cost).
+//
+// The general pathlib rule, stated precisely because a narrower reading of
+// it is exactly what shipped broken: strip the ENTIRE leading run of dots
+// first — not just a single leading dot — and only then split what remains
+// on "."; a name whose only dots are that leading run has NO further pieces
+// and therefore no suffix at all, however long the run is. leading is
+// returned separately so a caller can re-prepend it to the stem; pieces is
+// nil when nothing follows the leading run (including when name is entirely
+// dots, or empty).
+func splitLeadingDots(name string) (leading string, pieces []string) {
+	trimmed := strings.TrimLeft(name, ".")
+	leading = name[:len(name)-len(trimmed)]
+	if trimmed == "" {
+		return leading, nil
+	}
+	return leading, strings.Split(trimmed, ".")
+}
+
 // splitStemSuffix divides a final component at its LAST dot, following
 // pathlib.
 //
 // Two rules make this less obvious than it looks, and both were measured
 // against Python:
-//   - a LEADING dot is not a suffix separator, so ".hidden" is all stem;
+//   - a LEADING dot is not a suffix separator, so ".hidden" is all stem —
+//     and this generalizes to any RUN of leading dots, however long
+//     (splitLeadingDots), not just a single one: "..a" is all stem too,
+//     which is what fix-round 1 found broken here (LastIndex over the
+//     unstripped name, guarded only by i <= 0, catches a single leading dot
+//     at index 0 but not a run of two or more, where the last dot sits at
+//     index >= 1 and slips past the guard);
 //   - a name that is entirely dots ("..") has no suffix at all.
 //
 // A trailing dot IS a suffix: "a." has stem "a" and suffix ".". The reference
 // implementation disagrees and reports stem "a." with no suffix; RFC 0006 says
 // these properties match pathlib, so this follows Python.
 func splitStemSuffix(name string) (stem, suffix string) {
-	if name == "" || strings.Trim(name, ".") == "" {
+	leading, pieces := splitLeadingDots(name)
+	if len(pieces) <= 1 {
 		return name, ""
 	}
-	i := strings.LastIndex(name, ".")
-	if i <= 0 {
-		return name, ""
-	}
-	return name[:i], name[i:]
+	stem = leading + strings.Join(pieces[:len(pieces)-1], ".")
+	suffix = "." + pieces[len(pieces)-1]
+	return stem, suffix
 }
 
 // suffixes is every extension on the final component, in order.
 func (p parsedPath) suffixes() []string {
-	name := p.name()
-	if name == "" || strings.Trim(name, ".") == "" {
+	_, pieces := splitLeadingDots(p.name())
+	if len(pieces) <= 1 {
 		return nil
 	}
-	trimmed := strings.TrimLeft(name, ".")
-	pieces := strings.Split(trimmed, ".")
 	out := make([]string, 0, len(pieces)-1)
 	for _, s := range pieces[1:] {
 		out = append(out, "."+s)
