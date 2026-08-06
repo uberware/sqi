@@ -355,6 +355,12 @@ func TestPathWithFunctions_Reject(t *testing.T) {
 		{`path('/').with_stem('x')`, errEmptyName},
 		{`path('/a/b.txt').with_suffix('png')`, errInvalidSuffix},
 		{`path('/a/b').relative_to(path('/x'))`, errNotRelative},
+		// with_number's path row runs its result through the SAME withName
+		// as with_name and with_stem, so a receiver with no final component
+		// fails the ordinary errEmptyName rather than a second check — even
+		// though withNumber itself never inspects the receiver at all.
+		// Measured against the reference during design.
+		{`path('/').with_number(3)`, errEmptyName},
 	}
 	for _, tc := range tests {
 		t.Run(tc.src, func(t *testing.T) {

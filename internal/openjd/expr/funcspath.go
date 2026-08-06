@@ -172,6 +172,30 @@ var pathFuncs = map[string][]Shape{
 			return withName(p, stem+suffix)
 		}},
 	},
+	// with_number's path row splits the receiver's name through withNumber —
+	// pathnumber.go's own file, since the frame-number grammar it implements
+	// is independent of everything else here — and then rebuilds the path
+	// through the SAME withName the other with_* rows use, so a receiver
+	// with no final component (p.name() == "") fails with the ordinary
+	// errEmptyName rather than a second empty-name check grown here; the
+	// string row calls withNumber directly with no path involved at all.
+	"with_number": {
+		{Params: []Type{TPath, TInt}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+			p := pathOf(args[0])
+			newName, err := withNumber(p.name(), args[1].AsInt())
+			if err != nil {
+				return Value{}, err
+			}
+			return withName(p, newName)
+		}},
+		{Params: []Type{TString, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+			result, err := withNumber(args[0].AsStr(), args[1].AsInt())
+			if err != nil {
+				return Value{}, err
+			}
+			return String(result), nil
+		}},
+	},
 	"is_relative_to": {
 		{Params: []Type{TPath, TPath}, Ret: TBool, Fn: func(args []Value) (Value, error) {
 			_, ok := relativeParts(pathOf(args[0]), pathOf(args[1]))

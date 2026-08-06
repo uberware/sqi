@@ -29,7 +29,8 @@ func TestMergeFuncs_CombinesGroups(t *testing.T) {
 // regular-expression group brought it to 59, its shell-quoting group brought
 // it to 62, and its serialization group brought it to 64; C4's path
 // constructor and predicates bring it to 67, its six path properties bring
-// it to 73, and its with-functions and relative-to bring it to 78.
+// it to 73, its with-functions and relative-to bring it to 78, and
+// with_number brings it to 79 — the whole registry.
 func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 	want := []string{
 		// funcsconv.go: general conversions, plus fail (validation).
@@ -62,6 +63,8 @@ func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 		"__property_suffixes__", "__property_parent__", "__property_parts__",
 		// funcspath.go: with-functions and relative-to.
 		"with_name", "with_stem", "with_suffix", "is_relative_to", "relative_to",
+		// funcspath.go / pathnumber.go: frame-number substitution.
+		"with_number",
 	}
 	if len(functionShapes) != len(want) {
 		t.Fatalf("functionShapes has %d entries, want %d: %v", len(functionShapes), len(want), want)
