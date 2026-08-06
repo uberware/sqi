@@ -195,3 +195,124 @@ func TestPathRoundTrip_PartsProperty(t *testing.T) {
 
 	t.Logf("path(p.parts) == p round-trip property: %d cases, %d failures", len(corpus), failures)
 }
+
+// TestPathProperties pins Python's pathlib semantics, including the cases that
+// surprise people. Every expectation came from running python3 during design.
+//
+// ".hidden" has NO suffix — a leading dot is not an extension. "a." has stem
+// "a" and suffix "." , which is where the reference implementation disagrees
+// with Python; RFC 0006 says these properties match pathlib, so Python wins and
+// the difference is baselined in test/oracle/baseline.txt.
+func TestPathProperties(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('/projects/shot01/render.exr').name`, "render.exr"},
+		{`path('/projects/shot01/render.exr').stem`, "render"},
+		{`path('/projects/shot01/render.exr').suffix`, ".exr"},
+		{`path('/projects/shot01/render.exr').parent`, "/projects/shot01"},
+		{`path('/data/backup.tar.gz').suffix`, ".gz"},
+		{`path('/data/backup.tar.gz').stem`, "backup.tar"},
+		{`path('.hidden').name`, ".hidden"},
+		{`path('.hidden').stem`, ".hidden"},
+		{`path('.hidden').suffix`, ""},
+		{`path('a.').stem`, "a"},
+		{`path('a.').suffix`, "."},
+		{`path('..').suffix`, ""},
+		{`path('noext').suffix`, ""},
+		{`path('/a/b').parent`, "/a"},
+		{`path('/a').parent`, "/"},
+		{`path('/').parent`, "/"},
+		{`path('a').parent`, "."},
+		{`path('s3://bucket/dir/file.obj').name`, "file.obj"},
+		{`path('s3://bucket/dir/file.obj').parent`, "s3://bucket/dir"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPathListProperties(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`join(path('/data/backup.tar.gz').suffixes, '|')`, ".tar|.gz"},
+		{`len(path('/data/backup.tar.gz').suffixes)`, "2"},
+		{`len(path('/a/b').suffixes)`, "0"},
+		{`join(path('/a/b').parts, '|')`, "/|a|b"},
+		{`join(path('a/b').parts, '|')`, "a|b"},
+		{`len(path('.').parts)`, "0"},
+		{`join(path('s3://bucket/dir/file.obj').parts, '|')`, "s3://bucket|dir|file.obj"},
+		{`join(path('s3://bucket/a//b/c').parts, '|')`, "s3://bucket|a||b|c"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathParts_Roundtrip pins the specification's own claim that
+// path(p.parts) == p, over the same generated corpus the engine differential
+// uses — so it is a property over many inputs, not three hand-picked ones.
+//
+// DEVIATION 1 from the brief's literal test body: the brief calls a helper
+// named joinParts(parts, flavor) that does not exist in this codebase.
+// task-5's fix round DELETED joinParts outright — it was a second formula for
+// "how does a root join its components" that disagreed with
+// parsedPath.String() on a bare Windows drive ("C:" + "a"; see
+// funcspath.go's pathFromParts doc comment) — and replaced every caller with
+// pathFromParts, which defers to String() instead of re-deriving the rule.
+// Writing a fresh joinParts here to satisfy the brief literally would be
+// exactly the second copy of that formula the fix round removed. This test
+// therefore calls pathFromParts(parts, flavor).String() in joinParts's place;
+// the expected VALUES (parts, roundtrip equality) are unchanged from the
+// brief, only the helper name is current.
+//
+// DEVIATION 2: this stays POSIX-only (pathCorpusPOSIX, matching the brief)
+// rather than also folding in pathCorpusWindows. That corpus was built for a
+// DIFFERENT property (TestParsePath_WindowsMatchesPython's parse/render/
+// is_absolute differential) and several of its deliberately adversarial
+// leads — "./c:", ".\a:b" — produce a component whose text is itself
+// drive-shaped ("c:.", "a:b") only because a separator hid it from
+// splitRootWindows on the ORIGINAL parse. Feeding that component back through
+// parts() and pathFromParts reparses it in ISOLATION, where the same text now
+// reads as a real drive, and the round trip genuinely does not hold — not a
+// bug here, since python3 was run to confirm PureWindowsPath itself fails
+// the identical way: W(*W("./c:.").parts) renders "c:", not ".\c:.". C4 Task
+// 7 (with_* and relative_to) or a later fix round is where any additional
+// classification would need to be reconsidered, not this task, and reusing
+// pathCorpusWindows here would pin an equality RFC 0006 does not actually
+// hold. Three-flavor coverage of the property THAT DOES hold is already
+// delivered by TestPathRoundTrip_PartsProperty above (206 cases spanning
+// POSIX, Windows and URI, curated to avoid this exact known limitation) —
+// this test adds POSIX-differential-corpus breadth on top, per the brief.
+func TestPathParts_Roundtrip(t *testing.T) {
+	for _, in := range pathCorpusPOSIX() {
+		p := parsePath(in, PathPOSIX)
+		rebuilt := parsePath(pathFromParts(p.parts(), PathPOSIX).String(), PathPOSIX)
+		if rebuilt.String() != p.String() {
+			t.Errorf("roundtrip %q: parts %q rebuilt to %q, want %q",
+				in, p.parts(), rebuilt.String(), p.String())
+		}
+	}
+}
+
+// TestPathProperty_ReceiverIsNotCoerced pins section 1.2.4 for a PROPERTY: a
+// string receiver must not silently become a path.
+func TestPathProperty_ReceiverIsNotCoerced(t *testing.T) {
+	_, err := Eval(`'/a/b.txt'.stem`, MapSymbols{}, TAny)
+	if err == nil {
+		t.Fatal("'/a/b.txt'.stem succeeded; a string receiver must not coerce to path")
+	}
+}

@@ -125,6 +125,51 @@ func (p parsedPath) parts() []string {
 	return append([]string{p.root}, p.comps...)
 }
 
+// name is the final component, or "" for a path that has only a root.
+func (p parsedPath) name() string {
+	if len(p.comps) == 0 {
+		return ""
+	}
+	return p.comps[len(p.comps)-1]
+}
+
+// splitStemSuffix divides a final component at its LAST dot, following
+// pathlib.
+//
+// Two rules make this less obvious than it looks, and both were measured
+// against Python:
+//   - a LEADING dot is not a suffix separator, so ".hidden" is all stem;
+//   - a name that is entirely dots ("..") has no suffix at all.
+//
+// A trailing dot IS a suffix: "a." has stem "a" and suffix ".". The reference
+// implementation disagrees and reports stem "a." with no suffix; RFC 0006 says
+// these properties match pathlib, so this follows Python.
+func splitStemSuffix(name string) (stem, suffix string) {
+	if name == "" || strings.Trim(name, ".") == "" {
+		return name, ""
+	}
+	i := strings.LastIndex(name, ".")
+	if i <= 0 {
+		return name, ""
+	}
+	return name[:i], name[i:]
+}
+
+// suffixes is every extension on the final component, in order.
+func (p parsedPath) suffixes() []string {
+	name := p.name()
+	if name == "" || strings.Trim(name, ".") == "" {
+		return nil
+	}
+	trimmed := strings.TrimLeft(name, ".")
+	pieces := strings.Split(trimmed, ".")
+	out := make([]string, 0, len(pieces)-1)
+	for _, s := range pieces[1:] {
+		out = append(out, "."+s)
+	}
+	return out
+}
+
 // parseWindows splits a Windows path into its anchor and components.
 //
 // Three anchor shapes exist and they are NOT interchangeable:

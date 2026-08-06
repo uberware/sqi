@@ -62,8 +62,8 @@ func TestEvalName_UsesLongestPrefix(t *testing.T) {
 	if got, want := v.String(), "/a/b.exr"; got != want {
 		t.Fatalf("Eval = %q, want %q", got, want)
 	}
-	// A trailing segment is a property, and no properties exist yet.
-	_, err = Eval("Param.File.stem", syms, TAny)
+	// A trailing segment is a property that does not exist.
+	_, err = Eval("Param.File.nosuchprop", syms, TAny)
 	if err == nil {
 		t.Fatal("Eval of a property = nil error, want unknown property")
 	}
@@ -71,8 +71,8 @@ func TestEvalName_UsesLongestPrefix(t *testing.T) {
 		t.Fatalf("error = %q, want it to mention unknown property", err.Error())
 	}
 	// An unknown symbol names the longest candidate the author wrote.
-	_, err = Eval("Param.Nope.stem", syms, TAny)
-	if err == nil || !strings.Contains(err.Error(), `"Param.Nope.stem"`) {
+	_, err = Eval("Param.Nope.nosuchprop", syms, TAny)
+	if err == nil || !strings.Contains(err.Error(), `"Param.Nope.nosuchprop"`) {
 		t.Fatalf("error = %v, want it to name the longest candidate", err)
 	}
 }

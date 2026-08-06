@@ -44,6 +44,48 @@ var pathFuncs = map[string][]Shape{
 			return Bool(pathOf(args[0]).isAbsolute()), nil
 		}},
 	},
+	// The six properties. Section 1.3.3 makes p.x sugar for __property_x__,
+	// and resolve.go's evalProperty calls exactly that name with
+	// methodStyle = true — so registering these here is what makes
+	// section 1.2.4's receiver-coercion restriction apply to them: a STRING
+	// receiver does not coerce to TPath, and 'a/b.txt'.stem is an error by
+	// design, not an oversight.
+	"__property_name__": {
+		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+			return String(pathOf(args[0]).name()), nil
+		}},
+	},
+	"__property_stem__": {
+		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+			stem, _ := splitStemSuffix(pathOf(args[0]).name())
+			return String(stem), nil
+		}},
+	},
+	"__property_suffix__": {
+		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+			_, suffix := splitStemSuffix(pathOf(args[0]).name())
+			return String(suffix), nil
+		}},
+	},
+	"__property_suffixes__": {
+		{Params: []Type{TPath}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+			return stringList(pathOf(args[0]).suffixes())
+		}},
+	},
+	"__property_parent__": {
+		{Params: []Type{TPath}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+			p := pathOf(args[0])
+			if len(p.comps) > 0 {
+				p.comps = p.comps[:len(p.comps)-1]
+			}
+			return boundedPath(p.String(), p.flavor)
+		}},
+	},
+	"__property_parts__": {
+		{Params: []Type{TPath}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+			return stringList(pathOf(args[0]).parts())
+		}},
+	},
 }
 
 // boundedPath builds a path value with its text bounded before it is stored.

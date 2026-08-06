@@ -286,14 +286,21 @@
 //     would refuse anyway, so the test would pass with the restriction
 //     switched off. Property syntax (section 1.3.3) is sugar for a call to
 //     __property_p__, dispatched through the same registry, so a property
-//     access fails through the identical mechanism today (C1 registers no
-//     property) — but NOT with the identical message: an unknown-function
-//     failure there is deliberately reworded to "unknown property"
-//     (resolve.go's evalProperty) so that a genuine runtime error inside a
-//     property that DOES exist is never relabeled as a missing one.
-//     "Param.Name.stem" (Param.Name bound to a string) reports
-//     `unknown property "stem" on string`, not `unknown function
-//     "__property_stem__"`. A dotted name that reaches a method or property
+//     access to a name NOTHING has registered fails through the identical
+//     unknown-function mechanism — but NOT with the identical message: it is
+//     deliberately reworded to "unknown property" (resolve.go's
+//     evalProperty) so that a genuine runtime error inside a property that
+//     DOES exist is never relabeled as a missing one. "Param.Name.nosuchprop"
+//     (Param.Name bound to a string) reports `unknown property "nosuchprop"
+//     on string`, not `unknown function "__property_nosuchprop__"`.
+//     "Param.Name.stem" on that same string receiver is the OTHER branch, and
+//     went stale exactly the way the with_suffix worked example above warned
+//     a path-family example would: it named the "unknown property" wording
+//     until C4's Task 6 registered __property_stem__ for real, and now
+//     verified directly, it instead reports `no signature of
+//     "__property_stem__" accepts (string)` — the receiver-restriction
+//     message two paragraphs up, not this one, because the property is no
+//     longer unknown. A dotted name that reaches a method or property
 //     call is split by LONGEST-PREFIX resolution against the caller's own
 //     symbol table (resolve.go's
 //     resolveName): "Param.Name.upper()" tries "Param.Name.upper" as a bound
