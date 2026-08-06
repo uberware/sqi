@@ -4,6 +4,8 @@ package expr
 
 import (
 	"errors"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -43,6 +45,18 @@ func TestWithNumber(t *testing.T) {
 		// in it — the no-pattern fallback applies. Measured against the
 		// reference during design.
 		{`path('/r/...').with_number(3)`, "/r/..._0003"},
+		// A DIGIT RUN INSIDE THE SUFFIX is not a candidate, because the scan
+		// runs over the STEM alone — the case pathnumber.go's own doc comment
+		// names ("file.v2.003.exr") and the one shape the table had no row
+		// for until the final fix wave. The .exr row alone does not pin it:
+		// scanning the whole NAME instead of the stem gives the identical
+		// answer there, since ".exr" holds no digits at all. The .mp4 row is
+		// the one that separates the two readings — scanning the name would
+		// take the "4" as the last candidate and answer "render.0001.mp72",
+		// destroying the container extension. Both values measured against the
+		// reference at openjd-model 0.11.1, which agrees on both.
+		{`with_number('file.v2.003.exr', 7)`, "file.v2.007.exr"},
+		{`path('/r/render.0001.mp4').with_number(72)`, "/r/render.0072.mp4"},
 		// Several suffixes: splitStemSuffix cuts at the LAST dot only, so
 		// "a.tar.gz" has stem "a.tar" (no digit pattern in it) and suffix
 		// ".gz" — the no-pattern fallback applies to the stem, not the whole
@@ -198,6 +212,88 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestWithNumber_ScanIsAllocationBounded pins the final fix wave's Important
+// finding: withNumber needs only the LAST candidate in the stem, and the
+// original implementation materialized EVERY candidate first
+// (numberPattern.FindAllStringIndex(stem, -1)) to get it. The "-1" is
+// unbounded, and funcsre.go's reSub already wrote the rule down one wave
+// earlier — "an unbounded -1 here would let a zero-width pattern enumerate
+// maxStringBytes+1 matches before anything downstream could object" — which
+// this file did not carry across. Measured before the fix:
+// with_number('#a' * 5000000, 7), every operand inside maxStringBytes,
+// allocated 794 MB to produce a 10 MB result.
+//
+// THE ASSERTION IS ON LIVE HEAP ACROSS THE CALL, not on the allocation COUNT,
+// not on cumulative bytes, and not by exhausting memory in CI. Each candidate
+// was measured before the threshold was chosen:
+//
+//   - Allocation COUNT cannot see the defect at all. Both forms call into the
+//     regexp engine once per candidate, so their malloc counts land within
+//     0.02% of each other (1,000,192 against 1,000,045 for a million
+//     candidates) and a testing.AllocsPerRun assertion would pass either way.
+//   - CUMULATIVE bytes (MemStats.TotalAlloc) separates them cleanly in a plain
+//     build — 160 MB against 16 MB — but NOT under -race, where the detector's
+//     own per-call instrumentation dominates both (1.71 GB against 1.63 GB, a
+//     4% gap). make test runs the race detector by default, so a TotalAlloc
+//     bound tuned on a plain build fails there for a reason that has nothing
+//     to do with this function. That is not hypothetical: it is what the first
+//     version of this test did.
+//   - LIVE HEAP measured immediately after the call, before any collection can
+//     sweep the result, is stable across every build mode — 100.8 MB against
+//     4.2 MB with -race, 97.2 MB against 4.4 MB without — because it measures
+//     what the two forms genuinely differ in: whether every candidate is still
+//     reachable at the moment the last one is chosen. It is also the quantity
+//     the 794 MB figure above actually names.
+//
+// The forward scan keeps ONE pair of indices live at a time, so its peak is
+// the input plus the result rather than a multiple of the candidate count.
+// Measured for the 200,000 candidates below, plain / -race / -cover: 0.51 MB,
+// 1.89 MB, 0.43 MB retained here against 16.5 MB, 21.9 MB, 16.5 MB with
+// FindAllStringIndex. The 12x-of-input bound sits between them with at least
+// 2.5x of room on the passing side and 3.4x on the failing side in every mode,
+// which is why it is stated as a multiple of the input rather than an absolute
+// byte count. The value is logged on every run so a future engine change moving
+// either side is visible before it becomes a false green.
+func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
+	const pairs = 200_000
+	name := strings.Repeat("#a", pairs)
+
+	// Correctness first: only the LAST candidate — the final "#", every other
+	// one being separated from it by an "a" — is replaced.
+	got, err := withNumber(name, 7)
+	if err != nil {
+		t.Fatalf("withNumber on a %d-candidate stem failed: %v", pairs, err)
+	}
+	if want := strings.Repeat("#a", pairs-1) + "7a"; got != want {
+		t.Fatalf("withNumber replaced the wrong candidate: got ...%q, want ...%q",
+			got[len(got)-8:], want[len(want)-8:])
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	out, err := withNumber(name, 7)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("withNumber failed: %v", err)
+	}
+	// The result must stay reachable across the reading, so that what is
+	// measured is the SCAN's retention and not an artifact of the result
+	// itself having become collectable early.
+	runtime.KeepAlive(out)
+
+	// Signed, because the scan's transient garbage can leave the heap SMALLER
+	// than it started after a collection runs mid-call — a negative delta is a
+	// pass, not an underflow to a huge unsigned number.
+	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	t.Logf("retained %d bytes of heap for a %d-byte stem with %d candidates", retained, len(name), pairs)
+	if limit := int64(12 * len(name)); retained > limit {
+		t.Errorf("withNumber retained %d bytes of heap across a %d-byte stem (%d candidates), limit %d — "+
+			"the scan is materializing every candidate instead of keeping only the last",
+			retained, len(name), pairs, limit)
 	}
 }
 

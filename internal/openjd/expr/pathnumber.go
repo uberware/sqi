@@ -3,7 +3,7 @@
 package expr
 
 import (
-	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 )
@@ -12,7 +12,16 @@ import (
 // run asks for more than maxNumberPadding characters of padding. Measured
 // against the reference (openjd-model 0.11.1): %099d and a 33-character #
 // run both fail this way; %032d and a 32-character # run are both accepted.
-var errPaddingTooWide = errors.New("with_number: padding width exceeds maximum of 32")
+//
+// The width is INTERPOLATED FROM THE CONSTANT rather than written out beside
+// it: the message and maxNumberPadding stated "32" twice, and a message is
+// exactly the kind of second copy that comes to lie the first time the limit
+// moves. The function-name prefix the message used to carry is gone, so this
+// reads in the same register as funcspath.go's five path errors, none of which
+// names the function it backs — the caller supplies that context already.
+var errPaddingTooWide = fmt.Errorf(
+	"a padding width may not exceed %d characters", maxNumberPadding,
+)
 
 // maxNumberPadding is RFC 0006's own limit on with_number's printf and hash
 // padding widths ("The maximum padding width is 32 characters; wider printf
@@ -66,8 +75,8 @@ var numberPattern = regexp.MustCompile(`%(0\d+)?d|#+|\d+`)
 // splits at the LAST dot (matching pathlib's .stem), so "render.0001.exr"
 // keeps its ".exr" suffix untouched and a version-looking suffix like ".v2"
 // on "file.v2.003.exr" is never mistaken for the number itself. Within the
-// stem, numberPattern finds every candidate; the LAST one — by START
-// POSITION, not by which pattern kind it is — is replaced. That is what lets
+// stem, lastNumberMatch finds the LAST candidate — by START POSITION, not by
+// which pattern kind it is — and only that one is replaced. That is what lets
 // "shot01_####" replace only the hashes (the digits in "01" are never a
 // candidate on their own; "####" starts later) and what makes
 // "f_%d_abc_###.exr" replace the "###" while "file_%04d_003.exr" replaces
@@ -80,21 +89,62 @@ var numberPattern = regexp.MustCompile(`%(0\d+)?d|#+|\d+`)
 // follows the specification's stated behavior rather than the open question.
 func withNumber(name string, n int64) (string, error) {
 	stem, suffix := splitStemSuffix(name)
-	matches := numberPattern.FindAllStringIndex(stem, -1)
-	if len(matches) == 0 {
+	start, end, found := lastNumberMatch(stem)
+	if !found {
 		padded, err := paddedNumber(n, 4)
 		if err != nil {
 			return "", err
 		}
 		return stem + "_" + padded + suffix, nil
 	}
-	last := matches[len(matches)-1]
-	start, end := last[0], last[1]
 	replacement, err := numberReplacement(stem[start:end], n)
 	if err != nil {
 		return "", err
 	}
 	return stem[:start] + replacement + stem[end:] + suffix, nil
+}
+
+// lastNumberMatch reports the byte range of the LAST numberPattern candidate
+// in stem, or found == false when the stem holds none.
+//
+// IT SCANS RATHER THAN ENUMERATING, and that is a memory bound, not a
+// micro-optimization. The original wrote numberPattern.FindAllStringIndex(stem,
+// -1) and then took the final element — materializing every candidate to use
+// exactly one. The "-1" is unbounded, and funcsre.go's reSub already stated the
+// rule this file did not carry across: "an unbounded -1 here would let a
+// zero-width pattern enumerate maxStringBytes+1 matches before anything
+// downstream could object." C3's reSub, reFindAll and reMatchCount all pass
+// maxElements+1 for that reason. Here a bound is not needed at all, because
+// nothing is accumulated: successive FindStringIndex calls over the shrinking
+// remainder keep ONE pair of indices live however many candidates the stem has,
+// so with_number('#a' * 5000000, 7) — every operand inside maxStringBytes —
+// costs a small multiple of the input instead of the 794 MB the enumerating
+// form measured. Pinned by TestWithNumber_ScanIsAllocationBounded, which
+// asserts cumulative bytes rather than allocation count, since the two forms'
+// allocation COUNTS are indistinguishable.
+//
+// Searching a SUFFIX of the stem gives the same answer as searching the whole
+// stem because numberPattern contains no anchor, boundary or lookaround — it is
+// an alternation of literal character runs, so no match's admissibility depends
+// on what precedes it. The zero-width guard below is defensive rather than
+// reachable: every alternative requires at least one character ("%d" at the
+// shortest), so loc[1] > loc[0] always holds today; it is there so that
+// widening the pattern to something nullable cannot silently turn this loop
+// into a non-terminating one.
+func lastNumberMatch(stem string) (start, end int, found bool) {
+	for off := 0; off <= len(stem); {
+		loc := numberPattern.FindStringIndex(stem[off:])
+		if loc == nil {
+			break
+		}
+		start, end, found = off+loc[0], off+loc[1], true
+		if loc[1] == loc[0] {
+			off = end + 1
+			continue
+		}
+		off = end
+	}
+	return start, end, found
 }
 
 // numberReplacement renders n for ONE matched candidate, dispatching on the
