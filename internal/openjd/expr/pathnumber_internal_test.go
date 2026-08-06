@@ -5,6 +5,7 @@ package expr
 import (
 	"errors"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -226,39 +227,80 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 // with_number('#a' * 5000000, 7), every operand inside maxStringBytes,
 // allocated 794 MB to produce a 10 MB result.
 //
-// THE ASSERTION IS ON LIVE HEAP ACROSS THE CALL, not on the allocation COUNT,
-// not on cumulative bytes, and not by exhausting memory in CI. Each candidate
-// was measured before the threshold was chosen:
+// WHAT IS ASSERTED, AND WHY IT IS THE ONLY THING THAT CAN BE. The invariant is
+// "no candidate but the current best is still reachable when the last one is
+// chosen", so the assertion is on LIVE HEAP across the call — with the
+// collector's pace forced for the duration, which is what makes it a
+// measurement of retention rather than of the pacer. Two cheaper-looking
+// metrics were measured and rejected, each for a concrete reason:
 //
-//   - Allocation COUNT cannot see the defect at all. Both forms call into the
-//     regexp engine once per candidate, so their malloc counts land within
-//     0.02% of each other (1,000,192 against 1,000,045 for a million
-//     candidates) and a testing.AllocsPerRun assertion would pass either way.
-//   - CUMULATIVE bytes (MemStats.TotalAlloc) separates them cleanly in a plain
-//     build — 160 MB against 16 MB — but NOT under -race, where the detector's
-//     own per-call instrumentation dominates both (1.71 GB against 1.63 GB, a
-//     4% gap). make test runs the race detector by default, so a TotalAlloc
-//     bound tuned on a plain build fails there for a reason that has nothing
-//     to do with this function. That is not hypothetical: it is what the first
-//     version of this test did.
-//   - LIVE HEAP measured immediately after the call, before any collection can
-//     sweep the result, is stable across every build mode — 100.8 MB against
-//     4.2 MB with -race, 97.2 MB against 4.4 MB without — because it measures
-//     what the two forms genuinely differ in: whether every candidate is still
-//     reachable at the moment the last one is chosen. It is also the quantity
-//     the 794 MB figure above actually names.
+//   - ALLOCATION COUNT is blind to the defect. Both forms enter the regexp
+//     engine once per candidate, so their malloc counts land within 0.02% of
+//     each other (1,000,192 against 1,000,045 for a million candidates). A
+//     testing.AllocsPerRun assertion passes either way.
 //
-// The forward scan keeps ONE pair of indices live at a time, so its peak is
-// the input plus the result rather than a multiple of the candidate count.
-// Measured for the 200,000 candidates below, plain / -race / -cover: 0.51 MB,
-// 1.89 MB, 0.43 MB retained here against 16.5 MB, 21.9 MB, 16.5 MB with
-// FindAllStringIndex. The 12x-of-input bound sits between them with at least
-// 2.5x of room on the passing side and 3.4x on the failing side in every mode,
-// which is why it is stated as a multiple of the input rather than an absolute
-// byte count. The value is logged on every run so a future engine change moving
-// either side is visible before it becomes a false green.
+//   - CUMULATIVE BYTES (MemStats.TotalAlloc) separates them only in a plain
+//     build — 160 MB against 16 MB — and NOT under the race detector, whose
+//     per-call instrumentation swamps the difference (1.71 GB against 1.63 GB).
+//     make test and make ci run -race by default. NORMALIZING IT AS A RATIO
+//     AGAINST A ONE-CANDIDATE STEM OF THE SAME LENGTH DOES NOT RESCUE IT, and
+//     that was measured rather than assumed: under -race the ratios come out
+//     47,000 for the scan against 43,000 for the enumerating form, i.e.
+//     INVERTED as well as indistinguishable, because the per-call constant the
+//     ratio is meant to cancel does not appear in a two-call baseline at all.
+//
+//   - LIVE HEAP does separate them, but only once the collector is taken out of
+//     the measurement. Left to the default pacer it measures garbage
+//     accumulated since whichever collection happened to fire mid-call, which
+//     is a function of GOGC, GOMEMLIMIT, the live heap left by preceding tests
+//     and the pacer's own state — under -race that put a correct
+//     implementation at 76% of an earlier version of this bound, and GOGC=off
+//     failed outright, because the fixed form still allocates ~377 MB
+//     cumulatively for this input under -race even though it retains almost
+//     none of it. debug.SetGCPercent below overrides the environment for the
+//     measurement window and restores it afterwards, so collection runs often
+//     enough that transient garbage never accumulates and what remains is what
+//     is genuinely REACHABLE. The enumerating form's match list is reachable by
+//     construction and no pacer setting can collect it.
+//
+// MEASURED SPREAD at the 400,000 candidates below, on the machine this was
+// written on. FIXED, 90 runs: 25 isolated under -race (max 1,956,192), 20 plain
+// (max 1,125,296), 20 under -cover (max 1,173,456), 10 whole-package runs in
+// the make ci shape, -race -cover, so preceding tests' live heap is present
+// (max 1,810,496), and 5 each under GOGC=off, GOGC=400 and GOGC=1000 to show
+// the forced pace neutralizes a hostile environment (maxima 1,806,064,
+// 1,738,448, 1,475,336). Worst case over all 90: 1.96 MB. BROKEN, 32 runs: 8
+// each under plain (min 32,577,304), -race (min 14,501,312), -cover (min
+// 32,577,288) and -race GOGC=off (min 14,245,016); it went RED in every one of
+// those modes and in the whole-package make ci shape. Best case over all 32:
+// 14.2 MB.
+//
+// The bound sits between them at 6 MB — 3.07x of room on the passing side,
+// 2.37x on the failing side, deliberately biased toward the passing side
+// because a test that fails on correct code is worse than the gap it closes.
+// The measured value and the live heap it was taken against are logged on every
+// run, so a future engine or runtime change moving either side shows up before
+// it becomes a flake or a false green.
 func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
-	const pairs = 200_000
+	// 400,000 candidates rather than the 200,000 first tried. Raising the count
+	// does NOT widen the RATIO, and saying so matters because the opposite is
+	// the intuitive guess: measured separation is 7.3x here against 7.7x at
+	// 200,000, because under -race the enumerating form's retained reading is
+	// itself affected by collection timing and grew only 18% when the candidate
+	// count doubled. What the larger count buys is a bigger ABSOLUTE gap
+	// (12.3 MB against 10.7 MB) so the bound can sit further from both sides in
+	// bytes, at a cost of about one extra second under -race.
+	const pairs = 400_000
+	// gcPercentDuringMeasurement is low enough that collection is frequent
+	// relative to what one call allocates, so HeapAlloc tracks the live set.
+	// It is not zero-cost — it is why the -race run takes a few seconds — and
+	// it is the price of an assertion that does not depend on the pacer.
+	const gcPercentDuringMeasurement = 10
+	// maxRetainedBytes is chosen from the measurements in the doc comment
+	// above, not by guessing, and is stated absolutely rather than as a
+	// multiple of the input because the two sides scale differently.
+	const maxRetainedBytes = 6_000_000
+
 	name := strings.Repeat("#a", pairs)
 
 	// Correctness first: only the LAST candidate — the final "#", every other
@@ -271,6 +313,8 @@ func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
 		t.Fatalf("withNumber replaced the wrong candidate: got ...%q, want ...%q",
 			got[len(got)-8:], want[len(want)-8:])
 	}
+
+	defer debug.SetGCPercent(debug.SetGCPercent(gcPercentDuringMeasurement))
 
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -289,11 +333,12 @@ func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
 	// than it started after a collection runs mid-call — a negative delta is a
 	// pass, not an underflow to a huge unsigned number.
 	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-	t.Logf("retained %d bytes of heap for a %d-byte stem with %d candidates", retained, len(name), pairs)
-	if limit := int64(12 * len(name)); retained > limit {
-		t.Errorf("withNumber retained %d bytes of heap across a %d-byte stem (%d candidates), limit %d — "+
+	t.Logf("retained %d bytes of heap for a %d-byte stem with %d candidates (live heap before: %d, bound: %d)",
+		retained, len(name), pairs, before.HeapAlloc, maxRetainedBytes)
+	if retained > maxRetainedBytes {
+		t.Errorf("withNumber retained %d bytes of heap across a %d-byte stem (%d candidates), bound %d — "+
 			"the scan is materializing every candidate instead of keeping only the last",
-			retained, len(name), pairs, limit)
+			retained, len(name), pairs, maxRetainedBytes)
 	}
 }
 

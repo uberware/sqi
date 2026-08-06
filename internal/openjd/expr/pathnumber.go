@@ -120,8 +120,9 @@ func withNumber(name string, n int64) (string, error) {
 // so with_number('#a' * 5000000, 7) — every operand inside maxStringBytes —
 // costs a small multiple of the input instead of the 794 MB the enumerating
 // form measured. Pinned by TestWithNumber_ScanIsAllocationBounded, which
-// asserts cumulative bytes rather than allocation count, since the two forms'
-// allocation COUNTS are indistinguishable.
+// asserts LIVE HEAP across the call under a forced collector pace — neither
+// allocation count nor cumulative bytes can separate the two forms under the
+// race detector, and that test's doc comment carries the measurements.
 //
 // Searching a SUFFIX of the stem gives the same answer as searching the whole
 // stem because numberPattern contains no anchor, boundary or lookaround — it is
