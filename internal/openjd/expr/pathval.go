@@ -23,7 +23,15 @@ type parsedPath struct {
 	root   string
 	comps  []string
 	flavor PathFormat
-	isURI  bool // read by isAbsolute since Task 3; set starting Task 4 (URI flavor)
+	// isURI records that root holds an opaque scheme+authority (splitURI
+	// recognized one) rather than a filesystem anchor. It is not a fourth
+	// flavor: a URI is detected from the text under every PathFormat, and the
+	// flag is what makes the rest of this file suppress the normalizations a
+	// filesystem path gets — the body stays "/"-separated whatever flavor says,
+	// empty and "." components survive, is_absolute is unconditionally true,
+	// as_posix is the identity, and the authority is never treated as a drive a
+	// join could inherit.
+	isURI bool
 }
 
 // pathSeparatorChars is the set of characters that separate path components
@@ -128,13 +136,31 @@ func parsePath(text string, f PathFormat) parsedPath {
 		}
 		rest = trimmed
 	}
+	p.comps = splitComponents(rest, f)
+	return p
+}
+
+// splitComponents splits the text FOLLOWING a root into f's components,
+// applying the two normalizations both filesystem flavors share: a consecutive
+// separator run collapses (it produces empty pieces, which are dropped) and a
+// "." segment is dropped. ".." is kept, for the reason parsePath's own doc
+// comment gives.
+//
+// It exists because parsePath's POSIX branch and parseWindows carried this loop
+// TEXTUALLY TWICE, identical modulo the flavor constant they passed to
+// pathCanonicalSeparator — the same duplication shape the rest of this file has
+// already had to close for separators, stem/suffix splitting and root joining.
+// A URI never reaches here: splitURI's body is "/"-only and opacity forbids
+// both normalizations, so parsePath splits it itself, one line above.
+func splitComponents(rest string, f PathFormat) []string {
+	var comps []string
 	for c := range strings.SplitSeq(rest, string(pathCanonicalSeparator(f))) {
 		if c == "" || c == "." {
 			continue
 		}
-		p.comps = append(p.comps, c)
+		comps = append(comps, c)
 	}
-	return p
+	return comps
 }
 
 // String renders the path back to text, porting pathlib's own
@@ -166,10 +192,15 @@ func (p parsedPath) String() string {
 		}
 		return p.root + "/" + strings.Join(p.comps, "/")
 	}
-	sep := "/"
-	if p.flavor == PathWindows {
-		sep = `\`
-	}
+	// The separator comes from pathCanonicalSeparator, the SAME per-flavor
+	// definition the parse side splits on, rather than a second render-side
+	// encoding of it here. The two were written out independently — "/" or "\"
+	// picked by flavor — and a reviewer proved them equal over an 80-input by
+	// 2-flavor corpus, which is precisely the "two formulas that happen to
+	// agree today" shape this file has already had to close three times
+	// (joinParts against String(), splitStemSuffix against suffixes(),
+	// windowsSeparatorChars against pathSeparatorChars).
+	sep := string(pathCanonicalSeparator(p.flavor))
 	switch {
 	case p.root != "":
 		return p.root + strings.Join(p.comps, sep)
@@ -354,7 +385,16 @@ func pathJoin(parent, child parsedPath) parsedPath {
 	// A URI child replaces the parent whole. It is handled before the anchor
 	// split so that its authority can never be treated as a root the parent's
 	// drive gets prepended to.
+	//
+	// The clone is not decoration: returning child as-is hands the CALLER's
+	// slice back as the result's comps, so the two values share a backing
+	// array. That is safe only under an invariant invisible from here — that
+	// the single caller happens to pass a freshly-parsed child nobody else
+	// holds — in a function where every other arm builds a new slice
+	// (slices.Concat below) rather than aliasing one. Both early returns clone
+	// so the invariant is not needed at all.
 	if child.isURI {
+		child.comps = slices.Clone(child.comps)
 		return child
 	}
 	pDrive, pRoot := parent.anchorParts()
@@ -364,8 +404,9 @@ func pathJoin(parent, child parsedPath) parsedPath {
 		if cDrive == "" {
 			cDrive = pDrive
 		}
-		return parsedPath{root: cDrive + cRoot, comps: child.comps, flavor: parent.flavor}
+		return parsedPath{root: cDrive + cRoot, comps: slices.Clone(child.comps), flavor: parent.flavor}
 	case cDrive != "" && !strings.EqualFold(cDrive, pDrive):
+		child.comps = slices.Clone(child.comps)
 		return child
 	case cDrive != "":
 		pDrive = cDrive
@@ -480,12 +521,7 @@ func parseWindows(text string) parsedPath {
 	s := normalizeSeparators(text, PathWindows)
 	drive, root, rest := splitRootWindows(s)
 	p.root = drive + root
-	for c := range strings.SplitSeq(rest, string(pathCanonicalSeparator(PathWindows))) {
-		if c == "" || c == "." {
-			continue
-		}
-		p.comps = append(p.comps, c)
-	}
+	p.comps = splitComponents(rest, PathWindows)
 	return p
 }
 
@@ -718,6 +754,14 @@ func (p parsedPath) isAbsolute() bool {
 
 // windowsIsAbsPrefix is the direct port of ntpath.isabs's prefix test; see
 // isAbsolute's doc comment for what it tests and why.
+//
+// ITS '/' AND '\\' LITERALS ARE PART OF THE PORT and are deliberately NOT
+// routed through pathSeparatorChars/pathCanonicalSeparator, unlike every other
+// separator decision in this file. They are not a flavor decision this engine
+// is making: they are the two characters CPython's own three-line source names,
+// on a function that only ever runs for the Windows flavor in the first place.
+// Unifying them would replace a verbatim port with a paraphrase — and would
+// make the function silently follow a flavor change it must not follow.
 func windowsIsAbsPrefix(s string) bool {
 	r := []rune(s)
 	if len(r) > 3 {
