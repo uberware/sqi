@@ -1248,14 +1248,27 @@ path | string :: path('//') / 'x'
 # here (its .parts reports the trailing "" too), so the self-contradiction that
 # convicted the family above is absent.
 #
-# Section 2.1.5's worked example — path("s3://bucket/dir/") / "file" produces
-# "s3://bucket/dir/file" — is NOT decisive on its own, and an earlier revision
-# of this reason wrongly said it was: that example rules on a trailing slash on
-# the LEFT operand, and these cases are about one on the CHILD. What settles
-# them is the general clause beside it, "a trailing slash is consumed by the
-# join, matching pathlib behavior", which is stated of the join rather than of
-# one operand — the worked example is then an instance of it rather than its
-# whole content. A trailing slash on the child is therefore not a component, so
+# The specification has exactly ONE sentence on this, identical at
+# Expression-Language line 1249 and RFC 0006 line 204:
+#
+#   "A trailing slash on the left operand is consumed by the join (matching
+#   `pathlib` behavior), so `path("s3://bucket/dir/") / "file"` produces
+#   `s3://bucket/dir/file`."
+#
+# It is NOT decisive on its own, and two earlier revisions of this reason each
+# got that wrong in a different direction: the first claimed the worked example
+# settled it (the example is that sentence's own "so" tail, and both it and the
+# sentence rule on the LEFT operand, while these cases are about the CHILD);
+# the second quoted a "general clause beside it" that does not exist — the same
+# sentence with "on the left operand" excised.
+#
+# What actually settles it is the parenthetical, "matching `pathlib`
+# behavior". pathlib normalizes a trailing slash on EITHER operand:
+# PurePosixPath("/a/b") / "c/" is PurePosixPath("/a/b/c"), exactly as
+# PurePosixPath("/a/b/") / "c" is. The sentence names the left operand because
+# that is the side its example needs; the behavior it defers to does not
+# distinguish them. A trailing slash on the child is therefore not a component
+# either, so
 # path("s3://b/d/") / "a/" is "s3://b/d/a". Adjudicated in sqi's favor during
 # C4 Task 9's review. Note this rules on a trailing slash the JOIN consumes;
 # the one a URI carries through path() alone is a component, and is kept — see
@@ -1319,6 +1332,32 @@ path | string :: path('/a/b') + path('c')
 # rather than differently-ruled. Note it is not reaching the decision purely
 # textually either: it correctly answers false for "s3://bb/d" against the base
 # "s3://b", which a string-prefix test would call true.
+#
+# THE ONE SPEC SENTENCE THAT CUTS AGAINST THIS, stated rather than passed over.
+# Expression-Language's PathMappingRule section says: "For `URI` rules,
+# matching uses string prefix comparison on path boundaries — the input must
+# start with the source URI and the next character (if any) must be `/`." Read
+# as a general rule that would decide the self case for the reference:
+# "s3://b" does not start with "s3://b/". It is not a general rule. It is
+# scoped to PathMappingRule — a session-time transformation whose source is a
+# literal string, whose whole point is to preserve "the exact URI content
+# without normalization", and which is sub-project D's, not this function
+# library's. RFC 0006's own row for is_relative_to says only "checks prefix
+# match on the full URI" and says nothing about boundaries or about the next
+# character. Applying the mapping-rule sentence to these two functions would
+# also make them the ONLY path operations in the library that do not consume a
+# trailing separator, contradicting section 2.1.5's treatment of the same kind
+# of operand. So: cited, weighed, and ruled inapplicable — not unnoticed.
+#
+# The same clause SUPPORTS the entries below about a bare "scheme://" base, and
+# is cited there too.
+#
+# The RUN entries below are the same ruling reached by a base terminated by
+# SEVERAL separators. They exist because round 1 changed behavior for that
+# whole class and covered none of it: every base in that round's grid ended in
+# at most one separator, so a one-step trim of the base stayed green
+# everywhere. The reference requires the receiver to start with the base's
+# literal text, so it refuses each of them.
 
 # The base's trailing slash consumed, self case: sqi true, the reference false
 # even though it consumes the same slash for every deeper receiver. See the
@@ -1328,6 +1367,44 @@ bool | path | string :: path('s3://b').is_relative_to(path('s3://b/'))
 # relative_to's half of the same row: sqi strips the whole base and answers ".",
 # the reference refuses. See the explanation above.
 path | string :: path('s3://b').relative_to(path('s3://b/'))
+
+# A base terminated by a RUN of separators, receiver one separator short: sqi
+# consumes the whole run and matches, the reference requires the receiver to
+# start with the base's literal text. See the explanation above.
+bool | path | string :: path('s3://b/d').is_relative_to(path('s3://b//'))
+
+# relative_to's half of that row: sqi strips the base and answers "d", the
+# reference refuses. See the explanation above.
+path | string :: path('s3://b/d').relative_to(path('s3://b//'))
+
+# The self case against a run-terminated base: sqi true, the reference false.
+# See the explanation above.
+bool | path | string :: path('s3://b').is_relative_to(path('s3://b//'))
+
+# relative_to's half of that row: sqi answers ".", the reference refuses. See
+# the explanation above.
+path | string :: path('s3://b').relative_to(path('s3://b//'))
+
+# A run-terminated base deeper than the authority: sqi true, the reference
+# false. See the explanation above.
+bool | path | string :: path('s3://b/d/e').is_relative_to(path('s3://b/d//'))
+
+# relative_to's half of that row: sqi answers "e", the reference refuses. See
+# the explanation above.
+path | string :: path('s3://b/d/e').relative_to(path('s3://b/d//'))
+
+# The same with a THREE-separator run, which is what distinguishes consuming
+# the run from consuming one component: sqi true, the reference false. See the
+# explanation above.
+bool | path | string :: path('s3://b/d/e').is_relative_to(path('s3://b/d///'))
+
+# relative_to's half of the three-separator row: sqi answers "e", the reference
+# refuses. See the explanation above.
+path | string :: path('s3://b/d/e').relative_to(path('s3://b/d///'))
+
+# A three-separator run terminating the authority itself: sqi answers "d", the
+# reference refuses. See the explanation above.
+path | string :: path('s3://b/d').relative_to(path('s3://b///'))
 
 # ── sqi is right: relative_to returns a normalized path, not raw text ────────
 #
@@ -1360,6 +1437,17 @@ path | string :: path('s3://b/d/').relative_to(path('s3://b'))
 # "s3://b"), so this is not a coherent alternative reading, and the practical
 # consequence of the reference's answer is that a base naming NO bucket matches
 # every bucket in the scheme.
+#
+# The specification's ONLY explicit statement about URI prefix matching agrees
+# with sqi here, and is worth citing even though it is scoped to a different
+# feature. Expression-Language's PathMappingRule section: "For `URI` rules,
+# matching uses string prefix comparison on path boundaries — the input must
+# start with the source URI and the next character (if any) must be `/`."
+# "s3://b/d" does start with "s3://", but the next character is "b", not "/",
+# so even the most textual reading available in the specification refuses these.
+# (That clause is PathMappingRule's and therefore sub-project D's, so it is not
+# decisive on its own — see the entries further up, where it cuts the other way
+# and is ruled inapplicable for the same reason.)
 
 # An empty authority as a base: sqi false (the authorities differ), the
 # reference true. See the explanation above.

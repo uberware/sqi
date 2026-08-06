@@ -1376,3 +1376,41 @@ string | list[string] | path	join(path('..b.c').suffixes, '|')
 string | list[string] | path	join(path('.hidden.tar.gz').suffixes, '|')
 string | path	path('/a/.hidden.tar.gz').stem
 string | path	path('/a/.hidden.tar.gz').suffix
+
+# ── C4: the boundary rule for RUNS, on both sides ────────────────────────────
+#
+# A two-separator case cannot distinguish trimming the RUN from trimming ONE
+# component, and the difference is the whole defect: a one-step trim leaves
+# every two-slash row green and still answers "/d" for the three-slash one.
+# Both sides of the boundary get a 3-or-more run, and the is_absolute() rows
+# state the property directly rather than through a rendering.
+path | string	path('s3://b///d').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b///d').relative_to(path('s3://b')))
+path | string	path('s3://b////d/e').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b////d/e').relative_to(path('s3://b')))
+path | string	path('s3://b///').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b///').relative_to(path('s3://b')))
+bool | path | string	path('s3://b///d').is_relative_to(path('s3://b'))
+path | string	path('s3://b///d').relative_to(path('s3://b/'))
+# A base TERMINATED by a run. Round 1 changed behavior for this whole class
+# and covered none of it — every base in the round-1 grid ended in at most one
+# separator, so a one-step trim of the base stayed green everywhere.
+bool | path | string	path('s3://b//d').is_relative_to(path('s3://b//'))
+path | string	path('s3://b//d').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b//').is_relative_to(path('s3://b//'))
+path | string	path('s3://b//').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b///d').is_relative_to(path('s3://b//'))
+path | string	path('s3://b///d').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://b//'))
+path | string	path('s3://b/d').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b').is_relative_to(path('s3://b//'))
+path | string	path('s3://b').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b/d/e').is_relative_to(path('s3://b/d//'))
+path | string	path('s3://b/d/e').relative_to(path('s3://b/d//'))
+bool | path | string	path('s3://b/d/e').is_relative_to(path('s3://b/d///'))
+path | string	path('s3://b/d/e').relative_to(path('s3://b/d///'))
+path | string	path('s3://b/d').relative_to(path('s3://b///'))
+# The coherence artifact the ruling produces, pinned rather than left to be
+# rediscovered: these two values are NOT equal, and each is relative to the
+# other with relative_to answering "." both ways.
+bool | path | string	path('s3://b//') == path('s3://b')

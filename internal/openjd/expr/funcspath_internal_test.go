@@ -446,6 +446,37 @@ func TestPathRelativeTo_URIBoundarySlash(t *testing.T) {
 		// absolute.
 		{`is_absolute(path('s3://b//').relative_to(path('s3://b')))`, "false"},
 		{`is_absolute(path('s3://b//d').relative_to(path('s3://b')))`, "false"},
+		// RUNS OF THREE OR MORE, on both sides of the boundary, because a
+		// two-separator case cannot tell a RUN trim from a ONE-STEP trim. A
+		// mutation trimming a single empty component instead of the run leaves
+		// every two-slash row above green and still answers "/d" here, which is
+		// the very defect this rule exists to close. Both directions are
+		// covered: a long run in the receiver (the remainder side) and a long
+		// run terminating the base.
+		{`path('s3://b///d').relative_to(path('s3://b'))`, "d"},
+		{`is_absolute(path('s3://b///d').relative_to(path('s3://b')))`, "false"},
+		{`path('s3://b////d/e').relative_to(path('s3://b'))`, "d/e"},
+		{`is_absolute(path('s3://b////d/e').relative_to(path('s3://b')))`, "false"},
+		{`path('s3://b///').relative_to(path('s3://b'))`, "."},
+		{`is_absolute(path('s3://b///').relative_to(path('s3://b')))`, "false"},
+		{`path('s3://b//d').relative_to(path('s3://b//'))`, "d"},
+		{`path('s3://b/d').relative_to(path('s3://b///'))`, "d"},
+		{`path('s3://b/d/e').relative_to(path('s3://b/d//'))`, "e"},
+		{`path('s3://b/d/e').relative_to(path('s3://b/d///'))`, "e"},
+		{`path('s3://b/d').is_relative_to(path('s3://b//'))`, "true"},
+		// The coherence artifact the ruling produces, recorded rather than
+		// left to be rediscovered: two URI values that are NOT equal are each
+		// relative to the other, and relative_to answers "." both ways. That
+		// follows directly from the boundary rule — the separators between
+		// them are the boundary and belong to neither — and it is not a
+		// contradiction, because equality compares the values while
+		// is_relative_to compares them ACROSS a boundary that consumes exactly
+		// those separators. The reference agrees on the first two rows.
+		{`path('s3://b//') == path('s3://b')`, "false"},
+		{`path('s3://b//').is_relative_to(path('s3://b'))`, "true"},
+		{`path('s3://b').is_relative_to(path('s3://b//'))`, "true"},
+		{`path('s3://b//').relative_to(path('s3://b'))`, "."},
+		{`path('s3://b').relative_to(path('s3://b//'))`, "."},
 		// Consuming the boundary must not degrade the prefix test into a
 		// TEXTUAL one: a longer authority and a longer component are still not
 		// matches.
