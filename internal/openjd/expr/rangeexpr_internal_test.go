@@ -5,6 +5,7 @@ package expr
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/uberware/sqi/internal/openjd/intrange"
 )
@@ -202,5 +203,84 @@ func TestCanonicalRange(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRangeExprCount_AgreesWithExpansion pins rangeExprCount against the
+// actual expansion (len(rangeInts(v))) for every case, not against
+// hand-written numbers: a table of expected COUNTS could accidentally repeat
+// the same overcounting mistake rangeExprCount itself once made (summing
+// Count() across every sub-range unconditionally, which double-counts
+// overlap). Comparing against rangeInts's own de-duplicated, sorted
+// expansion — already pinned elsewhere in this file against the base
+// specification's worked table — is the stronger check, because the two
+// helpers would have to be wrong in exactly the same way to agree by
+// accident.
+//
+// "1-5,3-7" and "10-15:2,1-5" are the two cases from the review finding:
+// TestRangeExpr_ConstructAndExpand and TestRangeExpr_SpecWorkedTable already
+// pin their expansions at 7 and 8 values respectively, which is what makes
+// the naive sum (10 and 13) visibly wrong.
+func TestRangeExprCount_AgreesWithExpansion(t *testing.T) {
+	for _, text := range []string{
+		"1-5",           // single sub-range, ascending, unit step
+		"1-5:2",         // single sub-range, stepped
+		"7",             // single bare value
+		"10-1:-1",       // single sub-range, descending
+		"1-5,3-7",       // two OVERLAPPING sub-ranges — the review finding's case
+		"10-15:2,1-5",   // two sub-ranges, out of order and non-overlapping
+		"1,5,10",        // three bare values, no overlap
+		"1-5,1-5",       // two IDENTICAL sub-ranges — total overlap
+		"1-10,5-15,3-7", // three sub-ranges with staggered overlap
+		"1-10:2,2-10:2", // two sub-ranges that interleave without ever coinciding
+	} {
+		t.Run(text, func(t *testing.T) {
+			v, err := RangeExpr(text)
+			if err != nil {
+				t.Fatalf("RangeExpr(%q): %v", text, err)
+			}
+			want, err := rangeInts(v)
+			if err != nil {
+				t.Fatalf("rangeInts(%q): %v", text, err)
+			}
+			got, err := rangeExprCount(v)
+			if err != nil {
+				t.Fatalf("rangeExprCount(%q): %v", text, err)
+			}
+			if got != len(want) {
+				t.Errorf("rangeExprCount(%q) = %d, want %d (len of the actual expansion %v)", text, got, len(want), want)
+			}
+		})
+	}
+}
+
+// TestRangeExprCount_LargeSingleRangeStaysArithmetic proves the single-
+// sub-range path never materializes anything, rather than merely asserting
+// it returns the right answer. "1-2000000000" is 2 BILLION values, 200 times
+// this package's own maxElements bound: actually expanding it would allocate
+// gigabytes and take long enough that this test's own time budget below would
+// catch it, and TestRangeExpr_RejectsTooManyValues already shows rangeInts
+// rejects the identical text via the bound check rather than by finishing an
+// expansion. rangeExprCount must reject it too, but the point of THIS test is
+// that it does so in microseconds: intrange.Range.Count() answers the size in
+// O(1) arithmetic, so checkElementCount can reject the total before a single
+// int is ever allocated.
+func TestRangeExprCount_LargeSingleRangeStaysArithmetic(t *testing.T) {
+	v, err := RangeExpr("1-2000000000")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v (construction must not expand)", err)
+	}
+	start := time.Now()
+	_, err = rangeExprCount(v)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("rangeExprCount on a 2-billion-value range = nil error, want the bound to reject it")
+	}
+	// A generous ceiling: real arithmetic finishes in microseconds, while
+	// appending 2 billion int64s (rangeInts's own path, deliberately NOT
+	// taken here) would not complete in under a second on any machine this
+	// suite runs on, and would more likely exhaust memory first.
+	if elapsed > time.Second {
+		t.Fatalf("rangeExprCount on a 2-billion-value range took %s, want it to reject arithmetically without materializing", elapsed)
 	}
 }

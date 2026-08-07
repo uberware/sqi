@@ -75,14 +75,39 @@ func rangeInts(v Value) ([]int64, error) {
 	return expandRanges(ranges, total), nil
 }
 
-// rangeExprCount returns how many integers a range_expr expands to, computed
-// arithmetically from the parsed ranges without materializing any of them.
+// rangeExprCount returns how many integers a range_expr expands to — the same
+// count len(rangeInts(v)) would give — computed without materializing the
+// expansion wherever that is possible.
 //
 // This is section 1.3.10 rule 2's element count for a range_expr: charging the
-// cost of counting must not itself cost an expansion, so it goes through
-// intrange.Range.Count() rather than rangeInts. Sub-project task 12 makes
-// len(range_expr) reuse this same helper; rangeInts stays the right function
-// for every caller that genuinely needs the values, such as list(range_expr).
+// cost of counting must not itself cost an expansion. Sub-project task 12
+// makes len(range_expr) reuse this same helper; rangeInts stays the right
+// function for every caller that genuinely needs the values, such as
+// list(range_expr).
+//
+// A SINGLE sub-range is the case that matters for avoiding materialization,
+// and the only case handled purely arithmetically: its values are strictly
+// monotonic (expandOneRange's own comment — "no two are equal" — is the same
+// fact stated for the expansion path), so intrange.Range.Count() needs no
+// deduplication to already be exact. It is also the only shape in which a
+// caller can ask for an astronomically large count — len(range_expr(
+// '1-20000000')) is the motivating case — without this function allocating
+// anything to answer.
+//
+// TWO OR MORE sub-ranges may overlap — expandRanges's own comment says so
+// ("may overlap ... must be de-duplicated"), and rangeInts's doc comment
+// pins "1-5,3-7" at 7 distinct values, not 5+5 — and there is no general
+// arithmetic shortcut to size the union of several arithmetic progressions
+// with different steps short of finding the overlap itself. An earlier
+// version of this function summed Count() across every sub-range
+// unconditionally, which overcounts exactly this case; that was a real
+// defect caught in review, not a hypothetical one. The multi-sub-range case
+// is bounded by what a template author writes by hand rather than by the
+// magnitude of any one range, and the running total below is already the
+// SAME conservative pre-dedup bound rangeInts itself checks before
+// expanding — so falling back to the real expansion here, reusing the
+// ranges already parsed, costs no more than list(range_expr(...)) already
+// pays for the identical value.
 func rangeExprCount(v Value) (int, error) {
 	ranges, err := intrange.Parse(v.AsRangeExpr())
 	if err != nil {
@@ -96,7 +121,10 @@ func rangeExprCount(v Value) (int, error) {
 			return 0, err
 		}
 	}
-	return total, nil
+	if len(ranges) == 1 {
+		return total, nil
+	}
+	return len(expandRanges(ranges, total)), nil
 }
 
 // rangeExprValues expands a range_expr to its integers as a boxed []Value,
