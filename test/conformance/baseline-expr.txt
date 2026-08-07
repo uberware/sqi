@@ -52,24 +52,22 @@
 # configurable §1.3.9 limit remains sub-project E's, and this fixture will
 # only be passing for the RIGHT reason once E lands it.
 #
-# Note for sub-project D — apply_path_mapping, a forward hazard of exactly the
-# kind the range() paragraph below warned about, recorded before it lands:
+# THAT HAS NOW HAPPENED, exactly as written, and the note is kept rather than
+# deleted because it is the record of a prediction that came true:
 #
 #   EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml
 #   EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml
 #
-# Both are NOT on this list — they pass today — and both pass FOR THE WRONG
-# REASON. Each is invalid because apply_path_mapping is available in host
-# context only and neither a job name nor a timeout is host context; this
-# scoring path cannot see placement at all, so what actually rejects them is
-# `unknown function "apply_path_mapping"`. Sub-project C4 registered the whole
-# path family EXCEPT that one function, deliberately, so the accident survives
-# into D. The moment D registers apply_path_mapping, both expressions will
-# parse and evaluate to completion and both fixtures will start FAILING —
-# expect 145 -> 143 — and both must then be ADDED to this list, until
-# sub-project E evaluates templates with real context tracking and can reject
-# them for their own rule. Do not treat the regression as a defect in D's
-# implementation; it is this scoring path's blind spot becoming visible.
+# Sub-project D registered apply_path_mapping, so these two now evaluate
+# cleanly (passthrough with no rules) instead of failing "unknown function" —
+# but they are .invalid because the call is placed in a submission-time context
+# (a job name, a timeout) where a host-context function is forbidden. That
+# placement rule needs scope-aware evaluation, which is sub-project E's; until
+# then both are baselined below, and the predicted 145 -> 143 is what the
+# rollup now reports. (Same class as
+# expr1.3.10--string-operation-limit-exceeded.) Do not treat the regression as
+# a defect in D's implementation; it is this scoring path's blind spot becoming
+# visible. Deleting these two entries is E's job, not a cleanup.
 #
 # expr1.3.10--operation-limit-exceeded joins this list for the mirror-image
 # reason, in sub-project C1's task 9: it was correctly rejected only because
@@ -142,6 +140,8 @@ EXPR/job_templates/3.6--let-too-many.invalid.yaml
 EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
 EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
 EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
+EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml
+EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml
 EXPR/job_templates/7.3--complex-expr-in-env-action-requires-expr.invalid.yaml
 EXPR/job_templates/7.3--complex-expr-in-env-variables-requires-expr.invalid.yaml
 EXPR/job_templates/7.3--session-in-host-requirements.invalid.yaml
