@@ -37,8 +37,10 @@ var (
 )
 
 // pathFuncs is sub-project C4's group: RFC 0006's path properties and path
-// functions. apply_path_mapping is NOT here — it is sub-project D's, because it
-// needs the session's mapping rules, which this package has no access to.
+// functions. apply_path_mapping is sub-project D's and lives with its engine in
+// pathmapping.go's pathMappingFuncs group, not here, because it needs the
+// session's mapping rules (threaded through evalCtx by WithPathMapping) that
+// this group's functions never touch.
 var pathFuncs = map[string][]Shape{
 	// path()'s three rows are the only ones in the whole registry that use
 	// FnCtx rather than Fn — see Shape.FnCtx's doc comment for why: they are

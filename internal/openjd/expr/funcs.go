@@ -15,18 +15,21 @@ package expr
 // sub-project C1 registers the general, validation, math and list groups; C2
 // adds the string library across four files (case and classification, trim and
 // search, split and join, padding), C3 regular expressions and the repr_*
-// family, C4 the path engine and its properties and functions. A wave adds a
-// file and one argument here, and never edits a table another wave owns.
+// family, C4 the path engine and its properties and functions, and D the single
+// session-dependent function apply_path_mapping (pathmapping.go), which
+// completes the library. A wave adds a file and one argument here, and never
+// edits a table another wave owns.
 var functionShapes = mergeFuncs(
 	convFuncs, mathFuncs, listFuncs,
 	strCaseFuncs, strFindFuncs, strSplitFuncs, strPadFuncs,
 	reFuncs, reprShellFuncs, reprDataFuncs,
 	pathFuncs,
+	pathMappingFuncs,
 )
 
 // mergeFuncs folds the per-category tables into one registry.
 //
-// It PANICS on a duplicate name rather than letting one table quietly win. Four
+// It PANICS on a duplicate name rather than letting one table quietly win. Five
 // waves write into a single namespace, and RFC 0006 reuses names across
 // categories in ways that are easy to misread — "string" is a conversion while
 // "str"-prefixed helpers are not, "list" is a conversion while the list

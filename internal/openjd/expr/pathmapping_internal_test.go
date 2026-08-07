@@ -142,3 +142,67 @@ func TestMapPath(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyPathMapping_PassthroughWithoutRules(t *testing.T) {
+	// No WithPathMapping option: nil rules, so the input passes through as a path.
+	// This is the behaviour RunExprCase relies on (design doc §6).
+	v, err := Eval(`apply_path_mapping('/mnt/share')`, MapSymbols{}, TAny)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.String(); got != "/mnt/share" {
+		t.Errorf("passthrough = %q, want %q", got, "/mnt/share")
+	}
+	if got := v.Type.String(); got != "path" {
+		t.Errorf("result type = %q, want path", got)
+	}
+}
+
+func TestApplyPathMapping_FunctionForm(t *testing.T) {
+	rules := []PathMapRule{{PathMapPOSIX, "/projects", "/mnt/projects"}}
+	v, err := Eval(`apply_path_mapping('/projects/shot01/out.exr')`, MapSymbols{}, TAny, WithPathMapping(rules))
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.String(); got != "/mnt/projects/shot01/out.exr" {
+		t.Errorf("function form = %q, want %q", got, "/mnt/projects/shot01/out.exr")
+	}
+}
+
+func TestApplyPathMapping_MethodForm(t *testing.T) {
+	rules := []PathMapRule{{PathMapPOSIX, "/projects", "/mnt/projects"}}
+	v, err := Eval(`'/projects/shot01/out.exr'.apply_path_mapping()`, MapSymbols{}, TAny, WithPathMapping(rules))
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.String(); got != "/mnt/projects/shot01/out.exr" {
+		t.Errorf("method form = %q, want %q", got, "/mnt/projects/shot01/out.exr")
+	}
+}
+
+func TestApplyPathMapping_WindowsSourceCaseInsensitive(t *testing.T) {
+	// The rule's SourcePath is a Go string, so backslashes are literal; the
+	// expression input uses forward slashes, which the Windows parser accepts.
+	rules := []PathMapRule{{PathMapWindows, `C:\studio`, "/mnt/studio"}}
+	v, err := Eval(`apply_path_mapping('c:/STUDIO/project/scene.ma')`, MapSymbols{}, TAny, WithPathMapping(rules))
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.String(); got != "/mnt/studio/project/scene.ma" {
+		t.Errorf("windows map = %q, want %q", got, "/mnt/studio/project/scene.ma")
+	}
+}
+
+func TestApplyPathMapping_UnresolvedArgumentPropagates(t *testing.T) {
+	// An unresolved argument short-circuits before the function runs (call.go),
+	// so the result is unresolved[path], never a mapped value.
+	syms := MapSymbols{"Param.U": Unresolved(TString)}
+	rules := []PathMapRule{{PathMapPOSIX, "/projects", "/mnt/projects"}}
+	v, err := Eval(`apply_path_mapping(Param.U)`, syms, TAny, WithPathMapping(rules))
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.Type.String(); got != "unresolved[path]" {
+		t.Errorf("unresolved arg gave type %q, want unresolved[path]", got)
+	}
+}

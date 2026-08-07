@@ -129,3 +129,22 @@ func applyURIRule(s string, r PathMapRule) (string, bool) {
 	}
 	return "", false
 }
+
+// pathMappingFuncs is sub-project D's group: the single host-context function
+// apply_path_mapping, co-located with the engine it wraps. It is a SEPARATE
+// group from C4's pathFuncs because the codebase convention is that a wave adds
+// its own table and never edits another's (see funcs.go's mergeFuncs).
+//
+// There is NO leaf-level host-context gate: the function is always resolvable
+// and, with no rules, passes through. Host-context availability (the function is
+// valid only in @fmtstring[host] scopes) is enforced by sub-project E, which is
+// the only layer with a scope model; E uses Expression.CalledFunctions to spot
+// the call. A leaf gate would also break the deliberate conformance regression
+// this registration causes — see the design doc §5 and §6.
+var pathMappingFuncs = map[string][]Shape{
+	"apply_path_mapping": {
+		{Params: []Type{TString}, Ret: TPath, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return boundedPath(mapPath(args[0].AsStr(), ec.pathMapping, ec.pathFormat), ec.pathFormat)
+		}},
+	},
+}

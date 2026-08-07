@@ -119,6 +119,14 @@ func WithPathFormat(f PathFormat) Option {
 	return func(ec *evalCtx) { ec.pathFormat = f.resolve() }
 }
 
+// WithPathMapping supplies the session's path-mapping rules to apply_path_mapping.
+// Absent, apply_path_mapping passes its input through unchanged. Sub-project E
+// injects the rules per host-context scope; before E, no production caller sets
+// this, so apply_path_mapping is passthrough everywhere it is currently reached.
+func WithPathMapping(rules []PathMapRule) Option {
+	return func(ec *evalCtx) { ec.pathMapping = rules }
+}
+
 // evalCtx is the state one evaluation threads through every node.
 //
 // It bundles what used to be two parameters on seventeen functions. The point
@@ -129,6 +137,9 @@ type evalCtx struct {
 	src        string
 	syms       Symbols
 	pathFormat PathFormat
+	// pathMapping holds the session's path-mapping rules for apply_path_mapping.
+	// Nil (the default) makes apply_path_mapping pass its input through unchanged.
+	pathMapping []PathMapRule
 }
 
 func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
