@@ -130,14 +130,16 @@ parameter value ever existing — the same static type checking `internal/openjd
 performs everywhere else. A name introduced by a `let:` block binds untyped,
 since this path does not track `let` scoping or evaluate a binding's
 right-hand side to learn its real type. As of this measurement it scores
-**145 / 209 pass, 64 baselined** in `test/conformance/baseline-expr.txt`. A
+**143 / 209 pass, 66 baselined** in `test/conformance/baseline-expr.txt`. A
 fixture that is invalid for a reason this path cannot see — a runtime-only
 condition, or a `let` binding whose real type would have caught it — still
 parses and evaluates fine, is accepted, and therefore fails and is baselined
 — that is deliberate reporting, the same principle as the not-applicable rows
-below, not a defect to chase down here. Three fixtures that are NOT on the
-baseline list — they currently pass — are worth calling out, because each
-passes for a reason narrower than the rule it exists to test.
+below, not a defect to chase down here. One fixture that is NOT on the
+baseline list — it currently passes — is worth calling out, because it passes
+for a reason narrower than the rule it exists to test; two more are worth
+calling out for having passed that way until sub-project D took the reason
+away.
 
 `expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) passes, but not
 because section 1.3.9's memory limit is enforced — it isn't; the spec's
@@ -156,12 +158,18 @@ budget — an expression that stays just under it repeatedly still allocates
 without bound.
 
 `7.3--apply-path-mapping-in-job-name.invalid.yaml` and
-`7.3--apply-path-mapping-in-timeout.invalid.yaml` pass because
-`apply_path_mapping` is an **unknown function**, not because either fixture's
-actual rule — that the function is available in host context only — is
-checked. Sub-project D registers it, and both will regress the moment it does.
-See the header of `test/conformance/baseline-expr.txt`, which records the
-forward hazard in full.
+`7.3--apply-path-mapping-in-timeout.invalid.yaml` **used to** pass, because
+`apply_path_mapping` was an **unknown function** — not because either
+fixture's actual rule, that the function is available in host context only, was
+checked. Sub-project D registered the function (it was the last name missing
+from the RFC 0006 library), so both expressions now evaluate cleanly and both
+`.invalid` fixtures flip to failing: the score moved **145 → 143** and the
+baseline **64 → 66**. Both are now listed in
+`test/conformance/baseline-expr.txt` with that reason. They are burn-down
+entries, not permanent ones: sub-project E is the layer with a scope model, and
+when its scope-aware evaluation can reject the two expressions for the rule they
+actually violate, both come off the list and the score goes back up. See that
+file's header, which records the whole sequence.
 
 The path is deleted the moment EXPR is registered for real:
 `TestConformance_EXPRNotRegistered` fails the build if `openjd.LookupExtension("EXPR")`
@@ -256,7 +264,7 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **145 / 209 pass, 64 baselined** |
+| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **143 / 209 pass, 66 baselined** |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
