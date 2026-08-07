@@ -198,14 +198,14 @@ var pathFuncs = map[string][]Shape{
 	},
 	"is_relative_to": {
 		{Params: []Type{TPath, TPath}, Ret: TBool, Fn: func(args []Value) (Value, error) {
-			_, ok := relativeParts(pathOf(args[0]), pathOf(args[1]))
+			_, ok := relativeParts(pathOf(args[0]), pathOf(args[1]), byteEqual)
 			return Bool(ok), nil
 		}},
 	},
 	"relative_to": {
 		{Params: []Type{TPath, TPath}, Ret: TPath, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
-			remaining, ok := relativeParts(p, pathOf(args[1]))
+			remaining, ok := relativeParts(p, pathOf(args[1]), byteEqual)
 			if !ok {
 				return Value{}, errNotRelative
 			}
@@ -355,15 +355,33 @@ func pathSeparators(p parsedPath) string {
 	return pathSeparatorChars(p.flavor)
 }
 
-// relativeParts backs relative_to and is_relative_to. Both compare parts()
-// element-wise rather than reasoning about root/comps separately, which is
-// what makes a URI fall out for free: its scheme+authority is just the first
-// element of parts(), so a prefix match over parts is already a prefix match
-// over the full URI without any URI-specific code here.
+// byteEqual is plain string equality, given a name so relativeParts' two
+// in-package callers (is_relative_to/relative_to here, and
+// pathmapping.go's applyFileRule for a POSIX or non-Windows-flavored rule)
+// can pass a comparator by value without each writing out its own
+// single-use closure.
+func byteEqual(a, b string) bool { return a == b }
+
+// relativeParts backs relative_to and is_relative_to, and — via an injected
+// eq — pathmapping.go's applyFileRule, which asks the identical question
+// ("are other's parts a full prefix of p's, and what remains?") for a
+// WINDOWS-flavored path-mapping rule, where component comparison must be
+// case-insensitive rather than the byte-exact equality relative_to/
+// is_relative_to use. eq is the ONE place that distinction is made; every
+// other rule below (the anchorless-other guard, the length check, the
+// separator-run trimming) is unaffected by it and applies identically to
+// both callers. is_relative_to and relative_to pass byte-exact equality, so
+// their own behavior is unchanged by this parameter's existence.
+//
+// Both compare parts() element-wise rather than reasoning about root/comps
+// separately, which is what makes a URI fall out for free: its
+// scheme+authority is just the first element of parts(), so a prefix match
+// over parts is already a prefix match over the full URI without any
+// URI-specific code here.
 //
 // ok is true when other's parts are a full prefix of p's; remaining is
 // whatever is left of p's parts after that prefix, valid only when ok.
-func relativeParts(p, other parsedPath) (remaining []string, ok bool) {
+func relativeParts(p, other parsedPath, eq func(a, b string) bool) (remaining []string, ok bool) {
 	// The separator run at the boundary between the base and what follows it
 	// belongs to the boundary and to neither side, which is section 2.1.5's own
 	// rule for "/" ("a trailing slash on the left operand is consumed by the
@@ -399,7 +417,7 @@ func relativeParts(p, other parsedPath) (remaining []string, ok bool) {
 		return nil, false
 	}
 	for i, part := range op {
-		if pp[i] != part {
+		if !eq(pp[i], part) {
 			return nil, false
 		}
 	}

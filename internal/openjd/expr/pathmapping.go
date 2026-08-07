@@ -70,31 +70,34 @@ func applyRule(s string, r PathMapRule, dst PathFormat) (string, bool) {
 
 // applyFileRule matches a POSIX or WINDOWS source against s on component
 // boundaries and, on a match, joins s's remainder components onto the
-// destination in the dst flavor. WINDOWS matching is case-insensitive (via
-// strings.EqualFold) and separator-insensitive (C4's Windows parser already
-// accepts both separators). This is deliberately distinct from C4's byte-exact,
-// case-SENSITIVE path comparison (==, relative_to): source MATCHING and path
-// EQUALITY are different operations. See the design doc §2.3.
+// destination in the dst flavor.
+//
+// The matching itself is relativeParts (funcspath.go), the SAME function
+// is_relative_to/relative_to use to answer the identical question ("are
+// other's parts a full prefix of p's, and what remains?"), rather than a
+// second hand-written prefix loop beside it — precisely the "two formulas
+// that happen to agree today" duplication this package's own doc comments
+// (pathval.go's String(), pathJoin) name as its signature defect class. The
+// only thing this caller varies is the comparator: relativeParts takes an eq
+// function, and this passes strings.EqualFold for a WINDOWS source (C4's
+// Windows parser already accepts both separators, so separator-insensitivity
+// falls out of parsePath itself) and byteEqual otherwise. This is
+// deliberately distinct from C4's byte-exact, case-SENSITIVE path equality
+// (==) that relativeParts' OTHER two callers always use: source MATCHING and
+// path EQUALITY are different operations, and eq is the one place that
+// difference is expressed — relativeParts' other rules (the anchorless-other
+// guard, the length check, the boundary trimming) are shared unchanged.
 func applyFileRule(s string, r PathMapRule, dst PathFormat) (string, bool) {
 	srcFlavor := PathPOSIX
+	eq := byteEqual
 	if r.SourceFormat == PathMapWindows {
 		srcFlavor = PathWindows
-	}
-	srcParts := parsePath(r.SourcePath, srcFlavor).parts()
-	inParts := parsePath(s, srcFlavor).parts()
-	if len(srcParts) == 0 || len(srcParts) > len(inParts) {
-		return "", false
-	}
-	eq := func(a, b string) bool { return a == b }
-	if srcFlavor == PathWindows {
 		eq = strings.EqualFold
 	}
-	for i, part := range srcParts {
-		if !eq(inParts[i], part) {
-			return "", false
-		}
+	remainder, ok := relativeParts(parsePath(s, srcFlavor), parsePath(r.SourcePath, srcFlavor), eq)
+	if !ok {
+		return "", false
 	}
-	remainder := inParts[len(srcParts):]
 	// parsedPath.parts() already returns a freshly built slice (it appends
 	// into a []string literal rather than slicing p.comps directly), so its
 	// backing array is not shared with the parsedPath it came from. But

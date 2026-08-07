@@ -92,6 +92,47 @@ func TestMapPath(t *testing.T) {
 			dst:   PathPOSIX,
 			want:  "/x",
 		},
+		{
+			// Two equal-length rules, so mapPath's stable sort leaves them in
+			// this order. The first rule's own destination "/b" is itself a
+			// prefix the SECOND rule's source would match — so an
+			// implementation that kept scanning and applying every matching
+			// rule (rather than stopping at the first) would additionally
+			// rewrite "/b/x" to "/c/x". First-match-wins must stop after
+			// the first rule fires.
+			name: "processing stops at the first match: a later rule must not re-apply to the result",
+			s:    "/a/x",
+			rules: []PathMapRule{
+				{PathMapPOSIX, "/a", "/b"},
+				{PathMapPOSIX, "/b", "/c"},
+			},
+			dst:  PathPOSIX,
+			want: "/b/x",
+		},
+		{
+			// Windows sources match case-insensitively (see the other cases
+			// above); POSIX ones do not. A comparator that dropped that
+			// distinction (e.g. strings.EqualFold unconditionally) would
+			// match "/Projects" against "/projects/x" and this would fail.
+			name:  "posix source matching is case-sensitive: a differently-cased source does not match",
+			s:     "/projects/x",
+			rules: []PathMapRule{{PathMapPOSIX, "/Projects", "/mnt"}},
+			dst:   PathPOSIX,
+			want:  "/projects/x",
+		},
+		{
+			// dst governs how the DESTINATION and the transferred remainder
+			// are re-expressed, independent of the source's own flavor — a
+			// POSIX source can map into a Windows destination. Every other
+			// case in this table uses dst: PathPOSIX, which would let a bug
+			// that ignored dst entirely (e.g. always joining with "/") pass
+			// unnoticed.
+			name:  "destination and remainder are re-expressed in a windows dst",
+			s:     "/projects/shot01/render.exr",
+			rules: []PathMapRule{{PathMapPOSIX, "/projects", `Z:\renders`}},
+			dst:   PathWindows,
+			want:  `Z:\renders\shot01\render.exr`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
