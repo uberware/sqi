@@ -29,32 +29,59 @@ var (
 // and affix functions, and (from Task 4) its search functions and replace.
 // They share this file because they share the empty-argument sentinels and the
 // codepoint-index conversion.
+//
+// Section 1.3.10 rule 3 (sub-project E1, Task 7): every row in this file
+// declares Cost{ArgBytes: []int{0}} -- the RECEIVER's (arg0's) own byte
+// length ONLY. None of the second or third string arguments (a cutset,
+// prefix, needle, "old" or "new") ever contribute, confirmed by holding the
+// receiver fixed and growing the other argument from 10 to 300 bytes without
+// moving the count (cost_string_internal_test.go's
+// TestOperationCount_StripCutsetDoesNotAffectCost,
+// TestOperationCount_AffixArgumentDoesNotAffectRemoveprefixCost,
+// TestOperationCount_NeedleLengthDoesNotAffectFindCost). startswith/endswith
+// charge the FULL receiver even though a real implementation only needs the
+// prefix/suffix span -- the reference does, and rule 3's general clause does
+// not carve out an exception for a function whose real work is smaller than
+// its receiver.
+//
+// replace() is the one row here worth a specific note: it can balloon a
+// small receiver into an enormous result (old shorter than new, many
+// occurrences), and the reference's own operation count does not move when
+// that happens -- confirmed with a 100-byte receiver and a 300-byte "new",
+// producing a ~30000-byte result at an unchanged count
+// (TestOperationCount_ReplaceDoesNotChargeTheProducedResult). sqi follows the
+// reference here rather than diverging (unlike join/zfill below in this
+// task): rule 3 groups replace() in the SAME sentence as upper()/lower()/
+// strip(), which are all confirmed receiver-driven (see funcsstrcase.go's own
+// Cost comment), and the growth this exposes is independently bounded by
+// maxStringBytes (replaceAll's own checkRepeat call, below) -- a SEPARATE
+// limit (section 1.3.9) from the one this Cost declares (section 1.3.10).
 var strFindFuncs = map[string][]Shape{
 	// The two-argument forms take a SET of runes, not a substring:
 	// lstrip("xxayx", "xy") is "ayx", not "xayx". strings.Trim and its
 	// siblings already have exactly that cutset semantics, including the
 	// no-op on an empty cutset that RFC 0006 wants here.
 	"strip": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimSpace(args[0].AsStr())), nil
 		}},
-		{Params: []Type{TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.Trim(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
 	"lstrip": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimLeftFunc(args[0].AsStr(), unicode.IsSpace)), nil
 		}},
-		{Params: []Type{TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimLeft(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
 	"rstrip": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimRightFunc(args[0].AsStr(), unicode.IsSpace)), nil
 		}},
-		{Params: []Type{TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimRight(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
@@ -62,12 +89,12 @@ var strFindFuncs = map[string][]Shape{
 	// an EMPTY prefix is not an error here, unlike the empty substring the
 	// search functions reject. strings.TrimPrefix is already both.
 	"removeprefix": {
-		{Params: []Type{TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimPrefix(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
 	"removesuffix": {
-		{Params: []Type{TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(strings.TrimSuffix(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
@@ -75,12 +102,12 @@ var strFindFuncs = map[string][]Shape{
 	// true. RFC 0006 states the non-empty requirement for count/find/rfind/
 	// index/rindex/replace/split/rsplit and for nothing else.
 	"startswith": {
-		{Params: []Type{TString, TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(strings.HasPrefix(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
 	"endswith": {
-		{Params: []Type{TString, TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(strings.HasSuffix(args[0].AsStr(), args[1].AsStr())), nil
 		}},
 	},
@@ -88,7 +115,7 @@ var strFindFuncs = map[string][]Shape{
 	// already non-overlapping; the empty-substring guard runs first because
 	// strings.Count("abc","") returns 4 rather than erroring.
 	"count": {
-		{Params: []Type{TString, TString}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TInt, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			sub := args[1].AsStr()
 			if sub == "" {
 				return Value{}, errEmptySubstring
@@ -97,7 +124,7 @@ var strFindFuncs = map[string][]Shape{
 		}},
 	},
 	"find": {
-		{Params: []Type{TString, TString}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TInt, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			i, err := runeIndexOf(args[0].AsStr(), args[1].AsStr(), false)
 			if err != nil {
 				return Value{}, err
@@ -106,7 +133,7 @@ var strFindFuncs = map[string][]Shape{
 		}},
 	},
 	"rfind": {
-		{Params: []Type{TString, TString}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TInt, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			i, err := runeIndexOf(args[0].AsStr(), args[1].AsStr(), true)
 			if err != nil {
 				return Value{}, err
@@ -117,17 +144,17 @@ var strFindFuncs = map[string][]Shape{
 	// index and rindex differ from find and rfind ONLY in what a miss does:
 	// -1 there, an error here. RFC 0006 spells both out.
 	"index": {
-		{Params: []Type{TString, TString}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TInt, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return foundIndex(args[0].AsStr(), args[1].AsStr(), false)
 		}},
 	},
 	"rindex": {
-		{Params: []Type{TString, TString}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: TInt, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return foundIndex(args[0].AsStr(), args[1].AsStr(), true)
 		}},
 	},
 	"replace": {
-		{Params: []Type{TString, TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return replaceAll(args[0].AsStr(), args[1].AsStr(), args[2].AsStr())
 		}},
 	},

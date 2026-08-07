@@ -15,9 +15,30 @@ import (
 // strCaseFuncs is the first of sub-project C2's four groups: RFC 0006 section
 // 2.2.4's case transforms and its classification predicates. The two share
 // this file because they share isAlnumRune and the casers below.
+//
+// Section 1.3.10 rule 3 (sub-project E1, Task 7): every row in this file
+// declares Cost{ArgBytes: []int{0}} -- the RECEIVER's own byte length, not
+// the produced result's. Confirmed by a probe designed to tell the two
+// apart: 'İ' (U+0130, 2 UTF-8 bytes) lowers to 'i' plus a combining dot above
+// (3 UTF-8 bytes), so 100 copies is 200 INPUT bytes (ceil/256 = 1) but 300
+// OUTPUT bytes (ceil/256 = 2). The reference measures 2 for
+// ('İ'*100).lower() -- matching ArgBytes, not ResultBytes -- which is the
+// OPPOSITE of Task 5's finding for string "+" (ResultBytes there). See
+// cost_string_internal_test.go's PROBE comment for the full transcript.
+//
+// The four case transforms are named directly ("upper()", "lower()" by rule
+// 3's own text; capitalize()/title() are not, but do the identical
+// length-proportional work, so "and similar" covers them). The seven
+// classification predicates below are NOT named by rule 3's enumeration
+// either, and are decided explicitly rather than left to fall out of the
+// zero value: they scan the WHOLE string (RFC 0006's "all characters are X"),
+// so they are rule-3 charges under "and similar" -- NOT len()-style exempt
+// lookups. Confirmed scaling 10/300 bytes -> 2/3 for every one of the seven,
+// with len() on the identical input pinned flat at 1 as the control (see
+// TestOperationCount_ClassificationFunctionsAreNotLenExempt).
 var strCaseFuncs = map[string][]Shape{
 	"upper": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			s := args[0].AsStr()
 			if err := checkCaseInputBytes(len(s)); err != nil {
 				return Value{}, err
@@ -26,7 +47,7 @@ var strCaseFuncs = map[string][]Shape{
 		}},
 	},
 	"lower": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			s := args[0].AsStr()
 			if err := checkCaseInputBytes(len(s)); err != nil {
 				return Value{}, err
@@ -35,7 +56,7 @@ var strCaseFuncs = map[string][]Shape{
 		}},
 	},
 	"capitalize": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			s := args[0].AsStr()
 			if err := checkCaseInputBytes(len(s)); err != nil {
 				return Value{}, err
@@ -44,7 +65,7 @@ var strCaseFuncs = map[string][]Shape{
 		}},
 	},
 	"title": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			s := args[0].AsStr()
 			if err := checkCaseInputBytes(len(s)); err != nil {
 				return Value{}, err
@@ -63,12 +84,12 @@ var strCaseFuncs = map[string][]Shape{
 	// int('٣') still fails, so guarding a conversion with isdigit would
 	// silently stop working on exactly the inputs the guard exists for.
 	"isdigit": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(allRunes(args[0].AsStr(), func(r rune) bool { return r >= '0' && r <= '9' })), nil
 		}},
 	},
 	"isalpha": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(allRunes(args[0].AsStr(), unicode.IsLetter)), nil
 		}},
 	},
@@ -81,12 +102,12 @@ var strCaseFuncs = map[string][]Shape{
 	// is a bug. Will be baselined in test/oracle/baseline.txt with that reason
 	// when the oracle corpus lands.
 	"isalnum": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(allRunes(args[0].AsStr(), isAlnumRune)), nil
 		}},
 	},
 	"isspace": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(allRunes(args[0].AsStr(), unicode.IsSpace)), nil
 		}},
 	},
@@ -96,12 +117,12 @@ var strCaseFuncs = map[string][]Shape{
 	// satisfies nor breaks the test. isupper("ABC1") is true because a digit is
 	// uncased; isupper("1") is false because nothing in it is cased at all.
 	"isupper": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(allCased(args[0].AsStr(), unicode.IsUpper)), nil
 		}},
 	},
 	"islower": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return Bool(allCased(args[0].AsStr(), unicode.IsLower)), nil
 		}},
 	},
@@ -109,7 +130,7 @@ var strCaseFuncs = map[string][]Shape{
 	// "all characters are ASCII (U+0000-U+007F), OR string is empty". The other
 	// six require non-empty. That asymmetry is the specification's, not a slip.
 	"isascii": {
-		{Params: []Type{TString}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			for _, r := range args[0].AsStr() {
 				if r > unicode.MaxASCII {
 					return Bool(false), nil

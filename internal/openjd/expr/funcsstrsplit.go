@@ -14,6 +14,35 @@ import (
 // bounded by a different quantity — an ELEMENT count here, a BYTE count there —
 // and one file holding both limits would give a reader no marker for which
 // applies where.
+//
+// Section 1.3.10 (sub-project E1, Task 7): split and rsplit declare
+// Cost{ArgBytes: []int{0}} on every row, ArgBytes on the MAIN string only —
+// confirmed NOT to be ArgElements/ResultElements despite producing a list: a
+// 5-word and a 150-word whitespace split measure what their BYTE lengths
+// predict, not their word counts (TestOperationCount_SplitDoesNotChargeByWordCount).
+// This matches shape.go's specNamedIteratingFunctions, rule 2's own
+// enumeration, which does NOT name split — only specNamedStringFunctions
+// (rule 3) does.
+//
+// join is the row the brief and this sub-project's own standing method most
+// distrust, and rightly: it is named by BOTH rule 2 (iterates a list) and
+// rule 3 (processes strings), and probing the reference shows it implements
+// only rule 2's charge. Holding the element count fixed at 5 and growing each
+// element from 1 byte to 300 bytes leaves the reference's own count UNCHANGED
+// (6 both times) — it never scales with string content at all. Per the
+// standing rule ("the specification outranks the reference"), sqi declares
+// Cost{ArgElements: []int{0}, ResultBytes: true} on the list[string] and
+// list[path] rows: ArgElements for rule 2 (matching the reference), and
+// ResultBytes — not a per-element ArgBytes sum, which the Cost mechanism
+// cannot express (chargeArgs's ArgBytes reads a single argument's OWN .s
+// payload, ops.go, and args[0] here is the LIST, not a string) — for rule 3,
+// charging the PRODUCED joined string's length. ResultBytes-over-ArgBytes is
+// the same idiom this package already uses wherever a function's
+// byte-proportional work is best measured by what it BUILDS: padString
+// below shares it, and so do the "+"/"*" operators (Task 5, ops.go). See
+// TestOperationCount_JoinChargesElementsAndBytesTogether for the
+// discriminating probe and cost_string_internal_test.go's PROBE comment for
+// the full reference transcript.
 var strSplitFuncs = map[string][]Shape{
 	// The no-separator form splits on runs of whitespace with the ends
 	// stripped, which is why split('   ') is [] while split('', ',') is [""].
@@ -21,24 +50,24 @@ var strSplitFuncs = map[string][]Shape{
 	// indistinguishable, so rsplit's one-argument row delegates here rather
 	// than running a second scan that could drift from this one.
 	"split": {
-		{Params: []Type{TString}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return stringList(strings.Fields(args[0].AsStr()))
 		}},
-		{Params: []Type{TString, TString}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return splitSep(args[0].AsStr(), args[1].AsStr(), -1, false)
 		}},
-		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return splitSep(args[0].AsStr(), args[1].AsStr(), args[2].AsInt(), false)
 		}},
 	},
 	"rsplit": {
-		{Params: []Type{TString}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return stringList(strings.Fields(args[0].AsStr()))
 		}},
-		{Params: []Type{TString, TString}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return splitSep(args[0].AsStr(), args[1].AsStr(), -1, true)
 		}},
-		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return splitSep(args[0].AsStr(), args[1].AsStr(), args[2].AsInt(), true)
 		}},
 	},
@@ -51,13 +80,21 @@ var strSplitFuncs = map[string][]Shape{
 	// No string coercion happens here: this is a declared row, and C2 relies
 	// on coercion only for a SCALAR path reaching a string parameter.
 	"join": {
+		// No Cost here (rather than a copy of the list[string] row's): a
+		// list[nulltype] argument is empty BY TYPE, so its element count is
+		// always provably 0 and its (always "") result is always 0 bytes —
+		// the charge would evaluate to 0 either way. Declared as an explicit
+		// zero, same precedent as flatten's and any/all's list[nulltype] rows
+		// (funcslist.go, Task 6), so a reader sees "always empty, nothing to
+		// charge" rather than wondering whether the two rows were meant to
+		// match.
 		{Params: []Type{ListOf(TNull), TString}, Ret: TString, Fn: func([]Value) (Value, error) {
 			return String(""), nil
 		}},
-		{Params: []Type{ListOf(TString), TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TString), TString}, Ret: TString, Cost: Cost{ArgElements: []int{0}, ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return joinValues(args[0].AsList(), args[1].AsStr(), func(v Value) string { return v.AsStr() })
 		}},
-		{Params: []Type{ListOf(TPath), TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TPath), TString}, Ret: TString, Cost: Cost{ArgElements: []int{0}, ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return joinValues(args[0].AsList(), args[1].AsStr(), pathText)
 		}},
 	},

@@ -13,19 +13,54 @@ import (
 //
 // Separated from the split group because these are bounded by a BYTE count and
 // those by an ELEMENT count — see funcsstrsplit.go's header.
+//
+// Section 1.3.10 rule 3 (sub-project E1, Task 7): all six rows declare
+// Cost{ResultBytes: true} — the PRODUCED, padded string's length, not
+// ArgBytes on the input. Discriminated by holding the input FIXED at 10
+// bytes and growing only the requested WIDTH: an ArgBytes(input) reading
+// would stay flat at every width; it does not — 2/3/4 at widths 20/300/600
+// (TestOperationCount_PaddingFunctionsChargeProducedBytes). This matches the
+// same ResultBytes-over-ArgBytes idiom join uses above (funcsstrsplit.go) and
+// the "+"/"*" operators use (Task 5, ops.go): the work here is proportional
+// to what the function BUILDS (a string sized by the requested width), not
+// to what it was handed.
+//
+// zfill is the ONE row in this file where the reference disagrees with its
+// own three siblings: probing shows its measured count does NOT scale with
+// width at all — '5'.zfill(10), .zfill(300), .zfill(600) and .zfill(1000)
+// all measure 2, tracking only the 1-byte INPUT ('5')'s own ArgBytes charge,
+// never the padded output. zfillString shares the EXACT SAME padWidth
+// mechanism ljust/rjust/center use below, and does the exact same
+// proportional work, so this is a reference omission rather than a
+// meaningful semantic difference — the same family of defect the brief flags
+// for negative widths ("center('ab', -3) failing with a bogus 72-quadrillion
+// operation count, and zfill with a negative width panics outright") but on
+// the positive-width path instead. Per the standing rule ("the specification
+// outranks the reference"), sqi does not reproduce the omission: all three
+// zfill rows declare the SAME Cost{ResultBytes: true} as their siblings,
+// rather than making zfill the one padding function whose declared cost does
+// not reflect the padding it performs. See
+// TestOperationCount_ZfillDivergesFromReferenceOnWidth and
+// cost_string_internal_test.go's PROBE comment for the full transcript.
+//
+// A negative width never reaches this growth path at all — padWidth
+// (below) already treats width <= the current length as a no-op, so there is
+// nothing extra for either ljust/rjust/center or zfill to charge beyond
+// ResultBytes on the (unchanged) input, and no divergence to adjudicate for
+// that case specifically.
 var strPadFuncs = map[string][]Shape{
 	"ljust": {
-		{Params: []Type{TString, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return padString(args[0].AsStr(), args[1].AsInt(), padRight)
 		}},
 	},
 	"rjust": {
-		{Params: []Type{TString, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return padString(args[0].AsStr(), args[1].AsInt(), padLeft)
 		}},
 	},
 	"center": {
-		{Params: []Type{TString, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return padString(args[0].AsStr(), args[1].AsInt(), padCenter)
 		}},
 	},
@@ -37,13 +72,13 @@ var strPadFuncs = map[string][]Shape{
 	// The float row is also why "(42).zfill(5)" needs its parentheses: RFC 0006
 	// notes the Python grammar reads "42." as the start of a float literal.
 	"zfill": {
-		{Params: []Type{TString, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return zfillString(args[0].AsStr(), args[1].AsInt())
 		}},
-		{Params: []Type{TInt, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TInt, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return zfillString(strconv.FormatInt(args[0].AsInt(), 10), args[1].AsInt())
 		}},
-		{Params: []Type{TFloat, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TFloat, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
 			return zfillString(args[0].String(), args[1].AsInt())
 		}},
 	},
