@@ -21,6 +21,18 @@ import (
 // funcsrepr.go, funcspath.go) and their own entry in funcs.go's mergeFuncs
 // call.
 var convFuncs = map[string][]Shape{
+	// Section 1.3.10 rule 3 names len() BY NAME as its one explicit exemption:
+	// "Simple lookups like len() that do not process the string content do not
+	// add to the count." All four rows below therefore carry the zero Cost —
+	// not an omission, THE load-bearing case for "zero Cost is a decision" in
+	// this whole sub-project. Confirmed against the reference: len("abc") is 1
+	// (rule 1 only) and len(range_expr("1-100")) is 2 (one call for
+	// range_expr(), one for len() — len itself adds nothing, and in
+	// particular does NOT expand the range to count it, even though
+	// rangeInts() below happens to do exactly that internally; the exemption
+	// is declared independently of what Fn's own implementation costs in real
+	// CPU time — see Task 12 on reconciling that gap). Pinned in
+	// cost_list_internal_test.go.
 	"len": {
 		{Params: []Type{ListOf(varT)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return Int(int64(len(args[0].AsList()))), nil
@@ -48,6 +60,14 @@ var convFuncs = map[string][]Shape{
 	// return noreturn. Section 1.2.3 does not define a string -> bool coercion
 	// at all (scalarCoercible has no CodeBool arm), so the accepted spellings
 	// are this function's own behavior and not the coercion matrix's.
+	//
+	// None of these rows carry a Cost. Neither rule 2 nor rule 3 names bool()
+	// anywhere, and the string row's own work is not "roughly proportional to
+	// the string length" in rule 3's sense — boolFromString tests membership
+	// in a closed set of eight short literal spellings, not string-length-
+	// scaled processing. Probed: bool("true"), bool(True) and bool(1) all
+	// measure 1 against the reference (rule 1 only); the path and list rows
+	// always error before any processing happens.
 	"bool": {
 		{Params: []Type{TBool}, Ret: TBool, Fn: func(args []Value) (Value, error) {
 			return args[0], nil
@@ -82,6 +102,17 @@ var convFuncs = map[string][]Shape{
 	// A union parameter is matched member-wise at no cost, passes the value
 	// through unconverted (coerce's directUnionMember), and leaves the real
 	// conversion to Fn, where its failure is the diagnostic.
+	//
+	// int() and float() carry no Cost. Neither is named by rule 2 (there is no
+	// list here) or rule 3, and — unlike the string-processing functions rule
+	// 3 DOES name — a numeric parse is not charged by the reference in
+	// proportion to input length: isolating float()'s own contribution from
+	// float("1"+"2"*300) (a 301-byte string built by two already-charged
+	// operators) leaves exactly 1 operation for the conversion itself,
+	// matching float("1.5")'s 1. int() shares the same coerce() path and is
+	// assumed to match by the same reasoning (a 250+-digit string cannot stay
+	// a valid int64 to test directly; int("0"*250+"5") does, and isolates to
+	// the same flat 1).
 	"int": {
 		{Params: []Type{UnionOf(TInt, TFloat, TString)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return coerce(args[0], TInt)
@@ -106,6 +137,14 @@ var convFuncs = map[string][]Shape{
 	// "null" for nulltype, the JSON spellings for bool, formatFloat for float,
 	// the payload text for string, path and range_expr.
 	"string": {
+		// No Cost: rule 3's own text scopes to "the string or path value"
+		// PROCESSED, and Value.String() on a scalar does no work proportional
+		// to its length beyond formatting a fixed-size number or copying a
+		// string's bytes once. Discriminating probe: string("a"*1000) isolates
+		// to exactly 1 operation once the 1000-byte literal's own repetition
+		// charge (already declared, Task 5) is subtracted — the same flat 1 as
+		// string("a"). string(path(...)) and string(range_expr(...)) isolate
+		// the same way.
 		{
 			Params: []Type{UnionOf(TBool, TInt, TFloat, TString, TPath, TRangeExpr, TNull)},
 			Ret:    TString,
@@ -123,7 +162,19 @@ var convFuncs = map[string][]Shape{
 		// to sub-project E. This one quotes them ("[\"a\", \"b\"]"), matching
 		// the reference implementation. Two renderings, two functions, on
 		// purpose.
-		{Params: []Type{ListOf(varT)}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		//
+		// Cost{ArgElements: {0}} — a DELIBERATE divergence from the reference,
+		// which measures a flat 1 for string([1,2,3]) AND for a 10-element
+		// list, never scaling. Rule 2's operative sentence is "When a function
+		// or the evaluator iterates through every element of a list, the
+		// number of elements is added" — the named function list after it is
+		// introduced with "such as", not "only", and writeJSONValue provably
+		// walks every element of args[0] to build the JSON text. The general
+		// rule's text is satisfied regardless of the enumeration, so per
+		// doc.go's standing ruling that the specification outranks the
+		// reference's own (Beta, known-defective) counting, this row charges.
+		// See TestOperationCount_StringOverListDivergesFromReference.
+		{Params: []Type{ListOf(varT)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			s, err := jsonList(args[0])
 			if err != nil {
 				return Value{}, err
@@ -131,8 +182,16 @@ var convFuncs = map[string][]Shape{
 			return String(s), nil
 		}},
 	},
+	// list() over a range_expr materializes every value the range denotes —
+	// exactly the "built-in functions that iterate lists" rule 2's own general
+	// sentence describes (range() itself is named; list() is the same shape of
+	// operation over the same source type). Cost{ResultElements: true}: the
+	// charge scales with the PRODUCED list, not the range_expr's compact text
+	// representation. Confirmed: list(range_expr("1-100")) measures 102 on the
+	// reference — range_expr("1-100") alone is 1, so list()'s own share is
+	// 101 = 1 (call) + 100 (the 100 produced elements).
 	"list": {
-		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
 			vals, err := rangeExprValues(args[0])
 			if err != nil {
 				return Value{}, err
@@ -141,10 +200,24 @@ var convFuncs = map[string][]Shape{
 		}},
 	},
 	"range_expr": {
+		// No Cost: parsing compact range text into ranges is not proportional
+		// to the EXPANDED count, matching len(range_expr(...))'s exemption
+		// above. Confirmed: range_expr("1-100") measures 1 on the reference
+		// regardless of the range spanning 100 values.
 		{Params: []Type{TString}, Ret: TRangeExpr, Fn: func(args []Value) (Value, error) {
 			return RangeExpr(args[0].AsStr())
 		}},
-		{Params: []Type{ListOf(TInt)}, Ret: TRangeExpr, Fn: func(args []Value) (Value, error) {
+		// Cost{ArgElements: {0}}, unlike the string row just above: this row
+		// must scan every element of the INPUT list to sort, de-duplicate and
+		// find its ranges, so the work genuinely is proportional to the
+		// argument's length — a different question from the string row's
+		// (already-compact range text). Confirmed scaling against the
+		// reference: range_expr([1,2,3]) measures 4 (1 call + 3 elements) and
+		// the 10-element form measures 11 (1 call + 10) — not in the brief's
+		// own "rows that must charge" list, found by probing this row anyway
+		// per the task's instruction to probe every row rather than trust the
+		// brief's starting list.
+		{Params: []Type{ListOf(TInt)}, Ret: TRangeExpr, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			elems := args[0].AsList()
 			if len(elems) == 0 {
 				return Value{}, errors.New("range_expr() requires at least one value")
@@ -169,6 +242,11 @@ var convFuncs = map[string][]Shape{
 	// noreturn return type then collapses out of any union it lands in
 	// (collectUnionMembers, type.go), which is what makes
 	// "x if c else fail(...)" typed x rather than x?.
+	//
+	// No Cost: fail() takes a message string but does no work proportional to
+	// its length (it wraps it verbatim in an error), and neither rule 2 nor
+	// rule 3 names it. Every call to it also fails the whole evaluation, so
+	// its own charge is unobservable in the operation count regardless.
 	"fail": {
 		{Params: []Type{TString}, Ret: TNoReturn, Fn: func(args []Value) (Value, error) {
 			return Value{}, errors.New(args[0].AsStr())

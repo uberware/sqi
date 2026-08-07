@@ -18,14 +18,20 @@ import (
 // which turns a range_expr into a list[int]. mergeFuncs panics on a duplicate
 // name, so the two cannot silently collide.
 var listFuncs = map[string][]Shape{
+	// range() is named explicitly by rule 2. Cost{ResultElements: true} on all
+	// three rows: the charge scales with the list PRODUCED, not with the
+	// arguments (a huge stop/start pair with a huge step can produce a short
+	// list). Confirmed against the reference: range(10) and range(0,10) both
+	// measure 11 (1 call + 10 elements); range(0,10,2) measures 6
+	// (1 call + 5 elements, for 0,2,4,6,8).
 	"range": {
-		{Params: []Type{TInt}, Ret: ListOf(TInt), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
 			return rangeList(0, args[0].AsInt(), 1)
 		}},
-		{Params: []Type{TInt, TInt}, Ret: ListOf(TInt), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TInt, TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
 			return rangeList(args[0].AsInt(), args[1].AsInt(), 1)
 		}},
-		{Params: []Type{TInt, TInt, TInt}, Ret: ListOf(TInt), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TInt, TInt, TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
 			return rangeList(args[0].AsInt(), args[1].AsInt(), args[2].AsInt())
 		}},
 	},
@@ -34,9 +40,30 @@ var listFuncs = map[string][]Shape{
 	// nested row binding T to int, the flat row binding T to list[int] — and
 	// matchShapesExactFirst breaks an exact tie to the EARLIEST shape. Putting
 	// the flat row first would make flatten the identity on every argument.
+	// flatten is named explicitly by rule 2. Its three rows do NOT share one
+	// Cost, because they charge different quantities:
+	//
+	// The nested row (list[list[T]]) charges Cost{ArgElements: {0},
+	// ResultElements: true} — the OUTER list's length (how many inner lists
+	// there are) plus the flattened RESULT's length (how many values came out
+	// of them), which differ whenever an inner list has other than 1 element.
+	// Confirmed against the reference, discriminating on exactly that
+	// difference: flatten([[1],[2]]) measures 5 = 1 (call) + 2 (outer) + 2
+	// (result, coincidentally equal to outer here); flatten([[1,2,3],[4,5]])
+	// measures 8 = 1 + 2 (outer) + 5 (result, NOW different from outer,
+	// which is what proves both charges are real and not one double-counted
+	// figure); flatten([[],[],[]]) measures 4 = 1 + 3 (outer) + 0 (result).
+	//
+	// The flat row (list[T], already flat) charges Cost{ArgElements: {0}}
+	// alone — ONE charge of the list's length, not two, even though its Fn
+	// below is a plain identity that does no real iteration at all: the
+	// reference still measures flatten([1,2,3]) as 4 (1 + 3) and the
+	// 10-element form as 11 (1 + 10), so the declared Cost matches what the
+	// SPEC (via the reference, uncontested here) charges for this row,
+	// independent of what Fn happens to implement it as.
 	"flatten": {
-		{Params: []Type{ListOf(ListOf(varT))}, Ret: ListOf(varT), Fn: flattenNested},
-		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(ListOf(varT))}, Ret: ListOf(varT), Cost: Cost{ArgElements: []int{0}, ResultElements: true}, Fn: flattenNested},
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return args[0], nil
 		}},
 		// RFC 0006 lists list[nulltype] separately, and the row stays for
@@ -57,6 +84,13 @@ var listFuncs = map[string][]Shape{
 		// Ret from its list[varT] sibling: registered in this order, the
 		// list[varT] row would still win the tie and this row's behavior
 		// would never run.
+		//
+		// No Cost here (rather than the flat row's ArgElements{0}): a
+		// list[nulltype] argument is empty BY TYPE, so its element count is
+		// always provably 0 and the charge would always evaluate to 0 either
+		// way. Declared as an explicit zero rather than a copy of the flat
+		// row's Cost so a reader sees "always empty, nothing to charge"
+		// rather than wondering whether the two rows were meant to match.
 		{Params: []Type{ListOf(TNull)}, Ret: ListOf(TNull), Fn: func(args []Value) (Value, error) {
 			return args[0], nil
 		}},
@@ -67,11 +101,17 @@ var listFuncs = map[string][]Shape{
 	// operators use; a second comparator here would be a second implementation
 	// of the same section, free to drift from the first. Its refusals come
 	// along too, which is why sorting nulls is an error rather than a no-op.
+	// sorted is named explicitly by rule 2. Cost{ArgElements: {0}}: confirmed,
+	// sorted([3,1,2]) measures 4 (1 + 3) and a 10-element permutation measures
+	// 11 (1 + 10).
 	"sorted": {
-		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: sortedList},
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Cost: Cost{ArgElements: []int{0}}, Fn: sortedList},
 	},
+	// reversed is named explicitly by rule 2. Cost{ArgElements: {0}}:
+	// confirmed, reversed([1,2,3,4,5]) measures 6 (1 + 5) and reversed([1,2])
+	// measures 3 (1 + 2).
 	"reversed": {
-		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			in := args[0].AsList()
 			out := make([]Value, len(in))
 			for i, v := range in {
@@ -80,18 +120,52 @@ var listFuncs = map[string][]Shape{
 			return rebuildList(args[0], out), nil
 		}},
 	},
+	// unique is not named by rule 2's own enumeration, but its Fn genuinely
+	// iterates every element of args[0] (uniqueList's outer loop, above), so
+	// the general "iterates through every element of a list" sentence covers
+	// it independent of the named list — confirmed scaling against the
+	// reference (unique([1,1,2]) measures 4 = 1 + 3; a 10-element input
+	// measures 11 = 1 + 10). Cost{ArgElements: {0}} charges the INPUT length,
+	// not the comparison count: uniqueList's inner loop is O(n^2) in the
+	// worst case (every element unique), which this row's charge does not
+	// reflect — per the brief's standing ruling, that quadratic question is
+	// Task 12's, not this task's; this row gets exactly the linear charge
+	// section 1.3.10's text supports today.
 	"unique": {
-		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Fn: uniqueList},
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Cost: Cost{ArgElements: []int{0}}, Fn: uniqueList},
 	},
 	// any and all are declared over list[bool] and list[nulltype] only. There
 	// is no truthiness in this language — section 1.3.5 requires a conditional's
 	// condition to be a bool outright — so "any([1, 0])" is a type error rather
 	// than a question about zero.
+	//
+	// Both are named explicitly by rule 2. The list[bool] rows charge
+	// Cost{ArgElements: {0}} — the FULL list length — which is a deliberate
+	// divergence from the reference for a reason distinct from the rest of
+	// this file: the reference SHORT-CIRCUITS (any() stops at the first true
+	// element, all() at the first false one), so its measured count tracks
+	// how many elements were actually visited, not the list's length.
+	// Probed: any([True]*10) measures only 2 (1 call + 1, stopping at the
+	// first element) while any([False]*5) measures 6 (1 + 5, forced to scan
+	// all of them); all() mirrors this the other way around. This package's
+	// Cost mechanism charges arguments in chargeArgs BEFORE Fn ever runs
+	// (callShape, ops.go) precisely so a limit is enforced before the work
+	// happens, which makes an exact "however many elements Fn actually
+	// visits" charge structurally unavailable without threading the meter
+	// into Fn itself — a bigger change than this row warrants. Charging the
+	// full length is a SAFE over-approximation in the direction section
+	// 1.3.10 exists to enforce (it never lets short-circuited work escape
+	// the bound; it only ever charges more than the reference, never less),
+	// and is the same shape of tradeoff the brief's own standing ruling
+	// makes for unique()'s O(n^2) scan — give the row the linear charge it
+	// warrants today and leave finer-grained, in-loop charging to a later
+	// task if the operation limit's accuracy on short-circuiting functions
+	// ever needs it. See TestOperationCount_AnyAllDivergeOnShortCircuit.
 	"any": {
 		{Params: []Type{ListOf(TNull)}, Ret: TBool, Fn: func([]Value) (Value, error) {
 			return Bool(false), nil
 		}},
-		{Params: []Type{ListOf(TBool)}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TBool)}, Ret: TBool, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			for _, v := range args[0].AsList() {
 				if v.AsBool() {
 					return Bool(true), nil
@@ -104,7 +178,7 @@ var listFuncs = map[string][]Shape{
 		{Params: []Type{ListOf(TNull)}, Ret: TBool, Fn: func([]Value) (Value, error) {
 			return Bool(true), nil
 		}},
-		{Params: []Type{ListOf(TBool)}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TBool)}, Ret: TBool, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			for _, v := range args[0].AsList() {
 				if !v.AsBool() {
 					return Bool(false), nil
