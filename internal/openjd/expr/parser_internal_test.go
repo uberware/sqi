@@ -385,6 +385,14 @@ func TestCalledFunctions(t *testing.T) {
 		// explicitly (it is also exercised incidentally by the string-literal
 		// receiver case above).
 		{"a parenthesized receiver's callee is an Access node", "(Param.A).upper()", []string{"upper"}},
+		// The three cases below pin the loop-variable exclusion, which is only
+		// meaningful for a SINGLE-SEGMENT callee. Removing the scope check in
+		// CalledFunctions makes the first of them report {"x"} and fail; making
+		// it any broader (dropping the len(Parts) == 1 guard, or letting the
+		// binding outlive its comprehension) fails the second or the third.
+		{"a called loop variable is bound, not external", "[x() for x in Param.L]", nil},
+		{"a loop variable does not shadow a method it receives", "[x.foo() for x in Param.L]", []string{"foo"}},
+		{"the binding ends with the comprehension", "[x for x in Param.L] + [x()]", []string{"x"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

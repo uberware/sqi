@@ -63,9 +63,9 @@ func (e *Expression) Root() Node { return e.root }
 //     called_functions set, so the trailing segment of a call's callee is
 //     dropped: "len(Param.Items)" collects {"Param.Items"} and
 //     "Param.Name.upper()" collects {"Param.Name"}, not {"len"} and
-//     {"Param.Name.upper"}. (called_functions itself is not built here. Its
-//     stated use — spotting apply_path_mapping() — belongs to sub-project D,
-//     and an unused second set would only rot.)
+//     {"Param.Name.upper"}. The spec's called_functions set is CalledFunctions
+//     below, added by sub-project D; it collects exactly the segment this one
+//     drops.
 //   - A COMPREHENSION LOOP VARIABLE, and anything rooted at one. Section
 //     1.3.7 binds it inside the comprehension, so it is not external:
 //     "[x for x in Param.Items]" collects {"Param.Items"} and
@@ -129,6 +129,17 @@ func (e *Expression) Names() []string {
 // (section 1.3.3). "len(x)" yields "len"; "Param.Name.upper()" yields "upper";
 // "s.apply_path_mapping()" yields "apply_path_mapping".
 //
+// It is EXTERNAL in the same sense Names is, and for the same reason: a
+// comprehension loop variable called directly is bound by section 1.3.7, not by
+// the function registry, so "[x() for x in Param.L]" yields the empty set
+// rather than {"x"}. The exclusion is deliberately NARROW — it applies only to
+// a SINGLE-SEGMENT callee, where the called name IS the bound identifier. In
+// "[x.foo() for x in Param.L]" the called name is the method "foo", which the
+// loop variable x does not shadow, so "foo" is reported; and the binding ends
+// with its comprehension, so "[x for x in Param.L] + [x()]" reports {"x"}
+// again. (Names diverges from the reference implementation on that last point
+// and explains why above; the same reading applies here.)
+//
 // Its stated use is sub-project E's: spotting a host-context call (notably
 // apply_path_mapping) in a submission-time scope, which E rejects. This package
 // enforces no such rule itself — see pathMappingFuncs.
@@ -147,6 +158,14 @@ func (e *Expression) CalledFunctions() []string {
 		}
 		switch c := n.(type) {
 		case *Name:
+			// A bare callee that a comprehension binds is a loop variable being
+			// called, not an external function — mirroring the exclusion in
+			// Names. Only the single-segment case can be shadowed: in
+			// "x.foo()" the called name is "foo", which no loop variable named
+			// x binds.
+			if len(c.Parts) == 1 && ctx.scope.binds(c.Parts[0]) {
+				return
+			}
 			// The trailing segment is the function or method being called.
 			add(c.Parts[len(c.Parts)-1])
 		case *Access:
