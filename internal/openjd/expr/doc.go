@@ -673,9 +673,18 @@
 //     registry that reads session state: the rules WithPathMapping (eval.go)
 //     threads through evalCtx.
 //
-//     WITH NO RULES IT PASSES ITS INPUT THROUGH, as a path:
-//     apply_path_mapping('/mnt/share') evaluates with no option at all to the
-//     path "/mnt/share" (verified directly). That is not a placeholder — it is
+//     WITH NO RULES IT PASSES ITS INPUT THROUGH, NORMALIZED AS A PATH VALUE
+//     IN THE EVALUATION'S FLAVOR: apply_path_mapping('/mnt/share') evaluates
+//     with no option at all to the path "/mnt/share" (verified directly).
+//     "Passthrough" names the MAPPING outcome — no rule rewrote the text — not
+//     a verbatim string return: the result is always re-parsed by boundedPath
+//     in ec.pathFormat, so apply_path_mapping('/a//b/') is the path "/a/b" and
+//     apply_path_mapping('/a/b') under WithPathFormat(PathWindows) is "\a\b"
+//     (both verified). That normalization is required rather than incidental —
+//     the vendored fixture expr2.3.2--apply-path-mapping's output_windows line
+//     for its POSIX_UNMAPPED case expects a slash-shaped input that matched no
+//     rule to come back with Windows separators, which only happens because the
+//     passthrough is re-parsed. That is not a placeholder — it is
 //     the specified behavior when nothing matches — and it is what every
 //     current caller gets, because nothing in sqi passes WithPathMapping yet.
 //     Sub-project E is what will. Rules are tried in order of DECREASING
@@ -686,9 +695,19 @@
 //
 //     A WINDOWS SOURCE MATCHES CASE-INSENSITIVELY AND
 //     SEPARATOR-INSENSITIVELY, which is DELIBERATELY NOT C4's path equality.
-//     Everything else in this package compares path components byte-exactly
-//     and case-SENSITIVELY on every flavor including Windows (the path bullet
-//     above explains why: determinism for a server-side expansion). Source
+//     Path EQUALITY (==) and relative_to/is_relative_to compare components
+//     byte-exactly and case-SENSITIVELY on every flavor including Windows (the
+//     path bullet above explains why: determinism for a server-side
+//     expansion). Those are the operations the contrast is with, and the claim
+//     is deliberately not widened to "everything else in the package": the /
+//     operator already case-folds, because pathJoin (pathval.go) compares the
+//     two operands' DRIVES with strings.EqualFold, as ntpath.join does — so
+//     path('C:/a') / 'c:b' keeps the parent and gives "c:\a\b", where
+//     path('C:/a') / 'd:b' discards it and gives "d:b" (both verified under
+//     WithPathFormat(PathWindows)). That fold predates D and is the only
+//     case-insensitive comparison C4's path engine makes — pathJoin's drive
+//     test is the package's only strings.EqualFold outside pathmapping.go.
+//     Source
 //     MATCHING is a different operation from path EQUALITY, and the two
 //     answers genuinely disagree on the same pair of paths: a WINDOWS rule
 //     whose SourcePath is `C:\studio` maps 'c:/STUDIO/project/scene.ma',
@@ -706,8 +725,9 @@
 //     but a PATH receiver is refused —
 //     path('/projects/a').apply_path_mapping() reports `no signature of
 //     "apply_path_mapping" accepts (path)`, because a method receiver is not
-//     coerced. Both verified directly. Two calls therefore do not compose
-//     directly; ask for a string in between.
+//     coerced. Both are pinned by
+//     TestApplyPathMapping_ResultChainsButAPathReceiverIsRefused. Two calls
+//     therefore do not compose directly; ask for a string in between.
 //
 //     IT HAS NO ORACLE COVERAGE, and cannot get any through the current
 //     harness: scripts/expr-oracle.py calls the reference's
@@ -716,6 +736,21 @@
 //     mapping rules and none of test/oracle/corpus.txt's cases name this
 //     function. Everything above is pinned by unit tests in this package
 //     alone, the same position C4's Windows semantics are in.
+//
+//     Those unit tests are NOT all invented, which is the one thing that
+//     distinguishes this function's position from C4's. The conformance suite
+//     ships three fixtures written against apply_path_mapping itself —
+//     EXPR/jobs/expr2.3.2--apply-path-mapping.test.yaml and its
+//     --uri-source-path-mapping-posix and --uri-source-path-mapping-windows
+//     siblings — carrying 31 hand-authored expected strings across their
+//     expected.output/output_posix/output_windows blocks, rules and all. The
+//     scored harness never reads them: test/conformance/classify.go scores only
+//     EXPR/job_templates and env_templates, since EXPR/jobs needs a real
+//     session and a python subprocess. They are therefore transcribed into
+//     TestApplyPathMapping_VendoredFixtureExpectations (35 assertions — the
+//     four flavor-independent ones run under both formats), which is
+//     specification-authored ground truth rather than sqi's own reading, and
+//     is the only external check this function has.
 //
 //     SQI NOW CARRIES TWO PATH-MAPPING IMPLEMENTATIONS, and that is by
 //     design rather than an oversight left to be found later.

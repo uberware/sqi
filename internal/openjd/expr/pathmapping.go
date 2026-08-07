@@ -34,9 +34,18 @@ type PathMapRule struct {
 }
 
 // mapPath applies rules to s and returns the mapped path text, or s unchanged
-// when no rule matches (passthrough). dst is the flavor destinations and the
-// mapped result are expressed in — the evaluation's pathFormat, which is the
-// worker's native flavor in the host context apply_path_mapping runs in.
+// when no rule matches (passthrough).
+//
+// dst is the flavor a POSIX or WINDOWS rule's destination and transferred
+// remainder are rebuilt in (applyFileRule) — the evaluation's pathFormat, which
+// is the worker's native flavor in the host context apply_path_mapping runs in.
+// It is NOT a guarantee about this function's whole result: a URI rule
+// (applyURIRule) and the no-match passthrough both return raw text, unparsed
+// and unnormalized, so "s3://b/x" under a URI rule to "E:\dst" comes back
+// containing a forward slash. What makes "the result is a path in dst" true is
+// the WRAPPER, pathMappingFuncs' apply_path_mapping, which re-parses whatever
+// this returns with boundedPath(…, ec.pathFormat). Callers wanting a path value
+// must do the same rather than assume it.
 //
 // This is the OpenJD path-mapping algorithm (wiki How-Jobs-Are-Run §Path
 // Mapping): rules are tried in order of DECREASING SourcePath length, and the

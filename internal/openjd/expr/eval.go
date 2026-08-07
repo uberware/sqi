@@ -120,9 +120,12 @@ func WithPathFormat(f PathFormat) Option {
 }
 
 // WithPathMapping supplies the session's path-mapping rules to apply_path_mapping.
-// Absent, apply_path_mapping passes its input through unchanged. Sub-project E
-// injects the rules per host-context scope; before E, no production caller sets
-// this, so apply_path_mapping is passthrough everywhere it is currently reached.
+// Absent, apply_path_mapping passes its input through, NORMALIZED as a path value
+// in the evaluation's flavor — passthrough means "no rule rewrote it", not "the
+// text is returned verbatim", so '/a//b/' still comes back as the path "/a/b".
+// Sub-project E injects the rules per host-context scope; before E, no production
+// caller sets this, so apply_path_mapping is passthrough everywhere it is
+// currently reached.
 func WithPathMapping(rules []PathMapRule) Option {
 	return func(ec *evalCtx) { ec.pathMapping = rules }
 }
@@ -138,7 +141,8 @@ type evalCtx struct {
 	syms       Symbols
 	pathFormat PathFormat
 	// pathMapping holds the session's path-mapping rules for apply_path_mapping.
-	// Nil (the default) makes apply_path_mapping pass its input through unchanged.
+	// Nil (the default) makes apply_path_mapping pass its input through, still
+	// re-parsed as a path in pathFormat — see WithPathMapping.
 	pathMapping []PathMapRule
 }
 
