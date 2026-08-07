@@ -119,15 +119,29 @@ import (
 // divergence in this task that is NOT "the reference failed to charge
 // something", but "the reference charges LESS than a flat per-call Cost can
 // express" -- see the Cost comment on the any/all list[bool] rows in
-// funcslist.go and TestOperationCount_AnyAllDivergeOnShortCircuit:
+// funcslist.go and TestOperationCount_AnyAllDivergeOnShortCircuit. All six
+// lines below are the COMMA-SEPARATED LITERAL form, copy-paste-runnable as
+// printed. Deliberately NOT written with "*" list-repetition syntax --
+// "[True]*10" is itself a rule-2-charged operation (Task 5's OpMul row,
+// ArgElements/ResultElements over the repeated-out list), so a probe of
+// "any([True]*10)" measures any() PLUS the repetition's own charge baked
+// in (13, not 2) and "all([True]*10)" measures 22, not 11. A prior revision
+// of this comment printed those inflated totals next to the isolated
+// any()/all()-only numbers below, which does not reproduce by re-running it
+// -- caught in review. The literal form has no such extra charge to strip
+// out, which is also why TestOperationCount_AnyAllDivergeOnShortCircuit
+// builds its lists directly via a boolList helper rather than parsing a
+// source string with "*" in it.
 //
 //	 1  any([])                             list[nulltype] row, trivial
 //	 6  any([False,False,False,False,False])          1 + 5, forced to
 //	                                                   scan all of them
-//	 2  any([True]*10)                                1 + 1, stops at
+//	 2  any([True,True,True,True,True,True,True,True,True,True])
+//	                                                   1 + 1, stops at
 //	                                                   the FIRST element
 //	 1  all([])                             list[nulltype] row, trivial
-//	11  all([True]*10)                                1 + 10, forced to
+//	11  all([True,True,True,True,True,True,True,True,True,True])
+//	                                                   1 + 10, forced to
 //	                                                   scan all of them
 //	 2  all([False,False,False,False,False])          1 + 1, stops at
 //	                                                   the FIRST element
@@ -147,6 +161,13 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		// len(). len itself charges nothing, and in particular does NOT
 		// expand the range to count it -- see Task 12.
 		{"len(range_expr('1-100'))", 2, "range_expr() call + len() call, no expansion"},
+		// EXPECTED TO CHANGE when Task 8 lands path()'s own Cost: this pins
+		// sqi's CURRENT total (path() call, presently uncharged, + len()
+		// call, which adds nothing), not the reference's 3 (see the probe
+		// comment above). If this starts failing after Task 8, that is the
+		// expected consequence of path() gaining a real charge, not a
+		// regression in len()'s own exemption -- update the want here to
+		// match, and re-confirm len's own contribution is still 0.
 		{"len(path('/a/b'))", 2, "path() call (uncharged, Task 8 not landed yet) + len() call, len itself adds nothing"},
 
 		// bool()/int()/float() carry no Cost anywhere -- neither rule names

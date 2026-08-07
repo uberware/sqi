@@ -145,23 +145,54 @@ var listFuncs = map[string][]Shape{
 	// this file: the reference SHORT-CIRCUITS (any() stops at the first true
 	// element, all() at the first false one), so its measured count tracks
 	// how many elements were actually visited, not the list's length.
-	// Probed: any([True]*10) measures only 2 (1 call + 1, stopping at the
-	// first element) while any([False]*5) measures 6 (1 + 5, forced to scan
-	// all of them); all() mirrors this the other way around. This package's
-	// Cost mechanism charges arguments in chargeArgs BEFORE Fn ever runs
-	// (callShape, ops.go) precisely so a limit is enforced before the work
-	// happens, which makes an exact "however many elements Fn actually
-	// visits" charge structurally unavailable without threading the meter
-	// into Fn itself — a bigger change than this row warrants. Charging the
-	// full length is a SAFE over-approximation in the direction section
-	// 1.3.10 exists to enforce (it never lets short-circuited work escape
-	// the bound; it only ever charges more than the reference, never less),
-	// and is the same shape of tradeoff the brief's own standing ruling
-	// makes for unique()'s O(n^2) scan — give the row the linear charge it
-	// warrants today and leave finer-grained, in-loop charging to a later
-	// task if the operation limit's accuracy on short-circuiting functions
-	// ever needs it. See TestOperationCount_AnyAllDivergeOnShortCircuit.
+	//
+	// PROBED, comma-separated literal lists (copy-paste-runnable as printed —
+	// NOT "[True]*10" list-repetition syntax, which is itself a rule-2-charged
+	// operation, Task 5's OpMul row, so a probe of "any([True]*10)" measures
+	// any() PLUS the repetition's own charge baked into the total, 13 rather
+	// than 2; a prior revision of this comment printed that inflated number
+	// next to the isolated one and did not reproduce on re-running it —
+	// caught in review):
+	//
+	//	 6  any([False,False,False,False,False])                1+5, forced to scan all of them
+	//	 2  any([True,True,True,True,True,True,True,True,True,True])  1+1, stops at the FIRST element
+	//	 2  all([False,False,False,False,False])                1+1, stops at the FIRST element
+	//	11  all([True,True,True,True,True,True,True,True,True,True])  1+10, forced to scan all of them
+	//
+	// This package's Cost mechanism charges arguments in chargeArgs BEFORE Fn
+	// ever runs (callShape, ops.go) precisely so a limit is enforced before
+	// the work happens, which makes an exact "however many elements Fn
+	// actually visits" charge structurally unavailable without threading the
+	// meter into Fn itself — a bigger change than this row warrants. Charging
+	// the full length is a SAFE over-approximation in the direction section
+	// 1.3.10 exists to enforce (it never lets short-circuited work escape the
+	// bound; it only ever charges more than the reference, never less), and
+	// is the same shape of tradeoff the brief's own standing ruling makes for
+	// unique()'s O(n^2) scan.
+	//
+	// It is also more than merely conservative: this package already has
+	// direct evidence that the reference's own short-circuiting here is NOT
+	// the textually-mandated reading of rule 2, rather than sqi settling for
+	// a weaker, safety-only argument. Rule 2 names "contains()" — the "in"
+	// operator (see the OpIn/OpNotIn Cost comment in ops.go and RFC 0005's
+	// dunder-transform table) — under the exact same "iterates through every
+	// element of a list" sentence any()/all() fall under, and
+	// TestOperationCount_InOperator (cost_ops_internal_test.go) already
+	// pinned that the reference charges "in" by the FULL container length
+	// with NO early exit: "1 in [1,2,3,4,5,6,7,8,9,10]" measures 12 even
+	// though the match is the very first element scanned. The reference is
+	// therefore internally inconsistent about whether rule 2's list-iterating
+	// functions short-circuit — full-length for "in", first-match for
+	// any()/all() — which means its any()/all() short-circuit is the
+	// reference's own implementation choice, not something rule 2's text
+	// requires. Charging the full length here is sqi picking the SAME
+	// reading of rule 2 it already uses for "in", not an unrelated
+	// concession. See TestOperationCount_AnyAllDivergeOnShortCircuit.
 	"any": {
+		// No Cost: a list[nulltype] argument is empty BY TYPE (see the
+		// identical situation and reasoning on flatten's list[nulltype] row
+		// above), so there is nothing to iterate and the charge is always
+		// provably 0.
 		{Params: []Type{ListOf(TNull)}, Ret: TBool, Fn: func([]Value) (Value, error) {
 			return Bool(false), nil
 		}},
@@ -175,6 +206,7 @@ var listFuncs = map[string][]Shape{
 		}},
 	},
 	"all": {
+		// No Cost: same reasoning as any()'s list[nulltype] row above.
 		{Params: []Type{ListOf(TNull)}, Ret: TBool, Fn: func([]Value) (Value, error) {
 			return Bool(true), nil
 		}},
