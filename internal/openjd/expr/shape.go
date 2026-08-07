@@ -93,7 +93,8 @@ type Cost struct {
 }
 
 // specNamedIteratingFunctions returns section 1.3.10 rule 2's own list of
-// named functions, verbatim and in the wiki's order (2026-02
+// named REGISTRY functions -- deliberately not verbatim against the wiki's
+// token list, see the CORRECTION below -- in the wiki's order (2026-02
 // Expression-Language.md, section 1.3.10). It exists so the per-group coverage
 // tests in sub-projects Tasks 5-8 assert against the SPEC TEXT rather than
 // against a hand-copied list that could silently drift from it.
@@ -103,10 +104,23 @@ type Cost struct {
 // comparisons. Those are binaryShapes rows, not functionShapes ones, so this
 // function -- which names FUNCTIONS -- omits them; the operator charges are
 // each Task's own to declare on the row that implements them.
+//
+// CORRECTION (review finding, Task 5): "contains()" is omitted here too, and
+// for the same reason as the three operator-shaped items above, not by
+// oversight. RFC 0005's dunder-transform table (lines 1445-1446) is explicit:
+// "In -> __contains__, NotIn -> __not_contains__ ... x in y becomes
+// __contains__(y, x)". Rule 2's "contains()" names that dunder -- the "in"
+// operator itself, written by its transform name rather than its surface
+// syntax -- not a functionShapes registry entry; there is no function named
+// "contains" anywhere in the spec or in sqi's registry. An earlier revision
+// of this list included it, which would have made Task 8's coverage test
+// (every name here must resolve to a functionShapes entry) permanently and
+// correctly fail, since "contains" will never be registered as a function.
+// The charge itself is declared on OpIn/OpNotIn's rows in ops.go, not here.
 func specNamedIteratingFunctions() []string {
 	return []string{
 		"sum", "min", "max", "any", "all", "sorted", "reversed", "flatten",
-		"join", "contains", "range",
+		"join", "range",
 		"repr_sh", "repr_py", "repr_json", "repr_pwsh", "repr_cmd",
 	}
 }
@@ -129,6 +143,13 @@ func specNamedIteratingFunctions() []string {
 // itself names, and leaves resolving "regex functions" to the concrete
 // re_-prefixed registry entries, and the two operators to their own shape
 // rows, to the tasks that declare Cost on them.
+//
+// Checked for specNamedIteratingFunctions's "contains()" mistake (review
+// finding, Task 5) and found clean: rule 3's own text names no dunder-style
+// operator entry under a function-looking name the way rule 2's "contains()"
+// did -- "in"/"not in" against a string ARE charged (OpIn/OpNotIn's
+// TString,TString rows in ops.go), but rule 3 never names them by any token,
+// dunder or otherwise, so there was nothing here to remove.
 func specNamedStringFunctions() []string {
 	return []string{
 		"upper", "lower", "replace", "split", "join", "strip",

@@ -280,18 +280,33 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(powFloats)},
 	},
 
-	// OpIn and OpNotIn charge nothing beyond rule 1 on every row, including
-	// the string/string substring rows. Rules 2 and 3 each end their operator
-	// list with a closed enumeration ("This applies to: ...") — rule 2 names
-	// list concatenation, list repetition, and list/range equality; rule 3
-	// names string/path concatenation, repetition, and a short list of
-	// FUNCTIONS (contains() among them, which is a registry entry Tasks 6-8
-	// own, not this "in" OPERATOR). Neither enumeration names "in"/"not in".
-	// The reference disagrees (e.g. "'a' in 'abc'" measures 3, not 1), but
-	// extending either rule to an operator the text does not name is not
-	// supported by that text, and doc.go's ruling is that the spec outranks
-	// the reference's Beta counting behavior. Left undeclared and unexplained
-	// on purpose rather than by oversight.
+	// CORRECTION (review finding on this task): an earlier revision of this
+	// comment claimed rule 2's "contains()" was a functionShapes registry
+	// entry Tasks 6-8 own, and left every OpIn/OpNotIn row uncharged on that
+	// basis. That premise is false. RFC 0005's own dunder-transform table
+	// (lines 1445-1446) is explicit: "In -> __contains__, NotIn ->
+	// __not_contains__ ... x in y becomes __contains__(y, x)". There is no
+	// registry function named "contains" anywhere in the spec (confirmed:
+	// `rg '"contains"' internal/openjd/expr/` finds no functionShapes entry,
+	// only this comment and a test label) — "contains()" in rule 2's list
+	// (and __contains__/__not_contains__ in the wiki's operator table,
+	// section 2.1.2/2.1.3) IS this operator, named by its dunder rather than
+	// its surface syntax the way every other operator in rule 2's list is
+	// (list concatenation "+", not "__add__"). So "in"/"not in" against a
+	// STRING or a LIST *is* named by rule 2/3 and must charge; only the
+	// range_expr row is genuinely unnamed (the reference agrees: its count
+	// does not scale with the range's size — probed 1 in range_expr("1-3")
+	// and 1 in range_expr("1-100") both at 3, see
+	// TestOperationCount_InOperator's probe comment).
+	//
+	// Cost.ArgBytes{1} on the string/string rows and Cost.ArgElements{1} on
+	// the list rows, charging the CONTAINER (index 1, per the item-is-
+	// Params[0] note below) rather than the searched-for item: rule 2/3 charge
+	// scales with what is iterated or scanned, which is the container, not
+	// the (constant-size) needle. Confirmed against the reference with
+	// container sizes that discriminate a per-container charge from no
+	// charge and from a per-item charge — see the probe comment on
+	// TestOperationCount_InOperator.
 	//
 	// Note the operand order: the AST puts the searched-for value on the LEFT
 	// ("item in list"), matching containsString's own (needle, haystack)
@@ -313,13 +328,17 @@ var binaryShapes = map[Op][]Shape{
 	// 2.1.2 nor 2.1.3 gives "in" a string/range_expr row, and the reference
 	// implementation likewise rejects "'1' in range_expr('1-10')".
 	OpIn: {
-		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Fn: shapeBinary(containsString)},
-		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Fn: shapeBinary(containsElem)},
+		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Cost: Cost{ArgBytes: []int{1}}, Fn: shapeBinary(containsString)},
+		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(containsElem)},
+		// Uncharged on purpose: the reference's own count does not scale with
+		// the range's size (see the probe comment on
+		// TestOperationCount_InOperator), so nothing here supports a per-range
+		// charge the way the string and list rows above have one.
 		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(containsRangeInt)},
 	},
 	OpNotIn: {
-		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Fn: shapeBinary(notContainsString)},
-		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Fn: shapeBinary(negate(containsElem))},
+		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Cost: Cost{ArgBytes: []int{1}}, Fn: shapeBinary(notContainsString)},
+		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(negate(containsElem))},
 		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(negate(containsRangeInt))},
 	},
 

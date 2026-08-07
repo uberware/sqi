@@ -90,19 +90,32 @@ import (
 // elementCount, which reads a range_expr's count arithmetically via
 // rangeExprCount without expanding it).
 //
-// Ordering, "not", and "in"/"not in" all report MORE than rule 1 alone from
-// the reference (1 < 2 = 2, not True = 2, 'a' in 'abc' = 3), but section
-// 1.3.10 rules 2 and 3 each end their operator list with an explicit,
-// closed enumeration ("This applies to: ...") that does not name ordering,
-// "not", or "in"/"not in" anywhere. Rule 2 names list concatenation, list
-// repetition, and list/range equality by name and stops; rule 3 names
-// string/path concatenation, repetition, and a short named-function list
-// (plus "and similar", which is the function library's business in Tasks
-// 6-8, not an operator this task owns) and stops. Extending either rule to
-// operators it does not name is not supported by the text, so these rows
-// charge nothing beyond rule 1 here, and the reference's extra charge for
-// them is left unexplained -- consistent with doc.go's ruling that the
-// reference is Beta software with known counting defects the spec outranks.
+// Ordering and "not" report MORE than rule 1 alone from the reference
+// (1 < 2 = 2, not True = 2), but section 1.3.10 rules 2 and 3 each end their
+// operator list with an explicit, closed enumeration ("This applies to:
+// ...") that does not name ordering or "not" anywhere -- not even under a
+// dunder name (RFC 0005's own transform table gives ordering __lt__ etc. and
+// "not" __not__, and neither appears in rule 2 or rule 3's text). Extending
+// either rule to an operator the text does not name is not supported by the
+// text, so these rows charge nothing beyond rule 1 here, and the reference's
+// extra charge for them is left unexplained -- consistent with doc.go's
+// ruling that the reference is Beta software with known counting defects the
+// spec outranks.
+//
+// CORRECTION (review finding on this task): "in"/"not in" were originally
+// grouped with ordering/"not" above on the same "not named by rule 2/3"
+// reasoning, and that was wrong. Rule 2's own text names "contains()" --
+// RFC 0005's dunder-transform table (lines 1445-1446) is explicit that
+// "In -> __contains__, NotIn -> __not_contains__ ... x in y becomes
+// __contains__(y, x)": "contains()" in rule 2's list IS the "in" operator,
+// named by its dunder rather than its surface syntax, not a functionShapes
+// registry entry (there is no function named "contains" anywhere in the
+// spec or sqi's registry -- confirmed by `rg '"contains"'
+// internal/openjd/expr/`). So the string and list rows of OpIn/OpNotIn DO
+// charge; see TestOperationCount_InOperator below. Only the range_expr row
+// stays uncharged, and for a different, evidence-based reason: the
+// reference's own count does not scale with the range's size (see that
+// test's probe comment), so nothing supports a per-range charge there.
 func TestOperationCount_Operators(t *testing.T) {
 	tests := []struct {
 		src  string
@@ -234,11 +247,143 @@ func TestOperationCount_RangeExprConcatenation(t *testing.T) {
 	})
 }
 
+// TestOperationCount_InOperator covers the review correction: OpIn/OpNotIn's
+// string/string and elem/list rows charge the CONTAINER (Params[1] -- the
+// item is Params[0], see the comment on OpIn in ops.go), because rule 2's
+// "contains()" and rule 3's implicit coverage of "in" are the __contains__/
+// __not_contains__ dunder this operator transforms to (RFC 0005 lines
+// 1445-1446), not a functionShapes registry entry.
+//
+// PROBE, .venv-oracle/bin/python against openjd-model 0.11.1, following the
+// same method as the top-of-file probe -- run first, decide against the spec
+// text second:
+//
+//	 5  1 in [1,2,3]                        3  1 in [1]
+//	12  1 in [1,2,3,4,5,6,7,8,9,10]          5  4 in [1,2,3]  (full length, no early exit)
+//	 3  "a" in "a"                           3  "z" in ("a"*10)
+//	 7  "z" in ("a"*300)                     2  "" in ""
+//	 3  1 in range_expr("1-3")               3  1 in range_expr("1-100")
+//
+// The list and string rows clearly SCALE with the container's size (3, 5, 12
+// track container lengths 1, 3, 10 exactly; 3 vs 7 tracks byte length
+// crossing a 256 boundary); the range_expr row does not (3 regardless of
+// range size) -- this is the evidence for charging the first two and not the
+// third.
+//
+// The reference's own absolute totals are NOT reproduced exactly and are not
+// the target: they run a flat 1-2 operations higher than 1(call)+N predicts
+// (e.g. "1 in [1]" measures 3, not 1+1=2; isolating the string rows further
+// suggests the reference charges on the COMBINED needle+haystack length, not
+// the container alone -- `("a"*300) in ("b"*300)` isolates to 5, not
+// 1+ceil(300/256)=3). That combined-length or extra-call behavior is not
+// what rule 2/3's text asks for (rule 2: "the number of elements is added",
+// scoped to what is iterated -- the container, not the constant-size probe
+// item; rule 3 likewise), and doc.go's standing ruling is that the spec text
+// outranks an unexplained reference count. Cost{ArgBytes:[]int{1}} /
+// Cost{ArgElements:[]int{1}} on the container only, combined with sqi's own
+// fixed one-call rule 1 (never two, see callShape), is what the spec text
+// supports; the tests below assert against THAT formula, not against the
+// reference's raw numbers.
+func TestOperationCount_InOperator(t *testing.T) {
+	t.Run("list container, 3 vs 10 elements discriminates from uncharged", func(t *testing.T) {
+		ec := testCtx()
+		small := List(TInt, []Value{Int(1), Int(2), Int(3)})
+		if _, err := applyBinary(ec, OpIn, Int(1), small); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		// 1 (call) + 3 (container elements). An uncharged row would read 1.
+		if ec.m.ops != 4 {
+			t.Errorf("ops = %d; want 4 (1 call + 3 container elements)", ec.m.ops)
+		}
+
+		ec2 := testCtx()
+		big := List(TInt, []Value{Int(1), Int(2), Int(3), Int(4), Int(5), Int(6), Int(7), Int(8), Int(9), Int(10)})
+		if _, err := applyBinary(ec2, OpIn, Int(1), big); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		// 1 (call) + 10 (container elements): proves the charge SCALES, not
+		// just that it's nonzero.
+		if ec2.m.ops != 11 {
+			t.Errorf("ops = %d; want 11 (1 call + 10 container elements)", ec2.m.ops)
+		}
+	})
+
+	t.Run("not in, list container", func(t *testing.T) {
+		ec := testCtx()
+		list := List(TInt, []Value{Int(1), Int(2), Int(3), Int(4), Int(5)})
+		if _, err := applyBinary(ec, OpNotIn, Int(9), list); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		if ec.m.ops != 6 {
+			t.Errorf("ops = %d; want 6 (1 call + 5 container elements)", ec.m.ops)
+		}
+	})
+
+	t.Run("string container, 10 vs 300 bytes crosses the 256 boundary", func(t *testing.T) {
+		ec := testCtx()
+		if _, err := applyBinary(ec, OpIn, String("z"), String(strings.Repeat("a", 10))); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		// 1 (call) + ceil(10/256) = 1. An uncharged row would also read 1 here
+		// -- this case alone cannot discriminate, which is why the 300-byte
+		// case below is required too (a <=256-byte-only test is exactly how
+		// this was missed the first time).
+		if ec.m.ops != 2 {
+			t.Errorf("ops = %d; want 2 (1 call + ceil(10/256)=1 container byte unit)", ec.m.ops)
+		}
+
+		ec2 := testCtx()
+		if _, err := applyBinary(ec2, OpIn, String("z"), String(strings.Repeat("a", 300))); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		// 1 (call) + ceil(300/256) = 2: proves the charge SCALES with the
+		// container's byte length, crossing the 256-byte boundary.
+		if ec2.m.ops != 3 {
+			t.Errorf("ops = %d; want 3 (1 call + ceil(300/256)=2 container byte units)", ec2.m.ops)
+		}
+	})
+
+	t.Run("not in, string container", func(t *testing.T) {
+		ec := testCtx()
+		if _, err := applyBinary(ec, OpNotIn, String("z"), String(strings.Repeat("a", 300))); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		if ec.m.ops != 3 {
+			t.Errorf("ops = %d; want 3 (1 call + ceil(300/256)=2 container byte units)", ec.m.ops)
+		}
+	})
+
+	t.Run("int/range_expr stays uncharged regardless of range size", func(t *testing.T) {
+		small, err := RangeExpr("1-3")
+		if err != nil {
+			t.Fatalf("RangeExpr: %v", err)
+		}
+		big, err := RangeExpr("1-1000")
+		if err != nil {
+			t.Fatalf("RangeExpr: %v", err)
+		}
+		for _, tt := range []struct {
+			name string
+			rng  Value
+		}{{"small", small}, {"big", big}} {
+			ec := testCtx()
+			if _, err := applyBinary(ec, OpIn, Int(1), tt.rng); err != nil {
+				t.Fatalf("applyBinary: %v", err)
+			}
+			if ec.m.ops != 1 {
+				t.Errorf("%s range: ops = %d; want 1 (rule 1 only, no scaling with range size)", tt.name, ec.m.ops)
+			}
+		}
+	})
+}
+
 // TestOperationCount_ScalarRowsChargeNothing pins the negative space: every
-// row NOT named by section 1.3.10 rule 2 or rule 3 charges rule 1 and
-// nothing else, regardless of what the reference happens to report for it
-// (see the comment above TestOperationCount_Operators for why ordering,
-// "not", and "in"/"not in" are excluded on purpose rather than by oversight).
+// row NOT named by section 1.3.10 rule 2 or rule 3 -- including, after the
+// review correction above, only the range_expr row of OpIn/OpNotIn rather
+// than all of them -- charges rule 1 and nothing else, regardless of what
+// the reference happens to report for it (see the comment above
+// TestOperationCount_Operators for why ordering and "not" are excluded on
+// purpose rather than by oversight).
 func TestOperationCount_ScalarRowsChargeNothing(t *testing.T) {
 	tests := []struct {
 		name string
@@ -256,13 +401,20 @@ func TestOperationCount_ScalarRowsChargeNothing(t *testing.T) {
 			_, err := applyBinary(ec, OpLt, a, b)
 			return err
 		}},
-		{"in, string/string", func(ec evalCtx) error { _, err := applyBinary(ec, OpIn, String("a"), String("abc")); return err }},
-		{"in, elem/list", func(ec evalCtx) error {
-			_, err := applyBinary(ec, OpIn, Int(1), List(TInt, []Value{Int(1), Int(2)}))
+		{"in, int/range_expr (uncharged: does not scale with range size)", func(ec evalCtx) error {
+			r, err := RangeExpr("1-3")
+			if err != nil {
+				return err
+			}
+			_, err = applyBinary(ec, OpIn, Int(1), r)
 			return err
 		}},
-		{"not in, string/string", func(ec evalCtx) error {
-			_, err := applyBinary(ec, OpNotIn, String("z"), String("abc"))
+		{"not in, int/range_expr", func(ec evalCtx) error {
+			r, err := RangeExpr("1-3")
+			if err != nil {
+				return err
+			}
+			_, err = applyBinary(ec, OpNotIn, Int(5), r)
 			return err
 		}},
 		{"unary negation", func(ec evalCtx) error { _, err := applyUnary(ec, OpNeg, Int(5)); return err }},

@@ -93,13 +93,15 @@ func TestCost_ZeroPolicyChargesOnlyTheCall(t *testing.T) {
 }
 
 // TestSpecNamedIteratingFunctions pins section 1.3.10 rule 2's own named-
-// function list, transcribed from the wiki (2026-02 Expression-Language.md,
-// section 1.3.10), so a future edit that drifts from the spec text fails a
-// test rather than silently shrinking what Tasks 5-8's coverage test checks.
+// REGISTRY-function list (not verbatim against the wiki's token list --
+// "contains()" is deliberately omitted; see specNamedIteratingFunctions's
+// CORRECTION comment, shape.go), so a future edit that drifts from the spec
+// text fails a test rather than silently shrinking what Tasks 5-8's coverage
+// test checks.
 func TestSpecNamedIteratingFunctions(t *testing.T) {
 	want := []string{
 		"sum", "min", "max", "any", "all", "sorted", "reversed", "flatten",
-		"join", "contains", "range",
+		"join", "range",
 		"repr_sh", "repr_py", "repr_json", "repr_pwsh", "repr_cmd",
 	}
 	got := specNamedIteratingFunctions()
