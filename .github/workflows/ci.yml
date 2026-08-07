@@ -136,6 +136,20 @@ jobs:
         with:
           args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 
+      # The internal/openjd/expr path-engine differentials shell out to python3
+      # and compare against pathlib. sqi implements CPython 3.13 path semantics
+      # (PureWindowsPath.is_absolute() delegating to ntpath.isabs, and stem/suffix
+      # no longer treating a name's leading/trailing dot run as an extension), so
+      # those tests requirePython313 and SKIP on anything older — including the
+      # ubuntu-latest system python, which is 3.12. Pin >= 3.13 here so the
+      # differential actually ASSERTS rather than silently skipping. This is the
+      # normal test suite only; the oracle job keeps its own 3.12 pin, which is
+      # about the openjd-model venv, not pathlib.
+      - name: Set up Python (>= 3.13 for the expr path differentials)
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
       # Run the full test suite with the race detector enabled and enforce
       # the minimum line-coverage threshold.
       # `make test-cover` enables -race via RACE=on (the Makefile default),
