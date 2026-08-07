@@ -169,7 +169,7 @@
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
 //     unsupported syntax — and the registry they resolve through,
 //     functionShapes (funcs.go, assembled by its own mergeFuncs), now holds
-//     79 entries: sub-project C1's four groups — general conversions (len,
+//     80 entries: sub-project C1's four groups — general conversions (len,
 //     bool, string, int, float, list, range_expr — funcsconv.go), validation
 //     (fail, the same file, its own RFC 0006 category despite living beside
 //     the conversions in one Go source file), math (abs, min, max, sum,
@@ -191,36 +191,43 @@
 //     sub-project C4's path engine, all of it in funcspath.go over the
 //     three-flavor pure-path engine in pathval.go: construction and predicates
 //     (path, as_posix, is_absolute), the six properties, which are registered
-//     under their __property_*__ spellings and so are six of the 79
+//     under their __property_*__ spellings and so are six of the 80
 //     (__property_name__, __property_stem__, __property_suffix__,
 //     __property_suffixes__, __property_parent__, __property_parts__), the
 //     with_* family and the relative pair (with_name, with_stem, with_suffix,
 //     is_relative_to, relative_to), and with_number, whose substitution
 //     scanner lives in pathnumber.go. Section 2.1.5's "/" and "+" path
 //     operators ship in the same wave but are operator-table rows (ops.go),
-//     not registry entries, so they are not among the 79 — see the path
-//     bullet below for all of it.
+//     not registry entries, so they are not among the 80 — see the path
+//     bullet below for all of it. The eightieth entry is sub-project D's
+//     apply_path_mapping, which is registered from its own pathMappingFuncs
+//     group beside the engine it wraps (pathmapping.go) rather than from C4's
+//     pathFuncs, because it is the one function in the registry that reads
+//     SESSION state — the path-mapping rules WithPathMapping threads through
+//     evalCtx — see the path-mapping bullet below.
 //
-//     Section 2.2's roughly 100-function library now has exactly ONE name
-//     left unregistered: apply_path_mapping, sub-project D's, because it
-//     needs the session's path-mapping rules this package has no access to.
-//     A call to it still fails at RUNTIME with "unknown function", a real
-//     diagnostic rather than a parse error — "apply_path_mapping('/mnt/share')"
-//     reports `unknown function "apply_path_mapping"`, not a syntax error,
-//     verified directly, exactly as every name did before C1.
+//     WITH IT, SECTION 2.2's ROUGHLY 100-FUNCTION LIBRARY IS ENTIRELY
+//     REGISTERED: no library name is left unregistered, in any sub-project.
+//     An unknown call still fails at RUNTIME with "unknown function", a real
+//     diagnostic rather than a parse error — "no_such_function('/mnt/share')"
+//     reports `unknown function "no_such_function"`, not a syntax error,
+//     verified directly, exactly as every library name did before C1.
 //
-//     THAT WORKED EXAMPLE MUST NAME A FUNCTION FROM A SUB-PROJECT THAT HAS
-//     NOT SHIPPED, or it goes stale — and it now has, three times. It named
-//     re_match until C2 shipped, repr_* until C3 shipped, and with_suffix
-//     until C4 shipped: "with_suffix('/foo/bar.txt', '.png')" no longer
-//     reports an unknown function at all but `no signature of "with_suffix"
-//     accepts (string, string)`, verified directly — a different mechanism
-//     (overload selection, and the receiver-restriction paragraph below),
-//     which is exactly the misreading a stale example invites.
-//     apply_path_mapping is the LAST name available: when D registers it,
-//     no unregistered library function is left, and this example must be
-//     rewritten against something that is not a library function — or
-//     deleted — rather than re-pointed a fourth time.
+//     THAT WORKED EXAMPLE DELIBERATELY NAMES SOMETHING THAT IS NOT, AND WILL
+//     NEVER BE, A LIBRARY FUNCTION. Every earlier revision pointed it at a
+//     real name from a sub-project that had not shipped yet, and every one
+//     went stale when that sub-project shipped — FOUR times: re_match until
+//     C2, repr_* until C3, with_suffix until C4, and apply_path_mapping until
+//     this wave. Each time the example began demonstrating a DIFFERENT
+//     mechanism under the same prose: "with_suffix('/foo/bar.txt', '.png')"
+//     reports `no signature of "with_suffix" accepts (string, string)`, and
+//     "apply_path_mapping('/mnt/share')" now returns the path "/mnt/share"
+//     outright (both verified directly) — overload selection and a clean
+//     evaluation, not the unknown-function lookup the paragraph is about,
+//     which is exactly the misreading a stale example invites. There is no
+//     unregistered library name left to re-point it at a fifth time, and it
+//     must not be re-pointed at a real one: a name nothing registers is the
+//     only spelling of this example that cannot go stale.
 //     (Not every call reaches the registry at all: a dunder
 //     callee like "__add__(1, 2)" is rejected before lookup with "is a
 //     specification naming convention and is not directly callable", and a
@@ -331,8 +338,9 @@
 //     its own — the caller's table is authoritative, exactly as it is for the
 //     comprehension shadowing check above — so a caller that binds both
 //     "a.b" and "a.b.c" gets "a.b.c" resolved to the SYMBOL rather than to a
-//     property "c" of "a.b". Only apply_path_mapping (sub-project D's) is left
-//     of the ~100-function library; the type-variable codes (CodeVarT and friends) and the
+//     property "c" of "a.b". Nothing of the ~100-function library is left
+//     unregistered, sub-project D's apply_path_mapping having been the last
+//     of it; the type-variable codes (CodeVarT and friends) and the
 //     matcher's binding of them already live here in shape.go, and C1's own
 //     list[varT] rows — len(), bool(), string()'s list row, and flatten(),
 //     sorted(), reversed() and unique() from the list-function group — are
@@ -439,7 +447,8 @@
 //     puts the whole family in the function library, which is why C4 owns it
 //     and D does not; D is narrower than that split once suggested:
 //     apply_path_mapping, the Param/RawParam split, and mapping into typed
-//     parameter values. range_expr, by contrast, still has no operator of its
+//     parameter values — the first of those has now shipped, and has the
+//     path-mapping bullet below to itself. range_expr, by contrast, still has no operator of its
 //     own beyond what coercion gives it for free. The
 //     range_expr -> list[int] conversion (section 1.2.3) is fully
 //     implemented — coercing a range_expr value to a list[int] target expands
@@ -482,9 +491,12 @@
 //     deferred to sub-project E along with the rest of section 1.3.4's
 //     pass-through requirements.
 //
-//   - THE PATH ENGINE (sub-project C4) is complete except apply_path_mapping:
-//     three flavors, every path property and function RFC 0006 defines, and
-//     section 2.1.5's "/" and "+" operators. A path value here is PURE — no
+//   - THE PATH ENGINE (sub-project C4) is complete: three flavors, every path
+//     property and function RFC 0006 defines, and
+//     section 2.1.5's "/" and "+" operators. apply_path_mapping was the one
+//     name it left out, and sub-project D has since registered it — it has the
+//     PATH MAPPING bullet below to itself, because its source matching is
+//     deliberately NOT this engine's path equality. A path value here is PURE — no
 //     filesystem is touched, nothing is resolved or stat'ed — and it is
 //     NORMALIZED BY CONSTRUCTION, because Value.Path re-parses its text. That
 //     is what makes RFC 0006 line 767's own guarantee, path(p.parts) == p,
@@ -652,6 +664,78 @@
 //     flavor is consulted. Special-casing a single-letter scheme so a drive
 //     wins would be sqi inventing a rule the specification does not have, on a
 //     shape no real template produces. See splitURI.
+//
+//   - PATH MAPPING (sub-project D) ships apply_path_mapping, the last name
+//     the RFC 0006 library was missing, over a prefix-mapping engine local to
+//     this package (pathmapping.go's mapPath). It is registered FLAT — always
+//     resolvable, in every scope — from its own pathMappingFuncs group rather
+//     than from C4's pathFuncs, because it is the only function in the
+//     registry that reads session state: the rules WithPathMapping (eval.go)
+//     threads through evalCtx.
+//
+//     WITH NO RULES IT PASSES ITS INPUT THROUGH, as a path:
+//     apply_path_mapping('/mnt/share') evaluates with no option at all to the
+//     path "/mnt/share" (verified directly). That is not a placeholder — it is
+//     the specified behavior when nothing matches — and it is what every
+//     current caller gets, because nothing in sqi passes WithPathMapping yet.
+//     Sub-project E is what will. Rules are tried in order of DECREASING
+//     SourcePath length and the first match wins, so the more specific rule
+//     wins whatever order the caller listed them in: with "/a" -> "/short"
+//     listed BEFORE "/a/b" -> "/long", apply_path_mapping('/a/b/c') is
+//     "/long/c" (verified).
+//
+//     A WINDOWS SOURCE MATCHES CASE-INSENSITIVELY AND
+//     SEPARATOR-INSENSITIVELY, which is DELIBERATELY NOT C4's path equality.
+//     Everything else in this package compares path components byte-exactly
+//     and case-SENSITIVELY on every flavor including Windows (the path bullet
+//     above explains why: determinism for a server-side expansion). Source
+//     MATCHING is a different operation from path EQUALITY, and the two
+//     answers genuinely disagree on the same pair of paths: a WINDOWS rule
+//     whose SourcePath is `C:\studio` maps 'c:/STUDIO/project/scene.ma',
+//     while path('C:/Studio') == path('c:/studio') is FALSE and
+//     is_relative_to(path('C:/Studio/a'), path('c:/studio')) is FALSE, both
+//     under WithPathFormat(PathWindows) — all three verified directly. The
+//     insensitivity is confined to the rule comparator (applyFileRule passes
+//     strings.EqualFold to relativeParts, which is otherwise the SAME function
+//     is_relative_to uses); a POSIX rule does not casefold, so a "/Projects"
+//     rule leaves '/projects/a.exr' untouched (verified).
+//
+//     ITS PARAMETER IS A STRING AND ITS RESULT IS A PATH, which makes the
+//     section 1.2.4 receiver restriction visible in a new place: the result
+//     chains, so apply_path_mapping('/projects/shot01/out.exr').stem is "out",
+//     but a PATH receiver is refused —
+//     path('/projects/a').apply_path_mapping() reports `no signature of
+//     "apply_path_mapping" accepts (path)`, because a method receiver is not
+//     coerced. Both verified directly. Two calls therefore do not compose
+//     directly; ask for a string in between.
+//
+//     IT HAS NO ORACLE COVERAGE, and cannot get any through the current
+//     harness: scripts/expr-oracle.py calls the reference's
+//     evaluate_expression(src, target_type=...), whose only two knobs are the
+//     source text and the target type, so there is no channel for session
+//     mapping rules and none of test/oracle/corpus.txt's cases name this
+//     function. Everything above is pinned by unit tests in this package
+//     alone, the same position C4's Windows semantics are in.
+//
+//     SQI NOW CARRIES TWO PATH-MAPPING IMPLEMENTATIONS, and that is by
+//     design rather than an oversight left to be found later.
+//     internal/worker/pathmap does a strings.ReplaceAll SUBSTRING swap
+//     anywhere in a command string; this engine matches a PREFIX on component
+//     boundaries and rebuilds the remainder in the destination flavor. They
+//     serve different jobs, and this leaf package cannot import that one
+//     anyway. Reconciling them is possible future work, not D's.
+//
+//     HOST-CONTEXT ENFORCEMENT IS NOT HERE. RFC 0006 makes
+//     apply_path_mapping valid only in host-context (@fmtstring[host]) scopes
+//     and an error anywhere else, and this package has no scope model to
+//     enforce that with — sub-project E does. The cost is recorded rather
+//     than hidden: registering the function turned
+//     EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml and
+//     its -in-timeout sibling from passing to failing (conformance 145 ->
+//     143), because both were only ever rejected by "unknown function" and
+//     not by the placement rule they actually violate. Both are baselined in
+//     test/conformance/baseline-expr.txt with that reason, and burn down when
+//     E can reject them for the right one.
 //
 //   - A union target that names a value's own type exactly now admits it
 //     unchanged, list types included: Eval("[1.0, 2.0]", nil,
