@@ -59,6 +59,81 @@ type Shape struct {
 	// lossless conversion coerce.go allows, which is right for most operators
 	// and wrong for ordering — see promotion.
 	Promote promotion
+	// Cost declares this signature's section 1.3.10 charges beyond the single
+	// per-call operation. See Cost.
+	Cost Cost
+}
+
+// Cost declares a Shape's section 1.3.10 rule-2 and rule-3 charges.
+//
+// The single per-call operation of rule 1 is charged by callShape for EVERY
+// shape and is deliberately not declared here: making it declarative would let
+// a forgotten entry silently un-count a call, which is the one charge that can
+// never legitimately be zero.
+//
+// The zero value charges nothing beyond that call, which is correct for the
+// functions section 1.3.10 explicitly exempts -- "simple lookups like len()
+// that do not process the string content".
+type Cost struct {
+	// ArgElements are parameter indices charged by element count (rule 2:
+	// "when a function or the evaluator iterates through every element of a
+	// list, the number of elements is added").
+	ArgElements []int
+	// ArgBytes are parameter indices charged by ceil(len/256) (rule 3: "when a
+	// function processes a string or path value, the length of the value
+	// divided by 256, rounded up, is added").
+	ArgBytes []int
+	// ResultElements charges the element count of the value PRODUCED. Rule 2
+	// covers generators as well as consumers: range(1000) iterates a list it
+	// created rather than one it was given.
+	ResultElements bool
+	// ResultBytes charges the byte length of the value PRODUCED, for a function
+	// whose work scales with what it built rather than with what it read.
+	ResultBytes bool
+}
+
+// specNamedIteratingFunctions returns section 1.3.10 rule 2's own list of
+// named functions, verbatim and in the wiki's order (2026-02
+// Expression-Language.md, section 1.3.10). It exists so the per-group coverage
+// tests in sub-projects Tasks 5-8 assert against the SPEC TEXT rather than
+// against a hand-copied list that could silently drift from it.
+//
+// Rule 2 also names three things that are not registry entries at all: list
+// concatenation ("+"), list repetition ("*"), and list/range equality
+// comparisons. Those are binaryShapes rows, not functionShapes ones, so this
+// function -- which names FUNCTIONS -- omits them; the operator charges are
+// each Task's own to declare on the row that implements them.
+func specNamedIteratingFunctions() []string {
+	return []string{
+		"sum", "min", "max", "any", "all", "sorted", "reversed", "flatten",
+		"join", "contains", "range",
+		"repr_sh", "repr_py", "repr_json", "repr_pwsh", "repr_cmd",
+	}
+}
+
+// specNamedStringFunctions returns section 1.3.10 rule 3's own list of named
+// functions, verbatim and in the wiki's order. See specNamedIteratingFunctions
+// on why this mirrors the spec text rather than a hand-copied list.
+//
+// "join" and "repr_sh" appear in BOTH this list and
+// specNamedIteratingFunctions's: the spec names them under both rules because
+// each does work proportional to element count (rule 2) AND to the string
+// content it reads or writes (rule 3) -- a duplication in the return values
+// here, not a mistake.
+//
+// Rule 3 also names "regex functions" and "and similar" without spelling out
+// which registry entries those are, and names string concatenation ("+") and
+// string repetition ("*"), which -- like their list counterparts above -- are
+// binaryShapes rows rather than functionShapes entries. None of those four are
+// returned here for the same reason: this function names things the SPEC TEXT
+// itself names, and leaves resolving "regex functions" to the concrete
+// re_-prefixed registry entries, and the two operators to their own shape
+// rows, to the tasks that declare Cost on them.
+func specNamedStringFunctions() []string {
+	return []string{
+		"upper", "lower", "replace", "split", "join", "strip",
+		"repr_sh",
+	}
 }
 
 // promotion selects the set of conversions a shape's parameters accept.

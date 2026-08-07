@@ -75,6 +75,30 @@ func rangeInts(v Value) ([]int64, error) {
 	return expandRanges(ranges, total), nil
 }
 
+// rangeExprCount returns how many integers a range_expr expands to, computed
+// arithmetically from the parsed ranges without materializing any of them.
+//
+// This is section 1.3.10 rule 2's element count for a range_expr: charging the
+// cost of counting must not itself cost an expansion, so it goes through
+// intrange.Range.Count() rather than rangeInts. Sub-project task 12 makes
+// len(range_expr) reuse this same helper; rangeInts stays the right function
+// for every caller that genuinely needs the values, such as list(range_expr).
+func rangeExprCount(v Value) (int, error) {
+	ranges, err := intrange.Parse(v.AsRangeExpr())
+	if err != nil {
+		// Unreachable: RangeExpr validated the text on construction.
+		return 0, fmt.Errorf("invalid range expression %q: %w", v.AsRangeExpr(), err)
+	}
+	total := 0
+	for _, r := range ranges {
+		total += r.Count()
+		if err := checkElementCount(total); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
+}
+
 // rangeExprValues expands a range_expr to its integers as a boxed []Value,
 // for the one caller that actually needs the boxed form: list(range_expr)
 // (funcsconv.go) becomes a list[int], so boxing there is the RESULT, not

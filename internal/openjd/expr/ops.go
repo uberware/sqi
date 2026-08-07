@@ -402,10 +402,90 @@ func callShape(ec evalCtx, s Shape, b bindings, args []Value) (Value, error) {
 		}
 		args[i] = converted
 	}
-	if s.FnCtx != nil {
-		return s.FnCtx(ec, args)
+	if err := chargeArgs(ec, s.Cost, args); err != nil {
+		return Value{}, err
 	}
-	return s.Fn(args)
+	var (
+		out Value
+		err error
+	)
+	if s.FnCtx != nil {
+		out, err = s.FnCtx(ec, args)
+	} else {
+		out, err = s.Fn(args)
+	}
+	if err != nil {
+		return Value{}, err
+	}
+	if err := chargeResult(ec, s.Cost, out); err != nil {
+		return Value{}, err
+	}
+	return out, nil
+}
+
+// chargeArgs applies a Cost's declared argument charges.
+//
+// An index naming a parameter position that does not exist is ignored rather
+// than panicking: a Cost is data, and a wrong index is caught by the coverage
+// tests in the per-group tasks, not by crashing a running server.
+func chargeArgs(ec evalCtx, c Cost, args []Value) error {
+	for _, i := range c.ArgElements {
+		if i < 0 || i >= len(args) {
+			continue
+		}
+		n, err := elementCount(args[i])
+		if err != nil {
+			return err
+		}
+		if err := ec.m.chargeElements(n); err != nil {
+			return err
+		}
+	}
+	for _, i := range c.ArgBytes {
+		if i < 0 || i >= len(args) {
+			continue
+		}
+		if err := ec.m.chargeBytes(args[i].s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// chargeResult applies a Cost's declared charges to the produced value.
+func chargeResult(ec evalCtx, c Cost, out Value) error {
+	if c.ResultElements {
+		n, err := elementCount(out)
+		if err != nil {
+			return err
+		}
+		if err := ec.m.chargeElements(n); err != nil {
+			return err
+		}
+	}
+	if c.ResultBytes {
+		if err := ec.m.chargeBytes(out.s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// elementCount is a value's rule-2 element count.
+//
+// A range_expr's count is computed ARITHMETICALLY from its parsed ranges rather
+// than by expanding it: charging the cost of counting must not itself cost an
+// expansion, and rangeExprCount already answers the question without
+// allocating. A non-collection value counts as zero.
+func elementCount(v Value) (int, error) {
+	switch v.Type.Code {
+	case CodeList:
+		return len(v.l), nil
+	case CodeRangeExpr:
+		return rangeExprCount(v)
+	default:
+		return 0, nil
+	}
 }
 
 // intBinary adapts an int64 operation to the table's signature.
