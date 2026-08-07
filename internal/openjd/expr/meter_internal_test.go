@@ -166,3 +166,53 @@ func TestWithLimits_NonPositiveIsAnError(t *testing.T) {
 		})
 	}
 }
+
+// TestOperatorDispatch_CarriesTheCallersMeter proves an operator reaches
+// callShape with the caller's meter rather than a zero-value evalCtx.
+//
+// Written to FAIL against the pre-task implementation, where applyBinary and
+// applyUnary call callShape(evalCtx{}, ...) -- a context whose m field is nil.
+// Without this, Task 3's charging would silently never fire for any operator,
+// and every count assertion written against it would still pass.
+func TestOperatorDispatch_CarriesTheCallersMeter(t *testing.T) {
+	var seen *meter
+	probe := Shape{
+		Params: []Type{TInt, TInt},
+		Ret:    TInt,
+		FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			seen = ec.m
+			return Int(args[0].AsInt() + args[1].AsInt()), nil
+		},
+	}
+	ec := newEvalCtx("", nil, nil)
+	b := bindings{}
+	if _, err := callShape(ec, probe, b, []Value{Int(1), Int(2)}); err != nil {
+		t.Fatalf("callShape: %v", err)
+	}
+	if seen == nil {
+		t.Fatal("callShape received a nil meter; the evaluation context was not threaded")
+	}
+	if seen != ec.m {
+		t.Fatal("callShape received a different meter than the caller's")
+	}
+}
+
+// TestApplyBinary_TakesAContext is a compile-level assertion: applyBinary and
+// applyUnary must accept an evalCtx. It fails to build before this task.
+func TestApplyBinary_TakesAContext(t *testing.T) {
+	ec := newEvalCtx("", nil, nil)
+	v, err := applyBinary(ec, OpAdd, Int(1), Int(2))
+	if err != nil {
+		t.Fatalf("applyBinary: %v", err)
+	}
+	if v.AsInt() != 3 {
+		t.Errorf("1 + 2 = %d; want 3", v.AsInt())
+	}
+	n, err := applyUnary(ec, OpNeg, Int(5))
+	if err != nil {
+		t.Fatalf("applyUnary: %v", err)
+	}
+	if n.AsInt() != -5 {
+		t.Errorf("-5 = %d; want -5", n.AsInt())
+	}
+}

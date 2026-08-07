@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+// testCtx returns a bare evaluation context for the tests in this file that
+// call applyBinary/applyUnary directly rather than through Eval. Task 2
+// (sub-project E1) added the ec parameter these calls now require; this file
+// predates that and asserts nothing about ec.m itself, so a fresh, unshared
+// context per call site is all that is needed here.
+func testCtx() evalCtx {
+	return newEvalCtx("", nil, nil)
+}
+
 func TestApplyBinary_IntArithmetic(t *testing.T) {
 	tests := []struct {
 		name string
@@ -35,7 +44,7 @@ func TestApplyBinary_IntArithmetic(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(tt.op, Int(tt.l), Int(tt.r))
+			got, err := applyBinary(testCtx(), tt.op, Int(tt.l), Int(tt.r))
 			if err != nil {
 				t.Fatalf("applyBinary(%v, %d, %d): %v", tt.op, tt.l, tt.r, err)
 			}
@@ -67,7 +76,7 @@ func TestApplyBinary_IntErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := applyBinary(tt.op, Int(tt.l), Int(tt.r))
+			_, err := applyBinary(testCtx(), tt.op, Int(tt.l), Int(tt.r))
 			if err == nil {
 				t.Fatalf("applyBinary(%v, %d, %d) = nil error; want an error", tt.op, tt.l, tt.r)
 			}
@@ -79,15 +88,15 @@ func TestApplyBinary_IntErrors(t *testing.T) {
 }
 
 func TestApplyUnary_Int(t *testing.T) {
-	got, err := applyUnary(OpNeg, Int(5))
+	got, err := applyUnary(testCtx(), OpNeg, Int(5))
 	if err != nil || !got.Equal(Int(-5)) {
 		t.Errorf("applyUnary(OpNeg, 5) = %v, %v; want -5, nil", got, err)
 	}
-	got, err = applyUnary(OpPos, Int(5))
+	got, err = applyUnary(testCtx(), OpPos, Int(5))
 	if err != nil || !got.Equal(Int(5)) {
 		t.Errorf("applyUnary(OpPos, 5) = %v, %v; want 5, nil", got, err)
 	}
-	if _, err := applyUnary(OpNeg, Int(math.MinInt64)); err == nil {
+	if _, err := applyUnary(testCtx(), OpNeg, Int(math.MinInt64)); err == nil {
 		t.Error("negating math.MinInt64 = nil error; want integer overflow")
 	}
 }
@@ -97,7 +106,7 @@ func TestApplyBinary_UnsupportedOperands(t *testing.T) {
 	// to float and the float overload is used." Sub-project A reported this as
 	// unsupported, same-type-only dispatch having no int/float coercion; B1's
 	// coercing shape match now supplies exactly that promotion.
-	got, err := applyBinary(OpAdd, Int(1), Float(2.5))
+	got, err := applyBinary(testCtx(), OpAdd, Int(1), Float(2.5))
 	if err != nil {
 		t.Fatalf("applyBinary(+, 1, 2.5): %v", err)
 	}
@@ -107,7 +116,7 @@ func TestApplyBinary_UnsupportedOperands(t *testing.T) {
 }
 
 func TestApplyUnary_UnsupportedOperand(t *testing.T) {
-	_, err := applyUnary(OpNeg, String("x"))
+	_, err := applyUnary(testCtx(), OpNeg, String("x"))
 	if err == nil {
 		t.Fatal("-'x' = nil error; want unsupported operand type")
 	}
@@ -171,7 +180,7 @@ func TestApplyBinary_FloatArithmetic(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(tt.op, Float(tt.l), Float(tt.r))
+			got, err := applyBinary(testCtx(), tt.op, Float(tt.l), Float(tt.r))
 			if err != nil {
 				t.Fatalf("applyBinary(%v, %v, %v): %v", tt.op, tt.l, tt.r, err)
 			}
@@ -199,7 +208,7 @@ func TestApplyBinary_FloatErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := applyBinary(tt.op, Float(tt.l), Float(tt.r)); err == nil {
+			if _, err := applyBinary(testCtx(), tt.op, Float(tt.l), Float(tt.r)); err == nil {
 				t.Fatalf("applyBinary(%v, %v, %v) = nil error; want %q", tt.op, tt.l, tt.r, tt.wantMsg)
 			} else if !strings.Contains(err.Error(), tt.wantMsg) {
 				t.Errorf("error = %q; want it to contain %q", err.Error(), tt.wantMsg)
@@ -224,7 +233,7 @@ func TestApplyBinary_StringOperators(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(tt.op, String(tt.l), String(tt.r))
+			got, err := applyBinary(testCtx(), tt.op, String(tt.l), String(tt.r))
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
@@ -240,14 +249,14 @@ func TestApplyBinary_StringRepetitionNowBounded(t *testing.T) {
 	// cap an unbounded repeat count; this task implements it now that the
 	// bound exists. Confirm both that a modest repeat succeeds and that it is
 	// not exempt from the bound.
-	got, err := applyBinary(OpMul, String("x"), Int(3))
+	got, err := applyBinary(testCtx(), OpMul, String("x"), Int(3))
 	if err != nil {
 		t.Fatalf("applyBinary: %v", err)
 	}
 	if want := "xxx"; got.AsStr() != want {
 		t.Errorf("= %q; want %q", got.AsStr(), want)
 	}
-	if _, err := applyBinary(OpMul, String("x"), Int(100_000_000)); err == nil {
+	if _, err := applyBinary(testCtx(), OpMul, String("x"), Int(100_000_000)); err == nil {
 		t.Error("'x' * 100000000 succeeded; want the size bound to reject it")
 	}
 }
@@ -267,7 +276,7 @@ func TestApplyUnary_FloatAndNot(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyUnary(tt.op, tt.in)
+			got, err := applyUnary(testCtx(), tt.op, tt.in)
 			if err != nil {
 				t.Fatalf("applyUnary: %v", err)
 			}
@@ -282,7 +291,7 @@ func TestApplyUnary_NotRequiresBool(t *testing.T) {
 	// Section 2.1.6: "not" remains strictly boolean even though "and"/"or"
 	// accept any operand.
 	for _, v := range []Value{Int(1), String(""), Null(), Float(0)} {
-		if _, err := applyUnary(OpNot, v); err == nil {
+		if _, err := applyUnary(testCtx(), OpNot, v); err == nil {
 			t.Errorf("not %v succeeded; want unsupported operand type", v.Type)
 		}
 	}
@@ -308,7 +317,7 @@ func TestApplyBinary_Ordering(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(tt.op, tt.l, tt.r)
+			got, err := applyBinary(testCtx(), tt.op, tt.l, tt.r)
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
@@ -335,7 +344,7 @@ func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
 		{String("z"), Value{Type: TPath, s: "abc"}},
 	}
 	for _, tt := range promoted {
-		if _, err := applyBinary(OpLt, tt.l, tt.r); err != nil {
+		if _, err := applyBinary(testCtx(), OpLt, tt.l, tt.r); err != nil {
 			t.Errorf("%s < %s: %v; want the named compatible pair to be permitted", tt.l.Type, tt.r.Type, err)
 		}
 	}
@@ -346,7 +355,7 @@ func TestApplyBinary_OrderingIsSameTypeOnly(t *testing.T) {
 		{Null(), Null()},
 	}
 	for _, tt := range rejected {
-		if _, err := applyBinary(OpLt, tt.l, tt.r); err == nil {
+		if _, err := applyBinary(testCtx(), OpLt, tt.l, tt.r); err == nil {
 			t.Errorf("%s < %s succeeded; want unsupported operand types", tt.l.Type, tt.r.Type)
 		}
 	}
@@ -393,7 +402,7 @@ func TestValuesEqual_Section125(t *testing.T) {
 				t.Errorf("valuesEqual(%v, %v) = %v; want %v", tt.l, tt.r, got, tt.want)
 			}
 			// != must always be the exact negation.
-			ne, err := applyBinary(OpNe, tt.l, tt.r)
+			ne, err := applyBinary(testCtx(), OpNe, tt.l, tt.r)
 			if err != nil {
 				t.Fatalf("applyBinary(OpNe): %v", err)
 			}
@@ -413,7 +422,7 @@ func TestApplyBinary_EqualityIsNeverUnsupported(t *testing.T) {
 	all := sampleValues(t)
 	for _, l := range all {
 		for _, r := range all {
-			if _, err := applyBinary(OpEq, l, r); err != nil {
+			if _, err := applyBinary(testCtx(), OpEq, l, r); err != nil {
 				t.Errorf("%s == %s returned %v; equality is total", l.Type, r.Type, err)
 			}
 		}
@@ -429,7 +438,7 @@ func TestApplyBinary_EqualityIsNeverUnsupported(t *testing.T) {
 // test instead.
 func TestApplyBinary_EqualitySelfEquality(t *testing.T) {
 	for _, v := range sampleValues(t) {
-		out, err := applyBinary(OpEq, v, v)
+		out, err := applyBinary(testCtx(), OpEq, v, v)
 		if err != nil {
 			t.Errorf("%s == %s returned error %v; equality is total", v.Type, v.Type, err)
 			continue
@@ -587,7 +596,7 @@ func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(tt.op, tt.l, tt.r)
+			got, err := applyBinary(testCtx(), tt.op, tt.l, tt.r)
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
@@ -601,7 +610,7 @@ func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
 func TestApplyBinary_MixedComparison(t *testing.T) {
 	// Section 2.1.4 permits int/float ordering, which cost-ranked shape
 	// matching supplies by promoting the int and choosing the float shape.
-	got, err := applyBinary(OpLt, Int(1), Float(2.5))
+	got, err := applyBinary(testCtx(), OpLt, Int(1), Float(2.5))
 	if err != nil {
 		t.Fatalf("applyBinary: %v", err)
 	}
@@ -622,7 +631,7 @@ func TestApplyBinary_StillRejectsWhatHasNoShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := applyBinary(tt.op, tt.l, tt.r)
+			_, err := applyBinary(testCtx(), tt.op, tt.l, tt.r)
 			if err == nil {
 				t.Fatalf("applyBinary(%s, %s, %s) = nil error; want an error", tt.op, tt.l, tt.r)
 			}
@@ -657,7 +666,7 @@ func TestApplyBinary_PropagatesAPlaceholder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyBinary(tt.op, tt.l, tt.r)
+			got, err := applyBinary(testCtx(), tt.op, tt.l, tt.r)
 			if err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
@@ -686,7 +695,7 @@ func TestApplyBinary_PlaceholderStillTypeChecks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := applyBinary(OpAdd, tt.l, tt.r); err == nil {
+			if _, err := applyBinary(testCtx(), OpAdd, tt.l, tt.r); err == nil {
 				t.Error("applyBinary = nil error; want unsupported operand types")
 			}
 		})
@@ -706,7 +715,7 @@ func TestApplyUnary_PropagatesAPlaceholder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyUnary(tt.op, tt.v)
+			got, err := applyUnary(testCtx(), tt.op, tt.v)
 			if err != nil {
 				t.Fatalf("applyUnary: %v", err)
 			}
@@ -715,7 +724,7 @@ func TestApplyUnary_PropagatesAPlaceholder(t *testing.T) {
 			}
 		})
 	}
-	if _, err := applyUnary(OpNot, Unresolved(TInt)); err == nil {
+	if _, err := applyUnary(testCtx(), OpNot, Unresolved(TInt)); err == nil {
 		t.Error("not on a placeholder int = nil error; want unsupported operand type")
 	}
 }
@@ -732,7 +741,7 @@ func TestApplyBinary_EqualityWithAPlaceholder(t *testing.T) {
 			{Unresolved(TInt), Unresolved(TInt)},
 		} {
 			t.Run(op.String()+" "+pair[0].Type.String()+" "+pair[1].Type.String(), func(t *testing.T) {
-				got, err := applyBinary(op, pair[0], pair[1])
+				got, err := applyBinary(testCtx(), op, pair[0], pair[1])
 				if err != nil {
 					t.Fatalf("applyBinary: %v", err)
 				}
@@ -747,11 +756,11 @@ func TestApplyBinary_EqualityWithAPlaceholder(t *testing.T) {
 func TestApplyBinary_PlaceholderChains(t *testing.T) {
 	// A placeholder result keeps propagating, so a longer expression does not
 	// fail at the second operator.
-	first, err := applyBinary(OpAdd, Unresolved(TInt), Int(1))
+	first, err := applyBinary(testCtx(), OpAdd, Unresolved(TInt), Int(1))
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := applyBinary(OpMul, first, Int(2))
+	second, err := applyBinary(testCtx(), OpMul, first, Int(2))
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}

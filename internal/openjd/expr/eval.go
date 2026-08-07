@@ -172,8 +172,18 @@ func WithOperationLimit(ops int64) Option {
 //
 // It bundles what used to be two parameters on seventeen functions. The point
 // is not brevity: sub-project E must thread operation and memory counters the
-// same way, and a struct absorbs those as fields instead of as another sweep
-// over every signature.
+// same way.
+//
+// CORRECTION (sub-project E1): an earlier revision of this comment said that
+// sub-project E would thread its operation and memory counters here and that
+// "a struct absorbs those as fields instead of as another sweep over every
+// signature". The first half is right and the second is WRONG, and the error
+// was not harmless. evalCtx flows by VALUE, so a counter stored as a plain
+// field would be incremented on a copy and discarded when the callee returned:
+// the counter would read near zero however much work an expression did, and
+// every test written against it would pass. The counters live behind the
+// POINTER field m instead, which is what makes them accumulate without the
+// signature sweep the original claim was trying to avoid.
 type evalCtx struct {
 	src        string
 	syms       Symbols
@@ -327,7 +337,7 @@ func evalUnary(n *Unary, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	out, err := applyUnary(n.Op, x)
+	out, err := applyUnary(ec, n.Op, x)
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
@@ -343,7 +353,7 @@ func evalBinary(n *Binary, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	out, err := applyBinary(n.Op, l, r)
+	out, err := applyBinary(ec, n.Op, l, r)
 	if err != nil {
 		// n.Offset is the operator's own position, so the error blames the "+"
 		// rather than the start of the expression.
@@ -369,7 +379,7 @@ func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		out, err := applyBinary(op, left, right)
+		out, err := applyBinary(ec, op, left, right)
 		if err != nil {
 			// n.OpOffsets[i] is THIS link's own operator, not the chain's
 			// first one (n.Offset) — a chain of three or more operators must

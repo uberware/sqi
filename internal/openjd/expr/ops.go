@@ -290,7 +290,15 @@ var unaryShapes = map[Op][]Shape{
 // applyBinary dispatches a binary operator, or reports that no signature accepts
 // the operand types. Errors carry no position; the evaluator wraps them with the
 // offset of the operator that failed.
-func applyBinary(op Op, l, r Value) (Value, error) {
+//
+// ec is threaded through to callShape and is NOT optional. An earlier revision
+// passed callShape(evalCtx{}, ...) here, with a comment arguing that a
+// zero-value context was safe "because no row of binaryShapes ever sets FnCtx".
+// CORRECTION (sub-project E1): that reasoning held only while callShape read
+// nothing but FnCtx from the context. callShape now charges section 1.3.10
+// operations against ec.m, and a zero-value evalCtx carries a nil meter, so a
+// fresh context here would silently un-count every operator in the language.
+func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 	switch op {
 	case OpEq, OpNe:
 		// Equality is total across types (section 1.2.5), so it is never
@@ -313,16 +321,15 @@ func applyBinary(op Op, l, r Value) (Value, error) {
 	if l.IsUnresolved() || r.IsUnresolved() {
 		return unresolvedResult(s, b), nil
 	}
-	// A zero-value evalCtx is safe here: no row of binaryShapes ever sets
-	// FnCtx (only path()'s rows do, reached through callFunction, not an
-	// operator, because constructing a path is the only operation that has to
-	// choose a flavor — see Shape.FnCtx), so callShape never actually reads it
-	// for this call site.
-	return callShape(evalCtx{}, s, b, []Value{l, r})
+	return callShape(ec, s, b, []Value{l, r})
 }
 
 // applyUnary dispatches a prefix operator.
-func applyUnary(op Op, v Value) (Value, error) {
+//
+// See applyBinary on why ec is threaded rather than zero-valued: CORRECTION
+// (sub-project E1) to the previous claim that a zero-value evalCtx was safe at
+// this call site.
+func applyUnary(ec evalCtx, op Op, v Value) (Value, error) {
 	s, b, ok := matchShapes(unaryShapes[op], []Type{v.Type})
 	if !ok {
 		return Value{}, fmt.Errorf("unsupported operand type for %s: %s", op, v.Type)
@@ -330,9 +337,7 @@ func applyUnary(op Op, v Value) (Value, error) {
 	if v.IsUnresolved() {
 		return unresolvedResult(s, b), nil
 	}
-	// See applyBinary's comment on the zero-value evalCtx: no row of
-	// unaryShapes ever sets FnCtx either.
-	return callShape(evalCtx{}, s, b, []Value{v})
+	return callShape(ec, s, b, []Value{v})
 }
 
 // unresolvedResult is the whole reason a Shape declares a return type.
