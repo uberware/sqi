@@ -47,6 +47,9 @@ func (m MapSymbols) Lookup(name string) (Value, bool) {
 // evaluating naturally and converting afterward.
 func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, error) {
 	ec := newEvalCtx(e.src, syms, opts)
+	if ec.limitErr != nil {
+		return Value{}, ec.limitErr
+	}
 	// The target is threaded inward for the node kinds that forward it (see
 	// evalNode); the boundary coercion below still applies to the result of the
 	// whole expression, whether or not any node consumed the target.
@@ -130,6 +133,41 @@ func WithPathMapping(rules []PathMapRule) Option {
 	return func(ec *evalCtx) { ec.pathMapping = rules }
 }
 
+// WithMemoryLimit bounds the LIVE memory, in bytes, of the values one
+// evaluation holds at once (section 1.3.9). It defaults to 100,000,000.
+//
+// There is no unlimited mode: a non-positive limit is a caller error, reported
+// by Eval. A value that reads like "off" must not BE off in a package reachable
+// from POST /api/v1/jobs. Tests wanting effectively-unbounded evaluation pass a
+// large number.
+//
+// Note that limits.go's fixed bounds sit UNDERNEATH this one and are not
+// configurable, so raising this limit does not raise what a single operation may
+// allocate: "'a' * 20000000" still fails on maxStringBytes with errTooLarge, not
+// on errMemoryLimit.
+func WithMemoryLimit(bytes int64) Option {
+	return func(ec *evalCtx) {
+		if bytes <= 0 {
+			ec.limitErr = fmt.Errorf("memory limit must be positive, got %d", bytes)
+			return
+		}
+		ec.m.memLimit = bytes
+	}
+}
+
+// WithOperationLimit bounds the number of operations one evaluation may perform
+// (section 1.3.10). It defaults to 10,000,000. A non-positive limit is a caller
+// error, for the same reason WithMemoryLimit's is.
+func WithOperationLimit(ops int64) Option {
+	return func(ec *evalCtx) {
+		if ops <= 0 {
+			ec.limitErr = fmt.Errorf("operation limit must be positive, got %d", ops)
+			return
+		}
+		ec.m.opLimit = ops
+	}
+}
+
 // evalCtx is the state one evaluation threads through every node.
 //
 // It bundles what used to be two parameters on seventeen functions. The point
@@ -144,6 +182,13 @@ type evalCtx struct {
 	// Nil (the default) makes apply_path_mapping pass its input through, still
 	// re-parsed as a path in pathFormat — see WithPathMapping.
 	pathMapping []PathMapRule
+	// m carries the section 1.3.9 and 1.3.10 budgets. It is a POINTER because
+	// evalCtx is copied at every call boundary -- see meter's doc comment.
+	// newEvalCtx always sets it, so it is never nil during evaluation.
+	m *meter
+	// limitErr records a caller error in the limit options, reported by Eval
+	// rather than by panicking inside an Option closure.
+	limitErr error
 }
 
 func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
@@ -151,6 +196,7 @@ func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
 		syms = MapSymbols(nil)
 	}
 	ec := evalCtx{src: src, syms: syms, pathFormat: PathPOSIX}
+	ec.m = newMeter(defaultMemoryLimit, defaultOperationLimit)
 	for _, o := range opts {
 		o(&ec)
 	}
