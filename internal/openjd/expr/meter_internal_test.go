@@ -244,6 +244,10 @@ func TestOperationCount_RuleOne(t *testing.T) {
 		{"-1", 1},
 		// Two operators are two calls.
 		{"1 + 2 + 3", 2},
+		// The ==/!= fast path (applyBinary) returns before matchShapes ever
+		// runs, so it never reaches callShape's charge -- it needs its own,
+		// separately verified below and here end-to-end.
+		{"1 == 2", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.src, func(t *testing.T) {
@@ -269,4 +273,81 @@ func TestOperationLimit_UnderTheLimitSucceeds(t *testing.T) {
 	if v.AsInt() != 5 {
 		t.Errorf("= %d; want 5", v.AsInt())
 	}
+}
+
+// TestOperationCount_EqualityFastPath covers ops.go's ==/!= fast path in
+// applyBinary directly, exercising the charge site the source-driven
+// TestOperationCount_RuleOne case above cannot reach on its own: the
+// UNRESOLVED-operand branch. That branch returns Unresolved(TBool) before
+// matchShapes/callShape ever runs, exactly like the resolved comparison a few
+// lines below it, so it needs its own charge -- and this is the only way to
+// drive an unresolved operand into it, since there is no source-level way to
+// produce a placeholder value without a bound symbol.
+//
+// Calling applyBinary directly with hand-built Values follows the precedent
+// TestApplyBinary_TakesAContext and TestOperatorDispatch_CarriesTheCallersMeter
+// already set in this file.
+func TestOperationCount_EqualityFastPath(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		l, r Value
+	}{
+		{"resolved ==", OpEq, Int(1), Int(2)},
+		{"resolved !=", OpNe, Int(1), Int(2)},
+		{"unresolved ==, left operand unresolved", OpEq, Unresolved(TInt), Int(2)},
+		{"unresolved !=, right operand unresolved", OpNe, Int(1), Unresolved(TInt)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ec := newEvalCtx("", nil, nil)
+			if _, err := applyBinary(ec, tt.op, tt.l, tt.r); err != nil {
+				t.Fatalf("applyBinary(%s, %s, %s): %v", tt.op, tt.l, tt.r, err)
+			}
+			if ec.m.ops != 1 {
+				t.Errorf("ops = %d; want exactly 1", ec.m.ops)
+			}
+		})
+	}
+}
+
+// TestOperationCount_UnresolvedOperandSites covers Task 3's ruling directly:
+// when an operand is unresolved, callFunction, applyBinary's general
+// (matchShapes) branch, and applyUnary all return before ever reaching
+// callShape, so each needs its OWN rule-1 charge -- and the assertion that
+// matters is the EXACT count. A future edit that charges twice (once here,
+// once by mistakenly still calling into callShape) or drops the charge
+// entirely would both slip past a test that only checked "> 0".
+//
+// TestOperationCount_EqualityFastPath above covers the fourth such site,
+// applyBinary's OpEq/OpNe branch; this test covers the remaining three named
+// in the brief's Step 5.
+func TestOperationCount_UnresolvedOperandSites(t *testing.T) {
+	t.Run("applyBinary general branch", func(t *testing.T) {
+		ec := newEvalCtx("", nil, nil)
+		if _, err := applyBinary(ec, OpAdd, Unresolved(TInt), Int(2)); err != nil {
+			t.Fatalf("applyBinary(OpAdd, unresolved, 2): %v", err)
+		}
+		if ec.m.ops != 1 {
+			t.Errorf("ops = %d; want exactly 1", ec.m.ops)
+		}
+	})
+	t.Run("applyUnary", func(t *testing.T) {
+		ec := newEvalCtx("", nil, nil)
+		if _, err := applyUnary(ec, OpNeg, Unresolved(TInt)); err != nil {
+			t.Fatalf("applyUnary(OpNeg, unresolved): %v", err)
+		}
+		if ec.m.ops != 1 {
+			t.Errorf("ops = %d; want exactly 1", ec.m.ops)
+		}
+	})
+	t.Run("callFunction", func(t *testing.T) {
+		ec := newEvalCtx("", nil, nil)
+		if _, err := callFunction(ec, "int", []Value{Unresolved(TInt)}, false); err != nil {
+			t.Fatalf("callFunction(int, unresolved): %v", err)
+		}
+		if ec.m.ops != 1 {
+			t.Errorf("ops = %d; want exactly 1", ec.m.ops)
+		}
+	})
 }
