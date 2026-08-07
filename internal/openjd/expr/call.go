@@ -145,6 +145,12 @@ func callFunction(ec evalCtx, name string, args []Value, methodStyle bool) (Valu
 	}
 	for _, a := range args {
 		if a.IsUnresolved() {
+			// The call was dispatched even though nothing ran, so rule 1
+			// applies. Rules 2 and 3 do NOT: no list was iterated and no
+			// string was processed. See doc.go for the ruling.
+			if err := ec.m.charge(1); err != nil {
+				return Value{}, err
+			}
 			return unresolvedResult(s, b), nil
 		}
 	}

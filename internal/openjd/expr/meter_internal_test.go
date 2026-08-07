@@ -216,3 +216,57 @@ func TestApplyBinary_TakesAContext(t *testing.T) {
 		t.Errorf("-5 = %d; want -5", n.AsInt())
 	}
 }
+
+// opsFor evaluates src with a generous budget and returns the operation count.
+func opsFor(t *testing.T, src string) int64 {
+	t.Helper()
+	e, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	ec := newEvalCtx(src, MapSymbols(nil), nil)
+	if _, err := evalNode(e.root, ec, TAny, 0); err != nil {
+		t.Fatalf("eval(%q): %v", src, err)
+	}
+	return ec.m.ops
+}
+
+func TestOperationCount_RuleOne(t *testing.T) {
+	tests := []struct {
+		src  string
+		want int64
+	}{
+		// A literal is not a call. Confirmed against the reference: 0.
+		{"1", 0},
+		{"'abc'", 0},
+		// One operator is one call.
+		{"1 + 2", 1},
+		{"-1", 1},
+		// Two operators are two calls.
+		{"1 + 2 + 3", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			if got := opsFor(t, tt.src); got != tt.want {
+				t.Errorf("ops(%q) = %d; want %d", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOperationLimit_IsReported(t *testing.T) {
+	_, err := Eval("1 + 1 + 1 + 1 + 1", nil, TInt, WithOperationLimit(2))
+	if !errors.Is(err, errOperationLimit) {
+		t.Fatalf("evaluating past the operation limit = %v; want errOperationLimit", err)
+	}
+}
+
+func TestOperationLimit_UnderTheLimitSucceeds(t *testing.T) {
+	v, err := Eval("1 + 1 + 1 + 1 + 1", nil, TInt, WithOperationLimit(4))
+	if err != nil {
+		t.Fatalf("evaluating within the operation limit: %v", err)
+	}
+	if v.AsInt() != 5 {
+		t.Errorf("= %d; want 5", v.AsInt())
+	}
+}

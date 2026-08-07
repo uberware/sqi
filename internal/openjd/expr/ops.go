@@ -306,7 +306,19 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 		// either. A bare false would be wrong: the values may be equal at
 		// runtime.
 		if l.IsUnresolved() || r.IsUnresolved() {
+			// The call was dispatched even though nothing ran, so rule 1
+			// applies. Rules 2 and 3 do NOT: no list was iterated and no
+			// string was processed. See doc.go for the ruling.
+			if err := ec.m.charge(1); err != nil {
+				return Value{}, err
+			}
 			return Unresolved(TBool), nil
+		}
+		// This path returns before matchShapes, so it never reaches callShape.
+		// Rule 1 still applies: an equality comparison is a call. Its rule-2
+		// element charge for list/range equality lands in Task 9.
+		if err := ec.m.charge(1); err != nil {
+			return Value{}, err
 		}
 		if op == OpEq {
 			return Bool(valuesEqual(l, r)), nil
@@ -319,6 +331,12 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 		return Value{}, fmt.Errorf("unsupported operand types for %s: %s and %s", op, l.Type, r.Type)
 	}
 	if l.IsUnresolved() || r.IsUnresolved() {
+		// The call was dispatched even though nothing ran, so rule 1 applies.
+		// Rules 2 and 3 do NOT: no list was iterated and no string was
+		// processed. See doc.go for the ruling.
+		if err := ec.m.charge(1); err != nil {
+			return Value{}, err
+		}
 		return unresolvedResult(s, b), nil
 	}
 	return callShape(ec, s, b, []Value{l, r})
@@ -335,6 +353,12 @@ func applyUnary(ec evalCtx, op Op, v Value) (Value, error) {
 		return Value{}, fmt.Errorf("unsupported operand type for %s: %s", op, v.Type)
 	}
 	if v.IsUnresolved() {
+		// The call was dispatched even though nothing ran, so rule 1 applies.
+		// Rules 2 and 3 do NOT: no list was iterated and no string was
+		// processed. See doc.go for the ruling.
+		if err := ec.m.charge(1); err != nil {
+			return Value{}, err
+		}
 		return unresolvedResult(s, b), nil
 	}
 	return callShape(ec, s, b, []Value{v})
@@ -362,6 +386,11 @@ func unresolvedResult(s Shape, b bindings) Value {
 // exact one, so an argument can still need converting — that is where section
 // 2.1.1's int-to-float promotion actually happens.
 func callShape(ec evalCtx, s Shape, b bindings, args []Value) (Value, error) {
+	// Section 1.3.10 rule 1: every call is one operation, and this is the one
+	// place every operator and every library function funnels through.
+	if err := ec.m.charge(1); err != nil {
+		return Value{}, err
+	}
 	for i := range args {
 		want := substitute(s.Params[i], b)
 		if args[i].Type.Equal(want) {
