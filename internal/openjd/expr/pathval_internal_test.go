@@ -307,7 +307,7 @@ func runPython(t *testing.T, script, stdin string) string {
 // requirePython313 skips a differential unless the python3 on PATH is CPython
 // 3.13 or newer.
 //
-// CPython 3.13 changed two pathlib behaviours these differentials exercise, and
+// CPython 3.13 changed two pathlib behaviors these differentials exercise, and
 // sqi implements the 3.13 side of BOTH deliberately (pinned by TestPathProperties
 // and by isAbsolute's own doc comment):
 //   - PureWindowsPath.is_absolute() now delegates to ntpath.isabs, so a
@@ -335,13 +335,13 @@ func requirePython313(t *testing.T) {
 	}
 	majS, minS, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
 	maj, errMaj := strconv.Atoi(majS)
-	min, errMin := strconv.Atoi(minS)
+	minor, errMin := strconv.Atoi(minS)
 	if !ok || errMaj != nil || errMin != nil {
 		t.Fatalf("could not parse python3 version %q", strings.TrimSpace(string(out)))
 	}
-	if maj < 3 || (maj == 3 && min < 13) {
+	if maj < 3 || (maj == 3 && minor < 13) {
 		t.Skipf("python3 is %d.%d; this differential needs >= 3.13 "+
-			"(sqi implements 3.13 pathlib path semantics — see requirePython313)", maj, min)
+			"(sqi implements 3.13 pathlib path semantics — see requirePython313)", maj, minor)
 	}
 }
 
