@@ -707,9 +707,8 @@
 //     WithPathFormat(PathWindows)). That fold predates D and is the only
 //     case-insensitive comparison C4's path engine makes — pathJoin's drive
 //     test is the package's only strings.EqualFold outside pathmapping.go.
-//     Source
-//     MATCHING is a different operation from path EQUALITY, and the two
-//     answers genuinely disagree on the same pair of paths: a WINDOWS rule
+//     Source MATCHING is a different operation from path EQUALITY, and the
+//     two answers genuinely disagree on the same pair of paths: a WINDOWS rule
 //     whose SourcePath is `C:\studio` maps 'c:/STUDIO/project/scene.ma',
 //     while path('C:/Studio') == path('c:/studio') is FALSE and
 //     is_relative_to(path('C:/Studio/a'), path('c:/studio')) is FALSE, both
@@ -744,9 +743,11 @@
 //     --uri-source-path-mapping-posix and --uri-source-path-mapping-windows
 //     siblings — carrying 31 hand-authored expected strings across their
 //     expected.output/output_posix/output_windows blocks, rules and all. The
-//     scored harness never reads them: test/conformance/classify.go scores only
-//     EXPR/job_templates and env_templates, since EXPR/jobs needs a real
-//     session and a python subprocess. They are therefore transcribed into
+//     scored harness never reads them: collectTemplateFixtures
+//     (test/conformance/suite_test.go) keeps only the job_templates and
+//     env_templates kinds, and the EXPR path reads exprSuiteDir —
+//     "EXPR/job_templates" — alone, since EXPR/jobs needs a real session and a
+//     python subprocess. They are therefore transcribed into
 //     TestApplyPathMapping_VendoredFixtureExpectations (35 assertions — the
 //     four flavor-independent ones run under both formats), which is
 //     specification-authored ground truth rather than sqi's own reading, and

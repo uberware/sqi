@@ -282,9 +282,11 @@ func TestApplyPathMapping_ResultChainsButAPathReceiverIsRefused(t *testing.T) {
 // an external reference.
 //
 // They are transcribed rather than executed because test/conformance scores only
-// EXPR/job_templates and env_templates (test/conformance/classify.go), not
-// EXPR/jobs, which needs a real session and a real python subprocess. Left in
-// the fixture tree they are inert; here they run.
+// the job_templates and env_templates kinds — collectTemplateFixtures filters on
+// the kind directory, and the EXPR path reads exprSuiteDir ("EXPR/job_templates")
+// alone, both in test/conformance/suite_test.go — not EXPR/jobs, which needs a
+// real session and a real python subprocess. Left in the fixture tree they are
+// inert; here they run.
 //
 // Each fixture's pathMapping block becomes the rules, and its runOn/output block
 // the format: output_posix under PathPOSIX, output_windows under PathWindows, and
