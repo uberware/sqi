@@ -181,14 +181,14 @@
 //     search/replace (strip, lstrip, rstrip, removeprefix, removesuffix,
 //     startswith, endswith, count, find, rfind, index, rindex, replace —
 //     funcsstrfind.go), split, rsplit and join (funcsstrsplit.go) and padding
-//     (ljust, rjust, center, zfill — funcsstrpad.go) — and, as of this wave,
-//     sub-project C3's two hard-grammar families across four more files:
+//     (ljust, rjust, center, zfill — funcsstrpad.go) — sub-project C3's two
+//     hard-grammar families across four more files:
 //     regular expressions (re_match, re_search, re_findall, re_sub,
 //     re_escape, re_split — funcsre.go, behind its own translated dialect in
 //     repattern.go — see the regex bullet below) and repr_* (repr_sh,
 //     repr_cmd, repr_pwsh — funcsreprshell.go — and repr_py, repr_json —
-//     funcsreprdata.go — see the repr_* bullet below) — and, as of this wave,
-//     sub-project C4's path engine, all of it in funcspath.go over the
+//     funcsreprdata.go — see the repr_* bullet below) — and sub-project
+//     C4's path engine, all of it in funcspath.go over the
 //     three-flavor pure-path engine in pathval.go: construction and predicates
 //     (path, as_posix, is_absolute), the six properties, which are registered
 //     under their __property_*__ spellings and so are six of the 80
@@ -873,12 +873,26 @@
 //     comparison.
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
-//     EXPR/job_templates group is 145/209 passing, 64 fixtures baselined
-//     (make test-conformance), including the ten .invalid fixtures
-//     TestConformance_B3ProtectedFixtures asserts by name — a construct this
-//     comment describes as rejected, such as the comprehension shadowing
-//     check or a parser/lexer rejection of a form Python allows, genuinely
-//     does reject it — the sixteen TestConformance_C1ProtectedFixtures
+//     EXPR/job_templates group is 143/209 passing, 66 fixtures baselined
+//     (make test-conformance). It went DOWN in sub-project D, from 145/209
+//     with 64 baselined, and that is the one direction this number is allowed
+//     to move without being a defect: registering apply_path_mapping made
+//     7.3--apply-path-mapping-in-job-name.invalid.yaml and its -in-timeout
+//     sibling evaluate cleanly, and both were only ever rejected by "unknown
+//     function" rather than by the placement rule they actually violate. Both
+//     are baselined until sub-project E can reject them for the right reason —
+//     see the PATH MAPPING bullet above, which states the same 145 -> 143 and
+//     must keep stating it. D therefore has NO protected-fixtures test of the
+//     kind every wave below has, because it is the mirror image of one: those
+//     tests exist where registering a family turned accidental
+//     "unknown function" passes into real rejections that must not silently
+//     become acceptances, whereas here registration turned two accidental
+//     passes into acceptances outright, which no assertion can protect and
+//     only scope-aware evaluation can fix. The score includes the ten .invalid
+//     fixtures TestConformance_B3ProtectedFixtures asserts by name — a
+//     construct this comment describes as rejected, such as the comprehension
+//     shadowing check or a parser/lexer rejection of a form Python allows,
+//     genuinely does reject it — the sixteen TestConformance_C1ProtectedFixtures
 //     protects: sub-project C1's own conversion and math functions correctly
 //     REJECTING an invalid argument (an empty list or path into bool(), an
 //     unrecognized string into bool(), an empty list to min/max, an
@@ -922,11 +936,16 @@
 //     implementation, 161 baselined divergences (make test-expr-oracle) — up
 //     from B3's 135/169, then C1's 279/321 now that C1's 22 functions had
 //     their own corpus cases, C2's 407/469 once its 31 string functions had
-//     theirs, C3's 473/551 with its regex and repr_* functions, and now C4's
+//     theirs, C3's 473/551 with its regex and repr_* functions, and C4's
 //     path family (test/oracle/corpus.txt), which is where most of the growth
-//     in BOTH numbers comes from: the path corpus is large and its divergences
-//     are the reference's, argued family by family in the C4 section of
-//     test/oracle/baseline.txt (its non-normalizing "/" and "+", its
+//     in BOTH numbers comes from. Sub-project D moved neither number and is
+//     the first wave that could not: the corpus contains no apply_path_mapping
+//     case and cannot contain one, because the harness passes the reference
+//     only a source string and a target type, with no channel for session
+//     mapping rules — see the PATH MAPPING bullet above. The path corpus is
+//     large and its divergences are the reference's, argued family by family
+//     in the C4 section of test/oracle/baseline.txt (its non-normalizing "/"
+//     and "+", its
 //     flavor-blind as_posix, its
 //     pre-current-pathlib stem/suffix split, its with_number hash-swallow, its
 //     inconsistent trailing-slash consumption on a relative_to base, and its
