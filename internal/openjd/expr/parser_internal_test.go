@@ -367,6 +367,44 @@ func TestExpression_Names(t *testing.T) {
 	}
 }
 
+func TestCalledFunctions(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{"plain call", "len(Param.X)", []string{"len"}},
+		{"method call takes the trailing segment", "Param.Name.upper()", []string{"upper"}},
+		{"host function is detected in function form", "apply_path_mapping('/x')", []string{"apply_path_mapping"}},
+		{"host function is detected in method form", "'/x'.apply_path_mapping()", []string{"apply_path_mapping"}},
+		{"nested calls are all collected, sorted, de-duplicated", "min(len(A), len(B))", []string{"len", "min"}},
+		{"a comprehension body call is collected, the loop var is not", "[upper(x) for x in Param.L]", []string{"upper"}},
+		{"no calls", "Param.A + Param.B", nil},
+		// A parenthesized receiver is not a bare dotted Name, so the callee
+		// parses as an Access rather than a Name — this exercises that arm
+		// explicitly (it is also exercised incidentally by the string-literal
+		// receiver case above).
+		{"a parenthesized receiver's callee is an Access node", "(Param.A).upper()", []string{"upper"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("Parse(%q) failed: %v", tc.src, err)
+			}
+			got := e.CalledFunctions()
+			if len(got) != len(tc.want) {
+				t.Fatalf("CalledFunctions() = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("CalledFunctions() = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 // TestParse_RejectsPythonBeyondEXPR runs the exact expression bodies from the
 // EXPR conformance suite's expr1.1--reject-* fixtures. EXPR's grammar is a
 // subset of Python's, and the failure direction matters: a reader that

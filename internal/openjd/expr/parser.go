@@ -122,6 +122,43 @@ func (e *Expression) Names() []string {
 	return out
 }
 
+// CalledFunctions returns the external set of function and method names this
+// expression calls, sorted and de-duplicated. It is the counterpart to Names:
+// where Names collects the SYMBOL a callee's leading segments name, this
+// collects the trailing segment that names the function or method itself
+// (section 1.3.3). "len(x)" yields "len"; "Param.Name.upper()" yields "upper";
+// "s.apply_path_mapping()" yields "apply_path_mapping".
+//
+// Its stated use is sub-project E's: spotting a host-context call (notably
+// apply_path_mapping) in a submission-time scope, which E rejects. This package
+// enforces no such rule itself — see pathMappingFuncs.
+func (e *Expression) CalledFunctions() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	walk(e.root, func(n Node, ctx walkCtx) {
+		if !ctx.callee {
+			return
+		}
+		switch c := n.(type) {
+		case *Name:
+			// The trailing segment is the function or method being called.
+			add(c.Parts[len(c.Parts)-1])
+		case *Access:
+			// A callee whose receiver is not a bare dotted name — "(expr).method()"
+			// — parses as an Access; its Attr is the method name.
+			add(c.Attr)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
+
 // parser turns a token slice into a tree. One method per grammar production,
 // named for it, so the code can be diffed against the BNF in spec section 1.1.
 type parser struct {
