@@ -4,6 +4,7 @@ package expr
 
 import (
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -208,6 +209,7 @@ func pathCorpusPOSIX() []string {
 // previous task in this wave had to fix for exactly this failure shape (two
 // formulas that agree on most inputs and diverge on one).
 func TestPathName_StemSuffixMatchesPython(t *testing.T) {
+	requirePython313(t)
 	corpus := pathNameCorpus()
 	script := `
 import sys
@@ -292,7 +294,55 @@ func runPython(t *testing.T, script, stdin string) string {
 	if err != nil {
 		t.Fatalf("python3 failed: %v", err)
 	}
-	return string(out)
+	// Python's print() writes the platform line ending, so on Windows every
+	// line comes back "...\r\n". The callers strip only "\n" and then compare
+	// tab-separated fields, so an unstripped "\r" rides along on the LAST field
+	// of every line — turning "True" into "True\r" and quietly failing every
+	// is_absolute / final-field comparison while String() and parts() (earlier
+	// fields) still match. Normalize CRLF to LF here, at the one point every
+	// differential funnels through, so the comparison is line-ending agnostic.
+	return strings.ReplaceAll(string(out), "\r\n", "\n")
+}
+
+// requirePython313 skips a differential unless the python3 on PATH is CPython
+// 3.13 or newer.
+//
+// CPython 3.13 changed two pathlib behaviours these differentials exercise, and
+// sqi implements the 3.13 side of BOTH deliberately (pinned by TestPathProperties
+// and by isAbsolute's own doc comment):
+//   - PureWindowsPath.is_absolute() now delegates to ntpath.isabs, so a
+//     driveless-but-colon-rooted path like "\:\a" is absolute (3.12 answered
+//     false, using bool(drive and root));
+//   - stem/suffix/suffixes stopped treating a name's leading OR trailing dot
+//     run as an extension, so "a." is all stem and "..a" keeps both dots (3.12
+//     split them, e.g. "..a" -> stem ".", suffix ".a").
+//
+// Run against an older interpreter, the oracle would report sqi diverging from
+// semantics sqi deliberately does not implement — a false mismatch, not a
+// defect. A skip here is honest for the same reason runPython's missing-python3
+// skip is: the differential verifies nothing it can trust, so it must not
+// assert. The version-STABLE POSIX differential does not call this; the CRLF
+// normalization in runPython is all it needed to pass on any interpreter.
+func requirePython313(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable — this differential verifies NOTHING when skipped")
+	}
+	out, err := exec.CommandContext(t.Context(), "python3", "-c",
+		"import sys; print('%d %d' % sys.version_info[:2])").Output()
+	if err != nil {
+		t.Fatalf("python3 version probe failed: %v", err)
+	}
+	majS, minS, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
+	maj, errMaj := strconv.Atoi(majS)
+	min, errMin := strconv.Atoi(minS)
+	if !ok || errMaj != nil || errMin != nil {
+		t.Fatalf("could not parse python3 version %q", strings.TrimSpace(string(out)))
+	}
+	if maj < 3 || (maj == 3 && min < 13) {
+		t.Skipf("python3 is %d.%d; this differential needs >= 3.13 "+
+			"(sqi implements 3.13 pathlib path semantics — see requirePython313)", maj, min)
+	}
 }
 
 // TestParsePath_Windows pins PureWindowsPath. Every expectation came from
@@ -338,6 +388,7 @@ func TestParsePath_Windows(t *testing.T) {
 // so this differential is the ONLY automated check on Windows semantics, and it
 // runs on Linux against Python rather than on Windows against anything.
 func TestParsePath_WindowsMatchesPython(t *testing.T) {
+	requirePython313(t)
 	corpus := pathCorpusWindows()
 	// Unlike an earlier draft of this script, blank input lines are NOT
 	// skipped: pathCorpusWindows's "" lead produces exactly one blank line,
