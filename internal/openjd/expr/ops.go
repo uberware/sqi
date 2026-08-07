@@ -66,9 +66,21 @@ func shapeUnary(f func(v Value) (Value, error)) func(args []Value) (Value, error
 // is the same single mechanism sub-project A used.
 var binaryShapes = map[Op][]Shape{
 	OpAdd: {
+		// Section 1.3.10 rule 2/3: scalar int/float arithmetic processes no
+		// list and no string, so rule 1 (charged by callShape for every row)
+		// is the whole charge -- neither row below declares a Cost.
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(addInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a + b }))},
-		{Params: []Type{TString, TString}, Ret: TString, Fn: shapeBinary(concatStrings)},
+		// Rule 3 names string concatenation by name. Cost.ResultBytes, not
+		// ArgBytes on both operands: ceil(len/256) is not additive the way a
+		// plain element count is, and measuring against the reference (see
+		// the probe comment on TestOperationCount_Operators,
+		// cost_ops_internal_test.go) shows it charges the PRODUCED string's
+		// length once, not each operand's length separately. The two
+		// readings agree whenever both operands are short or their split
+		// doesn't cross a 256 boundary differently than their sum does; they
+		// were told apart with unequal, over-256-byte operands.
+		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(concatStrings)},
 		// RFC 0006 section 2.1.5's __add__(p: path, suffix: string) -> path.
 		//
 		// This row is what makes "P + 'x'" a PATH rather than the string it
@@ -79,7 +91,13 @@ var binaryShapes = map[Op][]Shape{
 		// string -> path is not a conversion the matcher will make to select
 		// an overload (promotable, coerce.go) — and so is "'a' + 'b'", which
 		// the string row still matches at cost 0.
-		{Params: []Type{TPath, TString}, Ret: TPath, Fn: shapeBinary(appendToPath)},
+		//
+		// Cost.ResultBytes: a path is a string value for rule 3 (RFC 0006),
+		// and the same ResultBytes-over-ArgBytes resolution applies here as
+		// it does to string concatenation just above — confirmed against the
+		// reference by isolating this row's own contribution from path()'s
+		// construction cost. See TestOperationCount_PathOperators.
+		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(appendToPath)},
 		// Section 2.1.3: range_expr + range_expr -> list[int]. range_expr
 		// promotes losslessly to BOTH list[int] and string (coercibleConditional,
 		// coerce.go), and the generic list shape below cannot admit a bare
@@ -95,7 +113,16 @@ var binaryShapes = map[Op][]Shape{
 		// expansion for free, as the mixed row below does) would report this
 		// row's own cost as 2 and recreate the very tie this row exists to
 		// avoid. concatRanges performs the same expansion by hand instead.
-		{Params: []Type{TRangeExpr, TRangeExpr}, Ret: ListOf(TInt), Fn: shapeBinary(concatRanges)},
+		//
+		// Cost.ArgElements charges rule 2's "list concatenation" on both
+		// operands even though this row's declared params are range_expr, not
+		// list[int]: elementCount (ops.go) computes a range_expr's count
+		// ARITHMETICALLY via rangeExprCount without expanding it, so the
+		// charge is correct without waiting for concatRanges to run. Verified
+		// against the reference by subtracting each range_expr() call's own
+		// cost from the combined expression — see the probe comment on
+		// TestOperationCount_Operators.
+		{Params: []Type{TRangeExpr, TRangeExpr}, Ret: ListOf(TInt), Cost: Cost{ArgElements: []int{0, 1}}, Fn: shapeBinary(concatRanges)},
 		// Section 2.1.3. The two element variables are independent, so that
 		// "[1] + [2.0]" matches at all; concatLists then computes the real
 		// common element type from both operands, since section 2.1.3's
@@ -106,10 +133,19 @@ var binaryShapes = map[Op][]Shape{
 		// it: Ret: ListOf(varT) reads only the LEFT operand, which typed
 		// "[] + Param.Items" as list[nulltype] while "Param.Items + []" — the
 		// same concatenation — came out list[int].
+		//
+		// Cost.ArgElements charges rule 2's "list concatenation" by name, on
+		// both operands. Unlike rule 3's ceil(len/256), a plain element count
+		// is additive, so ArgElements{0,1} and a hypothetical "charge the
+		// produced list's length instead" always agree here (len(a)+len(b) IS
+		// len(result)) — no probe can tell them apart, so ArgElements is used
+		// because it is what the rule's own wording most directly describes:
+		// the evaluator iterating through each operand list.
 		{
 			Params: []Type{ListOf(varT), ListOf(varT1)},
 			Ret:    ListOf(varT),
 			RetOf:  concatRet,
+			Cost:   Cost{ArgElements: []int{0, 1}},
 			Fn:     shapeBinary(concatLists),
 		},
 		// A bare range_expr operand cannot reach the generic list[T] shape
@@ -127,13 +163,25 @@ var binaryShapes = map[Op][]Shape{
 		// the argument's own, so a bare range_expr parameter would pass the
 		// unconverted range_expr straight to concatLists, which expects a
 		// list payload.
-		{Params: []Type{ListOf(TInt), ListOf(TInt)}, Ret: ListOf(TInt), Fn: shapeBinary(concatLists)},
+		//
+		// Cost.ArgElements, same as the generic list+list row above and for
+		// the same reason: this is still "list concatenation" under rule 2,
+		// just at a signature the generic row cannot admit. callShape coerces
+		// a range_expr operand to list[int] BEFORE chargeArgs runs (this row
+		// is not exact-match for that argument), so elementCount reads the
+		// already-expanded list's length here rather than needing
+		// rangeExprCount's arithmetic shortcut the way the range_expr+range_expr
+		// row above does.
+		{Params: []Type{ListOf(TInt), ListOf(TInt)}, Ret: ListOf(TInt), Cost: Cost{ArgElements: []int{0, 1}}, Fn: shapeBinary(concatLists)},
 	},
+	// Section 1.3.10 rules 2/3: scalar subtraction processes no list and no
+	// string, so rule 1 is the whole charge.
 	OpSub: {
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(subInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a - b }))},
 	},
 	OpMul: {
+		// Scalar multiplication: rule 1 only, same reasoning as OpSub above.
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(mulInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a * b }))},
 		// Section 2.1.3's __mul__(list[T], int) and section 2.1.2's
@@ -173,11 +221,23 @@ var binaryShapes = map[Op][]Shape{
 		// reference implementation independently rejects this expression with
 		// "Cannot use '*' operator with range_expr and int" under every target
 		// type tried (any, string, list[int]) — evidence, not the reason.
-		{Params: []Type{ListOf(varT), TInt}, Ret: ListOf(varT), Fn: shapeBinary(repeatList)},
-		{Params: []Type{TString, TInt}, Ret: TString, Promote: promoteNoRangeText, Fn: shapeBinary(repeatString)},
+		// Rule 2 names list repetition by name. ResultElements, not
+		// ArgElements on the list operand: repetition's produced length is
+		// len(operand)*n, which ArgElements cannot express (it would charge
+		// the pre-repetition length, undercounting by a factor of n), and
+		// matches the reference exactly — see TestOperationCount_Operators's
+		// "[1,2] * 3" case (1 call + 6 produced elements = 7).
+		{Params: []Type{ListOf(varT), TInt}, Ret: ListOf(varT), Cost: Cost{ResultElements: true}, Fn: shapeBinary(repeatList)},
+		// Rule 3 names string repetition by name. ResultBytes for the same
+		// reason ResultElements is right for list repetition just above: the
+		// produced length is len(operand)*n, and the spec's own worked
+		// example (ceilDiv256's doc comment) confirms ceil(PRODUCED length /
+		// 256) is the formula, not a per-operand charge.
+		{Params: []Type{TString, TInt}, Ret: TString, Promote: promoteNoRangeText, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(repeatString)},
 	},
 	// Dividing two ints yields a float — the spec's __truediv__(int, int) -> float.
 	OpDiv: {
+		// Scalar division: rule 1 only, same reasoning as OpSub/OpMul above.
 		{Params: []Type{TInt, TInt}, Ret: TFloat, Fn: shapeBinary(divInts)},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(divFloats)},
 		// RFC 0006 section 2.1.5's two path-join rows. Both are registered
@@ -190,25 +250,49 @@ var binaryShapes = map[Op][]Shape{
 		// "path('a') / 1" and "1 / path('a')" errors: int -> string is a
 		// coercion but not a promotion, so it cannot be used to SELECT an
 		// overload (see matchShapesExactFirst, shape.go).
-		{Params: []Type{TPath, TString}, Ret: TPath, Fn: shapeBinary(joinPaths)},
-		{Params: []Type{TPath, TPath}, Ret: TPath, Fn: shapeBinary(joinPaths)},
+		//
+		// Cost.ResultBytes on both rows: a path is a string value for rule 3
+		// (RFC 0006), and joinPaths's own contribution — isolated from
+		// path()'s construction cost by subtracting it from the combined
+		// expression's measured total — matches ResultBytes and not
+		// ArgBytes{0,1}, the same resolution as string concatenation above.
+		// See TestOperationCount_PathOperators and the probe comment on
+		// TestOperationCount_Operators.
+		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(joinPaths)},
+		{Params: []Type{TPath, TPath}, Ret: TPath, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(joinPaths)},
 	},
 	// Floor-dividing two floats yields an int — __floordiv__(float, float) -> int.
+	// Rule 1 only for both rows: scalar arithmetic, same as OpSub/OpMul/OpDiv.
 	OpFloorDiv: {
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(floorDivInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TInt, Fn: shapeBinary(floorDivFloats)},
 	},
+	// Rule 1 only: scalar arithmetic, same as the other scalar operators above.
 	OpMod: {
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(modInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(modFloats)},
 	},
 	// int ** int is int for a non-negative exponent and float for a negative one,
 	// so its declared return is the union the spec writes: float | int.
+	// Rule 1 only for both rows: scalar arithmetic, same as the operators above.
 	OpPow: {
 		{Params: []Type{TInt, TInt}, Ret: UnionOf(TInt, TFloat), Fn: shapeBinary(powInts)},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(powFloats)},
 	},
 
+	// OpIn and OpNotIn charge nothing beyond rule 1 on every row, including
+	// the string/string substring rows. Rules 2 and 3 each end their operator
+	// list with a closed enumeration ("This applies to: ...") — rule 2 names
+	// list concatenation, list repetition, and list/range equality; rule 3
+	// names string/path concatenation, repetition, and a short list of
+	// FUNCTIONS (contains() among them, which is a registry entry Tasks 6-8
+	// own, not this "in" OPERATOR). Neither enumeration names "in"/"not in".
+	// The reference disagrees (e.g. "'a' in 'abc'" measures 3, not 1), but
+	// extending either rule to an operator the text does not name is not
+	// supported by that text, and doc.go's ruling is that the spec outranks
+	// the reference's Beta counting behavior. Left undeclared and unexplained
+	// on purpose rather than by oversight.
+	//
 	// Note the operand order: the AST puts the searched-for value on the LEFT
 	// ("item in list"), matching containsString's own (needle, haystack)
 	// convention, so the item is each shape's first parameter.
@@ -255,6 +339,17 @@ var binaryShapes = map[Op][]Shape{
 // section 1.2.3's range_expr -> string coercion would leak into the
 // (string, string) shape below and wrongly let a range_expr order against a
 // string.
+//
+// None of the five rows below declares a Cost. Section 1.3.10's rule 2 and
+// rule 3 each close with an explicit "This applies to: ..." enumeration, and
+// ordering operators appear in neither one — not even the list/list row,
+// which iterates its operands' elements (compareLists) but is not the
+// "list/range equality comparisons" rule 2 names, a distinct operation with
+// its own row (once Task 9 lands equality's charge; see doc.go). The
+// reference measures 2 for every ordering comparison tried here, scalar or
+// list ("1 < 2", "[1] < [2]"), not 1 — an unexplained reference quirk, not a
+// rule 2/3 charge the spec text supports extending to. Rule 1 is the whole
+// charge on every row.
 func orderingShapes(op Op) []Shape {
 	return []Shape{
 		{Params: []Type{TInt, TInt}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareInts))},
@@ -273,6 +368,17 @@ func orderingShapes(op Op) []Shape {
 }
 
 // unaryShapes lists every accepted signature of each prefix operator.
+//
+// No row in this table declares a Cost. Numeric negation and unary plus
+// process no list and no string (rule 1 is the whole charge, same as the
+// scalar rows of binaryShapes). Boolean "not" processes no list or string
+// either, and — like "in"/"not in" above — is not named by rule 2 or rule
+// 3's closed "This applies to: ..." enumerations, so it gets nothing beyond
+// rule 1 despite the reference measuring 2 for "not True", not 1. and/or are
+// a separate case entirely and are not in this table at all: RFC 0005 line
+// 1454 says they are handled directly by the evaluator rather than
+// transformed to function calls, so evalLogical never reaches applyUnary,
+// callShape, or any Cost here (see doc.go).
 var unaryShapes = map[Op][]Shape{
 	OpNeg: {
 		{Params: []Type{TInt}, Ret: TInt, Fn: shapeUnary(negInt)},
