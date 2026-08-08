@@ -312,7 +312,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 		errs = append(errs, ValidationError{Pointer: "/name", Message: "required"})
 	}
 	errs = append(errs, validateNoControlChars(t.Name, "/name")...)
-	errs = append(errs, validateFormatString(t.Name, "/name", jobScopeRefs, nil)...)
+	errs = append(errs, validateFormatString(t.Name, "/name", ScopeJob, nil)...)
 	for _, f := range t.UnknownFields {
 		errs = append(errs, ValidationError{
 			Pointer: "/" + f,
@@ -329,7 +329,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	errs = append(errs, validateJobParams(t.ParameterDefinitions)...)
 
 	// ── jobEnvironments ───────────────────────────────────────────────────
-	errs = append(errs, validateEnvironments(t.JobEnvironments, "/jobEnvironments")...)
+	errs = append(errs, validateEnvironments(t.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment)...)
 
 	// ── steps ─────────────────────────────────────────────────────────────
 	if len(t.Steps) == 0 {
@@ -1311,29 +1311,19 @@ const (
 	maxEmbeddedFilenameLen = 64
 )
 
-// Format-string scope sets (spec §7.3.1). Each entry is a legal reference
-// PREFIX; a reference must start with one of them. Matching is exact-case
-// because value references are case-sensitive — "param.X" is not "Param.X".
-var (
-	// jobScopeRefs are legal in a format string evaluated at job-creation time
-	// with no session or task context, such as the job's own name.
-	jobScopeRefs = []string{"Param.", "RawParam."}
-	// envScriptRefs are legal within Environment Script actions and embedded
-	// files: the environment's own attachments plus session builtins.
-	envScriptRefs = []string{"Param.", "RawParam.", "Env.File.", "Session."}
-	// stepScriptRefs are legal within Step Script actions and embedded files:
-	// task parameters and task attachments plus session builtins. Env.File is
-	// NOT among them — an environment's attachments belong to the environment.
-	stepScriptRefs = []string{"Param.", "RawParam.", "Task.Param.", "Task.RawParam.", "Task.File.", "Session."}
-)
-
 // validateFormatString checks one format string: that its interpolation
 // expressions parse, and that every reference is in scope where it appears.
+//
+// The legal reference PREFIXES for scope are derived from the shared Scope
+// declaration (scope.go) rather than hand-maintained here (spec §7.3.1).
+// Matching is exact-case because value references are case-sensitive —
+// "param.X" is not "Param.X".
 //
 // A reference that is well-formed but out of scope resolves to nothing at run
 // time, so the command silently receives an empty value rather than failing —
 // which is why this is structural correctness and always runs.
-func validateFormatString(s, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
+func validateFormatString(s, ptr string, scope Scope, files map[string]struct{}) ValidationErrors {
+	allowed := derivedPrefixes(scope)
 	refs, err := fmtstring.References(s)
 	if err != nil {
 		return ValidationErrors{{
@@ -1957,7 +1947,7 @@ func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
 // no command is accepted by parse, expands into tasks, and then runs nothing --
 // the step reports success having done no work -- so this is structural
 // correctness and always runs, never gated behind EnforceLimits.
-func validateAction(a Action, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
+func validateAction(a Action, ptr string, scope Scope, files map[string]struct{}) ValidationErrors {
 	if a.Command == "" {
 		return ValidationErrors{{
 			Pointer: ptr + "/command",
@@ -1971,7 +1961,7 @@ func validateAction(a Action, ptr string, allowed []string, files map[string]str
 	for i, arg := range a.Args {
 		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
 	}
-	errs = append(errs, validateActionRefs(a, ptr, allowed, files)...)
+	errs = append(errs, validateActionRefs(a, ptr, scope, files)...)
 	errs = append(errs, validateActionTiming(a, ptr)...)
 	// args is @optional, but a declared list must hold at least one argument —
 	// an empty array says "pass arguments" and then passes none.
@@ -2035,16 +2025,16 @@ func validateActionTiming(a Action, ptr string) ValidationErrors {
 // vars may be nil for a step script, which has no variables of its own.
 // scriptBase points at the script object; varsBase at the object holding
 // variables — on an Environment those are siblings, not nested.
-func validateScriptRefs(files []EmbeddedFile, vars map[string]string, allowed []string, scriptBase, varsBase string) ValidationErrors {
+func validateScriptRefs(files []EmbeddedFile, vars map[string]string, scope Scope, scriptBase, varsBase string) ValidationErrors {
 	var errs ValidationErrors
 	declared := embeddedFileNames(files)
 	for i, f := range files {
 		errs = append(errs, validateFormatString(f.Data,
-			fmt.Sprintf("%s/embeddedFiles/%d/data", scriptBase, i), allowed, declared)...)
+			fmt.Sprintf("%s/embeddedFiles/%d/data", scriptBase, i), scope, declared)...)
 	}
 	// Sorted so the errors a template produces do not depend on map order.
 	for _, k := range slices.Sorted(maps.Keys(vars)) {
-		errs = append(errs, validateFormatString(vars[k], varsBase+"/variables/"+k, allowed, declared)...)
+		errs = append(errs, validateFormatString(vars[k], varsBase+"/variables/"+k, scope, declared)...)
 	}
 	return errs
 }
@@ -2052,10 +2042,10 @@ func validateScriptRefs(files []EmbeddedFile, vars map[string]string, allowed []
 // validateActionRefs checks the format strings in an action's command and args
 // against the reference scope legal at its site. Embedded-file data and
 // environment variable values are covered by [validateScriptRefs].
-func validateActionRefs(a Action, ptr string, allowed []string, files map[string]struct{}) ValidationErrors {
-	errs := validateFormatString(a.Command, ptr+"/command", allowed, files)
+func validateActionRefs(a Action, ptr string, scope Scope, files map[string]struct{}) ValidationErrors {
+	errs := validateFormatString(a.Command, ptr+"/command", scope, files)
 	for i, arg := range a.Args {
-		errs = append(errs, validateFormatString(arg, fmt.Sprintf("%s/args/%d", ptr, i), allowed, files)...)
+		errs = append(errs, validateFormatString(arg, fmt.Sprintf("%s/args/%d", ptr, i), scope, files)...)
 	}
 	return errs
 }
@@ -2091,7 +2081,7 @@ func checkFileRef(ref, ptr string, files map[string]struct{}) ValidationErrors {
 
 // ─── environment validation ───────────────────────────────────────────────────
 
-func validateEnvironments(envs []Environment, base string) ValidationErrors {
+func validateEnvironments(envs []Environment, base string, scope Scope) ValidationErrors {
 	var errs ValidationErrors
 	seen := make(map[string]struct{}, len(envs))
 	for i, e := range envs {
@@ -2118,7 +2108,7 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 		if e.Script != nil {
 			envScriptFiles = e.Script.EmbeddedFiles
 		}
-		errs = append(errs, validateScriptRefs(envScriptFiles, e.Variables, envScriptRefs, ptr+"/script", ptr)...)
+		errs = append(errs, validateScriptRefs(envScriptFiles, e.Variables, scope, ptr+"/script", ptr)...)
 
 		if e.Script != nil {
 			envFiles := embeddedFileNames(e.Script.EmbeddedFiles)
@@ -2128,10 +2118,10 @@ func validateEnvironments(envs []Environment, base string) ValidationErrors {
 					Message: "required",
 				})
 			} else {
-				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", envScriptRefs, envFiles)...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, envFiles)...)
 			}
 			if e.Script.Actions.OnExit != nil {
-				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", envScriptRefs, envFiles)...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, envFiles)...)
 			}
 			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, e.Script.EmbeddedFilesSet, ptr+"/script/embeddedFiles")...)
 		}
@@ -2297,12 +2287,12 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
 	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, s.Script.EmbeddedFilesSet, base+"/script/embeddedFiles")...)
-		errs = append(errs, validateScriptRefs(s.Script.EmbeddedFiles, nil, stepScriptRefs, base+"/script", base)...)
-		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", stepScriptRefs, embeddedFileNames(s.Script.EmbeddedFiles))...)
+		errs = append(errs, validateScriptRefs(s.Script.EmbeddedFiles, nil, ScopeStepScript, base+"/script", base)...)
+		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", ScopeStepScript, embeddedFileNames(s.Script.EmbeddedFiles))...)
 	}
 
 	// step environments
-	errs = append(errs, validateEnvironments(s.StepEnvironments, base+"/stepEnvironments")...)
+	errs = append(errs, validateEnvironments(s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment)...)
 
 	// parameter space
 	if s.ParameterSpace != nil {
