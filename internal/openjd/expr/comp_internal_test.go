@@ -128,7 +128,7 @@ func TestEvalListComp_Values(t *testing.T) {
 		{"[i for i in Param.Empty]", "[]", "list[nulltype]"},
 		{"[i for i in Param.Range]", "[1, 2, 3]", "list[int]"},
 		{"[i * 1.5 for i in Param.Items]", "[1.5, 3.0, 4.5]", "list[float]"},
-		{"[w for w in Param.Words]", "[a, b]", "list[string]"},
+		{"[w for w in Param.Words]", `["a", "b"]`, "list[string]"},
 		{"[[i] for i in Param.Items]", "[[1], [2], [3]]", "list[list[int]]"},
 		{"[[j for j in Param.Items] for i in Param.Words]", "[[1, 2, 3], [1, 2, 3]]", "list[list[int]]"},
 	}

@@ -241,11 +241,11 @@ func TestList_EqualAndString(t *testing.T) {
 			render: "[[1]]",
 		},
 		{
-			name:   "strings render without quotes",
+			name:   "strings render quoted",
 			a:      List(TString, []Value{String("a"), String("b")}),
 			b:      List(TString, []Value{String("a"), String("b")}),
 			want:   true,
-			render: "[a, b]",
+			render: `["a", "b"]`,
 		},
 	}
 	for _, tc := range tests {
@@ -297,5 +297,54 @@ func TestValueEqual_IgnoresTheRenderedForm(t *testing.T) {
 	}
 	if plain.String() != "3.5" {
 		t.Errorf("String() = %q, want %q", plain.String(), "3.5")
+	}
+}
+
+func TestValueString_ListElementsAreQuoted(t *testing.T) {
+	tests := []struct {
+		name string
+		val  Value
+		want string
+	}{
+		{"strings", List(TString, []Value{String("a"), String("b")}), `["a", "b"]`},
+		{"ints are not quoted", List(TInt, []Value{Int(1), Int(2)}), "[1, 2]"},
+		{"empty", List(TString, nil), "[]"},
+		{"single", List(TString, []Value{String("x")}), `["x"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.val.String(); got != tt.want {
+				t.Errorf("String() = %s; want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValueString_VersusStringFunction records what the two renderings do on
+// the same input, now that both quote.
+//
+// Fill these expectations in from what the code ACTUALLY produces after the
+// change -- run both, do not predict -- and carry the answer into doc.go. The
+// question the E1 design left open is whether they agree on ESCAPING, not on
+// quoting.
+func TestValueString_VersusStringFunction(t *testing.T) {
+	for _, src := range []string{
+		`['a"b']`,
+		`['café']`,
+		`['a<b>c&d']`,
+		`['a\nb']`,
+	} {
+		t.Run(src, func(t *testing.T) {
+			v, err := Eval(src, nil, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%s): %v", src, err)
+			}
+			s, err := Eval("string("+src+")", nil, TString)
+			if err != nil {
+				t.Fatalf("Eval(string(%s)): %v", src, err)
+			}
+			t.Logf("Value.String() = %s", v.String())
+			t.Logf("string(list)   = %s", s.AsStr())
+		})
 	}
 }

@@ -1027,3 +1027,12 @@ float | int :: round(3.5, 2)
 # unique(): sqi charges one operation per valuesEqual comparison (the real O(n^2) scan); the reference charges only the linear input length (see section header).
 list[int] :: unique([2, 1, 2, 3, 1])
 
+# unique() on strings: same divergence as the entry above, now visible because
+# Task 13 fixed Value.String() to quote list-of-string elements, which moved
+# this case from a value divergence to a value-agreeing one and put its
+# operation count under comparison for the first time. sqi charges one
+# operation per valuesEqual comparison (the real O(n^2) scan); the reference's
+# count is not the input length either (see section header) — same class of
+# divergence, not a new question.
+list[string] :: unique(["a", "b", "a"])
+

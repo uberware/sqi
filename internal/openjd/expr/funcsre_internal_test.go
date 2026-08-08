@@ -23,14 +23,14 @@ func TestRegexFunctions(t *testing.T) {
 		want     string
 		wantType string
 	}{
-		{"re_search finds anywhere", `re_search('asset_v042_final.abc', '_v(\d+)')`, "[_v042, 042]", "list[string]"},
-		{"re_search with no groups", `re_search('hello123', '\d+')`, "[123]", "list[string]"},
+		{"re_search finds anywhere", `re_search('asset_v042_final.abc', '_v(\d+)')`, `["_v042", "042"]`, "list[string]"},
+		{"re_search with no groups", `re_search('hello123', '\d+')`, `["123"]`, "list[string]"},
 		{"re_search misses", `re_search('abc', 'z')`, "null", "nulltype"},
-		{"re_match anchors at the start", `re_match('v042_final', 'v(\d+)')`, "[v042, 042]", "list[string]"},
+		{"re_match anchors at the start", `re_match('v042_final', 'v(\d+)')`, `["v042", "042"]`, "list[string]"},
 		{"re_match refuses a later match", `re_match('asset_v042', 'v(\d+)')`, "null", "nulltype"},
-		{"re_findall no groups gives full matches", `re_findall('shot010_shot020', 'shot\d+')`, "[shot010, shot020]", "list[string]"},
-		{"re_findall one group gives that group", `re_findall('shot010_shot020', 'shot(\d+)')`, "[010, 020]", "list[string]"},
-		{"re_findall two groups gives lists", `re_findall('v1.2 and v4.5', 'v(\d+)\.(\d+)')`, "[[1, 2], [4, 5]]", "list[list[string]]"},
+		{"re_findall no groups gives full matches", `re_findall('shot010_shot020', 'shot\d+')`, `["shot010", "shot020"]`, "list[string]"},
+		{"re_findall one group gives that group", `re_findall('shot010_shot020', 'shot(\d+)')`, `["010", "020"]`, "list[string]"},
+		{"re_findall two groups gives lists", `re_findall('v1.2 and v4.5', 'v(\d+)\.(\d+)')`, `[["1", "2"], ["4", "5"]]`, "list[list[string]]"},
 		{"re_findall misses", `re_findall('abc', '\d')`, "[]", "list[string]"},
 		{"re_sub replaces every match", `re_sub('frame_001', '\d+', '002')`, "frame_002", "string"},
 		{"re_sub with no match", `re_sub('abc', '\d', 'x')`, "abc", "string"},
@@ -46,16 +46,16 @@ func TestRegexFunctions(t *testing.T) {
 		// match, since the class now holds the three literal characters
 		// 'a', '-' and 'z', not the range a-z.
 		{"escaped dash stops it from forming a range in a class", `re_search('b', '[' + re_escape('a-z') + ']')`, "null", "nulltype"},
-		{"re_split on a pattern", `re_split('a1b2c', '\d')`, "[a, b, c]", "list[string]"},
-		{"re_split with maxsplit", `re_split('a1b2c', '\d', 1)`, "[a, b2c]", "list[string]"},
+		{"re_split on a pattern", `re_split('a1b2c', '\d')`, `["a", "b", "c"]`, "list[string]"},
+		{"re_split with maxsplit", `re_split('a1b2c', '\d', 1)`, `["a", "b2c"]`, "list[string]"},
 		// RFC 0006: "at most maxsplit times", nothing defined below zero.
 		// Python's re.split returns the string UNSPLIT for a negative
 		// maxsplit, and that is the ruling here — deliberately DIFFERENT
 		// from C2's split()/rsplit(), where negative means unlimited
 		// because that is str.split's own rule (see reSplit's doc).
-		{"negative maxsplit means no split at all", `re_split('a1b2c', '\d', -1)`, "[a1b2c]", "list[string]"},
-		{"unicode digit class", `re_search('٣', '\d')`, "[٣]", "list[string]"},
-		{"method form", `'hello123'.re_search('\d+')`, "[123]", "list[string]"},
+		{"negative maxsplit means no split at all", `re_split('a1b2c', '\d', -1)`, `["a1b2c"]`, "list[string]"},
+		{"unicode digit class", `re_search('٣', '\d')`, `["٣"]`, "list[string]"},
+		{"method form", `'hello123'.re_search('\d+')`, `["123"]`, "list[string]"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

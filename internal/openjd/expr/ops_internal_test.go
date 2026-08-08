@@ -784,7 +784,7 @@ func TestListOperators(t *testing.T) {
 		{"[1] + [2.0]", "[1.0, 2.0]", "list[float]"},
 		{"[] + [1]", "[1]", "list[int]"},
 		{"[1] + []", "[1]", "list[int]"},
-		{"[['a']] + [['b']]", "[[a], [b]]", "list[list[string]]"},
+		{"[['a']] + [['b']]", `[["a"], ["b"]]`, "list[list[string]]"},
 		{"[0] * 3", "[0, 0, 0]", "list[int]"},
 		{"[1, 2] * 2", "[1, 2, 1, 2]", "list[int]"},
 		{"[1] * 0", "[]", "list[int]"},

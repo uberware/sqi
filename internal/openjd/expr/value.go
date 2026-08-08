@@ -214,7 +214,18 @@ func (v Value) String() string {
 	case CodeList:
 		parts := make([]string, len(v.l))
 		for i, elem := range v.l {
-			parts[i] = elem.String()
+			// Section 1.2.1's string-like codes render QUOTED inside a list, so
+			// ["a", "b"] rather than [a, b]. A bare rendering was ambiguous --
+			// ['a, b'] and ['a', 'b'] both printed as [a, b] -- and diverged
+			// from the reference on 31 corpus cases across list literals,
+			// coercion, comprehensions, flatten/sorted/unique, split/rsplit,
+			// the regex family and the path .parts/.suffixes properties.
+			switch elem.Type.Code {
+			case CodeString, CodePath, CodeRangeExpr:
+				parts[i] = strconv.Quote(elem.s)
+			default:
+				parts[i] = elem.String()
+			}
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case CodeUnresolved:

@@ -26,9 +26,9 @@ func TestRangeAndFlatten(t *testing.T) {
 		{"flatten with an empty inner list", "flatten([[1], [], [2]])", "[1, 2]", "list[int]"},
 		{"flatten of a flat list is the identity", "flatten([1, 2])", "[1, 2]", "list[int]"},
 		{"flatten of an empty list", "flatten([])", "[]", "list[nulltype]"},
-		{"flatten of strings", `flatten([["a"], ["b"]])`, "[a, b]", "list[string]"},
+		{"flatten of strings", `flatten([["a"], ["b"]])`, `["a", "b"]`, "list[string]"},
 		{"flatten only removes one level", "flatten([[[1]], [[2]]])", "[[1], [2]]", "list[list[int]]"},
-		{"the comprehension idiom from the spec", `flatten([["-e", e] for e in ["A=1", "B=2"]])`, "[-e, A=1, -e, B=2]", "list[string]"},
+		{"the comprehension idiom from the spec", `flatten([["-e", e] for e in ["A=1", "B=2"]])`, `["-e", "A=1", "-e", "B=2"]`, "list[string]"},
 		// Regression for the flattenNested defect the C1 task-9 review found:
 		// the outer list's own element type is list[int] (a slice preserves its
 		// receiver's element type at zero length — slice.go), so the flattened
@@ -110,7 +110,7 @@ func TestSortedReversedUnique(t *testing.T) {
 		wantType string
 	}{
 		{"sorted ints", "sorted([3, 1, 2])", "[1, 2, 3]", "list[int]"},
-		{"sorted strings", `sorted(["b", "a", "c"])`, "[a, b, c]", "list[string]"},
+		{"sorted strings", `sorted(["b", "a", "c"])`, `["a", "b", "c"]`, "list[string]"},
 		{"sorted floats", "sorted([3.5, 1.5])", "[1.5, 3.5]", "list[float]"},
 		{"sorted bools put false first", "sorted([true, false])", "[false, true]", "list[bool]"},
 		{"sorted nested lists compare lexicographically", "sorted([[2], [1, 9]])", "[[1, 9], [2]]", "list[list[int]]"},
@@ -121,7 +121,7 @@ func TestSortedReversedUnique(t *testing.T) {
 		{"unique preserves first-seen order", "unique([2, 1, 2, 3, 1])", "[2, 1, 3]", "list[int]"},
 		{"unique of an empty list", "unique([])", "[]", "list[nulltype]"},
 		{"unique with nothing to remove", "unique([1, 2])", "[1, 2]", "list[int]"},
-		{"unique of strings", `unique(["a", "b", "a"])`, "[a, b]", "list[string]"},
+		{"unique of strings", `unique(["a", "b", "a"])`, `["a", "b"]`, "list[string]"},
 		{"method form", "[3, 1, 2].sorted()", "[1, 2, 3]", "list[int]"},
 	}
 	for _, tc := range tests {

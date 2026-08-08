@@ -254,78 +254,6 @@ string :: 'hello'[1:99]
 # types outright instead of applying 1.2.5's int/float equality rule.
 bool :: 2.0 in [1, 2, 3]
 
-# ── known gap in sqi: list-of-strings rendering is not the final form ────────
-#
-# `[1, 2]` coerced to `list[string]` computes correctly on both sides — sqi's
-# elements are genuinely type=string, value="1"/"2" internally (verified
-# directly against the coercion step, not inferred from the printed form) —
-# but the two sides print the result differently: sqi renders `[1, 2]` (no
-# quotes around string elements), the reference renders `["1", "2"]`
-# (JSON-quoted). The spec documents to_string() as doing exactly that for
-# lists: "Lists are converted to JSON" (Recommended Library Interface,
-# ExprValue.to_string()). sqi's Value.String() is explicitly commented as a
-# diagnostics/test rendering rather than the definitive form —
-# internal/openjd/expr/value.go says outright that "the definitive form used
-# when interpolating a value back into a template is sub-project E's to fix."
-# This is a known, already-tracked gap rather than a fresh one: recorded here
-# so the oracle stays green in the meantime, not as a claim that sqi's current
-# rendering is correct or final.
-#
-# It is not specific to coercion: a list literal built directly from string
-# elements hits the identical rendering gap with no coercion involved at all,
-# which is why a second entry below covers ['a', 'b'] under a matching
-# list[string] target rather than "any" — retargeting it off "any" recovers
-# real coverage of 1.2.6 rule 1 (same-type elements, list[string] with no
-# coercion needed) and the target-driven admissibility check that accepts it,
-# even though the final string comparison still diverges on rendering.
-
-# List-of-strings rendering: sqi prints unquoted elements ([1, 2]), the
-# reference prints JSON-quoted elements (["1", "2"]); both sides agree on the
-# actual values and on the list[string] type. Deferred to sub-project E per
-# value.go's own comment on Value.String().
-list[string] :: [1, 2]
-
-# List-of-strings rendering, no coercion involved: sqi prints unquoted
-# elements ([a, b]), the reference prints JSON-quoted elements (["a", "b"]);
-# both sides agree on the actual values and on the list[string] type. Same gap
-# as the entry above, not a new one — retargeted from "any" (which the
-# reference cannot evaluate at all) to list[string] so this case exercises
-# real list-literal/target logic instead of the ANY-target bug; the rendering
-# difference is what remains.
-list[string] :: ['a', 'b']
-
-# List-of-strings rendering, via a comprehension: sqi prints unquoted elements
-# ([a, b]), the reference prints JSON-quoted elements (["a", "b"]); both sides
-# agree on the actual values and on the list[string] type. Same gap as the two
-# entries above, not a new one — the comprehension body is the identity
-# function over already-string elements, so the divergence is confined to
-# Value.String()'s rendering, not to comprehension evaluation itself.
-list[string] :: [s for s in ['a', 'b']]
-
-# List-of-strings rendering, via flatten(): sqi prints unquoted elements
-# ([a, b]), the reference prints JSON-quoted elements (["a", "b"]); both sides
-# agree on the actual values and on the list[string] type. Same gap as the
-# entries above, not a new one — flatten() concatenates already-string
-# sub-lists, so the divergence is confined to Value.String()'s rendering, not
-# to flatten() itself.
-list[string] | list[list[string]] :: flatten([["a"], ["b"]])
-
-# List-of-strings rendering, via sorted(): sqi prints unquoted elements
-# ([a, b, c]), the reference prints JSON-quoted elements (["a", "b", "c"]);
-# both sides agree on the actual values, the order and the list[string] type.
-# Same gap as the entries above, not a new one — sorted() reorders
-# already-string elements, so the divergence is confined to Value.String()'s
-# rendering, not to sorted() itself.
-list[string] :: sorted(["b", "a", "c"])
-
-# List-of-strings rendering, via unique(): sqi prints unquoted elements
-# ([a, b]), the reference prints JSON-quoted elements (["a", "b"]); both sides
-# agree on the actual values and on the list[string] type. Same gap as the
-# entries above, not a new one — unique() de-duplicates already-string
-# elements, so the divergence is confined to Value.String()'s rendering, not
-# to unique() itself.
-list[string] :: unique(["a", "b", "a"])
-
 # ── sqi is right: the reference mistypes list comprehensions under a target type ─
 #
 # Both cases below evaluate correctly and produce the expected nested list
@@ -534,68 +462,6 @@ bool | string :: isalnum('٣')
 
 # title's word boundary on the same rune: see the explanation above.
 string :: title('²x y')
-
-# List-of-strings rendering, via split(): sqi prints unquoted elements
-# ([a, b, c]), the reference prints JSON-quoted elements (["a", "b", "c"]);
-# both sides agree on the actual values and on the list[string] type. Same gap
-# as the flatten()/sorted()/unique()/comprehension entries above, not a new
-# one — split() partitions the input string, so the divergence is confined to
-# Value.String()'s rendering, not to split() itself. Deferred to sub-project E
-# per value.go's own comment on Value.String().
-list[string] | string :: split('a b c')
-
-# List-of-strings rendering, via split() on runs of whitespace: see the
-# explanation above. Same gap, not a new one.
-list[string] | string :: split('a b  c')
-
-# List-of-strings rendering, via split() with leading/trailing whitespace
-# stripped: see the explanation above. Same gap, not a new one.
-list[string] | string :: split('  a b  ')
-
-# List-of-strings rendering, via split() with an explicit separator: see the
-# explanation above. Same gap, not a new one.
-list[string] | string :: split('a,b,c', ',')
-
-# List-of-strings rendering, via split() with an empty field in the middle:
-# see the explanation above. Same gap, not a new one.
-list[string] | string :: split('a,b,,c', ',')
-
-# List-of-strings rendering, via split() on an empty string: sqi's value here
-# is a ONE-ELEMENT list holding a single empty string — verified directly
-# against Value.AsList(), not inferred from the render — identical to the
-# reference's [""]. Value.String() joins that one element with nothing (no
-# separator appears between fewer than two elements, and the element itself
-# is invisible), so the render LOOKS like an empty list ([]) when it is not.
-# This is the same rendering gap as the entries above, at its most misleading
-# edge case, not a semantic difference — do not mistake this for split()
-# returning zero elements.
-list[string] | string :: split('', ',')
-
-# List-of-strings rendering, via split() with maxsplit=1: see the explanation
-# above. Same gap, not a new one.
-list[string] | string | int :: split('a,b,c', ',', 1)
-
-# List-of-strings rendering, via split() with maxsplit=0 (no split performed,
-# the whole string is the one element): see the explanation above. Same gap,
-# not a new one.
-list[string] | string | int :: split('a,b,c', ',', 0)
-
-# List-of-strings rendering, via split() with a maxsplit larger than the
-# number of separators present: see the explanation above. Same gap, not a
-# new one.
-list[string] | string | int :: split('a,b,c', ',', 100)
-
-# List-of-strings rendering, via rsplit() on runs of whitespace: see the
-# explanation above. Same gap, not a new one.
-list[string] | string :: rsplit('  a b  ')
-
-# List-of-strings rendering, via rsplit() with an explicit separator: see the
-# explanation above. Same gap, not a new one.
-list[string] | string :: rsplit('a,b,c', ',')
-
-# List-of-strings rendering, via rsplit() with maxsplit=1 (splitting from the
-# right): see the explanation above. Same gap, not a new one.
-list[string] | string | int :: rsplit('a b c', ' ', 1)
 
 # ── the reference is wrong: a negative maxsplit discards the string ──────────
 #
@@ -860,64 +726,6 @@ string :: repr_sh("it's")
 # shared explanation above.
 string :: repr_py("it's")
 
-# ── known gap in sqi: list-of-strings rendering, C3 regex functions ─────────
-#
-# The pre-existing gap already baselined above for list literals, coercion,
-# comprehensions, flatten(), sorted(), unique() and C2's split()/rsplit(): sqi
-# prints list[string] elements unquoted, the reference JSON-quotes them. Both
-# sides agree on the actual values, the order, and the list[string] (or
-# list[list[string]]) type in every case below — re_search(), re_match(),
-# re_findall() and re_split() are simply the first C3 functions to return a
-# list of strings. Not a new gap, and not evidence the regex semantics
-# themselves disagree: the rendering-immune companions in corpus.txt that wrap
-# these same calls in len(...) or join(..., '|') return an int or a plain
-# string and agree with the reference exactly, which is what actually verifies
-# the underlying matching, grouping and splitting.
-
-# List-of-strings rendering, via re_search() with one capture group: see the
-# explanation above. Same gap, not a new one.
-list[string] | string | nulltype :: re_search('asset_v042_final.abc', '_v(\d+)')
-
-# List-of-strings rendering, via re_search() with no capture groups (the whole
-# match is the sole element): see the explanation above. Same gap, not a new
-# one.
-list[string] | string | nulltype :: re_search('hello123', '\d+')
-
-# List-of-strings rendering, via re_search() matching a non-ASCII Unicode
-# digit: see the explanation above. Same gap, not a new one.
-list[string] | string | nulltype :: re_search('٣', '\d')
-
-# List-of-strings rendering, via re_search() with two capture groups: see the
-# explanation above. Same gap, not a new one.
-list[string] | string | nulltype :: re_search('shot010_v003', 'shot(\d+)_v(\d+)')
-
-# List-of-strings rendering, via re_match() anchored at the start with a
-# capture group: see the explanation above. Same gap, not a new one.
-list[string] | string | nulltype :: re_match('v042_final', 'v(\d+)')
-
-# List-of-strings rendering, via re_findall() with one capture group per match
-# (findall returns the group, not the whole match): see the explanation above.
-# Same gap, not a new one.
-list[string] | string :: re_findall('shot010_shot020_shot035', 'shot(\d+)')
-
-# List-of-strings rendering, via re_findall() with no capture groups (findall
-# returns the whole match per element): see the explanation above. Same gap,
-# not a new one.
-list[string] | string :: re_findall('shot010_shot020_shot035', 'shot\d+')
-
-# List-of-strings rendering, via re_findall() with two capture groups per
-# match (each element is itself a list[string]): see the explanation above.
-# Same gap, not a new one.
-list[list[string]] | list[string] | string :: re_findall('v1.2 and v4.5', 'v(\d+)\.(\d+)')
-
-# List-of-strings rendering, via re_split() with no maxsplit: see the
-# explanation above. Same gap, not a new one.
-list[string] | string :: re_split('a1b2c', '\d')
-
-# List-of-strings rendering, via re_split() with maxsplit=1: see the
-# explanation above. Same gap, not a new one.
-list[string] | string | int :: re_split('a1b2c', '\d', 1)
-
 # ── sqi is right: re_split's negative maxsplit discards the string, too ──────
 #
 # A DIFFERENT rule from the split()/rsplit() negative-maxsplit entries above,
@@ -1095,33 +903,8 @@ string | path :: path('/a/b.').suffix
 
 # The suffixes property reached by the same trailing-dot rule: sqi reports
 # ["."], the reference reports []. Wrapped in join() so this compares the
-# VALUES rather than the list-of-strings rendering below. See the explanation
-# above.
+# VALUES rather than a list-of-strings rendering. See the explanation above.
 string | list[string] | path :: join(path('a.').suffixes, '|')
-
-# ── known gap in sqi: list-of-strings rendering, path properties ─────────────
-#
-# The pre-existing gap already baselined above for list literals, coercion,
-# comprehensions, flatten(), sorted(), unique(), C2's split()/rsplit() and C3's
-# regex family: sqi prints list[string] elements unquoted, the reference
-# JSON-quotes them. Both sides agree on the values, their order and the
-# list[string] type in every case below — parts and suffixes are simply the
-# first PROPERTIES to return a list of strings. Every one of them has a
-# rendering-immune companion in corpus.txt wrapping the same property in
-# join(..., '|') or len(...), and those companions agree with the reference
-# exactly, which is what actually verifies the component split.
-
-# List-of-strings rendering, via .parts on an absolute POSIX path: see the
-# explanation above. Same gap, not a new one.
-list[string] | path :: path('/a/b/c').parts
-
-# List-of-strings rendering, via .parts on a URI (the scheme+authority is the
-# first element): see the explanation above. Same gap, not a new one.
-list[string] | path :: path('s3://b/d/f').parts
-
-# List-of-strings rendering, via .suffixes on a multi-suffix name: see the
-# explanation above. Same gap, not a new one.
-list[string] | path :: path('c.tar.gz').suffixes
 
 # ── sqi is right: with_number replaces the LAST MATCH, not the tail ──────────
 #

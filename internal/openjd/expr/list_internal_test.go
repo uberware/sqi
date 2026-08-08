@@ -15,7 +15,7 @@ func TestEvalListLit_InferenceWithoutTarget(t *testing.T) {
 		wantStr  string
 	}{
 		{"all int", "[1, 2, 3]", "list[int]", "[1, 2, 3]"},
-		{"all string", "['a', 'b']", "list[string]", "[a, b]"},
+		{"all string", "['a', 'b']", "list[string]", `["a", "b"]`},
 		{"all bool", "[true, false]", "list[bool]", "[true, false]"},
 		{"mixed int and float", "[1, 2.0, 3]", "list[float]", "[1.0, 2.0, 3.0]"},
 		{"all float", "[1.0, 2.5]", "list[float]", "[1.0, 2.5]"},
@@ -32,9 +32,9 @@ func TestEvalListLit_InferenceWithoutTarget(t *testing.T) {
 		// isPathStringPair branch had no direct coverage at all. The coercion
 		// tests exercise path -> string through a different code path
 		// (coercible), not through unification.
-		{"mixed string and path", "['a', Param.Dir]", "list[string]", "[a, /tmp]"},
-		{"all path", "[Param.Dir, Param.Dir]", "list[path]", "[/tmp, /tmp]"},
-		{"nested string and path lists", "[['a'], [Param.Dir]]", "list[list[string]]", "[[a], [/tmp]]"},
+		{"mixed string and path", "['a', Param.Dir]", "list[string]", `["a", "/tmp"]`},
+		{"all path", "[Param.Dir, Param.Dir]", "list[path]", `["/tmp", "/tmp"]`},
+		{"nested string and path lists", "[['a'], [Param.Dir]]", "list[list[string]]", `[["a"], ["/tmp"]]`},
 	}
 	syms := MapSymbols{"Param.Dir": Value{Type: TPath, s: "/tmp"}}
 	for _, tc := range tests {
@@ -62,7 +62,7 @@ func TestEvalListLit_InferenceWithTarget(t *testing.T) {
 		wantStr  string
 	}{
 		{"ints to floats", "[1, 2]", "list[float]", "list[float]", "[1.0, 2.0]"},
-		{"ints to strings", "[1, 2]", "list[string]", "list[string]", "[1, 2]"},
+		{"ints to strings", "[1, 2]", "list[string]", "list[string]", `["1", "2"]`},
 		{"empty adopts the target", "[]", "list[int]", "list[int]", "[]"},
 		{"nested applies recursively", "[[1], [2]]", "list[list[float]]", "list[list[float]]", "[[1.0], [2.0]]"},
 		{"inside a conditional", "[1, 2] if true else []", "list[float]", "list[float]", "[1.0, 2.0]"},

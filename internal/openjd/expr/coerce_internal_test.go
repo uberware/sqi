@@ -363,7 +363,7 @@ func TestCoerce_Lists(t *testing.T) {
 	}{
 		{"identity", List(TInt, []Value{Int(1)}), "list[int]", "[1]", "list[int]"},
 		{"elementwise int to float", List(TInt, []Value{Int(1), Int(2)}), "list[float]", "[1.0, 2.0]", "list[float]"},
-		{"elementwise to string", List(TInt, []Value{Int(1)}), "list[string]", "[1]", "list[string]"},
+		{"elementwise to string", List(TInt, []Value{Int(1)}), "list[string]", `["1"]`, "list[string]"},
 		{"empty adopts any element type", List(TNull, nil), "list[string]", "[]", "list[string]"},
 		{"nested elementwise", List(ListOf(TInt), []Value{List(TInt, []Value{Int(1)})}), "list[list[float]]", "[[1.0]]", "list[list[float]]"},
 		{"range_expr to list[int]", rng, "list[int]", "[1, 2, 3]", "list[int]"},
