@@ -47,10 +47,10 @@ import (
 // caught it) still parses and evaluates fine, is accepted, and fails —
 // visibly baselined rather than silently passed.
 //
-// TestConformance_EXPRNotRegistered fails the build the moment
-// internal/openjd registers EXPR. At that point this file and its baseline
-// must be deleted and EXPR/job_templates left to the template path, which will
-// then score it end to end.
+// TestConformance_EXPRNotSupported fails the build the moment
+// internal/openjd marks EXPR StatusSupported. At that point this file and its
+// baseline must be deleted and EXPR/job_templates left to the template path,
+// which will then score it end to end.
 func RunExprCase(tc TestCase, data []byte) Result {
 	res := Result{Case: tc, State: StateLive}
 

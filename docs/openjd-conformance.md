@@ -171,12 +171,14 @@ when its scope-aware evaluation can reject the two expressions for the rule they
 actually violate, both come off the list and the score goes back up. See that
 file's header, which records the whole sequence.
 
-The path is deleted the moment EXPR is registered for real:
-`TestConformance_EXPRNotRegistered` fails the build if `openjd.LookupExtension("EXPR")`
-ever succeeds, forcing `test/conformance/exprcase.go`, `exprcase_test.go`,
-`baseline-expr.txt`, `TestConformance_Expressions` and that guard itself to be
-deleted in favor of letting `TestConformance_Templates` score `EXPR/job_templates`
-end to end.
+The path is deleted the moment EXPR is supported for real: as of sub-project E2,
+EXPR is registered (status `"in-progress"`) so this suite can score EXPR fixtures
+through the real parse and validate path, but production still rejects an EXPR
+template because it is not yet `StatusSupported`. `TestConformance_EXPRNotSupported`
+fails the build the moment `internal/openjd` marks EXPR `StatusSupported`, forcing
+`test/conformance/exprcase.go`, `exprcase_test.go`, `baseline-expr.txt`,
+`TestConformance_Expressions` and that guard itself to be deleted in favor of
+letting `TestConformance_Templates` score `EXPR/job_templates` end to end.
 
 This is also why the portability claim in `README.md` and `ROADMAP.md` carries an
 explicit caveat rather than being dropped. The measured position is narrower and

@@ -78,7 +78,12 @@ func KindFor(path string) string {
 // fixture — regardless of extension, including "base" — is not applicable.
 // Only once kind clears that gate does extension matter: "base" is always
 // live, and any other extension is live only when it is registered in
-// internal/openjd's extension registry.
+// internal/openjd's extension registry AND marked openjd.StatusSupported.
+// Registered-but-in-progress (EXPR, since sub-project E2) does not count as
+// live here: validateExtensions still rejects every such template, so scoring
+// its fixtures through this path would report 209 false failures instead of
+// the honest "not applicable" — that suite is RunExprCase's until the
+// extension's status flips.
 func Classify(extension, kind string) State {
 	if kind == "env_templates" {
 		return StateNotApplicable
@@ -86,7 +91,7 @@ func Classify(extension, kind string) State {
 	if extension == "base" {
 		return StateLive
 	}
-	if _, ok := openjd.LookupExtension(extension); ok {
+	if ext, ok := openjd.LookupExtension(extension); ok && ext.Status == openjd.StatusSupported {
 		return StateLive
 	}
 	return StateNotApplicable

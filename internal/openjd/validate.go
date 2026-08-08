@@ -65,24 +65,35 @@ func validateExtensions(t *JobTemplate) ValidationErrors {
 	// Build a fast lookup set from the declared extensions and report any
 	// unsupported ones. Format check runs first.
 	declared := make(map[string]struct{}, len(t.Extensions))
-	for i, ext := range t.Extensions {
+	for i, name := range t.Extensions {
 		// Check format FIRST: extension names must match [A-Z_0-9]{3,128}
-		if !extensionNameRE.MatchString(ext) {
+		if !extensionNameRE.MatchString(name) {
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/extensions/%d", i),
-				Message: fmt.Sprintf("invalid extension name %q; must match [A-Z_0-9]{3,128}", ext),
+				Message: fmt.Sprintf("invalid extension name %q; must match [A-Z_0-9]{3,128}", name),
 			})
 			continue // Skip unsupported-set check and declared-set addition for malformed names
 		}
 
-		// Check if the well-formed name is supported
-		if _, ok := LookupExtension(ext); !ok {
+		// Two-part gate: the name must be registered AND the entry must be
+		// supported. A registered-but-unsupported extension gets its own
+		// message — reusing "unsupported extension" here would say the name is
+		// unknown, which is false and sends a reader to the wrong place.
+		entry, known := LookupExtension(name)
+		switch {
+		case !known:
 			errs = append(errs, ValidationError{
 				Pointer: fmt.Sprintf("/extensions/%d", i),
-				Message: fmt.Sprintf("unsupported extension %q", ext),
+				Message: fmt.Sprintf("unsupported extension %q", name),
+			})
+		case entry.Status != StatusSupported:
+			errs = append(errs, ValidationError{
+				Pointer: fmt.Sprintf("/extensions/%d", i),
+				Message: fmt.Sprintf("extension %q is registered but not yet supported (status %q)",
+					name, entry.Status),
 			})
 		}
-		declared[ext] = struct{}{}
+		declared[name] = struct{}{}
 	}
 
 	// If any step declares a CHUNK[INT] parameter, TASK_CHUNKING must appear

@@ -134,18 +134,27 @@ const exprBaselinePath = "baseline-expr.txt"
 // minExpectedTests does for the template path.
 const minExpectedExprFixtures = 200
 
-// TestConformance_EXPRNotRegistered is the drift guard for the
+// TestConformance_EXPRNotSupported is the drift guard for the
 // expression-level scoring path.
 //
 // That path (conformance.RunExprCase) exists only because internal/openjd
 // rejects EXPR templates outright, which makes the template path unable to
-// score EXPR fixtures without reporting 180 false passes. The moment
-// production registers EXPR, the workaround becomes not merely unnecessary but
-// actively misleading — two paths scoring the same fixtures by different
-// rules. Failing here forces its removal rather than letting it rot.
-func TestConformance_EXPRNotRegistered(t *testing.T) {
-	if _, ok := openjd.LookupExtension("EXPR"); ok {
-		t.Fatal("internal/openjd now registers EXPR.\n" +
+// score EXPR fixtures without reporting 180 false passes. EXPR is registered
+// (status "in-progress") so the conformance harness can drive it through the
+// real parse and validate path, but the moment production marks it
+// StatusSupported, the workaround becomes not merely unnecessary but actively
+// misleading — two paths scoring the same fixtures by different rules.
+// Failing here forces its removal rather than letting it rot.
+func TestConformance_EXPRNotSupported(t *testing.T) {
+	ext, ok := openjd.LookupExtension("EXPR")
+	if !ok {
+		t.Fatal("EXPR is no longer in the extension registry.\n" +
+			"Sub-project E2 registers it with status \"in-progress\" so this\n" +
+			"suite can score EXPR fixtures through the real template path.\n" +
+			"Removing the entry breaks that scoring path.")
+	}
+	if ext.Status == openjd.StatusSupported {
+		t.Fatal("internal/openjd now SUPPORTS EXPR.\n" +
 			"The expression-level conformance path is obsolete: delete\n" +
 			"test/conformance/exprcase.go, exprcase_test.go, baseline-expr.txt,\n" +
 			"TestConformance_Expressions, collectEXPRFixtures, this test, and the\n" +

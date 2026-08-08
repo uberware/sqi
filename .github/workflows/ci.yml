@@ -963,7 +963,7 @@ jobs:
           grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_Expressions' /tmp/conformance.log
-          grep -q -- '--- PASS: TestConformance_EXPRNotRegistered' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_EXPRNotSupported' /tmp/conformance.log
 
   # Differential-tests internal/openjd/expr against the implementation the EXPR
   # specification names as its reference — the openjd.expr namespace of

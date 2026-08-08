@@ -82,17 +82,19 @@ func TestValidateExtensions_RedactedEnvVars_OK(t *testing.T) {
 	}
 }
 
-// TestValidateExtensions_EXPR_Error confirms that the EXPR extension (not
-// implemented by sqi) is rejected.
+// TestValidateExtensions_EXPR_Error confirms that the EXPR extension, which is
+// registered but not yet StatusSupported, is still rejected — with a message
+// naming its status rather than the "unsupported extension" (unknown-name)
+// wording, since EXPR IS known.
 func TestValidateExtensions_EXPR_Error(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
 	tmpl.Extensions = []string{"EXPR"}
 	errs := openjd.Validate(tmpl)
 	if !containsPointer(errs, "/extensions/0") {
-		t.Errorf("expected /extensions/0 error for unsupported EXPR; got: %v", errs)
+		t.Errorf("expected /extensions/0 error for EXPR; got: %v", errs)
 	}
-	if !containsMessage(errs, `unsupported extension`) {
-		t.Errorf("expected 'unsupported extension' message; got: %v", errs)
+	if !containsMessage(errs, `in-progress`) {
+		t.Errorf("expected message naming the in-progress status; got: %v", errs)
 	}
 }
 
@@ -221,11 +223,13 @@ func TestValidateExtensions_FormatError_Empty(t *testing.T) {
 }
 
 // TestValidateExtensions_FormatOK_UnsupportedName confirms that a well-formed
-// but unsupported extension name (like "EXPR") still gets the "unsupported"
-// error, not a format error.
+// but unregistered extension name (like "UNSUPPORTED") still gets the
+// "unsupported" error, not a format error. EXPR no longer serves as this
+// example: it IS registered (status in-progress), so its rejection message
+// names that status instead — see TestValidateExtensions_EXPR_Error.
 func TestValidateExtensions_FormatOK_UnsupportedName(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
-	tmpl.Extensions = []string{"EXPR"}
+	tmpl.Extensions = []string{"UNSUPPORTED"}
 	errs := openjd.Validate(tmpl)
 	if !containsPointer(errs, "/extensions/0") {
 		t.Errorf("expected /extensions/0 error; got: %v", errs)
