@@ -22,8 +22,20 @@ import (
 // SAME evaluator, either type-checks against placeholders or runs for real
 // against submitted values.
 //
-// step may be nil for a job-level position; tmpl may carry no parameters;
-// params may be nil for phase 1 (or when no concrete values are available yet).
+// step may be nil for a job-level position; env may be nil where the position
+// is not inside any environment's script; tmpl may carry no parameters;
+// params may be nil for phase 1 (or when no concrete values are available
+// yet).
+//
+// env identifies WHICH environment's embedded files back Env.File. -- a
+// template can declare many job and step environments, each with its own
+// files, and Env.File.X means a different file depending on which one an
+// expression sits inside. That is not reachable from tmpl/step alone (a
+// StepTemplate holds a slice of StepEnvironments, not "the one this position
+// is inside"), so the caller -- which walks the template and knows exactly
+// which environment it is currently inside -- must say so explicitly. A nil
+// env binds no Env.File symbols, the same way a nil step binds no Task.File
+// or Task.Param symbols.
 //
 // The type-mapping rules (PATH, LIST[PATH], CHUNK[INT], and the ParseType
 // floor) are copied from test/conformance/exprcase.go's DeclaredSymbols, which
@@ -33,7 +45,9 @@ import (
 // regardless of position), while this one works from the parsed model and is
 // scope-aware. They stay separate until sub-project H deletes the harness
 // copy, at which point DeclaredSymbols is retired in favor of this path.
-func symbolsFor(tmpl *JobTemplate, step *StepTemplate, scope Scope, params map[string]string) expr.MapSymbols {
+func symbolsFor(
+	tmpl *JobTemplate, step *StepTemplate, env *Environment, scope Scope, params map[string]string,
+) expr.MapSymbols {
 	syms := expr.MapSymbols{}
 
 	for _, sym := range scopeFixed(scope) {
@@ -53,8 +67,14 @@ func symbolsFor(tmpl *JobTemplate, step *StepTemplate, scope Scope, params map[s
 				bindTaskParamSymbols(step, syms)
 				boundTaskParams = true
 			}
-		case "Task.File.", "Env.File.":
-			bindEmbeddedFileSymbols(step, fam.Prefix, syms)
+		case "Task.File.":
+			if step != nil && step.Script != nil {
+				bindEmbeddedFileSymbols(step.Script.EmbeddedFiles, fam.Prefix, syms)
+			}
+		case "Env.File.":
+			if env != nil && env.Script != nil {
+				bindEmbeddedFileSymbols(env.Script.EmbeddedFiles, fam.Prefix, syms)
+			}
 		}
 	}
 
@@ -113,6 +133,15 @@ func jobParamTypes(declared string) (paramType, rawType expr.Type) {
 // reported as still-unknown rather than causing symbolsFor to panic or lie
 // about what is bound. Validating submitted parameter values against their
 // declared type is bind.go's job, upstream of this call.
+//
+// The CodePath case hardcodes PathPOSIX rather than taking a PathFormat from
+// the caller. That is harmless today -- nothing calls symbolsFor yet -- but a
+// future caller that also sets expr.WithPathFormat(expr.PathWindows) for the
+// same evaluation would get a mismatched flavor for a concrete Param.<path>
+// value: this Value and the evaluator's own path literals would disagree.
+// Left as a known gap rather than fixed now, since symbolsFor has no
+// PathFormat input to thread through yet and inventing one without a caller
+// to drive it would be speculative.
 func concreteJobParamValue(t expr.Type, raw string) expr.Value {
 	switch t.Code {
 	case expr.CodeInt:
@@ -171,24 +200,18 @@ func taskParamType(declared TaskParamType) expr.Type {
 }
 
 // bindEmbeddedFileSymbols binds prefix+<name> as an unresolved path for every
-// embedded file in step's script.
+// embedded file in files.
 //
-// step is the only source of embedded files symbolsFor's signature gives it:
-// there is no separate Environment parameter, so Task.File. (bound for
-// ScopeStepScript) and Env.File. (bound for ScopeJobEnvironment and
-// ScopeStepEnvironment) both read step.Script.EmbeddedFiles here, matching
-// DeclaredSymbols' own stepSymbols, which binds both families from the same
-// source for the same reason. This under-serves ScopeJobEnvironment in
-// particular: a job environment has no associated StepTemplate, so step is
-// nil there and no Env.File symbols are bound at all. Threading the
-// Environment itself through is left to whichever later task wires a real
-// caller to symbolsFor, which is the first one with an Environment value to
-// pass.
-func bindEmbeddedFileSymbols(step *StepTemplate, prefix string, syms expr.MapSymbols) {
-	if step == nil || step.Script == nil {
-		return
-	}
-	for _, f := range step.Script.EmbeddedFiles {
+// The caller picks which files: Task.File. is bound from a step's OWN script
+// (step.Script.EmbeddedFiles), Env.File. from the specific environment's
+// script the caller identifies (env.Script.EmbeddedFiles) -- they are
+// DIFFERENT sources, unlike DeclaredSymbols' scope-blind stepSymbols, which
+// binds both families from a step's script alone because it has no separate
+// environment context to draw on. Conflating the two here previously bound
+// Env.File.<name> from a step's task-script files rather than the
+// environment's own -- fixed by requiring the caller to pass the right slice.
+func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapSymbols) {
+	for _, f := range files {
 		if f.Name == "" {
 			continue
 		}

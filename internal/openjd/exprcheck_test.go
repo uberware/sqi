@@ -22,7 +22,7 @@ func TestSymbolsFor_ScopeGatesTheFixedSymbols(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.scope.String(), func(t *testing.T) {
-			syms := symbolsFor(tmpl, nil, tc.scope, nil)
+			syms := symbolsFor(tmpl, nil, nil, tc.scope, nil)
 			for _, name := range tc.present {
 				if _, ok := syms[name]; !ok {
 					t.Errorf("%s: %s missing", tc.scope, name)
@@ -46,7 +46,7 @@ func TestSymbolsFor_JobParameterTypes(t *testing.T) {
 			{Name: "P", Type: "PATH"},
 		},
 	}
-	syms := symbolsFor(tmpl, nil, ScopeJob, nil)
+	syms := symbolsFor(tmpl, nil, nil, ScopeJob, nil)
 	tests := []struct{ name, want string }{
 		{"Param.S", "unresolved[string]"},
 		{"Param.N", "unresolved[int]"},
@@ -75,7 +75,7 @@ func TestSymbolsFor_ConcreteParamsAtPhaseTwo(t *testing.T) {
 		Name:                 "T",
 		ParameterDefinitions: []JobParameter{{Name: "N", Type: "INT"}},
 	}
-	syms := symbolsFor(tmpl, nil, ScopeJob, map[string]string{"N": "42"})
+	syms := symbolsFor(tmpl, nil, nil, ScopeJob, map[string]string{"N": "42"})
 	v, ok := syms["Param.N"]
 	if !ok {
 		t.Fatal("Param.N missing")
@@ -85,5 +85,73 @@ func TestSymbolsFor_ConcreteParamsAtPhaseTwo(t *testing.T) {
 	}
 	if got := v.String(); got != "42" {
 		t.Errorf("Param.N = %s, want 42", got)
+	}
+}
+
+// TestSymbolsFor_FamilyMembersScopedCorrectly builds a template with real
+// Task.Param., Task.File. and Env.File. members and checks each lands only in
+// the scopes that expose its family -- not merely that fixed symbols do,
+// which is all the other tests here check. It also pins a real regression:
+// Env.File. must come from the ENVIRONMENT's own script, not from the step's
+// task script. Before the fix, ScopeStepEnvironment (which exposes Env.File.
+// but not Task.File.) fabricated "Env.File.TaskScript" from step's script,
+// while the environment's own "EnvScript" file was never bound at all.
+func TestSymbolsFor_FamilyMembersScopedCorrectly(t *testing.T) {
+	tmpl := &JobTemplate{Name: "T"}
+	step := &StepTemplate{
+		Name: "Step1",
+		Script: &StepScript{
+			EmbeddedFiles: []EmbeddedFile{{Name: "TaskScript", Type: EmbeddedFileTypeText}},
+		},
+		ParameterSpace: &StepParameterSpace{
+			TaskParameterDefinitions: []TaskParamDefinition{{Name: "Frame", Type: TaskParamTypeInt}},
+		},
+	}
+	env := &Environment{
+		Name: "Env1",
+		Script: &EnvironmentScript{
+			EmbeddedFiles: []EmbeddedFile{{Name: "EnvScript", Type: EmbeddedFileTypeText}},
+		},
+	}
+
+	tests := []struct {
+		scope   Scope
+		present []string
+		absent  []string
+	}{
+		{
+			ScopeJob, nil,
+			[]string{"Task.Param.Frame", "Task.File.TaskScript", "Env.File.EnvScript", "Env.File.TaskScript"},
+		},
+		{
+			ScopeJobEnvironment,
+			[]string{"Env.File.EnvScript"},
+			[]string{"Task.Param.Frame", "Task.File.TaskScript", "Env.File.TaskScript"},
+		},
+		{
+			ScopeStepEnvironment,
+			[]string{"Env.File.EnvScript"},
+			[]string{"Task.Param.Frame", "Task.File.TaskScript", "Env.File.TaskScript"},
+		},
+		{
+			ScopeStepScript,
+			[]string{"Task.Param.Frame", "Task.File.TaskScript"},
+			[]string{"Env.File.EnvScript", "Env.File.TaskScript"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.scope.String(), func(t *testing.T) {
+			syms := symbolsFor(tmpl, step, env, tc.scope, nil)
+			for _, name := range tc.present {
+				if _, ok := syms[name]; !ok {
+					t.Errorf("%s: %s missing", tc.scope, name)
+				}
+			}
+			for _, name := range tc.absent {
+				if _, ok := syms[name]; ok {
+					t.Errorf("%s: %s present but must not be", tc.scope, name)
+				}
+			}
+		})
 	}
 }
