@@ -21,9 +21,13 @@ type Segment struct {
 
 // Segments splits input into literal runs and reference bodies, in order.
 //
-// It returns a *MalformedError on an unclosed or empty reference, matching
-// Resolve and References exactly -- the three share parse, so no caller can
-// disagree with another about where a reference starts and ends.
+// It returns a *MalformedError on an unclosed or empty reference, sharing the
+// underlying scanner with Resolve and References (parse and parseRaw both
+// call scan), so all three agree on where a reference starts and ends. They
+// do NOT agree on whether a given body is well-formed: Segments reports a
+// body like "Param.1bad" unjudged, where Resolve and References would reject
+// it via parse's validName check -- that judgment is deliberately left to the
+// caller, per the package doc comment.
 func Segments(input string) ([]Segment, error) {
 	refs, trailing, err := parseRaw(input)
 	if err != nil {

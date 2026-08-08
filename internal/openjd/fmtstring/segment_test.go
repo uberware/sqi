@@ -64,6 +64,9 @@ func TestLoneRef(t *testing.T) {
 		{"{{A}}{{B}}", "", false},
 		{"plain", "", false},
 		{"", "", false},
+		// LoneRef's err != nil branch: an unclosed reference is a
+		// *MalformedError from Segments, not a lone reference.
+		{"{{ Param.X", "", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {

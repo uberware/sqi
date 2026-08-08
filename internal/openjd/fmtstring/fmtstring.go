@@ -13,7 +13,6 @@ const (
 type ref struct {
 	literal string // literal text before this reference
 	name    string // trimmed reference body
-	raw     string // the reference's original text, including braces
 }
 
 // Resolve replaces every "{{ name }}" reference in input with the value
@@ -81,22 +80,13 @@ func References(input string) ([]string, error) {
 
 // parse scans input into a sequence of references (each carrying the literal
 // text that precedes it) plus any trailing literal text after the final
-// reference, then validates each reference body as a dotted OpenJD identifier.
-// It returns a *MalformedError on the first malformed reference.
+// reference, validating each reference body as a dotted OpenJD identifier
+// inline as it is found. It returns a *MalformedError on the first malformed
+// reference -- whichever comes first in the input, whether that malformation
+// is a bad identifier or a syntax error such as an unclosed "{{" -- matching
+// the single-pass ordering this package has always had.
 func parse(input string) (refs []ref, trailing string, err error) {
-	refs, trailing, err = parseRaw(input)
-	if err != nil {
-		return nil, "", err
-	}
-	for _, r := range refs {
-		if !validName(r.name) {
-			return nil, "", &MalformedError{
-				Ref:    r.raw,
-				Reason: "not a valid dotted identifier",
-			}
-		}
-	}
-	return refs, trailing, nil
+	return scan(input, validName)
 }
 
 // parseRaw scans input into a sequence of references (each carrying the
@@ -107,6 +97,16 @@ func parse(input string) (refs []ref, trailing string, err error) {
 // caller's job, since the base specification requires a dotted identifier
 // while the EXPR extension allows an arbitrary expression.
 func parseRaw(input string) (refs []ref, trailing string, err error) {
+	return scan(input, nil)
+}
+
+// scan is the single scanner shared by parse and parseRaw. It walks input
+// left to right, and when validate is non-nil, checks each reference body
+// against it inline -- in the same pass that finds unclosed references and
+// empty bodies -- so the first malformed reference in the input, of any
+// kind, is the one reported. A nil validate skips the body check entirely,
+// which is what lets parseRaw report only syntax errors.
+func scan(input string, validate func(string) bool) (refs []ref, trailing string, err error) {
 	rest := input
 	for {
 		open := strings.Index(rest, openDelim)
@@ -134,8 +134,14 @@ func parseRaw(input string) (refs []ref, trailing string, err error) {
 				Reason: "empty variable name",
 			}
 		}
+		if validate != nil && !validate(name) {
+			return nil, "", &MalformedError{
+				Ref:    fullRef,
+				Reason: "not a valid dotted identifier",
+			}
+		}
 
-		refs = append(refs, ref{literal: literal, name: name, raw: fullRef})
+		refs = append(refs, ref{literal: literal, name: name})
 		rest = afterOpen[closeIdx+len(closeDelim):]
 	}
 }
