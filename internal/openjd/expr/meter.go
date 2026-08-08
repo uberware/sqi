@@ -184,6 +184,20 @@ func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Val
 // that, this instrument would be structurally blind to a leak or a missing
 // bound check in exactly the region WithMemoryLimit most needs to reach (see
 // coerceTop's own doc comment).
+//
+// WHAT THE CORPUS-WIDE SWEEP DOES NOT REACH, stated because "over the whole
+// corpus" reads broader than it delivers: this function takes no Symbols and
+// passes MapSymbols(nil), and test/oracle/corpus.txt contains NO SYMBOL
+// REFERENCES AT ALL. So no corpus case ever produces an unresolved value,
+// and the sweep touches none of the roughly thirteen release sites on the
+// unresolved paths (evalIndex's and evalSlice's unresolved branches,
+// sliceComponent, condResult, applyBinary's and callFunction's
+// unresolved-operand returns, and their siblings) and no symbol-backed
+// receiver. That is a COVERAGE gap, not a known correctness one: the final
+// whole-branch review probed 67 symbol-bearing and unresolved-path
+// expressions by hand and every one balanced exactly. Closing it properly
+// needs a corpus that binds symbols, which is sub-project E's to add when
+// template integration gives it a reason to.
 func EvalForBalanceCheck(src string, target Type) (live, resultSize int64, err error) {
 	e, perr := Parse(src)
 	if perr != nil {

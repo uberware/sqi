@@ -10,7 +10,21 @@ import (
 
 // PROBE (sub-project E1, Task 7), .venv-oracle/bin/python -c "..." against
 // openjd-model 0.11.1. Pasted verbatim as evidence, per "run something first,
-// decide against the spec text second." All 42 rows across funcsstrcase.go
+// decide against the spec text second."
+//
+// HOW TO REPRODUCE THESE NUMBERS (added by the final whole-branch review;
+// cost_misc_internal_test.go's probe header already carried this note and
+// this one did not). Wherever a row below is written with a repetition
+// shorthand such as 'a'*300 or 'xy'*150, the repetition was performed in
+// PYTHON and the resulting literal spliced into the expression text. It was
+// NOT evaluated by the expression language's own "*" operator: doing that
+// bakes "*"'s own rule-1 and rule-3 charge into the reading, and the numbers
+// then do not reproduce -- ('a'*300).upper() measures 6 in-expression, not
+// the 3 transcribed here. funcsstrsplit.go names this exact trap and avoids
+// it for join(); it is the third instance of the same failure class in this
+// sub-project, which is why it is written down rather than assumed.
+//
+// All 42 rows across funcsstrcase.go
 // (11), funcsstrfind.go (16), funcsstrsplit.go (9) and funcsstrpad.go (6) were
 // probed; the 300/600-byte inputs below are the ones that actually
 // DISCRIMINATE (a sub-256-byte probe cannot, per the brief's own warning: it

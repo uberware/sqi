@@ -162,12 +162,27 @@ var convFuncs = map[string][]Shape{
 				return String(s), nil
 			},
 		},
-		// RFC 0006 calls this "the JSON string representation", and it is NOT
-		// Value.String(): that renders a list's string elements unquoted
-		// ("[a, b]") as a diagnostic form, which is a known divergence deferred
-		// to sub-project E. This one quotes them ("[\"a\", \"b\"]"), matching
-		// the reference implementation. Two renderings, two functions, on
-		// purpose.
+		// RFC 0006 calls this "the JSON string representation", and it is a
+		// separate implementation from Value.String() -- two renderings, two
+		// functions, on purpose: this row encodes with encoding/json and
+		// SetEscapeHTML(false) (writeJSONValue), while Value.String() quotes a
+		// list's string elements with strconv.Quote (value.go).
+		//
+		// CORRECTION (final whole-branch review, sub-project E1): an earlier
+		// revision said Value.String() "renders a list's string elements
+		// unquoted ('[a, b]') as a diagnostic form, which is a known
+		// divergence deferred to sub-project E". That was true when written
+		// and is FALSE now -- sub-project E1 CLOSED the divergence rather than
+		// deferring it, and Value.String() has quoted list string elements
+		// since. What is true today: the two renderings agree byte-for-byte on
+		// quoting AND on escaping for every case measured
+		// (TestValueString_VersusStringFunction's thirteen), but they remain
+		// independent implementations and do NOT agree universally -- they
+		// diverge on the C0 controls, vertical tab, DEL and invalid UTF-8,
+		// pinned in the opposite direction by
+		// TestValueString_DivergesFromStringFunctionOutsideMeasuredSet. Do not
+		// restate the old claim, and do not widen the new one past the set it
+		// was measured on; doc.go carries the full statement.
 		//
 		// Cost{ArgElements: {0}} — a DELIBERATE divergence from the reference,
 		// which measures a flat 1 for string([1,2,3]) AND for a 10-element
