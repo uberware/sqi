@@ -1117,3 +1117,13 @@ list[int] :: unique([2, 1, 2, 3, 1])
 # divergence, not a new question.
 list[string] :: unique(["a", "b", "a"])
 
+
+# round(2.0, 309) joins the positive-ndigits count family already recorded
+# above: the reference charges ceil(ndigits/256) on top of the call, tracking
+# the length of the RENDERED decimal string. That string lives on Value.fs, a
+# presentation-only field Cost's ArgBytes/ResultBytes deliberately never read
+# (section 1.3.4's rule), and ndigits is an int, which rule 3 does not name
+# ("a string or path value"). go=1, ref=3. Same adjudication as the family
+# header for round above; this case is new only because the corpus had no
+# large-ndigits round case until the positive-branch overflow fix added one.
+int | float :: round(2.0, 309)

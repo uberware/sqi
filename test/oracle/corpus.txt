@@ -430,6 +430,27 @@ int	round(9223372036854775806, -1)
 # above already does — see baseline.txt.
 int | float	round(3.5, -400)
 
+# roundToDigits's POSITIVE-ndigits branch had the mirror-image defect, found
+# after the negative one was fixed and left unguarded for a whole sub-project:
+# math.Pow(10, ndigits) is +Inf from 309 up, and below that f*scale can still
+# overflow on its own for a large enough f, so the unusable window depends on
+# f's magnitude rather than on ndigits alone. Both windows produced a spurious
+# ERROR (errNotANumber and errInfinite respectively) for a rounding whose
+# answer is simply f: no float64 carries enough precision for a rounding at
+# 1e-308 resolution to change it. There was no corpus case in either window,
+# which is why it survived.
+int | float	round(2.0, 309)
+int | float	round(2.0, 308)
+int | float	round(1e300, 300)
+
+# roundIntToDigits had the same shape of over-strictness: it bailed out with an
+# integer overflow as soon as the accumulated scale passed MaxInt64, even where
+# the answer is 0 and representable. The last two straddle the tie at half of
+# 10^19, which is exact in int64 and not in float64.
+int	round(1234, -19)
+int	round(5000000000000000000, -19)
+int	round(5000000000000000001, -19)
+
 int	min(3, 7)
 float	min(3.5, 7.5)
 float | int	min(1, 2.0)

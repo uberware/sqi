@@ -348,8 +348,25 @@ func roundToDigits(f float64, ndigits int64) (Value, error) {
 			return Value{}, fmt.Errorf("%w: %d decimal places exceeds the limit of %d",
 				errTooLarge, ndigits, maxStringBytes)
 		}
-		scale := math.Pow(10, float64(ndigits))
-		rounded := math.RoundToEven(f*scale) / scale
+		// Scaling is only usable while both the scale and the scaled value stay
+		// finite. math.Pow(10, ndigits) is +Inf from ndigits 309 up, and below
+		// that f*scale can still overflow on its own for a large enough f — so
+		// the unusable window depends on f's magnitude, not on ndigits alone
+		// (round(2.0, 308) and round(1e300, 300) both land in it).
+		//
+		// Past that point the rounding is the IDENTITY, and that is the answer
+		// rather than an error: no float64 carries enough precision for a
+		// rounding at 1e-308 resolution to change it, so f is already its own
+		// round-to-even at that place. round(2.0, 307) returns 2.000…0 and
+		// there is no mathematical discontinuity at 308 — only an artifact of
+		// the multiply. Computing it directly is the same move the negative
+		// branch below makes, for the same reason.
+		rounded := f
+		if scale := math.Pow(10, float64(ndigits)); !math.IsInf(scale, 0) {
+			if scaled := f * scale; !math.IsInf(scaled, 0) {
+				rounded = math.RoundToEven(scaled) / scale
+			}
+		}
 		out, err := floatValue(rounded)
 		if err != nil {
 			return Value{}, err
@@ -379,6 +396,32 @@ func roundToDigits(f float64, ndigits int64) (Value, error) {
 	return Int(n), nil
 }
 
+// roundIntBeyondScale answers round(n, -places) for a places whose scale,
+// 10^places, is past int64's range — the case roundIntToDigits' accumulation
+// loop bails out on.
+//
+// It returns the answer rather than an error, because there is one and it is
+// representable. The scale exceeds MaxInt64 and so exceeds |n|, which makes the
+// quotient 0; the only question is whether the remainder — all of n — reaches
+// half the scale and rounds away from zero. If it does the result is ±scale,
+// which is not representable and IS a genuine overflow; if it does not, the
+// result is 0. roundToDigits' float branch already returns 0 for the same
+// shape of question (round(3.5, -400)), and bailing out here made
+// round(1234, -19) an error where round(1234.0, -19) was 0.
+//
+// Exactly one exponent can be ambiguous. 10^19 is the first power past
+// MaxInt64, and its half — 5e18 — is representable, so it has to be compared
+// against. Every larger power has a half above MaxInt64, which no n can reach,
+// so those all round to 0. The bound is inclusive because a remainder exactly
+// at half rounds to even, and the quotient 0 is already even.
+func roundIntBeyondScale(n, places int64) (Value, error) {
+	const halfOfTheFirstUnrepresentablePower = 5_000_000_000_000_000_000
+	if places > 19 || (n >= -halfOfTheFirstUnrepresentablePower && n <= halfOfTheFirstUnrepresentablePower) {
+		return Int(0), nil
+	}
+	return Value{}, errIntOverflow
+}
+
 // roundIntToDigits implements round(int, int). An int is already whole, so a
 // non-negative ndigits changes nothing; a negative one rounds to that decimal
 // position, half to even, without going through float64 and its precision.
@@ -389,7 +432,7 @@ func roundIntToDigits(n, ndigits int64) (Value, error) {
 	scale := int64(1)
 	for range -ndigits {
 		if scale > math.MaxInt64/10 {
-			return Value{}, errIntOverflow
+			return roundIntBeyondScale(n, -ndigits)
 		}
 		scale *= 10
 	}

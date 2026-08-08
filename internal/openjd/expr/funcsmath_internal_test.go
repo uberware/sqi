@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -399,5 +400,188 @@ func TestRoundToDigits_NegativeNdigitsBeyondFloatRange(t *testing.T) {
 				t.Errorf("Eval(%q) typed %s, want int", tc.src, got)
 			}
 		})
+	}
+}
+
+// TestRoundToDigits_PositiveNdigitsBeyondFloatRange is the positive-ndigits
+// counterpart to TestRoundToDigits_NegativeNdigitsBeyondFloatRange above, and
+// it exists because only the negative branch was ever guarded.
+//
+// The positive branch scales by math.Pow(10, ndigits), which is +Inf from
+// ndigits 309 up; f*Inf is then ±Inf (NaN when f is 0), and dividing that by
+// Inf gives NaN. Below 309 the scale is finite but f*scale can still overflow
+// on its own, which is why round(2.0, 308) and round(1e300, 300) fail too --
+// the window depends on the magnitude of f, not on ndigits alone.
+//
+// None of these is an error case. Rounding a float64 to that many decimal
+// places is the IDENTITY: no float64 carries enough precision for a rounding
+// at 1e-308 resolution to change it, so the answer is f itself, rendered to
+// ndigits places. round(2.0, 307) already returns 2.000...0 and there is no
+// mathematical discontinuity at 308 -- only an artifact of the multiply.
+func TestRoundToDigits_PositiveNdigitsBeyondFloatRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		prefix  string
+		ndigits int
+	}{
+		{"the scale itself overflows", "round(2.0, 309)", "2.", 309},
+		{"far beyond the scale overflow", "round(2.0, 600)", "2.", 600},
+		{"the scale is finite but f*scale overflows", "round(2.0, 308)", "2.", 308},
+		{"a negative value is unchanged the same way", "round(-2.0, 400)", "-2.", 400},
+		{"zero is unchanged", "round(0.0, 600)", "0.", 600},
+		{"a large f overflows at a much smaller ndigits", "round(1e300, 300)", "1", 300},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.Type.String(); got != "float" {
+				t.Errorf("Eval(%q) typed %s, want float", tc.src, got)
+			}
+			got := v.String()
+			if !strings.HasPrefix(got, tc.prefix) {
+				t.Errorf("Eval(%q) = %.20s..., want it to start with %q", tc.src, got, tc.prefix)
+			}
+			point := strings.IndexByte(got, '.')
+			if point < 0 {
+				t.Fatalf("Eval(%q) = %.20s..., want a decimal point", tc.src, got)
+			}
+			if places := len(got) - point - 1; places != tc.ndigits {
+				t.Errorf("Eval(%q) rendered %d decimal places, want %d", tc.src, places, tc.ndigits)
+			}
+		})
+	}
+}
+
+// TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow guards the fix above
+// from being written as "return f whenever ndigits is large": inside the range
+// where the scale is usable, round must still round.
+func TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"rounds at two places", "round(3.14159, 2)", "3.14"},
+		{"keeps a trailing zero", "round(3.5, 2)", "3.50"},
+		{"rounds half to even at one place", "round(3.55, 1)", "3.6"},
+		{"the largest usable scale still renders", "round(2.0, 307)", "2." + strings.Repeat("0", 307)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %.20s..., want %.20s...", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRoundIntToDigits_CoarserThanTheValueIsZeroNotOverflow is the int
+// counterpart to the float branch's "compute the answer directly" rule, and it
+// covers the one place the two disagreed.
+//
+// roundIntToDigits bounds its scale accumulation to avoid an int64 multiply
+// overflow, but bailed out with errIntOverflow as soon as the scale itself
+// grew past MaxInt64 — even though rounding a small value at a place that
+// coarse has an exact, representable answer: 0. roundToDigits' own negative
+// branch already returns 0 for round(3.5, -400); this made round(1234, -19)
+// an error for the same shape of question.
+//
+// A genuine overflow is still an overflow: a value at or above half the scale
+// rounds away from zero to ±scale, which is not representable.
+func TestRoundIntToDigits_CoarserThanTheValueIsZeroNotOverflow(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"the scale exceeds int64 and the value is far below half of it", "round(1234, -19)", "0"},
+		{"astronomically coarse", "round(1234, -400)", "0"},
+		{"a negative value rounds to 0 the same way", "round(-1234, -19)", "0"},
+		{"the float branch already agreed", "round(1234.0, -400)", "0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %s, want %s", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRoundIntToDigits_BeyondScaleStillReportsRealOverflow is the other half of
+// the test above: returning 0 for a coarse place must not swallow the case that
+// genuinely does not fit. A value past half the scale rounds away from zero to
+// ±scale, and no scale in this branch is representable.
+//
+// The 5e18 boundary is exact and is the tie: at exactly half, round-to-even
+// keeps the already-even quotient 0, and one above it rounds away. The
+// reference disagrees on that single value — it answers 0 for
+// round(5000000000000000001, -19) because it scales through float64, where
+// 5000000000000000001 IS 5e18 and the +1 is gone. roundIntToDigits exists to
+// avoid exactly that ("without going through float64 and its precision"), so
+// sqi is right here; see test/oracle/baseline.txt.
+func TestRoundIntToDigits_BeyondScaleStillReportsRealOverflow(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"one past the tie rounds away to an unrepresentable scale", "round(5000000000000000001, -19)"},
+		{"the maximum int64 rounds away the same way", "round(9223372036854775807, -19)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want an overflow error", tc.src)
+			}
+			if !strings.Contains(err.Error(), "overflow") {
+				t.Errorf("Eval(%q) error = %v, want it to report an overflow", tc.src, err)
+			}
+		})
+	}
+}
+
+// TestRoundIntToDigits_ExactlyAtTheTieRoundsToEven pins the inclusive bound.
+func TestRoundIntToDigits_ExactlyAtTheTieRoundsToEven(t *testing.T) {
+	for _, src := range []string{"round(5000000000000000000, -19)", "round(-5000000000000000000, -19)"} {
+		t.Run(src, func(t *testing.T) {
+			v, err := Eval(src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", src, err)
+			}
+			if got := v.String(); got != "0" {
+				t.Errorf("Eval(%q) = %s, want 0 (the tie keeps the even quotient)", src, got)
+			}
+		})
+	}
+}
+
+// TestRoundIntBeyondScale_MinInt64 covers the one input the source-level tests
+// cannot reach: math.MinInt64 has no integer literal, because the lexer sees
+// "-9223372036854775808" as unary minus applied to 9223372036854775808, which
+// is itself out of int64's range. Calling the helper directly is the only way
+// to exercise the negative half of the away-from-zero branch.
+func TestRoundIntBeyondScale_MinInt64(t *testing.T) {
+	if _, err := roundIntBeyondScale(math.MinInt64, 19); err == nil {
+		t.Fatal("roundIntBeyondScale(MinInt64, 19) succeeded; want an overflow error")
+	}
+	v, err := roundIntBeyondScale(math.MinInt64, 20)
+	if err != nil {
+		t.Fatalf("roundIntBeyondScale(MinInt64, 20) failed: %v", err)
+	}
+	if got := v.String(); got != "0" {
+		t.Errorf("roundIntBeyondScale(MinInt64, 20) = %s, want 0", got)
 	}
 }

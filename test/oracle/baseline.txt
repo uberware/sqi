@@ -331,6 +331,52 @@ int | float :: round(1234.5, -1)
 # RFC 0006's signature table — see the shared explanation above.
 int | float :: round(3.5, -400)
 
+# ── sqi is right: the reference reports an intermediate infinity as the result
+#    of a rounding whose answer is finite ────────────────────────────────────
+#
+# Rounding a float64 to a large number of decimal places is the IDENTITY. No
+# float64 carries enough precision for a rounding at 1e-308 resolution to
+# change it, so the answer is the input, rendered to that many places. Both
+# implementations scale by 10^ndigits and divide back, and both can overflow
+# doing so: 10^ndigits is +Inf from 309 up, and below that f*10^ndigits can
+# still overflow on its own once f is large enough. That overflow is an
+# artifact of the ALGORITHM, not a property of the operation — section 1.3.4's
+# "operations that would produce infinity are errors" is about the result, and
+# the result here is 2.0 and 1e300 respectively.
+#
+# sqi computes the identity directly in that window rather than discovering it
+# through an Inf, which is the same move its own negative-ndigits branch
+# already made. The reference reports "Float operation produced infinity".
+#
+# Note the reference gets ndigits >= 309 RIGHT (round(2.0, 309) returns
+# 2.000...0 on both sides, and that case is in the corpus above agreeing) —
+# it fails only in the narrower window where the scale is finite but the
+# product is not, which is why this looks arbitrary from the outside.
+
+# The scale (1e308) is finite but 2.0*1e308 overflows. Answer is 2.0.
+int | float :: round(2.0, 308)
+
+# Same window reached from the other direction: 1e300 is large enough that
+# even ndigits=300 overflows the product. Answer is 1e300.
+int | float :: round(1e300, 300)
+
+# ── sqi is right: the reference rounds an int through float64 and loses the
+#    digit that decides the tie ───────────────────────────────────────────────
+#
+# 5000000000000000001 rounded to the nearest 10^19 is 1e19, because the value
+# is strictly ABOVE half the scale. 1e19 does not fit in int64, so the correct
+# answer is an integer overflow, which is what sqi reports.
+#
+# The reference answers 0. As a float64, 5000000000000000001 IS 5e18 — the
+# trailing 1 is not representable — so it sees an exact tie and rounds to the
+# even quotient. roundIntToDigits exists precisely to avoid that: its own doc
+# comment says it rounds "without going through float64 and its precision".
+#
+# The neighbouring cases agree on both sides, which isolates the cause:
+# round(5000000000000000000, -19) is a genuine tie and gives 0 on both, and
+# round(1234, -19) gives 0 on both. Only the value one above the tie diverges.
+int :: round(5000000000000000001, -19)
+
 # ── sqi is right: range_expr(string) preserves the input text, the reference
 #    re-derives an undocumented "corrected" form ─────────────────────────────
 #
