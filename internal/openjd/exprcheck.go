@@ -7,6 +7,25 @@ import (
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
+	"github.com/uberware/sqi/internal/openjd/fmtstring"
+)
+
+// Target types for checkFormatString, section 1.3.2. Declared once as
+// package-level values so call sites read as "the name field" rather than
+// reconstructing the type at every call.
+var (
+	// TargetString is the target for a name, command, variable value or
+	// embedded-file body -- any plain string-typed field.
+	TargetString = expr.TString
+	// TargetInt is the target for a timeout.
+	TargetInt = expr.TInt
+	// TargetArgItem is the target for a single entry of an args list, per
+	// section 1.3.2's list-item rule: a string is one argument, None drops the
+	// argument, and a list[string] flattens inline. UnionOf/OptionalOf's
+	// normalization collapses OptionalOf(TString)'s own union with the
+	// list[string] member into one flat three-member union rather than a
+	// union nested inside a union.
+	TargetArgItem = expr.UnionOf(expr.OptionalOf(expr.TString), expr.ListOf(expr.TString))
 )
 
 // symbolsFor builds the typed EXPR symbol table for a template position,
@@ -217,4 +236,47 @@ func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapS
 		}
 		syms[prefix+f.Name] = expr.Unresolved(expr.TPath)
 	}
+}
+
+// checkFormatString parses and evaluates every EXPR reference in s against
+// syms, at the position ptr, reporting a ValidationError for every parse or
+// type error the evaluator finds.
+//
+// Section 1.3.2's target-type rule decides what a reference is checked
+// against: a format string that is EXACTLY one reference with no surrounding
+// text (fmtstring.LoneRef) is transparent and inherits target -- the field's
+// own declared type. Anything else -- a literal, an embedded reference, or a
+// reference alongside other text -- evaluates each reference unconstrained
+// (expr.TAny) because the result is converted to a string regardless of what
+// the reference itself produces, so a type that would be wrong for target is
+// still fine here.
+//
+// scope is accepted but not yet consulted: gating a scope's host-only
+// functions (apply_path_mapping) is E's job, once Expression.CalledFunctions
+// has a caller. Nothing in this task changes behavior based on scope.
+func checkFormatString(s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type) ValidationErrors {
+	_ = scope // reserved for E's host-context function gating; see doc comment
+
+	if body, ok := fmtstring.LoneRef(s); ok {
+		if _, err := expr.Eval(body, syms, target); err != nil {
+			return ValidationErrors{{Pointer: ptr, Message: err.Error()}}
+		}
+		return nil
+	}
+
+	segs, err := fmtstring.Segments(s)
+	if err != nil {
+		return ValidationErrors{{Pointer: ptr, Message: err.Error()}}
+	}
+
+	var errs ValidationErrors
+	for _, seg := range segs {
+		if !seg.IsRef {
+			continue
+		}
+		if _, err := expr.Eval(seg.Ref, syms, expr.TAny); err != nil {
+			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
+		}
+	}
+	return errs
 }

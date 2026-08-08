@@ -2,7 +2,10 @@
 
 package openjd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSymbolsFor_ScopeGatesTheFixedSymbols(t *testing.T) {
 	tmpl := &JobTemplate{Name: "T"}
@@ -153,5 +156,85 @@ func TestSymbolsFor_FamilyMembersScopedCorrectly(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCheckFormatString(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name: "T",
+		ParameterDefinitions: []JobParameter{
+			{Name: "N", Type: "INT"},
+			{Name: "S", Type: "STRING"},
+		},
+	}
+	tests := []struct {
+		name    string
+		src     string
+		scope   Scope
+		wantErr bool
+		wantSub string
+	}{
+		{"a literal is always fine", "hello", ScopeJob, false, ""},
+		{"arithmetic on an int parameter", "{{ Param.N + 1 }}", ScopeJob, false, ""},
+		{"embedded reference converts to string", "n is {{ Param.N }}", ScopeJob, false, ""},
+		{"unknown symbol", "{{ Param.Missing }}", ScopeJob, true, "Param.Missing"},
+		{"a step symbol is out of scope in a job position", "{{ Step.Name }}", ScopeJob, true, "Step.Name"},
+		{"a session symbol is out of scope in a job position", "{{ Session.WorkingDirectory }}", ScopeJob, true, "Session"},
+		{"a step symbol is in scope in a step script", "{{ Step.Name }}", ScopeStepScript, false, ""},
+		{"a type error is caught with everything unresolved", "{{ Param.N.upper() }}", ScopeJob, true, "upper"},
+		{"a syntax error", "{{ Param.N + }}", ScopeJob, true, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			syms := symbolsFor(tmpl, nil, nil, tc.scope, nil)
+			errs := checkFormatString(tc.src, "/p", tc.scope, syms, TargetString)
+			if tc.wantErr && len(errs) == 0 {
+				t.Fatalf("checkFormatString(%q) accepted it; want a rejection", tc.src)
+			}
+			if !tc.wantErr && len(errs) != 0 {
+				t.Fatalf("checkFormatString(%q) rejected it: %v", tc.src, errs)
+			}
+			if tc.wantSub != "" {
+				if len(errs) == 0 {
+					t.Fatalf("checkFormatString(%q): no errors, but wanted message containing %q", tc.src, tc.wantSub)
+				}
+				if !strings.Contains(errs[0].Message, tc.wantSub) {
+					t.Errorf("message %q does not mention %q", errs[0].Message, tc.wantSub)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckFormatString_LoneRefInheritsTheTarget pins section 1.3.2's
+// transparency rule: "{{expr}}" alone takes the field's type, while the same
+// expression with surrounding text is converted to a string and so is always
+// acceptable.
+//
+// The brief's own example used a STRING parameter against an int target, but
+// section 1.2.3 lists "string -> int" as a legal non-destructive coercion
+// (deferred to runtime: "3" succeeds, "3.75" fails, checked only once a
+// concrete value exists) -- so a STRING placeholder against TargetInt
+// type-checks CLEAN at this unresolved, no-params-supplied phase, and cannot
+// demonstrate a rejection. Confirmed directly: expr.Eval("Param.S",
+// MapSymbols{"Param.S": Unresolved(TString)}, TInt) returns
+// unresolved[int], nil. A PATH parameter has no such rule in either
+// direction (scalarCoercible's "to == CodeInt" case admits only float and
+// string; coercibleConditional's "from == CodePath" case admits only a
+// target that includes string) -- see internal/openjd/expr/coerce.go -- so it
+// is used here instead, preserving the test's intent unchanged.
+func TestCheckFormatString_LoneRefInheritsTheTarget(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:                 "T",
+		ParameterDefinitions: []JobParameter{{Name: "S", Type: "PATH"}},
+	}
+	syms := symbolsFor(tmpl, nil, nil, ScopeJob, nil)
+
+	if errs := checkFormatString("{{ Param.S }}", "/p", ScopeJob, syms, TargetInt); len(errs) == 0 {
+		t.Error("a path parameter was accepted for an int field; the lone reference " +
+			"must inherit the field's target type")
+	}
+	if errs := checkFormatString("x{{ Param.S }}", "/p", ScopeJob, syms, TargetInt); len(errs) != 0 {
+		t.Errorf("an EMBEDDED reference must be converted to a string and accepted: %v", errs)
 	}
 }
