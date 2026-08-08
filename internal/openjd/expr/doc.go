@@ -833,11 +833,107 @@
 //     counterpart to probe against the reference implementation, which has
 //     no comparable unresolved-operand evaluation path.
 //
+//     RULE 2'S ENUMERATION IS OPEN, AND THE TWO SPECIFICATION DOCUMENTS
+//     DISAGREE ABOUT IT. This is settled here, once, because sub-project E1
+//     did not notice the disagreement and let each task decide it by
+//     whichever document that task happened to open — leaving the package
+//     citing two mutually exclusive readings, both citations literally
+//     accurate. The divergence is real and it is in the specification, not
+//     in a misreading of it:
+//
+//     wiki/2026-02-Expression-Language.md lines 1080-1087 introduces rule
+//     2's function list with "such as" — an OPEN enumeration.
+//     rfcs/0005-expression-language.md lines 1173-1182 introduces the same
+//     list with "This applies to:" — read literally, a CLOSED one.
+//
+//     THE RULING IS OPEN, on four grounds. (1) The wiki page is THE
+//     SPECIFICATION for this package (see the closing note at the bottom of
+//     this file); RFC 0005 is the proposal that produced it, and where the
+//     two disagree the specification governs — the same precedence this
+//     package already applies to the reference implementation. (2) BOTH
+//     documents state the same operative sentence first — "When a function
+//     or the evaluator iterates through every element of a list, the number
+//     of elements is added to the operation count" — and both introduce
+//     rule 3's parallel list with "and similar", openly, in the RFC too. A
+//     closed rule 2 beside an open rule 3 in one document, on two rules of
+//     identical construction, is not a reading either document argues for.
+//     (3) A closed reading makes rule 2's own words "or the evaluator"
+//     INOPERATIVE for anything unnamed: no evaluator-performed iteration
+//     except the list comprehension is in the enumeration, and the
+//     comprehension is listed separately precisely BECAUSE the evaluator,
+//     not a function, performs it — so the general clause must reach
+//     further than the list, or it says nothing. (4) A closed reading
+//     defeats the rule's stated purpose. It was not a theoretical
+//     preference: five constructs that do O(receiver) work were charged a
+//     flat 1 under it, and
+//     "len([range_expr('1-1000000')[0] for x in range(500)])" ran 1.8
+//     seconds for 2,002 counted operations, scaling to roughly half an hour
+//     while staying under a fifth of the default budget. Charging them (see
+//     the bullet below) closes that.
+//
+//     WHAT THE OPEN READING DOES NOT LICENSE. It is not a mandate to charge
+//     everything: the question each row still answers is whether the work
+//     is element-count-dominated or byte-scan-dominated, and whether the
+//     implementation PROVABLY does that work. split() stays uncharged for
+//     rule 2 because its work is byte-dominated; "not", unary minus and
+//     unary plus stay uncharged because they touch no list and no string at
+//     all; min/max's fixed-arity 2- and 3-argument overloads stay uncharged
+//     because they take no list-typed parameter. "Unnamed by the
+//     enumeration" is not a reason to charge nothing, and "named by the
+//     enumeration" is not required to charge — that is the whole content of
+//     the ruling.
+//
+//     FIVE CONSTRUCTS THAT DID O(receiver) WORK FOR A FLAT 1, NOW CHARGED.
+//     The closed reading's cost was concrete and was found by a
+//     whole-branch review measuring this checkout, not by argument. Each of
+//     these expands or decodes its whole receiver inside a single call, and
+//     each was charged 1 while the SLICE form of the identical expression
+//     was charged correctly:
+//
+//     subscript of a string receiver   (list.go's evalIndex) — indexValue
+//     does []rune(recv.AsStr()), decoding every byte of the receiver to
+//     find rune boundaries. Now charges rule 3 on the receiver, before
+//     the decode. A 500,000-byte receiver went from 1 to 1,954.
+//     subscript of a range_expr receiver (same) — indexValue calls
+//     rangeInts, which fully expands. Now charges rule 2 on the
+//     receiver's element count, computed arithmetically by
+//     rangeExprCount so nothing is expanded to price the expansion. A
+//     1,000,000-element receiver went from 1 to 1,000,001.
+//     "in"/"not in" with a range_expr container (ops.go) —
+//     containsRangeInt calls rangeInts. Now Cost{ArgElements: {1}},
+//     index 1 being the container, matching the string and list rows
+//     beside it.
+//     min() and max() over a range_expr (funcsmath.go) — both bodies are
+//     byte-identical rangeInts calls, and sum()'s range_expr row one
+//     table over ALREADY charged Cost{ArgElements: {0}} for the same
+//     body. Now both charge it too, which also removes an
+//     inconsistency inside one file.
+//
+//     A SUBSCRIPT OF A LIST STAYS AT A FLAT 1, deliberately: AsList returns
+//     the backing slice with no copy (value.go), so a list subscript
+//     genuinely touches one element and iterates nothing. The receiver-kind
+//     split is the same one slice.go's sliceValue already established and
+//     the same asymmetry the implementations themselves have.
+//
+//     LIST ORDERING NOW CHARGES ITS WALK, like list equality. "[...] <
+//     [...]" and "[...] == [...]" run the SAME compareLists/valuesEqual
+//     walk over the same operands, and only equality was charged, on the
+//     sole ground that rule 2 names "list/range equality comparisons" by
+//     token and does not name ordering. Under the open reading that
+//     distinction does not survive — the general sentence is satisfied
+//     either way, and the measured consequence was a 1,666x discrepancy:
+//     a 20,000-int list compared 2,000 times completed at 6,002 operations
+//     under "<" while the identical "==" expression tripped the 10,000,000
+//     limit. orderingShapes' list/list row now declares
+//     Cost{ArgElements: {0}}, charging the LEFT operand exactly as
+//     applyBinary's equality path does. The four scalar ordering rows still
+//     charge rule 1 only; they iterate nothing.
+//
 //     THE COUNTING RULINGS. sqi's operation counter and the reference's
-//     diverge on 255 corpus cases, each adjudicated and recorded in
+//     diverge on 247 corpus cases, each adjudicated and recorded in
 //     test/oracle/baseline-ops.txt, grouped under roughly twenty root-cause
 //     families (its own "# ── " section headers enumerate them; that file,
-//     not this comment, is where to check one entry). Most of the 255 are
+//     not this comment, is where to check one entry). Most of the 247 are
 //     the reference over-counting by a flat +1 on operators RFC 0005's own
 //     AST-transformation table routes around section 1.3.10 rule 1
 //     entirely rather than through a genuine function call — ordering,
@@ -1155,7 +1251,7 @@
 //     "repr_sh(out)" reports `no signature of "repr_sh" accepts (unresolved)`
 //     — measured. That is the scope-blindness class the baseline file's own
 //     header describes, and it burns down in sub-project E, not here. The
-//     differential oracle test's VALUE dimension has 922/1052 cases agreeing
+//     differential oracle test's VALUE dimension has 927/1057 cases agreeing
 //     with the reference implementation, 130 baselined divergences
 //     (make test-expr-oracle) — up from B3's 135/169, then C1's 279/321 now
 //     that C1's 22 functions had their own corpus cases, C2's 407/469 once
@@ -1165,7 +1261,9 @@
 //     Task 13, which retired 31 value baselines by closing the Value.String()
 //     list-quoting gap described in the float-passthrough bullet above and
 //     the BOUNDED EVALUATION bullet below (891/1052 with 161 baselined,
-//     unmoved by sub-project D, to 922/1052 with 130 baselined). Sub-project
+//     unmoved by sub-project D, to 922/1052 with 130 baselined; E1's final
+//     review then added five range_expr membership and subscript cases,
+//     all agreeing, for 927/1057 with the same 130). Sub-project
 //     D itself moved neither number and was the first wave that could not:
 //     the corpus contains no apply_path_mapping case and cannot contain one,
 //     because the harness passes the reference only a source string and a
@@ -1175,7 +1273,7 @@
 //     EvalWithMetrics (meter.go) and the reference's own
 //     evaluate_with_metrics are compared on every case whose value already
 //     agrees — a case with a value divergence is already reported once and
-//     is not double-counted here — and land at 667/922 agreeing, 255
+//     is not double-counted here — and land at 680/927 agreeing, 247
 //     baselined divergences, recorded and adjudicated family by family in
 //     test/oracle/baseline-ops.txt (roughly twenty root-cause families; see
 //     the BOUNDED EVALUATION bullet's COUNTING RULINGS paragraph for the
