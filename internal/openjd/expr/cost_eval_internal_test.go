@@ -78,36 +78,101 @@ func TestOperationCount_ListLiteralChargesNothing(t *testing.T) {
 // 2 + len(result): the [0:2] row is 2+2=4, [0:9] is 2+9=11, [5:9] is 2+4=6,
 // [:] is 2+10=12, and the empty [3:3] is 2+0=2.
 //
-// RFC 0005's own AST-to-call transform (dunder-transform table, items 4 and
-// 5) settles what this means: "Subscript(value, index) ... becomes
-// Call(Name("__getitem__"), [value, index])" and "Subscript(value,
-// Slice(lower, upper, step)) becomes Call(Name("__getitem__"), [value,
-// lower_or_none, upper_or_none, step_or_none])". BOTH forms are explicitly
-// ONE __getitem__ call -- the slice bounds are extra ARGUMENTS to that one
-// call, not a second call. So rule 1 (section 1.3.10) charges exactly 1 for
-// each, and __getitem__ is not named anywhere in rule 2's own enumeration
-// (shape.go's specNamedIteratingFunctions) -- unlike list/range equality,
-// concatenation and repetition, which rule 2 names explicitly. A plain
-// subscript touches exactly ONE element of the receiver, never "every
-// element of a list", so rule 2 cannot apply to it on the rule's own words
-// regardless of whether its named-function list is exhaustive.
+// RULING, subscript: 1 (rule 1 only), diverging from the reference's
+// constant 2. RFC 0005's own AST-to-call transform (dunder-transform table,
+// item 4) settles rule 1's count: "Subscript(value, index) ... becomes
+// Call(Name("__getitem__"), [value, index])" -- exactly one call. Rule 2
+// does not apply: a plain subscript touches exactly ONE element of the
+// receiver and produces a SCALAR, never "every element of a list" and never
+// a produced list to iterate either -- there is no list on either side of
+// the operation for rule 2 to have a claim on. The reference's constant
+// "+1" -- present even at index 0, 2, 4 and 9 across two list lengths -- has
+// no textual home: rule 1 is fully accounted for by the RFC's single dunder
+// call, and rule 2 has no element or list to charge. This is an uncredited
+// reference implementation artifact, not a consequence of either rule's
+// text, so sqi does not adopt it. This ruling was independently reviewed
+// and confirmed correct; it is unchanged from the first version of this
+// comment.
 //
-// The reference's constant "+1" beyond rule 1 on EVERY row above -- present
-// even on the subscript rows, which touch one element, and even on the empty
-// slice [3:3], which touches none -- has no textual home in either rule.
-// Rule 1 is fully accounted for by a single dunder call per the RFC's own
-// transform (never 2). Rule 2 does not name __getitem__, and even read as
-// non-exhaustive ("iterates through every element of A list"), neither a
-// single-index subscript nor a partial slice touches every element of the
-// RECEIVER -- sqi's own indexValue/sliceValue (list.go, slice.go) are
-// direct-index operations for exactly this reason, touching only what is
-// selected. The reference's extra unit is an uncredited implementation
-// artifact (plausibly an internal slice-object construction step the RFC's
-// transform table explicitly declines to make a second call), not a
-// consequence of either rule's text. Per the standing method -- run the
-// probe, decide against the spec text, adopt the reference's number only
-// where the text agrees with it -- sqi does not adopt it: both subscript and
-// slice charge rule 1 alone.
+// RULING, slice: rule 1 (1) PLUS the produced element count -- e.g.
+// [1,2,3][0:2] is 1 + 2 = 3. THIS CORRECTS AN EARLIER, WRONG RULING kept
+// here (rather than silently replaced) because a falsified claim in this
+// package stays auditable. The first version of this comment argued slice
+// should charge rule 1 alone, on two grounds, and BOTH were wrong:
+//
+//  1. "It is one __getitem__ call per RFC 0005's dunder-transform table
+//     (item 5), so rule 1 is the whole charge." TRUE that it is one call,
+//     but this package's own precedent already rejects "one call means no
+//     rule 2": join() (funcsstrsplit.go) charges rule 2's element count AND
+//     rule 3's byte count on its single call, and list repetition
+//     (ops.go's OpMul, ResultElements) charges rule 1 via callShape AND a
+//     rule-2 element count on ITS single call. Rules 1 and 2 are additive
+//     wherever they both apply, not alternatives.
+//  2. "__getitem__ is not named in rule 2's own enumeration
+//     (specNamedIteratingFunctions), so rule 2 cannot apply." This
+//     package's own precedent already rejects "not named" as sufficient
+//     too: string(list) (funcsconv.go) charges ArgElements despite being
+//     absent from rule 2's list, because it provably walks every element
+//     to build its output; shape.go's own comment on ResultElements
+//     states the ruling this package has held since Task 5: "rule 2 covers
+//     generators as well as consumers".
+//
+// The line this package actually draws -- restated here because it is what
+// the corrected ruling rests on -- is whether the work is
+// element-count-dominated. split() (funcsstrsplit.go) is unnamed and
+// correctly NOT charged elements, because its cost is byte-scan-dominated.
+// Slice is the opposite: sliceValue (slice.go) does an O(1) bounds
+// computation (sliceIndices) followed by an O(len(idx)) copy loop that
+// walks and copies every SELECTED element into a newly produced list --
+// exactly list repetition's shape, and exactly what rule 2 charges there.
+// A subscript has no such loop (it reads one element and returns), which is
+// why the subscript ruling above is untouched by this correction: the
+// distinguishing question -- is a list actually walked and copied? -- has
+// two different answers for the two constructs, not one shared answer.
+//
+// The reference's reported totals (2 for subscript, [4,11,6,12,2] for the
+// five slice rows) were independently re-measured during review and
+// confirmed accurate. What was wrong was treating the reference's
+// discrepancy as entirely an artifact: rule 1's "+1" component IS an
+// artifact (RFC 0005 confirms one call, never two, so there is no textual
+// basis for the reference's flat 2 on a plain subscript, which never
+// touches a list at all) -- but the reference's SCALING component
+// (2+len(result) for slice, growing 4/11/6/12 with the selection while
+// staying flat at 2 for subscript, which never selects more than one
+// element) is exactly rule 2's element charge, correctly present in the
+// reference and previously misread here as part of the same artifact.
+//
+// FOLLOW-UP CORRECTION, same fix round: the list-only fix above is not the
+// whole story. sliceValue (slice.go) also handles STRING and RANGE_EXPR
+// receivers, through the SAME sliceIndices machinery, and an identical
+// probe run against those two receiver kinds shows they do NOT scale with
+// the selection the way list does -- they are FLAT regardless of what is
+// selected, and instead scale with the RECEIVER:
+//
+//	3    'hello'[0:0]                        3     'hello'[0:1]
+//	11   ('a'*1000)[0:1]                     11    ('a'*1000)[0:1000]
+//	785  ('a'*100000)[0:1]                   785   ('a'*100000)[0:100000]
+//	3    range_expr('1-1000')[0:1]           3     range_expr('1-1000')[0:1000]
+//	3    range_expr('1-10000')[0:1]          3     range_expr('1-10000')[0:10000]
+//
+// This is not a reference quirk to reject -- it matches what sqi's OWN
+// sliceValue genuinely does: recv.AsList() is O(1) (returns the backing
+// slice, no copy), so a list slice's only real work is the O(len(idx))
+// copy loop, proportional to the SELECTION -- but []rune(recv.AsStr())
+// touches every byte of the WHOLE string to find rune boundaries regardless
+// of slice bounds, and rangeInts (sliceRangeExpr's first call) fully
+// EXPANDS a range_expr to a concrete []int64 regardless of slice bounds
+// too. Both do real O(receiver-size) work before any selection happens, so
+// charging on the selection for these two receivers would UNDER-charge
+// exactly the gap this whole fix round exists to close: a huge string or
+// range_expr sliced down to nothing would read as nearly free while sqi's
+// own implementation did receiver-sized work regardless. sliceValue now
+// charges the STRING branch on ceil(receiver-bytes/256) (rule 3, matching
+// funcsstrfind.go's strip/find precedent: ArgBytes on the full receiver
+// "even though a real implementation only needs" less) and the
+// RANGE_EXPR branch on rangeExprCount(receiver) (rule 2, computed
+// arithmetically so the charge itself does not require the expansion it is
+// guarding). See sliceValue's and sliceRangeExpr's own doc comments.
 func TestOperationCount_SubscriptAndSlice(t *testing.T) {
 	tests := []struct {
 		src  string
@@ -115,13 +180,69 @@ func TestOperationCount_SubscriptAndSlice(t *testing.T) {
 	}{
 		// Not Shape-dispatched -- evalIndex calls indexValue directly and
 		// evalSlice calls sliceValue directly -- so both charge in the
-		// evaluator rather than in callShape. Each is exactly ONE
-		// __getitem__ call per RFC 0005's dunder-transform table (items 4
-		// and 5), and __getitem__ is not one of rule 2's named iterating
-		// functions, so rule 1 is the whole charge for both: see the PROBE
-		// above for why this diverges from the reference's measured 2 and 4.
+		// evaluator rather than in callShape.
+		//
+		// Subscript: exactly ONE __getitem__ call (RFC 0005 item 4), and
+		// rule 2 has no list to apply to (one element read, no list
+		// produced) -- flat 1 regardless of index or receiver length. Two
+		// cases here (first element, last element of a longer list) pin
+		// that flatness in the suite rather than leaving it only in the
+		// PROBE comment above.
 		{"[1,2,3][0]", 1},
-		{"[1,2,3][0:2]", 1},
+		{"[1,2,3,4,5,6,7,8,9,10][9]", 1},
+		// Slice: rule 1 (1) plus rule 2's element count on the PRODUCED
+		// list (sliceValue's copy loop walks and writes exactly this many
+		// elements, the same shape list repetition's ResultElements
+		// charges). Two cases at different result lengths (2 and 9) make
+		// the charge visibly PROPORTIONAL rather than merely nonzero.
+		{"[1,2,3][0:2]", 3},                 // 1 + 2
+		{"[1,2,3,4,5,6,7,8,9,10][0:9]", 10}, // 1 + 9
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			if got := opsFor(t, tt.src); got != tt.want {
+				t.Errorf("ops(%q) = %d; want %d", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOperationCount_SliceReceiverSizedForStringAndRangeExpr covers
+// sliceValue's other two receiver kinds, deliberately not folded into
+// TestOperationCount_SubscriptAndSlice above: list slicing charges on the
+// SELECTION (see that test), but string and range_expr slicing charge on
+// the RECEIVER instead, because that is what sqi's own []rune conversion
+// and rangeInts expansion actually do regardless of slice bounds -- see the
+// FOLLOW-UP CORRECTION comment above and sliceValue's own doc comment.
+// Values computed with opsFor itself (t.Logf against the probe expressions
+// below during the fix, cross-checked by hand against each construct's own
+// already-declared cost): 'hello'[1:3] is 1 (rule 1) + ceil(5/256)=1 = 2;
+// ('a'*300)[0:1] is repetition's own 3 (1 + ceil(300/256)=2, per
+// TestOperationCount_StringRepetition's formula) PLUS the slice's 1 +
+// ceil(300/256)=2 = 3, total 6; range_expr('1-10')'s own construction is 1
+// (a bare call, no elements -- range_expr() itself declares no Cost) plus
+// the slice's 1 + rangeExprCount(10) = 11, total 12.
+func TestOperationCount_SliceReceiverSizedForStringAndRangeExpr(t *testing.T) {
+	tests := []struct {
+		src  string
+		want int64
+	}{
+		// String: flat regardless of the selected span -- both charge the
+		// SAME 2 (1 call + ceil(5/256)=1) despite selecting 2 characters
+		// vs. all 5.
+		{"'hello'[1:3]", 2},
+		{"'hello'[0:5]", 2},
+		// A larger receiver crossing a 256-byte boundary, to confirm the
+		// charge tracks the RECEIVER's byte count and not the selection:
+		// both a 1-character and a full 300-character selection off the
+		// SAME 300-byte receiver charge identically.
+		{"('a'*300)[0:1]", 6},
+		{"('a'*300)[0:300]", 6},
+		// range_expr: flat regardless of the selected span, same shape as
+		// string above -- both charge the SAME 12 despite selecting 3
+		// elements vs. all 10.
+		{"range_expr('1-10')[2:5]", 12},
+		{"range_expr('1-10')[0:9]", 12},
 	}
 	for _, tt := range tests {
 		t.Run(tt.src, func(t *testing.T) {
@@ -154,6 +275,16 @@ func TestOperationLimit_CatchesANestedComprehension(t *testing.T) {
 	// The case section 1.3.10 exists for, and the one no per-operation
 	// allocation bound can catch: bounded live memory, unbounded CPU. This is
 	// the shape of expr1.3.10--operation-limit-exceeded.
+	//
+	// This is a FIXTURE-SHAPE regression test, not an isolation test for the
+	// comprehension charge specifically: it already passed before
+	// runComp's chargeElements landed, because the other operations charged
+	// inside the triple-nested body (range() and the comprehensions'
+	// element counts at every level) were enough to trip the default
+	// 10-million-operation limit on their own. TestComprehension_
+	// SharesTheCallersMeter below is the test that isolates the
+	// comprehension charge's presence with an exact count on a body too
+	// small for anything else to trip the limit first.
 	_, err := Eval("[[[x for x in range(300)] for y in range(300)] for z in range(300)]",
 		nil, TAny)
 	if !errors.Is(err, errOperationLimit) {

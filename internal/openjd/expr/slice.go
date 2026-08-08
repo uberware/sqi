@@ -39,11 +39,33 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	// table, "Subscript(value, Slice(lower, upper, step))" becomes ONE
 	// __getitem__ call carrying the bounds as extra arguments -- not a second
 	// call -- so this is the whole rule-1 charge, unconditional past the
-	// receiver-type check exactly as evalIndex's is. Rule 2 does NOT apply,
-	// for the same reason it does not apply to a subscript: __getitem__ is not
-	// one of rule 2's named iterating functions, and sqi's own sliceValue
-	// below touches only the selected elements, never "every element" of the
-	// receiver. See cost_eval_internal_test.go's PROBE comment.
+	// receiver-type check exactly as evalIndex's is.
+	//
+	// CORRECTION (review finding, Task 9 fix round): an earlier revision of
+	// this comment argued rule 2 does not apply at all, on the theory that
+	// __getitem__ is unnamed by rule 2's enumeration and that "one call"
+	// settled the whole charge. Both halves of that argument are WRONG, and
+	// the wrongness was already refuted by this package's own precedent
+	// before this comment was written: "not named" was rejected as
+	// sufficient for string(list) (funcsconv.go, charged ArgElements despite
+	// being unnamed, because it provably walks every element) and for
+	// list(range_expr) (shape.go's own words: "rule 2 covers generators as
+	// well as consumers"); and "one call" has never meant rule 1 and rule 2
+	// are mutually exclusive -- join() charges rule 2's element count AND
+	// rule 3's byte count on a single call, and list repetition charges rule
+	// 1 via callShape AND ResultElements. The real question this package
+	// already asks is whether the work is element-count-dominated, and
+	// sliceValue below answers it: an O(1) bounds computation
+	// (sliceIndices) followed by real O(n) work that a rule 2 or rule 3
+	// charge already covers elsewhere in this package for the identical
+	// shape -- see sliceValue's own doc comment for exactly what "n" is for
+	// each of the three receiver kinds, which is NOT uniform (a list's real
+	// work scales with what was SELECTED; a string's and a range_expr's
+	// both scale with the RECEIVER regardless of selection, matching what
+	// this package's own []rune conversion and rangeInts expansion
+	// actually do). Each branch charges before doing that O(n) work, so an
+	// already-exhausted budget stops it from running rather than merely
+	// being billed after the fact.
 	if err := ec.m.charge(1); err != nil {
 		return Value{}, err
 	}
@@ -53,7 +75,7 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	if step != nil && *step == 0 {
 		return Value{}, errorAt(ec.src, n.Step.Pos(), "a slice step cannot be 0")
 	}
-	out, err := sliceValue(recv, start, stop, step)
+	out, err := sliceValue(ec, recv, start, stop, step)
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
@@ -133,11 +155,50 @@ func errNotSliceable(t Type) error {
 }
 
 // sliceValue performs the slice on a receiver that has one.
-func sliceValue(recv Value, start, stop, step *int64) (Value, error) {
+//
+// Each branch charges section 1.3.10 BEFORE doing the O(n) work it is about
+// to do, so an already-exhausted operation budget stops that work rather
+// than merely billing it after the fact (mirroring meter.charge's own
+// check-then-act contract). Which quantity is charged is NOT uniform across
+// the three receivers, because the real work sqi's own implementation does
+// is not uniform either:
+//
+//   - list: rule 2, the RESULT's raw element count (ArgElements/
+//     ResultElements' own convention -- ops.go's list repetition,
+//     funcsconv.go's string(list)). recv.AsList() is O(1) (it returns the
+//     backing slice, no copy — see AsList's own doc comment), so the ONLY
+//     real work a list slice does is the copy loop below, which is
+//     O(len(idx)) -- proportional to what was SELECTED, not to the
+//     receiver's size. Confirmed against the reference too: probing
+//     [1,2,3,4,5,6,7,8,9,10] at several bounds shows its charge scaling
+//     with the selection (4/11/6/12 for growing selections off the SAME
+//     10-element list), never with the receiver alone.
+//   - string and range_expr: rule 3 / rule 2 respectively, but on the
+//     RECEIVER's own size, NOT the selection -- the opposite of list. Both
+//     branches do REAL O(receiver-size) work regardless of what is
+//     selected, before any slicing happens at all: recv.AsStr() is cheap,
+//     but converting it to []rune below touches every byte of the WHOLE
+//     string to find rune boundaries (Go's utf8 decoding is not
+//     random-access), and rangeInts (called by sliceRangeExpr) fully
+//     EXPANDS a range_expr to a concrete []int64 regardless of the slice
+//     bounds -- there is no cheaper path in this package's own range_expr
+//     representation. Confirmed against the reference: ('a'*500)[0:1] and
+//     ('a'*500)[0:500] both charge the identical 4 extra operations beyond
+//     the receiver's own construction cost (2 + ceil(500/256)), and
+//     range_expr('1-10000')[0:1] and range_expr('1-10000')[0:10000] both
+//     charge the same flat amount -- neither moves with the SELECTED
+//     count, only (for strings) with the receiver's byte length. So both
+//     branches charge on the RECEIVER, before doing the receiver-sized
+//     work (the []rune conversion, or rangeInts's expansion) that is about
+//     to happen regardless of selection.
+func sliceValue(ec evalCtx, recv Value, start, stop, step *int64) (Value, error) {
 	switch recv.Type.Code {
 	case CodeList:
 		elems := recv.AsList()
 		idx := sliceIndices(start, stop, step, int64(len(elems)))
+		if err := ec.m.chargeElements(len(idx)); err != nil {
+			return Value{}, err
+		}
 		out := make([]Value, len(idx))
 		for i, at := range idx {
 			out[i] = elems[at]
@@ -148,7 +209,18 @@ func sliceValue(recv Value, start, stop, step *int64) (Value, error) {
 		}
 		return List(elemType, out), nil
 	case CodeString:
-		runes := []rune(recv.AsStr())
+		// Charged on the RECEIVER, before the []rune conversion that is
+		// about to touch every byte of it regardless of what is selected --
+		// the same "real work is receiver-sized, not exception-carved for a
+		// function whose work COULD be smaller" reasoning funcsstrfind.go
+		// already states for strip/find/startswith/endswith (ArgBytes on
+		// the full receiver even though a real implementation only needs a
+		// span of it).
+		s := recv.AsStr()
+		if err := ec.m.chargeBytes(s); err != nil {
+			return Value{}, err
+		}
+		runes := []rune(s)
 		idx := sliceIndices(start, stop, step, int64(len(runes)))
 		out := make([]rune, len(idx))
 		for i, at := range idx {
@@ -156,7 +228,7 @@ func sliceValue(recv Value, start, stop, step *int64) (Value, error) {
 		}
 		return String(string(out)), nil
 	case CodeRangeExpr:
-		return sliceRangeExpr(recv, start, stop, step)
+		return sliceRangeExpr(ec, recv, start, stop, step)
 	}
 	// Unreachable: sliceResultType has already rejected every receiver this
 	// switch does not handle. See errNotSliceable.
@@ -170,7 +242,22 @@ func sliceValue(recv Value, start, stop, step *int64) (Value, error) {
 // the selected integers. An EMPTY result cannot be a range_expr at all — section
 // 2.2.1 makes range_expr("") an error — so it comes back as an empty list[int],
 // the same type a negative step gives.
-func sliceRangeExpr(recv Value, start, stop, step *int64) (Value, error) {
+//
+// Charged under rule 2 on the RECEIVER's own element count -- see
+// sliceValue's doc comment for why range_expr takes the receiver-sized
+// treatment rather than list's selection-sized one: rangeInts below fully
+// EXPANDS the range_expr regardless of what the slice bounds go on to
+// select, so that expansion's cost is what must be charged, computed
+// arithmetically via rangeExprCount (no expansion of its own) so that an
+// already-exhausted budget is caught before rangeInts does the real work.
+func sliceRangeExpr(ec evalCtx, recv Value, start, stop, step *int64) (Value, error) {
+	n, err := rangeExprCount(recv)
+	if err != nil {
+		return Value{}, err
+	}
+	if err := ec.m.chargeElements(n); err != nil {
+		return Value{}, err
+	}
 	ints, err := rangeInts(recv)
 	if err != nil {
 		return Value{}, err
