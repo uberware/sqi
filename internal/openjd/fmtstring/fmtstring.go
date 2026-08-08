@@ -12,7 +12,8 @@ const (
 // ref describes a single parsed reference and the literal text that precedes it.
 type ref struct {
 	literal string // literal text before this reference
-	name    string // trimmed, validated variable name
+	name    string // trimmed reference body
+	raw     string // the reference's original text, including braces
 }
 
 // Resolve replaces every "{{ name }}" reference in input with the value
@@ -80,9 +81,32 @@ func References(input string) ([]string, error) {
 
 // parse scans input into a sequence of references (each carrying the literal
 // text that precedes it) plus any trailing literal text after the final
-// reference. It validates reference syntax and returns a *MalformedError on the
-// first malformed reference.
+// reference, then validates each reference body as a dotted OpenJD identifier.
+// It returns a *MalformedError on the first malformed reference.
 func parse(input string) (refs []ref, trailing string, err error) {
+	refs, trailing, err = parseRaw(input)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, r := range refs {
+		if !validName(r.name) {
+			return nil, "", &MalformedError{
+				Ref:    r.raw,
+				Reason: "not a valid dotted identifier",
+			}
+		}
+	}
+	return refs, trailing, nil
+}
+
+// parseRaw scans input into a sequence of references (each carrying the
+// literal text that precedes it) plus any trailing literal text after the
+// final reference. It validates only reference *syntax* -- an unclosed "{{" or
+// an empty/whitespace-only body -- and returns a *MalformedError on the first
+// such case. It does not judge what a reference body means: that is the
+// caller's job, since the base specification requires a dotted identifier
+// while the EXPR extension allows an arbitrary expression.
+func parseRaw(input string) (refs []ref, trailing string, err error) {
 	rest := input
 	for {
 		open := strings.Index(rest, openDelim)
@@ -110,14 +134,8 @@ func parse(input string) (refs []ref, trailing string, err error) {
 				Reason: "empty variable name",
 			}
 		}
-		if !validName(name) {
-			return nil, "", &MalformedError{
-				Ref:    fullRef,
-				Reason: "not a valid dotted identifier",
-			}
-		}
 
-		refs = append(refs, ref{literal: literal, name: name})
+		refs = append(refs, ref{literal: literal, name: name, raw: fullRef})
 		rest = afterOpen[closeIdx+len(closeDelim):]
 	}
 }
