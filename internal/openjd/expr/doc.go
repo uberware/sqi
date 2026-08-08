@@ -161,9 +161,16 @@
 //     count at every level, the same shape of growth "[[0]*10000000]*10"
 //     already had. checkElementCount (limits.go's maxElements) bounds one
 //     comprehension's own RESULT, not the cumulative work of producing every
-//     nested level along the way — the configurable limits that would
-//     (sections 1.3.9 and 1.3.10) are still sub-project E's, unchanged from
-//     every earlier wave.
+//     nested level along the way; the CUMULATIVE work is what section
+//     1.3.10's operation-bounded evaluation was for, and sub-project E1
+//     landed it: runComp (comp.go) charges rule 2 for every element the
+//     comprehension iterates, at EVERY nesting level, so the multiplied
+//     work now spends against the same operation budget as the rest of the
+//     expression, one charge per level per iteration, and the limit fires
+//     before the multiplication runs away
+//     (TestOperationLimit_CatchesANestedComprehension, the fixture-shaped
+//     regression test for exactly this construct). See the BOUNDED
+//     EVALUATION bullet below for the two limits themselves.
 //
 //   - Function, method and property calls now PARSE AND RESOLVE —
 //     "len([1])", "[1,2].upper()" and "Param.Name.stem" no longer fail as
@@ -773,6 +780,153 @@
 //     test/conformance/baseline-expr.txt with that reason, and burn down when
 //     E can reject them for the right one.
 //
+//   - BOUNDED EVALUATION (sub-project E1) delivers the specification's two
+//     configurable resource limits — section 1.3.9's memory-bounded
+//     evaluation and section 1.3.10's operation-bounded evaluation — both in
+//     this wave, both through meter.go.
+//
+//     TWO OPTIONS, ON BY DEFAULT, NO UNLIMITED MODE. WithMemoryLimit(bytes)
+//     bounds the live memory, in bytes, that one evaluation's values hold at
+//     once; it defaults to 100,000,000. WithOperationLimit(ops) bounds the
+//     number of section 1.3.10 operations one evaluation may perform; it
+//     defaults to 10,000,000 (eval.go). Both apply with NO option passed at
+//     all — a caller that forgets the option is not left unbounded, which
+//     matters because conformance.RunExprCase evaluates with no options, and
+//     the two expr1.3.10 conformance fixtures below only burn down if a
+//     no-option evaluation is already bounded. There is no unlimited escape
+//     hatch: a non-positive value to either option is a caller error,
+//     reported by Eval (verified directly: WithMemoryLimit(0) and
+//     WithOperationLimit(-1) both fail with "... must be positive, got ...").
+//
+//     THE FLOOR RELATIONSHIP. limits.go's four hard, non-configurable bounds
+//     — maxElements, maxStringBytes, maxParseDepth, maxEvalDepth, all
+//     described above — sit UNDERNEATH these two configurable ones and are
+//     not raised by them: raising WithMemoryLimit does not raise what one
+//     operation may allocate. Evaluating "'a' * 20000000" under
+//     WithMemoryLimit(1_000_000_000) — a budget ten times the string it
+//     would produce — still fails, and on the SAME error as with no option
+//     at all: "col 5: the result is too large: repeating 1 elements
+//     20000000 times exceeds the limit of 10000000", with
+//     errors.Is(err, errTooLarge) true and errors.Is(err, errMemoryLimit)
+//     false (both measured directly). checkRepeat's maxStringBytes ceiling
+//     (limits.go) is checked before any WithMemoryLimit accounting ever
+//     sees the string.
+//
+//     LIMITS ARE PER-Eval, NOT PER-TEMPLATE. Each call to Expression.Eval
+//     (and Eval, EvalWithMetrics, EvalForBalanceCheck, which route through
+//     it) starts a fresh meter with its own budget; nothing here accumulates
+//     a running total across multiple expressions evaluated for one
+//     template. Whether a template-wide, cumulative budget across every
+//     expression it contains is also needed is deliberately NOT decided
+//     here — that question belongs to whichever of sub-projects E2-E4 first
+//     has template integration to ask it against.
+//
+//     THE UNRESOLVED-OPERAND RULING. A dispatched call whose argument is
+//     still unresolved — the type-check path taken before a parameter is
+//     bound to a value — charges section 1.3.10 rule 1 only, the single
+//     operation for the call itself (call.go's callFunction, plus four
+//     mirroring sites in ops.go for binary, unary and the fast-path
+//     equality check). Rules 2 and 3 do not apply: the call was dispatched,
+//     but no list was iterated and no string was processed, because nothing
+//     downstream of the unresolved operand actually ran. This ruling has no
+//     counterpart to probe against the reference implementation, which has
+//     no comparable unresolved-operand evaluation path.
+//
+//     THE COUNTING RULINGS. sqi's operation counter and the reference's
+//     diverge on 255 corpus cases, each adjudicated and recorded in
+//     test/oracle/baseline-ops.txt, grouped under roughly twenty root-cause
+//     families (its own "# ── " section headers enumerate them; that file,
+//     not this comment, is where to check one entry). Most of the 255 are
+//     the reference over-counting by a flat +1 on operators RFC 0005's own
+//     AST-transformation table routes around section 1.3.10 rule 1
+//     entirely rather than through a genuine function call — ordering,
+//     equality, "not", "and"/"or", the ternary, "in"/"not in" — adjudicated
+//     as the reference's own bug rather than a gap here. A second class is
+//     sqi charging where the reference does not (join()'s byte charge,
+//     string(list)'s and the repr_* family's per-element charge, unique()'s
+//     per-comparison charge — see below) or the reverse (round(x,
+//     ndigits>0), min/max's fixed 2- and 3-arg rows) — each argued from the
+//     RFC 0006 text in that file's own section for it.
+//
+//     THE SECTION 1.3.10 WORKED EXAMPLE'S OWN ARITHMETIC IS WRONG. The
+//     specification states 'a' * 100000 costs 393 operations; the correct
+//     total is 392: ceil(100000/256) is 391 (256*390 = 99840, leaving 160),
+//     plus 1 for the repetition call itself. Measured directly —
+//     EvalWithMetrics("'a' * 100000", nil, TString) reports 392, not 393 —
+//     and the reference implementation agrees with 392. The RULE
+//     (meter.go's ceilDiv256) is right; only the specification's own
+//     addition is off, and meter.go records the correction beside the
+//     function so a reader checking it against the spec does not conclude
+//     it has an off-by-one.
+//
+//     Value.String() AND string(list) AGREE ON QUOTING AND ESCAPING FOR
+//     EVERY CASE EXERCISED — not universally. Before this wave,
+//     Value.String() rendered a list's string elements unquoted while
+//     string()'s JSON row quoted them (see the float-passthrough bullet
+//     above); that quoting gap closed in this wave, and the two were then
+//     measured to also agree byte-for-byte on ESCAPING for every case
+//     tried: an embedded double quote, non-ASCII, angle brackets and an
+//     ampersand, a newline, a backslash, tab, backspace, formfeed, carriage
+//     return, an emoji, U+2028/U+2029, and the empty string
+//     (TestValueString_VersusStringFunction). That is the full extent of
+//     the claim, and it must not be read as universal agreement: the two
+//     are INDEPENDENT implementations — Value.String() quotes a list's
+//     string elements with strconv.Quote (value.go), string()'s list row
+//     encodes with encoding/json and SetEscapeHTML(false) (funcsconv.go's
+//     writeJSONValue) — and a direct probe of the two encoders against each
+//     other, outside the set above, finds real divergences: on the C0
+//     controls U+0000, U+0001 and U+001B, strconv.Quote emits its own
+//     hex-escape form where the JSON encoder emits a \u00XX escape; on
+//     vertical tab (U+000B), Quote emits its own short escape where JSON
+//     emits \u000b; on DEL (U+007F), Quote escapes it where JSON leaves it
+//     literal; and on invalid UTF-8, Quote preserves the raw bytes where
+//     JSON substitutes U+FFFD — all four measured directly against both
+//     functions. Do not widen the agreement claim past the set it was
+//     measured on.
+//
+//     unique() CHARGES PER COMPARISON, NOT PER ELEMENT — and the reason is
+//     a prediction that measurement overturned, not a preference. C1
+//     predicted section 1.3.10's operation limit would already catch
+//     uniqueList's O(n^2) scan through its old registry-level
+//     Cost{ArgElements: {0}} charge, which prices only the INPUT length. It
+//     did not: unique(range(20000)) completed in roughly 4 seconds with no
+//     error under that charge, running on the order of 4*10^8 real
+//     valuesEqual comparisons while only 20,001 operations were ever
+//     counted against the 10-million default limit. uniqueList
+//     (funcslist.go) is now an FnCtx function charging one operation per
+//     valuesEqual comparison, and the charge fires BEFORE the comparison it
+//     prices, so the limit stops the quadratic work while it is in
+//     progress rather than billing for it, unbounded, after the fact
+//     (TestUnique_IsBoundedByTheOperationLimit).
+//
+//     THE TOP-LEVEL COERCION IS METERED. coerceTop (eval.go), which every
+//     public entry point — Expression.Eval, Eval, EvalWithMetrics,
+//     EvalForBalanceCheck — runs on the whole expression's result, releases
+//     the pre-coercion value and allocates the coerced result with
+//     WithMemoryLimit's bound checked, at all four entry points. Before
+//     this wave's final fix round it ran OUTSIDE the metered region:
+//     coerceList (coerce.go) can turn a small live range_expr into an
+//     arbitrarily large list[int], and with the top-level coercion
+//     unmetered that materialization was bounded only by the fixed
+//     maxElements floor (10,000,000 elements, roughly 640MB at 64 bytes a
+//     value), with WithMemoryLimit never consulted at all on that path.
+//
+//     THE FENCE IS LIFTED, WITH A RESIDUAL STATED RATHER THAN THE PROBLEM
+//     DECLARED GONE. Every earlier wave's version of this comment said this
+//     package must not be handed untrusted expressions until sub-project E;
+//     sub-project E1 is what changes that, demonstrated by running
+//     TestOperationLimit_*, TestMemoryLimit_* and
+//     TestUnique_IsBoundedByTheOperationLimit, all passing. Three things
+//     this does NOT mean: the fixed floor (limits.go) still bounds what a
+//     single operation may allocate, unchanged by either configurable
+//     limit; maxParseDepth still guards PARSING, a phase no evaluation-time
+//     budget can reach at all, so a hostile expression can still be
+//     arbitrarily deep before a single operation charge exists to stop it;
+//     and limits are per-Eval, so a template with many expressions gets
+//     many independent budgets, one per expression evaluated — a
+//     cumulative per-template budget, if one turns out to be needed, is
+//     sub-project E2's or E4's question.
+//
 //   - A union target that names a value's own type exactly now admits it
 //     unchanged, list types included: Eval("[1.0, 2.0]", nil,
 //     expr.UnionOf(expr.ListOf(expr.TFloat), expr.ListOf(expr.TInt)))
@@ -811,12 +965,18 @@
 //     evalNode — which overflowed the stack for real between 400,000 and
 //     500,000 operators.
 //     None of the four is the spec's own configurable memory and operation
-//     limits (sections 1.3.9 and 1.3.10) — those remain unimplemented, still
-//     sub-project E's, unchanged from sub-project A — so this package must
-//     still not be handed untrusted expressions in its present state: the hard
-//     bounds stop one operation from allocating unbounded memory and stop the
-//     parser and the evaluator from overflowing the stack, not a pathological
-//     expression from doing unbounded total work. The one remaining walk over a
+//     limits (sections 1.3.9 and 1.3.10) — those are a SEPARATE mechanism,
+//     covered in the BOUNDED EVALUATION bullet below, and this paragraph's
+//     historical claim that this package must not be handed untrusted
+//     expressions before they exist is corrected there rather than restated
+//     here: sub-project E1 delivered them, on by default, and that fence is
+//     now lifted, with a residual stated precisely in that bullet rather
+//     than the problem being declared gone outright. What the four bounds
+//     here still do, unchanged: stop one operation from allocating unbounded
+//     memory and stop the parser and the evaluator from overflowing the
+//     stack — a narrower job than the configurable limits below, which stop
+//     a pathological expression from doing unbounded TOTAL work across many
+//     operations. The one remaining walk over a
 //     parsed tree — ast.go's walk, which Expression.Names uses — needs no bound
 //     at all any more: it is ITERATIVE, with an explicit stack, so its Go stack
 //     depth is constant however deep the tree is. It was recursive, and it was
@@ -841,17 +1001,23 @@
 //     still renders through ordinary formatting, digit-for-digit fidelity and
 //     all, remains unimplemented, and extending the carry to cover it is
 //     sub-project E's, unchanged from sub-project A. The same underlying
-//     Value.String gap now shows up for a list too: Value.String renders a
-//     list's string elements unquoted ("[a, b]"), while the reference
-//     implementation's to_string() JSON-quotes them ("[\"a\", \"b\"]") —
-//     confirmed directly against the reference, not just inferred. Sub-project
-//     C1's own string() function (funcsconv.go) does NOT share this gap for a
-//     list argument: RFC 0006 calls that conversion's list row "the JSON string
-//     representation" rather than a diagnostic rendering, so it quotes string
-//     elements — string(["a", "b"]) is "[\"a\", \"b\"]" — while Value.String()
-//     of that same list stays unquoted. Two renderings, two functions, on
-//     purpose (TestString), and only Value.String()'s form is still
-//     sub-project E's to fix.
+//     Value.String gap USED TO show up for a list too, before this wave:
+//     Value.String rendered a list's string elements unquoted ("[a, b]"),
+//     while string()'s JSON row (funcsconv.go) quoted them ("[\"a\", \"b\"]")
+//     — confirmed directly against the reference, not just inferred, since
+//     RFC 0006 calls that conversion's list row "the JSON string
+//     representation" rather than a diagnostic rendering. Sub-project E1
+//     closed the Value.String() half of that gap: it now quotes a list's
+//     string elements too, and the BOUNDED EVALUATION bullet below states,
+//     narrowly and from a direct measurement rather than from prediction,
+//     exactly how far the two renderings agree once both quote — do not
+//     restate that claim here, and read it there rather than assume the two
+//     are now interchangeable. What is NOT closed is the pass-through this
+//     paragraph opened with: Value.String() remains a rendering for
+//     diagnostics and tests, not section 1.3.4's digit-for-digit float
+//     pass-through, which still needs the original submitted string and
+//     still belongs to whichever later sub-project first has template
+//     integration to source it from.
 //
 //   - Nothing here touches a job template. Parsing a template, binding its
 //     parameters, and interpolating an expression's result back into template
@@ -909,16 +1075,35 @@
 //     comparison.
 //
 //   - Test coverage, as of this writing: the OpenJD conformance suite's
-//     EXPR/job_templates group is 143/209 passing, 66 fixtures baselined
+//     EXPR/job_templates group is 145/209 passing, 64 fixtures baselined
 //     (make test-conformance). It went DOWN in sub-project D, from 145/209
-//     with 64 baselined, and that is the one direction this number is allowed
-//     to move without being a defect: registering apply_path_mapping made
+//     with 64 baselined to 143/209 with 66 baselined, and that was the one
+//     direction this number was allowed to move without being a defect:
+//     registering apply_path_mapping made
 //     7.3--apply-path-mapping-in-job-name.invalid.yaml and its -in-timeout
 //     sibling evaluate cleanly, and both were only ever rejected by "unknown
 //     function" rather than by the placement rule they actually violate. Both
-//     are baselined until sub-project E can reject them for the right reason —
-//     see the PATH MAPPING bullet above, which states the same 145 -> 143 and
-//     must keep stating it. D therefore has NO protected-fixtures test of the
+//     are STILL baselined, waiting on sub-project E's scope-aware evaluation
+//     to reject them for the right reason — see the PATH MAPPING bullet
+//     above, which states the same 145 -> 143 and must keep stating it. The
+//     score is back at 145/209 with 64 baselined AS OF sub-project E1, but
+//     NOT because D's regression reversed: E1's Task 9 landed the section
+//     1.3.10 operation counter and burned down a completely DIFFERENT pair
+//     of long-baselined entries, expr1.3.10--operation-limit-exceeded and
+//     expr1.3.10--string-operation-limit-exceeded (present in the baseline
+//     since C1 and C2 respectively, for the mirror-image reason: both used
+//     to be rejected only by an "unknown function" error before range() and
+//     .upper() were registered, then wrongly evaluated to completion once
+//     those landed, and now correctly exceed the operation limit instead).
+//     The two apply_path_mapping placement fixtures are UNCHANGED by E1 and
+//     remain baselined; the arithmetic landing on the same total (145/209,
+//     64 baselined) both before D and after E1's Task 9 is a coincidence of
+//     magnitude — D ADDED two baseline entries, E1's Task 9 REMOVED two
+//     different ones, and the counts happen to net to the same score — not a
+//     reversal or a same-composition round trip.
+//     test/conformance/baseline-expr.txt's own header records this history
+//     in full, including the note that predicted the E1 outcome before it
+//     landed. D therefore has NO protected-fixtures test of the
 //     kind every wave below has, because it is the mirror image of one: those
 //     tests exist where registering a family turned accidental
 //     "unknown function" passes into real rejections that must not silently
@@ -968,17 +1153,31 @@
 //     "repr_sh(out)" reports `no signature of "repr_sh" accepts (unresolved)`
 //     — measured. That is the scope-blindness class the baseline file's own
 //     header describes, and it burns down in sub-project E, not here. The
-//     differential oracle test has 891/1052 cases agreeing with the reference
-//     implementation, 161 baselined divergences (make test-expr-oracle) — up
-//     from B3's 135/169, then C1's 279/321 now that C1's 22 functions had
-//     their own corpus cases, C2's 407/469 once its 31 string functions had
-//     theirs, C3's 473/551 with its regex and repr_* functions, and C4's
-//     path family (test/oracle/corpus.txt), which is where most of the growth
-//     in BOTH numbers comes from. Sub-project D moved neither number and is
-//     the first wave that could not: the corpus contains no apply_path_mapping
-//     case and cannot contain one, because the harness passes the reference
-//     only a source string and a target type, with no channel for session
-//     mapping rules — see the PATH MAPPING bullet above. The path corpus is
+//     differential oracle test's VALUE dimension has 922/1052 cases agreeing
+//     with the reference implementation, 130 baselined divergences
+//     (make test-expr-oracle) — up from B3's 135/169, then C1's 279/321 now
+//     that C1's 22 functions had their own corpus cases, C2's 407/469 once
+//     its 31 string functions had theirs, C3's 473/551 with its regex and
+//     repr_* functions, C4's path family (test/oracle/corpus.txt), which is
+//     where most of the growth in the value count came from, and E1's
+//     Task 13, which retired 31 value baselines by closing the Value.String()
+//     list-quoting gap described in the float-passthrough bullet above and
+//     the BOUNDED EVALUATION bullet below (891/1052 with 161 baselined,
+//     unmoved by sub-project D, to 922/1052 with 130 baselined). Sub-project
+//     D itself moved neither number and was the first wave that could not:
+//     the corpus contains no apply_path_mapping case and cannot contain one,
+//     because the harness passes the reference only a source string and a
+//     target type, with no channel for session mapping rules — see the PATH
+//     MAPPING bullet above. Sub-project E1 also added a SECOND oracle
+//     dimension the tracker had never carried before: OPERATION COUNTS.
+//     EvalWithMetrics (meter.go) and the reference's own
+//     evaluate_with_metrics are compared on every case whose value already
+//     agrees — a case with a value divergence is already reported once and
+//     is not double-counted here — and land at 667/922 agreeing, 255
+//     baselined divergences, recorded and adjudicated family by family in
+//     test/oracle/baseline-ops.txt (roughly twenty root-cause families; see
+//     the BOUNDED EVALUATION bullet's COUNTING RULINGS paragraph for the
+//     shape of them). The path corpus is
 //     large and its divergences are the reference's, argued family by family
 //     in the C4 section of test/oracle/baseline.txt (its non-normalizing "/"
 //     and "+", its

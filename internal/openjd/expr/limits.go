@@ -18,13 +18,21 @@ import (
 // multi-gigabyte allocation.
 //
 // The specification's OWN limits — section 1.3.9's memory-bounded evaluation and
-// section 1.3.10's operation-bounded evaluation — are sub-project E's and are
-// configurable. This floor stays underneath them: it is a safety property, not a
-// conformance one.
+// section 1.3.10's operation-bounded evaluation — landed in sub-project E1
+// (meter.go's WithMemoryLimit and WithOperationLimit) and are configurable. This
+// floor stays underneath them and is not raised by either: it is a safety
+// property, not a conformance one, and it is what still fires on a large enough
+// single operation even under a generous WithMemoryLimit — see doc.go's BOUNDED
+// EVALUATION bullet for the measured example.
 const maxElements = 10_000_000
 
 // maxStringBytes is the same bound for a produced string, in bytes, since
 // "'x' * 100000000" costs memory by length rather than by element count.
+//
+// Like maxElements, this sits underneath sub-project E1's configurable
+// WithMemoryLimit (meter.go) rather than being superseded by it: raising the
+// memory limit does not raise this ceiling, so "'a' * 20000000" still fails here
+// with errTooLarge regardless of what WithMemoryLimit allows.
 const maxStringBytes = 10_000_000
 
 // maxParseDepth is the third bound, and the only one that applies before any
