@@ -390,16 +390,35 @@ func checkFormatString(
 // opposite failure, a false rejection of a legitimate template that would
 // have worked fine at run time:
 //
-//   - Phase 1 (checkTemplateExpressions with params == nil) binds every
-//     Param./RawParam./Task.Param. symbol as Unresolved -- an opaque
-//     placeholder that carries no data to process, so referencing it costs a
-//     handful of operations regardless of what the SUBMITTED value will
-//     eventually be. The only way an evaluation can accumulate real cost is
-//     literal computation baked directly into the template text -- a large
-//     string literal, a large literal list, or a loop over one -- which is
-//     exactly the class of construct sections 1.3.9/1.3.10 exist to bound,
-//     not something a legitimate template needs at a submission-time
-//     position (a job name, a host requirement value, a command).
+//   - Phase 1 (checkTemplateExpressions with params == nil, called from
+//     ValidateWithOptions) binds every Param./RawParam./Task.Param. symbol as
+//     Unresolved -- an opaque placeholder that carries no data to process, so
+//     referencing it costs a handful of operations regardless of what the
+//     SUBMITTED value will eventually be. The only way an evaluation can
+//     accumulate real cost at THIS phase is literal computation baked
+//     directly into the template text -- a large string literal, a large
+//     literal list, or a loop over one -- which is exactly the class of
+//     construct sections 1.3.9/1.3.10 exist to bound, not something a
+//     legitimate template needs at a submission-time position (a job name, a
+//     host requirement value, a command).
+//   - Phase 2 (checkExpressionsAtSubmit, submit.go, sub-project E2's Task 10,
+//     called after job parameters are bound) re-runs the SAME walk with
+//     Param./RawParam. symbols now bound to their concrete submitted values --
+//     so referencing one is NO LONGER free: a large submitted value costs
+//     real bytes and real per-character operations, same as a literal would.
+//     Measured directly: `[Param.S.upper() for i in range(10)]` with a
+//     900,000-byte Param.S costs ~520us at phase 1 (nothing to touch, params
+//     is nil) versus ~23ms at phase 2 (roughly 40x) -- and correctly trips
+//     submissionMemoryLimit before completing ("1800128 bytes of live values
+//     exceeds the limit of 1000000"), because the doubled live string (the
+//     bound value plus its .upper() copy) alone exceeds the 1MB budget. A
+//     submitted parameter value large enough to threaten the budget is
+//     bounded by the SAME fixed limits below, not a separate analysis --
+//     symmetric with the literal-computation case Phase 1 bounds, just
+//     reached through a submitted value instead of template text. Phase 2 is
+//     therefore the phase that can be genuinely EXPENSIVE per evaluation, not
+//     Phase 1 -- keep that in mind before assuming Phase 1's "cheap
+//     placeholder" reasoning extends to it.
 //   - submissionOperationLimit (10,000) leaves roughly two orders of
 //     magnitude of headroom over any realistic submission-time expression --
 //     a handful of Param references, arithmetic, string formatting, or a
@@ -413,12 +432,17 @@ func checkFormatString(
 //     well under a few KB) while bounding any single large literal
 //     allocation far below limits.go's fixed, non-configurable maxStringBytes
 //     floor (10,000,000 bytes) -- so a large literal is caught by THIS limit
-//     first, before it can allocate anywhere close to that floor.
+//     first, before it can allocate anywhere close to that floor. The same
+//     budget also catches a large CONCRETE parameter value at phase 2, per
+//     the measurement above -- one limit, enforced identically at both
+//     phases because both go through the same checkFormatString/submissionLimits
+//     call.
 //
 // A template whose expressions need more than this to type-check against
-// UNRESOLVED placeholders was already relying on literal computation heavy
-// enough to be a submission-time liability; rejecting it here is the
-// intended outcome, not a false positive.
+// UNRESOLVED placeholders (phase 1) or to evaluate against submitted values
+// (phase 2) was already relying on computation heavy enough to be a
+// submission-time liability; rejecting it here is the intended outcome, not
+// a false positive.
 const (
 	submissionOperationLimit int64 = 10_000
 	submissionMemoryLimit    int64 = 1_000_000
@@ -450,9 +474,11 @@ func submissionLimits() []expr.Option {
 // would reject as malformed but EXPR's grammar parses differently, wrong at
 // worst.
 //
-// params is nil for phase 1 (every job-parameter symbol unresolved) and
-// holds concrete values for phase 2 (Task 10's caller, once one exists) --
-// see symbolsFor's own doc comment for what params changes.
+// params is nil for phase 1 (every job-parameter symbol unresolved, called
+// from ValidateWithOptions) and holds concrete values for phase 2 (called
+// from submit.go's checkExpressionsAtSubmit, sub-project E2's Task 10, once
+// job parameters are bound) -- see symbolsFor's own doc comment for what
+// params changes.
 //
 // The walk mirrors validate.go's traversal (ValidateWithOptions ->
 // validateStep -> validateEnvironments/validateParameterSpace/

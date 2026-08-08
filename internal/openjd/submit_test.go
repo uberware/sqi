@@ -1039,29 +1039,34 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 
 // ── Sub-project E2's Task 10: submit-time expression re-check ───────────────
 //
-// checkExpressionsAtSubmit (submit.go) proves the phase-1/phase-2 distinction
-// directly, in submit_exprcheck_test.go's package-openjd (white-box) tests --
-// see that file's header comment for why: Submit's own phase 1 call
-// (ValidateWithOptions, above in this same function) rejects every
-// EXPR-declaring template outright today, because the EXPR extension is
-// registered but not yet StatusSupported (extension.go). That is a separate
-// gate, sub-project H's, not this task's -- but it does mean an EXPR template
-// can never reach parameter binding (where Task 10's new call lives) via the
-// public Submit API before H ships. The two tests below cover what IS
-// observable through Submit itself: that an EXPR template still surfaces as
-// a SubmitValidationError (unchanged, pre-existing behavior) and that the new
-// call site is inert -- no false rejection -- for the common EXPR-off case,
-// even when a job parameter used in a format string is submitted as "0".
+// The real, end-to-end proof that Submit's phase-2 wiring works -- driving
+// the brief's own division-by-zero template through the public Submit API,
+// with the EXPR extension's registry entry temporarily flipped to
+// StatusSupported -- lives in submit_exprcheck_test.go's package-openjd
+// (white-box) tests, because only that file can reach the unexported
+// registry var to perform the flip. A first draft of this file asserted that
+// such a test was "impossible today"; a review disproved that by writing it,
+// and that claim is withdrawn (see the report's "Fix round 1" section).
+//
+// The two tests below still earn their place as package-openjd_test
+// (external API) coverage of what Submit does WITHOUT that temporary flip --
+// i.e. under the real, current registry state: that an EXPR template still
+// surfaces as a SubmitValidationError (unchanged, pre-existing behavior, for
+// the extension-registration reason specifically) and that the new call site
+// is inert -- no false rejection -- for the common EXPR-off case, even when a
+// job parameter used in a format string is submitted as "0".
 
-// TestSubmitter_Submit_EXPRTemplateStillRejectedBeforeParameterBinding pins
-// today's actual, observable behavior for an EXPR-declaring template: Submit
-// returns a *SubmitValidationError at phase 1 (step 2, before parameter
-// binding), for the extension-registration reason, not the new phase-2 code
-// this task adds -- which is never reached as a result. This is a regression
-// guard, not a proof of Task 10's wiring (see the header comment above); it
-// exists so that a change unblocking EXPR at some later date is required to
-// touch (and re-examine) this test.
-func TestSubmitter_Submit_EXPRTemplateStillRejectedBeforeParameterBinding(t *testing.T) {
+// TestSubmitter_Submit_EXPRTemplateRejectedForUnsupportedExtension pins
+// today's actual, observable behavior for an EXPR-declaring template under
+// the real (unflipped) registry: Submit returns a *SubmitValidationError
+// whose message names the extension-registration reason. It does NOT observe
+// -- and its name no longer claims to observe -- whether parameter binding
+// ran; ValidateWithOptions's own early return means it did not, but nothing
+// in this test depends on or checks that. This is a regression guard, not a
+// proof of Task 10's wiring (see the header comment above); it exists so
+// that a change unblocking EXPR at some later date is required to touch
+// (and re-examine) this test.
+func TestSubmitter_Submit_EXPRTemplateRejectedForUnsupportedExtension(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
 	sub := openjd.NewSubmitter(st)
