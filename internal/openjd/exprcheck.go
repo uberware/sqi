@@ -610,14 +610,31 @@ func checkScriptRefExpressions(
 // TargetArgItem; exprcheck_test.go's direct checkFormatString calls establish
 // the contract, this wires it into the walk.
 //
-// timeout is checked via a decimal re-rendering of the already-decoded int
-// (a.TimeoutSeconds) rather than a raw format-string body, because
-// decodeAction (parse.go) accepts only a strict integer for "timeout" today --
-// there is no field on Action that could carry an unresolved "{{ ... }}"
-// body for a real template to reach this call with. The call is still made,
-// unconditionally when TimeoutSet, so the position is wired for the day that
-// decoder changes; until then it is a no-op (a plain decimal string parses to
-// zero format-string references).
+// PLAIN STATEMENT, so nobody reads "timeout is validated" into this: the
+// timeout call below is WIRED BUT UNREACHABLE FROM A REAL TEMPLATE. It is not
+// a live check today, only the shape of one. decodeAction (parse.go) decodes
+// "timeout" via a strict integer parse (intFieldStrict/scalarToInt) for EVERY
+// template, EXPR or not -- there is no code path by which a.TimeoutSeconds
+// ever holds anything but an already-resolved int, so re-rendering it with
+// strconv.Itoa below and running it through checkFormatString ALWAYS produces
+// a plain decimal literal with zero "{{" references, and checkFormatString is
+// a guaranteed no-op on that input. Confirmed directly: parsing
+// EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml
+// (timeout: "{{ len(apply_path_mapping(Param.Val)) }}") fails at
+// openjd.Parse itself with "openjd: timeout must be an integer", before
+// ValidateWithOptions -- and therefore this function -- ever runs; that
+// fixture is one of this sub-project's thirteen target fixtures and it
+// passes CONFORMANCE (correctly rejected) entirely incidentally, for a
+// decode-time reason unrelated to scope checking. Making this position
+// actually live requires changing decodeAction to accept a format-string
+// body for "timeout", which has its own blast radius (every existing
+// template's timeout becomes format-string-capable, base-spec included) and
+// is deliberately NOT part of this task -- out of the file list
+// (validate.go, exprcheck.go, baseline-expr.txt) this task was scoped to.
+// The call stays here, unconditional when TimeoutSet, so the position is
+// wired for the day that decoder changes without a second pass over the
+// walk; until then, reading this comment is the only way to know it does
+// nothing.
 func checkActionExpressions(a Action, ptr string, scope Scope, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	errs = append(errs, checkFormatString(
@@ -675,19 +692,24 @@ func checkHostRequirementExpressions(hr HostRequirements, base string, syms expr
 	return errs
 }
 
-// checkParameterSpaceExpressions checks a step's task-parameter RANGE LIST
+// checkParameterSpaceExpressions checks a step's task-parameter range
 // entries -- the other position with no format-string scope validation
-// before Task 9. Each entry is checked at ScopeJob/TargetString, matching
-// validate.go's validateRangeListValues.
+// before Task 9 -- in both of the field's two shapes: each RANGE LIST entry
+// (ScopeJob/TargetString, matching validate.go's validateRangeListValues) and
+// the whole-field RANGE EXPR alternative (ScopeJob/expr.TAny).
 //
-// RangeExpr (the whole-field alternative form, e.g. "1-100:2" or, under EXPR,
-// a list-valued expression per section 1.3.11) is deliberately NOT checked
-// here, for the same reason validateRangeListValues' doc comment gives: its
-// target type is not TargetString uniformly -- an EXPR RangeExpr may
-// legitimately evaluate to list[float]/list[path]/list[string], and checking
-// it against TargetString would reject the passing
+// RangeExpr does NOT use TargetString, unlike a RangeList entry: the field's
+// target type is not TargetString uniformly. A base-spec RangeExpr is the
+// INT range syntax ("1-100:2", a plain string), but under EXPR it may
+// legitimately be a list-valued expression per section 1.3.11 --
+// "{{ [Param.Scale * 2, Param.Scale + 0.5] }}" evaluates to list[float], and
+// checking it against TargetString would reject the passing
 // expr1.3.11--*-range-expression.yaml fixtures for a type mismatch that is
-// not a real defect.
+// not a real defect. expr.TAny still catches an out-of-scope symbol -- an
+// unknown-symbol failure happens during evaluation, at the symbol lookup, not
+// at the final target coercion, so a target that accepts anything does not
+// weaken the scope check at all, only the (deliberately not-imposed) result
+// type check.
 func checkParameterSpaceExpressions(ps StepParameterSpace, base string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	for i, tp := range ps.TaskParameterDefinitions {
@@ -695,6 +717,12 @@ func checkParameterSpaceExpressions(ps StepParameterSpace, base string, syms exp
 		for j, v := range tp.RangeList {
 			errs = append(errs, checkFormatString(
 				v, fmt.Sprintf("%s/range/%d", ptr, j), ScopeJob, syms, TargetString,
+				submissionLimits()...,
+			)...)
+		}
+		if tp.RangeExpr != nil {
+			errs = append(errs, checkFormatString(
+				*tp.RangeExpr, ptr+"/range", ScopeJob, syms, expr.TAny,
 				submissionLimits()...,
 			)...)
 		}

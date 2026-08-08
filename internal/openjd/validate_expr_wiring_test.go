@@ -107,6 +107,66 @@ steps:
 	}
 }
 
+// TestValidate_RangeExpr_BaseSpec_OutOfScopeRejected pins the whole-field
+// RangeExpr form of the range position, which a review caught as unchecked
+// in the first pass of this task: a base-spec template with
+// range: "{{Session.WorkingDirectory}}" (a STRING scalar, not an array) used
+// to validate with ZERO errors -- the same silent resolve-to-nothing this
+// task exists to close, left open at this one field because RangeList (the
+// array form) was closed but RangeExpr (the scalar form) was not.
+func TestValidate_RangeExpr_BaseSpec_OutOfScopeRejected(t *testing.T) {
+	tmpl := mustParse(t, `
+specificationVersion: jobtemplate-2023-09
+name: TestJob
+steps:
+  - name: Step1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Shot
+          type: STRING
+          range: "{{Session.WorkingDirectory}}"
+    script:
+      actions:
+        onRun:
+          command: echo
+`)
+	errs := openjd.Validate(tmpl)
+	if !containsMessage(errs, "Session.WorkingDirectory") {
+		t.Fatalf("expected an out-of-scope error mentioning Session.WorkingDirectory; got: %v", errs)
+	}
+}
+
+// TestValidate_RangeExpr_BaseSpec_InScopeAccepted is the accompanying sanity
+// check, using the exact shape sqi's own reference presets use
+// (presets/sqi/*.yaml all set range to "{{Param.Frames}}" or
+// "{{Param.FrameRange}}") -- confirming the new check does not regress the
+// common case.
+func TestValidate_RangeExpr_BaseSpec_InScopeAccepted(t *testing.T) {
+	tmpl := mustParse(t, `
+specificationVersion: jobtemplate-2023-09
+name: TestJob
+parameterDefinitions:
+  - name: Frames
+    type: STRING
+    default: "1-10"
+steps:
+  - name: Step1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Shot
+          type: INT
+          range: "{{Param.Frames}}"
+    script:
+      actions:
+        onRun:
+          command: echo
+`)
+	errs := openjd.Validate(tmpl)
+	if len(errs) != 0 {
+		t.Fatalf("an in-scope Param. reference in a RangeExpr must be accepted; got: %v", errs)
+	}
+}
+
 // TestValidate_EXPR_HostRequirements_OutOfScopeRejected is the EXPR-template
 // counterpart of TestValidate_HostRequirements_BaseSpec_OutOfScopeRejected,
 // exercised end to end through openjd.Parse and openjd.Validate rather than

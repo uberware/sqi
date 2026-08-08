@@ -318,8 +318,32 @@ func TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm(t *te
 // contract at the checkFormatString level so a later sub-project (E4, which
 // performs the substitution TargetArgItem only type-checks here) inherits a
 // pinned contract rather than a prose description.
+//
+// Both the concrete-literal shapes AND their UNRESOLVED equivalents are
+// covered, and this is not redundancy: a concrete literal is not what a real
+// template produces at this position. checkTemplateExpressions runs phase 1
+// with params == nil, so every Param./RawParam. reference is an unresolved
+// placeholder (symbolsFor), and the canonical section 1.3.2 example --
+// "a value that is a string is one argument, None means no argument is added,
+// and a list[string] adds each element" -- is written as a CONDITIONAL
+// picking between those shapes based on another parameter, e.g.
+// "{{ Param.S if Param.Flag else None }}". That conditional's result type is
+// a UNION of its branches (here string? = string | nulltype) precisely
+// because Param.Flag has no phase-1 value to pick a branch with. A version of
+// this test that only tried concrete 'x'/None/['a','b'] would have missed a
+// real bug: an earlier revision of the checker rejected exactly this
+// unresolved-union shape (a null member of a source union coerced to a
+// target union that plainly names nulltype), even though every concrete form
+// of the same shapes passed -- see the CodeNull branch this pins in
+// internal/openjd/expr/coerce.go's coercible().
 func TestCheckFormatString_ArgItemShapes(t *testing.T) {
-	tmpl := &JobTemplate{Name: "T"}
+	tmpl := &JobTemplate{
+		Name: "T",
+		ParameterDefinitions: []JobParameter{
+			{Name: "Flag", Type: "BOOL"},
+			{Name: "S", Type: "STRING"},
+		},
+	}
 	syms := symbolsFor(tmpl, nil, nil, ScopeStepScript, nil)
 
 	tests := []struct {
@@ -331,6 +355,25 @@ func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 		{"None drops the argument", "{{ None }}", false},
 		{"a list[string] flattens inline", "{{ ['a', 'b'] }}", false},
 		{"a list[list[string]] does not type-check", "{{ [['a'], ['b']] }}", true},
+
+		// The same three accepted shapes, but UNRESOLVED -- what phase 1
+		// actually produces, via a conditional whose condition (Param.Flag)
+		// has no concrete value. Each branch's own type is still a concrete
+		// member (string, nulltype, or list[string]); what makes the WHOLE
+		// expression's result type a union is that evaluation cannot pick
+		// which branch runs without a value for Param.Flag.
+		{"an unresolved string (a Param reference) is one argument", "{{ Param.S }}", false},
+		{"an unresolved list[string] flattens inline", "{{ [Param.S] }}", false},
+		{
+			"a conditional between a string and None is the canonical " +
+				"section 1.3.2 shape, and must type-check unresolved",
+			"{{ Param.S if Param.Flag else None }}", false,
+		},
+		{
+			"a conditional between a list[string] and None must also " +
+				"type-check unresolved",
+			"{{ ['--x', Param.S] if Param.Flag else None }}", false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -468,6 +511,74 @@ func TestCheckTemplateExpressions_RangeEntries(t *testing.T) {
 	}
 }
 
+// TestCheckTemplateExpressions_RangeExprOutOfScope pins the whole-field
+// RangeExpr form of the range position (a review finding, distinct from
+// TestCheckTemplateExpressions_RangeEntries above, which only covers the
+// RangeList array form): an out-of-scope reference in RangeExpr must still
+// be rejected even though checkParameterSpaceExpressions deliberately checks
+// it against expr.TAny rather than TargetString. TAny weakens only the
+// RESULT type check, not symbol scoping -- an unknown-symbol failure happens
+// at evaluation's symbol lookup, before any target coercion runs.
+func TestCheckTemplateExpressions_RangeExprOutOfScope(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:       "T",
+		Extensions: []string{"EXPR"},
+		Steps: []StepTemplate{{
+			Name:   "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{Command: "echo"}}},
+			ParameterSpace: &StepParameterSpace{
+				TaskParameterDefinitions: []TaskParamDefinition{{
+					Name:      "Shot",
+					Type:      TaskParamTypeString,
+					RangeExpr: func() *string { s := "{{ Session.WorkingDirectory }}"; return &s }(),
+				}},
+			},
+		}},
+	}
+
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "Session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an out-of-scope error at %s mentioning Session; got: %v", wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_RangeExprListValuedAccepted is the
+// accompanying sanity check: checkParameterSpaceExpressions must NOT regress
+// section 1.3.11's list-valued RangeExpr fixtures
+// (expr1.3.11--*-range-expression.yaml) by forcing TargetString on a value
+// that legitimately evaluates to list[float].
+func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:                 "T",
+		Extensions:           []string{"EXPR"},
+		ParameterDefinitions: []JobParameter{{Name: "Scale", Type: "FLOAT"}},
+		Steps: []StepTemplate{{
+			Name:   "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{Command: "echo"}}},
+			ParameterSpace: &StepParameterSpace{
+				TaskParameterDefinitions: []TaskParamDefinition{{
+					Name: "Factor",
+					Type: TaskParamTypeFloat,
+					RangeExpr: func() *string {
+						s := "{{ [Param.Scale * 2, Param.Scale + 0.5] }}"
+						return &s
+					}(),
+				}},
+			},
+		}},
+	}
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Fatalf("a list-valued RangeExpr must type-check against expr.TAny: %v", errs)
+	}
+}
+
 // TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget pins that the
 // walk applies TargetArgItem (not TargetString) at an action's args entries,
 // by round-tripping a value shape TargetString would reject but
@@ -492,34 +603,69 @@ func TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget(t *testing.T) {
 }
 
 // TestCheckTemplateExpressions_AppliesSubmissionLimits pins that the walk
-// applies submissionLimits (a much tighter operation budget than expr.Eval's
-// own execution-time default of 10,000,000) end to end, not just when
-// checkFormatString is called directly with no opts. A single literal
-// 'a' * 3_000_000 costs ceil(3_000_000/256) = 11,719 operations to repeat --
-// under limits.go's fixed maxStringBytes floor (10,000,000 bytes) so it is
-// not rejected by that unrelated hard cap, but over submissionOperationLimit
-// (10,000) -- so it must be rejected as an operation-limit error, and
-// quickly: this is a single allocation, not a loop, so the test itself stays
-// fast regardless of what it is pinning.
+// applies submissionLimits (a much tighter budget than expr.Eval's own
+// execution-time defaults) end to end, not just when checkFormatString is
+// called directly with no opts.
+//
+// Each of the two budgets is pinned with a value chosen to sit on ONE side of
+// ONE limit only, so the two sub-tests cannot pass for the wrong reason --
+// an earlier revision of this test used 'a' * 3_000_000, which exceeds BOTH
+// submissionMemoryLimit and submissionOperationLimit at once and asserted
+// only on the operation-limit message; it happened to pass because the
+// operation charge (callShape's chargeResult, ceil(len/256) per section
+// 1.3.10 rule 3) runs BEFORE the memory charge (evalNode's ec.m.alloc, per
+// section 1.3.9) for a string repeat, so the memory check was never even
+// reached, and a caller who mixed up which Option went where would not have
+// been caught here.
+//
+//   - "over memory, under operations": 'a' * 1,500,000 costs
+//     ceil(1,500,000/256) = 5,860 operations (well under
+//     submissionOperationLimit's 10,000) but allocates a 1,500,000-byte
+//     string (over submissionMemoryLimit's 1,000,000) -- and stays under
+//     limits.go's fixed, unrelated maxStringBytes floor (10,000,000), so
+//     that hard cap cannot be what rejects it either.
+//   - "over operations, under memory": a comprehension iterating range(11,000)
+//     with a filter that is always false (`x > 999999`, impossible for any
+//     element range() produces) costs one operation per iteration plus the
+//     call itself -- 11,001 operations, over submissionOperationLimit -- but
+//     the filtered-out result list stays EMPTY, so live memory never
+//     approaches submissionMemoryLimit.
 func TestCheckTemplateExpressions_AppliesSubmissionLimits(t *testing.T) {
-	tmpl := &JobTemplate{
-		Name:       "T",
-		Extensions: []string{"EXPR"},
-		Steps: []StepTemplate{{
-			Name: "Step1",
-			Script: &StepScript{Actions: StepActions{OnRun: Action{
-				Command: "echo",
-				Args:    []string{"{{ 'a' * 3000000 }}"},
-				ArgsSet: true,
-			}}},
-		}},
+	newTmpl := func(arg string) *JobTemplate {
+		return &JobTemplate{
+			Name:       "T",
+			Extensions: []string{"EXPR"},
+			Steps: []StepTemplate{{
+				Name: "Step1",
+				Script: &StepScript{Actions: StepActions{OnRun: Action{
+					Command: "echo",
+					Args:    []string{arg},
+					ArgsSet: true,
+				}}},
+			}},
+		}
 	}
-	errs := checkTemplateExpressions(tmpl, nil)
-	if len(errs) == 0 {
-		t.Fatal("a 3,000,000-character literal repeat was accepted; submissionLimits must reject it")
-	}
-	if !strings.Contains(errs[0].Message, "operation limit exceeded") {
-		t.Errorf("want an operation-limit error (submissionOperationLimit, not limits.go's unrelated "+
-			"maxStringBytes floor); got: %v", errs[0].Message)
-	}
+
+	t.Run("over memory limit, under operation limit", func(t *testing.T) {
+		errs := checkTemplateExpressions(newTmpl("{{ 'a' * 1500000 }}"), nil)
+		if len(errs) == 0 {
+			t.Fatal("a 1,500,000-byte literal repeat was accepted; submissionMemoryLimit must reject it")
+		}
+		if !strings.Contains(errs[0].Message, "memory limit exceeded") {
+			t.Errorf("want a memory-limit error (submissionMemoryLimit); got: %v", errs[0].Message)
+		}
+	})
+
+	t.Run("over operation limit, under memory limit", func(t *testing.T) {
+		errs := checkTemplateExpressions(
+			newTmpl("{{ len([x for x in range(11000) if x > 999999]) }}"), nil,
+		)
+		if len(errs) == 0 {
+			t.Fatal("an 11,001-operation, empty-result comprehension was accepted; " +
+				"submissionOperationLimit must reject it")
+		}
+		if !strings.Contains(errs[0].Message, "operation limit exceeded") {
+			t.Errorf("want an operation-limit error (submissionOperationLimit); got: %v", errs[0].Message)
+		}
+	})
 }

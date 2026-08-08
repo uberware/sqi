@@ -2526,6 +2526,23 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 
 	errs = append(errs, validateRangeListValues(tp, base, exprDeclared)...)
 
+	// RangeExpr (the whole-field alternative to RangeList) is ALSO a
+	// format-string position, and previously had NO scope check at all: a
+	// base-spec template with range: "{{Session.WorkingDirectory}}" validated
+	// with zero errors and resolved to nothing at run time -- the same hole
+	// this task exists to close, at the same field RangeList already closed
+	// it for. validateFormatString is prefix-only and type-blind (it has no
+	// concept of a target type to get wrong), so this costs nothing and is
+	// safe for the common case too: sqi's own preset templates all use
+	// RangeExpr for a single job-parameter reference
+	// ("{{Param.Frames}}"/"{{Param.FrameRange}}"), in scope at ScopeJob.
+	// (checkParameterSpaceExpressions in exprcheck.go covers the EXPR-declared
+	// counterpart with expr.TAny rather than a fixed target, for a reason
+	// specific to that path -- see its doc comment.)
+	if tp.RangeExpr != nil && !exprDeclared {
+		errs = append(errs, validateFormatString(*tp.RangeExpr, base+"/range", ScopeJob, nil)...)
+	}
+
 	// INT and CHUNK[INT] range expressions must be parseable — but only when
 	// they contain no format-string references (those will be resolved against
 	// bound job parameters before expansion; parsability is re-checked then).

@@ -57,6 +57,24 @@ func coercible(from, to Type) bool {
 		constraint, ok := unresolvedConstraint(to)
 		return ok && coercible(from, constraint)
 	}
+	// Null coerces to any target that admits null, and to nothing else -- the
+	// type-level counterpart of coerce()'s own v.IsNull() rule (below), needed
+	// here because coerceUnresolved narrows a PLACEHOLDER's constraint through
+	// coercible rather than converting a concrete value through coerce.
+	// Without this rule, an unresolved union member of type nulltype -- for
+	// example the "else None" branch of "{{ Param.S if Param.Flag else None
+	// }}", still unresolved because Param.Flag has no phase-1 value -- was
+	// rejected even against a target that obviously admits null (section
+	// 1.3.2's TargetArgItem, "string? | list[string]"), because isScalarCode
+	// deliberately excludes nulltype from the catch-all scalar rule below --
+	// that exclusion is about VALUE conversion ("null coerces to nothing"),
+	// not about whether a target that already NAMES null admits it unchanged.
+	// A concrete null value never reached this gap (coerce's own IsNull()
+	// branch has always handled it); only the still-unresolved, still-a-type
+	// case did.
+	if from.Code == CodeNull {
+		return includes(to, CodeNull)
+	}
 	// A union value is usable only where EVERY member would be: it is SOME ONE
 	// of its members, decided at runtime, so a target that would reject any one
 	// of them cannot safely receive it. This is the dual of shape.go's
