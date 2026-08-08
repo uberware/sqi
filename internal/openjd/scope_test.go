@@ -5,6 +5,8 @@ package openjd
 import (
 	"reflect"
 	"testing"
+
+	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
 // TestDerivedPrefixes_MatchTheShippedLiterals is the safety net for making the
@@ -86,6 +88,94 @@ func TestScopeStepScriptExcludesEnvFile(t *testing.T) {
 		if f.Prefix == "Env.File." {
 			t.Fatal("step script scope exposes Env.File.; an environment's attachments " +
 				"belong to the environment, not to a step's script")
+		}
+	}
+}
+
+// TestScopeFixed_PerScopeMembership pins, per scope, exactly which fixed
+// symbols scopeFixed exposes -- both presence AND absence, and each one's
+// type. Absence is the load-bearing half: it is what makes Step.Name illegal
+// in a job environment while legal in a step environment, which is the entire
+// reason the four-scope split exists. derivedPrefixes cannot assert this,
+// because every fixed symbol is EXPR-only and so all four are filtered out of
+// it by design (TestDerivedPrefixes_EnvironmentScopesAreIdenticalToBaseSpec).
+// A membership-only check would also pass with every type wrong, so each
+// expected symbol's type is checked with expr.Type.Equal too.
+func TestScopeFixed_PerScopeMembership(t *testing.T) {
+	tests := []struct {
+		scope Scope
+		want  map[string]expr.Type
+	}{
+		{ScopeJob, map[string]expr.Type{}},
+		{ScopeJobEnvironment, map[string]expr.Type{
+			"Job.Name":                     expr.TString,
+			"Session.WorkingDirectory":     expr.TPath,
+			"Session.PathMappingRulesFile": expr.TPath,
+			"Session.HasPathMappingRules":  expr.TBool,
+		}},
+		{ScopeStepEnvironment, map[string]expr.Type{
+			"Job.Name":                     expr.TString,
+			"Session.WorkingDirectory":     expr.TPath,
+			"Session.PathMappingRulesFile": expr.TPath,
+			"Session.HasPathMappingRules":  expr.TBool,
+			"Step.Name":                    expr.TString,
+		}},
+		{ScopeStepScript, map[string]expr.Type{
+			"Job.Name":                     expr.TString,
+			"Session.WorkingDirectory":     expr.TPath,
+			"Session.PathMappingRulesFile": expr.TPath,
+			"Session.HasPathMappingRules":  expr.TBool,
+			"Step.Name":                    expr.TString,
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.scope.String(), func(t *testing.T) {
+			got := scopeFixed(tc.scope)
+
+			gotNames := make(map[string]expr.Type, len(got))
+			for _, sym := range got {
+				if _, dup := gotNames[sym.Name]; dup {
+					t.Fatalf("scopeFixed(%s) declares %q more than once", tc.scope, sym.Name)
+				}
+				gotNames[sym.Name] = sym.Type
+			}
+
+			for name, wantType := range tc.want {
+				gotType, ok := gotNames[name]
+				if !ok {
+					t.Errorf("scopeFixed(%s) is missing %q, want present with type %s",
+						tc.scope, name, wantType)
+					continue
+				}
+				if !gotType.Equal(wantType) {
+					t.Errorf("scopeFixed(%s) has %q with type %s, want %s",
+						tc.scope, name, gotType, wantType)
+				}
+			}
+			for name := range gotNames {
+				if _, want := tc.want[name]; !want {
+					t.Errorf("scopeFixed(%s) unexpectedly exposes %q", tc.scope, name)
+				}
+			}
+		})
+	}
+}
+
+// TestScopeFixed_AllEXPROnly guards the invariant derivedPrefixes' correctness
+// depends on: every fixed symbol must be EXPROnly, because derivedPrefixes
+// only excludes EXPR-only entries from the base-spec prefix list. If a future
+// fixed symbol were added without the flag, derivedPrefixes would silently
+// gain a prefix and a base-spec template would start accepting a reference it
+// used to reject, with nothing to catch it. Asserted as an invariant over
+// scopeFixed for every scope, so a new entry is covered automatically rather
+// than needing its own line here.
+func TestScopeFixed_AllEXPROnly(t *testing.T) {
+	for _, s := range []Scope{ScopeJob, ScopeJobEnvironment, ScopeStepEnvironment, ScopeStepScript} {
+		for _, sym := range scopeFixed(s) {
+			if !sym.EXPROnly {
+				t.Errorf("scopeFixed(%s): %q is not EXPROnly; every fixed symbol must be, "+
+					"or derivedPrefixes would silently expose it to base-spec templates", s, sym.Name)
+			}
 		}
 	}
 }
