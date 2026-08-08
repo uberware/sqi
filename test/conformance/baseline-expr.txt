@@ -202,8 +202,108 @@
 # 3.6--let-host-context-symbols.yaml fails on the same (iv)-class scope gap as
 # 7.3.1--job-step-name-in-step-let.yaml above, compounded by the same
 # FEATURE_BUNDLE_1 and `bash:` gaps.
+#
+# 2026-08-08 (same day, corrected before this task was reported done): THE
+# MEASUREMENT ABOVE IS INVALID. Caught in review, not by this task's own
+# checks: conformance.RunCase's accept/reject semantics make the (i) status-
+# gate error ALONE sufficient to reject an EXPR-declaring template, and 180 of
+# the 209 EXPR fixtures are marked ".invalid" — so an unconditional rejection
+# makes almost all of them "pass" whether or not sqi's validator detects the
+# specific defect each fixture exists to test. That is exactly the false-pass
+# failure mode RunExprCase's own doc comment at the top of this file warns
+# naive pass/fail classification into ("would report 180 passes... for the
+# wrong reason"); scoring EXPR fixtures through RunCase unfiltered silently
+# reintroduced it the moment routing made the gate error fire on every
+# fixture.
+#
+# The fix: TestConformance_Expressions now calls a small wrapper, runEXPRCase
+# (suite_test.go), instead of conformance.RunCase directly. runEXPRCase runs
+# the exact same Parse + ValidateWithOptions RunCase does, then DISCOUNTS
+# (removes) any ValidationError that is the EXPR extension's own
+# registered-but-unsupported rejection BEFORE deciding acceptance —
+# discountEXPRGateErrors / isEXPRGateError, keyed structurally off the
+# error's Pointer ("/extensions/<index>") plus openjd.LookupExtension's
+# Status field, not message text, so a wording change to the gate's message
+# does not silently stop this from working.
+# TestEXPRGateFilter_MatchesRealValidateExtensionsOutput drives the real
+# validateExtensions code path (not a synthetic error) to pin that pointer
+# format. RunCase ITSELF is unchanged — every other suite directory keeps its
+# current, unfiltered semantics, and production keeps reporting the gate
+# error verbatim (TestConformance_EXPRNotSupported still checks this).
+#
+# This filter is temporary in exactly the way RunExprCase is: once
+# sub-project H flips EXPR to StatusSupported, discountEXPRGateErrors always
+# removes zero errors (there is no gate error left to discount), so
+# runEXPRCase becomes indistinguishable from calling RunCase directly. H's
+# checklist (TestConformance_EXPRNotSupported's failure message) now names
+# runEXPRCase, discountEXPRGateErrors, isEXPRGateError and
+# TestEXPRGateFilter_MatchesRealValidateExtensionsOutput for deletion
+# alongside RunExprCase and this file — do not remove this filter as
+# "redundant" before then; while EXPR is StatusInProgress it is load-bearing.
+#
+# Corrected score: 177/209 (32 baselined) -> 171/209 (38 baselined). Two
+# corrections, both invisible until the gate stopped being an unconditional
+# accept-for-.invalid-fixtures free pass:
+#
+#   - THREE ENTRIES NOW GENUINELY PASS, removed below:
+#     expr1.3.11--float-range-expression.yaml,
+#     expr1.3.11--path-range-expression.yaml, and
+#     expr1.3.11--string-range-expression.yaml. Reason (i) above said these
+#     three "have no other defect" — that was correct, and is exactly why
+#     discounting their one and only error (the gate) now lets them pass for
+#     real: they are not ".invalid", so an empty remaining-error set is the
+#     right outcome.
+#
+#   - NINE ENTRIES ADDED, all fixtures whose real defect is UNDETECTED by
+#     internal/openjd today and which were "passing" ONLY on the
+#     now-discounted gate error — confirmed individually: each produces
+#     exactly one raw ValidationError before filtering (the gate) and zero
+#     after. Two are new to this file; seven were WRONGLY removed as
+#     "genuinely fixed by routing" by the "60 STALE entries" claim in the
+#     2026-08-08 Task 2 note above (kept, not deleted, per this file's own
+#     convention — see the memory-limit note higher up) — they were never
+#     fixed, they were passing on the gate the whole time, and the initial
+#     (uncorrected) measurement could not tell the difference, because
+#     nothing in that run's REGRESSION/STALE diff crosses a visible boundary
+#     for a fixture that "passes" for two different wrong reasons in a row:
+#
+#     EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
+#     EXPR/job_templates/3.6--let-empty-list.invalid.yaml
+#     EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
+#     EXPR/job_templates/3.6--let-too-many.invalid.yaml
+#     EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
+#     EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
+#     EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
+#         (duplicate name / empty list / shadowing an enclosing binding /
+#         too many bindings / missing "=" / self-reference / uppercase name:
+#         internal/openjd's parser and validator accept a `let:` block's
+#         syntax and names without checking ANY of section 3.6's own
+#         scoping/format rules. Confirmed by reviewer to be sub-project E3's,
+#         not E2's — consistent with this file's own pre-existing note above
+#         ("a 'let' binding invalid for a scoping reason ... all still
+#         sub-project E's").)
+#
+#     EXPR/job_templates/error--unknown-variable.invalid.yaml
+#     EXPR/job_templates/expr1.1--unknown-variable.invalid.yaml
+#         (both reference "Param.DoesNotExist", a name no
+#         parameterDefinitions entry declares: validateFormatString checks
+#         only that a reference's PREFIX category — "Param." — is legal in
+#         context, never that the specific name after the prefix resolves to
+#         an actually-declared parameter or `let:` binding. Undetected today;
+#         ownership not settled by this task — it is the same class of gap as
+#         reason (iv)'s Step.Name-in-stepEnvironments finding below, so it is
+#         plausibly the later scope-model tasks' to close, but that is an
+#         inference here, not a reviewer ruling, unlike the seven `let:`
+#         fixtures above.)
+#
+# The 38 entries below supersede the 32-entry list the "32 entries below
+# are..." intro above describes. That intro's reasons (i)-(iv) still hold for
+# every entry it named EXCEPT that reason (i) no longer has any fixture for
+# which it is the ONLY reason (the three range-expression fixtures it named
+# are gone from the list below); (ii) and (iii) are unaffected by this
+# correction — discounting the gate never changes their outcome, since their
+# OTHER error stands on its own regardless of the gate.
 EXPR/job_templates/2--type-case-insensitive.yaml
-EXPR/job_templates/2.9--bool-param.yaml
 EXPR/job_templates/2.10--range-expr-param.yaml
 EXPR/job_templates/2.11--list-string-param.yaml
 EXPR/job_templates/2.12--list-path-param.yaml
@@ -211,13 +311,22 @@ EXPR/job_templates/2.13--list-int-param.yaml
 EXPR/job_templates/2.14--list-float-param.yaml
 EXPR/job_templates/2.15--list-bool-param.yaml
 EXPR/job_templates/2.16--list-list-int-param.yaml
+EXPR/job_templates/2.9--bool-param.yaml
 EXPR/job_templates/3.6--let-bindings.yaml
+EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
+EXPR/job_templates/3.6--let-empty-list.invalid.yaml
 EXPR/job_templates/3.6--let-host-context-symbols.yaml
 EXPR/job_templates/3.6--let-in-job-environment-requires-expr.invalid.yaml
 EXPR/job_templates/3.6--let-in-step-environment-requires-expr.invalid.yaml
 EXPR/job_templates/3.6--let-requires-expr.invalid.yaml
+EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
+EXPR/job_templates/3.6--let-too-many.invalid.yaml
+EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
+EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
+EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
 EXPR/job_templates/7.3.1--step-name-in-step-environment.yaml
+EXPR/job_templates/error--unknown-variable.invalid.yaml
 EXPR/job_templates/expr-extension-enabled.yaml
 EXPR/job_templates/expr-with-other-extensions.yaml
 EXPR/job_templates/expr1.1--arithmetic-expr.yaml
@@ -229,8 +338,6 @@ EXPR/job_templates/expr1.1--list-literal-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
 EXPR/job_templates/expr1.1--multiline-expr.yaml
 EXPR/job_templates/expr1.1--slice-expr.yaml
+EXPR/job_templates/expr1.1--unknown-variable.invalid.yaml
 EXPR/job_templates/expr1.1.3--contextual-keywords.yaml
 EXPR/job_templates/expr1.1.4--json-yaml-aliases.yaml
-EXPR/job_templates/expr1.3.11--float-range-expression.yaml
-EXPR/job_templates/expr1.3.11--path-range-expression.yaml
-EXPR/job_templates/expr1.3.11--string-range-expression.yaml

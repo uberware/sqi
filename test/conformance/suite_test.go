@@ -5,8 +5,11 @@
 package conformance_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -159,9 +162,14 @@ func TestConformance_EXPRNotSupported(t *testing.T) {
 			"test/conformance/exprcase.go, exprcase_test.go, baseline-expr.txt,\n" +
 			"TestConformance_Expressions, collectEXPRFixtures, this test, and the\n" +
 			"exprSuiteDir, exprBaselinePath, minExpectedExprFixtures and\n" +
-			"minExpectedPasses constants; also delete the \"EXPR: a temporary,\n" +
-			"second scoring path\" section of docs/openjd-conformance.md; then let\n" +
-			"TestConformance_Templates score EXPR/job_templates end to end.")
+			"minExpectedPasses constants; also delete runEXPRCase,\n" +
+			"discountEXPRGateErrors, isEXPRGateError and\n" +
+			"TestEXPRGateFilter_MatchesRealValidateExtensionsOutput (sub-project E2\n" +
+			"Task 2's status-gate discount — once EXPR is StatusSupported it always\n" +
+			"discounts zero errors, so it becomes dead weight, not a correctness\n" +
+			"requirement) and the \"EXPR: a temporary, second scoring path\" section\n" +
+			"of docs/openjd-conformance.md; then let TestConformance_Templates score\n" +
+			"EXPR/job_templates end to end via plain RunCase.")
 	}
 }
 
@@ -191,13 +199,150 @@ func collectEXPRFixtures(t *testing.T) []conformance.TestCase {
 	return cases
 }
 
+// runEXPRCase scores one EXPR fixture through the real parse-and-validate
+// path (like conformance.RunCase), but discounts the EXPR extension's own
+// not-yet-supported rejection first, so a fixture is judged on whatever
+// OTHER validation errors sqi finds.
+//
+// Why this exists: EXPR is registered but StatusInProgress (Task 1), so
+// validateExtensions unconditionally rejects every EXPR-declaring template
+// with an "/extensions/<i>: extension \"EXPR\" is registered but not yet
+// supported" error, regardless of the template's own content. Scoring EXPR
+// fixtures through conformance.RunCase unfiltered therefore makes REJECTION
+// trivially easy: every one of the 180 fixtures marked ".invalid" would
+// "pass" whether or not sqi actually detects the defect the fixture exists
+// to test, because the gate error alone already satisfies "must be
+// rejected." That is exactly the false-pass mode RunExprCase's own doc
+// comment warns naive pass/fail classification into ("would report 180
+// passes... for the wrong reason") — this wrapper exists to keep the real
+// path from silently reintroducing that failure mode now that EXPR
+// fixtures reach RunCase's machinery at all. (Caught in review of sub-project
+// E2 Task 2, before the resulting 177/209 score was reported as final —
+// see baseline-expr.txt's 2026-08-08 note.)
+//
+// Deliberately local to the EXPR scoring loop, not a change to RunCase
+// itself: every other suite directory depends on RunCase's current,
+// unfiltered semantics, and production must keep reporting the gate error
+// verbatim (see TestConformance_EXPRNotSupported). Sub-project H's checklist
+// (see TestConformance_EXPRNotSupported's failure message) must delete this
+// function alongside RunExprCase, exprcase.go and baseline-expr.txt once EXPR
+// becomes StatusSupported — at that point discountEXPRGateErrors always
+// removes zero errors and TestConformance_Templates scores EXPR/job_templates
+// through plain RunCase like every other directory.
+func runEXPRCase(tc conformance.TestCase, data []byte) conformance.Result {
+	res := conformance.Result{Case: tc, State: conformance.StateLive}
+
+	tmpl, err := openjd.Parse(data, openjd.FormatYAML)
+	switch {
+	case err != nil:
+		res.Reason = fmt.Sprintf("parse rejected: %v", err)
+	default:
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+		errs = discountEXPRGateErrors(errs, tmpl.Extensions)
+		if len(errs) > 0 {
+			res.Reason = fmt.Sprintf("validation rejected: %v", errs)
+		} else {
+			res.Accepted = true
+		}
+	}
+
+	res.Passed = res.Accepted != tc.Invalid
+	if res.Passed {
+		res.Reason = ""
+	} else if res.Accepted {
+		res.Reason = "accepted, but fixture is marked .invalid"
+	}
+	return res
+}
+
+// discountEXPRGateErrors removes every ValidationError produced by
+// validateExtensions' registered-but-unsupported branch (Task 1's status
+// gate) from errs, given the template's own declared extensions list in
+// parse order. Every other error — including a genuinely unsupported or
+// unregistered extension, and every non-extension validation failure — is
+// left untouched; only the specific gate condition is discounted.
+func discountEXPRGateErrors(errs openjd.ValidationErrors, extensions []string) openjd.ValidationErrors {
+	out := make(openjd.ValidationErrors, 0, len(errs))
+	for _, e := range errs {
+		if isEXPRGateError(e, extensions) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// isEXPRGateError reports whether e is validateExtensions' registered-but-
+// unsupported rejection for one of the template's own declared extensions.
+//
+// Matching is structural, keyed off the error's Pointer plus
+// openjd.LookupExtension's Status field — NOT message text, so a wording
+// change to the gate's message does not silently stop working here.
+// TestEXPRGateFilter_MatchesRealValidateExtensionsOutput drives the real
+// validateExtensions code path and pins the pointer format
+// ("/extensions/<index>", no further nesting) this depends on; if that
+// format ever changes, that test fails loudly instead of the EXPR score
+// silently drifting because the filter stopped matching.
+func isEXPRGateError(e openjd.ValidationError, extensions []string) bool {
+	const prefix = "/extensions/"
+	if !strings.HasPrefix(e.Pointer, prefix) {
+		return false
+	}
+	idx, err := strconv.Atoi(e.Pointer[len(prefix):])
+	if err != nil || idx < 0 || idx >= len(extensions) {
+		return false
+	}
+	entry, known := openjd.LookupExtension(extensions[idx])
+	return known && entry.Status != openjd.StatusSupported
+}
+
+// TestEXPRGateFilter_MatchesRealValidateExtensionsOutput pins the assumption
+// isEXPRGateError depends on against the REAL validateExtensions output (not
+// a synthetic ValidationError): that a registered-but-unsupported extension
+// is reported at pointer "/extensions/<index>" with no further nesting, and
+// that discountEXPRGateErrors removes exactly that error and nothing else
+// for a minimal EXPR-only template. If validateExtensions' pointer format or
+// gating condition ever changes, this test fails here rather than the EXPR
+// score silently drifting.
+func TestEXPRGateFilter_MatchesRealValidateExtensionsOutput(t *testing.T) {
+	data := []byte(`specificationVersion: jobtemplate-2023-09
+name: TestJob
+extensions:
+- EXPR
+steps:
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+`)
+
+	tmpl, err := openjd.Parse(data, openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+	if len(errs) != 1 {
+		t.Fatalf("want exactly 1 validation error (the EXPR gate) for this minimal fixture, got %d: %v",
+			len(errs), errs)
+	}
+	if !isEXPRGateError(errs[0], tmpl.Extensions) {
+		t.Fatalf("isEXPRGateError did not recognize validateExtensions' real output: %+v", errs[0])
+	}
+	if filtered := discountEXPRGateErrors(errs, tmpl.Extensions); len(filtered) != 0 {
+		t.Fatalf("discountEXPRGateErrors left %d errors, want 0: %v", len(filtered), filtered)
+	}
+}
+
 // TestConformance_Expressions scores every EXPR job-template fixture.
 //
-// Sub-project E2 routed this to conformance.RunCase, the same real
-// parse-and-validate path TestConformance_Templates uses — see the comment on
-// the RunCase call below. It remains a separate test function (not folded
-// into TestConformance_Templates) because it scores its own directory against
-// its own baseline file, exprBaselinePath, rather than baseline.txt.
+// Sub-project E2 routed this to the real parse-and-validate path
+// TestConformance_Templates uses (conformance.RunCase), instead of the old
+// expression-level RunExprCase — see runEXPRCase's doc comment for why a
+// thin wrapper around RunCase, not RunCase itself, is called below. It
+// remains a separate test function (not folded into TestConformance_Templates)
+// because it scores its own directory against its own baseline file,
+// exprBaselinePath, rather than baseline.txt.
 func TestConformance_Expressions(t *testing.T) {
 	cases := collectEXPRFixtures(t)
 	if len(cases) < minExpectedExprFixtures {
@@ -211,18 +356,7 @@ func TestConformance_Expressions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fixture %s: %v", tc.Path, err)
 		}
-		// Sub-project E2: EXPR fixtures are scored through the REAL template
-		// path (parse + validate), the same one every other suite directory
-		// uses. Before E2 this called RunExprCase, an expression-level path
-		// that read the fixture's "{{ }}" bodies directly because
-		// internal/openjd rejected EXPR templates outright and would have
-		// reported ~180 false passes. Task 1's status gate is what makes the
-		// real path reachable: EXPR is registered (so parse and validate run)
-		// but not supported (so production still rejects it).
-		//
-		// StateLive, not Classify's verdict: Classify reports EXPR as
-		// not-applicable, which is what kept these fixtures unscored.
-		results = append(results, conformance.RunCase(tc, conformance.StateLive, data))
+		results = append(results, runEXPRCase(tc, data))
 	}
 
 	t.Logf("template-level scoring (parse and validate)\n%s",
