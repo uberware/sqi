@@ -60,9 +60,10 @@ type Value struct {
 	// second producer, a phase-2 job parameter's submitted text via
 	// FloatText, does not change it) and left AS-IS on purpose: whether
 	// repr_* should show a value's carried text or canonicalise it is
-	// underspecified by RFC 0006 (section 1.3.4 addresses substitution and
-	// arithmetic, not a function that emits another language's literal
-	// syntax) and is parked for sub-project E4 to settle, not fixed here.
+	// underspecified: section 1.3.4 (the specification, not RFC 0006, which
+	// defines repr_* but says nothing about the carry) addresses substitution
+	// and arithmetic, not a function that emits another language's literal
+	// syntax. Parked for sub-project E4 to settle, not fixed here.
 	fs string
 
 	// pf is the path flavor for a CodePath value.
