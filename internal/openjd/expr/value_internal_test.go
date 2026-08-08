@@ -320,31 +320,95 @@ func TestValueString_ListElementsAreQuoted(t *testing.T) {
 	}
 }
 
-// TestValueString_VersusStringFunction records what the two renderings do on
-// the same input, now that both quote.
+// TestValueString_VersusStringFunction asserts that the two renderings AGREE
+// -- byte-for-byte, quoting and escaping both -- on every case below, now
+// that both quote a list's string elements. This is the durable regression
+// check doc.go's BOUNDED EVALUATION bullet cites by name; do not let the two
+// drift apart again without updating that citation.
 //
-// Fill these expectations in from what the code ACTUALLY produces after the
-// change -- run both, do not predict -- and carry the answer into doc.go. The
-// question the E1 design left open is whether they agree on ESCAPING, not on
-// quoting.
+// The assertion compares the two outputs to EACH OTHER rather than against a
+// hand-typed expected string on purpose: transcribing an escaped literal by
+// hand is exactly the failure mode this sub-project keeps finding in itself
+// (see the sub-project's own ledger), and the property under test IS "these
+// two agree", which a direct comparison states without needing to predict
+// either side's exact spelling.
+//
+// This does not mean the two agree UNIVERSALLY -- see
+// TestValueString_DivergesFromStringFunctionOutsideMeasuredSet immediately
+// below, which pins four classes of input where they provably do not.
 func TestValueString_VersusStringFunction(t *testing.T) {
-	for _, src := range []string{
-		`['a"b']`,
-		`['café']`,
-		`['a<b>c&d']`,
-		`['a\nb']`,
-	} {
-		t.Run(src, func(t *testing.T) {
-			v, err := Eval(src, nil, TAny)
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"embedded double quote", `['a"b']`},
+		{"non-ASCII", `['café']`},
+		{"angle brackets and ampersand", `['a<b>c&d']`},
+		{"newline", `['a\nb']`},
+		{"backslash", `['a\\b']`},
+		{"tab", `['a\tb']`},
+		{"backspace", `['a\x08b']`},
+		{"formfeed", `['a\x0cb']`},
+		{"carriage return", `['a\rb']`},
+		{"emoji", `['a😀b']`},
+		{"U+2028 line separator", `['a\u2028b']`},
+		{"U+2029 paragraph separator", `['a\u2029b']`},
+		{"empty string", `['']`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v, err := Eval(tt.src, nil, TAny)
 			if err != nil {
-				t.Fatalf("Eval(%s): %v", src, err)
+				t.Fatalf("Eval(%s): %v", tt.src, err)
 			}
-			s, err := Eval("string("+src+")", nil, TString)
+			s, err := Eval("string("+tt.src+")", nil, TString)
 			if err != nil {
-				t.Fatalf("Eval(string(%s)): %v", src, err)
+				t.Fatalf("Eval(string(%s)): %v", tt.src, err)
 			}
-			t.Logf("Value.String() = %s", v.String())
-			t.Logf("string(list)   = %s", s.AsStr())
+			got, want := v.String(), s.AsStr()
+			if got != want {
+				t.Errorf("Value.String() = %s; string(list) = %s; want the two to agree", got, want)
+			}
+		})
+	}
+}
+
+// TestValueString_DivergesFromStringFunctionOutsideMeasuredSet pins the four
+// classes of input where Value.String() (value.go's strconv.Quote) and
+// string(list)'s JSON row (funcsconv.go's writeJSONValue, an
+// encoding/json.Encoder with SetEscapeHTML(false)) are independent
+// implementations that provably do NOT agree, so doc.go's narrow "agrees on
+// every case exercised" claim stays testable in both directions rather than
+// only the agreeing one.
+//
+// Constructed directly through the List/String value constructors rather
+// than through Eval: an EXPR source string must itself be valid UTF-8, so
+// the invalid-UTF-8 case cannot be expressed as parseable source text at
+// all. Building every case the same way keeps the six comparable.
+func TestValueString_DivergesFromStringFunctionOutsideMeasuredSet(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+	}{
+		{"C0 control U+0000", "\x00"},
+		{"C0 control U+0001", "\x01"},
+		{"C0 control U+001B (ESC)", "\x1b"},
+		{"vertical tab U+000B", "\v"},
+		{"DEL U+007F", "\x7f"},
+		{"invalid UTF-8", "\xff\xfe"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			list := List(TString, []Value{String(tt.s)})
+			valueStr := list.String()
+			jsonStr, err := jsonList(list)
+			if err != nil {
+				t.Fatalf("jsonList(%q): %v", tt.s, err)
+			}
+			if valueStr == jsonStr {
+				t.Errorf("Value.String() and string(list) unexpectedly AGREE on %q (both %s); "+
+					"update doc.go's divergence claim if this is now correct", tt.s, valueStr)
+			}
 		})
 	}
 }

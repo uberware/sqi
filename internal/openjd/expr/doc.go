@@ -824,9 +824,10 @@
 //     THE UNRESOLVED-OPERAND RULING. A dispatched call whose argument is
 //     still unresolved — the type-check path taken before a parameter is
 //     bound to a value — charges section 1.3.10 rule 1 only, the single
-//     operation for the call itself (call.go's callFunction, plus four
-//     mirroring sites in ops.go for binary, unary and the fast-path
-//     equality check). Rules 2 and 3 do not apply: the call was dispatched,
+//     operation for the call itself (call.go's callFunction, plus three
+//     mirroring sites in ops.go — binary, unary and the fast-path equality
+//     check — four unresolved-operand charge sites in all). Rules 2 and 3
+//     do not apply: the call was dispatched,
 //     but no list was iterated and no string was processed, because nothing
 //     downstream of the unresolved operand actually ran. This ruling has no
 //     counterpart to probe against the reference implementation, which has
@@ -881,8 +882,9 @@
 //     emits \u000b; on DEL (U+007F), Quote escapes it where JSON leaves it
 //     literal; and on invalid UTF-8, Quote preserves the raw bytes where
 //     JSON substitutes U+FFFD — all four measured directly against both
-//     functions. Do not widen the agreement claim past the set it was
-//     measured on.
+//     functions and pinned as regression tests, not just measured once
+//     (TestValueString_DivergesFromStringFunctionOutsideMeasuredSet). Do not
+//     widen the agreement claim past the set it was measured on.
 //
 //     unique() CHARGES PER COMPARISON, NOT PER ELEMENT — and the reason is
 //     a prediction that measurement overturned, not a preference. C1
