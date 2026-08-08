@@ -999,3 +999,31 @@ float | int :: round(3.14159, 2)
 # round(x, ndigits>0): reference count scales with ndigits, which sqi's Cost model does not track (see section header).
 float | int :: round(3.5, 2)
 
+# ── sqi is right: unique() charges its real quadratic scan; reference charges only the linear input ──
+#
+# Task 12 decided this by RUNNING, not by reasoning about it:
+# TestUnique_IsBoundedByTheOperationLimit (internal/openjd/expr/carried_internal_test.go)
+# first ran against unique() charged only by a declared Cost{ArgElements: {0}}
+# -- the input list's length -- and unique(range(20000)) returned
+# successfully in under 4 seconds with ~4*10^8 valuesEqual comparisons
+# actually performed, while only ~20001 operations were charged against the
+# 10-million default limit. Section 1.3.10 rule 2's own text ("when a
+# function ... iterates through every element of a list, the number of
+# elements is added") does not on its own capture a function that iterates
+# the SAME list once per element it keeps, which is what unique's
+# de-duplication scan does: Value cannot be a map key (its Type contains a
+# slice) and section 1.2.5's cross-type equality is not a hashable relation,
+# so the scan is genuinely O(n^2) in valuesEqual calls and not merely an
+# implementation choice that could be linear instead.
+#
+# sqi now charges ONE operation per valuesEqual comparison (uniqueList,
+# funcslist.go, converted from Fn to FnCtx), which is what makes the
+# operation limit see the real work rather than only the input length --
+# the whole reason section 1.3.10 exists. This is rule 2 applied at the
+# granularity the actual algorithm operates at, which is more faithful to
+# the rule's stated purpose ("prevents ... excessively long processing
+# times") than matching the reference's under-count would be.
+
+# unique(): sqi charges one operation per valuesEqual comparison (the real O(n^2) scan); the reference charges only the linear input length (see section header).
+list[int] :: unique([2, 1, 2, 3, 1])
+

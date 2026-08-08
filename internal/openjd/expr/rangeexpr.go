@@ -92,7 +92,14 @@ func rangeInts(v Value) ([]int64, error) {
 // deduplication to already be exact. It is also the only shape in which a
 // caller can ask for an astronomically large count — len(range_expr(
 // '1-20000000')) is the motivating case — without this function allocating
-// anything to answer.
+// anything to answer. That is also why it is returned BEFORE checkElementCount
+// runs, unlike the multi-sub-range path below: checkElementCount guards
+// materialization, which this branch never does, so 20,000,000 (twice
+// maxElements) is a legitimate arithmetic answer here, not a value to refuse.
+// A prior revision of this function ran every sub-range's Count() through
+// checkElementCount unconditionally, before branching on len(ranges) — TDD's
+// own RED run for TestLenRangeExpr_DoesNotMaterialize (Task 12) caught that
+// directly, refusing the motivating case this comment already named.
 //
 // TWO OR MORE sub-ranges may overlap — expandRanges's own comment says so
 // ("may overlap ... must be de-duplicated"), and rangeInts's doc comment
@@ -102,17 +109,20 @@ func rangeInts(v Value) ([]int64, error) {
 // version of this function summed Count() across every sub-range
 // unconditionally, which overcounts exactly this case; that was a real
 // defect caught in review, not a hypothetical one. The multi-sub-range case
-// is bounded by what a template author writes by hand rather than by the
-// magnitude of any one range, and the running total below is already the
-// SAME conservative pre-dedup bound rangeInts itself checks before
-// expanding — so falling back to the real expansion here, reusing the
-// ranges already parsed, costs no more than list(range_expr(...)) already
-// pays for the identical value.
+// IS bounded, unlike the single-range one above, because it falls back to a
+// real expansion that allocates: the running total below is the SAME
+// conservative pre-dedup bound rangeInts itself checks before expanding — so
+// falling back to the real expansion here, reusing the ranges already
+// parsed, costs no more than list(range_expr(...)) already pays for the
+// identical value.
 func rangeExprCount(v Value) (int, error) {
 	ranges, err := intrange.Parse(v.AsRangeExpr())
 	if err != nil {
 		// Unreachable: RangeExpr validated the text on construction.
 		return 0, fmt.Errorf("invalid range expression %q: %w", v.AsRangeExpr(), err)
+	}
+	if len(ranges) == 1 {
+		return ranges[0].Count(), nil
 	}
 	total := 0
 	for _, r := range ranges {
@@ -120,9 +130,6 @@ func rangeExprCount(v Value) (int, error) {
 		if err := checkElementCount(total); err != nil {
 			return 0, err
 		}
-	}
-	if len(ranges) == 1 {
-		return total, nil
 	}
 	return len(expandRanges(ranges, total)), nil
 }

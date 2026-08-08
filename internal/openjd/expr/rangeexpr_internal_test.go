@@ -259,28 +259,42 @@ func TestRangeExprCount_AgreesWithExpansion(t *testing.T) {
 // it returns the right answer. "1-2000000000" is 2 BILLION values, 200 times
 // this package's own maxElements bound: actually expanding it would allocate
 // gigabytes and take long enough that this test's own time budget below would
-// catch it, and TestRangeExpr_RejectsTooManyValues already shows rangeInts
+// catch it, and TestRangeExpr_RejectsTooManyValues shows rangeInts still
 // rejects the identical text via the bound check rather than by finishing an
-// expansion. rangeExprCount must reject it too, but the point of THIS test is
-// that it does so in microseconds: intrange.Range.Count() answers the size in
-// O(1) arithmetic, so checkElementCount can reject the total before a single
-// int is ever allocated.
+// expansion — that is unchanged, because rangeInts DOES materialize.
+//
+// rangeExprCount must NOT reject it, and that is Task 12's correction to this
+// test, not a new behavior invented here: this same function's own doc
+// comment already named "len(range_expr('1-20000000'))" as the motivating
+// case for answering arithmetically, but a prior revision ran EVERY
+// sub-range's Count() through checkElementCount before ever branching on
+// len(ranges) == 1, so the single-range path was bound-checked exactly like
+// the materializing multi-range path it was meant to be exempt from. That
+// bound guards MATERIALIZATION (maxElements' own doc comment: "how many
+// elements one operation may materialize") — irrelevant here, since
+// intrange.Range.Count() answers arithmetically and allocates nothing however
+// large the range is, and Count() itself already saturates to math.MaxInt
+// rather than overflow if the arithmetic would. The point of THIS test is
+// that the right, unbounded answer comes back in microseconds.
 func TestRangeExprCount_LargeSingleRangeStaysArithmetic(t *testing.T) {
 	v, err := RangeExpr("1-2000000000")
 	if err != nil {
 		t.Fatalf("RangeExpr: %v (construction must not expand)", err)
 	}
 	start := time.Now()
-	_, err = rangeExprCount(v)
+	got, err := rangeExprCount(v)
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("rangeExprCount on a 2-billion-value range = nil error, want the bound to reject it")
+	if err != nil {
+		t.Fatalf("rangeExprCount on a 2-billion-value range: %v, want the arithmetic answer, not a rejection", err)
+	}
+	if got != 2_000_000_000 {
+		t.Fatalf("rangeExprCount(%q) = %d, want 2000000000", "1-2000000000", got)
 	}
 	// A generous ceiling: real arithmetic finishes in microseconds, while
 	// appending 2 billion int64s (rangeInts's own path, deliberately NOT
 	// taken here) would not complete in under a second on any machine this
 	// suite runs on, and would more likely exhaust memory first.
 	if elapsed > time.Second {
-		t.Fatalf("rangeExprCount on a 2-billion-value range took %s, want it to reject arithmetically without materializing", elapsed)
+		t.Fatalf("rangeExprCount on a 2-billion-value range took %s, want it to answer arithmetically without materializing", elapsed)
 	}
 }

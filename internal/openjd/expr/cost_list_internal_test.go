@@ -114,6 +114,22 @@ import (
 //	 4  unique([1,1,2])                     1 + 3
 //	11  unique([1,1,1,1,1,1,1,1,1,1])       1 + 10
 //
+// unique's own two numbers above are the REFERENCE's, unchanged by Task 12
+// and reproducible today by rerunning the same probe -- the reference charges
+// unique() by input length alone, with no accounting for its comparison
+// count. sqi's own unique() deliberately no longer matches them: Task 12
+// found, by RUNNING TestUnique_IsBoundedByTheOperationLimit before making any
+// change, that a linear charge lets unique()'s real O(n^2) valuesEqual scan
+// run uncounted underneath it -- unique(range(20000)) returned successfully
+// in under 4 seconds with 4*10^8 comparisons actually performed and only
+// ~20001 operations charged, nowhere near the 10-million default limit. sqi
+// now charges one operation per valuesEqual call instead (uniqueList,
+// funcslist.go, FnCtx), which is what makes the SAME call fail fast with
+// errOperationLimit. See TestOperationCount_ConversionAndListFunctions's
+// unique() row below for sqi's own resulting count, and
+// test/oracle/baseline-ops.txt for the adjudication of this divergence
+// against the oracle.
+//
 // any/all -- the reference SHORT-CIRCUITS, so its own count does not equal
 // "1 + list length" once the answer is decided early; this is the one
 // divergence in this task that is NOT "the reference failed to charge
@@ -209,7 +225,14 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		// any/all).
 		{"sorted([3,1,2])", 4, "sorted(): 1 call + 3 elements"},
 		{"reversed([1,2,3,4,5])", 6, "reversed(): 1 call + 5 elements"},
-		{"unique([1,1,2])", 4, "unique(): 1 call + 3 input elements (the O(n^2) comparison count is Task 12's problem, not this charge's)"},
+		// Task 12: unique() no longer declares Cost{ArgElements: {0}} at all --
+		// it charges itself, per valuesEqual comparison, via FnCtx. For
+		// [1,1,2]: comparing the second 1 against the kept [1] costs 1
+		// comparison and finds a duplicate; comparing 2 against the kept [1]
+		// costs 1 more and finds none. 1 call + 2 comparisons = 3. This is a
+		// deliberate divergence from the reference's own linear count (4, see
+		// the probe comment above) -- baselined in test/oracle/baseline-ops.txt.
+		{"unique([1,1,2])", 3, "unique(): 1 call + 2 comparisons (quadratic scan, charged per comparison, not per input element)"},
 
 		// flatten's three rows, discriminated in the probe comment above.
 		{"flatten([[1],[2]])", 5, "flatten(nested): 1 call + 2 outer + 2 result"},

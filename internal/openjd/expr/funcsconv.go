@@ -27,12 +27,11 @@ var convFuncs = map[string][]Shape{
 	// not an omission, THE load-bearing case for "zero Cost is a decision" in
 	// this whole sub-project. Confirmed against the reference: len("abc") is 1
 	// (rule 1 only) and len(range_expr("1-100")) is 2 (one call for
-	// range_expr(), one for len() — len itself adds nothing, and in
-	// particular does NOT expand the range to count it, even though
-	// rangeInts() below happens to do exactly that internally; the exemption
-	// is declared independently of what Fn's own implementation costs in real
-	// CPU time — see Task 12 on reconciling that gap). Pinned in
-	// cost_list_internal_test.go.
+	// range_expr(), one for len() — len itself adds nothing). The range_expr
+	// row below reuses rangeExprCount rather than rangeInts precisely so that
+	// this exemption is not merely a declared charge while the real Fn secretly
+	// materializes the whole expansion underneath it — see Task 12 (the range_expr
+	// row's own comment, and rangeexpr.go). Pinned in cost_list_internal_test.go.
 	"len": {
 		{Params: []Type{ListOf(varT)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return Int(int64(len(args[0].AsList()))), nil
@@ -47,12 +46,19 @@ var convFuncs = map[string][]Shape{
 		}},
 		// RFC 0006: "Number of values in range expression" — the expanded
 		// count, not the text length, so len(range_expr("1-10")) is 10.
+		// Computed ARITHMETICALLY -- rangeExprCount answers this without
+		// materializing anything for the common single-sub-range case, and
+		// expanding to count refused a legitimate query:
+		// len(range_expr('1-20000000')) failed the element bound for a number
+		// rangeExprCount produces in constant time. See its doc comment
+		// (rangeexpr.go) for the two-or-more-sub-range fallback, which is
+		// still bounded by the same per-sub-range checkElementCount cap.
 		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
-			ints, err := rangeInts(args[0])
+			n, err := rangeExprCount(args[0])
 			if err != nil {
 				return Value{}, err
 			}
-			return Int(int64(len(ints))), nil
+			return Int(int64(n)), nil
 		}},
 	},
 	// RFC 0006's bool(). The scalar rows are conversions; the path and list

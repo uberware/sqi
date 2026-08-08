@@ -121,18 +121,18 @@ var listFuncs = map[string][]Shape{
 		}},
 	},
 	// unique is not named by rule 2's own enumeration, but its Fn genuinely
-	// iterates every element of args[0] (uniqueList's outer loop, above), so
+	// iterates every element of args[0] (uniqueList's outer loop, below), so
 	// the general "iterates through every element of a list" sentence covers
 	// it independent of the named list — confirmed scaling against the
 	// reference (unique([1,1,2]) measures 4 = 1 + 3; a 10-element input
-	// measures 11 = 1 + 10). Cost{ArgElements: {0}} charges the INPUT length,
-	// not the comparison count: uniqueList's inner loop is O(n^2) in the
-	// worst case (every element unique), which this row's charge does not
-	// reflect — per the brief's standing ruling, that quadratic question is
-	// Task 12's, not this task's; this row gets exactly the linear charge
-	// section 1.3.10's text supports today.
+	// measures 11 = 1 + 10). No declared Cost here, unlike every other row in
+	// this table: uniqueList charges itself, per comparison, via FnCtx — see
+	// its doc comment for why a linear ArgElements charge is not merely
+	// incomplete but unsafe for this function specifically, and why a second,
+	// declarative charge here would double-count the very thing FnCtx exists
+	// to charge accurately.
 	"unique": {
-		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), Cost: Cost{ArgElements: []int{0}}, Fn: uniqueList},
+		{Params: []Type{ListOf(varT)}, Ret: ListOf(varT), FnCtx: uniqueList},
 	},
 	// any and all are declared over list[bool] and list[nulltype] only. There
 	// is no truthiness in this language — section 1.3.5 requires a conditional's
@@ -384,20 +384,40 @@ func sortedList(args []Value) (Value, error) {
 	return rebuildList(args[0], out), nil
 }
 
-// uniqueList removes duplicates, keeping the first occurrence of each value.
+// uniqueList removes duplicates, preserving first-seen order.
 //
 // Equality is valuesEqual — section 1.2.5's cross-type "==" — and NOT
 // Value.Equal, which is Go identity and would call 5 and 5.0 different values.
-// The comparison is quadratic because Value is not a valid map key (Type
-// contains a slice) and because cross-type equality is not an equivalence a
-// hash could reproduce anyway. maxElements caps the input, so the worst case is
-// bounded.
-func uniqueList(args []Value) (Value, error) {
+//
+// The scan is O(n^2) in valuesEqual calls and cannot easily be anything else:
+// Value is not usable as a map key (its Type contains a slice) and section
+// 1.2.5's cross-type equality is not a hashable relation. maxElements caps the
+// INPUT, but that bounds n, not n^2 — at the cap, ~5*10^13 comparisons is a
+// hang, not a slowdown. What makes that safe rather than a hang is that the
+// comparisons are CHARGED: section 1.3.10's operation limit sees the real
+// work, not just the input length.
+//
+// This is FnCtx rather than Fn for exactly that reason, and it was decided by
+// RUNNING, not by reasoning about it: TestUnique_IsBoundedByTheOperationLimit
+// (carried_internal_test.go) first ran against a version of this function
+// charged only by the registry row's old Cost{ArgElements: {0}} — the linear
+// input length — and unique(range(20000)) returned successfully in under 4
+// seconds with 4*10^8 comparisons run and NO errOperationLimit, because 20001
+// charged operations never approached the 10-million default limit while the
+// real work sailed past it uncounted. Charging per comparison here, and
+// removing the registry row's Cost so the input length is not ALSO charged
+// declaratively (which would double-count it against this function's own
+// charge), is what makes the same call fail fast with errOperationLimit
+// instead.
+func uniqueList(ec evalCtx, args []Value) (Value, error) {
 	in := args[0].AsList()
 	out := make([]Value, 0, len(in))
 	for _, v := range in {
 		dup := false
 		for _, kept := range out {
+			if err := ec.m.charge(1); err != nil {
+				return Value{}, err
+			}
 			if valuesEqual(kept, v) {
 				dup = true
 				break
