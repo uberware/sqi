@@ -95,67 +95,142 @@
 # It is kept separate from baseline.txt because the same fixture IDs appear in
 # both scoring paths, and an EXPR entry there would be reported as orphaned
 # forever.
-EXPR/job_templates/2.10--range-expr-param-invalid-default.invalid.yaml
-EXPR/job_templates/2.11--list-string-item-not-in-allowed.invalid.yaml
-EXPR/job_templates/2.11--list-string-item-too-long.invalid.yaml
-EXPR/job_templates/2.11--list-string-item-too-short.invalid.yaml
-EXPR/job_templates/2.11--list-string-scalar-not-list.invalid.yaml
-EXPR/job_templates/2.11--list-string-too-long.invalid.yaml
-EXPR/job_templates/2.11--list-string-too-short.invalid.yaml
-EXPR/job_templates/2.12--list-path-item-too-short.invalid.yaml
-EXPR/job_templates/2.12--list-path-scalar-not-list.invalid.yaml
-EXPR/job_templates/2.12--list-path-too-long.invalid.yaml
-EXPR/job_templates/2.12--list-path-too-short.invalid.yaml
-EXPR/job_templates/2.12--list-path-wrong-item-type.invalid.yaml
-EXPR/job_templates/2.13--list-int-item-below-min.invalid.yaml
-EXPR/job_templates/2.13--list-int-item-not-in-allowed.invalid.yaml
-EXPR/job_templates/2.13--list-int-scalar-not-list.invalid.yaml
-EXPR/job_templates/2.13--list-int-too-long.invalid.yaml
-EXPR/job_templates/2.13--list-int-too-short.invalid.yaml
-EXPR/job_templates/2.13--list-int-wrong-item-type.invalid.yaml
-EXPR/job_templates/2.14--list-float-item-below-min.invalid.yaml
-EXPR/job_templates/2.14--list-float-scalar-not-list.invalid.yaml
-EXPR/job_templates/2.14--list-float-too-long.invalid.yaml
-EXPR/job_templates/2.14--list-float-too-short.invalid.yaml
-EXPR/job_templates/2.14--list-float-wrong-item-type.invalid.yaml
-EXPR/job_templates/2.15--list-bool-scalar-not-list.invalid.yaml
-EXPR/job_templates/2.15--list-bool-too-long.invalid.yaml
-EXPR/job_templates/2.15--list-bool-too-short.invalid.yaml
-EXPR/job_templates/2.15--list-bool-wrong-item-type.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-inner-item-above-max.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-inner-item-below-min.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-inner-item-not-in-allowed.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-inner-too-long.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-inner-too-short.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-ragged-scalar-in-outer.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-scalar-not-list.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-string-in-inner.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-too-long.invalid.yaml
-EXPR/job_templates/2.16--list-list-int-too-short.invalid.yaml
-EXPR/job_templates/2.9--bool-param-float-invalid.invalid.yaml
-EXPR/job_templates/2.9--bool-param-int-invalid.invalid.yaml
-EXPR/job_templates/2.9--bool-param-string-invalid.invalid.yaml
-EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
-EXPR/job_templates/3.6--let-empty-list.invalid.yaml
+#
+# 2026-08-08, sub-project E2 (Task 2): TestConformance_Expressions now scores
+# this directory through conformance.RunCase — the REAL parse-and-validate
+# path every other suite directory uses — instead of RunExprCase. Task 1 made
+# this reachable: EXPR is registered (StatusInProgress) so Parse and
+# ValidateWithOptions run against an EXPR template, though production still
+# rejects it. Everything above this note is the record of what the
+# expression-level path measured; it is kept, not deleted, per this project's
+# convention that a superseded claim is labelled superseded.
+#
+# Score went from 145/209 (64 baselined) to 177/209 (32 baselined): the 60
+# STALE entries below are gone because the real validator agrees with the
+# fixtures' own expectation once it actually runs — most were section-2
+# parameter-constraint fixtures (list length/item bounds, disallowed values)
+# and section-3.6 let-binding scoping fixtures (duplicate/self-reference/
+# shadowing/too-many/uppercase names) that the flat, scope-blind expression
+# path could never see because it never ran the schema those rules live in.
+# The two apply_path_mapping-in-restricted-context fixtures predicted in the
+# note above also confirmed clear, and the extension-missing fixture is
+# trivially correct under the real path (EXPR isn't declared, so `let:` and
+# `{{ ... }}` semantics don't apply — same verdict, now for the real reason).
+#
+# The 32 entries below are NOT syntax gaps in the expression reader — every
+# one of them is one of three known, out-of-E2 causes, or a real scope-model
+# gap E2's later tasks (the scope model itself) must close:
+#
+#  (i) The EXPR extension's own status gate. validateExtensions rejects any
+#      template declaring "extensions: [EXPR]" outright while Status is
+#      StatusInProgress ("extension \"EXPR\" is registered but not yet
+#      supported"), regardless of the template's own content. This is
+#      deliberate — sub-project H flips the status only once the whole EXPR
+#      program is complete (see internal/openjd/extension.go's EXPR entry and
+#      TestConformance_EXPRNotSupported) — so every fixture below carries this
+#      reason at minimum, and it alone accounts for the three
+#      expr1.3.11--*-range-expression.yaml fixtures, which have no other
+#      defect.
+#
+#  (ii) Section 1.2.2's BOOL, RANGE_EXPR and LIST[*] job-parameter TYPES are
+#      not implemented by internal/openjd's base parameter parsing at all —
+#      unrelated to the expression reader, which has supported these VALUES
+#      since B1/B2. A LIST[*]-typed default is rejected at parse time
+#      ("default must be a string, number, or boolean" — internal/openjd's
+#      parameter-default reader only accepts a bare scalar); a BOOL- or
+#      RANGE_EXPR-typed parameter is rejected at validate time ("unknown
+#      type ... must be INT, FLOAT, STRING, or PATH"). Per the EXPR registry
+#      entry's own comment this is explicitly sub-project F's, not E2's:
+#          2--type-case-insensitive.yaml, 2.9--bool-param.yaml,
+#          2.10--range-expr-param.yaml, 2.11--list-string-param.yaml,
+#          2.12--list-path-param.yaml, 2.13--list-int-param.yaml,
+#          2.14--list-float-param.yaml, 2.15--list-bool-param.yaml,
+#          2.16--list-list-int-param.yaml, 3.6--let-bindings.yaml,
+#          expr1.1--conditional-expr.yaml, expr1.1--list-comprehension-expr.yaml,
+#          expr1.1--multiline-expr.yaml, expr1.1--slice-expr.yaml,
+#          expr1.1.3--contextual-keywords.yaml,
+#          expr1.1.4--json-yaml-aliases.yaml
+#      (the last five also carry reason (iii) below independently — either
+#      one on its own would already reject them).
+#
+#  (iii) validateFormatString (internal/openjd/validate.go) still resolves
+#      every "{{ }}" body through fmtstring.References, the BASE-spec
+#      single-<DottedIdent> parser — it has NO bridge to
+#      internal/openjd/expr at all. Any body that is not a bare dotted
+#      identifier — arithmetic, a comparison, a conditional, a list literal, a
+#      function or method call — is rejected as "malformed format string: ...
+#      not a valid dotted identifier", independent of EXPR's registration or
+#      support status. This is the clearest evidence in this run that the
+#      template-integration bridge is genuinely unbuilt, not merely gated: it
+#      is exactly the work sub-project E (this scope-model program) exists to
+#      do, not a byproduct that appears for free once H flips EXPR's status.
+#      Affected: expr-extension-enabled.yaml, expr-with-other-extensions.yaml,
+#      expr1.1--arithmetic-expr.yaml, expr1.1--comparison-expr.yaml,
+#      expr1.1--conditional-expr.yaml, expr1.1--function-call-expr.yaml,
+#      expr1.1--list-literal-expr.yaml, expr1.1--method-call-expr.yaml,
+#      expr1.1.3--contextual-keywords.yaml, expr1.1.4--json-yaml-aliases.yaml.
+#      Several of these also fail on "must not contain control characters
+#      (found U+000A)" for their multi-line `{{ }}` bodies: base validate.go
+#      still enforces the base-spec no-control-characters rule verbatim,
+#      unaware that EXPR relaxes it for multi-line expressions (also (iii)'s
+#      to fix, same missing bridge).
+#
+#  (iv) A genuine scope-model gap, distinct from (iii): validateFormatString's
+#      allowed-prefix lists (jobScopeRefs, envScriptRefs, stepScriptRefs in
+#      validate.go) are flat and know nothing of "let:"-introduced names or of
+#      Step.Name's legality inside stepEnvironments variables.
+#      7.3.1--step-name-in-step-environment.yaml is rejected with
+#      `reference "Step.Name" is not available here; allowed: Param.,
+#      RawParam., Env.File., Session.` even though the fixture's own comment
+#      states "Step.Name is available in stepEnvironments" per spec — this is
+#      a real defect for the scope model's later tasks to fix, not a routing
+#      artifact, and it is the ONE fixture in this batch whose only other
+#      failure reason is (i) alone. 7.3.1--job-step-name-in-step-let.yaml
+#      shows the same class of gap for `let`-bound names (job_tag, script_tag
+#      rejected as "not available here" in the allowed-prefix sense) but is
+#      ALSO blocked independently by an unregistered "FEATURE_BUNDLE_1"
+#      extension and an unimplemented `bash:` step action type, so fixing (iv)
+#      alone will not clear it.
+#
+# The four remaining entries below (3.6--let-host-context-symbols.yaml and the
+# three 3.6--let-*-requires-expr.invalid.yaml fixtures) are carried over
+# unchanged from the expression-level path — RunCase confirms the same
+# verdict for a directly-observed version of the same reason the header above
+# already predicted: internal/openjd's parser accepts a bare `let:` block
+# even when the template does not declare the EXPR extension (the three
+# "requires-expr" fixtures are accepted when they must be rejected), and
+# 3.6--let-host-context-symbols.yaml fails on the same (iv)-class scope gap as
+# 7.3.1--job-step-name-in-step-let.yaml above, compounded by the same
+# FEATURE_BUNDLE_1 and `bash:` gaps.
+EXPR/job_templates/2--type-case-insensitive.yaml
+EXPR/job_templates/2.9--bool-param.yaml
+EXPR/job_templates/2.10--range-expr-param.yaml
+EXPR/job_templates/2.11--list-string-param.yaml
+EXPR/job_templates/2.12--list-path-param.yaml
+EXPR/job_templates/2.13--list-int-param.yaml
+EXPR/job_templates/2.14--list-float-param.yaml
+EXPR/job_templates/2.15--list-bool-param.yaml
+EXPR/job_templates/2.16--list-list-int-param.yaml
+EXPR/job_templates/3.6--let-bindings.yaml
 EXPR/job_templates/3.6--let-host-context-symbols.yaml
 EXPR/job_templates/3.6--let-in-job-environment-requires-expr.invalid.yaml
 EXPR/job_templates/3.6--let-in-step-environment-requires-expr.invalid.yaml
 EXPR/job_templates/3.6--let-requires-expr.invalid.yaml
-EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
-EXPR/job_templates/3.6--let-too-many.invalid.yaml
-EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
-EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
-EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
-EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml
-EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml
-EXPR/job_templates/7.3--complex-expr-in-env-action-requires-expr.invalid.yaml
-EXPR/job_templates/7.3--complex-expr-in-env-variables-requires-expr.invalid.yaml
-EXPR/job_templates/7.3--session-in-host-requirements.invalid.yaml
-EXPR/job_templates/7.3--task-param-in-job-name.invalid.yaml
-EXPR/job_templates/7.3.1--job-name-in-job-name-field.invalid.yaml
-EXPR/job_templates/7.3.1--job-name-requires-expr.invalid.yaml
-EXPR/job_templates/7.3.1--step-name-in-job-environment-let.invalid.yaml
-EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
-EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
-EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
-EXPR/job_templates/expr-extension-missing.invalid.yaml
+EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
+EXPR/job_templates/7.3.1--step-name-in-step-environment.yaml
+EXPR/job_templates/expr-extension-enabled.yaml
+EXPR/job_templates/expr-with-other-extensions.yaml
+EXPR/job_templates/expr1.1--arithmetic-expr.yaml
+EXPR/job_templates/expr1.1--comparison-expr.yaml
+EXPR/job_templates/expr1.1--conditional-expr.yaml
+EXPR/job_templates/expr1.1--function-call-expr.yaml
+EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
+EXPR/job_templates/expr1.1--list-literal-expr.yaml
+EXPR/job_templates/expr1.1--method-call-expr.yaml
+EXPR/job_templates/expr1.1--multiline-expr.yaml
+EXPR/job_templates/expr1.1--slice-expr.yaml
+EXPR/job_templates/expr1.1.3--contextual-keywords.yaml
+EXPR/job_templates/expr1.1.4--json-yaml-aliases.yaml
+EXPR/job_templates/expr1.3.11--float-range-expression.yaml
+EXPR/job_templates/expr1.3.11--path-range-expression.yaml
+EXPR/job_templates/expr1.3.11--string-range-expression.yaml

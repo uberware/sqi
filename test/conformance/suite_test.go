@@ -191,9 +191,13 @@ func collectEXPRFixtures(t *testing.T) []conformance.TestCase {
 	return cases
 }
 
-// TestConformance_Expressions scores every EXPR job-template fixture by
-// parsing the expressions it embeds. See RunExprCase for why this is a
-// separate path from TestConformance_Templates.
+// TestConformance_Expressions scores every EXPR job-template fixture.
+//
+// Sub-project E2 routed this to conformance.RunCase, the same real
+// parse-and-validate path TestConformance_Templates uses — see the comment on
+// the RunCase call below. It remains a separate test function (not folded
+// into TestConformance_Templates) because it scores its own directory against
+// its own baseline file, exprBaselinePath, rather than baseline.txt.
 func TestConformance_Expressions(t *testing.T) {
 	cases := collectEXPRFixtures(t)
 	if len(cases) < minExpectedExprFixtures {
@@ -207,10 +211,21 @@ func TestConformance_Expressions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fixture %s: %v", tc.Path, err)
 		}
-		results = append(results, conformance.RunExprCase(tc, data))
+		// Sub-project E2: EXPR fixtures are scored through the REAL template
+		// path (parse + validate), the same one every other suite directory
+		// uses. Before E2 this called RunExprCase, an expression-level path
+		// that read the fixture's "{{ }}" bodies directly because
+		// internal/openjd rejected EXPR templates outright and would have
+		// reported ~180 false passes. Task 1's status gate is what makes the
+		// real path reachable: EXPR is registered (so parse and validate run)
+		// but not supported (so production still rejects it).
+		//
+		// StateLive, not Classify's verdict: Classify reports EXPR as
+		// not-applicable, which is what kept these fixtures unscored.
+		results = append(results, conformance.RunCase(tc, conformance.StateLive, data))
 	}
 
-	t.Logf("expression-level scoring (parse and evaluate)\n%s",
+	t.Logf("template-level scoring (parse and validate)\n%s",
 		conformance.FormatRollup(conformance.Rollup(results)))
 
 	// A run in which almost nothing passes means the reader is broken, not
