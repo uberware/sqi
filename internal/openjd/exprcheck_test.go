@@ -238,3 +238,30 @@ func TestCheckFormatString_LoneRefInheritsTheTarget(t *testing.T) {
 		t.Errorf("an EMBEDDED reference must be converted to a string and accepted: %v", errs)
 	}
 }
+
+// TestCheckFormatString_HostOnlyFunctionPlacement pins that a host-context-only
+// function is rejected in a submission-time scope and accepted in a host one.
+// apply_path_mapping is registered FLAT in the leaf -- it has no scope model --
+// so this gate is the only thing enforcing section "Host-Context Function
+// Availability".
+func TestCheckFormatString_HostOnlyFunctionPlacement(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:                 "T",
+		ParameterDefinitions: []JobParameter{{Name: "P", Type: "PATH"}},
+	}
+	const src = "{{ apply_path_mapping(RawParam.P) }}"
+
+	syms := symbolsFor(tmpl, nil, nil, ScopeJob, nil)
+	errs := checkFormatString(src, "/name", ScopeJob, syms, TargetString)
+	if len(errs) == 0 {
+		t.Fatal("apply_path_mapping was accepted in a submission-time scope")
+	}
+	if !strings.Contains(errs[0].Message, "apply_path_mapping") {
+		t.Errorf("message %q does not name the function", errs[0].Message)
+	}
+
+	syms = symbolsFor(tmpl, nil, nil, ScopeStepScript, nil)
+	if errs := checkFormatString(src, "/p", ScopeStepScript, syms, TargetString); len(errs) != 0 {
+		t.Errorf("apply_path_mapping must be allowed in a host context: %v", errs)
+	}
+}

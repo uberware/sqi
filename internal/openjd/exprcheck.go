@@ -3,6 +3,7 @@
 package openjd
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -238,6 +239,60 @@ func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapS
 	}
 }
 
+// hostOnlyFunctions is the set of function names the specification restricts
+// to a host-context scope (SESSION and TASK) -- section "Host-Context
+// Function Availability" -- because they need runtime resources that do not
+// exist at submission time. apply_path_mapping needs the session's
+// path-mapping rules, which are established only once a session is running;
+// internal/openjd/expr registers it FLAT, with no scope model of its own, so
+// this set is the only thing enforcing the restriction.
+//
+// The specification does NOT commit to a single such function:
+// FunctionLibrary.with_host_context() returns a library "with host-only
+// functions LIKE apply_path_mapping() enabled" (wiki line 515), and the
+// availability section itself says "Certain functions ... For example,
+// apply_path_mapping()". apply_path_mapping is the only entry today because it
+// is the only function that reads session state -- declaring the gate as a
+// SET rather than a single name comparison means a second entrant costs one
+// map entry, not a rewritten conditional.
+var hostOnlyFunctions = map[string]struct{}{
+	"apply_path_mapping": {},
+}
+
+// checkHostOnlyFunctions rejects e when scope is not a host context and e
+// calls a member of hostOnlyFunctions, per Scope.IsHostContext. It is called
+// after a successful expr.Parse and BEFORE Eval: the call must not run at
+// all in a scope where the state it needs does not exist, not merely fail
+// once it tries to read that state.
+//
+// It walks Expression.CalledFunctions() rather than inspecting the parse tree
+// directly -- CalledFunctions already collects every function and method name
+// the expression calls, sorted and de-duplicated, including names reached
+// through nested calls and comprehension bodies (its own narrow
+// loop-variable exclusion mirrors Names' and does not weaken this check: a
+// direct call to a comprehension's own loop variable is excluded because
+// that call cannot possibly reach a REGISTRY function of the same name, host-
+// only or not -- see its doc comment and TestCalledFunctions).
+func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) ValidationErrors {
+	if scope.IsHostContext() {
+		return nil
+	}
+	var errs ValidationErrors
+	for _, name := range e.CalledFunctions() {
+		if _, ok := hostOnlyFunctions[name]; !ok {
+			continue
+		}
+		errs = append(errs, ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf(
+				"%s() is only available in a host-context scope (SESSION or TASK), not %s",
+				name, scope,
+			),
+		})
+	}
+	return errs
+}
+
 // checkFormatString parses and evaluates every EXPR reference in s against
 // syms, at the position ptr, reporting a ValidationError for every parse or
 // type error the evaluator finds.
@@ -251,14 +306,20 @@ func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapS
 // the reference itself produces, so a type that would be wrong for target is
 // still fine here.
 //
-// scope is accepted but not yet consulted: gating a scope's host-only
-// functions (apply_path_mapping) is E's job, once Expression.CalledFunctions
-// has a caller. Nothing in this task changes behavior based on scope.
+// Each reference is parsed on its own (expr.Parse) rather than evaluated in
+// one step (expr.Eval) so that checkHostOnlyFunctions can run BETWEEN parse
+// and eval: a host-only call is rejected before it is ever executed, in a
+// scope where the state it would read does not exist.
 func checkFormatString(s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type) ValidationErrors {
-	_ = scope // reserved for E's host-context function gating; see doc comment
-
 	if body, ok := fmtstring.LoneRef(s); ok {
-		if _, err := expr.Eval(body, syms, target); err != nil {
+		e, err := expr.Parse(body)
+		if err != nil {
+			return ValidationErrors{{Pointer: ptr, Message: err.Error()}}
+		}
+		if errs := checkHostOnlyFunctions(e, scope, ptr); len(errs) != 0 {
+			return errs
+		}
+		if _, err := e.Eval(syms, target); err != nil {
 			return ValidationErrors{{Pointer: ptr, Message: err.Error()}}
 		}
 		return nil
@@ -274,7 +335,16 @@ func checkFormatString(s, ptr string, scope Scope, syms expr.MapSymbols, target 
 		if !seg.IsRef {
 			continue
 		}
-		if _, err := expr.Eval(seg.Ref, syms, expr.TAny); err != nil {
+		e, err := expr.Parse(seg.Ref)
+		if err != nil {
+			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
+			continue
+		}
+		if hostErrs := checkHostOnlyFunctions(e, scope, ptr); len(hostErrs) != 0 {
+			errs = append(errs, hostErrs...)
+			continue
+		}
+		if _, err := e.Eval(syms, expr.TAny); err != nil {
 			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
 		}
 	}
