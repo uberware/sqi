@@ -41,6 +41,7 @@ type caseResult struct {
 	value string
 	typ   string
 	err   string
+	ops   int64
 }
 
 // oracleReply is the reference implementation's JSON reply. Its field names
@@ -53,6 +54,7 @@ type oracleReply struct {
 	Value   string `json:"value"`
 	Type    string `json:"type"`
 	Error   string `json:"error"`
+	Ops     int64  `json:"ops"`
 }
 
 // exprCase is one corpus entry.
@@ -72,12 +74,15 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 		t.Fatal("corpus is empty; expected the checked-in cases")
 	}
 	baseline := loadBaseline(t, filepath.Join(root, "test", "oracle", "baseline.txt"))
+	opsBaseline := loadBaseline(t, filepath.Join(root, "test", "oracle", "baseline-ops.txt"))
 
 	version, refs := runOracle(t, root, python, cases)
 	t.Logf("reference implementation: openjd-model %s (%d cases)", version, len(cases))
 
 	var diverged, expected int
+	var compared, opsDiverged, opsExpected int
 	seen := make(map[string]bool, len(cases))
+	opsSeen := make(map[string]bool, len(cases))
 
 	for _, c := range cases {
 		ref, ok := refs[c.id]
@@ -97,6 +102,30 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 				// event worth surfacing.
 				t.Errorf("corpus.txt:%d: %s\n  no longer diverges — remove it from baseline.txt\n  baselined reason: %s",
 					c.line, c.id, reason)
+			}
+			// Counts are compared ONLY here, on cases whose values already agree.
+			// Stacking a count divergence onto a value divergence would report one
+			// root cause twice and make both harder to read.
+			compared++
+			if got.ops != ref.ops {
+				opsDiverged++
+				opsReason, opsBaselined := opsBaseline[c.id]
+				opsSeen[c.id] = true
+				if opsBaselined {
+					opsExpected++
+					t.Logf("known count divergence: %s\n  go=%d ref=%d\n  %s", c.id, got.ops, ref.ops, opsReason)
+				} else {
+					t.Errorf("corpus.txt:%d: NEW OPERATION-COUNT DIVERGENCE\n  expression: %s\n  target:     %s\n"+
+						"  go:         %d operations\n  reference:  %d operations (openjd-model %s)\n"+
+						"  Section 1.3.10 specifies the counting rules, so this is comparable. Adjudicate\n"+
+						"  against the spec, which outranks the reference. If sqi is right, add this case\n"+
+						"  to baseline-ops.txt with the reasoning.",
+						c.line, c.src, c.target, got.ops, ref.ops, version)
+				}
+			} else if _, opsBaselined := opsBaseline[c.id]; opsBaselined {
+				opsSeen[c.id] = true
+				t.Errorf("corpus.txt:%d: %s\n  operation counts no longer diverge — remove it from baseline-ops.txt",
+					c.line, c.id)
 			}
 			continue
 		}
@@ -118,7 +147,14 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 			t.Errorf("baseline.txt lists %q, which is not in corpus.txt\n  reason given: %s", id, reason)
 		}
 	}
+	for id, reason := range opsBaseline {
+		if !opsSeen[id] {
+			t.Errorf("baseline-ops.txt lists %q, which either is not in corpus.txt or does not diverge on count\n  reason given: %s", id, reason)
+		}
+	}
 	t.Logf("%d/%d agree; %d diverge (%d baselined)", len(cases)-diverged, len(cases), diverged, expected)
+	t.Logf("operation counts: %d/%d agree on the %d value-agreeing cases; %d diverge (%d baselined)",
+		compared-opsDiverged, compared, compared, opsDiverged, opsExpected)
 }
 
 // agree reports whether the two sides produced the same outcome.
@@ -152,11 +188,11 @@ func evalGo(c exprCase) caseResult {
 	if err != nil {
 		return caseResult{err: err.Error()}
 	}
-	v, err := expr.Eval(c.src, nil, target)
+	v, ops, err := expr.EvalWithMetrics(c.src, nil, target)
 	if err != nil {
 		return caseResult{err: err.Error()}
 	}
-	return caseResult{ok: true, value: v.String(), typ: v.Type.String()}
+	return caseResult{ok: true, value: v.String(), typ: v.Type.String(), ops: ops}
 }
 
 // runOracle feeds the whole corpus through one interpreter and returns the
@@ -199,7 +235,7 @@ func runOracle(t *testing.T, root, python string, cases []exprCase) (string, map
 			version = reply.Version
 			continue
 		}
-		results[reply.ID] = caseResult{ok: reply.OK, value: reply.Value, typ: reply.Type, err: reply.Error}
+		results[reply.ID] = caseResult{ok: reply.OK, value: reply.Value, typ: reply.Type, err: reply.Error, ops: reply.Ops}
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("reading the reference implementation's output: %v", err)

@@ -16,7 +16,7 @@ Protocol, one JSON object per line in each direction so a whole corpus costs a
 single interpreter start rather than one per case:
 
     stdin   {"id": "...", "src": "1 + 2", "target": "int"}
-    stdout  {"id": "...", "ok": true, "value": "3", "type": "int"}
+    stdout  {"id": "...", "ok": true, "value": "3", "type": "int", "ops": 1}
             {"id": "...", "ok": false, "error": "Cannot coerce ..."}
 
 The first stdout line is a banner carrying the resolved package version, which
@@ -40,7 +40,7 @@ import sys
 
 def main() -> int:
     try:
-        from openjd.expr import ExprType, evaluate_expression
+        from openjd.expr import ExprType, parse_expression
     except ImportError as exc:  # pragma: no cover - exercised by the skip path
         print(f"import failed: {exc}", file=sys.stderr)
         return 2
@@ -60,12 +60,12 @@ def main() -> int:
         if not line:
             continue
         case = json.loads(line)
-        emit(evaluate(case, ExprType, evaluate_expression))
+        emit(evaluate(case, ExprType, parse_expression))
 
     return 0
 
 
-def evaluate(case: dict, ExprType, evaluate_expression) -> dict:  # noqa: N803
+def evaluate(case: dict, ExprType, parse_expression) -> dict:  # noqa: N803
     """Evaluate one case, reporting any failure as data rather than raising.
 
     A malformed target type is reported through the same `error` channel as a
@@ -76,7 +76,8 @@ def evaluate(case: dict, ExprType, evaluate_expression) -> dict:  # noqa: N803
     result = {"id": case["id"]}
     try:
         target = ExprType(case["target"])
-        value = evaluate_expression(case["src"], target_type=target)
+        parsed = parse_expression(case["src"])
+        outcome = parsed.evaluate_with_metrics(target_type=target)
     except BaseException as exc:  # noqa: BLE001 - see comment below
         result["ok"] = False
         # BaseException, not Exception, and deliberately.
@@ -97,8 +98,16 @@ def evaluate(case: dict, ExprType, evaluate_expression) -> dict:  # noqa: N803
         result["error"] = str(exc).splitlines()[0]
         return result
     result["ok"] = True
-    result["value"] = str(value)
-    result["type"] = str(value.type)
+    result["value"] = str(outcome.value)
+    result["type"] = str(outcome.value.type)
+    # Section 1.3.10's operation count. Compared by the Go side only on cases
+    # whose VALUES already agree, so a count divergence is never stacked on a
+    # value divergence that is already reported and already baselined.
+    #
+    # peak_memory is deliberately NOT reported: section 1.3.9 makes value sizing
+    # explicitly implementation-defined, so a memory divergence could only ever
+    # be suppressed, never adjudicated.
+    result["ops"] = outcome.operation_count
     return result
 
 

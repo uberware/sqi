@@ -143,3 +143,31 @@ func sizeOf(v Value) int64 {
 		return valueHeaderBytes
 	}
 }
+
+// EvalWithMetrics evaluates src and reports the section 1.3.10 operation count
+// alongside the result, mirroring the reference implementation's
+// ParsedExpression.evaluate_with_metrics. It exists for the differential oracle
+// (test/oracle), which cannot read a package-private counter.
+//
+// It reports operations only. Section 1.3.9's memory figure is deliberately not
+// exposed: value sizing is implementation-defined, so a differential comparison
+// of it could only be suppressed, never adjudicated.
+func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Value, int64, error) {
+	e, err := Parse(src)
+	if err != nil {
+		return Value{}, 0, err
+	}
+	ec := newEvalCtx(src, syms, opts)
+	if ec.limitErr != nil {
+		return Value{}, 0, ec.limitErr
+	}
+	v, err := evalNode(e.root, ec, target, 0)
+	if err != nil {
+		return Value{}, ec.m.ops, err
+	}
+	out, err := coerce(v, target)
+	if err != nil {
+		return Value{}, ec.m.ops, wrapAt(src, e.root.Pos(), err)
+	}
+	return out, ec.m.ops, nil
+}
