@@ -440,9 +440,21 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 			return Unresolved(TBool), nil
 		}
 		// This path returns before matchShapes, so it never reaches callShape.
-		// Rule 1 still applies: an equality comparison is a call. Its rule-2
-		// element charge for list/range equality lands in Task 9.
+		// Rule 1 still applies: an equality comparison is a call.
 		if err := ec.m.charge(1); err != nil {
+			return Value{}, err
+		}
+		// Section 1.3.10 rule 2 names "list/range equality comparisons"
+		// explicitly. elementCount is 0 for any non-collection operand, so
+		// this is a no-op charge for every other type pair; it only fires
+		// when the LEFT operand is a list or range_expr. Charged against the
+		// left operand only -- matching the brief's adjudicated ruling
+		// (cost_eval_internal_test.go's TestOperationCount_ListEquality),
+		// which sets 1 (call) + 2 (elements) = 3 for a two-element
+		// comparison against the reference's unexplained 2.
+		if n, err := elementCount(l); err != nil {
+			return Value{}, err
+		} else if err := ec.m.chargeElements(n); err != nil {
 			return Value{}, err
 		}
 		if op == OpEq {

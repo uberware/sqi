@@ -86,6 +86,12 @@
 # down together only once an operation counter lands, which is still
 # sub-project E's.
 #
+# 2026-08-07: THAT HAS NOW HAPPENED. Sub-project E1 (Task 9) landed the
+# section 1.3.10 operation counter, and both fixtures burned down exactly as
+# predicted above: the triple-nested comprehension over range(300), and its
+# .upper()-calling sibling, now correctly exceed the operation limit instead
+# of evaluating to completion. Both entries are removed from this list below.
+#
 # It is kept separate from baseline.txt because the same fixture IDs appear in
 # both scoring paths, and an EXPR entry there would be reported as orphaned
 # forever.
@@ -153,5 +159,3 @@ EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml
 EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml
 EXPR/job_templates/expr-extension-missing.invalid.yaml
-EXPR/job_templates/expr1.3.10--operation-limit-exceeded.invalid.yaml
-EXPR/job_templates/expr1.3.10--string-operation-limit-exceeded.invalid.yaml

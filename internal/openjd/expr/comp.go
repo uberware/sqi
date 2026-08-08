@@ -192,6 +192,14 @@ func unresolvedComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, depth in
 // mirrors how evalCond and evalCompare treat an unresolved condition, right
 // down to reusing the same must-be-a-bool check (see evalCompFilter).
 func runComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, items []Value, depth int) (Value, error) {
+	// Section 1.3.10 rule 2 names list comprehensions first: iterating every
+	// element of the iterable adds the number of elements. Charged against the
+	// FULL iterable (items), not whatever survives the filter, matching the
+	// spec's own worked example: [x * 2 for x in range(100)] charges 100 here
+	// regardless of what the (absent) filter would have kept.
+	if err := ec.m.chargeElements(len(items)); err != nil {
+		return Value{}, err
+	}
 	out := make([]Value, 0, len(items))
 	types := make([]Type, 0, len(items))
 	unresolved := false

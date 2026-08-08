@@ -34,6 +34,19 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	// Slice is not Shape-dispatched (sliceValue is called directly), so rule 1
+	// is charged here rather than by callShape. Per RFC 0005's dunder-transform
+	// table, "Subscript(value, Slice(lower, upper, step))" becomes ONE
+	// __getitem__ call carrying the bounds as extra arguments -- not a second
+	// call -- so this is the whole rule-1 charge, unconditional past the
+	// receiver-type check exactly as evalIndex's is. Rule 2 does NOT apply,
+	// for the same reason it does not apply to a subscript: __getitem__ is not
+	// one of rule 2's named iterating functions, and sqi's own sliceValue
+	// below touches only the selected elements, never "every element" of the
+	// receiver. See cost_eval_internal_test.go's PROBE comment.
+	if err := ec.m.charge(1); err != nil {
+		return Value{}, err
+	}
 	if recv.IsUnresolved() || !startOK || !stopOK || !stepOK {
 		return Unresolved(result), nil
 	}

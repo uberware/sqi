@@ -178,6 +178,19 @@ func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	// Subscript is not Shape-dispatched (indexValue is called directly), so
+	// rule 1 is charged here rather than by callShape. Charged once the
+	// receiver type is known to be subscriptable -- mirroring
+	// applyBinary/applyUnary, which charge nothing for an "unsupported
+	// operand" rejection but charge rule 1 unconditionally past that point,
+	// including when an operand is unresolved and nothing actually runs.
+	// Rule 2 does NOT apply: __getitem__ is not one of rule 2's named
+	// iterating functions (shape.go's specNamedIteratingFunctions), and a
+	// subscript touches exactly one element of the receiver, never "every
+	// element of a list". See cost_eval_internal_test.go's PROBE comment.
+	if err := ec.m.charge(1); err != nil {
+		return Value{}, err
+	}
 	// Either operand missing means the result is typed but has no value. A
 	// bounds check is impossible and must NOT be attempted: whether the index
 	// is in range is not knowable until the value exists.
