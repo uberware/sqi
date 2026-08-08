@@ -57,11 +57,35 @@ func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, err
 	if err != nil {
 		return Value{}, err
 	}
+	return coerceTop(ec, e.src, e.root, v, target)
+}
+
+// coerceTop performs the top-level implicit coercion (section 1.2.3) that
+// every public entry point (Expression.Eval, Eval, EvalWithMetrics,
+// EvalForBalanceCheck) applies to the whole expression's result once
+// evaluation finishes, and meters it exactly like any other construct: v is
+// what evalNode's own allocation point already added to the live total, so it
+// is released once coerce is done consuming it, and the coerced result is
+// allocated fresh -- checked against the memory bound at THAT point, not
+// left unchecked.
+//
+// This exists because section 1.2.3's range_expr -> list[int] conversion
+// (coerce.go's coerceList) can turn a small live range_expr into an
+// arbitrarily large list -- and this boundary coercion runs OUTSIDE evalNode,
+// after the single allocation point, so without this it was never checked
+// against WithMemoryLimit at all, only against the fixed and much larger
+// maxElements floor (limits.go). See
+// TestMemoryLimit_CatchesTopLevelCoercion.
+func coerceTop(ec evalCtx, src string, root Node, v Value, target Type) (Value, error) {
 	out, err := coerce(v, target)
 	if err != nil {
 		// The whole expression failed to meet its context's type, so blame the
 		// expression's start rather than any operator inside it.
-		return Value{}, wrapAt(e.src, e.root.Pos(), err)
+		return Value{}, wrapAt(src, root.Pos(), err)
+	}
+	ec.m.release(v) // rule 2: v is consumed by the top-level coercion
+	if err := ec.m.alloc(out); err != nil {
+		return Value{}, err
 	}
 	return out, nil
 }

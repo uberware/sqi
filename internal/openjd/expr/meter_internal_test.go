@@ -422,6 +422,29 @@ func TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot(t *testing.T) {
 	}
 }
 
+// TestMemoryLimit_CatchesTopLevelCoercion is the top-level-coercion analog of
+// TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot.
+//
+// Section 1.2.3's range_expr -> list[int] conversion (coerce.go's coerceList)
+// runs in the top-level coercion that Expression.Eval/Eval/EvalWithMetrics
+// apply to the WHOLE expression's result, AFTER evalNode returns -- outside
+// the single allocation point, and so outside WithMemoryLimit's reach unless
+// that boundary is metered too. 2,000,000 elements sits comfortably under the
+// fixed maxElements floor (10,000,000), so the floor cannot see this case
+// either, but expands to roughly 128,000,000 bytes of live int values -- which
+// a tight memory budget must catch.
+func TestMemoryLimit_CatchesTopLevelCoercion(t *testing.T) {
+	const src = `range_expr("1-2000000")`
+	if _, err := Eval(src, nil, ListOf(TInt), WithMemoryLimit(10_000_000)); !errors.Is(err, errMemoryLimit) {
+		t.Fatalf("%s under a 10 MB budget = %v; want errMemoryLimit", src, err)
+	}
+	// The same expression succeeds under a budget that fits it, proving the
+	// failure above is the BUDGET and not the maxElements floor.
+	if _, err := Eval(src, nil, ListOf(TInt), WithMemoryLimit(200_000_000)); err != nil {
+		t.Fatalf("%s under a 200 MB budget: %v", src, err)
+	}
+}
+
 func TestOperationCount_UnresolvedOperandSites(t *testing.T) {
 	t.Run("applyBinary general branch", func(t *testing.T) {
 		ec := newEvalCtx("", nil, nil)

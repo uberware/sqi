@@ -165,9 +165,9 @@ func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Val
 	if err != nil {
 		return Value{}, ec.m.ops, err
 	}
-	out, err := coerce(v, target)
+	out, err := coerceTop(ec, src, e.root, v, target)
 	if err != nil {
-		return Value{}, ec.m.ops, wrapAt(src, e.root.Pos(), err)
+		return Value{}, ec.m.ops, err
 	}
 	return out, ec.m.ops, nil
 }
@@ -179,7 +179,11 @@ func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Val
 // It exists for the differential oracle, which asserts the identity over the
 // whole corpus rather than over hand-picked cases. That breadth is the point: a
 // release bug in one rarely-exercised function is exactly what a written-out
-// test set misses.
+// test set misses. It routes through coerceTop exactly like every other public
+// entry point, so the invariant covers the top-level coercion too -- without
+// that, this instrument would be structurally blind to a leak or a missing
+// bound check in exactly the region WithMemoryLimit most needs to reach (see
+// coerceTop's own doc comment).
 func EvalForBalanceCheck(src string, target Type) (live, resultSize int64, err error) {
 	e, perr := Parse(src)
 	if perr != nil {
@@ -190,5 +194,9 @@ func EvalForBalanceCheck(src string, target Type) (live, resultSize int64, err e
 	if eerr != nil {
 		return 0, 0, eerr
 	}
-	return ec.m.mem, sizeOf(v), nil
+	out, cerr := coerceTop(ec, src, e.root, v, target)
+	if cerr != nil {
+		return 0, 0, cerr
+	}
+	return ec.m.mem, sizeOf(out), nil
 }
