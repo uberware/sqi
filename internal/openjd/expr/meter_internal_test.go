@@ -67,6 +67,24 @@ func TestMeter_OperationLimit(t *testing.T) {
 	}
 }
 
+// TestMeter_MemoryLimitIsExact pins alloc's bound check to "mem > memLimit"
+// with no slack in either direction -- a real budget, not an approximate one.
+// Written to catch a one-step weakening to "mem > memLimit+1" (Task 11's
+// mutation-testing step 8.1): that mutation lets an allocation land exactly
+// ONE byte over the limit without erroring, which this test's second case
+// exercises directly.
+func TestMeter_MemoryLimitIsExact(t *testing.T) {
+	m := newMeter(valueHeaderBytes, defaultOperationLimit) // limit = 64
+	if err := m.alloc(Int(1)); err != nil {                // mem becomes 64, AT the limit
+		t.Fatalf("alloc exactly at the limit: unexpected error %v", err)
+	}
+	m2 := newMeter(valueHeaderBytes, defaultOperationLimit) // limit = 64
+	if err := m2.alloc(String("x")); !errors.Is(err, errMemoryLimit) {
+		// sizeOf(String("x")) = 65: exactly one byte over the limit.
+		t.Fatalf("alloc one byte over the limit = %v; want errMemoryLimit", err)
+	}
+}
+
 func TestMeter_MemoryLimitAndRelease(t *testing.T) {
 	m := newMeter(valueHeaderBytes*2, defaultOperationLimit)
 	if err := m.alloc(Int(1)); err != nil {
@@ -322,6 +340,88 @@ func TestOperationCount_EqualityFastPath(t *testing.T) {
 // TestOperationCount_EqualityFastPath above covers the fourth such site,
 // applyBinary's OpEq/OpNe branch; this test covers the remaining three named
 // in the brief's Step 5.
+// balanceOf evaluates src and returns (live bytes remaining, size of result).
+func balanceOf(t *testing.T, src string) (live, resultSize int64) {
+	t.Helper()
+	e, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	ec := newEvalCtx(src, MapSymbols(nil), nil)
+	v, err := evalNode(e.root, ec, TAny, 0)
+	if err != nil {
+		t.Fatalf("eval(%q): %v", src, err)
+	}
+	return ec.m.mem, sizeOf(v)
+}
+
+// TestMemory_ZeroBalance is the leak detector.
+//
+// After a top-level evaluation, the only value still live must be the result.
+// The identity catches drift in BOTH directions -- a missed release inflates it,
+// a double-release deflates it -- which is exactly what a release discipline in
+// a language with no destructors needs, and what no hand-picked set of
+// allocation assertions provides.
+func TestMemory_ZeroBalance(t *testing.T) {
+	srcs := []string{
+		"1",
+		"1 + 2",
+		"1 + 2 + 3",
+		"-1",
+		"'abc' + 'def'",
+		"[1,2,3]",
+		"[1,2,3][0]",
+		"[1,2,3][0:2]",
+		"[1,2] + [3]",
+		"[x * 2 for x in [1,2,3]]",
+		"sum([1,2,3])",
+		"1 if True else 2",
+		"True and False",
+		"len('abc')",
+		"sorted([3,1,2])",
+		"'a,b,c'.split(',')",
+	}
+	for _, src := range srcs {
+		t.Run(src, func(t *testing.T) {
+			live, want := balanceOf(t, src)
+			if live != want {
+				t.Errorf("live memory after eval = %d; want %d (the result's own size).\n"+
+					"  A larger number means a value was never released; a smaller one means\n"+
+					"  something was released twice.", live, want)
+			}
+		})
+	}
+}
+
+func TestMemoryLimit_IsReported(t *testing.T) {
+	// A list of 100 ints is 101 headers = 6464 bytes at valueHeaderBytes = 64.
+	_, err := Eval("range(100)", nil, TAny, WithMemoryLimit(valueHeaderBytes*10))
+	if !errors.Is(err, errMemoryLimit) {
+		t.Fatalf("evaluating past the memory limit = %v; want errMemoryLimit", err)
+	}
+}
+
+// TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot is the whole
+// justification for section 1.3.9 over limits.go's fixed maxStringBytes.
+//
+// Each individual repetition stays under the per-operation ceiling; what breaks
+// the budget is holding many of them live at once. A fixed per-operation bound
+// cannot see this at all, which is why the tracker recorded that nested
+// repetition "grows ~91 MB per level with no cumulative accounting".
+func TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot(t *testing.T) {
+	// 200 strings of 100_000 bytes each is ~20 MB live, well under
+	// maxStringBytes (10 MB) for any SINGLE operation.
+	const src = "['a' * 100000 for i in range(200)]"
+	if _, err := Eval(src, nil, TAny, WithMemoryLimit(5_000_000)); !errors.Is(err, errMemoryLimit) {
+		t.Fatalf("%s under a 5 MB budget = %v; want errMemoryLimit", src, err)
+	}
+	// The same expression succeeds under a budget that fits it, proving the
+	// failure above is the BUDGET and not the floor.
+	if _, err := Eval(src, nil, TAny, WithMemoryLimit(100_000_000)); err != nil {
+		t.Fatalf("%s under a 100 MB budget: %v", src, err)
+	}
+}
+
 func TestOperationCount_UnresolvedOperandSites(t *testing.T) {
 	t.Run("applyBinary general branch", func(t *testing.T) {
 		ec := newEvalCtx("", nil, nil)

@@ -171,3 +171,24 @@ func EvalWithMetrics(src string, syms Symbols, target Type, opts ...Option) (Val
 	}
 	return out, ec.m.ops, nil
 }
+
+// EvalForBalanceCheck evaluates src and reports the live memory remaining
+// afterward alongside the result's own size. The two must be equal: after a
+// top-level evaluation nothing but the result is live.
+//
+// It exists for the differential oracle, which asserts the identity over the
+// whole corpus rather than over hand-picked cases. That breadth is the point: a
+// release bug in one rarely-exercised function is exactly what a written-out
+// test set misses.
+func EvalForBalanceCheck(src string, target Type) (live, resultSize int64, err error) {
+	e, perr := Parse(src)
+	if perr != nil {
+		return 0, 0, perr
+	}
+	ec := newEvalCtx(src, MapSymbols(nil), nil)
+	v, eerr := evalNode(e.root, ec, target, 0)
+	if eerr != nil {
+		return 0, 0, eerr
+	}
+	return ec.m.mem, sizeOf(v), nil
+}

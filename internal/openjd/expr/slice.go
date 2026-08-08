@@ -70,6 +70,7 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 		return Value{}, err
 	}
 	if recv.IsUnresolved() || !startOK || !stopOK || !stepOK {
+		ec.m.release(recv) // rule 2: the receiver, consumed determining the result is unresolved
 		return Unresolved(result), nil
 	}
 	if step != nil && *step == 0 {
@@ -79,6 +80,7 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	ec.m.release(recv) // rule 2: the receiver, consumed by the slice
 	return out, nil
 }
 
@@ -99,9 +101,11 @@ func sliceComponent(n Node, ec evalCtx, depth int) (val *int64, ok bool, err err
 			"a slice component must be an int, found %s", v.Type)
 	}
 	if v.IsUnresolved() {
+		ec.m.release(v) // rule 2: consumed determining the component is unresolved
 		return nil, false, nil
 	}
 	i := v.AsInt()
+	ec.m.release(v) // rule 2: consumed extracting the plain int64 evalSlice needs; the int itself is discarded
 	return &i, true, nil
 }
 

@@ -125,13 +125,26 @@ func evalListComp(n *ListComp, ec evalCtx, target Type, depth int) (Value, error
 
 	elemTarget := listElemTarget(target)
 	if iter.IsUnresolved() {
-		return unresolvedComp(n, ec, elemTarget, elemType, depth)
+		out, err := unresolvedComp(n, ec, elemTarget, elemType, depth)
+		if err != nil {
+			return Value{}, err
+		}
+		ec.m.release(iter) // rule 2: consumed determining the comprehension's own placeholder result
+		return out, nil
 	}
 
 	items, err := iterItems(iter)
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Iter.Pos(), err)
 	}
+	// rule 2/3: the iterable, consumed producing items. Its own elements are
+	// never separately tracked: a list receiver's items ALIAS its own backing
+	// slice (AsList copies nothing, so they are already counted inside iter's
+	// own sizeOf), and a range_expr's items are freshly built ints that were
+	// never passed through evalNode's allocation point at all. Either way,
+	// releasing the whole iterable here accounts for its contribution in one
+	// shot; nothing downstream needs to touch it again.
+	ec.m.release(iter)
 	// This reads as running AFTER iterItems, but iterItems itself allocates
 	// nothing new to check retroactively here: a list's items are the value's
 	// own backing slice (AsList copies nothing), and a range_expr already
@@ -181,6 +194,7 @@ func unresolvedComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, depth in
 		// because there is no concrete value yet to check against the target.
 		return Value{}, wrapAt(ec.src, n.Elem.Pos(), cerr)
 	}
+	ec.m.release(v) // rule 2: consumed determining the placeholder's element type only
 	return Unresolved(ListOf(elem)), nil
 }
 
@@ -200,39 +214,70 @@ func runComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, items []Value, 
 	if err := ec.m.chargeElements(len(items)); err != nil {
 		return Value{}, err
 	}
-	out := make([]Value, 0, len(items))
-	types := make([]Type, 0, len(items))
-	unresolved := false
+	out, types, unresolved, err := collectCompElements(n, ec, elemTarget, items, depth)
+	if err != nil {
+		return Value{}, err
+	}
+	if unresolved {
+		// rule 2: every element already accumulated in `out` was allocated by
+		// evalNode inside collectCompElements, but the whole batch is
+		// abandoned in favor of unresolvedComp's own placeholder result --
+		// none of it survives.
+		for _, v := range out {
+			ec.m.release(v)
+		}
+		return unresolvedComp(n, ec, elemTarget, elemType, depth)
+	}
+	return buildCompResult(n, ec, elemTarget, out, types)
+}
+
+// collectCompElements runs the per-item loop: applying the filter and
+// evaluating the element expression for every item that survives it. Split out
+// of runComp to keep that function under the repo's complexity cap.
+//
+// unresolved is true when the filter or an element turned out to have no value
+// partway through -- the caller falls back to unresolvedComp in that case, and
+// out holds whatever was accumulated before the break, for the caller to
+// release.
+func collectCompElements(n *ListComp, ec evalCtx, elemTarget Type, items []Value, depth int) (out []Value, types []Type, unresolved bool, err error) {
+	out = make([]Value, 0, len(items))
+	types = make([]Type, 0, len(items))
 	for _, item := range items {
 		scoped := ec
 		scoped.syms = &scopedSymbols{parent: ec.syms, name: n.Var, val: item}
 		if n.Cond != nil {
-			keep, known, err := evalCompFilter(n, scoped, depth)
-			if err != nil {
-				return Value{}, err
+			keep, known, ferr := evalCompFilter(n, scoped, depth)
+			if ferr != nil {
+				return nil, nil, false, ferr
 			}
 			if !known {
-				unresolved = true
-				break
+				return out, types, true, nil
 			}
 			if !keep {
 				continue
 			}
 		}
-		v, err := evalNode(n.Elem, scoped, elemTarget, depth+1)
-		if err != nil {
-			return Value{}, err
+		v, verr := evalNode(n.Elem, scoped, elemTarget, depth+1)
+		if verr != nil {
+			return nil, nil, false, verr
 		}
 		if v.IsUnresolved() {
-			unresolved = true
-			break
+			// rule 2: this element triggered the switch to the unresolved path
+			// and is abandoned right along with everything already in `out`
+			// -- it never makes it into unresolvedComp's placeholder.
+			ec.m.release(v)
+			return out, types, true, nil
 		}
 		out = append(out, v)
 		types = append(types, v.Type)
 	}
-	if unresolved {
-		return unresolvedComp(n, ec, elemTarget, elemType, depth)
-	}
+	return out, types, false, nil
+}
+
+// buildCompResult unifies the produced elements' types (when the target left
+// that open), coerces each element, and builds the result list. Split out of
+// runComp to keep that function under the repo's complexity cap.
+func buildCompResult(n *ListComp, ec evalCtx, elemTarget Type, out []Value, types []Type) (Value, error) {
 	elem := elemTarget
 	if elem.Code == CodeAny {
 		var ok bool
@@ -249,6 +294,16 @@ func runComp(n *ListComp, ec evalCtx, elemTarget, elemType Type, items []Value, 
 			return Value{}, wrapAt(ec.src, n.Elem.Pos(), err)
 		}
 		converted[i] = c
+	}
+	// rule 3: every produced element is absorbed into the list being built.
+	// Release the EXACT pre-coercion values evalNode allocated (out), not the
+	// coerced converted[] -- see evalListLit's identical reasoning (list.go).
+	// Each element stays live from its own creation until this point, which is
+	// exactly what lets a comprehension accumulate many live elements at once
+	// (see TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot) rather
+	// than being released one at a time as it is produced.
+	for _, v := range out {
+		ec.m.release(v)
 	}
 	return List(elem, converted), nil
 }
@@ -269,13 +324,16 @@ func evalCompFilter(n *ListComp, ec evalCtx, depth int) (keep, known bool, err e
 			return false, false, errorAt(ec.src, n.Cond.Pos(),
 				"a comprehension filter must be a bool, found %s", c.Type)
 		}
+		ec.m.release(c) // rule 2: consumed determining the filter is unresolved
 		return false, false, nil
 	}
 	if c.Type.Code != CodeBool {
 		return false, false, errorAt(ec.src, n.Cond.Pos(),
 			"a comprehension filter must be a bool, found %s", c.Type)
 	}
-	return c.AsBool(), true, nil
+	keep = c.AsBool()
+	ec.m.release(c) // rule 2: consumed extracting the plain bool; the filter value itself is discarded
+	return keep, true, nil
 }
 
 // checkCompFilter type-checks a filter without a concrete element, for the
@@ -292,6 +350,7 @@ func checkCompFilter(n *ListComp, ec evalCtx, depth int) error {
 		return errorAt(ec.src, n.Cond.Pos(),
 			"a comprehension filter must be a bool, found %s", c.Type)
 	}
+	ec.m.release(c) // rule 2: consumed determining the filter's declared type only
 	return nil
 }
 

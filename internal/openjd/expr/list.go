@@ -56,6 +56,12 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 	// whole literal is a placeholder of the inferred type. Its elements were
 	// still type-checked above, which is the point.
 	if unresolved {
+		// rule 2: every element was allocated by evalNode above, but the
+		// placeholder returned here carries no payload of its own -- they are
+		// consumed and discarded, not absorbed into a container.
+		for _, v := range vals {
+			ec.m.release(v)
+		}
 		return Unresolved(ListOf(elem)), nil
 	}
 	out := make([]Value, len(vals))
@@ -65,6 +71,14 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 			return Value{}, wrapAt(ec.src, n.Elems[i].Pos(), err)
 		}
 		out[i] = coerced
+	}
+	// rule 3: every element is absorbed into the list being built -- sizeOf
+	// (meter.go) already counts a list's elements recursively. Release the
+	// EXACT pre-coercion values evalNode allocated (vals), not the coerced
+	// out[]: a coercion that changed a value's size must not silently drift
+	// the live total (Task 1's carried finding).
+	for _, v := range vals {
+		ec.m.release(v)
 	}
 	return List(elem, out), nil
 }
@@ -195,12 +209,21 @@ func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 	// bounds check is impossible and must NOT be attempted: whether the index
 	// is in range is not knowable until the value exists.
 	if recv.IsUnresolved() || idx.IsUnresolved() {
+		ec.m.release(recv) // rule 2: consumed determining the result is unresolved
+		ec.m.release(idx)  // rule 2
 		return Unresolved(elem), nil
 	}
 	out, err := indexValue(recv, idx.AsInt())
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	// rule 2: receiver and index, consumed by the subscript. Aliasing needs no
+	// special case here -- "[1,2,3][0]" releases the whole list (which already
+	// counted the element inside it via sizeOf's recursion) and evalNode then
+	// allocates the returned element fresh on the way out, so it is counted
+	// exactly once afterward even though it started out living inside recv.
+	ec.m.release(recv)
+	ec.m.release(idx)
 	return out, nil
 }
 

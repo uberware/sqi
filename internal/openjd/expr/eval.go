@@ -253,7 +253,18 @@ func evalNode(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if depth >= maxEvalDepth {
 		return Value{}, errorAt(ec.src, n.Pos(), "this expression is nested too deeply to evaluate")
 	}
-	return evalDispatch(n, ec, target, depth+1)
+	v, err := evalDispatch(n, ec, target, depth+1)
+	if err != nil {
+		return Value{}, err
+	}
+	// Section 1.3.9: this is the ONE place a value enters the live set. Every
+	// construct below releases the children it consumed, so the running total
+	// is what is live AT THIS MOMENT rather than what has been allocated in
+	// total -- see the package's release discipline (meter.go).
+	if err := ec.m.alloc(v); err != nil {
+		return Value{}, err
+	}
+	return v, nil
 }
 
 // evalDispatch is evalNode's type switch, split out so that the depth check and
@@ -292,13 +303,32 @@ func evalDispatch(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	case *Call:
 		return evalCall(v, ec, depth)
 	case *Access:
-		recv, err := evalNode(v.X, ec, TAny, depth+1)
-		if err != nil {
-			return Value{}, err
-		}
-		return evalProperty(recv, v.Attr, ec, v.Offset, depth)
+		return evalAccess(v, ec, depth)
 	}
 	return Value{}, errorAt(ec.src, n.Pos(), "internal error: cannot evaluate %T", n)
+}
+
+// evalAccess evaluates a bare property access, "X.Attr" with no call parens --
+// e.g. "path('..b').suffixes". Split out of evalDispatch's own switch to keep
+// that function under the repo's complexity cap.
+//
+// Unlike evalCall's own Access handling (call.go), which only ever sees an
+// Access as a METHOD CALL's receiver, this is the property-sugar path (section
+// 1.3.3): X is produced by any general expression (Access is emitted only when
+// the receiver is not a plain dotted Name, see ast.go), so recv is always
+// allocated by evalNode below and must be released once evalProperty is done
+// consuming it.
+func evalAccess(v *Access, ec evalCtx, depth int) (Value, error) {
+	recv, err := evalNode(v.X, ec, TAny, depth+1)
+	if err != nil {
+		return Value{}, err
+	}
+	out, err := evalProperty(recv, v.Attr, ec, v.Offset, depth)
+	if err != nil {
+		return Value{}, err
+	}
+	ec.m.release(recv) // rule 2: the receiver, consumed by the property access
+	return out, nil
 }
 
 // evalLiteral evaluates a leaf literal node. ok is false for any other node
@@ -341,6 +371,7 @@ func evalUnary(n *Unary, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	ec.m.release(x) // rule 2: the operand, consumed by applyUnary
 	return out, nil
 }
 
@@ -359,6 +390,13 @@ func evalBinary(n *Binary, ec evalCtx, depth int) (Value, error) {
 		// rather than the start of the expression.
 		return Value{}, wrapAt(ec.src, n.Offset, err)
 	}
+	// rule 2: both operands, consumed by applyBinary. Safe to release the
+	// EXACT values evalNode allocated -- applyBinary/callShape pass a freshly
+	// built []Value{l, r} literal down to callShape's coercion loop, so a
+	// widening coercion there mutates that temporary slice, never l or r
+	// themselves (contrast evalCall, where the slice IS the caller's own).
+	ec.m.release(l)
+	ec.m.release(r)
 	return out, nil
 }
 
@@ -386,11 +424,17 @@ func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
 			// blame whichever link actually failed.
 			return Value{}, wrapAt(ec.src, n.OpOffsets[i], err)
 		}
+		// rule 2: left has just been compared and is never touched again --
+		// either it stops here for good, or (as "right") it is released below
+		// in its own turn once ITS comparison is done. Released unconditionally
+		// so every branch past this point inherits it.
+		ec.m.release(left)
 		// A link whose operands are not all known yields an unknown bool, so the
 		// chain's outcome is unknown too. Stop here: the remaining operands
 		// cannot change the answer, and evaluating them would only risk a
 		// spurious error from a branch that may never run.
 		if out.IsUnresolved() {
+			ec.m.release(right) // rule 2: the chain stops here; right is discarded too
 			return Unresolved(TBool), nil
 		}
 		if out.Type.Code != CodeBool {
@@ -398,10 +442,12 @@ func evalCompare(n *Compare, ec evalCtx, depth int) (Value, error) {
 				fmt.Errorf("comparison operator %s did not produce a bool: %s", op, out.Type))
 		}
 		if !out.AsBool() {
+			ec.m.release(right) // rule 2: the chain stops here; right is discarded too
 			return Bool(false), nil
 		}
 		left = right
 	}
+	ec.m.release(left) // rule 2: the final operand, consumed by the chain completing
 	return Bool(true), nil
 }
 
@@ -424,17 +470,31 @@ func evalLogical(n *Logical, ec evalCtx, target Type, depth int) (Value, error) 
 			// The left operand is still reachable at runtime, so the expression
 			// as a whole can still produce a value: report its type rather than
 			// an error from a branch that may never be taken.
+			ec.m.release(left)                // rule 2: consumed to build the placeholder result below, not returned itself
 			return Unresolved(left.Type), nil //nolint:nilerr // deliberate suppression: the right operand's error can never surface at runtime when the left is still reachable
 		}
+		ec.m.release(left)  // rule 2: consumed to build the union placeholder result
+		ec.m.release(right) // rule 2: same
 		return Unresolved(UnionOf(left.Type, right.Type)), nil
 	}
 	switch {
 	case n.Op == OpAnd && !truthy(left):
+		// pass-through: left is returned UNCHANGED. evalNode already allocated
+		// it when evaluating n.L; release it here so evalNode's own allocation
+		// on the way out of this Logical node does not double-count it.
+		ec.m.release(left)
 		return left, nil
 	case n.Op == OpOr && truthy(left):
+		ec.m.release(left) // pass-through, same reasoning
 		return left, nil
 	}
-	return evalNode(n.R, ec, target, depth)
+	right, err := evalNode(n.R, ec, target, depth)
+	if err != nil {
+		return Value{}, err
+	}
+	ec.m.release(left)  // rule 2: the discarded operand -- short-circuiting did not apply, so left never surfaces
+	ec.m.release(right) // pass-through: right IS the returned value; see the case above
+	return right, nil
 }
 
 // truthy implements section 2.1.6's falsiness rule: ONLY null and false are
@@ -470,16 +530,35 @@ func evalCond(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 			return Value{}, errorAt(ec.src, n.If.Pos(),
 				"the condition of a conditional expression must be a bool, found %s", cond.Type)
 		}
-		return condResult(n, ec, target, depth)
+		out, err := condResult(n, ec, target, depth)
+		if err != nil {
+			return Value{}, err
+		}
+		ec.m.release(cond) // rule 2: consumed determining that the outcome is unresolved; condResult's own result is a fresh placeholder, never cond itself
+		return out, nil
 	}
 	if cond.Type.Code != CodeBool {
 		return Value{}, errorAt(ec.src, n.If.Pos(),
 			"the condition of a conditional expression must be a bool, found %s", cond.Type)
 	}
+	ec.m.release(cond) // rule 2: the condition, consumed deciding which branch runs
 	if cond.AsBool() {
-		return evalNode(n.Then, ec, target, depth)
+		branch, err := evalNode(n.Then, ec, target, depth)
+		if err != nil {
+			return Value{}, err
+		}
+		// pass-through: branch IS the returned value. evalNode already
+		// allocated it evaluating n.Then; release it here so evalNode's own
+		// allocation on the way out of this Cond node does not double-count it.
+		ec.m.release(branch)
+		return branch, nil
 	}
-	return evalNode(n.Else, ec, target, depth)
+	branch, err := evalNode(n.Else, ec, target, depth)
+	if err != nil {
+		return Value{}, err
+	}
+	ec.m.release(branch) // pass-through, same reasoning
+	return branch, nil
 }
 
 // condResult evaluates both branches of a conditional whose condition is not yet
@@ -492,6 +571,15 @@ func evalCond(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 func condResult(n *Cond, ec evalCtx, target Type, depth int) (Value, error) {
 	thenVal, thenErr := evalNode(n.Then, ec, target, depth)
 	elseVal, elseErr := evalNode(n.Else, ec, target, depth)
+	// rule 2: whichever branch produced a value was allocated by evalNode
+	// above, and every path below discards it in favor of a fresh placeholder
+	// (Unresolved(...)) rather than returning it -- never pass-through.
+	if thenErr == nil {
+		ec.m.release(thenVal)
+	}
+	if elseErr == nil {
+		ec.m.release(elseVal)
+	}
 	switch {
 	case thenErr == nil && elseErr == nil:
 		return Unresolved(UnionOf(thenVal.Type, elseVal.Type)), nil

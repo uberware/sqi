@@ -30,6 +30,14 @@ func evalCall(n *Call, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
+	// Only a receiver reached through an *Access* callee was itself allocated
+	// by evalNode: n.target's Access branch calls evalNode(callee.X, ...)
+	// directly. A *Name* callee instead resolves and walks properties through
+	// resolveName/evalProperties (resolve.go), which never touches the meter
+	// at all -- see Access's own doc comment (ast.go) on why a dotted name
+	// produces no Access node. Releasing that kind of receiver would debit the
+	// live total for a value the meter never counted in the first place.
+	_, recvCounted := n.Callee.(*Access)
 	args := make([]Value, 0, len(n.Args)+1)
 	if methodStyle {
 		args = append(args, recv)
@@ -41,9 +49,23 @@ func evalCall(n *Call, ec evalCtx, depth int) (Value, error) {
 		}
 		args = append(args, v)
 	}
+	// callShape (ops.go) coerces arguments IN PLACE on this same backing array
+	// when the matched signature needs widening ("args[i] = converted"), and
+	// this args slice -- unlike applyBinary/applyUnary's own freshly built
+	// []Value{...} literals -- IS the caller's own backing array all the way
+	// down through callFunction. Capture the exact values evalNode allocated
+	// BEFORE that mutation can happen, so the release below always targets
+	// what was actually added to the live total (Task 1's carried finding).
+	orig := append([]Value(nil), args...)
 	out, err := callFunction(ec, name, args, methodStyle)
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Offset, err)
+	}
+	for i, v := range orig {
+		if i == 0 && methodStyle && !recvCounted {
+			continue // the receiver was never allocated by evalNode; nothing to release
+		}
+		ec.m.release(v) // rule 2: the receiver and every argument, consumed by the call
 	}
 	return out, nil
 }

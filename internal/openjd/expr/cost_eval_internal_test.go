@@ -274,18 +274,36 @@ func TestOperationCount_ListEquality(t *testing.T) {
 func TestOperationLimit_CatchesANestedComprehension(t *testing.T) {
 	// The case section 1.3.10 exists for, and the one no per-operation
 	// allocation bound can catch: bounded live memory, unbounded CPU. This is
-	// the shape of expr1.3.10--operation-limit-exceeded.
+	// the shape of expr1.3.10--operation-limit-exceeded, and (since
+	// sub-project E1's memory accounting landed) it must be the REAL fixture's
+	// own shape, not a simplified stand-in.
+	//
+	// CORRECTION (sub-project E1, Task 11): an earlier revision of this test
+	// built its own "[[[x for x in range(300)] for y in range(300)] for z in
+	// range(300)]", reasoning it was equivalent in shape. It was not: that
+	// expression's outer levels accumulate whole nested LISTS as their
+	// produced elements (a 300-int list at the middle level, a list of 300 of
+	// those at the outer level), so once section 1.3.9 memory accounting was
+	// actually wired into evalNode, its live memory hit the DEFAULT 100MB
+	// bound after only ~18 outer iterations -- long before 10 million
+	// operations, failing with errMemoryLimit instead of errOperationLimit and
+	// falsifying this test's own "bounded live memory" premise. The real
+	// conformance fixture avoids this by wrapping every level's accumulation
+	// in len(), which collapses each produced element back down to a single
+	// int before it becomes part of the next level's list -- keeping live
+	// memory in the tens of kilobytes throughout while operations still climb
+	// past the limit through the cubic iteration pattern.
 	//
 	// This is a FIXTURE-SHAPE regression test, not an isolation test for the
-	// comprehension charge specifically: it already passed before
-	// runComp's chargeElements landed, because the other operations charged
-	// inside the triple-nested body (range() and the comprehensions'
-	// element counts at every level) were enough to trip the default
-	// 10-million-operation limit on their own. TestComprehension_
-	// SharesTheCallersMeter below is the test that isolates the
-	// comprehension charge's presence with an exact count on a body too
-	// small for anything else to trip the limit first.
-	_, err := Eval("[[[x for x in range(300)] for y in range(300)] for z in range(300)]",
+	// comprehension charge specifically: it already passed (under the old
+	// fixture) before runComp's chargeElements landed, because the other
+	// operations charged inside the triple-nested body (range() and the
+	// comprehensions' element counts at every level) were enough to trip the
+	// default 10-million-operation limit on their own. TestComprehension_
+	// SharesTheCallersMeter below is the test that isolates the comprehension
+	// charge's presence with an exact count on a body too small for anything
+	// else to trip the limit first.
+	_, err := Eval("[len([i for i in [len(range(300)) for j in range(300)]]) for k in range(300)]",
 		nil, TAny)
 	if !errors.Is(err, errOperationLimit) {
 		t.Fatalf("a triple-nested comprehension over range(300) = %v; want errOperationLimit", err)

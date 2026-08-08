@@ -94,6 +94,17 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 		reason, isBaselined := baseline[c.id]
 		seen[c.id] = true
 
+		if got.ok {
+			// Section 1.3.9's zero-balance invariant, asserted across the whole
+			// corpus: after a top-level evaluation the only live value is the
+			// result. A larger number is a missed release, a smaller one a
+			// double release.
+			if live, want, berr := expr.EvalForBalanceCheck(c.src, mustTarget(t, c.target)); berr == nil && live != want {
+				t.Errorf("corpus.txt:%d: %s\n  live memory after eval = %d; want %d (the result's own size)",
+					c.line, c.id, live, want)
+			}
+		}
+
 		if agree(got, ref) {
 			if isBaselined {
 				// A baselined divergence that stopped diverging. Left as a
@@ -193,6 +204,21 @@ func evalGo(c exprCase) caseResult {
 		return caseResult{err: err.Error()}
 	}
 	return caseResult{ok: true, value: v.String(), typ: v.Type.String(), ops: ops}
+}
+
+// mustTarget parses c's target type for EvalForBalanceCheck, which needs a
+// expr.Type rather than the raw string evalGo works from. Called only on cases
+// where evalGo already succeeded, which means its own identical ParseType call
+// already succeeded too -- so a failure here would be a bug in this test file
+// itself, not a corpus-driven condition, hence Fatalf rather than a silently
+// skipped balance check.
+func mustTarget(t *testing.T, target string) expr.Type {
+	t.Helper()
+	ty, err := expr.ParseType(target)
+	if err != nil {
+		t.Fatalf("parsing target type %q: %v", target, err)
+	}
+	return ty
 }
 
 // runOracle feeds the whole corpus through one interpreter and returns the
