@@ -37,9 +37,13 @@ type Value struct {
 	// RFC 0006 requires round(3.5, 2) to produce a value that renders "3.50",
 	// which no float64 can carry. Section 1.3.4 describes the same mechanism
 	// for a different producer — a float parameter submitted as "3.500" keeps
-	// that form until something computes on it — but that needs the original
-	// submitted string, which only template integration has, so it is
-	// sub-project E's and round() is the only producer today.
+	// that form until something computes on it. That needs the original
+	// submitted string, which sqi has at phase 2 (job parameters are stored as
+	// map[string]string): FloatText, below, binds it in
+	// internal/openjd/exprcheck.go's concreteJobParamValue. round() and a
+	// phase-2 float job parameter are the two producers today. Substituting
+	// the carried text back into a rendered template is a separate,
+	// still-unimplemented step — sub-project E4's, not this field's.
 	//
 	// Three invariants make it safe. Float() never sets it. Equal ignores it,
 	// so no comparison anywhere changes. And nothing propagates it: an
@@ -74,6 +78,18 @@ func Float(f float64) Value { return Value{Type: TFloat, f: f} }
 // floatRendered returns a float value that renders as the given text instead of
 // through formatFloat. See the fs field for why this exists and what may set it.
 func floatRendered(f float64, s string) Value { return Value{Type: TFloat, f: f, fs: s} }
+
+// FloatText returns a float value that renders as text instead of through the
+// default float formatting.
+//
+// It exists for section 1.3.4: a FLOAT job parameter submitted as "3.500"
+// must keep that exact text rather than the canonical "3.5". sqi stores
+// submitted parameters as map[string]string, so the original text is
+// available verbatim wherever a concrete value is bound from it —
+// internal/openjd/exprcheck.go's concreteJobParamValue is that call site
+// today. See the fs field's comment for the invariants this carry keeps:
+// Equal ignores it, and no operation propagates it.
+func FloatText(f float64, text string) Value { return floatRendered(f, text) }
 
 // String returns a string value.
 func String(s string) Value { return Value{Type: TString, s: s} }

@@ -156,6 +156,16 @@ func jobParamTypes(declared string) (paramType, rawType expr.Type) {
 // about what is bound. Validating submitted parameter values against their
 // declared type is bind.go's job, upstream of this call.
 //
+// The CodeFloat case binds raw as the value's rendered form (expr.FloatText),
+// per section 1.3.4: submitting "3.500" to a FLOAT parameter must preserve
+// that exact text, not the canonical "3.5" strconv.ParseFloat's companion
+// FormatFloat would produce. sqi stores submitted parameters as
+// map[string]string, so raw already IS the original submitted text -- no
+// separate capture is needed. Only the binding is done here; substituting the
+// carried text back into rendered template output is sub-project E4's, since
+// section 1.3.4 is observable only through substitution and this package's
+// phase 2 does not move it.
+//
 // The CodePath case hardcodes PathPOSIX rather than taking a PathFormat from
 // the caller. That is harmless today -- nothing calls symbolsFor yet -- but a
 // future caller that also sets expr.WithPathFormat(expr.PathWindows) for the
@@ -177,7 +187,7 @@ func concreteJobParamValue(t expr.Type, raw string) expr.Value {
 		if err != nil {
 			return expr.Unresolved(t)
 		}
-		return expr.Float(f)
+		return expr.FloatText(f, raw)
 	case expr.CodeString:
 		return expr.String(raw)
 	case expr.CodePath:

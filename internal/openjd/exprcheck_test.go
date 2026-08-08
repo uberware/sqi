@@ -5,6 +5,8 @@ package openjd
 import (
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
 func TestSymbolsFor_ScopeGatesTheFixedSymbols(t *testing.T) {
@@ -88,6 +90,55 @@ func TestSymbolsFor_ConcreteParamsAtPhaseTwo(t *testing.T) {
 	}
 	if got := v.String(); got != "42" {
 		t.Errorf("Param.N = %s, want 42", got)
+	}
+}
+
+// TestSymbolsFor_FloatParamPreservesSubmittedText pins section 1.3.4: a FLOAT
+// job parameter submitted as "3.500" must keep that exact text, not the
+// canonical "3.5" strconv.FormatFloat would produce. concreteJobParamValue
+// binds it via expr.FloatText, which rides on Value's fs field (value.go) --
+// String() reports fs when it is set, which is how this test observes the
+// carry without depending on anything E4's template substitution does. This
+// test asserts only the BINDING: that the Value produced at phase 2 carries
+// the text. It intentionally does not touch template rendering/substitution,
+// which is out of scope for this package and belongs to sub-project E4.
+func TestSymbolsFor_FloatParamPreservesSubmittedText(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:                 "T",
+		ParameterDefinitions: []JobParameter{{Name: "Scale", Type: "FLOAT"}},
+	}
+	syms := symbolsFor(tmpl, nil, nil, ScopeJob, map[string]string{"Scale": "3.500"})
+
+	param, ok := syms["Param.Scale"]
+	if !ok {
+		t.Fatal("Param.Scale missing")
+	}
+	if param.IsUnresolved() {
+		t.Fatal("Param.Scale is still unresolved with a concrete value supplied")
+	}
+	if got := param.String(); got != "3.500" {
+		t.Errorf("Param.Scale.String() = %q, want %q (submitted text)", got, "3.500")
+	}
+
+	raw, ok := syms["RawParam.Scale"]
+	if !ok {
+		t.Fatal("RawParam.Scale missing")
+	}
+	if got := raw.String(); got != "3.500" {
+		t.Errorf("RawParam.Scale.String() = %q, want %q (submitted text)", got, "3.500")
+	}
+
+	// The carry does not change VALUE equality or arithmetic -- only String().
+	// A canonically-formatted float with the same number must still compare
+	// equal and compute identically, per the fs field's own invariants
+	// (value.go): a carry that leaked into Equal or an operation would be the
+	// wrong kind of "preserve the text".
+	v, err := expr.Eval("Param.Scale + 0", syms, expr.TFloat)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got := v.String(); got != "3.5" {
+		t.Errorf("Param.Scale + 0 = %s, want 3.5 (the carry must not propagate through arithmetic)", got)
 	}
 }
 

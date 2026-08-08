@@ -1084,21 +1084,25 @@
 //     and a tree that already parsed cannot fail to be walked — so the hazard
 //     was removed rather than converted into an error.
 //
-//   - A float value does not preserve the original source text it was parsed
-//     from — "1.100" evaluates to a value that renders as "1.1", not
-//     "1.100". Section 1.3.4's requirement that a float pass through a
-//     template unchanged, digit for digit, is not implemented here;
-//     Value.String is a rendering for diagnostics and tests, not that
-//     pass-through. Sub-project C1 gives Value a NARROWER, related mechanism
-//     that must not be confused with it: an optional rendered form (value.go's
-//     fs field), set only by round(x, ndigits) for a positive ndigits, because
-//     RFC 0006 requires round(3.5, 2) to render "3.50" — a form no float64
-//     carries on its own (TestRound_CarryIsRoundOnlyAndDoesNotPropagate). It is
-//     NOT section 1.3.4's pass-through: that needs the original submitted
-//     string, which only template integration has, so a parsed float parameter
-//     still renders through ordinary formatting, digit-for-digit fidelity and
-//     all, remains unimplemented, and extending the carry to cover it is
-//     sub-project E's, unchanged from sub-project A. The same underlying
+//   - A float LITERAL in expression source does not preserve the text it was
+//     parsed from — "1.100" evaluates to a value that renders as "1.1", not
+//     "1.100". Value.String is a rendering for diagnostics and tests, not
+//     section 1.3.4's pass-through, and no producer sets the literal path's
+//     carry; this half of the gap is unchanged from sub-project A. Sub-project
+//     C1 gives Value the mechanism this needs but does not use it here: an
+//     optional rendered form (value.go's fs field, exported construction via
+//     FloatText), first set only by round(x, ndigits) for a positive ndigits
+//     because RFC 0006 requires round(3.5, 2) to render "3.50" — a form no
+//     float64 carries on its own (TestRound_CarryIsRoundOnlyAndDoesNotPropagate).
+//     Sub-project E2 added a second producer for the OTHER half of section
+//     1.3.4 — a FLOAT JOB PARAMETER's submitted text, which sqi has verbatim
+//     because parameters are stored as map[string]string: phase 2's
+//     concreteJobParamValue (internal/openjd/exprcheck.go) now binds it with
+//     FloatText, so Param.<name> for a submitted "3.500" carries that text and
+//     Value.String reports it. Still unimplemented on BOTH halves is
+//     SUBSTITUTION — reading the carry back out into rendered template
+//     output — which is sub-project E4's regardless of which half produced
+//     the carry. The same underlying
 //     Value.String gap USED TO show up for a list too, before this wave:
 //     Value.String rendered a list's string elements unquoted ("[a, b]"),
 //     while string()'s JSON row (funcsconv.go) quoted them ("[\"a\", \"b\"]")
