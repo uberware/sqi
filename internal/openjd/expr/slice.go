@@ -252,8 +252,9 @@ func sliceValue(ec evalCtx, recv Value, start, stop, step *int64) (Value, error)
 // treatment rather than list's selection-sized one: rangeInts below fully
 // EXPANDS the range_expr regardless of what the slice bounds go on to
 // select, so that expansion's cost is what must be charged, computed
-// arithmetically via rangeExprCount (no expansion of its own) so that an
-// already-exhausted budget is caught before rangeInts does the real work.
+// via rangeExprCount -- arithmetic for a single sub-range, a bounded expansion
+// for two or more (rangeexpr.go) -- so that an already-exhausted budget is
+// caught before rangeInts does the real work.
 func sliceRangeExpr(ec evalCtx, recv Value, start, stop, step *int64) (Value, error) {
 	n, err := rangeExprCount(recv)
 	if err != nil {

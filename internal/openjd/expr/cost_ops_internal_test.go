@@ -87,20 +87,40 @@ import (
 //	0  [4,5]                             (list literal: no charge, like any literal)
 //
 // Both match ArgElements{0,1} exactly (element counts computed by
-// elementCount, which reads a range_expr's count arithmetically via
-// rangeExprCount without expanding it).
+// elementCount, which reads a range_expr's count via rangeExprCount --
+// arithmetic for a single sub-range, a bounded expansion for two or more).
 //
 // Ordering and "not" report MORE than rule 1 alone from the reference
-// (1 < 2 = 2, not True = 2), but section 1.3.10 rules 2 and 3 each end their
-// operator list with an explicit, closed enumeration ("This applies to:
-// ...") that does not name ordering or "not" anywhere -- not even under a
-// dunder name (RFC 0005's own transform table gives ordering __lt__ etc. and
-// "not" __not__, and neither appears in rule 2 or rule 3's text). Extending
-// either rule to an operator the text does not name is not supported by the
-// text, so these rows charge nothing beyond rule 1 here, and the reference's
-// extra charge for them is left unexplained -- consistent with doc.go's
-// ruling that the reference is Beta software with known counting defects the
-// spec outranks.
+// (1 < 2 = 2, not True = 2), and the SCALAR rows still charge nothing beyond
+// rule 1: a scalar comparison iterates no list and scans no string, so
+// neither rule 2 nor rule 3 has a quantity to charge. The reference's extra
+// unit for them scales with nothing, measured directly: "1 < 2", "[1] < [2]",
+// "[1,2,3] < [1,2,4]" and a ten-element pair ALL report exactly 2. It is left
+// unexplained -- consistent with doc.go's ruling that the reference is Beta
+// software with known counting defects the spec outranks. (That flat 2 is
+// also why the one-element ordering cases agree with sqi and the longer ones
+// do not: sqi charges 1 + the left operand's element count, which happens to
+// equal 2 at length one. See test/oracle/baseline-ops.txt.)
+//
+// CORRECTION (final whole-branch review, sub-project E1). An earlier revision
+// of this paragraph justified those rows differently, and both halves of that
+// justification have since been withdrawn. It said: "section 1.3.10 rules 2
+// and 3 each end their operator list with an explicit, CLOSED enumeration
+// ('This applies to: ...') that does not name ordering or 'not' anywhere ...
+// Extending either rule to an operator the text does not name is not
+// supported by the text."
+//
+// First, the enumeration is OPEN, not closed. The two specification documents
+// disagree about it -- the wiki says "such as", RFC 0005 says "This applies
+// to:" -- and doc.go settles it as open, the wiki being the specification and
+// RFC 0005 the proposal behind it. "Not named" is therefore not a reason for
+// anything on its own.
+//
+// Second, the conclusion did not even hold under the closed reading: the
+// list/list ORDERING row now charges Cost{ArgElements: {0}} (ops.go), because
+// compareLists walks every element exactly as listsEqual does, and equality
+// was already charged for that same walk. Only the scalar rows stay
+// uncharged, and the reason above is why.
 //
 // CORRECTION (review finding on this task): "in"/"not in" were originally
 // grouped with ordering/"not" above on the same "not named by rule 2/3"
@@ -112,10 +132,23 @@ import (
 // registry entry (there is no function named "contains" anywhere in the
 // spec or sqi's registry -- confirmed by `rg '"contains"'
 // internal/openjd/expr/`). So the string and list rows of OpIn/OpNotIn DO
-// charge; see TestOperationCount_InOperator below. Only the range_expr row
-// stays uncharged, and for a different, evidence-based reason: the
-// reference's own count does not scale with the range's size (see that
-// test's probe comment), so nothing supports a per-range charge there.
+// charge; see TestOperationCount_InOperator below.
+//
+// CORRECTION (final whole-branch review, sub-project E1). That fix stopped one
+// row short, and this paragraph used to record the omission as settled: "Only
+// the range_expr row stays uncharged, and for a different, evidence-based
+// reason: the reference's own count does not scale with the range's size, so
+// nothing supports a per-range charge there."
+//
+// The observation about the reference is accurate and still holds. The
+// conclusion was wrong for the same reason the "not named" argument above was:
+// the reference is subordinate to the specification, and it was the SOLE
+// stated ground. The specification's own test is what the row failed --
+// containsRangeInt calls rangeInts, which fully EXPANDS the range, so "a
+// function ... iterates through every element of a list" is satisfied
+// outright. Measured before the fix, "1 in Param.R" with R =
+// range_expr("1-1000000") charged 1 operation while expanding a million
+// integers. All three OpIn/OpNotIn rows now charge; see ops.go.
 func TestOperationCount_Operators(t *testing.T) {
 	tests := []struct {
 		src  string

@@ -896,8 +896,8 @@
 //     the decode. A 500,000-byte receiver went from 1 to 1,954.
 //     subscript of a range_expr receiver (same) — indexValue calls
 //     rangeInts, which fully expands. Now charges rule 2 on the
-//     receiver's element count, computed arithmetically by
-//     rangeExprCount so nothing is expanded to price the expansion. A
+//     receiver's element count, from rangeExprCount (arithmetic for a
+//     single sub-range, a bounded expansion for two or more). A
 //     1,000,000-element receiver went from 1 to 1,000,001.
 //     "in"/"not in" with a range_expr container (ops.go) —
 //     containsRangeInt calls rangeInts. Now Cost{ArgElements: {1}},

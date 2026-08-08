@@ -116,9 +116,12 @@ var binaryShapes = map[Op][]Shape{
 		//
 		// Cost.ArgElements charges rule 2's "list concatenation" on both
 		// operands even though this row's declared params are range_expr, not
-		// list[int]: elementCount (ops.go) computes a range_expr's count
-		// ARITHMETICALLY via rangeExprCount without expanding it, so the
-		// charge is correct without waiting for concatRanges to run. Verified
+		// list[int]: elementCount (ops.go) computes a range_expr's count via
+		// rangeExprCount, so the charge is correct without waiting for
+		// concatRanges to run. That count is arithmetic for a single
+		// sub-range and falls back to a bounded expansion for two or more --
+		// see rangeExprCount's own doc comment (rangeexpr.go), which is the
+		// contract rather than this restatement of it. Verified
 		// against the reference by subtracting each range_expr() call's own
 		// cost from the combined expression — see the probe comment on
 		// TestOperationCount_Operators.
@@ -293,11 +296,15 @@ var binaryShapes = map[Op][]Shape{
 	// section 2.1.2/2.1.3) IS this operator, named by its dunder rather than
 	// its surface syntax the way every other operator in rule 2's list is
 	// (list concatenation "+", not "__add__"). So "in"/"not in" against a
-	// STRING or a LIST *is* named by rule 2/3 and must charge; only the
-	// range_expr row is genuinely unnamed (the reference agrees: its count
-	// does not scale with the range's size — probed 1 in range_expr("1-3")
-	// and 1 in range_expr("1-100") both at 3, see
-	// TestOperationCount_InOperator's probe comment).
+	// STRING or a LIST *is* named by rule 2/3 and must charge.
+	//
+	// ALL THREE rows charge, including range_expr. An earlier revision of this
+	// paragraph ended "only the range_expr row is genuinely unnamed (the
+	// reference agrees: its count does not scale with the range's size)",
+	// which read as a justification for leaving it alone. It is not one: being
+	// unnamed decides nothing once rule 2's enumeration is read as open
+	// (doc.go), and containsRangeInt expands the range in full regardless of
+	// what the reference charges. See the row-level CORRECTION below.
 	//
 	// Cost.ArgBytes{1} on the string/string rows and Cost.ArgElements{1} on
 	// the list rows, charging the CONTAINER (index 1, per the item-is-
@@ -650,10 +657,13 @@ func chargeResult(ec evalCtx, c Cost, out Value) error {
 
 // elementCount is a value's rule-2 element count.
 //
-// A range_expr's count is computed ARITHMETICALLY from its parsed ranges rather
-// than by expanding it: charging the cost of counting must not itself cost an
-// expansion, and rangeExprCount already answers the question without
-// allocating. A non-collection value counts as zero.
+// A range_expr's count comes from rangeExprCount rather than from expanding the
+// value here: charging the cost of counting must not itself repeat the work
+// being charged for. That is exact and allocation-free for a single sub-range,
+// and for two or more it falls back to an expansion bounded by the same cap
+// rangeInts checks -- see rangeExprCount's doc comment (rangeexpr.go) for why
+// the fallback exists and what it costs. A non-collection value counts as
+// zero.
 func elementCount(v Value) (int, error) {
 	switch v.Type.Code {
 	case CodeList:

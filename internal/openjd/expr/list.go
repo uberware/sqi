@@ -228,9 +228,9 @@ func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 	//     element and iterate nothing. This is the one case the withdrawn
 	//     argument was right about.
 	//   - string: rule 3 on the RECEIVER's bytes, ceil(len/256).
-	//   - range_expr: rule 2 on the RECEIVER's element count, computed
-	//     arithmetically by rangeExprCount so pricing the expansion does not
-	//     itself expand anything.
+	//   - range_expr: rule 2 on the RECEIVER's element count, from
+	//     rangeExprCount -- arithmetic for a single sub-range, and for two or
+	//     more a bounded expansion rather than a free one (rangeexpr.go).
 	//
 	// See cost_eval_internal_test.go's PROBE comment.
 	if err := ec.m.charge(1); err != nil {
