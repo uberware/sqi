@@ -198,10 +198,41 @@ func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 	// applyBinary/applyUnary, which charge nothing for an "unsupported
 	// operand" rejection but charge rule 1 unconditionally past that point,
 	// including when an operand is unresolved and nothing actually runs.
-	// Rule 2 does NOT apply: __getitem__ is not one of rule 2's named
-	// iterating functions (shape.go's specNamedIteratingFunctions), and a
-	// subscript touches exactly one element of the receiver, never "every
-	// element of a list". See cost_eval_internal_test.go's PROBE comment.
+	//
+	// CORRECTION (final whole-branch review, sub-project E1): an earlier
+	// revision stopped at that flat 1, arguing "Rule 2 does NOT apply:
+	// __getitem__ is not one of rule 2's named iterating functions
+	// (shape.go's specNamedIteratingFunctions), and a subscript touches
+	// exactly one element of the receiver, never 'every element of a list'."
+	// BOTH halves are wrong, and the first was already on record as rejected
+	// when this was written -- slice.go says so in as many words, because
+	// string(list) and list(range_expr) are unnamed and charged. The second
+	// half is true only for a LIST receiver. For the other two it is refuted
+	// by indexValue's own body below: a string receiver runs
+	// []rune(recv.AsStr()), decoding every byte of the WHOLE string to find
+	// rune boundaries, and a range_expr receiver runs rangeInts, which fully
+	// EXPANDS the range -- neither has a cheaper path in this package's
+	// representations, and neither depends on the index. Measured before the
+	// fix: Param.S[0] on a 500,000-byte string charged 1, and Param.R[0] on
+	// range_expr("1-1000000") charged 1 while expanding a million integers,
+	// where the SLICE form of each identical expression already charged
+	// 1,954 and 1,000,001.
+	//
+	// So the charge is receiver-kind-dependent, exactly as slice.go's
+	// sliceValue already established for the same three receivers, and each
+	// branch charges BEFORE indexValue does the work it prices, so an
+	// exhausted budget stops that work rather than billing for it:
+	//
+	//   - list: nothing beyond rule 1. AsList returns the backing slice with
+	//     no copy (value.go), so a list subscript really does touch one
+	//     element and iterate nothing. This is the one case the withdrawn
+	//     argument was right about.
+	//   - string: rule 3 on the RECEIVER's bytes, ceil(len/256).
+	//   - range_expr: rule 2 on the RECEIVER's element count, computed
+	//     arithmetically by rangeExprCount so pricing the expansion does not
+	//     itself expand anything.
+	//
+	// See cost_eval_internal_test.go's PROBE comment.
 	if err := ec.m.charge(1); err != nil {
 		return Value{}, err
 	}
@@ -212,6 +243,9 @@ func evalIndex(n *Index, ec evalCtx, depth int) (Value, error) {
 		ec.m.release(recv) // rule 2: consumed determining the result is unresolved
 		ec.m.release(idx)  // rule 2
 		return Unresolved(elem), nil
+	}
+	if err := chargeIndexReceiver(ec, recv); err != nil {
+		return Value{}, err
 	}
 	out, err := indexValue(recv, idx.AsInt())
 	if err != nil {
@@ -322,6 +356,31 @@ func unifyResultPair(a, b Type) Type {
 		}
 	}
 	return UnionOf(a, b)
+}
+
+// chargeIndexReceiver charges the section 1.3.10 cost of the work indexValue is
+// about to do, which is NOT uniform across the three receiver kinds -- see
+// evalIndex's own comment for the ruling and the measurements behind it, and
+// slice.go's sliceValue for the identical receiver-kind split on the slice
+// side. It runs BEFORE indexValue, so an exhausted budget stops the decode or
+// the expansion rather than billing for it afterwards.
+//
+// A list receiver charges nothing here: rule 1, charged by evalIndex, is its
+// whole cost.
+func chargeIndexReceiver(ec evalCtx, recv Value) error {
+	switch recv.Type.Code {
+	case CodeString:
+		// rule 3: []rune below touches every byte of the receiver.
+		return ec.m.chargeBytes(recv.AsStr())
+	case CodeRangeExpr:
+		// rule 2: rangeInts below expands the receiver in full.
+		n, err := rangeExprCount(recv)
+		if err != nil {
+			return err
+		}
+		return ec.m.chargeElements(n)
+	}
+	return nil
 }
 
 // indexValue performs the subscript on a receiver that has one.

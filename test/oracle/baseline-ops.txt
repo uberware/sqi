@@ -29,17 +29,12 @@
 # RFC 0005's AST-transformation table (section "AST Transformation to Uniform
 # Function Calls") converts every ordering comparison (<, <=, >, >=), both
 # equality operators (==, !=) and "not" into a __lt__/__le__/.../__not__ call.
-# Section 1.3.10 rule 1 ("every function call counts as 1 operation") is
-# therefore the WHOLE charge for each of these -- no rule 2 or rule 3 charge
-# applies, since none processes a list (rule 2 does not name comparison
-# operators, and the list/list row of an ordering comparison is not the
-# "list/range equality comparisons" rule 2 names by name -- that is a
-# distinct, separately-costed operation, see the LIST/RANGE EQUALITY section
-# below) and none processes a string byte-for-byte (rule 3's own text).
-# sqi's Cost tables (ops.go's orderingShapes, applyBinary and unaryShapes)
-# already document this: "the reference measures 2 for every ordering
-# comparison tried here, scalar or list ... an unexplained reference quirk",
-# and the identical measurement for "not True" and for scalar equality.
+# Section 1.3.10 rule 1 ("every function call counts as 1 operation") is the
+# whole charge for each of these whenever its operands are SCALARS: nothing
+# iterates a list and nothing processes a string byte-for-byte, so rules 2
+# and 3 have nothing to charge. The reference nevertheless measures 2 for
+# every ordering comparison, for "not True" and for scalar equality -- a flat
+# +1 with no textual home, and the divergence every entry below records.
 #
 # A CHAINED comparison ("1 < 2 < 3") is section 1.3.6's single Compare node,
 # evaluated as one short-circuiting unit; the reference's extra +1 is paid
@@ -47,8 +42,29 @@
 # measuring only 1 more than sqi's 2 (which already charges rule 1 once per
 # link), not 2 more.
 #
-# Every entry below is this same single-unit over-count on an otherwise
-# correct rule-1-only charge.
+# CORRECTION (final whole-branch review, sub-project E1). This header
+# previously extended the rule-1-only claim to the LIST/LIST ordering row as
+# well, arguing "the list/list row of an ordering comparison is not the
+# 'list/range equality comparisons' rule 2 names by name -- that is a
+# distinct, separately-costed operation". That is overturned. doc.go settles
+# the disagreement between the two specification documents over whether rule
+# 2's enumeration is open or closed (the wiki says "such as", RFC 0005 says
+# "This applies to:") in favor of the OPEN reading, under which being
+# unnamed by the enumeration decides nothing. A list ordering comparison runs
+# the same elementwise walk (compareLists) that a list equality comparison
+# runs (valuesEqual), and only the latter was charged -- a discrepancy
+# measured at 1,666x on the same expression shape. ops.go's list/list
+# ordering row now charges Cost{ArgElements: {0}}, matching applyBinary's
+# equality charge exactly.
+#
+# The consequence for THIS file: eleven list-ordering entries stopped
+# diverging and were removed, because the reference's flat 2 happens to equal
+# sqi's own 1 + 1 on the one-element and empty-list operands the corpus uses.
+# The list-ordering entries that remain are the ones with 2+ elements, where
+# sqi's 1 + N genuinely exceeds the reference's flat 2 -- the same "sqi
+# charges where the reference does not" family as the LIST/RANGE EQUALITY
+# section below, and adjudicated on the identical grounds. Each says so on
+# its own line.
 
 # Ordering-comparison reference over-count (see section header above).
 bool :: 1 < 2
@@ -77,59 +93,43 @@ bool :: 'abc' <= 'abd'
 # Ordering-comparison reference over-count (see section header above).
 bool :: 'a' < 'a'
 
-# Ordering-comparison reference over-count (see section header above).
+# sqi charges rule 2's elementwise walk on the LEFT operand (1 + N); the
+# reference stays flat at 2 whatever the operands' length. Adjudicated in
+# sqi's favor on the same grounds as the LIST/RANGE EQUALITY section below,
+# which the same walk backs -- see this section's CORRECTION.
 bool :: [1, 2] < [1, 3]
 
-# Ordering-comparison reference over-count (see section header above).
+# sqi charges rule 2's elementwise walk on the LEFT operand (1 + N); the
+# reference stays flat at 2 whatever the operands' length. Adjudicated in
+# sqi's favor on the same grounds as the LIST/RANGE EQUALITY section below,
+# which the same walk backs -- see this section's CORRECTION.
 bool :: [1, 2] < [1, 2, 0]
 
-# Ordering-comparison reference over-count (see section header above).
-bool :: ['a'] < ['b']
-
-# Ordering-comparison reference over-count (see section header above).
+# Ordering-comparison reference over-count (see section header above): both
+# operands' walks are empty here, so sqi's rule-2 charge adds 0 and the whole
+# divergence is the reference's flat +1.
 bool :: [] < [1]
 
-# Ordering-comparison reference over-count (see section header above).
-bool :: [1] < []
-
-# Ordering-comparison reference over-count (see section header above).
+# Ordering-comparison reference over-count (see section header above): both
+# operands' walks are empty here, so sqi's rule-2 charge adds 0 and the whole
+# divergence is the reference's flat +1.
 bool :: [] <= [1]
 
-# Ordering-comparison reference over-count (see section header above).
+# Ordering-comparison reference over-count (see section header above): both
+# operands' walks are empty here, so sqi's rule-2 charge adds 0 and the whole
+# divergence is the reference's flat +1.
 bool :: [] < []
 
-# Ordering-comparison reference over-count (see section header above).
+# Ordering-comparison reference over-count (see section header above): both
+# operands' walks are empty here, so sqi's rule-2 charge adds 0 and the whole
+# divergence is the reference's flat +1.
 bool :: [] <= []
 
-# Ordering-comparison reference over-count (see section header above).
-bool :: [[]] < [[1]]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [[1]] < [[]]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [[1]] > [[]]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [[]] <= [[1]]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [1] < [1.0]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [1.0] < [1]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [1] <= [1.0]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [1] >= [1.0]
-
-# Ordering-comparison reference over-count (see section header above).
+# sqi charges rule 2's elementwise walk on the LEFT operand (1 + N); the
+# reference stays flat at 2 whatever the operands' length. Adjudicated in
+# sqi's favor on the same grounds as the LIST/RANGE EQUALITY section below,
+# which the same walk backs -- see this section's CORRECTION.
 bool :: [1, 2] < [1.0, 3.0]
-
-# Ordering-comparison reference over-count (see section header above).
-bool :: [[1]] < [[1.0]]
 
 # Ordering-comparison reference over-count (see section header above).
 bool | path | string :: path('/a') < path('/b')
@@ -308,6 +308,36 @@ bool :: 9 in [1, 2, 3]
 # "in"/"not in" reference over-count on top of an agreeing container-length charge (see section header).
 bool :: 9 not in [1, 2, 3]
 
+# ADDED by the final whole-branch review, sub-project E1, and this is the
+# OPPOSITE direction from the three entries above: on a RANGE_EXPR container
+# sqi charges MORE than the reference, not less.
+#
+# The list and string containers above agree with the reference on scaling
+# and differ only by its flat +1. The range_expr row did not scale at all
+# until this review: ops.go left it uncharged on the sole ground that "the
+# reference's own count does not scale with the range's size", which is a
+# fact about the reference, and this file's own opening rule subordinates the
+# reference to the spec. sqi's containsRangeInt calls rangeInts, which
+# expands the range in full -- rule 2's "a function ... iterates through
+# every element of a list", satisfied outright -- so the row now charges
+# Cost{ArgElements: {1}} like its siblings. Measured before the fix, "1 in
+# Param.R" over a million-element range charged 1 operation while expanding a
+# million integers.
+#
+# 9 = 1 (range_expr call) + 1 (the "in" call) + 7 (the expansion), against
+# the reference's flat 3. The corpus carried NO "in range_expr" case before
+# this review, which is why the charge had no oracle coverage at all; these
+# three cases exist to give it some.
+
+# "in" over a range_expr charges its full expansion; the reference does not scale (see section header).
+bool | int | string | range_expr :: 1 in range_expr("3-9")
+
+# "in" over a range_expr charges its full expansion; the reference does not scale (see section header).
+bool | int | string | range_expr :: 5 in range_expr("3-9")
+
+# "not in" over a range_expr charges its full expansion; the reference does not scale (see section header).
+bool | int | string | range_expr :: 1 not in range_expr("3-9")
+
 # ── sqi is right: unary negation of a non-literal or float operand ──────────
 #
 # RFC 0005 rule 2 transforms USub into a __neg__ call, so rule 1's flat
@@ -357,33 +387,63 @@ int | float :: ceil(-9223372036854775808.0)
 # The embedded "-1.5" pays the unary-negation over-count; zfill's own charge agrees exactly (see section header, and the ZFILL section below).
 string | float | int :: zfill(-1.5, 7)
 
-# ── sqi is right: subscript charges 1; reference charges 2 ──────────────────
+# ── sqi is right: a LIST subscript charges 1; reference charges 2 ───────────
 #
-# list.go's evalIndex already documents this in full: subscript is not
-# Shape-dispatched, so rule 1 is charged directly (once, unconditionally
-# past the receiver-type check) and rule 2 does NOT apply -- __getitem__ is
-# not one of rule 2's named iterating functions, and a subscript touches
-# exactly one element of the receiver, never "every element of a list".
-# The reference measures a flat 2 regardless of receiver type (list,
-# string) or index sign, an uncredited extra unit with no rule 2/3 basis.
+# A subscript is not Shape-dispatched, so list.go's evalIndex charges rule 1
+# directly (once, unconditionally past the receiver-type check). For a LIST
+# receiver that is the whole charge: AsList returns the backing slice with no
+# copy, so the operation really does touch exactly one element and iterate
+# nothing. The reference measures a flat 2, an uncredited extra unit with no
+# rule 2/3 basis.
+#
+# CORRECTION (final whole-branch review, sub-project E1). This header
+# previously stated the claim for ALL receiver kinds -- "a subscript touches
+# exactly one element of the receiver, never 'every element of a list'", plus
+# "__getitem__ is not one of rule 2's named iterating functions" -- and both
+# halves were wrong outside the list case. indexValue runs
+# []rune(recv.AsStr()) for a STRING receiver, decoding every byte, and
+# rangeInts for a RANGE_EXPR receiver, expanding it in full; neither depends
+# on the index. Those two now charge on the RECEIVER (rule 3 and rule 2
+# respectively), exactly as slice.go's sliceValue already did for the same
+# receivers. The "not named by the enumeration" half is separately dead:
+# doc.go settles rule 2's enumeration as OPEN.
+#
+# Consequence for THIS file: the two string-receiver entries ('hello'[0] and
+# 'hello'[-1]) stopped diverging and were removed -- sqi's new 1 +
+# ceil(5/256) = 2 happens to equal the reference's flat 2 on a five-byte
+# receiver. Only LIST-receiver entries remain here, and for them the claim
+# above is sound. No corpus case subscripts a range_expr.
 
-# Subscript reference over-count (see section header above).
+# List-subscript reference over-count (see section header above).
 int | list[int] :: [10, 20, 30][0]
 
-# Subscript reference over-count (see section header above).
+# List-subscript reference over-count (see section header above).
 int | list[int] :: [10, 20, 30][2]
 
-# Subscript reference over-count (see section header above).
+# List-subscript reference over-count (see section header above).
 int | list[int] :: [10, 20, 30][-1]
 
-# Subscript reference over-count (see section header above).
+# List-subscript reference over-count (see section header above).
 int | list[int] :: [10, 20, 30][-3]
 
-# Subscript reference over-count (see section header above).
-string | int :: 'hello'[0]
+# ADDED by the final whole-branch review, sub-project E1, and in the OPPOSITE
+# direction from the four list entries above: on a RANGE_EXPR receiver sqi
+# charges MORE than the reference, because indexValue calls rangeInts and
+# expands the range in full regardless of the index, satisfying rule 2
+# outright. 9 = 1 (range_expr call) + 1 (the subscript call) + 7 (the
+# expansion), against the reference's flat 3; the [-1] case is one higher on
+# both sides for the negation. These two cases were added to corpus.txt in
+# the same review -- it carried no range_expr subscript at all, which is why
+# the flat-1 charge went unseen by the oracle. (No string-receiver entry is
+# needed: sqi's new 1 + ceil(5/256) = 2 happens to equal the reference's flat
+# 2 on the corpus's five-byte receivers, so those two stopped diverging and
+# were removed.)
 
-# Subscript reference over-count (see section header above).
-string | int :: 'hello'[-1]
+# A range_expr subscript charges its full expansion; the reference does not scale (see section header).
+int | string | range_expr :: range_expr("3-9")[0]
+
+# A range_expr subscript charges its full expansion; the reference does not scale (see section header).
+int | string | range_expr :: range_expr("3-9")[-1]
 
 # ── sqi is right: a chained subscript pays the subscript over-count twice ───
 #
@@ -970,17 +1030,38 @@ int :: max(3, 7)
 # min()/max()'s fixed-arity scalar rows: reference charges as if iterating a list it wasn't given (see section header).
 int :: max(5, 3, 7)
 
-# ── sqi is right: min/max's range_expr row charges nothing, matching the OpIn precedent ──
+# ── sqi is right: min/max over a range_expr charge its full expansion; reference is flat ──
 #
-# The single-argument range_expr overload of min()/max() is charged
-# nothing beyond rule 1, the same ruling already applied to OpIn for an
-# identical range_expr shape (funcslist.go) -- the reference's own count
-# for this shape does not scale with the range's size either.
+# CORRECTION (final whole-branch review, sub-project E1), and the direction
+# of this entry is REVERSED from what it was. It previously read: "The
+# single-argument range_expr overload of min()/max() is charged nothing
+# beyond rule 1, the same ruling already applied to OpIn for an identical
+# range_expr shape -- the reference's own count for this shape does not scale
+# with the range's size either." The reference's flatness is real and
+# unchanged; the inference from it was not. This file's own opening rule is
+# that the SPEC outranks the reference, and the reference's behavior was the
+# only reason given -- so the cited OpIn precedent was itself unadjudicated,
+# and following it propagated one unexamined ruling into a second table.
+#
+# What decides it is sqi's own implementation against rule 2's text: min's
+# and max's range_expr Fn bodies (funcsmath.go) both call rangeInts(args[0]),
+# which expands the range in full with no early exit and no arithmetic
+# shortcut -- "a function ... iterates through every element of a list",
+# satisfied outright. sum's range_expr row one table over already charged
+# Cost{ArgElements: {0}} for a byte-identical body, so the file also
+# contradicted itself. Measured before the fix, min() over a million-element
+# range charged 1 operation while expanding a million integers. Both rows now
+# charge ArgElements{0}; ops.go's OpIn/OpNotIn range_expr rows were corrected
+# in the same pass, so the cited precedent now points the same way.
+#
+# sqi is therefore HIGHER than the reference on these two, where it used to
+# be lower: 1 (range_expr call) + 1 (min call) + 7 (the expansion) = 9,
+# against the reference's flat 3.
 
-# min()/max()'s range_expr row: reference over-count relative to sqi's rule-1-only charge (see section header).
+# min()/max() over a range_expr charge its full expansion; the reference does not scale (see section header).
 int | string | range_expr :: min(range_expr("3-9"))
 
-# min()/max()'s range_expr row: reference over-count relative to sqi's rule-1-only charge (see section header).
+# min()/max() over a range_expr charge its full expansion; the reference does not scale (see section header).
 int | string | range_expr :: max(range_expr("3-9"))
 
 # ── sqi is right: round(x, ndigits>0) charges nothing; reference scales with ndigits ──

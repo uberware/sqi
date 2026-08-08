@@ -463,23 +463,32 @@ func TestOperationCount_MinMaxScalarFormsDivergeFromReference(t *testing.T) {
 	}
 }
 
-// TestOperationCount_MinMaxRangeExprUnchargedMatchesTask5Precedent pins that
-// min/max's range_expr row is Cost{}, matching the EXACT shape of the
-// range_expr divergence Task 5 already found and left uncharged for the
-// "in"/"not in" operator (ops.go's OpIn/OpNotIn, TInt/TRangeExpr row): the
-// reference's own count for min/max(range_expr(...)) does not scale with the
-// range's size at all (confirmed flat at the same total for a 5-value range
-// and a 100,000-value range), so there is nothing here that fits rule 2's
-// "iterates through every element of A LIST" -- and this task follows Task
-// 5's own precedent rather than re-litigating the identical situation.
-func TestOperationCount_MinMaxRangeExprUnchargedMatchesTask5Precedent(t *testing.T) {
-	small := opsFor(t, `min(range_expr("1-5"))`)
-	big := opsFor(t, `min(range_expr("1-100000"))`)
-	if small != 2 || big != 2 {
-		t.Errorf("ops = %d, %d; want 2, 2 -- must not scale with the range's size (reference measures a flat 3 for both, an unreproduced residual matching Task 5's own precedent for the 'in' operator's range_expr row)", small, big)
+// TestOperationCount_MinMaxRangeExprChargesItsExpansion pins that min/max's
+// range_expr row charges Cost{ArgElements: {0}} -- the range's own element
+// count -- because sqi's min and max both call rangeInts(args[0]) and expand
+// the range in full, satisfying rule 2's "a function ... iterates through
+// every element of a list" outright.
+//
+// This test previously asserted the OPPOSITE (a flat 2, "uncharged, matching
+// Task 5's precedent for the 'in' operator's range_expr row"), on the ground
+// that the REFERENCE's count does not scale here -- flat at the same total
+// for a 5-value and a 100,000-value range, which is still true and still
+// baselined. The final whole-branch review overturned that: the reference's
+// behavior is subordinate to the spec text by this package's standing rule,
+// and it was the only reason given. The cited precedent was itself corrected
+// in the same pass, so both now charge. min(Param.R) on a million-element
+// range charged 1 operation before this change while expanding a million
+// integers.
+func TestOperationCount_MinMaxRangeExprChargesItsExpansion(t *testing.T) {
+	// 1 (range_expr call) + 1 (min call) + N (the expansion).
+	if got := opsFor(t, `min(range_expr("1-5"))`); got != 7 {
+		t.Errorf("ops(min, 5-value range) = %d; want 7 (1 + 1 + 5 elements)", got)
 	}
-	if got := opsFor(t, `max(range_expr("1-100000"))`); got != 2 {
-		t.Errorf("ops(max) = %d; want 2, same reasoning as min", got)
+	if got := opsFor(t, `min(range_expr("1-100000"))`); got != 100002 {
+		t.Errorf("ops(min, 100000-value range) = %d; want 100002 -- must scale with the range's size", got)
+	}
+	if got := opsFor(t, `max(range_expr("1-100000"))`); got != 100002 {
+		t.Errorf("ops(max, 100000-value range) = %d; want 100002, same reasoning as min", got)
 	}
 }
 

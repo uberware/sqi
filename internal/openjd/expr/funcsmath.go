@@ -143,20 +143,38 @@ var mathFuncs = map[string][]Shape{
 	//     the arity here is fixed by the overload (2 or 3), so there is no
 	//     template-author-controlled quantity to bound.
 	//
-	//  2. The range_expr row's reference count does NOT scale with the
-	//     range's size (min(range_expr("1-5")) and
-	//     min(range_expr("1-100000")) both measure 3), matching the EXACT
-	//     shape of the range_expr divergence Task 5 already found and left
-	//     uncharged for the "in"/"not in" operator's own range_expr row
-	//     (ops.go's OpIn/OpNotIn, TInt/TRangeExpr) -- "probed 1 in
-	//     range_expr('1-3') and 1 in range_expr('1-100') both at 3", also
-	//     uncharged there. Both cases share the same flat, non-scaling
-	//     residual (a reference count of 3 where sqi's own total, uncharged,
-	//     is 2) that Task 5 already reviewed and accepted as not worth
-	//     chasing: it is not rule 2 (nothing scales, so nothing is being
-	//     "iterated" in the charged sense) and not rule 3 (range_expr is
-	//     neither a string nor a path). This task follows that precedent
-	//     rather than re-litigating it.
+	//  2. CORRECTION (final whole-branch review, sub-project E1). The
+	//     range_expr rows below are now Cost{ArgElements: {0}}. An earlier
+	//     revision left them uncharged, arguing: "The range_expr row's
+	//     reference count does NOT scale with the range's size
+	//     (min(range_expr('1-5')) and min(range_expr('1-100000')) both
+	//     measure 3), matching the EXACT shape of the range_expr divergence
+	//     Task 5 already found and left uncharged for the 'in'/'not in'
+	//     operator's own range_expr row (ops.go's OpIn/OpNotIn,
+	//     TInt/TRangeExpr) ... it is not rule 2 (nothing scales, so nothing
+	//     is being 'iterated' in the charged sense) ... This task follows
+	//     that precedent rather than re-litigating it."
+	//
+	//     The measurements are accurate; the inference from them is not.
+	//     "Nothing scales" was a fact about the REFERENCE, and this package's
+	//     standing rule subordinates the reference to the specification --
+	//     so the precedent being followed was an unadjudicated one, and
+	//     following it propagated a single unexamined ruling into a second
+	//     table. Rule 2's own test is what decides it, and sqi's own Fn
+	//     bodies below fail it plainly: both call rangeInts(args[0]), which
+	//     expands the range in full, with no early exit and no arithmetic
+	//     shortcut from the endpoints. The reference may well find its
+	//     answer without touching each value; sqi provably does touch each
+	//     one. The inconsistency was visible inside this very file, too --
+	//     sum's range_expr row (below) already charged Cost{ArgElements: {0}}
+	//     for a byte-identical rangeInts body. Measured before the fix,
+	//     min(Param.R) and max(Param.R) with R = range_expr("1-1000000")
+	//     each charged 1 operation while expanding a million integers.
+	//     ops.go's OpIn/OpNotIn range_expr rows were corrected in the same
+	//     pass, so the cited precedent now points the other way. Each is a
+	//     new count divergence from the reference, baselined in
+	//     test/oracle/baseline-ops.txt; the flat +1 residual described above
+	//     is unchanged and remains the reference's own.
 	//
 	// See cost_misc_internal_test.go's PROBE for the transcribed measurements
 	// of both divergences, and TestMinMax_EmptyList_SelectsNoReturnRow
@@ -198,7 +216,7 @@ var mathFuncs = map[string][]Shape{
 		{Params: []Type{ListOf(TNull)}, Ret: TNoReturn, Fn: func([]Value) (Value, error) {
 			return Value{}, emptyListError("min")
 		}},
-		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TRangeExpr}, Ret: TInt, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			ints, err := rangeInts(args[0])
 			if err != nil {
 				return Value{}, err
@@ -228,7 +246,7 @@ var mathFuncs = map[string][]Shape{
 		{Params: []Type{ListOf(TNull)}, Ret: TNoReturn, Fn: func([]Value) (Value, error) {
 			return Value{}, emptyListError("max")
 		}},
-		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TRangeExpr}, Ret: TInt, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			ints, err := rangeInts(args[0])
 			if err != nil {
 				return Value{}, err
@@ -250,18 +268,23 @@ var mathFuncs = map[string][]Shape{
 	// COST (sub-project E1, Task 8): rule 2 names sum() by name. The two list
 	// rows declare Cost{ArgElements: {0}} (list[nulltype] is Cost{}: its
 	// element count is always zero, so there is nothing to charge). The
-	// range_expr row ALSO declares Cost{ArgElements: {0}} -- UNLIKE min/max's
-	// own range_expr row above, this one is confirmed SCALING in the
-	// reference (sum(range_expr("1-100")) measures 102, sum(range_expr(
-	// "1-1000")) measures 1002, both exactly 1 + N) and reproduces exactly:
+	// range_expr row ALSO declares Cost{ArgElements: {0}}, and here it costs
+	// no divergence at all: the reference is confirmed SCALING on this one
+	// (sum(range_expr("1-100")) measures 102, sum(range_expr("1-1000"))
+	// measures 1002, both exactly 1 + N) and sqi reproduces it exactly, since
 	// range_expr's own construction already charges nothing (funcsconv.go),
-	// so sum's own share is 1 (the call) + N (elementCount, which resolves a
-	// range_expr via rangeExprCount, ops.go's elementCount) — matching the
-	// reference precisely, no divergence. The difference from min/max is
-	// real, not an inconsistency: summing genuinely visits every value,
-	// where min/max's own reference implementation apparently finds its
-	// answer arithmetically from the range's endpoints without touching each
-	// one (see min/max's own COST comment above).
+	// leaving sum's own share at 1 (the call) + N (elementCount, which
+	// resolves a range_expr via rangeExprCount, ops.go's elementCount).
+	//
+	// The reference does NOT scale on min/max's identical range_expr row --
+	// apparently finding its answer arithmetically from the range's
+	// endpoints. That is a difference in the reference's implementations,
+	// not a license for sqi to differ in its own: sqi's min, max and sum
+	// range_expr bodies all call rangeInts and all expand in full, so all
+	// three charge ArgElements{0}. min/max's rows were brought into line in
+	// the final whole-branch review and now diverge from the reference where
+	// this row agrees with it; see min's own COST comment above for that
+	// correction.
 	"sum": {
 		{Params: []Type{ListOf(TNull)}, Ret: TInt, Fn: func([]Value) (Value, error) {
 			return Int(0), nil

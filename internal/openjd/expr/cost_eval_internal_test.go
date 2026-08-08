@@ -78,21 +78,42 @@ func TestOperationCount_ListLiteralChargesNothing(t *testing.T) {
 // 2 + len(result): the [0:2] row is 2+2=4, [0:9] is 2+9=11, [5:9] is 2+4=6,
 // [:] is 2+10=12, and the empty [3:3] is 2+0=2.
 //
-// RULING, subscript: 1 (rule 1 only), diverging from the reference's
-// constant 2. RFC 0005's own AST-to-call transform (dunder-transform table,
-// item 4) settles rule 1's count: "Subscript(value, index) ... becomes
-// Call(Name("__getitem__"), [value, index])" -- exactly one call. Rule 2
-// does not apply: a plain subscript touches exactly ONE element of the
-// receiver and produces a SCALAR, never "every element of a list" and never
-// a produced list to iterate either -- there is no list on either side of
-// the operation for rule 2 to have a claim on. The reference's constant
-// "+1" -- present even at index 0, 2, 4 and 9 across two list lengths -- has
-// no textual home: rule 1 is fully accounted for by the RFC's single dunder
-// call, and rule 2 has no element or list to charge. This is an uncredited
-// reference implementation artifact, not a consequence of either rule's
-// text, so sqi does not adopt it. This ruling was independently reviewed
-// and confirmed correct; it is unchanged from the first version of this
-// comment.
+// RULING, subscript of a LIST: 1 (rule 1 only), diverging from the
+// reference's constant 2. RFC 0005's own AST-to-call transform
+// (dunder-transform table, item 4) settles rule 1's count:
+// "Subscript(value, index) ... becomes Call(Name("__getitem__"), [value,
+// index])" -- exactly one call. Rule 2 does not apply to a LIST receiver:
+// AsList returns the backing slice with no copy (value.go), so the operation
+// really does touch exactly ONE element and produce a SCALAR -- no list is
+// walked on either side for rule 2 to have a claim on. The reference's
+// constant "+1" -- present even at index 0, 2, 4 and 9 across two list
+// lengths -- has no textual home: rule 1 is fully accounted for by the RFC's
+// single dunder call, and rule 2 has no element or list to charge. This is
+// an uncredited reference implementation artifact, not a consequence of
+// either rule's text, so sqi does not adopt it.
+//
+// CORRECTION (final whole-branch review, sub-project E1), and it is the
+// SCOPE of the ruling above that was wrong, not its content. The probe rows
+// above use only LIST receivers, and the ruling was written -- and reviewed
+// twice -- as though it settled the subscript operator entirely. It does
+// not. indexValue (list.go) handles STRING and RANGE_EXPR receivers too,
+// through the same evalIndex, and for those two the claim "touches exactly
+// one element" is refuted by its own body: a string receiver runs
+// []rune(recv.AsStr()), decoding every byte of the whole string to find rune
+// boundaries, and a range_expr receiver runs rangeInts, expanding the range
+// in full -- neither depends on the index and neither has a cheaper path in
+// this package's representations. Those are exactly the two receiver kinds
+// the FOLLOW-UP CORRECTION below already singled out for receiver-sized
+// charging on the SLICE side, which is what makes the omission visible: the
+// slice form of an expression was charged correctly while the subscript form
+// of the same expression was charged 1. Measured before the fix, a
+// 500,000-byte string receiver charged 1 where its slice charged 1,954, and
+// a 1,000,000-element range_expr receiver charged 1 where its slice charged
+// 1,000,001. The withdrawn argument's other half -- "__getitem__ is not one
+// of rule 2's named iterating functions" -- was ALREADY on record as
+// rejected in the slice ruling below when the subscript comment restated it.
+// evalIndex now charges by receiver kind exactly as sliceValue does; see
+// TestOperationCount_SubscriptReceiverSizedForStringAndRangeExpr.
 //
 // RULING, slice: rule 1 (1) PLUS the produced element count -- e.g.
 // [1,2,3][0:2] is 1 + 2 = 3. THIS CORRECTS AN EARLIER, WRONG RULING kept
@@ -125,10 +146,13 @@ func TestOperationCount_ListLiteralChargesNothing(t *testing.T) {
 // computation (sliceIndices) followed by an O(len(idx)) copy loop that
 // walks and copies every SELECTED element into a newly produced list --
 // exactly list repetition's shape, and exactly what rule 2 charges there.
-// A subscript has no such loop (it reads one element and returns), which is
-// why the subscript ruling above is untouched by this correction: the
-// distinguishing question -- is a list actually walked and copied? -- has
-// two different answers for the two constructs, not one shared answer.
+// A subscript of a LIST has no such loop (it reads one element and returns),
+// which is why the list half of the subscript ruling above is untouched by
+// this correction: the distinguishing question -- is a list actually walked
+// and copied? -- has two different answers for those two constructs, not one
+// shared answer. (For a string or range_expr receiver it has the SAME
+// answer, which is what the final review's correction to the subscript
+// ruling above establishes.)
 //
 // The reference's reported totals (2 for subscript, [4,11,6,12,2] for the
 // five slice rows) were independently re-measured during review and
@@ -182,12 +206,14 @@ func TestOperationCount_SubscriptAndSlice(t *testing.T) {
 		// evalSlice calls sliceValue directly -- so both charge in the
 		// evaluator rather than in callShape.
 		//
-		// Subscript: exactly ONE __getitem__ call (RFC 0005 item 4), and
-		// rule 2 has no list to apply to (one element read, no list
-		// produced) -- flat 1 regardless of index or receiver length. Two
-		// cases here (first element, last element of a longer list) pin
-		// that flatness in the suite rather than leaving it only in the
-		// PROBE comment above.
+		// Subscript of a LIST: exactly ONE __getitem__ call (RFC 0005
+		// item 4), and rule 2 has no list to apply to (AsList is O(1), one
+		// element read, no list produced) -- flat 1 regardless of index or
+		// receiver length. Two cases here (first element, last element of a
+		// longer list) pin that flatness in the suite rather than leaving
+		// it only in the PROBE comment above. A STRING or RANGE_EXPR
+		// receiver is NOT flat and is covered separately by
+		// TestOperationCount_SubscriptReceiverSizedForStringAndRangeExpr.
 		{"[1,2,3][0]", 1},
 		{"[1,2,3,4,5,6,7,8,9,10][9]", 1},
 		// Slice: rule 1 (1) plus rule 2's element count on the PRODUCED
@@ -250,6 +276,67 @@ func TestOperationCount_SliceReceiverSizedForStringAndRangeExpr(t *testing.T) {
 				t.Errorf("ops(%q) = %d; want %d", tt.src, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestOperationCount_SubscriptReceiverSizedForStringAndRangeExpr is the
+// subscript counterpart of the slice test above, added by the final
+// whole-branch review to close the Critical it found: evalIndex charged a
+// flat 1 for all three receiver kinds while indexValue did O(receiver) work
+// for two of them, and no test in the suite could see it because every
+// subscript case used a LIST receiver.
+//
+// The expected values are the SLICE test's own values one for one --
+// deliberately, since the two constructs now charge the same receiver-sized
+// amount for a string and a range_expr receiver, and the whole defect was
+// that they did not. Only the list receiver differs, and it stays flat at 1
+// (TestOperationCount_SubscriptAndSlice pins that).
+func TestOperationCount_SubscriptReceiverSizedForStringAndRangeExpr(t *testing.T) {
+	tests := []struct {
+		src  string
+		want int64
+	}{
+		// String: 1 (rule 1) + ceil(receiver bytes/256), flat regardless of
+		// which index is read -- []rune decodes the whole receiver either
+		// way.
+		{"'hello'[0]", 2},
+		{"'hello'[4]", 2},
+		// A receiver crossing a 256-byte boundary: repetition's own 3
+		// (1 + ceil(300/256)=2) plus the subscript's 1 + 2 = 3, total 6 --
+		// identical to ('a'*300)[0:1] above, and identical at either end of
+		// the receiver.
+		{"('a'*300)[0]", 6},
+		{"('a'*300)[299]", 6},
+		// range_expr: range_expr()'s own construction charge of 1, plus the
+		// subscript's 1 + rangeExprCount(10) = 11, total 12 -- identical to
+		// range_expr('1-10')[2:5] above, and flat regardless of index.
+		{"range_expr('1-10')[0]", 12},
+		{"range_expr('1-10')[9]", 12},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			if got := opsFor(t, tt.src); got != tt.want {
+				t.Errorf("ops(%q) = %d; want %d", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOperationLimit_CatchesRepeatedSubscriptOfALargeReceiver is the exploit
+// the final whole-branch review measured, kept as a regression test because
+// it is the thing the charge exists to stop rather than a count assertion
+// about it. Before the fix this expression completed in about 1.8 seconds
+// having counted 2,002 operations against a 10,000,000 budget; scaling the
+// outer range kept it under a fifth of the budget while running for roughly
+// half an hour. It must now trip the limit.
+func TestOperationLimit_CatchesRepeatedSubscriptOfALargeReceiver(t *testing.T) {
+	const src = "len([range_expr('1-1000000')[0] for x in range(500)])"
+	_, _, err := EvalWithMetrics(src, MapSymbols(nil), TInt)
+	if err == nil {
+		t.Fatalf("Eval(%q) succeeded; want the operation limit to stop it", src)
+	}
+	if !errors.Is(err, errOperationLimit) {
+		t.Errorf("err = %v; want errOperationLimit", err)
 	}
 }
 

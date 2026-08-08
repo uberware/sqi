@@ -245,7 +245,7 @@ bool	['a'] < ['b']
 # rule 6 makes list[nulltype] convertible to list[T] for any T — so both orders
 # must answer, and sqi's did not: "[] < [1]" was a type error while "[1] < []"
 # was false, because the empty literal PINNED the shared element-type variable
-# to nulltype when it came first. The reference agrees with the fixed behaviour
+# to nulltype when it came first. The reference agrees with the fixed behavior
 # on every line here, including the last, where the empty list is nested one
 # level deeper than the other operand and there is no conversion at all.
 #
@@ -359,6 +359,17 @@ list[int] | string | range_expr	list(range_expr("1-10:3"))
 list[int] | string | range_expr	list(range_expr("1,5,9"))
 int | string | range_expr	len(range_expr("1-10"))
 string | range_expr	string(range_expr("1-5:2"))
+
+# Membership against a range_expr, and a range_expr subscript. Both are here
+# for OPERATION-COUNT coverage the corpus previously lacked entirely: sqi
+# expands the range in full for each (containsRangeInt's and indexValue's own
+# rangeInts calls), so both charge rule 2 on the range while the reference
+# stays flat -- see baseline-ops.txt. Their VALUES agree.
+bool | int | string | range_expr	1 in range_expr("3-9")
+bool | int | string | range_expr	5 in range_expr("3-9")
+bool | int | string | range_expr	1 not in range_expr("3-9")
+int | string | range_expr	range_expr("3-9")[0]
+int | string | range_expr	range_expr("3-9")[-1]
 
 # range_expr -> string is a NON-DESTRUCTIVE coercion (section 1.2.3) that the
 # spec says "produces canonical form like '1-5'" (2026-02

@@ -256,19 +256,37 @@ func TestOperationCount_RangeExprConcatenation(t *testing.T) {
 //
 // PROBE, .venv-oracle/bin/python against openjd-model 0.11.1, following the
 // same method as the top-of-file probe -- run first, decide against the spec
-// text second:
+// text second. Every count below is for the expression EXACTLY as written,
+// with any "*" evaluated IN-EXPRESSION and therefore carrying its own rule-3
+// charge (so "z" in ("a"*10) is 2 for the repetition plus 3 for the "in",
+// not 3 in total). That is the opposite convention from
+// cost_misc_internal_test.go's probe, which pre-expands its strings in
+// Python; read the two blocks accordingly:
 //
 //	 5  1 in [1,2,3]                        3  1 in [1]
 //	12  1 in [1,2,3,4,5,6,7,8,9,10]          5  4 in [1,2,3]  (full length, no early exit)
-//	 3  "a" in "a"                           3  "z" in ("a"*10)
+//	 3  "a" in "a"                           5  "z" in ("a"*10)
 //	 7  "z" in ("a"*300)                     2  "" in ""
 //	 3  1 in range_expr("1-3")               3  1 in range_expr("1-100")
 //
+// CORRECTION (final whole-branch review, sub-project E1): the "z" in ("a"*10)
+// entry was transcribed as 3 and is 5, re-measured live. It sat on the same
+// printed line as an entry that DOES use the in-expression reading, so a
+// reader comparing 3 -> 7 across the two would have inferred the wrong
+// scaling shape from two different notations. No `want` value in this file
+// was ever computed from the transcribed number -- they come from sqi's own
+// formula -- so no assertion moved; the probe block exists to be auditable,
+// which is reason enough to correct it.
+//
 // The list and string rows clearly SCALE with the container's size (3, 5, 12
-// track container lengths 1, 3, 10 exactly; 3 vs 7 tracks byte length
-// crossing a 256 boundary); the range_expr row does not (3 regardless of
-// range size) -- this is the evidence for charging the first two and not the
-// third.
+// track container lengths 1, 3, 10 exactly; 5 vs 7 tracks byte length
+// crossing a 256 boundary once the repetition's own charge is subtracted).
+// The reference's range_expr row does NOT scale (3 regardless of range size)
+// -- and sqi charges it anyway. That was the one row this probe originally
+// left uncharged on the strength of the reference's flatness; the final
+// whole-branch review overturned it, because sqi's own containsRangeInt
+// expands the range in full via rangeInts and rule 2's text is therefore
+// satisfied whatever the reference does. See ops.go's OpIn rows.
 //
 // The reference's own absolute totals are NOT reproduced exactly and are not
 // the target: they run a flat 1-2 operations higher than 1(call)+N predicts
@@ -353,7 +371,13 @@ func TestOperationCount_InOperator(t *testing.T) {
 		}
 	})
 
-	t.Run("int/range_expr stays uncharged regardless of range size", func(t *testing.T) {
+	// This subtest previously asserted the range_expr row "stays uncharged
+	// regardless of range size", at a flat 1. The final whole-branch review
+	// overturned that: containsRangeInt calls rangeInts, which expands the
+	// range in full, so the row scales with the container exactly as the
+	// string and list rows above do. The reference's own flatness here is
+	// unchanged and stays baselined.
+	t.Run("int/range_expr charges the container's element count", func(t *testing.T) {
 		small, err := RangeExpr("1-3")
 		if err != nil {
 			t.Fatalf("RangeExpr: %v", err)
@@ -365,25 +389,89 @@ func TestOperationCount_InOperator(t *testing.T) {
 		for _, tt := range []struct {
 			name string
 			rng  Value
-		}{{"small", small}, {"big", big}} {
+			want int64
+		}{{"small", small, 4}, {"big", big, 1001}} {
 			ec := testCtx()
 			if _, err := applyBinary(ec, OpIn, Int(1), tt.rng); err != nil {
 				t.Fatalf("applyBinary: %v", err)
 			}
-			if ec.m.ops != 1 {
-				t.Errorf("%s range: ops = %d; want 1 (rule 1 only, no scaling with range size)", tt.name, ec.m.ops)
+			if ec.m.ops != tt.want {
+				t.Errorf("%s range: ops = %d; want %d (1 call + the range's element count)", tt.name, ec.m.ops, tt.want)
 			}
+		}
+	})
+
+	// "not in" shares the row's Cost, and the negation cannot short-circuit
+	// the expansion either.
+	t.Run("not in, int/range_expr charges the container's element count", func(t *testing.T) {
+		r, err := RangeExpr("1-1000")
+		if err != nil {
+			t.Fatalf("RangeExpr: %v", err)
+		}
+		ec := testCtx()
+		if _, err := applyBinary(ec, OpNotIn, Int(5000), r); err != nil {
+			t.Fatalf("applyBinary: %v", err)
+		}
+		if ec.m.ops != 1001 {
+			t.Errorf("ops = %d; want 1001 (1 call + 1000 elements)", ec.m.ops)
 		}
 	})
 }
 
-// TestOperationCount_ScalarRowsChargeNothing pins the negative space: every
-// row NOT named by section 1.3.10 rule 2 or rule 3 -- including, after the
-// review correction above, only the range_expr row of OpIn/OpNotIn rather
-// than all of them -- charges rule 1 and nothing else, regardless of what
-// the reference happens to report for it (see the comment above
-// TestOperationCount_Operators for why ordering and "not" are excluded on
-// purpose rather than by oversight).
+// TestOperationCount_ListOrderingChargesItsWalk pins that an ordering
+// comparison of two lists charges its elementwise walk, exactly as the
+// equality comparison of the same operands does.
+//
+// The list/list ordering row was uncharged until the final whole-branch
+// review, on the sole ground that section 1.3.10 rule 2 names "list/range
+// equality comparisons" by token and does not name ordering. doc.go settles
+// the enumeration as OPEN, which removes that ground: "<" and "==" run the
+// same walk over the same operands (compareLists and valuesEqual are both
+// elementwise), and charging only one produced a measured 1,666x discrepancy
+// on the identical expression shape. Both are charged on the LEFT operand.
+func TestOperationCount_ListOrderingChargesItsWalk(t *testing.T) {
+	three := func() Value { return List(TInt, []Value{Int(1), Int(2), Int(3)}) }
+	for _, op := range []Op{OpLt, OpGt, OpLe, OpGe} {
+		ec := testCtx()
+		if _, err := applyBinary(ec, op, three(), three()); err != nil {
+			t.Fatalf("applyBinary(%s): %v", op, err)
+		}
+		if ec.m.ops != 4 {
+			t.Errorf("ops(%s) = %d; want 4 (1 call + 3 elements)", op, ec.m.ops)
+		}
+	}
+	// The equality form of the same comparison agrees by construction, which
+	// is the whole point of the correction.
+	ec := testCtx()
+	if _, err := applyBinary(ec, OpEq, three(), three()); err != nil {
+		t.Fatalf("applyBinary(==): %v", err)
+	}
+	if ec.m.ops != 4 {
+		t.Errorf("ops(==) = %d; want 4, matching the ordering rows exactly", ec.m.ops)
+	}
+	// Scalar ordering still charges rule 1 only: it iterates nothing.
+	ec = testCtx()
+	if _, err := applyBinary(ec, OpLt, Int(1), Int(2)); err != nil {
+		t.Fatalf("applyBinary(<, scalars): %v", err)
+	}
+	if ec.m.ops != 1 {
+		t.Errorf("ops(scalar <) = %d; want 1 (rule 1 only)", ec.m.ops)
+	}
+}
+
+// TestOperationCount_ScalarRowsChargeNothing pins the negative space: a row
+// whose operands are all SCALARS iterates no list and processes no string, so
+// it charges rule 1 and nothing else, regardless of what the reference
+// happens to report for it.
+//
+// The membership test is what "scalar" means here, and it is the one the
+// final whole-branch review substituted for the old one. This table
+// previously admitted any row "NOT named by section 1.3.10 rule 2 or rule 3"
+// and so also held the list/list ordering row and both OpIn/OpNotIn
+// range_expr rows -- three rows that do O(receiver) work. All three now
+// charge (see TestOperationCount_ListOrderingChargesItsWalk and
+// TestOperationCount_InOperator), and "unnamed by the enumeration" is no
+// longer a criterion for anything: doc.go settles the enumeration as OPEN.
 func TestOperationCount_ScalarRowsChargeNothing(t *testing.T) {
 	tests := []struct {
 		name string
@@ -395,26 +483,12 @@ func TestOperationCount_ScalarRowsChargeNothing(t *testing.T) {
 		{"modulo", func(ec evalCtx) error { _, err := applyBinary(ec, OpMod, Int(4), Int(2)); return err }},
 		{"power", func(ec evalCtx) error { _, err := applyBinary(ec, OpPow, Int(2), Int(3)); return err }},
 		{"ordering, scalar int", func(ec evalCtx) error { _, err := applyBinary(ec, OpLt, Int(1), Int(2)); return err }},
-		{"ordering, list", func(ec evalCtx) error {
-			a := List(TInt, []Value{Int(1), Int(2), Int(3)})
-			b := List(TInt, []Value{Int(1), Int(2), Int(4)})
-			_, err := applyBinary(ec, OpLt, a, b)
+		{"ordering, scalar string", func(ec evalCtx) error {
+			_, err := applyBinary(ec, OpLt, String("a"), String("b"))
 			return err
 		}},
-		{"in, int/range_expr (uncharged: does not scale with range size)", func(ec evalCtx) error {
-			r, err := RangeExpr("1-3")
-			if err != nil {
-				return err
-			}
-			_, err = applyBinary(ec, OpIn, Int(1), r)
-			return err
-		}},
-		{"not in, int/range_expr", func(ec evalCtx) error {
-			r, err := RangeExpr("1-3")
-			if err != nil {
-				return err
-			}
-			_, err = applyBinary(ec, OpNotIn, Int(5), r)
+		{"ordering, scalar bool", func(ec evalCtx) error {
+			_, err := applyBinary(ec, OpLt, Bool(false), Bool(true))
 			return err
 		}},
 		{"unary negation", func(ec evalCtx) error { _, err := applyUnary(ec, OpNeg, Int(5)); return err }},

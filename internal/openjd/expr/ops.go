@@ -330,16 +330,33 @@ var binaryShapes = map[Op][]Shape{
 	OpIn: {
 		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Cost: Cost{ArgBytes: []int{1}}, Fn: shapeBinary(containsString)},
 		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(containsElem)},
-		// Uncharged on purpose: the reference's own count does not scale with
+		// CORRECTION (final whole-branch review, sub-project E1). An earlier
+		// revision left this row and its OpNotIn twin UNCHARGED, arguing:
+		// "Uncharged on purpose: the reference's own count does not scale with
 		// the range's size (see the probe comment on
 		// TestOperationCount_InOperator), so nothing here supports a per-range
-		// charge the way the string and list rows above have one.
-		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(containsRangeInt)},
+		// charge the way the string and list rows above have one." That
+		// observation about the reference is accurate and still holds; the
+		// CONCLUSION drawn from it was wrong twice over. First, the reference's
+		// behavior is subordinate to the specification by this package's
+		// standing rule, and it was the SOLE stated reason here. Second, the
+		// specification's own test is what this row actually fails:
+		// containsRangeInt (below) calls rangeInts, which FULLY EXPANDS the
+		// range, so "a function ... iterates through every element of a list"
+		// is satisfied outright. Measured before the fix, "1 in Param.R" with
+		// R = range_expr("1-1000000") charged 1 operation while expanding a
+		// million integers. Now Cost{ArgElements: {1}} — index 1, the
+		// container, matching the string and list rows above — which prices
+		// the expansion arithmetically (elementCount routes a range_expr
+		// through rangeExprCount) and charges it BEFORE the expansion runs.
+		// The residual flat +1 the reference adds here is unchanged and stays
+		// baselined; only the SCALING component is at issue.
+		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(containsRangeInt)},
 	},
 	OpNotIn: {
 		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Cost: Cost{ArgBytes: []int{1}}, Fn: shapeBinary(notContainsString)},
 		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(negate(containsElem))},
-		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Fn: shapeBinary(negate(containsRangeInt))},
+		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(negate(containsRangeInt))},
 	},
 
 	OpLt: orderingShapes(OpLt),
@@ -359,16 +376,32 @@ var binaryShapes = map[Op][]Shape{
 // (string, string) shape below and wrongly let a range_expr order against a
 // string.
 //
-// None of the five rows below declares a Cost. Section 1.3.10's rule 2 and
-// rule 3 each close with an explicit "This applies to: ..." enumeration, and
-// ordering operators appear in neither one — not even the list/list row,
+// The four SCALAR rows below declare no Cost, and correctly so: they compare
+// two scalars, iterating no list and processing no string, so section
+// 1.3.10's rule 1 is the whole charge. (The reference measures 2 for every
+// ordering comparison, scalar or list, where sqi measures 1; that flat +1 is
+// an unexplained reference quirk, baselined in test/oracle/baseline-ops.txt,
+// and is a separate question from the scaling one below.)
+//
+// CORRECTION (final whole-branch review, sub-project E1). The LIST/LIST row
+// was in that same uncharged set, on this reasoning: "Section 1.3.10's rule 2
+// and rule 3 each close with an explicit 'This applies to: ...' enumeration,
+// and ordering operators appear in neither one — not even the list/list row,
 // which iterates its operands' elements (compareLists) but is not the
-// "list/range equality comparisons" rule 2 names, a distinct operation with
-// its own row (once Task 9 lands equality's charge; see doc.go). The
-// reference measures 2 for every ordering comparison tried here, scalar or
-// list ("1 < 2", "[1] < [2]"), not 1 — an unexplained reference quirk, not a
-// rule 2/3 charge the spec text supports extending to. Rule 1 is the whole
-// charge on every row.
+// 'list/range equality comparisons' rule 2 names, a distinct operation with
+// its own row." The citation was to rfcs/0005-expression-language.md; the
+// SPECIFICATION (wiki/2026-02-Expression-Language.md) introduces the same
+// enumeration with "such as", and doc.go now settles that disagreement in
+// favor of the open reading for the whole package. Under it, a token-level
+// distinction between "==" and "<" does not survive: applyBinary's equality
+// path and this row run the SAME walk over the same operands (valuesEqual
+// and compareLists both compare elementwise), and only one was charged.
+// Measured before the fix, a 20,000-int list compared 2,000 times cost 6,002
+// operations under "<" while the identical "==" expression tripped the
+// 10,000,000 limit — a 1,666x discrepancy for identical work. The row now
+// declares Cost{ArgElements: {0}}, charging the LEFT operand's element count,
+// exactly as applyBinary's equality charge does, so the two agree by
+// construction rather than by coincidence.
 func orderingShapes(op Op) []Shape {
 	return []Shape{
 		{Params: []Type{TInt, TInt}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareInts))},
@@ -382,18 +415,25 @@ func orderingShapes(op Op) []Shape {
 		// list[float], and reaches compareLists, answering false. A
 		// genuinely incompatible pair like ['a'] < [1] has no unification to
 		// reach and is still rejected at shape matching.
-		{Params: []Type{ListOf(varT), ListOf(varT)}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareLists))},
+		{Params: []Type{ListOf(varT), ListOf(varT)}, Ret: TBool, Promote: promoteOrdering, Cost: Cost{ArgElements: []int{0}}, Fn: shapeBinary(ordering(op, compareLists))},
 	}
 }
 
 // unaryShapes lists every accepted signature of each prefix operator.
 //
-// No row in this table declares a Cost. Numeric negation and unary plus
-// process no list and no string (rule 1 is the whole charge, same as the
-// scalar rows of binaryShapes). Boolean "not" processes no list or string
-// either, and — like "in"/"not in" above — is not named by rule 2 or rule
-// 3's closed "This applies to: ..." enumerations, so it gets nothing beyond
-// rule 1 despite the reference measuring 2 for "not True", not 1. and/or are
+// No row in this table declares a Cost, and every row's reason is the same
+// one: each operand is a scalar, so no list is iterated and no string is
+// processed, leaving rule 1 as the whole charge (the same reason the scalar
+// rows of binaryShapes carry no Cost). That holds for numeric negation,
+// unary plus and boolean "not" alike, despite the reference measuring 2 for
+// "not True" rather than 1.
+//
+// CORRECTION (final whole-branch review, sub-project E1): an earlier
+// revision of this comment argued "not" additionally "is not named by rule 2
+// or rule 3's closed 'This applies to: ...' enumerations". That half of the
+// argument is withdrawn — doc.go settles the enumerations as OPEN, so being
+// unnamed by them proves nothing either way. The rows are still correctly
+// uncharged; only the reasoning above stands. and/or are
 // a separate case entirely and are not in this table at all: RFC 0005 line
 // 1454 says they are handled directly by the evaluator rather than
 // transformed to function calls, so evalLogical never reaches applyUnary,
