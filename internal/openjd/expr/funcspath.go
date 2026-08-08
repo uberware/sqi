@@ -41,14 +41,47 @@ var (
 // pathmapping.go's pathMappingFuncs group, not here, because it needs the
 // session's mapping rules (threaded through evalCtx by WithPathMapping) that
 // this group's functions never touch.
+// COST (sub-project E1, Task 8): rule 3 covers "a string or path value", and a
+// path IS one, so every row below that PROCESSES its receiver's (or its
+// string argument's) text declares an ArgBytes charge — confirmed scaling in
+// the reference at 11/299/599-byte path text (2/3/4, matching path()'s own
+// ArgBytes-on-input formula reused throughout this file: 1 call +
+// ceil(bytes/256)). See cost_misc_internal_test.go's PROBE for the full set
+// of transcribed measurements this comment summarizes.
 var pathFuncs = map[string][]Shape{
 	// path()'s three rows are the only ones in the whole registry that use
 	// FnCtx rather than Fn — see Shape.FnCtx's doc comment for why: they are
 	// exactly the rows that have to CHOOSE a flavor, because constructing a
 	// path is the only operation that ever does. Every other path operation
 	// reads the flavor off its receiver.
+	//
+	// The TString row charges ArgBytes on the INPUT text, not the normalized
+	// output — confirmed with a probe built to discriminate the two: a
+	// 302-byte input full of redundant separators that normalizes down to a
+	// 2-byte output ("/a") still measures 3 (matching the 302-byte input's
+	// own ceil(302/256)=2), not 2 (which a result-based charge would give).
+	//
+	// The ListOf(TString) row instead declares ResultBytes: true, not
+	// ArgElements: there is no single input "text" to read (a list's own .s
+	// field is empty, the same structural gap join() hit in Task 7), and the
+	// reference's own count tracks the JOINED text's length, not the element
+	// count — confirmed flat at 2 for 1, 4 and 20-element literal lists whose
+	// joined text stays under 256 bytes, then 3 once one element pushes the
+	// joined text past it. This mirrors path(list)'s own construction
+	// (pathFromParts(...).String()), the same "charge what was BUILT, not
+	// what was handed in" idiom join() and the padding functions
+	// (funcsstrpad.go, Task 7) already use.
+	//
+	// The ListOf(TNull) row (the empty-list literal, "path([])") is Cost{}:
+	// it always produces the empty path, so a ResultBytes charge would be
+	// zero regardless (ceilDiv256 of an empty string is 0) — declared
+	// explicitly rather than left to that coincidence, and this row has no
+	// reference reading available at all: the reference errors on
+	// "path([])" outright ("No matching signature for path(list[nulltype])"),
+	// a registration difference from an earlier sub-project, not a Cost
+	// question.
 	"path": {
-		{Params: []Type{TString}, Ret: TPath, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
 			return boundedPath(args[0].AsStr(), ec.pathFormat)
 		}},
 		// The list row is what makes the specification's stated roundtrip
@@ -56,7 +89,7 @@ var pathFuncs = map[string][]Shape{
 		// pathFromParts reconstructs it into the SAME parsedPath shape
 		// parsePath itself produces, so String() — the one formula that
 		// already knows how a root joins its components — renders it.
-		{Params: []Type{ListOf(TString)}, Ret: TPath, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+		{Params: []Type{ListOf(TString)}, Ret: TPath, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
 			elems := args[0].AsList()
 			parts := make([]string, len(elems))
 			for i, e := range elems {
@@ -69,10 +102,18 @@ var pathFuncs = map[string][]Shape{
 		}},
 	},
 	"as_posix": {
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(asPosix(pathOf(args[0]))), nil
 		}},
 	},
+	// is_absolute is Cost{}: it looks only at the receiver's ROOT, matching
+	// rule 3's own len()-style exemption ("simple lookups ... that do not
+	// process the string content"). Confirmed flat at 1 in the reference once
+	// path()'s own construction charge is subtracted out (path(11-byte
+	// text).is_absolute() measures 3 = 2 [path()] + 1 [is_absolute's own
+	// share]; path(299-byte text).is_absolute() measures 4 = 3 + 1 — the
+	// SAME 1 both times, unlike as_posix and the six properties below, which
+	// grow with the receiver).
 	"is_absolute": {
 		{Params: []Type{TPath}, Ret: TBool, Fn: func(args []Value) (Value, error) {
 			return Bool(pathOf(args[0]).isAbsolute()), nil
@@ -84,30 +125,39 @@ var pathFuncs = map[string][]Shape{
 	// section 1.2.4's receiver-coercion restriction apply to them: a STRING
 	// receiver does not coerce to TPath, and 'a/b.txt'.stem is an error by
 	// design, not an oversight.
+	//
+	// All six declare Cost{ArgBytes: {0}} on the receiver: RFC 0006's own
+	// worked example (path('/a/b/c.exr').stem measures 4 — 1 call + 1 byte
+	// unit for path(), 1 call + 1 byte unit for .stem) generalizes to every
+	// property here, confirmed scaling identically (11/299 bytes -> the
+	// property's own share is 2/3 each time) whether the property returns a
+	// string (name/stem/suffix), a path (parent) or a list (suffixes/parts)
+	// — the charge tracks what the property READS off the receiver, not what
+	// shape it returns.
 	"__property_name__": {
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return String(pathOf(args[0]).name()), nil
 		}},
 	},
 	"__property_stem__": {
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			stem, _ := splitStemSuffix(pathOf(args[0]).name())
 			return String(stem), nil
 		}},
 	},
 	"__property_suffix__": {
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			_, suffix := splitStemSuffix(pathOf(args[0]).name())
 			return String(suffix), nil
 		}},
 	},
 	"__property_suffixes__": {
-		{Params: []Type{TPath}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return stringList(pathOf(args[0]).suffixes())
 		}},
 	},
 	"__property_parent__": {
-		{Params: []Type{TPath}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
 			if len(p.comps) > 0 {
 				p.comps = p.comps[:len(p.comps)-1]
@@ -116,15 +166,22 @@ var pathFuncs = map[string][]Shape{
 		}},
 	},
 	"__property_parts__": {
-		{Params: []Type{TPath}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return stringList(pathOf(args[0]).parts())
 		}},
 	},
 	// with_name validates its argument through withName — see that function's
 	// doc comment for the shared rule with_stem and with_suffix also run
 	// their replacement text through, rather than each checking separately.
+	//
+	// ArgBytes on the RECEIVER ONLY (index 0) — confirmed with a probe built
+	// to discriminate: a short receiver with a 300-byte replacement name
+	// measures the SAME as a short receiver with a 1-byte replacement, but a
+	// 299-byte receiver with a 1-byte replacement scales. The replacement's
+	// own length never contributes, the same pattern Task 7 confirmed for
+	// strip()'s cutset and removeprefix()'s affix arguments.
 	"with_name": {
-		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return withName(pathOf(args[0]), args[1].AsStr())
 		}},
 	},
@@ -138,8 +195,10 @@ var pathFuncs = map[string][]Shape{
 	// withName with_name uses, so a value with_name would reject (a
 	// separator, ".") is rejected here too rather than independently
 	// re-derived.
+	//
+	// ArgBytes on the receiver only, same as with_name — confirmed identically.
 	"with_stem": {
-		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
 			_, suffix := splitStemSuffix(p.name())
 			stem := args[1].AsStr()
@@ -163,8 +222,10 @@ var pathFuncs = map[string][]Shape{
 	// '/' has no final component either. Python 3.14 checks empty-name
 	// first; the reference does not, and fix round 1 confirmed this by
 	// measurement — do not reorder these to match Python.
+	//
+	// ArgBytes on the receiver only, same as with_name.
 	"with_suffix": {
-		{Params: []Type{TPath, TString}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath, TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			suffix := args[1].AsStr()
 			p := pathOf(args[0])
 			if suffix != "" && (!strings.HasPrefix(suffix, ".") || len(suffix) <= 1 || strings.ContainsAny(suffix, pathSeparators(p))) {
@@ -181,8 +242,13 @@ var pathFuncs = map[string][]Shape{
 	// with no final component (p.name() == "") fails with the ordinary
 	// errEmptyName rather than a second empty-name check grown here; the
 	// string row calls withNumber directly with no path involved at all.
+	//
+	// Both rows declare ArgBytes: {0} — on the PATH receiver for the first
+	// row, on the plain STRING argument for the second (there is no path
+	// involved on that row at all) — each confirmed scaling with that row's
+	// own index-0 argument.
 	"with_number": {
-		{Params: []Type{TPath, TInt}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath, TInt}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
 			newName, err := withNumber(p.name(), args[1].AsInt())
 			if err != nil {
@@ -190,7 +256,7 @@ var pathFuncs = map[string][]Shape{
 			}
 			return withName(p, newName)
 		}},
-		{Params: []Type{TString, TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			result, err := withNumber(args[0].AsStr(), args[1].AsInt())
 			if err != nil {
 				return Value{}, err
@@ -198,14 +264,45 @@ var pathFuncs = map[string][]Shape{
 			return String(result), nil
 		}},
 	},
+	// is_relative_to and relative_to both PROCESS TWO path values —
+	// relativeParts (below) walks both p.parts() and other.parts() to find
+	// the common prefix — so both declare Cost{ArgBytes: {0, 1}}, charging
+	// EACH operand's own bytes.
+	//
+	// This is a DELIBERATE, DOCUMENTED OVERCOUNT relative to the reference,
+	// not a match: the reference's own formula is neither "receiver only"
+	// nor "sum of both", but max(ceil(len(p)/256), ceil(len(other)/256)) —
+	// isolated with three probes that a simpler formula cannot all explain
+	// at once (a receiver=2B/other=2B pair measuring 2, a
+	// receiver=299B/other=2B pair AND its reverse (2B/299B) both measuring
+	// 3, and a receiver=10B/other=249B pair — both individually under the
+	// 256-byte ceiling alone — measuring 2, not the 3 a combined-then-ceiled
+	// sum would give). The Cost mechanism has no "max of two ceils"
+	// primitive — chargeArgs (ops.go) ceils and sums each declared index
+	// independently — so declaring both indices instead OVER-counts by
+	// (at most) the smaller operand's own ceil, typically 1 op. Given the
+	// mechanism cannot express the reference's exact formula, the
+	// conservative direction is the safe one: both is_relative_to and
+	// relative_to genuinely read every byte relativeParts touches on BOTH
+	// operands, so undercounting by charging only one (which a
+	// receiver-only or other-only reading would do whenever the UNCHARGED
+	// side is the long one) would leave real, template-author-controlled
+	// work unmetered — the exact gap section 1.3.10 exists to close. A small
+	// constant overcount does not.
+	//
+	// relative_to's own constructed result gets NO additional ResultBytes
+	// charge: confirmed identical to is_relative_to's (bool-returning, so
+	// definitionally cannot carry one) at every probed size, so relative_to's
+	// own path construction contributes nothing beyond the shared ArgBytes
+	// charge above.
 	"is_relative_to": {
-		{Params: []Type{TPath, TPath}, Ret: TBool, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath, TPath}, Ret: TBool, Cost: Cost{ArgBytes: []int{0, 1}}, Fn: func(args []Value) (Value, error) {
 			_, ok := relativeParts(pathOf(args[0]), pathOf(args[1]), byteEqual)
 			return Bool(ok), nil
 		}},
 	},
 	"relative_to": {
-		{Params: []Type{TPath, TPath}, Ret: TPath, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath, TPath}, Ret: TPath, Cost: Cost{ArgBytes: []int{0, 1}}, Fn: func(args []Value) (Value, error) {
 			p := pathOf(args[0])
 			remaining, ok := relativeParts(p, pathOf(args[1]), byteEqual)
 			if !ok {

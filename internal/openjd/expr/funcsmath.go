@@ -23,6 +23,23 @@ var mathFuncs = map[string][]Shape{
 	// returns 1230.0 typed float for round(1234.5, -1). RFC 0006's signature
 	// table says "returns int when ndigits <= 0", and the specification
 	// outranks the reference; see test/oracle/baseline.txt.
+	//
+	// COST (sub-project E1, Task 8): Cost{} on all three -- round takes no
+	// string, path or list argument, so neither rule 2 nor rule 3 names any
+	// charge here. NOT REPRODUCED: the reference's own count for the
+	// (float, int) and (int, int) rows is NOT flat -- it adds ceil(ndigits/256)
+	// when ndigits is POSITIVE (round(2.0,1) measures 2, round(2.0,300)
+	// measures 3, round(2.0,600) measures 4) and stays flat for ndigits <= 0
+	// no matter its magnitude (round(2.0,-600) still measures 2). This tracks
+	// the RENDERED decimal string's length, but that string lives on
+	// Value.fs (floatRendered, value.go), a field Cost's ArgBytes/ResultBytes
+	// deliberately never read (value.go's own doc: "nothing propagates it" --
+	// section 1.3.4's rule, not a shortcut). Reproducing the reference's count
+	// would require charging bytes for a presentation-only field no other Cost
+	// row in this package touches, on an argument (ndigits, an int) that rule
+	// 3 does not name ("a string or path value"). Left uncharged, per the
+	// standing rule that an unreproducible reference count is not chased
+	// absent spec text to justify it. See cost_misc_internal_test.go's PROBE.
 	"round": {
 		{Params: []Type{TFloat}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			n, err := floatToInt(math.RoundToEven(args[0].AsFloat()))
@@ -43,6 +60,12 @@ var mathFuncs = map[string][]Shape{
 	// machinery: argCost ranks an exact match below a widening one, so abs(-5)
 	// lands on the int row and abs(-2.5) on the float row, and a constrained
 	// variable would only re-derive that ranking by hand.
+	//
+	// COST (sub-project E1, Task 8): Cost{} on both rows -- abs takes a single
+	// scalar and does no list or string/path work; confirmed flat at 1 (rule 1
+	// only) in the reference for both int and float, isolated from unary
+	// minus's own separate charge (abs(-1) measures 2, but "-1" alone already
+	// measures 1 -- abs's own share is exactly 1).
 	"abs": {
 		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			n := args[0].AsInt()
@@ -64,6 +87,10 @@ var mathFuncs = map[string][]Shape{
 	// floor and ceil both return int from EITHER argument type, which is RFC
 	// 0006's signature and not an oversight: their whole purpose is the
 	// destructive conversion int() refuses to perform.
+	//
+	// COST (sub-project E1, Task 8): Cost{} on all four rows (floor and ceil
+	// together) -- same reasoning as abs: a single scalar in, a single scalar
+	// out, confirmed flat at 1 in the reference for both argument types.
 	"floor": {
 		{Params: []Type{TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return args[0], nil
@@ -88,6 +115,54 @@ var mathFuncs = map[string][]Shape{
 			return Int(n), nil
 		}},
 	},
+	// COST (sub-project E1, Task 8), min and max together: rule 2 names both
+	// by name ("built-in functions that iterate lists such as ... min(),
+	// max() ..."). The two LIST rows (ListOf(TInt), ListOf(TFloat)) declare
+	// Cost{ArgElements: {0}}, confirmed scaling in the reference
+	// (min([3,1,2]) measures 4 = 1 call + 3 elements).
+	//
+	// The FIXED-ARITY (T,T) and (T,T,T) rows, and the list[nulltype] and
+	// range_expr rows, are ALL Cost{} -- two separate DIVERGENCES from the
+	// reference, neither reproducible with the Cost mechanism as built:
+	//
+	//  1. The reference's own count for the SCALAR 2-arg and 3-arg rows is
+	//     NOT flat: min(1,2) measures 3 and min(1,2,3) measures 4 -- exactly
+	//     1 (the call) plus N (the argument COUNT), the identical formula the
+	//     list rows use, as if the reference internally treats every
+	//     min/max call as "iterate a slice of N values" regardless of
+	//     whether the N came from unpacking a list argument or from N
+	//     separate positional arguments. RFC 0006 declares min(T,T) and
+	//     min(T,T,T) as distinct, FIXED-ARITY overloads from min(list[T]) --
+	//     neither takes a list value at all -- and rule 2's own text requires
+	//     "iterates through every element of A LIST" for the charge to apply.
+	//     Reproducing the reference's count here would need a NEW Cost
+	//     mechanism (an unconditional per-Shape charge equal to len(Params),
+	//     unrelated to any argument's VALUE), which every other charge in
+	//     this package keys off instead, and which is outside this task's
+	//     brief. It also would not serve section 1.3.10's own stated purpose:
+	//     the arity here is fixed by the overload (2 or 3), so there is no
+	//     template-author-controlled quantity to bound.
+	//
+	//  2. The range_expr row's reference count does NOT scale with the
+	//     range's size (min(range_expr("1-5")) and
+	//     min(range_expr("1-100000")) both measure 3), matching the EXACT
+	//     shape of the range_expr divergence Task 5 already found and left
+	//     uncharged for the "in"/"not in" operator's own range_expr row
+	//     (ops.go's OpIn/OpNotIn, TInt/TRangeExpr) -- "probed 1 in
+	//     range_expr('1-3') and 1 in range_expr('1-100') both at 3", also
+	//     uncharged there. Both cases share the same flat, non-scaling
+	//     residual (a reference count of 3 where sqi's own total, uncharged,
+	//     is 2) that Task 5 already reviewed and accepted as not worth
+	//     chasing: it is not rule 2 (nothing scales, so nothing is being
+	//     "iterated" in the charged sense) and not rule 3 (range_expr is
+	//     neither a string nor a path). This task follows that precedent
+	//     rather than re-litigating it.
+	//
+	// See cost_misc_internal_test.go's PROBE for the transcribed measurements
+	// of both divergences, and TestMinMax_EmptyList_SelectsNoReturnRow
+	// (below the tables) for why the list[nulltype] row's own Cost{} needs no
+	// separate justification: it never reaches a success path to charge
+	// anything from.
 	"min": {
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return extremumInt(args, true)
@@ -101,10 +176,10 @@ var mathFuncs = map[string][]Shape{
 		{Params: []Type{TFloat, TFloat, TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
 			return extremumFloat(args, true)
 		}},
-		{Params: []Type{ListOf(TInt)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TInt)}, Ret: TInt, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return extremumInt(args[0].AsList(), true)
 		}},
-		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return extremumFloat(args[0].AsList(), true)
 		}},
 		// The empty literal's own row. list[nulltype] matches it EXACTLY (cost
@@ -144,10 +219,10 @@ var mathFuncs = map[string][]Shape{
 		{Params: []Type{TFloat, TFloat, TFloat}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
 			return extremumFloat(args, false)
 		}},
-		{Params: []Type{ListOf(TInt)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TInt)}, Ret: TInt, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return extremumInt(args[0].AsList(), false)
 		}},
-		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return extremumFloat(args[0].AsList(), false)
 		}},
 		{Params: []Type{ListOf(TNull)}, Ret: TNoReturn, Fn: func([]Value) (Value, error) {
@@ -171,21 +246,37 @@ var mathFuncs = map[string][]Shape{
 	// registered first — TestSum_EmptyListIsOrderIndependent pins that
 	// reordering these rows does not change the result, which is what a
 	// position-dependent tie would have let happen.
+	//
+	// COST (sub-project E1, Task 8): rule 2 names sum() by name. The two list
+	// rows declare Cost{ArgElements: {0}} (list[nulltype] is Cost{}: its
+	// element count is always zero, so there is nothing to charge). The
+	// range_expr row ALSO declares Cost{ArgElements: {0}} -- UNLIKE min/max's
+	// own range_expr row above, this one is confirmed SCALING in the
+	// reference (sum(range_expr("1-100")) measures 102, sum(range_expr(
+	// "1-1000")) measures 1002, both exactly 1 + N) and reproduces exactly:
+	// range_expr's own construction already charges nothing (funcsconv.go),
+	// so sum's own share is 1 (the call) + N (elementCount, which resolves a
+	// range_expr via rangeExprCount, ops.go's elementCount) — matching the
+	// reference precisely, no divergence. The difference from min/max is
+	// real, not an inconsistency: summing genuinely visits every value,
+	// where min/max's own reference implementation apparently finds its
+	// answer arithmetically from the range's endpoints without touching each
+	// one (see min/max's own COST comment above).
 	"sum": {
 		{Params: []Type{ListOf(TNull)}, Ret: TInt, Fn: func([]Value) (Value, error) {
 			return Int(0), nil
 		}},
-		{Params: []Type{ListOf(TInt)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TInt)}, Ret: TInt, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return sumInts(args[0].AsList())
 		}},
-		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TFloat)}, Ret: TFloat, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			total := 0.0
 			for _, v := range args[0].AsList() {
 				total += v.AsFloat()
 			}
 			return floatValue(total)
 		}},
-		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TRangeExpr}, Ret: TInt, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			ints, err := rangeInts(args[0])
 			if err != nil {
 				return Value{}, err

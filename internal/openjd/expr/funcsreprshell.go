@@ -12,39 +12,63 @@ import "strings"
 // command line, so a quoting bug here is a command-injection bug. The two
 // serialization functions next door produce data, where the same class of bug
 // is merely malformed output.
+//
+// COST (sub-project E1, Task 8): section 1.3.10 rule 2 names all FIVE repr_*
+// functions by name ("repr_sh(), repr_py(), repr_json(), repr_pwsh(),
+// repr_cmd()"), and rule 3 additionally names repr_sh() by name. Every
+// STRING/PATH row here declares Cost{ArgBytes: []int{0}}, confirmed scaling
+// against the reference at 10/300/600-byte inputs (2/3/4 operations). Every
+// LIST row declares Cost{ArgElements: []int{0}} — confirmed for repr_sh
+// against the reference (5 and 20-element literal lists measure 1+N), which is
+// the DIVERGENCE case for the other three: the reference's own count for
+// repr_cmd's and repr_pwsh's list rows stays flat at 1 regardless of element
+// count (5 or 20), omitting rule 2's own charge for the very functions rule 2
+// names by name — see cost_misc_internal_test.go's PROBE comment and
+// TestOperationCount_ReprFunctionsListChargesElementsDespiteReferenceOmission.
+// Per the standing rule (the specification outranks the reference, and Tasks
+// 5-7 each landed an analogous correction), sqi charges ArgElements on all
+// five repr_* functions' list rows, not just repr_sh's.
 var reprShellFuncs = map[string][]Shape{
 	"repr_sh": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(shellQuote(args[0].AsStr()))
 		}},
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(shellQuote(pathText(args[0])))
 		}},
-		{Params: []Type{ListOf(TString)}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TString)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return joinRendered(args[0].AsList(), " ", func(v Value) string { return shellQuote(v.AsStr()) })
 		}},
-		{Params: []Type{ListOf(TPath)}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{ListOf(TPath)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return joinRendered(args[0].AsList(), " ", func(v Value) string { return shellQuote(pathText(v)) })
 		}},
 	},
 	"repr_cmd": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(cmdQuote(args[0].AsStr()))
 		}},
-		{Params: []Type{ListOf(TString)}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		// DIVERGENCE from the reference: see this var block's own COST comment.
+		{Params: []Type{ListOf(TString)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return joinRendered(args[0].AsList(), " ", func(v Value) string { return cmdQuote(v.AsStr()) })
 		}},
 	},
 	"repr_pwsh": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(pwshQuote(args[0].AsStr()))
 		}},
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(pwshQuote(pathText(args[0])))
 		}},
+		// Cost{}: neither rule fires for a range_expr operand. Rule 3 covers
+		// only "a string or path value" -- a range_expr is neither -- and the
+		// reference agrees: repr_pwsh(range_expr(...)) stays flat at the same
+		// count for a 7-byte range text and a 4444-byte one, confirmed in the
+		// PROBE.
 		{Params: []Type{TRangeExpr}, Ret: TString, Fn: func(args []Value) (Value, error) {
 			return boundedString(pwshQuote(args[0].String()))
 		}},
+		// Cost{}: int/float/bool render from a fixed-shape payload with no
+		// input to scan; confirmed flat at 1 (rule 1 only) in the reference.
 		{Params: []Type{TInt}, Ret: TString, Fn: func(args []Value) (Value, error) {
 			return String(args[0].String()), nil
 		}},
@@ -57,7 +81,8 @@ var reprShellFuncs = map[string][]Shape{
 			}
 			return String("$false"), nil
 		}},
-		{Params: []Type{ListOf(varT)}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		// DIVERGENCE from the reference: see this var block's own COST comment.
+		{Params: []Type{ListOf(varT)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			body, err := joinRendered(args[0].AsList(), ", ", pwshElement)
 			if err != nil {
 				return Value{}, err

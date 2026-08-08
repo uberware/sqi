@@ -23,16 +23,29 @@ var errGroupReference = errors.New("group references in a replacement string are
 // nor Rust's regex, and RFC 0006 defines the accepted dialect as the
 // INTERSECTION of those two. See translatePattern's comment for the three
 // directions in which they differ.
+//
+// COST (sub-project E1, Task 8): section 1.3.10 rule 3 names "regex functions"
+// outright, so every row here declares Cost{ArgBytes: []int{0}} on the SUBJECT
+// string (the value being matched against), never the pattern or the
+// replacement/repl text — confirmed against the reference by holding the
+// subject fixed and growing the pattern (re_match, unaffected) and by holding
+// the pattern fixed and growing repl (re_sub, unaffected): only the subject's
+// length moves the count. re_findall and re_split each produce a LIST, and
+// their own probe (varying subject length at a FIXED match/split density, so
+// element count and byte count diverge) shows ArgBytes-on-the-subject alone
+// already accounts for the total — no additional ResultElements charge is
+// present in the reference for either. See cost_misc_internal_test.go's PROBE
+// comment for the transcribed measurements.
 var reFuncs = map[string][]Shape{
 	// re_match and re_search differ only in anchoring. Both return the full
 	// match at index 0 followed by the capture groups, or null.
 	"re_match": {
-		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return reFind(args[0].AsStr(), args[1].AsStr(), true)
 		}},
 	},
 	"re_search": {
-		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return reFind(args[0].AsStr(), args[1].AsStr(), false)
 		}},
 	},
@@ -40,18 +53,24 @@ var reFuncs = map[string][]Shape{
 	// a runtime value, so its declared return is a union. RFC 0006: full
 	// matches with no group, the single group's captures with one, a list per
 	// match with two or more.
+	//
+	// ArgBytes on the subject ONLY -- NOT ResultElements, despite producing a
+	// list: confirmed by growing the subject at a FIXED match density (100
+	// matches in a 200-byte subject vs. 400 matches in an 800-byte subject),
+	// which discriminates an element-count charge from a byte charge, and the
+	// reference's count tracks the SUBJECT'S BYTE LENGTH, not the match count.
 	"re_findall": {
-		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), ListOf(ListOf(TString))), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), ListOf(ListOf(TString))), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return reFindAll(args[0].AsStr(), args[1].AsStr())
 		}},
 	},
 	"re_sub": {
-		{Params: []Type{TString, TString, TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return reSub(args[0].AsStr(), args[1].AsStr(), args[2].AsStr())
 		}},
 	},
 	"re_escape": {
-		{Params: []Type{TString}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			quoted := reEscape(args[0].AsStr())
 			if err := checkStringBytes(len(quoted)); err != nil {
 				return Value{}, err
@@ -59,11 +78,14 @@ var reFuncs = map[string][]Shape{
 			return String(quoted), nil
 		}},
 	},
+	// re_split: ArgBytes on the subject ONLY, same reasoning as re_findall --
+	// confirmed by splitting subjects of different byte lengths at a fixed
+	// split density, in both the 2-arg (unlimited) and 3-arg (maxsplit) forms.
 	"re_split": {
-		{Params: []Type{TString, TString}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return reSplit(args[0].AsStr(), args[1].AsStr(), reSplitUnlimited)
 		}},
-		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return reSplit(args[0].AsStr(), args[1].AsStr(), args[2].AsInt())
 		}},
 	},

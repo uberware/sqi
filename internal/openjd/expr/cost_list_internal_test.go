@@ -161,14 +161,12 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		// len(). len itself charges nothing, and in particular does NOT
 		// expand the range to count it -- see Task 12.
 		{"len(range_expr('1-100'))", 2, "range_expr() call + len() call, no expansion"},
-		// EXPECTED TO CHANGE when Task 8 lands path()'s own Cost: this pins
-		// sqi's CURRENT total (path() call, presently uncharged, + len()
-		// call, which adds nothing), not the reference's 3 (see the probe
-		// comment above). If this starts failing after Task 8, that is the
-		// expected consequence of path() gaining a real charge, not a
-		// regression in len()'s own exemption -- update the want here to
-		// match, and re-confirm len's own contribution is still 0.
-		{"len(path('/a/b'))", 2, "path() call (uncharged, Task 8 not landed yet) + len() call, len itself adds nothing"},
+		// UPDATED by Task 8, as anticipated above: path(string) now declares
+		// Cost{ArgBytes: {0}} (funcspath.go), so path('/a/b') itself costs
+		// 1 call + ceil(4/256)=1 = 2, matching the reference's own 3 exactly
+		// once len()'s own call (1, still adding nothing -- len's exemption is
+		// unchanged) is added: 2 + 1 = 3.
+		{"len(path('/a/b'))", 3, "path() call (now ArgBytes-charged by Task 8) + len() call, len itself still adds nothing"},
 
 		// bool()/int()/float() carry no Cost anywhere -- neither rule names
 		// them, and probing shows their own work does not scale with input

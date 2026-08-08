@@ -150,9 +150,27 @@ func applyURIRule(s string, r PathMapRule) (string, bool) {
 // the only layer with a scope model; E uses Expression.CalledFunctions to spot
 // the call. A leaf gate would also break the deliberate conformance regression
 // this registration causes — see the design doc §5 and §6.
+// COST (sub-project E1, Task 8): apply_path_mapping walks the rule list and
+// matches/rewrites its argument against each source path, which is rule 3's
+// "processes a string or path value" applied to that argument — so
+// Cost{ArgBytes: {0}} on its one row, charging the INPUT text being mapped,
+// consistent with every other row in this package that processes a single
+// string/path argument (funcspath.go's ArgBytes-on-input rows).
+//
+// This charge has NO ORACLE COVERAGE and cannot get any: scripts/expr-oracle.py
+// invokes the reference with only `src` and `target_type` (see its own
+// doc/the sub-project's tracker), with no channel for session path-mapping
+// rules — evaluate_with_metrics's own keyword arguments (values, profile,
+// target_type, path_format, memory_limit, operation_limit; confirmed via
+// inspect.signature against openjd-model 0.11.1) carry no host_context
+// parameter either, so apply_path_mapping is not even RESOLVABLE through the
+// oracle's entry point (it raises "Unknown function: 'apply_path_mapping'").
+// This charge is pinned by unit test alone (cost_misc_internal_test.go's
+// TestOperationCount_ApplyPathMapping), not cross-checked against any
+// external ground truth.
 var pathMappingFuncs = map[string][]Shape{
 	"apply_path_mapping": {
-		{Params: []Type{TString}, Ret: TPath, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+		{Params: []Type{TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
 			return boundedPath(mapPath(args[0].AsStr(), ec.pathMapping, ec.pathFormat), ec.pathFormat)
 		}},
 	},

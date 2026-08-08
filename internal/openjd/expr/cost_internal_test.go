@@ -122,3 +122,41 @@ func TestSpecNamedStringFunctions(t *testing.T) {
 		t.Errorf("specNamedStringFunctions() = %v; want %v", got, want)
 	}
 }
+
+// TestCost_SpecNamedFunctionsAllCharge asserts that every function section
+// 1.3.10 names in rules 2 and 3 carries a non-zero Cost on at least one of its
+// signatures.
+//
+// This is the test that makes the declarative choice worth its constraints:
+// the specification ENUMERATES these names, so the table can be checked
+// against its own source rather than against someone's memory of it. A
+// function added to the registry without a Cost decision fails here rather
+// than silently under-charging.
+//
+// The brief's own inline draft of this test carried a HAND-COPIED "named"
+// list duplicating specNamedIteratingFunctions's and specNamedStringFunctions's
+// own return values (shape.go). That duplication is exactly what those two
+// helpers exist to prevent -- Task 4 built them for precisely this coverage
+// test, and shape.go's own doc comments on both say so -- so this iterates
+// the SPEC-TEXT-SOURCED helpers directly rather than a third hand-copied
+// list that could drift from either. Names appearing in BOTH lists (join,
+// repr_sh) are simply checked twice, which is harmless: the loop body is
+// idempotent per name.
+func TestCost_SpecNamedFunctionsAllCharge(t *testing.T) {
+	named := append(slices.Clone(specNamedIteratingFunctions()), specNamedStringFunctions()...)
+	for _, name := range named {
+		t.Run(name, func(t *testing.T) {
+			shapes, ok := functionShapes[name]
+			if !ok {
+				t.Fatalf("%q is named by section 1.3.10 but is not registered", name)
+			}
+			for _, s := range shapes {
+				if len(s.Cost.ArgElements) > 0 || len(s.Cost.ArgBytes) > 0 ||
+					s.Cost.ResultElements || s.Cost.ResultBytes {
+					return
+				}
+			}
+			t.Errorf("%q is named by section 1.3.10 but no signature declares a Cost", name)
+		})
+	}
+}

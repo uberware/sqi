@@ -27,6 +27,37 @@ import (
 // rows apart. If a future change ever gives the catch-all branch behavior
 // that diverges from the dedicated rows (for example, by narrowing that
 // switch), it must add a test that can — this one can't.
+// COST (sub-project E1, Task 8): rule 2 names repr_py() and repr_json() by
+// name; rule 3 does not name either (only repr_sh()), but the reference's own
+// measured count SCALES with a string argument's byte length for both
+// (10/300/600 bytes -> 2/3/4) -- rule 3's "and similar" catch-all covers work
+// that is proportional to string length even where the enumeration is silent,
+// the same reading Task 6 and Task 7 already established. So the catch-all
+// varT row below declares BOTH Cost{ArgElements: {0}} (rule 2, over a list --
+// a DIVERGENCE, see below) and Cost{ArgBytes: {0}} (rule 3, over a string):
+// chargeArgs reads args[0].s for the byte charge (empty, hence zero, for a
+// list/int/float/bool argument -- only a string populates it) and
+// elementCount for the element charge (zero for anything but a list/
+// range_expr), so declaring both on the SAME row is safe and never
+// double-charges a single argument.
+//
+// The DIVERGENCE: the reference's own count for a LIST argument to repr_py or
+// repr_json stays flat at 1 regardless of element count (5 or 20 -- see the
+// PROBE in cost_misc_internal_test.go), the same omission repr_pwsh's and
+// repr_cmd's list rows have (funcsreprshell.go) despite rule 2 naming all
+// four functions by name alongside repr_sh, whose list row DOES scale in the
+// reference. Per the standing rule, sqi charges ArgElements here regardless.
+//
+// TNull and TRangeExpr get their OWN zero-Cost rows rather than falling
+// through the catch-all's ArgBytes/ArgElements (which would also charge zero
+// for them, since neither populates .s or is a list): TNull's payload is a
+// glyph, and rule 3 does not apply to range_expr at all (confirmed flat
+// against a 4444-byte range_expr TEXT in the PROBE -- range_expr's own
+// constructor already carries the identical "no Cost" ruling, see
+// funcsconv.go's "range_expr" entry). TPath gets Cost{ArgBytes: {0}}: rule 3
+// explicitly covers path values, and the reference confirms scaling (11/299
+// bytes -> total 4/6, matching path()'s own construction charge plus this
+// row's).
 var reprDataFuncs = map[string][]Shape{
 	"repr_py": {
 		{Params: []Type{TNull}, Ret: TString, Fn: func([]Value) (Value, error) {
@@ -35,10 +66,10 @@ var reprDataFuncs = map[string][]Shape{
 		{Params: []Type{TRangeExpr}, Ret: TString, Fn: func(args []Value) (Value, error) {
 			return boundedString(pyRepr(String(args[0].String())))
 		}},
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(pyRepr(String(pathText(args[0]))))
 		}},
-		{Params: []Type{varT}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{varT}, Ret: TString, Cost: Cost{ArgElements: []int{0}, ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(pyRepr(args[0]))
 		}},
 	},
@@ -49,10 +80,10 @@ var reprDataFuncs = map[string][]Shape{
 		{Params: []Type{TRangeExpr}, Ret: TString, Fn: func(args []Value) (Value, error) {
 			return boundedString(jsonRepr(String(args[0].String())))
 		}},
-		{Params: []Type{TPath}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TPath}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(jsonRepr(String(pathText(args[0]))))
 		}},
-		{Params: []Type{varT}, Ret: TString, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{varT}, Ret: TString, Cost: Cost{ArgElements: []int{0}, ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
 			return boundedString(jsonRepr(args[0]))
 		}},
 	},
