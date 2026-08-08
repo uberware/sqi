@@ -265,3 +265,261 @@ func TestCheckFormatString_HostOnlyFunctionPlacement(t *testing.T) {
 		t.Errorf("apply_path_mapping must be allowed in a host context: %v", errs)
 	}
 }
+
+// TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm closes
+// a coverage gap the committed suite left open: TestCheckFormatString_
+// HostOnlyFunctionPlacement above only exercises a LONE reference calling
+// apply_path_mapping as a plain function. A reviewer confirmed with
+// throwaway tests that checkHostOnlyFunctions also fires when the call sits
+// inside an embedded segment (surrounded by other text) and when it is
+// written in method-call syntax (RawParam.P.apply_path_mapping()) -- neither
+// shape was pinned in the repo. checkHostOnlyFunctions walks
+// Expression.CalledFunctions(), which collects a call's function name
+// regardless of whether it was written as a free call or a method call, and
+// runs BEFORE Eval -- so the method form is rejected for the host-context
+// reason here, not for lacking a "(path)" overload of apply_path_mapping as
+// a method (which internal/openjd/expr/doc.go notes it does not have).
+func TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:                 "T",
+		ParameterDefinitions: []JobParameter{{Name: "P", Type: "PATH"}},
+	}
+	syms := symbolsFor(tmpl, nil, nil, ScopeJob, nil)
+
+	t.Run("embedded segment", func(t *testing.T) {
+		const src = "prefix {{ apply_path_mapping(RawParam.P) }} suffix"
+		errs := checkFormatString(src, "/p", ScopeJob, syms, TargetString)
+		if len(errs) == 0 {
+			t.Fatal("apply_path_mapping was accepted in a submission-time scope")
+		}
+		if !strings.Contains(errs[0].Message, "apply_path_mapping") {
+			t.Errorf("message %q does not name the function", errs[0].Message)
+		}
+	})
+
+	t.Run("method-call form", func(t *testing.T) {
+		const src = "{{ RawParam.P.apply_path_mapping() }}"
+		errs := checkFormatString(src, "/p", ScopeJob, syms, TargetString)
+		if len(errs) == 0 {
+			t.Fatal("apply_path_mapping() written as a method call was accepted in a submission-time scope")
+		}
+		if !strings.Contains(errs[0].Message, "apply_path_mapping") {
+			t.Errorf("message %q does not name the function", errs[0].Message)
+		}
+	})
+}
+
+// TestCheckFormatString_ArgItemShapes pins section 1.3.2's list-item rule for
+// TargetArgItem, the union expr.UnionOf(expr.OptionalOf(expr.TString),
+// expr.ListOf(expr.TString)): a string is one argument, None drops it, and a
+// list[string] flattens inline -- but a list[list[string]] (nesting one level
+// too deep) does not type-check. checkActionExpressions (exprcheck.go) is
+// TargetArgItem's first real caller in the template walk; this test pins the
+// contract at the checkFormatString level so a later sub-project (E4, which
+// performs the substitution TargetArgItem only type-checks here) inherits a
+// pinned contract rather than a prose description.
+func TestCheckFormatString_ArgItemShapes(t *testing.T) {
+	tmpl := &JobTemplate{Name: "T"}
+	syms := symbolsFor(tmpl, nil, nil, ScopeStepScript, nil)
+
+	tests := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		{"a string is one argument", "{{ 'x' }}", false},
+		{"None drops the argument", "{{ None }}", false},
+		{"a list[string] flattens inline", "{{ ['a', 'b'] }}", false},
+		{"a list[list[string]] does not type-check", "{{ [['a'], ['b']] }}", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := checkFormatString(tc.src, "/p", ScopeStepScript, syms, TargetArgItem)
+			if tc.wantErr && len(errs) == 0 {
+				t.Fatalf("checkFormatString(%q) accepted it; want a rejection", tc.src)
+			}
+			if !tc.wantErr && len(errs) != 0 {
+				t.Fatalf("checkFormatString(%q) rejected it: %v", tc.src, errs)
+			}
+		})
+	}
+}
+
+// TestCheckFormatString_TimeoutTarget pins the target-type contract
+// checkActionExpressions applies at the "action timeout" position (TargetInt).
+//
+// This exercises checkFormatString directly rather than through
+// checkTemplateExpressions and a full YAML round trip, because decodeAction
+// (parse.go) decodes "timeout" as a STRICT integer for every template, EXPR
+// or not -- scalarToInt has no case for a "{{ ... }}" string, so it errors
+// "timeout must be an integer" at PARSE time before ValidateWithOptions ever
+// runs. There is therefore no field on Action that can carry an unresolved
+// format-string body at this position today; checkActionExpressions'
+// strconv.Itoa(a.TimeoutSeconds) call is wired for the position but is
+// necessarily a no-op against a real template until that decoder changes,
+// which is a separate gap this task does not close (see
+// checkActionExpressions' doc comment). This test pins the contract that
+// call applies, independent of whether decodeAction can reach it yet.
+func TestCheckFormatString_TimeoutTarget(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:                 "T",
+		ParameterDefinitions: []JobParameter{{Name: "S", Type: "STRING"}},
+	}
+	syms := symbolsFor(tmpl, nil, nil, ScopeStepScript, nil)
+
+	if errs := checkFormatString("{{ [Param.S] }}", "/p", ScopeStepScript, syms, TargetInt); len(errs) == 0 {
+		t.Error("a list value was accepted against an int timeout target")
+	}
+	// What a real, already-decoded timeout looks like today: a plain decimal
+	// string with no "{{" reference. Must stay accepted.
+	if errs := checkFormatString("30", "/p", ScopeStepScript, syms, TargetInt); len(errs) != 0 {
+		t.Errorf("a plain decoded timeout value must not be rejected: %v", errs)
+	}
+}
+
+// ─── checkTemplateExpressions ───────────────────────────────────────────────
+
+// TestCheckTemplateExpressions_NoOpWithoutEXPR pins that checkTemplateExpressions
+// does nothing for a template that does not declare the EXPR extension. The
+// job name below would be rejected by checkFormatString (it is not a bare
+// dotted identifier) if the walk ran unconditionally; validate.go's base-spec
+// path covers this template instead.
+func TestCheckTemplateExpressions_NoOpWithoutEXPR(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name: "{{ this is not a dotted identifier }}",
+		Steps: []StepTemplate{{
+			Name:   "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{Command: "echo"}}},
+		}},
+	}
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Fatalf("checkTemplateExpressions must no-op for a template that does not declare EXPR; got: %v", errs)
+	}
+	if errs := checkTemplateExpressions(nil, nil); len(errs) != 0 {
+		t.Fatalf("checkTemplateExpressions must no-op for a nil template; got: %v", errs)
+	}
+}
+
+// TestCheckTemplateExpressions_HostRequirements pins the "host requirement
+// values" position (ScopeJob, TargetString) -- one of the two positions that
+// had NO format-string scope validation at all before sub-project E2's Task
+// 9. A Session.* reference is out of scope at ScopeJob (scope.go's
+// scopeFixed(ScopeJob) returns none), so it must be rejected at the amount's
+// min pointer.
+func TestCheckTemplateExpressions_HostRequirements(t *testing.T) {
+	minRef := "{{ Session.WorkingDirectory }}"
+	tmpl := &JobTemplate{
+		Name:       "T",
+		Extensions: []string{"EXPR"},
+		Steps: []StepTemplate{{
+			Name:   "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{Command: "echo"}}},
+			HostRequirements: &HostRequirements{
+				Amounts: []AmountRequirement{{Name: "amount.worker.vcpu", Min: &minRef}},
+			},
+		}},
+	}
+
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/hostRequirements/amounts/0/min"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "Session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an out-of-scope error at %s mentioning Session; got: %v", wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_RangeEntries pins the "task-parameter range
+// entries" position (ScopeJob, TargetString) -- the other position with no
+// format-string scope validation before Task 9. A Session.* reference in a
+// RangeList entry is out of scope at ScopeJob (task parameters, like host
+// requirements, are resolved before any session exists).
+func TestCheckTemplateExpressions_RangeEntries(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:       "T",
+		Extensions: []string{"EXPR"},
+		Steps: []StepTemplate{{
+			Name:   "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{Command: "echo"}}},
+			ParameterSpace: &StepParameterSpace{
+				TaskParameterDefinitions: []TaskParamDefinition{{
+					Name:      "Shot",
+					Type:      TaskParamTypeString,
+					RangeList: []string{"{{ Session.WorkingDirectory }}"},
+				}},
+			},
+		}},
+	}
+
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/parameterSpace/taskParameterDefinitions/0/range/0"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "Session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an out-of-scope error at %s mentioning Session; got: %v", wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget pins that the
+// walk applies TargetArgItem (not TargetString) at an action's args entries,
+// by round-tripping a value shape TargetString would reject but
+// TargetArgItem accepts: a list[string], which flattens inline per section
+// 1.3.2's list-item rule.
+func TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:       "T",
+		Extensions: []string{"EXPR"},
+		Steps: []StepTemplate{{
+			Name: "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{
+				Command: "echo",
+				Args:    []string{"{{ ['--quality', 'final'] }}"},
+				ArgsSet: true,
+			}}},
+		}},
+	}
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Fatalf("a list[string] args entry must type-check against TargetArgItem: %v", errs)
+	}
+}
+
+// TestCheckTemplateExpressions_AppliesSubmissionLimits pins that the walk
+// applies submissionLimits (a much tighter operation budget than expr.Eval's
+// own execution-time default of 10,000,000) end to end, not just when
+// checkFormatString is called directly with no opts. A single literal
+// 'a' * 3_000_000 costs ceil(3_000_000/256) = 11,719 operations to repeat --
+// under limits.go's fixed maxStringBytes floor (10,000,000 bytes) so it is
+// not rejected by that unrelated hard cap, but over submissionOperationLimit
+// (10,000) -- so it must be rejected as an operation-limit error, and
+// quickly: this is a single allocation, not a loop, so the test itself stays
+// fast regardless of what it is pinning.
+func TestCheckTemplateExpressions_AppliesSubmissionLimits(t *testing.T) {
+	tmpl := &JobTemplate{
+		Name:       "T",
+		Extensions: []string{"EXPR"},
+		Steps: []StepTemplate{{
+			Name: "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{
+				Command: "echo",
+				Args:    []string{"{{ 'a' * 3000000 }}"},
+				ArgsSet: true,
+			}}},
+		}},
+	}
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("a 3,000,000-character literal repeat was accepted; submissionLimits must reject it")
+	}
+	if !strings.Contains(errs[0].Message, "operation limit exceeded") {
+		t.Errorf("want an operation-limit error (submissionOperationLimit, not limits.go's unrelated "+
+			"maxStringBytes floor); got: %v", errs[0].Message)
+	}
+}

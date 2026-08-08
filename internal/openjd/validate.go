@@ -294,6 +294,14 @@ func Validate(t *JobTemplate) ValidationErrors {
 func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors {
 	var errs ValidationErrors
 
+	// exprDeclared gates which format-string checker runs at every position
+	// that carries one: the base-spec single-dotted-identifier path
+	// (validateFormatString, below) when the template does not declare EXPR,
+	// or the expression-evaluator path (checkTemplateExpressions, an
+	// unconditional call further down) when it does. Computed once so both
+	// paths agree on the same declaration.
+	exprDeclared := t.hasExtension("EXPR")
+
 	// ── specificationVersion ──────────────────────────────────────────────
 	if t.SpecificationVersion == "" {
 		errs = append(errs, ValidationError{
@@ -312,7 +320,9 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 		errs = append(errs, ValidationError{Pointer: "/name", Message: "required"})
 	}
 	errs = append(errs, validateNoControlChars(t.Name, "/name")...)
-	errs = append(errs, validateFormatString(t.Name, "/name", ScopeJob, nil)...)
+	if !exprDeclared {
+		errs = append(errs, validateFormatString(t.Name, "/name", ScopeJob, nil)...)
+	}
 	for _, f := range t.UnknownFields {
 		errs = append(errs, ValidationError{
 			Pointer: "/" + f,
@@ -329,7 +339,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	errs = append(errs, validateJobParams(t.ParameterDefinitions)...)
 
 	// ── jobEnvironments ───────────────────────────────────────────────────
-	errs = append(errs, validateEnvironments(t.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment)...)
+	errs = append(errs, validateEnvironments(t.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment, exprDeclared)...)
 
 	// ── steps ─────────────────────────────────────────────────────────────
 	if len(t.Steps) == 0 {
@@ -358,7 +368,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	}
 
 	for i, s := range t.Steps {
-		errs = append(errs, validateStep(s, i, stepNames)...)
+		errs = append(errs, validateStep(s, i, stepNames, exprDeclared)...)
 		errs = append(errs, validateStepEnvCollisions(s, i, t.JobEnvironments)...)
 	}
 
@@ -371,6 +381,11 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	errs = append(errs, validateExtensions(t)...)
 	errs = append(errs, validatePathTranslation(t)...)
 	errs = append(errs, validateChunkBounds(t)...)
+	// checkTemplateExpressions is phase 1: params is nil, so every symbol is
+	// an unresolved placeholder rather than a submitted value (Task 10 adds a
+	// phase-2 caller with concrete parameters). It no-ops for a template that
+	// does not declare EXPR -- see its own doc comment.
+	errs = append(errs, checkTemplateExpressions(t, nil)...)
 
 	// ── quantitative limits (gated) ───────────────────────────────────────
 	// Every check below MUST stay behind opts.EnforceLimits.
@@ -758,7 +773,15 @@ func validateHostRequirementLimits(hr HostRequirements, base string) ValidationE
 // the invariant documented on [ValidateOptions]. The gated size caps
 // (combined count, name length, anyOf/allOf element counts) live in
 // [validateHostRequirementLimits] instead.
-func validateHostRequirements(hr HostRequirements, base string) ValidationErrors {
+//
+// It also checks that every amount min/max and attribute anyOf/allOf value
+// is a well-scoped format string -- a new check as of sub-project E2's Task
+// 9. Host requirements had NO format-string scope validation before this: a
+// reference like {{Session.WorkingDirectory}} here was accepted and resolved
+// to nothing at run time. exprDeclared skips this half when the template
+// declares EXPR; checkTemplateExpressions covers the same position with the
+// real evaluator instead.
+func validateHostRequirements(hr HostRequirements, base string, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 
 	if len(hr.Amounts)+len(hr.Attributes) == 0 {
@@ -835,6 +858,47 @@ func validateHostRequirements(hr HostRequirements, base string) ValidationErrors
 	errs = append(errs, validateAmountBounds(hr.Amounts, base)...)
 	errs = append(errs, validateReservedAttributes(hr.Attributes, base)...)
 
+	if !exprDeclared {
+		errs = append(errs, validateHostRequirementFormatStrings(hr, base)...)
+	}
+
+	return errs
+}
+
+// validateHostRequirementFormatStrings checks that every amount min/max and
+// attribute anyOf/allOf value is a well-scoped format string (ScopeJob --
+// host requirements are resolved at submission time, before any session or
+// task exists). Split from [validateHostRequirements] to keep that function's
+// cyclomatic complexity within bounds.
+//
+// This is a new check as of sub-project E2's Task 9: host requirements had NO
+// format-string scope validation before it, so a reference like
+// {{Session.WorkingDirectory}} here was accepted and resolved to nothing at
+// run time. The caller skips this entirely when the template declares EXPR;
+// checkTemplateExpressions covers the same position with the real evaluator
+// instead. Called unconditionally regardless of whether a value looks like a
+// bare number: validateFormatString is a no-op on a literal with no "{{"
+// reference.
+func validateHostRequirementFormatStrings(hr HostRequirements, base string) ValidationErrors {
+	var errs ValidationErrors
+	for i, a := range hr.Amounts {
+		amtPtr := fmt.Sprintf("%s/amounts/%d", base, i)
+		if a.Min != nil {
+			errs = append(errs, validateFormatString(*a.Min, amtPtr+"/min", ScopeJob, nil)...)
+		}
+		if a.Max != nil {
+			errs = append(errs, validateFormatString(*a.Max, amtPtr+"/max", ScopeJob, nil)...)
+		}
+	}
+	for i, a := range hr.Attributes {
+		attrPtr := fmt.Sprintf("%s/attributes/%d", base, i)
+		for k, v := range a.AnyOf {
+			errs = append(errs, validateFormatString(v, fmt.Sprintf("%s/anyOf/%d", attrPtr, k), ScopeJob, nil)...)
+		}
+		for k, v := range a.AllOf {
+			errs = append(errs, validateFormatString(v, fmt.Sprintf("%s/allOf/%d", attrPtr, k), ScopeJob, nil)...)
+		}
+	}
 	return errs
 }
 
@@ -1947,7 +2011,7 @@ func validatePathFileFilter(f PathFileFilter, ptr string) ValidationErrors {
 // no command is accepted by parse, expands into tasks, and then runs nothing --
 // the step reports success having done no work -- so this is structural
 // correctness and always runs, never gated behind EnforceLimits.
-func validateAction(a Action, ptr string, scope Scope, files map[string]struct{}) ValidationErrors {
+func validateAction(a Action, ptr string, scope Scope, files map[string]struct{}, exprDeclared bool) ValidationErrors {
 	if a.Command == "" {
 		return ValidationErrors{{
 			Pointer: ptr + "/command",
@@ -1961,7 +2025,9 @@ func validateAction(a Action, ptr string, scope Scope, files map[string]struct{}
 	for i, arg := range a.Args {
 		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
 	}
-	errs = append(errs, validateActionRefs(a, ptr, scope, files)...)
+	if !exprDeclared {
+		errs = append(errs, validateActionRefs(a, ptr, scope, files)...)
+	}
 	errs = append(errs, validateActionTiming(a, ptr)...)
 	// args is @optional, but a declared list must hold at least one argument —
 	// an empty array says "pass arguments" and then passes none.
@@ -2025,7 +2091,13 @@ func validateActionTiming(a Action, ptr string) ValidationErrors {
 // vars may be nil for a step script, which has no variables of its own.
 // scriptBase points at the script object; varsBase at the object holding
 // variables — on an Environment those are siblings, not nested.
-func validateScriptRefs(files []EmbeddedFile, vars map[string]string, scope Scope, scriptBase, varsBase string) ValidationErrors {
+func validateScriptRefs(files []EmbeddedFile, vars map[string]string, scope Scope, scriptBase, varsBase string, exprDeclared bool) ValidationErrors {
+	if exprDeclared {
+		// checkTemplateExpressions covers this position with the real
+		// evaluator when EXPR is declared; the base-spec dotted-identifier
+		// path below would misread every non-trivial expression as malformed.
+		return nil
+	}
 	var errs ValidationErrors
 	declared := embeddedFileNames(files)
 	for i, f := range files {
@@ -2081,7 +2153,7 @@ func checkFileRef(ref, ptr string, files map[string]struct{}) ValidationErrors {
 
 // ─── environment validation ───────────────────────────────────────────────────
 
-func validateEnvironments(envs []Environment, base string, scope Scope) ValidationErrors {
+func validateEnvironments(envs []Environment, base string, scope Scope, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 	seen := make(map[string]struct{}, len(envs))
 	for i, e := range envs {
@@ -2108,7 +2180,7 @@ func validateEnvironments(envs []Environment, base string, scope Scope) Validati
 		if e.Script != nil {
 			envScriptFiles = e.Script.EmbeddedFiles
 		}
-		errs = append(errs, validateScriptRefs(envScriptFiles, e.Variables, scope, ptr+"/script", ptr)...)
+		errs = append(errs, validateScriptRefs(envScriptFiles, e.Variables, scope, ptr+"/script", ptr, exprDeclared)...)
 
 		if e.Script != nil {
 			envFiles := embeddedFileNames(e.Script.EmbeddedFiles)
@@ -2118,10 +2190,10 @@ func validateEnvironments(envs []Environment, base string, scope Scope) Validati
 					Message: "required",
 				})
 			} else {
-				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, envFiles)...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, envFiles, exprDeclared)...)
 			}
 			if e.Script.Actions.OnExit != nil {
-				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, envFiles)...)
+				errs = append(errs, validateAction(*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, envFiles, exprDeclared)...)
 			}
 			errs = append(errs, validateEmbeddedFiles(e.Script.EmbeddedFiles, e.Script.EmbeddedFilesSet, ptr+"/script/embeddedFiles")...)
 		}
@@ -2244,7 +2316,7 @@ func validateStepEnvCollisions(s StepTemplate, idx int, jobEnvs []Environment) V
 	return errs
 }
 
-func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) ValidationErrors {
+func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 	base := fmt.Sprintf("/steps/%d", idx)
 
@@ -2287,21 +2359,21 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 		errs = append(errs, ValidationError{Pointer: base + "/script", Message: "required"})
 	} else {
 		errs = append(errs, validateEmbeddedFiles(s.Script.EmbeddedFiles, s.Script.EmbeddedFilesSet, base+"/script/embeddedFiles")...)
-		errs = append(errs, validateScriptRefs(s.Script.EmbeddedFiles, nil, ScopeStepScript, base+"/script", base)...)
-		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", ScopeStepScript, embeddedFileNames(s.Script.EmbeddedFiles))...)
+		errs = append(errs, validateScriptRefs(s.Script.EmbeddedFiles, nil, ScopeStepScript, base+"/script", base, exprDeclared)...)
+		errs = append(errs, validateAction(s.Script.Actions.OnRun, base+"/script/actions/onRun", ScopeStepScript, embeddedFileNames(s.Script.EmbeddedFiles), exprDeclared)...)
 	}
 
 	// step environments
-	errs = append(errs, validateEnvironments(s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment)...)
+	errs = append(errs, validateEnvironments(s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment, exprDeclared)...)
 
 	// parameter space
 	if s.ParameterSpace != nil {
-		errs = append(errs, validateParameterSpace(*s.ParameterSpace, base+"/parameterSpace")...)
+		errs = append(errs, validateParameterSpace(*s.ParameterSpace, base+"/parameterSpace", exprDeclared)...)
 	}
 
 	// host requirements (structural; the size caps stay in validateLimits)
 	if s.HostRequirements != nil {
-		errs = append(errs, validateHostRequirements(*s.HostRequirements, base+"/hostRequirements")...)
+		errs = append(errs, validateHostRequirements(*s.HostRequirements, base+"/hostRequirements", exprDeclared)...)
 	}
 
 	return errs
@@ -2309,7 +2381,7 @@ func validateStep(s StepTemplate, idx int, stepNames map[string]struct{}) Valida
 
 // ─── parameter space validation ───────────────────────────────────────────────
 
-func validateParameterSpace(ps StepParameterSpace, base string) ValidationErrors {
+func validateParameterSpace(ps StepParameterSpace, base string, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 
 	if len(ps.TaskParameterDefinitions) == 0 {
@@ -2329,7 +2401,7 @@ func validateParameterSpace(ps StepParameterSpace, base string) ValidationErrors
 	chunkCount := 0
 	for i, tp := range ps.TaskParameterDefinitions {
 		ptr := fmt.Sprintf("%s/taskParameterDefinitions/%d", base, i)
-		errs = append(errs, validateTaskParam(tp, ptr, paramNames)...)
+		errs = append(errs, validateTaskParam(tp, ptr, paramNames, exprDeclared)...)
 		if tp.Type == TaskParamTypeChunkInt {
 			chunked[tp.Name] = struct{}{}
 			chunkCount++
@@ -2353,7 +2425,7 @@ func validateParameterSpace(ps StepParameterSpace, base string) ValidationErrors
 	return errs
 }
 
-func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]struct{}) ValidationErrors {
+func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]struct{}, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 
 	if !identifierRE.MatchString(tp.Name) {
@@ -2382,7 +2454,7 @@ func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]stru
 		})
 	}
 
-	errs = append(errs, validateTaskParamRangeAndChunks(tp, base)...)
+	errs = append(errs, validateTaskParamRangeAndChunks(tp, base, exprDeclared)...)
 
 	return errs
 }
@@ -2392,13 +2464,28 @@ func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]stru
 // range holding an empty string, expands into a task whose parameter can never
 // be used. Split from [validateTaskParamRangeAndChunks] to keep its cyclomatic
 // complexity within bounds.
-func validateRangeListValues(tp TaskParamDefinition, base string) ValidationErrors {
+//
+// It also checks that each entry is a well-scoped format string (ScopeJob --
+// task parameters do not exist yet while their own range is being defined) --
+// a new check as of sub-project E2's Task 9; a range entry had no
+// format-string scope validation before this. Skipped when exprDeclared:
+// checkTemplateExpressions covers this position with the real evaluator
+// instead. RangeExpr (the whole-field alternative form) is deliberately NOT
+// checked here or in checkTemplateExpressions: its target type depends on the
+// parameter's declared type and, under EXPR, may be a list-valued expression
+// (section 1.3.11) rather than a plain string -- a position this task leaves
+// alone to avoid rejecting the expr1.3.11--*-range-expression.yaml fixtures,
+// which legitimately evaluate to list[float]/list[path]/list[string].
+func validateRangeListValues(tp TaskParamDefinition, base string, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 	for i, v := range tp.RangeList {
+		vptr := fmt.Sprintf("%s/range/%d", base, i)
+		if !exprDeclared {
+			errs = append(errs, validateFormatString(v, vptr, ScopeJob, nil)...)
+		}
 		if strings.Contains(v, "{{") {
 			continue
 		}
-		vptr := fmt.Sprintf("%s/range/%d", base, i)
 		switch tp.Type {
 		case TaskParamTypeInt, TaskParamTypeChunkInt:
 			if _, err := strconv.ParseInt(v, 10, 64); err != nil {
@@ -2429,7 +2516,7 @@ func validateRangeListValues(tp TaskParamDefinition, base string) ValidationErro
 // validateTaskParamRangeAndChunks validates the range field and, for CHUNK[INT]
 // parameters, the chunks definition. It is extracted from [validateTaskParam]
 // to keep that function's cyclomatic complexity within bounds.
-func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string) ValidationErrors {
+func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 
 	// Range must be present
@@ -2437,7 +2524,7 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string) Valida
 		errs = append(errs, ValidationError{Pointer: base + "/range", Message: "required"})
 	}
 
-	errs = append(errs, validateRangeListValues(tp, base)...)
+	errs = append(errs, validateRangeListValues(tp, base, exprDeclared)...)
 
 	// INT and CHUNK[INT] range expressions must be parseable — but only when
 	// they contain no format-string references (those will be resolved against

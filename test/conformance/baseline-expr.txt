@@ -325,10 +325,6 @@ EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
 EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
 EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
-EXPR/job_templates/7.3.1--step-name-in-step-environment.yaml
-EXPR/job_templates/error--unknown-variable.invalid.yaml
-EXPR/job_templates/expr-extension-enabled.yaml
-EXPR/job_templates/expr-with-other-extensions.yaml
 EXPR/job_templates/expr1.1--arithmetic-expr.yaml
 EXPR/job_templates/expr1.1--comparison-expr.yaml
 EXPR/job_templates/expr1.1--conditional-expr.yaml
@@ -338,6 +334,73 @@ EXPR/job_templates/expr1.1--list-literal-expr.yaml
 EXPR/job_templates/expr1.1--method-call-expr.yaml
 EXPR/job_templates/expr1.1--multiline-expr.yaml
 EXPR/job_templates/expr1.1--slice-expr.yaml
-EXPR/job_templates/expr1.1--unknown-variable.invalid.yaml
 EXPR/job_templates/expr1.1.3--contextual-keywords.yaml
 EXPR/job_templates/expr1.1.4--json-yaml-aliases.yaml
+EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml
+
+# 2026-08-08, sub-project E2 (Task 9): checkTemplateExpressions is now wired
+# into ValidateWithOptions (via validate.go, gated on tmpl.hasExtension("EXPR")
+# so a base-spec template is untouched), and command/args/embedded-file
+# data/variable values/job name are checked through the real evaluator
+# instead of the base-spec single-dotted-identifier parser for any EXPR
+# template. Score went from 171/209 (38 baselined) to 175/209 (34 baselined):
+#
+#   - FIVE ENTRIES REMOVED, genuinely fixed now that the bridge exists (each
+#     confirmed individually, not just "no longer produces an error"):
+#
+#     EXPR/job_templates/7.3.1--step-name-in-step-environment.yaml
+#         Sets a stepEnvironments variable to "{{ Step.Name }}". Reason (iv)
+#         in this file's earlier note (validateFormatString's flat prefix
+#         lists not knowing Step.Name is legal in a step environment) no
+#         longer applies: scope.go's scopeFixed(ScopeStepEnvironment)
+#         includes Step.Name, and symbolsFor binds it from there, so the real
+#         evaluator accepts the reference the base-spec prefix list rejected.
+#
+#     EXPR/job_templates/error--unknown-variable.invalid.yaml
+#     EXPR/job_templates/expr1.1--unknown-variable.invalid.yaml
+#         Both reference "Param.DoesNotExist", declared by no
+#         parameterDefinitions entry. This file's earlier note flagged this
+#         as "undetected today" because validateFormatString checks only that
+#         a reference's PREFIX ("Param.") is legal, never that the specific
+#         name resolves to a declared parameter. checkFormatString does not
+#         have that gap: symbolsFor binds exactly the parameters tmpl
+#         declares, so evaluating an undeclared "Param.DoesNotExist" against
+#         that MapSymbols fails as an unknown-symbol error, same mechanism
+#         TestCheckFormatString's "unknown symbol" case already pins.
+#
+#     EXPR/job_templates/expr-extension-enabled.yaml
+#     EXPR/job_templates/expr-with-other-extensions.yaml
+#         "{{ Param.X + 1 }}" and "{{ Param.X + len(Task.Param.Frame) }}" in
+#         an args entry -- arithmetic and a function call, rejected by the
+#         base-spec dotted-identifier parser as reason (iii) described, now
+#         evaluated for real and accepted (both type-check cleanly against an
+#         INT job parameter and a CHUNK[INT] task parameter respectively).
+#
+#   - ONE ENTRY ADDED, a real scope-model gap this task's own protective
+#     framing exists to catch, not a defect introduced by this task:
+#
+#     EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml
+#         A step-level `let: [x = 99]` binding, then an arg
+#         "{{ [x for x in [1, 2]] }}" whose comprehension loop variable
+#         shadows the let-bound x -- section 1.3.7 requires this be rejected.
+#         Before this task it was rejected anyway, but for the wrong reason:
+#         the base-spec parser rejected the comprehension syntax outright as
+#         "not a valid dotted identifier", the same false-pass shape as the
+#         five entries removed above. `let:` blocks are not modeled by
+#         internal/openjd at all -- JobTemplate/StepTemplate carry no Let
+#         field, so symbolsFor has no way to know x is bound at the
+#         let-block's scope, let alone that a comprehension loop variable of
+#         the same name shadows it. That is the same gap this file's earlier
+#         note already assigned to sub-project E3, not E2 ("a 'let' binding
+#         invalid for a scoping reason ... all still sub-project E's" / "3.6
+#         --let-*" entries above, "confirmed by reviewer to be sub-project
+#         E3's, not E2's"). This fixture is the same class under a different
+#         section number (1.3.7's loop-variable shadowing, not 3.6's binding
+#         syntax), surfaced only now because command/args reach the real
+#         evaluator for the first time.
+#
+# (ii) and (iii) from the earlier note are otherwise unaffected: every entry
+# they named still carries its own independent reason and remains listed
+# above (job-parameter BOOL/RANGE_EXPR/LIST[*] types are still F's; several of
+# the (iii)-named entries also still fail on multi-line control characters,
+# a gap this task's brief does not ask it to close).
