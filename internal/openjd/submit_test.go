@@ -10,6 +10,7 @@ package openjd_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1033,5 +1034,109 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 	})
 	if !errors.As(err, &ve) {
 		t.Fatalf("failed upstream: got %v, want validation error", err)
+	}
+}
+
+// ── Sub-project E2's Task 10: submit-time expression re-check ───────────────
+//
+// checkExpressionsAtSubmit (submit.go) proves the phase-1/phase-2 distinction
+// directly, in submit_exprcheck_test.go's package-openjd (white-box) tests --
+// see that file's header comment for why: Submit's own phase 1 call
+// (ValidateWithOptions, above in this same function) rejects every
+// EXPR-declaring template outright today, because the EXPR extension is
+// registered but not yet StatusSupported (extension.go). That is a separate
+// gate, sub-project H's, not this task's -- but it does mean an EXPR template
+// can never reach parameter binding (where Task 10's new call lives) via the
+// public Submit API before H ships. The two tests below cover what IS
+// observable through Submit itself: that an EXPR template still surfaces as
+// a SubmitValidationError (unchanged, pre-existing behavior) and that the new
+// call site is inert -- no false rejection -- for the common EXPR-off case,
+// even when a job parameter used in a format string is submitted as "0".
+
+// TestSubmitter_Submit_EXPRTemplateStillRejectedBeforeParameterBinding pins
+// today's actual, observable behavior for an EXPR-declaring template: Submit
+// returns a *SubmitValidationError at phase 1 (step 2, before parameter
+// binding), for the extension-registration reason, not the new phase-2 code
+// this task adds -- which is never reached as a result. This is a regression
+// guard, not a proof of Task 10's wiring (see the header comment above); it
+// exists so that a change unblocking EXPR at some later date is required to
+// touch (and re-examine) this test.
+func TestSubmitter_Submit_EXPRTemplateStillRejectedBeforeParameterBinding(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	const tmpl = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: ExprTestJob
+parameterDefinitions:
+- name: N
+  type: INT
+steps:
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args:
+        - "{{ 10 / Param.N }}"
+`
+	_, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Parameters: map[string]string{"N": "0"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an EXPR-declaring template, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "not yet supported") {
+		t.Fatalf("expected the extension-registration message (today's actual rejection reason); got: %v", err)
+	}
+}
+
+// TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected confirms the new
+// checkExpressionsAtSubmit call site does not change behavior for a template
+// that does not declare EXPR: a job parameter referenced in a base-spec
+// format string and submitted as "0" -- the same value that trips the
+// division-by-zero check under EXPR -- must submit normally, because
+// checkTemplateExpressions no-ops without the EXPR extension declared.
+func TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	const tmpl = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "NoExprTestJob",
+  "parameterDefinitions": [
+    {"name": "N", "type": "INT"}
+  ],
+  "steps": [
+    {
+      "name": "Step1",
+      "script": {
+        "actions": {
+          "onRun": {"command": "echo", "args": ["{{Param.N}}"]}
+        }
+      }
+    }
+  ]
+}`
+	result, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Parameters: map[string]string{"N": "0"},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if result.BoundParameters["N"] != "0" {
+		t.Errorf("BoundParameters[N] = %q, want %q", result.BoundParameters["N"], "0")
 	}
 }

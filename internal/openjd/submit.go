@@ -112,6 +112,64 @@ type SubmitResult struct {
 	BoundParameters map[string]string
 }
 
+// ── prepareTemplate ─────────────────────────────────────────────────────────
+
+// prepareTemplate runs Submit's parse-through-parameter-binding steps: parse,
+// validate (phase 1 of the expression evaluator, unresolved parameters),
+// validate named storage location coverage, bind job parameters against the
+// caller-supplied values, and re-check expressions with those now-concrete
+// parameters (phase 2, sub-project E2's Task 10). Each step's error is
+// wrapped as a *SubmitValidationError, matching Submit's existing contract.
+// Extracted from Submit to keep its cyclomatic complexity within bounds.
+func (s *Submitter) prepareTemplate(
+	ctx context.Context, rawTemplate string, format store.TemplateFormat, params map[string]string,
+) (tmpl *JobTemplate, boundParams map[string]string, err error) {
+	// ── 1. Parse ──────────────────────────────────────────────────────────
+	parseFormat := FormatYAML
+	if format == store.TemplateFormatJSON {
+		parseFormat = FormatJSON
+	}
+
+	tmpl, err = Parse([]byte(rawTemplate), parseFormat)
+	if err != nil {
+		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
+	}
+
+	// ── 2. Validate ───────────────────────────────────────────────────────
+	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: s.enforceLimits}); len(errs) > 0 {
+		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
+	}
+
+	// ── 2b. Validate named storage location coverage ────────────
+	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
+		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
+	}
+
+	// ── 2c. Bind job parameters ────────────────────────────────────────────
+	boundParams, bindErrs := BindJobParameters(tmpl.ParameterDefinitions, params)
+	if len(bindErrs) > 0 {
+		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
+	}
+
+	// ── 2d. Re-check template expressions with concrete parameters ────────
+	// Phase 2 of the specification's Progressive Expression Evaluation model
+	// (see exprcheck.go's doc comment): phase 1 already ran inside
+	// ValidateWithOptions above with every Param./RawParam. symbol bound
+	// unresolved (a placeholder that carries no data). Now that boundParams
+	// holds the submitted values, re-run the same walk with those symbols
+	// concrete so an expression that only fails once a parameter has a real
+	// value -- e.g. dividing by a parameter submitted as zero -- is caught
+	// here rather than surfacing as a runtime error while expanding the
+	// parameter space. Must run before ResolveParameterSpaceParams (called
+	// per step, in Submit's step loop) so that resolution never sees a
+	// template this check would have rejected.
+	if err := checkExpressionsAtSubmit(tmpl, boundParams); err != nil {
+		return nil, nil, err
+	}
+
+	return tmpl, boundParams, nil
+}
+
 // ── Submit ────────────────────────────────────────────────────────────────────
 
 // Submit parses rawTemplate, validates it, expands each step's parameter space
@@ -134,34 +192,13 @@ func (s *Submitter) Submit(
 	format store.TemplateFormat,
 	opts SubmitOptions,
 ) (*SubmitResult, error) {
-	// ── 1. Parse ──────────────────────────────────────────────────────────
-	parseFormat := FormatYAML
-	if format == store.TemplateFormatJSON {
-		parseFormat = FormatJSON
-	}
-
-	tmpl, err := Parse([]byte(rawTemplate), parseFormat)
+	// ── 1-2d. Parse, validate, bind parameters, re-check expressions ──────
+	tmpl, boundParams, err := s.prepareTemplate(ctx, rawTemplate, format, opts.Parameters)
 	if err != nil {
-		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
+		return nil, err
 	}
 
-	// ── 2. Validate ───────────────────────────────────────────────────────
-	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: s.enforceLimits}); len(errs) > 0 {
-		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
-	}
-
-	// ── 2b. Validate named storage location coverage ────────────
-	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
-		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
-	}
-
-	// ── 2c. Bind job parameters ────────────────────────────────────────────
-	boundParams, bindErrs := BindJobParameters(tmpl.ParameterDefinitions, opts.Parameters)
-	if len(bindErrs) > 0 {
-		return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
-	}
-
-	// ── 2d. Validate cross-job dependencies ────────────────────────────────
+	// ── 2e. Validate cross-job dependencies ────────────────────────────────
 	blocked, err := s.resolveDependencies(ctx, opts.DependsOn, opts.FarmID)
 	if err != nil {
 		return nil, err
@@ -407,6 +444,38 @@ func (s *Submitter) expandStepTaskParams(
 	}
 
 	return taskParamList, nil
+}
+
+// checkExpressionsAtSubmit re-runs checkTemplateExpressions (sub-project E2's
+// Task 9) with boundParams now concrete -- phase 2 of the specification's
+// Progressive Expression Evaluation model, called from Submit right after
+// parameter binding (step 2c) and before any per-step call to
+// ResolveParameterSpaceParams. It is a free function, not a Submitter method,
+// because it touches neither ctx nor the store: it is a pure re-check of the
+// already-parsed template against the already-bound parameter map.
+//
+// checkTemplateExpressions itself no-ops for a template that does not declare
+// the EXPR extension, so this call is inert for every template that does not
+// use it -- unchanged behavior for the auth-off, EXPR-off common case.
+//
+// Extracted to a standalone function (rather than inlined in Submit) so it
+// can be unit-tested directly against a *JobTemplate value without going
+// through Submit's own phase 1 call (ValidateWithOptions, step 2 above):
+// today that call rejects EVERY EXPR-declaring template outright, for a
+// reason unrelated to expressions -- the EXPR extension is registered but
+// not yet StatusSupported (extension.go), and validateExtensions enforces
+// that unconditionally. Submit therefore never reaches parameter binding for
+// such a template, and this function is correspondingly unreachable via
+// Submit until sub-project H flips that status. See
+// TestCheckExpressionsAtSubmit_PhaseDistinction (submit_exprcheck_test.go)
+// for the direct-call proof, and this task's report for the full account.
+func checkExpressionsAtSubmit(tmpl *JobTemplate, boundParams map[string]string) error {
+	if errs := checkTemplateExpressions(tmpl, boundParams); len(errs) > 0 {
+		return &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: expression re-check with concrete parameters: %w", errs),
+		}
+	}
+	return nil
 }
 
 // resolveDependencies validates the requested cross-job dependencies against the
