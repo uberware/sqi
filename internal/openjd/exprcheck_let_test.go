@@ -728,6 +728,61 @@ steps:
 	}
 }
 
+// TestCheckTemplateExpressions_ComprehensionCannotShadowStepEnvironmentLet
+// covers the brief's fourth positional variant -- a STEP environment's own
+// script let -- which NO FIXTURE BACKS: none of the five
+// 3.6--let-comprehension-shadows*.invalid.yaml fixtures exercises
+// ScopeStepEnvironment; -env.invalid.yaml is a JOB environment, not a step
+// one. This is on the same footing as
+// TestCheckTemplateExpressions_ComprehensionMayReuseAStepLetFromAnotherStep
+// below: Task 8's review verified the scope model by construction, but
+// nothing in the repo pinned the comprehension-shadow interaction
+// specifically for this position. checkEnvironmentExpressions is called
+// TWICE from checkTemplateExpressions/checkStepExpressions -- once for job
+// environments with outerLet nil, once for stepEnvironments with outerLet =
+// stepLet, the enclosing step's own let-bound names -- and the merge that
+// folds those names into a step environment's table is exactly the area
+// Task 8's own comments flag as subtle (the maps.Clone that keeps one
+// environment's own let from leaking into a sibling environment's table or
+// into the step's hostRequirements). This binds "x" on a step environment's
+// own script let (ScopeStepEnvironment) and comprehends over "x" in that
+// same environment's onEnter action -- a wrong-scoped table for this
+// position specifically (over- or under-rejecting) would not be caught by
+// any existing test.
+func TestCheckTemplateExpressions_ComprehensionCannotShadowStepEnvironmentLet(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+steps:
+- name: Step1
+  stepEnvironments:
+  - name: Env1
+    script:
+      let:
+      - x = 10
+      actions:
+        onEnter:
+          command: echo
+          args: ["{{ [x for x in range(Param.N)] }}"]
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("a comprehension variable shadowed a step environment's let binding and was accepted")
+	}
+	if !strings.Contains(errs[0].Message, "shadows an existing binding") {
+		t.Errorf("message %q is not section 1.3.7's shadowing rejection", errs[0].Message)
+	}
+}
+
 // EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml
 // -- the design doc's "simple-action" case -- has no sqi equivalent: it binds
 // "x" on a bash SimpleAction's own let and comprehends over "x" in that
