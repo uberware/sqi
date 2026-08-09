@@ -215,6 +215,50 @@ func validateChunkBounds(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
+// validateLetExtension rejects a let: block on a template that does not declare
+// the EXPR extension. Template Schemas 3.6 defines <LetBindings> as "Available
+// when using the EXPR extension", and without this check a let: block is
+// silently ignored -- the template is accepted and its bindings never evaluated,
+// which is strictly worse than refusing it (see docs/openjd-conformance.md on
+// why rejecting an unimplemented opt-in extension is the correct failure mode).
+//
+// This is the ONE let rule that must fire on the base-spec path.
+// checkTemplateExpressions returns at its first line when EXPR is absent, so
+// every other let rule lives in exprcheck.go and this one cannot.
+//
+// Runs unconditionally (not gated by EnforceLimits).
+func validateLetExtension(t *JobTemplate) ValidationErrors {
+	if t.hasExtension("EXPR") {
+		return nil
+	}
+	var errs ValidationErrors
+	add := func(set bool, ptr string) {
+		if set {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: `"let" requires the EXPR extension to be declared`,
+			})
+		}
+	}
+	for i, s := range t.Steps {
+		add(s.LetSet, fmt.Sprintf("/steps/%d/let", i))
+		if s.Script != nil {
+			add(s.Script.LetSet, fmt.Sprintf("/steps/%d/script/let", i))
+		}
+		for j, e := range s.StepEnvironments {
+			if e.Script != nil {
+				add(e.Script.LetSet, fmt.Sprintf("/steps/%d/stepEnvironments/%d/script/let", i, j))
+			}
+		}
+	}
+	for i, e := range t.JobEnvironments {
+		if e.Script != nil {
+			add(e.Script.LetSet, fmt.Sprintf("/jobEnvironments/%d/script/let", i))
+		}
+	}
+	return errs
+}
+
 // ─── identifier pattern ───────────────────────────────────────────────────────
 
 var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -441,6 +485,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	errs = append(errs, validateExtensions(t)...)
 	errs = append(errs, validatePathTranslation(t)...)
 	errs = append(errs, validateChunkBounds(t)...)
+	errs = append(errs, validateLetExtension(t)...)
 	// checkTemplateExpressions is phase 1: params is nil, so every symbol is
 	// an unresolved placeholder rather than a submitted value (Task 10 adds a
 	// phase-2 caller with concrete parameters). It no-ops for a template that
