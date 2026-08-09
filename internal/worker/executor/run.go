@@ -436,9 +436,14 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 	pathMapFile := sess.PathMappingRulesFile()
 	hasPathMap := sess.HasPathMappingRules()
 
+	// NOT "step embedded files": the base-spec path uses that label because it
+	// wraps AddFileVars alone, but TaskSymbols also fails from job- and
+	// task-parameter binding (mapPathParamValue, via bindJobParamSymbols /
+	// bindTaskParamSymbols). Inheriting the narrower label would send an
+	// operator to look at embeddedFiles for a PATH-parameter fault.
 	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("step embedded files: %w", err)
+		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)
 	}
 	// Exactly one call over this table -- see fmtres.ApplyTaskLet's doc
 	// comment. Every resolution below (OnRun, then the embedded files) reuses
