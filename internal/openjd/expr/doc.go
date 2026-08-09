@@ -121,10 +121,21 @@
 //     colliding with a spec-defined symbol like Param. The shadowing check is
 //     only as precise as the caller's table: this package carries no scope
 //     information of its own, so a caller that binds a name which is not
-//     actually IN SCOPE at this particular expression — a "let" bound
-//     somewhere else in the template, say — will produce a false rejection.
-//     Real scope tracking is sub-project E's, where template integration
-//     threads an actual scope through. The iterable and the filter are both
+//     actually IN SCOPE at this particular expression will produce a false
+//     rejection. CORRECTION: an earlier revision of this paragraph said real
+//     scope tracking "is sub-project E's, where template integration threads
+//     an actual scope through" and gave "a 'let' bound somewhere else in the
+//     template" as the standing example of a false rejection. Sub-project E
+//     has now done that: internal/openjd's checkTemplateExpressions threads a
+//     per-position table built from section 3.6.2's scope model, so that
+//     specific false-rejection risk is closed for that caller — a step's own
+//     "let" is visible in its own script but not a sibling step's, and the
+//     table handed to this package's comprehension check reflects exactly
+//     that at each expression position (internal/openjd/exprcheck_let_test.go
+//     pins it, section by section). The general caveat above still holds for
+//     ANY caller, this package included: it carries no scope information of
+//     its own, so it can only ever be as precise as whatever table it is
+//     handed. The iterable and the filter are both
 //     parsed at the OR level (parser.go's parseOr), not the full
 //     <ConditionalExpr> section 1.1.2's own grammar names for them, because
 //     that grammar is ambiguous there: parseConditional consumes a bare "if"

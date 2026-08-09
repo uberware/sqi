@@ -599,3 +599,211 @@ steps:
 			"must be visible in a step environment's variables); got: %v", errs, errs)
 	}
 }
+
+// ─── section 1.3.7: a comprehension's loop variable vs a "let" binding ─────
+//
+// EXPR/job_templates/3.6--let-comprehension-shadows*.invalid.yaml has five
+// fixtures, and every one of them declares a LIST[INT] job parameter with a
+// YAML sequence default ("default: [1, 2, 3]") -- sub-project F's work,
+// unsupported today. Verified directly (Parse against each fixture file):
+// all five fail at PARSE time, before checkTemplateExpressions -- let alone
+// this rule -- ever runs, with "openjd: default must be a string, number, or
+// boolean". That error fires generically against the YAML shape of the
+// default value; it is not even a dedicated "unknown parameter type"
+// rejection; a LIST[INT] parameter with a scalar default parses fine and
+// only then fails Validate with "unknown type \"LIST[INT]\"". Either way,
+// every one of the five scores as a pass in test-conformance whether or not
+// section 1.3.7's shadowing rule works at all. That is the same trap
+// sub-project E2 fell into, crediting its scope model with rejecting a
+// fixture the YAML decoder was rejecting on its own; that whole-branch
+// review had to correct the claim in two places. So the tests below
+// transcribe each fixture's INTENT with a parameter type that exists today
+// (INT), naming the fixture each one stands in for, rather than trusting the
+// conformance score to prove anything here.
+
+// TestCheckTemplateExpressions_ComprehensionCannotShadowStepLet stands in for
+// BOTH EXPR/job_templates/3.6--let-comprehension-shadows.invalid.yaml and
+// 3.6--let-comprehension-shadows-step-let.invalid.yaml. The two fixtures are
+// byte-for-byte identical (verified with diff): the design doc
+// (docs/superpowers/specs/2026-08-08-expr-let-bindings-design.md, section
+// 5.2) names them the "plain" and "step-template" cases respectively, but
+// both bind "x" on a step template's own let and comprehend over "x" in that
+// step's script -- the same position, so one test stands in for both rather
+// than duplicating an identical body under a second name.
+func TestCheckTemplateExpressions_ComprehensionCannotShadowStepLet(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+steps:
+- name: Step1
+  let:
+  - x = 10
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ [x for x in range(Param.N)] }}"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("a comprehension variable shadowed a let binding and was accepted")
+	}
+	if !strings.Contains(errs[0].Message, "shadows an existing binding") {
+		t.Errorf("message %q is not section 1.3.7's shadowing rejection", errs[0].Message)
+	}
+}
+
+// TestCheckTemplateExpressions_ComprehensionCannotShadowStepScriptLet stands
+// in for EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml.
+// It binds "x" on the step SCRIPT's own let (ScopeStepScript) rather than the
+// step template's, and comprehends over "x" in that same script's action --
+// the design doc's "step-script" case.
+func TestCheckTemplateExpressions_ComprehensionCannotShadowStepScriptLet(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+steps:
+- name: Step1
+  script:
+    let:
+    - x = 10
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ [x for x in range(Param.N)] }}"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("a comprehension variable shadowed a step script's let binding and was accepted")
+	}
+	if !strings.Contains(errs[0].Message, "shadows an existing binding") {
+		t.Errorf("message %q is not section 1.3.7's shadowing rejection", errs[0].Message)
+	}
+}
+
+// TestCheckTemplateExpressions_ComprehensionCannotShadowEnvironmentLet stands
+// in for EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml --
+// the design doc's "environment" case. It binds "x" on a JOB environment's
+// script let (ScopeJobEnvironment) and comprehends over "x" in that same
+// environment's onEnter action.
+func TestCheckTemplateExpressions_ComprehensionCannotShadowEnvironmentLet(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+jobEnvironments:
+- name: Env1
+  script:
+    let:
+    - x = 10
+    actions:
+      onEnter:
+        command: echo
+        args: ["{{ [x for x in range(Param.N)] }}"]
+steps:
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("a comprehension variable shadowed a job environment's let binding and was accepted")
+	}
+	if !strings.Contains(errs[0].Message, "shadows an existing binding") {
+		t.Errorf("message %q is not section 1.3.7's shadowing rejection", errs[0].Message)
+	}
+}
+
+// EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml
+// -- the design doc's "simple-action" case -- has no sqi equivalent: it binds
+// "x" on a bash SimpleAction's own let and comprehends over "x" in that
+// action's inline script, but SimpleAction (bash/etc. as shorthand for a full
+// Script) is a FEATURE_BUNDLE_1 element sqi does not model (design spec
+// section 1.1). There is nothing to transcribe it into, so it is recorded
+// here rather than silently covering four of the five fixtures.
+
+// TestCheckTemplateExpressions_ComprehensionMayReuseAnUnboundName is the
+// negative half: without it, a checker that rejected every comprehension
+// outright would still pass every test above. "y" is not bound anywhere in
+// scope, so comprehending over it must be accepted.
+func TestCheckTemplateExpressions_ComprehensionMayReuseAnUnboundName(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+steps:
+- name: Step1
+  let:
+  - x = 10
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ [y for y in range(Param.N)] }}"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors", errs)
+	}
+}
+
+// TestCheckTemplateExpressions_ComprehensionMayReuseAStepLetFromAnotherStep is
+// the stronger negative: a "let" name bound in one step's scope must not make
+// a comprehension over that same name illegal in a SIBLING step. Task 8's
+// review verified this behavior by construction -- checkTemplateExpressions
+// builds a fresh stepTemplateSyms table per step (checkStepExpressions calls
+// symbolsFor(tmpl, &s, nil, ScopeStepTemplate, params) once per iteration of
+// its loop) -- but no repo test pinned it before this one. Step0's "x" binding
+// must never reach Step1's table, so Step1's "[x for x in ...]" comprehends
+// over an unbound name from Step1's own point of view, exactly like the
+// unbound-name case above. Without this test, a checker that (wrongly) shared
+// one symbol table across every step -- the mirror image of what
+// TestCheckTemplateExpressions_StepLetNotVisibleInAnotherStep already pins
+// for a bare reference -- would still pass every test above by rejecting
+// every comprehension whose loop variable happens to match ANY step's let
+// binding, not just the enclosing one.
+func TestCheckTemplateExpressions_ComprehensionMayReuseAStepLetFromAnotherStep(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+steps:
+- name: Step0
+  let:
+  - x = 10
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ [x for x in range(Param.N)] }}"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors (Step0's let binding must not "+
+			"leak into Step1's comprehension check); got: %v", errs, errs)
+	}
+}
