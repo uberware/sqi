@@ -441,13 +441,21 @@ func checkFormatString(
 // and is not gated by EnforceLimits -- see its comment), so a second error
 // here would only duplicate it at a different pointer.
 //
-// The guard has to live here rather than as a short-circuit in
-// ValidateWithOptions, because this function is the only place the cost is
-// actually incurred and it has more than one caller: phase 2
-// (checkExpressionsAtSubmit, submit.go) reaches checkTemplateExpressions
-// WITHOUT going through validateLetElementCounts, and every unit test calls
-// this leaf directly. A guard at the leaf bounds all of them; a short-circuit
-// upstream would bound exactly one.
+// The guard lives here rather than as a short-circuit in ValidateWithOptions
+// because this function is the only place the cost is actually incurred, so
+// bounding it here is independent of upstream ordering, of EnforceLimits, and
+// of exprExpressionWalkEnabled's status gate -- and it also covers the unit
+// tests that call this leaf directly.
+//
+// An earlier revision of this comment justified the placement by claiming
+// phase 2 (checkExpressionsAtSubmit, submit.go) reaches checkTemplateExpressions
+// without going through validateLetElementCounts. That is FALSE and was
+// retracted: prepareTemplate runs ValidateWithOptions first and returns on any
+// error, and validateLetElementCounts runs unconditionally within it, so an
+// over-cap block aborts before phase 2 is ever reached. A short-circuit
+// upstream would have bounded both production phases too. The placement is
+// still the better one, for the independence reasons above -- not for a
+// reachability reason that does not exist.
 //
 // let is the first construct in this checker that RETAINS values across
 // evaluations. Every other position goes through checkFormatString, which

@@ -89,7 +89,7 @@ does not mistake it for intended behavior:
   unconditionally, the same as any other unregistered extension name,
   regardless of anything else the template does.
 
-  **CORRECTION (sub-project E3, `80d69b1..3e2f87c`):** this bullet used to
+  **CORRECTION (sub-project E3, `80d69b1..fa3267d`, plus this docs correction):** this bullet used to
   also list `let` on step templates as unimplemented. That is no longer true.
   `internal/openjd` models, parses, and validates `let:` at the three
   locations it can reach today — `<StepTemplate>.let`, `<StepScript>.let`,
@@ -287,7 +287,7 @@ Both are asserted by name in `TestConformance_E2ProtectedFixtures`
 the two mechanisms applies, so a future regression that silently swaps them
 back to passing for the wrong reason (or fails them outright) is caught.
 
-**Sub-project E3 (`80d69b1..3e2f87c`) — `let` bindings.** `let` is now real at
+**Sub-project E3 (`80d69b1..fa3267d`, plus this docs correction) — `let` bindings.** `let` is now real at
 the three locations `internal/openjd/model.go` can reach (`<StepTemplate>.let`,
 `<StepScript>.let`, `<EnvironmentScript>.let`; the fourth, `<SimpleAction>.let`,
 needs `SimpleAction` itself, an unmodeled `FEATURE_BUNDLE_1` element). See the
@@ -453,7 +453,7 @@ pass, 66 baselined) that predates even the routing change onto `runEXPRCase`,
 while the actual score had already moved to 175/209 (34 baselined) with E2
 and then, across the three E3 tasks that moved it, to today's 186/209 (23
 baselined). It is now
-current as of sub-project E3 (`80d69b1..3e2f87c`); see [EXPR: a temporary,
+current as of sub-project E3 (`80d69b1..fa3267d`, plus this docs correction); see [EXPR: a temporary,
 second scoring path](#expr-a-temporary-second-scoring-path) for the full
 accounting of both moves.
 
