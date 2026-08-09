@@ -420,6 +420,19 @@ func checkFormatString(
 // Self-reference needs no check: "x = x + 1" fails because x is inserted only
 // after its own expression evaluates.
 //
+// Section 3.6 also forbids a binding that "shadows a previous binding in the
+// same let block or any enclosing scope". That reads as two rules but is
+// implemented as one: by the time a nested block's bindings are checked, the
+// enclosing scope's names are already present in syms -- exactly because of
+// the mutate-in-place mechanism above -- so "a name already present in syms
+// may not be bound" covers both cases through a single lookup. The check is
+// keyed off syms itself, not off some parallel list of names this call has
+// seen, so it equally rejects shadowing a spec-defined symbol (Param, Task,
+// Session, Env, RawParam) if one were ever present in syms under a name a
+// let binding could produce -- unreachable today only because 3.6.1's
+// lowercase-first <UserIdentifier> rule keeps those two namespaces disjoint,
+// not because this check assumes it.
+//
 // # The maxLetBindings guard
 //
 // Evaluation STOPS after [maxLetBindings] bindings. That is a
@@ -457,20 +470,19 @@ func checkFormatString(
 // in the template reported in the same pass, alongside the count error, so
 // one over-long let: block does not hide the rest of the template's faults.
 //
-// Section 3.6 also forbids a binding that "shadows a previous binding in the
-// same let block or any enclosing scope". That reads as two rules but is
-// implemented as one: by the time a nested block's bindings are checked, the
-// enclosing scope's names are already present in syms -- exactly because of
-// the mutate-in-place mechanism above -- so "a name already present in syms
-// may not be bound" covers both cases through a single lookup. The check is
-// keyed off syms itself, not off some parallel list of names this call has
-// seen, so it equally rejects shadowing a spec-defined symbol (Param, Task,
-// Session, Env, RawParam) if one were ever present in syms under a name a
-// let binding could produce -- unreachable today only because 3.6.1's
-// lowercase-first <UserIdentifier> rule keeps those two namespaces disjoint,
-// not because this check assumes it.
+// opts is forwarded verbatim to every Eval call, exactly as
+// [checkFormatString]'s identically-named tail is: it is how a caller supplies
+// section 1.3.9/1.3.10 limits, and all three walk call sites pass
+// submissionLimits(). checkLetBindings used to hardcode submissionLimits()
+// internally, which was behaviourally identical but a trap for sub-project E4,
+// which owns the specification's CONFIGURABLE limits: threading an
+// operator-supplied budget through checkTemplateExpressions reaches every
+// format-string position via checkFormatString and would have silently missed
+// every let binding -- the one position where budgets ACCUMULATE. One opts
+// tail per evaluator, so E4 has one place to thread rather than two to
+// remember.
 func checkLetBindings(
-	lets []string, base string, scope Scope, syms expr.MapSymbols,
+	lets []string, base string, scope Scope, syms expr.MapSymbols, opts ...expr.Option,
 ) ValidationErrors {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
@@ -507,7 +519,7 @@ func checkLetBindings(
 			continue
 		}
 
-		v, err := e.Eval(syms, expr.TAny, submissionLimits()...)
+		v, err := e.Eval(syms, expr.TAny, opts...)
 		if err != nil {
 			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
 			continue
@@ -520,8 +532,9 @@ func checkLetBindings(
 // ─── submission-time limits ─────────────────────────────────────────────────
 
 // submissionOperationLimit and submissionMemoryLimit bound every submission-time
-// evaluation (section 1.3.9/1.3.10) -- checkFormatString's, and checkLetBindings'
-// direct Eval call -- tighter than expr.Eval's own execution-time defaults
+// evaluation (section 1.3.9/1.3.10) -- checkFormatString's and
+// checkLetBindings' alike -- tighter than expr.Eval's own execution-time
+// defaults
 // (10,000,000 operations / 100,000,000 bytes).
 //
 // Why tighter: checkTemplateExpressions runs at TEMPLATE VALIDATION time --
@@ -602,8 +615,8 @@ const (
 )
 
 // submissionLimits builds the expr.Option slice every checkTemplateExpressions
-// call site passes to checkFormatString, and checkLetBindings hardcodes into
-// its own Eval call the same way. A function (not a package-level slice) so
+// call site passes to checkFormatString and to checkLetBindings, through the
+// identical opts tail both take. A function (not a package-level slice) so
 // each call gets its own slice header -- cheap, and avoids any question of the
 // underlying array being mutated by a caller.
 func submissionLimits() []expr.Option {
@@ -714,7 +727,7 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	for k := range stepTemplateSyms {
 		preLetKeys[k] = struct{}{}
 	}
-	errs = append(errs, checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms)...)
+	errs = append(errs, checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, submissionLimits()...)...)
 	stepLet := expr.MapSymbols{}
 	for k, v := range stepTemplateSyms {
 		if _, existed := preLetKeys[k]; !existed {
@@ -731,7 +744,7 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 		// parameterSpace below, which section 3.6.2 does not grant them.
 		syms := maps.Clone(stepLet)
 		maps.Copy(syms, symbolsFor(tmpl, &s, nil, ScopeStepScript, params))
-		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms)...)
+		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms, submissionLimits()...)...)
 		errs = append(errs, checkScriptRefExpressions(
 			s.Script.EmbeddedFiles, ScopeStepScript, syms, base+"/script",
 		)...)
@@ -850,7 +863,7 @@ func checkEnvironmentExpressions(
 		// this note was produced.
 		scriptSyms := maps.Clone(baseSyms)
 		if e.Script != nil {
-			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms)...)
+			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms, submissionLimits()...)...)
 		}
 
 		errs = append(errs, checkScriptRefExpressions(envScriptFiles, scope, scriptSyms, ptr+"/script")...)

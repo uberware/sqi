@@ -110,28 +110,36 @@ func TestCheckLetBindings_HostOnlyFunctionRejectedInNonHostScope(t *testing.T) {
 	}
 }
 
+// overBudgetLetBinding costs ~10,953 operations (a 200-iteration
+// comprehension, each iteration building and upper-casing a 900,000-byte
+// string) -- comfortably over submissionOperationLimit (10,000) but a small
+// fraction of expr.Eval's own 10,000,000-operation execution-time default. So
+// an assertion that it is REJECTED, naming the 10,000 budget, pins
+// specifically that the SUBMISSION limit fired: a generic "contains an error"
+// assertion would still pass at the default budget and pin nothing about
+// which limit did the work.
+const overBudgetLetBinding = "a = max([len(('y' * 900000).upper()) for i in range(200)])"
+
 // TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit pins that
-// checkLetBindings' Eval call is metered by submissionLimits(), not by
-// expr.Eval's own much looser execution-time defaults (10,000,000
-// operations). Without that, an unmetered evaluation on the synchronous
-// POST /api/v1/jobs path is the same class of Critical E2's whole-branch
-// review already found once (~9 minutes of server CPU per request) --
-// nothing else in the repo can catch a dropped submissionLimits() here:
-// checkLetBindings has no caller yet, so neither the conformance suite nor
-// the oracle differential test ever reaches this code.
+// checkLetBindings meters its Eval call with the opts its caller hands it,
+// rather than falling back to expr.Eval's much looser execution-time defaults.
+// Without that, an unmetered evaluation on the synchronous POST /api/v1/jobs
+// path is the same class of Critical E2's whole-branch review already found
+// once (~9 minutes of server CPU per request).
 //
-// The binding below costs ~10,953 operations (a 200-iteration comprehension,
-// each iteration building and upper-casing a 900,000-byte string) -- comfortably
-// over submissionOperationLimit (10,000) but a small fraction of expr.Eval's
-// 10,000,000-operation default, so this asserts specifically on the
-// SUBMISSION limit tripping, not merely on some error occurring: a generic
-// "contains an error" assertion would still pass at the default budget and
-// pin nothing about which limit fired.
+// This is the LEAF half of the pin, and on its own it is not enough: since
+// checkLetBindings takes limits from the caller (an opts tail, matching
+// checkFormatString, so sub-project E4 has one place to thread its
+// configurable section 1.3.9/1.3.10 budget rather than two), a test that
+// passes submissionLimits() explicitly cannot detect a CALL SITE that stops
+// passing them.
+// TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits below is the
+// other half, and it covers all three call sites through the real walk.
 func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T) {
 	syms := expr.MapSymbols{}
 	errs := checkLetBindings(
-		[]string{"a = max([len(('y' * 900000).upper()) for i in range(200)])"},
-		"/steps/0/let", ScopeStepTemplate, syms,
+		[]string{overBudgetLetBinding},
+		"/steps/0/let", ScopeStepTemplate, syms, submissionLimits()...,
 	)
 	if len(errs) != 1 {
 		t.Fatalf("checkLetBindings = %v, want exactly one error", errs)
@@ -141,6 +149,88 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 	}
 	if _, ok := syms["a"]; ok {
 		t.Error("an over-budget binding was inserted into the table; it must not be")
+	}
+}
+
+// TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits pins that
+// every one of the three let: positions the walk can reach is metered at
+// submissionLimits, by driving the real walk (checkTemplateExpressions) rather
+// than the leaf.
+//
+// It exists because checkLetBindings now takes its limits from the caller. The
+// leaf test above proves the leaf honours what it is given; only this one
+// proves the walk gives it the tight budget at each site. Nothing else in the
+// repo can: no conformance fixture or oracle case is expensive enough to
+// distinguish submissionLimits from expr.Eval's defaults, so a call site that
+// dropped submissionLimits() would keep the whole suite green.
+func TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits(t *testing.T) {
+	const header = `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step0
+`
+	tests := []struct {
+		name    string
+		body    string
+		wantPtr string
+	}{
+		{
+			name: "step template let",
+			body: `  let:
+  - ` + overBudgetLetBinding + `
+  script:
+    actions:
+      onRun:
+        command: echo
+`,
+			wantPtr: "/steps/0/let/0",
+		},
+		{
+			name: "step script let",
+			body: `  script:
+    let:
+    - ` + overBudgetLetBinding + `
+    actions:
+      onRun:
+        command: echo
+`,
+			wantPtr: "/steps/0/script/let/0",
+		},
+		{
+			name: "environment script let",
+			body: `  stepEnvironments:
+  - name: Env0
+    script:
+      let:
+      - ` + overBudgetLetBinding + `
+      actions:
+        onEnter:
+          command: echo
+  script:
+    actions:
+      onRun:
+        command: echo
+`,
+			wantPtr: "/steps/0/stepEnvironments/0/script/let/0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := mustParseEXPR(t, header+tc.body)
+			errs := checkTemplateExpressions(tmpl, nil)
+			if len(errs) != 1 {
+				t.Fatalf("checkTemplateExpressions = %v, want exactly one error", errs)
+			}
+			if errs[0].Pointer != tc.wantPtr {
+				t.Errorf("pointer = %q, want %q", errs[0].Pointer, tc.wantPtr)
+			}
+			if !strings.Contains(errs[0].Message, "limit of 10000") {
+				t.Errorf("message %q does not name the submission operation limit (10000); "+
+					"this call site is not passing submissionLimits()", errs[0].Message)
+			}
+		})
 	}
 }
 
