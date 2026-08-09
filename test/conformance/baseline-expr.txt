@@ -318,10 +318,8 @@ EXPR/job_templates/2.16--list-list-int-param.yaml
 EXPR/job_templates/2.9--bool-param.yaml
 EXPR/job_templates/3.6--let-bindings.yaml
 EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
-EXPR/job_templates/3.6--let-empty-list.invalid.yaml
 EXPR/job_templates/3.6--let-host-context-symbols.yaml
 EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
-EXPR/job_templates/3.6--let-too-many.invalid.yaml
 EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
 EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
 EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
@@ -445,3 +443,32 @@ EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml
 # template that DOES declare EXPR, so this task's new check is a no-op on all
 # of them -- their own (still open) scoping/format/scope-model gaps are
 # unaffected and unrelated to whether EXPR is declared.
+#
+# 2026-08-08, sub-project E3 (Task 4): validate.go gained
+# validateLetElementCounts, an unconditional (not EnforceLimits-gated) check
+# enforcing Template Schemas 3.6's element-count bounds on every let: block --
+# "If defined, then there must be at least one element in this list" and
+# "Maximum number of items: 50" -- sharing Task 2's walkLetPositions helper so
+# both rules visit the same four positions. Score went from 178/209 (31
+# baselined) to 180/209 (29 baselined):
+#
+#   - TWO ENTRIES REMOVED, genuinely fixed, confirmed individually by running
+#     each fixture and reading the resulting error (not inferred from the
+#     filename):
+#
+#     EXPR/job_templates/3.6--let-empty-list.invalid.yaml
+#         A step-level `let: []` block. Before this task the only raw error
+#         was the (discounted) EXPR status-gate error, so the fixture passed
+#         for the wrong reason and was baselined. Now also rejected with
+#         `/steps/0/let: must contain at least one binding when provided`.
+#
+#     EXPR/job_templates/3.6--let-too-many.invalid.yaml
+#         A step-level `let:` block with 51 bindings. Same shape: only the
+#         gate error before, now also rejected with `/steps/0/let: at most 50
+#         let bindings are allowed (got 51)`.
+#
+# No other entry in this list changed status: validateLetElementCounts only
+# fires on a let: block that is present and either empty or over 50 entries,
+# and no other `3.6--let-*`/`3.6.1--let-*` fixture has either shape -- their
+# own (still open) duplicate-name/shadowing/missing-equals/self-reference/
+# uppercase-name gaps are unaffected.

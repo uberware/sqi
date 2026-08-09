@@ -215,6 +215,48 @@ func validateChunkBounds(t *JobTemplate) ValidationErrors {
 	return errs
 }
 
+// letPosition is one of the four places a let: block can occupy in a
+// template, as yielded by [walkLetPositions].
+type letPosition struct {
+	// letSet records whether the key was present (distinguishing a declared
+	// empty list from an omitted key -- see the LetSet field doc comments in
+	// model.go).
+	letSet bool
+	// let is the raw "name = expression" strings, unparsed.
+	let []string
+	// ptr is the JSON pointer to this let: key, for error reporting.
+	ptr string
+}
+
+// walkLetPositions visits the four positions a let: block can occupy --
+// step template, step script, step environment script, job environment
+// script -- and calls fn once per position, present or not.
+//
+// Shared by [validateLetExtension] and [validateLetElementCounts] (both of
+// which apply at these same four positions) so the two rules cannot drift
+// apart the first time a fifth position appears. A closure was chosen over a
+// second pair of accumulator slices because each rule's logic is a few lines
+// and independent of the other's; threading two ValidationErrors slices
+// through one walk would couple them for no benefit.
+func walkLetPositions(t *JobTemplate, fn func(letPosition)) {
+	for i, s := range t.Steps {
+		fn(letPosition{s.LetSet, s.Let, fmt.Sprintf("/steps/%d/let", i)})
+		if s.Script != nil {
+			fn(letPosition{s.Script.LetSet, s.Script.Let, fmt.Sprintf("/steps/%d/script/let", i)})
+		}
+		for j, e := range s.StepEnvironments {
+			if e.Script != nil {
+				fn(letPosition{e.Script.LetSet, e.Script.Let, fmt.Sprintf("/steps/%d/stepEnvironments/%d/script/let", i, j)})
+			}
+		}
+	}
+	for i, e := range t.JobEnvironments {
+		if e.Script != nil {
+			fn(letPosition{e.Script.LetSet, e.Script.Let, fmt.Sprintf("/jobEnvironments/%d/script/let", i)})
+		}
+	}
+}
+
 // validateLetExtension rejects a let: block on a template that does not declare
 // the EXPR extension. Template Schemas 3.6 defines <LetBindings> as "Available
 // when using the EXPR extension", and without this check a let: block is
@@ -232,30 +274,47 @@ func validateLetExtension(t *JobTemplate) ValidationErrors {
 		return nil
 	}
 	var errs ValidationErrors
-	add := func(set bool, ptr string) {
-		if set {
+	walkLetPositions(t, func(p letPosition) {
+		if p.letSet {
 			errs = append(errs, ValidationError{
-				Pointer: ptr,
+				Pointer: p.ptr,
 				Message: `"let" requires the EXPR extension to be declared`,
 			})
 		}
-	}
-	for i, s := range t.Steps {
-		add(s.LetSet, fmt.Sprintf("/steps/%d/let", i))
-		if s.Script != nil {
-			add(s.Script.LetSet, fmt.Sprintf("/steps/%d/script/let", i))
+	})
+	return errs
+}
+
+// maxLetBindings caps the number of bindings in a single let: block.
+// Template Schemas 3.6: "Maximum number of items: 50".
+const maxLetBindings = 50
+
+// validateLetElementCounts enforces Template Schemas 3.6's element-count
+// bounds on every let: block, regardless of whether EXPR is declared: "If
+// defined, then there must be at least one element in this list" and
+// "Maximum number of items: 50." These read like quantitative caps, but they
+// are structural -- a let: block with 0 or 51 bindings is malformed, not
+// merely large or small, so (like [validateLetExtension]) this runs
+// unconditionally and is NOT gated by EnforceLimits (see
+// docs/openjd-conformance.md on why a structural check must not vanish under
+// EnforceLimits: false).
+//
+// The empty-list rule is expressible only because LetSet distinguishes a
+// declared-but-empty list ("let: []") from an omitted key -- len(Let) == 0 is
+// true for both, so this reuses [requireNonEmptyIfSet], the same
+// set/omitted-vs-empty helper every other optional-list-with-a-minimum field
+// in this file uses.
+func validateLetElementCounts(t *JobTemplate) ValidationErrors {
+	var errs ValidationErrors
+	walkLetPositions(t, func(p letPosition) {
+		errs = append(errs, requireNonEmptyIfSet(p.letSet, len(p.let), p.ptr, "binding")...)
+		if p.letSet && len(p.let) > maxLetBindings {
+			errs = append(errs, ValidationError{
+				Pointer: p.ptr,
+				Message: fmt.Sprintf("at most %d let bindings are allowed (got %d)", maxLetBindings, len(p.let)),
+			})
 		}
-		for j, e := range s.StepEnvironments {
-			if e.Script != nil {
-				add(e.Script.LetSet, fmt.Sprintf("/steps/%d/stepEnvironments/%d/script/let", i, j))
-			}
-		}
-	}
-	for i, e := range t.JobEnvironments {
-		if e.Script != nil {
-			add(e.Script.LetSet, fmt.Sprintf("/jobEnvironments/%d/script/let", i))
-		}
-	}
+	})
 	return errs
 }
 
@@ -486,6 +545,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	errs = append(errs, validatePathTranslation(t)...)
 	errs = append(errs, validateChunkBounds(t)...)
 	errs = append(errs, validateLetExtension(t)...)
+	errs = append(errs, validateLetElementCounts(t)...)
 	// checkTemplateExpressions is phase 1: params is nil, so every symbol is
 	// an unresolved placeholder rather than a submitted value (Task 10 adds a
 	// phase-2 caller with concrete parameters). It no-ops for a template that
