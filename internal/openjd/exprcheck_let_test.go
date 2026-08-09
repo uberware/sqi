@@ -203,3 +203,182 @@ func TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry(t *testing.T) {
 		t.Errorf("message %q does not say the binding shadows", errs[0].Message)
 	}
 }
+
+// ─── wiring: the three let locations in the template walk ─────────────────
+
+// mustParseEXPR parses yaml and fails the test immediately on error. It does
+// NOT call Validate: these tests exercise checkTemplateExpressions directly,
+// and Validate would stop at the EXPR extension's status gate (StatusInProgress)
+// before checkTemplateExpressions is ever reached.
+func mustParseEXPR(t *testing.T, yaml string) *JobTemplate {
+	t.Helper()
+	tmpl, err := Parse([]byte(yaml), FormatYAML)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	return tmpl
+}
+
+func TestCheckTemplateExpressions_StepLetVisibleInItsScript(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 3
+steps:
+- name: Step1
+  let:
+  - doubled = Param.N * 2
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ doubled }}"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors", errs)
+	}
+}
+
+func TestCheckTemplateExpressions_StepLetVisibleInParameterSpaceAndHostRequirements(t *testing.T) {
+	// Section 3.6.2 row 1 lists parameterSpace and hostRequirements among the
+	// places a step-template binding is visible, even though both positions are
+	// evaluated at ScopeJob. Scope and symbol table are separate.
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 4
+steps:
+- name: Step1
+  let:
+  - last = Param.N - 1
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: Frame
+      type: INT
+      range: "0-{{ last }}"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors", errs)
+	}
+}
+
+func TestCheckTemplateExpressions_StepLetNotVisibleInAnotherStep(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  let:
+  - only_here = 1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+- name: Step2
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ only_here }}"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("a step's let binding leaked into a sibling step")
+	}
+	if !strings.Contains(errs[0].Pointer, "/steps/1/") {
+		t.Errorf("error at %q, want it in step 1", errs[0].Pointer)
+	}
+}
+
+func TestCheckTemplateExpressions_ScriptLetSeesStepLet(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  let:
+  - base = 10
+  script:
+    let:
+    - derived = base * 2
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ derived }}"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors", errs)
+	}
+}
+
+func TestCheckTemplateExpressions_StepTemplateLetCannotSeeTaskSymbols(t *testing.T) {
+	// Section 3.6.2 row 1's negative half: a step template's let is evaluated at
+	// submission, so Task.Param is not available even though the step declares it.
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  let:
+  - bad = Task.Param.Frame
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: Frame
+      type: INT
+      range: "1-3"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	if len(errs) == 0 {
+		t.Fatal("Task.Param was available in a step-template let binding")
+	}
+	if errs[0].Pointer != "/steps/0/let/0" {
+		t.Errorf("error at %q, want /steps/0/let/0", errs[0].Pointer)
+	}
+}
+
+func TestCheckTemplateExpressions_EnvironmentLetVisibleInItsActions(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+parameterDefinitions:
+- name: Who
+  type: STRING
+  default: world
+jobEnvironments:
+- name: Setup
+  script:
+    let:
+    - greeting = 'hello ' + Param.Who
+    actions:
+      onEnter:
+        command: echo
+        args: ["{{ greeting }}"]
+steps:
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors", errs)
+	}
+}

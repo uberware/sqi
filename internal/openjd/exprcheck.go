@@ -639,7 +639,7 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string) Valid
 	)...)
 
 	errs = append(errs, checkEnvironmentExpressions(
-		tmpl, nil, tmpl.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment, params,
+		tmpl, nil, tmpl.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment, params, nil,
 	)...)
 
 	for i, s := range tmpl.Steps {
@@ -650,16 +650,49 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string) Valid
 }
 
 // checkStepExpressions checks the format-string positions of one step: its
-// own script, its step environments, its parameter space's range entries,
-// and its host requirement values.
+// own let, its own script, its step environments, its parameter space's
+// range entries, and its host requirement values.
+//
+// Section 3.6.2 row 1: a step template's own let: block is evaluated at
+// ScopeStepTemplate, and its bound names become visible in stepEnvironments,
+// hostRequirements, parameterSpace and script -- the other three positions of
+// this function. stepLet holds EXACTLY those bound names, computed as the
+// set-difference between stepTemplateSyms before and after checkLetBindings
+// runs, deliberately NOT the whole (post-let) stepTemplateSyms table: that
+// table also carries Job.Name, Step.Name, Param.* and RawParam.* entries
+// which ScopeStepTemplate exposes but ScopeJob (below) does not. Propagating
+// the whole table instead of just the diff would silently make a bare
+// Step.Name legal in a host requirement or task-parameter range, which
+// section 3.6.2 forbids -- see jobSyms' own comment below.
 func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map[string]string) ValidationErrors {
 	var errs ValidationErrors
 	base := fmt.Sprintf("/steps/%d", idx)
 
+	stepTemplateSyms := symbolsFor(tmpl, &s, nil, ScopeStepTemplate, params)
+	preLetKeys := make(map[string]struct{}, len(stepTemplateSyms))
+	for k := range stepTemplateSyms {
+		preLetKeys[k] = struct{}{}
+	}
+	errs = append(errs, checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms)...)
+	stepLet := expr.MapSymbols{}
+	for k, v := range stepTemplateSyms {
+		if _, existed := preLetKeys[k]; !existed {
+			stepLet[k] = v
+		}
+	}
+
 	if s.Script != nil {
-		syms := symbolsFor(tmpl, &s, nil, ScopeStepScript, params)
+		// syms starts as a CLONE of stepLet, not stepLet itself: the step
+		// script's own let: block (section 3.6.2 row 2) is evaluated over
+		// this table next, and checkLetBindings MUTATES the table it is
+		// handed -- if that were stepLet itself, the script's own bound
+		// names would leak into stepEnvironments/hostRequirements/
+		// parameterSpace below, which section 3.6.2 does not grant them.
+		syms := maps.Clone(stepLet)
+		maps.Copy(syms, symbolsFor(tmpl, &s, nil, ScopeStepScript, params))
+		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms)...)
 		errs = append(errs, checkScriptRefExpressions(
-			s.Script.EmbeddedFiles, nil, ScopeStepScript, syms, base+"/script", base,
+			s.Script.EmbeddedFiles, ScopeStepScript, syms, base+"/script",
 		)...)
 		errs = append(errs, checkActionExpressions(
 			s.Script.Actions.OnRun, base+"/script/actions/onRun", ScopeStepScript, syms,
@@ -667,17 +700,24 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	}
 
 	errs = append(errs, checkEnvironmentExpressions(
-		tmpl, &s, s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment, params,
+		tmpl, &s, s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment, params, stepLet,
 	)...)
 
 	// Host requirements and the task-parameter range both sit at ScopeJob: a
-	// step's own parameters and files do not exist yet while its host is
-	// being selected or its task-parameter space is being defined, so step
-	// is deliberately NOT passed to symbolsFor here -- ScopeJob's symbol
-	// families never include Task.Param./Task.RawParam./Task.File. anyway
-	// (scope.go's scopeFamilies), so the omission changes nothing observable,
-	// but omitting it says so at the call site rather than relying on that.
+	// step's own task-level symbols (Task.Param./Task.RawParam./Task.File.)
+	// do not exist yet while its host is being selected or its
+	// task-parameter space is being defined, so step is deliberately NOT
+	// passed to symbolsFor here -- ScopeJob's symbol families never include
+	// them anyway (scope.go's scopeFamilies), and ScopeJob's FIXED symbols
+	// (scopeFixed) are nil, so a bare Job.Name or Step.Name STAYS ILLEGAL at
+	// this position. Section 3.6.2 row 1 changes only the TABLE, not the
+	// scope: jobSyms gains the step's let-bound names (stepLet, merged in
+	// below) while keeping ScopeJob's own fixed/family set exactly as
+	// symbolsFor(..., ScopeJob, ...) built it -- scope and symbol table are
+	// separate things, and conflating them here was the mistake this
+	// function existed to avoid before let: made it worth restating.
 	jobSyms := symbolsFor(tmpl, nil, nil, ScopeJob, params)
+	maps.Copy(jobSyms, stepLet)
 
 	if s.ParameterSpace != nil {
 		errs = append(errs, checkParameterSpaceExpressions(*s.ParameterSpace, base+"/parameterSpace", jobSyms)...)
@@ -694,8 +734,23 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 // embedded-file data, and onEnter/onExit actions. step is nil for job
 // environments; scope selects ScopeJobEnvironment or ScopeStepEnvironment so
 // symbolsFor binds the right fixed-symbol and family set for the level.
+//
+// outerLet carries the ENCLOSING step template's let-bound names (section
+// 3.6.2 row 1: bound names are visible in the whole stepEnvironments
+// subtree, not merely its script) -- nil for job environments, which have no
+// enclosing step. It is folded into baseSyms, which backs BOTH variables and
+// (via scriptSyms, below) the script positions, because Variables is a
+// descendant of the stepEnvironments element that row 1 names as a whole.
+//
+// A single environment's OWN EnvironmentScript.let (row 4) is narrower: its
+// bound names are visible only in actions and embeddedFiles, because those
+// are EnvironmentScript's only child elements -- Variables sits on the
+// parent Environment, a SIBLING of Script, not a descendant of it. That is
+// why the environment's own let is bound into scriptSyms below but never
+// into baseSyms, which the variables loop above it has already consulted.
 func checkEnvironmentExpressions(
-	tmpl *JobTemplate, step *StepTemplate, envs []Environment, base string, scope Scope, params map[string]string,
+	tmpl *JobTemplate, step *StepTemplate, envs []Environment, base string, scope Scope,
+	params map[string]string, outerLet expr.MapSymbols,
 ) ValidationErrors {
 	var errs ValidationErrors
 	for i, e := range envs {
@@ -705,22 +760,56 @@ func checkEnvironmentExpressions(
 		if e.Script != nil {
 			envScriptFiles = e.Script.EmbeddedFiles
 		}
+
+		// baseSyms is a CLONE of outerLet, not outerLet itself: outerLet is
+		// the SAME map object across every iteration of this loop (it is
+		// built once by the caller, not per environment), so writing this
+		// environment's own symbolsFor additions -- or, further down,
+		// letting checkLetBindings mutate a table derived from it -- directly
+		// into outerLet would leak into environment i+1's table. A nil
+		// outerLet (job environments) clones to nil, so the map is
+		// allocated explicitly rather than left nil, which the writes just
+		// below require.
+		baseSyms := maps.Clone(outerLet)
+		if baseSyms == nil {
+			baseSyms = expr.MapSymbols{}
+		}
 		// symbolsFor needs THIS environment's own script to bind Env.File.:
 		// a template may declare many environments, each with its own files.
-		syms := symbolsFor(tmpl, step, &e, scope, params)
-		errs = append(errs, checkScriptRefExpressions(
-			envScriptFiles, e.Variables, scope, syms, ptr+"/script", ptr,
-		)...)
+		maps.Copy(baseSyms, symbolsFor(tmpl, step, &e, scope, params))
+
+		// Sorted so the errors a template produces do not depend on map
+		// order -- matching validateScriptRefs' own reason for sorting.
+		// Checked against baseSyms, BEFORE this environment's own
+		// EnvironmentScript.let is bound: see the function doc for why
+		// Variables must not see it.
+		for _, k := range slices.Sorted(maps.Keys(e.Variables)) {
+			errs = append(errs, checkFormatString(
+				e.Variables[k], ptr+"/variables/"+k, scope, baseSyms, TargetString, submissionLimits()...,
+			)...)
+		}
+
+		// scriptSyms is a clone of baseSyms for the same reason syms is
+		// cloned from stepLet in checkStepExpressions: checkLetBindings
+		// mutates the table it is handed, and that must not write back into
+		// baseSyms (already consulted for variables, above) or outerLet
+		// (shared across every sibling environment in this call).
+		scriptSyms := maps.Clone(baseSyms)
+		if e.Script != nil {
+			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms)...)
+		}
+
+		errs = append(errs, checkScriptRefExpressions(envScriptFiles, scope, scriptSyms, ptr+"/script")...)
 
 		if e.Script != nil {
 			if e.Script.Actions.OnEnter != nil {
 				errs = append(errs, checkActionExpressions(
-					*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, syms,
+					*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, scriptSyms,
 				)...)
 			}
 			if e.Script.Actions.OnExit != nil {
 				errs = append(errs, checkActionExpressions(
-					*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, syms,
+					*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, scriptSyms,
 				)...)
 			}
 		}
@@ -728,24 +817,20 @@ func checkEnvironmentExpressions(
 	return errs
 }
 
-// checkScriptRefExpressions checks a script's embedded-file data and (for an
-// environment) its variable values -- the EXPR-aware counterpart of
-// validate.go's validateScriptRefs. vars may be nil for a step script.
+// checkScriptRefExpressions checks a script's embedded-file data -- the
+// EXPR-aware counterpart of validate.go's validateScriptRefs. An
+// environment's variable values are a DIFFERENT position, checked by
+// checkEnvironmentExpressions directly against its own (possibly narrower)
+// symbol table -- see that function's doc comment for why the two positions
+// cannot share one symbol table once let: is in the picture.
 func checkScriptRefExpressions(
-	files []EmbeddedFile, vars map[string]string, scope Scope, syms expr.MapSymbols, scriptBase, varsBase string,
+	files []EmbeddedFile, scope Scope, syms expr.MapSymbols, scriptBase string,
 ) ValidationErrors {
 	var errs ValidationErrors
 	for i, f := range files {
 		errs = append(errs, checkFormatString(
 			f.Data, fmt.Sprintf("%s/embeddedFiles/%d/data", scriptBase, i), scope, syms, TargetString,
 			submissionLimits()...,
-		)...)
-	}
-	// Sorted so the errors a template produces do not depend on map order --
-	// matching validateScriptRefs' own reason for sorting.
-	for _, k := range slices.Sorted(maps.Keys(vars)) {
-		errs = append(errs, checkFormatString(
-			vars[k], varsBase+"/variables/"+k, scope, syms, TargetString, submissionLimits()...,
 		)...)
 	}
 	return errs

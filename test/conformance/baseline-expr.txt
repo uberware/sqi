@@ -317,12 +317,7 @@ EXPR/job_templates/2.15--list-bool-param.yaml
 EXPR/job_templates/2.16--list-list-int-param.yaml
 EXPR/job_templates/2.9--bool-param.yaml
 EXPR/job_templates/3.6--let-bindings.yaml
-EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
 EXPR/job_templates/3.6--let-host-context-symbols.yaml
-EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
-EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
-EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
-EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
 EXPR/job_templates/expr1.1--arithmetic-expr.yaml
 EXPR/job_templates/expr1.1--comparison-expr.yaml
@@ -335,7 +330,6 @@ EXPR/job_templates/expr1.1--multiline-expr.yaml
 EXPR/job_templates/expr1.1--slice-expr.yaml
 EXPR/job_templates/expr1.1.3--contextual-keywords.yaml
 EXPR/job_templates/expr1.1.4--json-yaml-aliases.yaml
-EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml
 
 # 2026-08-08, sub-project E2 (Task 9): checkTemplateExpressions is now wired
 # into ValidateWithOptions (via validate.go, gated on tmpl.hasExtension("EXPR")
@@ -472,3 +466,101 @@ EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml
 # and no other `3.6--let-*`/`3.6.1--let-*` fixture has either shape -- their
 # own (still open) duplicate-name/shadowing/missing-equals/self-reference/
 # uppercase-name gaps are unaffected.
+#
+# 2026-08-08/09, sub-project E3 (Task 8): checkTemplateExpressions now WIRES
+# checkLetBindings (Tasks 6/7's evaluator) into the three real let: locations
+# -- <StepTemplate>.let, <StepScript>.let, <EnvironmentScript>.let -- so a
+# let: block's own rules (duplicate-name/shadow-enclosing rejection from Task
+# 6, the <UserIdentifier> grammar and self-reference-as-unknown-symbol from
+# Tasks 1/7) actually run during template validation instead of sitting
+# unreached. Tasks 3-7 built the machinery; this task is what RUNS it. Score
+# went from 180/209 (29 baselined) to 186/209 (23 baselined):
+#
+#   - SIX ENTRIES REMOVED, genuinely fixed, confirmed individually by running
+#     each fixture through openjd.ValidateWithOptions directly and reading the
+#     raw (undiscounted) error list -- not inferred from the filename:
+#
+#     EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml
+#         A step-level let: block binding `x` twice. Now rejected with
+#         `/steps/0/let/1: let binding "x" shadows a name already in scope;
+#         section 3.6 forbids shadowing an earlier binding in the same block
+#         or in any enclosing scope` -- Task 6's shadow check, now reachable
+#         because checkStepExpressions runs checkLetBindings over s.Let for
+#         the first time.
+#
+#     EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml
+#         A <StepScript>.let binding shadowing the enclosing <StepTemplate>.let
+#         binding of the same name. Now rejected with
+#         `/steps/0/script/let/0: let binding "x" shadows a name already in
+#         scope; ...` -- the SAME check as above, firing on the "enclosing
+#         scope" half rather than the "same block" half, because
+#         checkStepExpressions merges the step-template's bound names into
+#         the table BEFORE running the step script's own let: block through
+#         checkLetBindings (see exprcheck.go's stepLet/syms comments).
+#
+#     EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml
+#         `x = x + 1`. Now rejected with `/steps/0/let/0: col 1: unknown
+#         symbol "x"` -- falls out of checkLetBindings' insertion ORDER with
+#         no dedicated check (x is inserted only after its own expression
+#         evaluates), exactly as its own doc comment predicts.
+#
+#     EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml
+#         A let: entry with no "=". Now rejected with `/steps/0/let/0: let
+#         binding "x": must be of the form "name = expression"` --
+#         parseLetBinding's (Task 1) grammar check, reachable for the first
+#         time now that checkLetBindings runs at all.
+#
+#     EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml
+#         A let: entry named "Foo". Now rejected with `/steps/0/let/0: name
+#         "Foo" must start with a lowercase letter or underscore` -- same
+#         reachability story as missing-equals above.
+#
+#     EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml
+#         NOT one of the 19 filename-matched `*let*` fixtures (it was always
+#         tracked separately, in the note two entries above this one, as an
+#         E2 Task 9 addition explicitly assigned to E3). A step-level
+#         `let: [x = 99]` binding, then a comprehension `[x for x in [1, 2]]`
+#         whose loop variable shadows it. Now rejected with
+#         `/steps/0/script/actions/onRun/args/1: col 8: the loop variable "x"
+#         shadows an existing binding` -- section 1.3.7's rule, already
+#         implemented in internal/openjd/expr/comp.go (comp.go:113, pinned by
+#         comp_internal_test.go since before this sub-project existed) and
+#         entirely UNCHANGED by this task. What changed is that `x` is now
+#         actually IN the symbol table the comprehension evaluates against:
+#         before this task nothing bound let: names at all, so the loop
+#         variable "x" collided with nothing and the comprehension evaluated
+#         cleanly. This is not one of the five `3.6--let-comprehension-
+#         shadows-*` fixtures section 5.2/5.3 of the E3 design spec describes
+#         (those use a LIST[INT] job parameter and remain blocked on
+#         sub-project F, unaffected by this task) -- it is a DIFFERENT,
+#         plain-list fixture that needed only the wiring this task provides,
+#         not the dedicated internal/openjd-level comprehension-shadow check
+#         (design spec section 5.2) that is not part of this task's scope.
+#
+# THREE let: fixtures remain listed above, unaffected by this task, each for
+# a reason already recorded and confirmed unchanged by direct measurement:
+#
+#     EXPR/job_templates/3.6--let-bindings.yaml
+#         Blocked on a LIST[INT] job-parameter default sub-project F owns
+#         (parse-time rejection, never reaches let: at all) -- section 1.1 of
+#         the E3 design spec.
+#
+#     EXPR/job_templates/3.6--let-host-context-symbols.yaml
+#         Blocked on the unregistered FEATURE_BUNDLE_1 extension, rejected at
+#         `/extensions/1` before let: is reached -- same section.
+#
+#     EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
+#         Also FEATURE_BUNDLE_1-blocked, plus a missing required `script`
+#         field and an unmodeled `bash:` SimpleAction -- same section.
+#
+# The forward hazard recorded in this sub-project's task brief was checked
+# directly: EXPR/job_templates/7.3.1--step-name-in-job-environment-let.invalid.yaml
+# (not in this list -- it was never baselined, and stays a live PASS) passed
+# BEFORE this task on "unknown symbol \"tag\"" only because let-bound names
+# were not in the symbol table yet. It now passes for the RIGHT reason:
+# `/jobEnvironments/0/script/let/0: col 1: unknown symbol "Step.Name"` (plus a
+# cascading `/jobEnvironments/0/script/actions/onEnter/args/1: col 1: unknown
+# symbol "tag"`, since a failed binding is never inserted and every position
+# referencing it reports its own unknown-name error) -- section 3.6.2's
+# <EnvironmentScript>.let row correctly omits Step.Name for a JOB environment,
+# per section 7.3.1.
