@@ -322,14 +322,33 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // an EXECUTION phase with no author to hand a JSON-pointer-keyed diagnostic
 // back to, unlike phase 1/2's synchronous validation request:
 //
-//  1. checkHostOnlyFunctions has no counterpart here. That check exists
-//     because a SUBMISSION-TIME scope (ScopeStepTemplate etc.) might not be a
-//     host context, and apply_path_mapping() needs session state that does
-//     not exist yet at that scope. Phase 3 runs ON the worker host, inside a
-//     real session, for every position this file touches -- it is ALWAYS a
-//     host context in the sense internal/openjd/scope.go's Scope.
-//     IsHostContext means, so there is no non-host-context phase-3 position
-//     for the restriction to apply to.
+//  1. checkHostOnlyFunctions has no counterpart here.
+//
+//     FIX ROUND 1 (Task 5 review): an earlier revision of this comment
+//     claimed phase 3 is "always a host context in the sense
+//     Scope.IsHostContext means" -- that is FALSE and was corrected.
+//     IsHostContext (scope.go) is a POSITIVE list of ScopeJobEnvironment,
+//     ScopeStepEnvironment and ScopeStepScript; ScopeStepTemplate --
+//     StepTemplateLet's own phase-1/2 scope, and that constant's own doc
+//     comment names it as exactly the case that exposed an earlier
+//     negation-based IsHostContext as wrong -- returns false. A
+//     StepTemplateLet binding is evaluated at submission time server-side,
+//     specifically BECAUSE it must not see host state, and this file's own
+//     stepTemplateLetScope (below) now enforces that at phase 3 too, so the
+//     claim "there is no non-host-context phase-3 position" was simply
+//     wrong on its own terms even before considering functions.
+//
+//     The missing gate is still safe, for a narrower reason: hostOnlyFunctions
+//     (exprcheck.go) has exactly one member, apply_path_mapping, which is
+//     side-effect-free (it returns a mapped path; it does not touch
+//     anything), and anyone able to forge StepTemplateLet already controls
+//     Command/Args on the same unauthenticated AssignMsg -- gating THIS one
+//     function here would not shrink what a forged assignment can already
+//     do. STANDING CAVEAT: if a second, side-effecting function ever joins
+//     hostOnlyFunctions, this reasoning stops holding and this file gains no
+//     gate of its own automatically -- nothing here would fail, silently.
+//     Revisit this comment (and consider a real checkHostOnlyFunctions
+//     counterpart) the day hostOnlyFunctions grows a second member.
 //  2. Errors are collected and returned as ONE joined error (errors.Join),
 //     not a ValidationErrors slice keyed by JSON pointer. A worker task fails
 //     with a single error message, not a structured multi-error report meant
@@ -338,7 +357,14 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 //     character-class grammar the way internal/openjd's own parseLetBinding
 //     does (letbinding.go) -- see that function's own doc comment for why: it
 //     is a submission-time-only concern the server has already enforced by
-//     the time an assignment reaches the worker.
+//     the time an assignment reaches the worker. It DOES trim differently:
+//     splitLetBinding uses strings.TrimSpace where parseLetBinding uses
+//     strings.Trim(s, " \t"), because section 3.6.1's <WS> is deliberately
+//     tab-and-space only. The two agree on every binding the server would
+//     ever accept (a name/expression the server validated never carries a
+//     newline or other space character at its edges); the wider trim here
+//     only ever matters for a binding the server has ALREADY rejected, which
+//     is not a case phase 3 needs to reproduce faithfully.
 //
 // The 50-binding cap (maxLetBindings, mirroring internal/openjd/validate.go's
 // constant of the same name) is enforced here exactly as checkLetBindings
@@ -439,15 +465,77 @@ func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []e
 	return errors.Join(errs...)
 }
 
+// stepTemplateLetScope filters full -- a phase-3 TaskSymbols table -- down to
+// exactly the symbols internal/openjd's ScopeStepTemplate exposes: Job.Name,
+// Step.Name, Param.<name> and RawParam.<name> (scope.go's scopeFixed/
+// scopeFamilies for ScopeStepTemplate). Nothing else -- no Task.*, no
+// Session.*, no *.File.* -- because a step template's own let: block
+// (Template Schemas 3.6.2 row 1) is evaluated by checkStepExpressions at
+// ScopeStepTemplate, which is NOT ScopeStepScript: it is checked at
+// SUBMISSION time, before any session or task exists, so a
+// StepTemplateLet binding referencing Session.WorkingDirectory or
+// Task.Param.* is an unknown-symbol error at phase 2, and phase 3 must
+// reject it the identical way -- not silently resolve it just because the
+// full TaskSymbols table happens to have the value available by the time a
+// worker runs it.
+//
+// FIX ROUND 1 (Task 5 review): this function did not exist in the first
+// round. ApplyTaskLet evaluated BOTH msg.StepTemplateLet and
+// msg.StepScriptLet against the one full table, so a StepTemplateLet
+// binding could see (and phase 2 would reject) Session.*/Task.*/*.File.* --
+// the "one walk, different table" claim did not hold for this block. See
+// ApplyTaskLet's own doc comment for how the diff this function enables gets
+// carried forward into the script's block, mirroring checkStepExpressions'
+// preLetKeys/stepLet mechanism (exprcheck.go) exactly.
+//
+// Filtering the ALREADY-BUILT full table -- rather than re-deriving
+// Param./RawParam./Job.Name/Step.Name a second time from msg -- keeps this
+// one formula: the exact same Values TaskSymbols computed are what a
+// StepTemplateLet binding sees, just gated to the narrower key set, with no
+// second, independently maintained construction that could drift from
+// TaskSymbols' own.
+func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
+	out := expr.MapSymbols{}
+	for k, v := range full {
+		switch {
+		case k == "Job.Name", k == "Step.Name":
+			out[k] = v
+		case strings.HasPrefix(k, "Param."), strings.HasPrefix(k, "RawParam."):
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // ApplyTaskLet evaluates a task's phase-3 let: bindings over syms -- the
 // step template's block (msg.StepTemplateLet) first, then the step script's
-// (msg.StepScriptLet), in that order, over the SAME table, mutating it in
-// place. This is Template Schemas section 3.6.2 row 1/2's ordering, and the
-// reason the two blocks travel as separate wire fields rather than being
-// concatenated: the script's block may not shadow a name the template's
-// block already bound, which is only enforceable if the two stay
-// distinguishable (protocol.go's own doc comment on StepTemplateLet/
-// StepScriptLet makes the same point).
+// (msg.StepScriptLet) -- mutating syms in place. This is Template Schemas
+// section 3.6.2 row 1/2's ordering, and the reason the two blocks travel as
+// separate wire fields rather than being concatenated: the script's block
+// may not shadow a name the template's block already bound, which is only
+// enforceable if the two stay distinguishable (protocol.go's own doc
+// comment on StepTemplateLet/StepScriptLet makes the same point).
+//
+// The two blocks do NOT share one table outright, mirroring
+// checkStepExpressions (exprcheck.go) exactly rather than the simpler
+// "evaluate both over syms" a first attempt at this function used (see
+// stepTemplateLetScope's own doc comment for that history): the template's
+// block is evaluated against [stepTemplateLetScope]'s NARROWER view of syms,
+// then only the names it successfully bound are merged into the full syms
+// before the script's block -- which DOES see the full table -- runs. A name
+// the template's block bound is therefore visible to the script's block
+// (and, per shadow rejection, may not be rebound by it), but a
+// Session.*/Task.*/*.File.* symbol the template's block tried to reference
+// is not, exactly as ScopeStepTemplate denies it server-side.
+//
+// CALL THIS ONCE PER TABLE. It mutates syms by inserting every successfully
+// bound name (both blocks') directly into it -- calling it a second time
+// over the SAME syms makes every binding in both blocks fail the shadow
+// check, because every name is now already present as a key. A caller that
+// resolves more than one action/embedded-file/variable against the same
+// task (e.g. ResolveActionExpr called once per action) must call
+// ApplyTaskLet exactly once to build the table, then reuse that same syms
+// for every resolution -- not call ApplyTaskLet again per resolution.
 //
 // Callers pass the result of TaskSymbols as syms -- ApplyTaskLet is a
 // SEPARATE step from building the base table, not folded into TaskSymbols
@@ -471,7 +559,19 @@ func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []e
 // failure, rather than aborting, is the intended behavior.
 func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
 	opts := ExprEvalOptions(pathMap)
-	tmplErr := evalLetBindings("step template let", msg.StepTemplateLet, syms, opts)
+
+	tmplScope := stepTemplateLetScope(syms)
+	preLetKeys := make(map[string]struct{}, len(tmplScope))
+	for k := range tmplScope {
+		preLetKeys[k] = struct{}{}
+	}
+	tmplErr := evalLetBindings("step template let", msg.StepTemplateLet, tmplScope, opts)
+	for k, v := range tmplScope {
+		if _, existed := preLetKeys[k]; !existed {
+			syms[k] = v
+		}
+	}
+
 	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, opts)
 	return errors.Join(tmplErr, scriptErr)
 }

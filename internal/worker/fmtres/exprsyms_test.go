@@ -838,9 +838,19 @@ func TestApplyTaskLet_SequentialPropagation(t *testing.T) {
 // path a command actually uses"): a host-only symbol phase 1/2 could only
 // ever bind as a placeholder is, at phase 3, a REAL concrete value, because
 // this function runs against TaskSymbols' table on the worker host itself.
+//
+// FIX ROUND 1 (Task 5 review): this binding moved from StepTemplateLet to
+// StepScriptLet. Section 3.6.2 row 1 evaluates a step TEMPLATE's own let:
+// block at ScopeStepTemplate, which grants NO Session.* symbols at all
+// (scope.go's scopeFixed) -- only the step SCRIPT's block (row 2,
+// ScopeStepScript) may reference Session.WorkingDirectory. The version of
+// this test that bound it via StepTemplateLet passed only because
+// ApplyTaskLet's first implementation evaluated both blocks against one
+// undifferentiated table; see TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols,
+// below, for the negative this move makes room for.
 func TestApplyTaskLet_HostOnlySymbol(t *testing.T) {
 	msg := &protocol.AssignMsg{
-		StepTemplateLet: []string{"wd = Session.WorkingDirectory"},
+		StepScriptLet: []string{"wd = Session.WorkingDirectory"},
 	}
 	syms, err := fmtres.TaskSymbols(msg, "/work/session1", "", false)
 	if err != nil {
@@ -857,6 +867,97 @@ func TestApplyTaskLet_HostOnlySymbol(t *testing.T) {
 	want := wantPathText(t, "WD", expr.MapSymbols{"WD": expr.Path("/work/session1", expr.PathNative)})
 	if wd.String() != want {
 		t.Errorf("wd = %q, want %q (Session.WorkingDirectory's own value)", wd.String(), want)
+	}
+}
+
+// TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols is FIX ROUND 1's
+// regression test for the review's item 1: a StepTemplateLet binding that
+// references a host-only symbol (Session.*) or a task-scoped symbol
+// (Task.Param.*) must fail as an unknown symbol, exactly as
+// internal/openjd's checkStepExpressions rejects the same reference at
+// ScopeStepTemplate server-side -- proven directly against the real checker
+// in the review (col 1: unknown symbol "Session.WorkingDirectory" /
+// "Task.Param.TChunk" at scope=step template). A StepScriptLet binding
+// referencing the SAME symbols must succeed, pinning that the restriction is
+// scoped to the template block only, not the whole step.
+func TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols(t *testing.T) {
+	for _, ref := range []string{"Session.WorkingDirectory", "Task.Param.Frame"} {
+		t.Run(ref, func(t *testing.T) {
+			msg := &protocol.AssignMsg{
+				Parameters:      map[string]string{"Frame": "1"},
+				ParameterTypes:  map[string]string{"Frame": "INT"},
+				StepTemplateLet: []string{"x = " + ref},
+			}
+			syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+			if err != nil {
+				t.Fatalf("TaskSymbols: %v", err)
+			}
+			if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+				t.Fatalf("ApplyTaskLet: want an unknown-symbol error for StepTemplateLet referencing %s, got nil", ref)
+			}
+			if _, ok := syms.Lookup("x"); ok {
+				t.Error(`"x" must not be bound when its own evaluation failed`)
+			}
+		})
+	}
+
+	// The positive: the SAME references, from StepScriptLet, must succeed --
+	// this is not a blanket restriction, only ScopeStepTemplate's.
+	for _, ref := range []string{"Session.WorkingDirectory", "Task.Param.Frame"} {
+		t.Run(ref+"/script", func(t *testing.T) {
+			msg := &protocol.AssignMsg{
+				Parameters:     map[string]string{"Frame": "1"},
+				ParameterTypes: map[string]string{"Frame": "INT"},
+				StepScriptLet:  []string{"x = " + ref},
+			}
+			syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+			if err != nil {
+				t.Fatalf("TaskSymbols: %v", err)
+			}
+			if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+				t.Fatalf("ApplyTaskLet: %v (StepScriptLet referencing %s should succeed)", err, ref)
+			}
+			if _, ok := syms.Lookup("x"); !ok {
+				t.Error(`"x" should be bound`)
+			}
+		})
+	}
+}
+
+// TestApplyTaskLet_StepTemplateLetSeesParamAndIdentity is the positive
+// complement to the previous test's negative: ScopeStepTemplate is narrow,
+// not empty -- Param.<name>, RawParam.<name>, Job.Name and Step.Name are all
+// still available to a StepTemplateLet binding (scope.go's scopeFixed/
+// scopeFamilies for ScopeStepTemplate), and the bound name is visible to the
+// FOLLOWING StepScriptLet block, exactly as section 3.6.2 row 1/2 requires.
+func TestApplyTaskLet_StepTemplateLetSeesParamAndIdentity(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		JobParameters:     map[string]string{"Scale": "2"},
+		JobParameterTypes: map[string]string{"Scale": "INT"},
+		JobName:           "J",
+		StepName:          "S",
+		StepTemplateLet:   []string{"doubled = Param.Scale * 2", "label = Job.Name + '/' + Step.Name"},
+		StepScriptLet:     []string{"tripled = doubled + Param.Scale"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v", err)
+	}
+
+	doubled, ok := syms.Lookup("doubled")
+	if !ok || doubled.AsInt() != 4 {
+		t.Errorf("doubled = %+v, want concrete int 4", doubled)
+	}
+	label, ok := syms.Lookup("label")
+	if !ok || label.AsStr() != "J/S" {
+		t.Errorf("label = %+v, want concrete string %q", label, "J/S")
+	}
+	tripled, ok := syms.Lookup("tripled")
+	if !ok || tripled.AsInt() != 6 {
+		t.Errorf("tripled = %+v, want concrete int 6 (doubled(4) + Param.Scale(2))", tripled)
 	}
 }
 
