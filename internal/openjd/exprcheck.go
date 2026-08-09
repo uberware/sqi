@@ -789,11 +789,24 @@ func checkEnvironmentExpressions(
 			)...)
 		}
 
-		// scriptSyms is a clone of baseSyms for the same reason syms is
-		// cloned from stepLet in checkStepExpressions: checkLetBindings
-		// mutates the table it is handed, and that must not write back into
-		// baseSyms (already consulted for variables, above) or outerLet
-		// (shared across every sibling environment in this call).
+		// scriptSyms is a clone of baseSyms, but -- unlike syms's clone of
+		// stepLet in checkStepExpressions, or baseSyms's own clone of
+		// outerLet just above -- mutation-tested and confirmed to have NO
+		// OBSERVABLE EFFECT today, under either the unit tests or the full
+		// conformance suite: baseSyms is allocated fresh every loop
+		// iteration (nothing else in this call reads it afterward), and the
+		// variables loop that consults it runs BEFORE this line, not after.
+		// Removing this clone (aliasing scriptSyms := baseSyms) changes
+		// nothing a test can currently see.
+		//
+		// Kept anyway, as ORDERING INSURANCE, not a live behavioral
+		// guarantee: it is one reordering away from mattering (moving the
+		// variables loop below this line, or adding a second consumer of
+		// baseSyms after it) and cloning here costs one small map allocation
+		// against that risk. A future edit that removes it should not read
+		// this comment as evidence something depends on it today -- verify
+		// by mutation before either keeping or removing it, the same way
+		// this note was produced.
 		scriptSyms := maps.Clone(baseSyms)
 		if e.Script != nil {
 			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms)...)

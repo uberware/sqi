@@ -382,3 +382,220 @@ steps:
 		t.Errorf("checkTemplateExpressions = %v, want no errors", errs)
 	}
 }
+
+// ─── fix round 1: mutation-pinned leak tests ───────────────────────────────
+
+// TestCheckTemplateExpressions_StepEnvironmentSymbolsDoNotLeakIntoHostRequirements
+// pins checkEnvironmentExpressions' baseSyms clone (`maps.Clone(outerLet)`).
+// outerLet, for a step's stepEnvironments, IS stepLet -- the SAME map object
+// checkStepExpressions later merges into jobSyms for hostRequirements and
+// parameterSpace. Without the clone, a step environment's own symbolsFor
+// output (here: ScopeStepEnvironment's Step.Name/Session.*/Env.File.) would
+// be written directly into that shared map, and checkStepExpressions runs
+// checkEnvironmentExpressions for stepEnvironments BEFORE it builds jobSyms
+// -- so the pollution would flow forward into hostRequirements, silently
+// re-legalizing a symbol section 3.6.2 row 1 and section 7.3.1 both forbid
+// there. A bare Step.Name in a host requirement value must be rejected
+// regardless of whether the step happens to declare a stepEnvironments
+// entry.
+func TestCheckTemplateExpressions_StepEnvironmentSymbolsDoNotLeakIntoHostRequirements(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  stepEnvironments:
+  - name: Env1
+    script:
+      actions:
+        onEnter:
+          command: echo
+          args: ["hi"]
+  hostRequirements:
+    attributes:
+    - name: attr.custom.dir
+      anyOf: ["{{ Step.Name }}"]
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/hostRequirements/attributes/0/anyOf/0"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "Step.Name") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an out-of-scope error at %s mentioning Step.Name (a step environment's "+
+			"own symbols must not leak into hostRequirements via the shared stepLet map); got: %v",
+			wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_StepScriptLetDoesNotLeakIntoHostRequirements
+// pins checkStepExpressions' syms clone (`maps.Clone(stepLet)`, used for the
+// step script's own table) from the OTHER direction: a name the STEP
+// SCRIPT's own let: binds must not become visible in hostRequirements or
+// parameterSpace. Without the clone, `syms := stepLet` would alias the same
+// map checkStepExpressions later copies into jobSyms, so
+// checkLetBindings(s.Script.Let, ...) mutating syms would mutate stepLet
+// itself, and "derived" would leak forward into jobSyms right alongside it.
+func TestCheckTemplateExpressions_StepScriptLetDoesNotLeakIntoHostRequirements(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  script:
+    let:
+    - derived = 5
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+  hostRequirements:
+    attributes:
+    - name: attr.custom.dir
+      anyOf: ["{{ derived }}"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/hostRequirements/attributes/0/anyOf/0"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "derived") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an unknown-symbol error at %s naming \"derived\" (a step SCRIPT's own "+
+			"let name must not leak into hostRequirements); got: %v", wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_StepEnvironmentLetDoesNotLeakToSiblingEnvironment
+// pins the same baseSyms clone from the sibling-environment angle: two
+// stepEnvironments entries sharing one checkEnvironmentExpressions call and
+// one outerLet map. Environment 0's own EnvironmentScript.let must not
+// become visible to environment 1.
+func TestCheckTemplateExpressions_StepEnvironmentLetDoesNotLeakToSiblingEnvironment(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  stepEnvironments:
+  - name: Env0
+    script:
+      let:
+      - only_in_env0 = 1
+      actions:
+        onEnter:
+          command: echo
+          args: ["hi"]
+  - name: Env1
+    script:
+      actions:
+        onEnter:
+          command: echo
+          args: ["{{ only_in_env0 }}"]
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/stepEnvironments/1/script/actions/onEnter/args/0"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "only_in_env0") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an unknown-symbol error at %s naming \"only_in_env0\" (environment 0's "+
+			"own let must not leak into environment 1); got: %v", wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_EnvironmentOwnLetNotVisibleInItsVariables pins
+// the Variables/scriptSyms split: section 3.6.2's <EnvironmentScript>.let row
+// lists actions and embeddedFiles as the only visible-in positions, because
+// Variables sits on the parent Environment, a SIBLING of Script -- not a
+// descendant of it. An environment's own let name must therefore be UNKNOWN
+// when referenced from that same environment's variables.
+func TestCheckTemplateExpressions_EnvironmentOwnLetNotVisibleInItsVariables(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  stepEnvironments:
+  - name: Env1
+    script:
+      let:
+      - greeting = 'hi'
+      actions:
+        onEnter:
+          command: echo
+          args: ["{{ greeting }}"]
+    variables:
+      MSG: "{{ greeting }}"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	errs := checkTemplateExpressions(tmpl, nil)
+	const wantPtr = "/steps/0/stepEnvironments/0/variables/MSG"
+	found := false
+	for _, e := range errs {
+		if e.Pointer == wantPtr && strings.Contains(e.Message, "greeting") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an unknown-symbol error at %s naming \"greeting\" (an environment's own "+
+			"let must not be visible in its own variables); got: %v", wantPtr, errs)
+	}
+}
+
+// TestCheckTemplateExpressions_StepLetVisibleInStepEnvironmentVariables is
+// the positive half of the Variables split above: row 1 names the WHOLE
+// stepEnvironments subtree as visible to the enclosing StepTemplate.let, and
+// Variables is a descendant of that subtree (unlike EnvironmentScript.let,
+// which cannot reach it). A step-template let name must resolve inside a
+// step environment's variables.
+func TestCheckTemplateExpressions_StepLetVisibleInStepEnvironmentVariables(t *testing.T) {
+	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: TestJob
+steps:
+- name: Step1
+  let:
+  - tag = 'hello'
+  stepEnvironments:
+  - name: Env1
+    script:
+      actions:
+        onEnter:
+          command: echo
+          args: ["hi"]
+    variables:
+      MSG: "{{ tag }}"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`)
+	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
+		t.Errorf("checkTemplateExpressions = %v, want no errors (a step-template let name "+
+			"must be visible in a step environment's variables); got: %v", errs, errs)
+	}
+}
