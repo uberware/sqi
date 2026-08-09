@@ -42,8 +42,11 @@ type Value struct {
 	// map[string]string): FloatText, below, binds it in
 	// internal/openjd/exprcheck.go's concreteJobParamValue. round() and a
 	// phase-2 float job parameter are the two producers today. Substituting
-	// the carried text back into a rendered template is a separate,
-	// still-unimplemented step — sub-project E4's, not this field's.
+	// the carried text back into a rendered template was a separate step, and
+	// sub-project E4a has now taken it: internal/worker/fmtres renders phase-3
+	// values onto a real command line, so the carry is observable end to end
+	// and is pinned there (a FLOAT parameter submitted "3.500" reaches the
+	// command line as 3.500, not 3.5).
 	//
 	// Three invariants make it mostly safe. Float() never sets it. Equal
 	// ignores it, so no comparison anywhere changes. And nothing ARITHMETIC
@@ -63,7 +66,15 @@ type Value struct {
 	// underspecified: section 1.3.4 (the specification, not RFC 0006, which
 	// defines repr_* but says nothing about the carry) addresses substitution
 	// and arithmetic, not a function that emits another language's literal
-	// syntax. Parked for sub-project E4 to settle, not fixed here.
+	// syntax.
+	//
+	// SETTLED BY SUB-PROJECT E4a: the carry is KEPT, in repr_* as everywhere
+	// else. Section 1.3.4 exists so a submitted "3.500" survives to the
+	// command line, and canonicalising inside a rendering function would
+	// discard the very text it preserves; no output is malformed either way,
+	// since 3.500 is valid Python, JSON and PowerShell alike. Pinned by
+	// internal/worker/fmtres's float-carry test, which asserts both the
+	// plain-substitution and repr_py paths.
 	fs string
 
 	// pf is the path flavor for a CodePath value.

@@ -1128,10 +1128,11 @@
 //     because parameters are stored as map[string]string: phase 2's
 //     concreteJobParamValue (internal/openjd/exprcheck.go) now binds it with
 //     FloatText, so Param.<name> for a submitted "3.500" carries that text and
-//     Value.String reports it. Still unimplemented on BOTH halves is
-//     SUBSTITUTION — reading the carry back out into rendered template
-//     output — which is sub-project E4's regardless of which half produced
-//     the carry. The same underlying
+//     Value.String reports it. SUBSTITUTION — reading the carry back out into
+//     rendered template output — was unimplemented on both halves and is now
+//     sub-project E4a's: internal/worker/fmtres renders phase-3 values onto a
+//     real command line, and pins that a submitted "3.500" arrives as 3.500
+//     through both plain substitution and repr_py. The same underlying
 //     Value.String gap USED TO show up for a list too, before this wave:
 //     Value.String rendered a list's string elements unquoted ("[a, b]"),
 //     while string()'s JSON row (funcsconv.go) quoted them ("[\"a\", \"b\"]")
