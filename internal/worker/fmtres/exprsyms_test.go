@@ -1258,3 +1258,200 @@ func TestPhase2Phase3Agreement_LetBindings(t *testing.T) {
 		}
 	}
 }
+
+// ── EnvSymbols and the enclosing step template's let: block ─────────────────
+//
+// EXPR sub-project E4a whole-branch review, Critical 1. Template Schemas
+// §3.6.2 row 1 makes a <StepTemplate>.let binding's names available in
+// stepEnvironments as well as in the step's script, and §3.6's prose says it
+// from the other side ("a let binding in a <StepTemplate>'s stepEnvironments
+// cannot shadow a binding from that step's let block"). Phase 2 has always
+// implemented it (checkStepExpressions hands stepLet to
+// checkEnvironmentExpressions as outerLet); phase 3 did not, so a template
+// phase 2 accepted failed every task in the step.
+
+// stepEnvMsg builds an AssignMsg carrying a step-template let: block, shared
+// by the tests below.
+func stepEnvMsg(lets ...string) *protocol.AssignMsg {
+	return &protocol.AssignMsg{
+		EXPR:              true,
+		JobName:           "J",
+		StepName:          "S",
+		JobParameters:     map[string]string{"Scene": "shot"},
+		JobParameterTypes: map[string]string{"Scene": "STRING"},
+		StepTemplateLet:   lets,
+	}
+}
+
+func TestEnvSymbols_StepEnvironmentSeesStepTemplateLet(t *testing.T) {
+	msg := stepEnvMsg(`outdir = "/tmp/out"`, `tagged = Param.Scene + "-v1"`)
+	env := &protocol.AssignEnvironment{Name: "E", StepEnvironment: true}
+
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	for name, want := range map[string]string{"outdir": "/tmp/out", "tagged": "shot-v1"} {
+		v, ok := syms[name]
+		if !ok {
+			t.Errorf("step environment table is missing let binding %q", name)
+			continue
+		}
+		if got := v.String(); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestEnvSymbols_JobEnvironmentIgnoresStepTemplateLet(t *testing.T) {
+	msg := stepEnvMsg(`outdir = "/tmp/out"`)
+	env := &protocol.AssignEnvironment{Name: "E"} // StepEnvironment false
+
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	if _, ok := syms["outdir"]; ok {
+		t.Error(`job environment table binds "outdir": a job environment has no enclosing step template (§3.6.2 row 1)`)
+	}
+	if _, ok := syms["Step.Name"]; ok {
+		t.Error(`job environment table binds "Step.Name"`)
+	}
+}
+
+// TestEnvSymbols_StepTemplateLetCannotSeeEnvSymbols pins the NARROWING half:
+// the step-template block is evaluated at ScopeStepTemplate even when it is
+// re-evaluated on the environment path, so Session.*/Env.File.* stay
+// invisible to it exactly as phase 2's checkLetBindings(..., ScopeStepTemplate,
+// ...) makes them.
+func TestEnvSymbols_StepTemplateLetCannotSeeEnvSymbols(t *testing.T) {
+	for _, src := range []string{
+		`bad = str(Session.WorkingDirectory)`,
+		`bad = str(Env.File.Config)`,
+	} {
+		msg := stepEnvMsg(src)
+		env := &protocol.AssignEnvironment{
+			Name:            "E",
+			StepEnvironment: true,
+			EmbeddedFiles:   []protocol.EmbeddedFile{{Name: "Config", Filename: "cfg.txt"}},
+		}
+		_, err := fmtres.EnvSymbols(msg, env, "/work", "/work/pm.json", true)
+		if err == nil {
+			t.Errorf("%s: want an unknown-symbol error, got nil", src)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unknown symbol") {
+			t.Errorf("%s: error = %v, want unknown symbol", src, err)
+		}
+	}
+}
+
+// TestApplyEnvLet_ShadowsStepTemplateLetRejected is §3.6's shadow rule across
+// the two blocks: "a let binding in a <StepTemplate>'s stepEnvironments
+// cannot shadow a binding from that step's let block". Before Critical 1's
+// fix phase 3 could not even SEE the step-template name, so it could not
+// reject the collision.
+func TestApplyEnvLet_ShadowsStepTemplateLetRejected(t *testing.T) {
+	msg := stepEnvMsg(`outdir = "/tmp/out"`)
+	env := &protocol.AssignEnvironment{
+		Name:            "E",
+		StepEnvironment: true,
+		Let:             []string{`outdir = "/tmp/elsewhere"`},
+	}
+
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	err = fmtres.ApplyEnvLet(env, syms, nil)
+	if err == nil {
+		t.Fatal("ApplyEnvLet: want a shadow rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "shadows") {
+		t.Errorf("error = %v, want it to report shadowing", err)
+	}
+	if got := syms["outdir"].String(); got != "/tmp/out" {
+		t.Errorf("outdir = %q after the rejected rebinding; want the step template's %q", got, "/tmp/out")
+	}
+}
+
+// TestPhase2Phase3Agreement_StepEnvironmentLet is Critical 1's agreement
+// proof, run against the REAL phase-2 checker: the same template that phase 2
+// accepts with zero expression errors must resolve at phase 3 with none
+// either. openjd.ValidateWithOptions is called with
+// CheckEXPRExpressionsWhileUnsupported so the expression walk actually runs
+// (EXPR is StatusInProgress, so the status-gate error below is expected and
+// is the ONLY error tolerated).
+func TestPhase2Phase3Agreement_StepEnvironmentLet(t *testing.T) {
+	const yaml = `specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: R
+steps:
+- name: S
+  let:
+    - 'outdir = "/tmp/out"'
+  stepEnvironments:
+  - name: E
+    variables:
+      OUT: "{{ outdir }}"
+    script:
+      actions:
+        onEnter:
+          command: echo
+          args: ["{{ outdir }}"]
+        onExit:
+          command: echo
+          args: ["{{ outdir }}"]
+  script:
+    actions:
+      onRun:
+        command: echo
+`
+	tmpl, err := openjd.Parse([]byte(yaml), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, ve := range openjd.ValidateWithOptions(
+		tmpl, openjd.ValidateOptions{CheckEXPRExpressionsWhileUnsupported: true},
+	) {
+		if ve.Pointer == "/extensions/0" {
+			continue // the StatusInProgress gate, not an expression error
+		}
+		t.Errorf("phase 2 reports %s: %s -- the fixture must be phase-2 clean", ve.Pointer, ve.Message)
+	}
+
+	step := tmpl.Steps[0]
+	msg := &protocol.AssignMsg{
+		EXPR:            true,
+		JobName:         "R",
+		StepName:        step.Name,
+		StepTemplateLet: step.Let,
+	}
+	env := &protocol.AssignEnvironment{
+		Name:            "E",
+		StepEnvironment: true,
+		Variables:       map[string]string{"OUT": "{{ outdir }}"},
+		OnEnter:         &protocol.Action{Command: "echo", Args: []string{"{{ outdir }}"}},
+		OnExit:          &protocol.Action{Command: "echo", Args: []string{"{{ outdir }}"}},
+	}
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("phase 3 EnvSymbols: %v", err)
+	}
+	vars, err := fmtres.ResolveVarsExpr(env.Variables, syms, nil)
+	if err != nil {
+		t.Fatalf("phase 3 ResolveVarsExpr: %v", err)
+	}
+	if vars["OUT"] != "/tmp/out" {
+		t.Errorf("OUT = %q, want %q", vars["OUT"], "/tmp/out")
+	}
+	for label, action := range map[string]*protocol.Action{"onEnter": env.OnEnter, "onExit": env.OnExit} {
+		got, aerr := fmtres.ResolveActionExpr(action, syms, nil)
+		if aerr != nil {
+			t.Fatalf("phase 3 ResolveActionExpr(%s): %v", label, aerr)
+		}
+		if len(got.Args) != 1 || got.Args[0] != "/tmp/out" {
+			t.Errorf("%s args = %v, want [/tmp/out]", label, got.Args)
+		}
+	}
+}

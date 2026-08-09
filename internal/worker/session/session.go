@@ -880,21 +880,29 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 		return resolvedEnter, resolvedVars, resolvedFiles, nil
 	}
 
+	// EnvSymbols also folds in the enclosing step template's let-bound names
+	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
+	// comment; this method does not apply that block itself.
 	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
 	}
+	// Variables FIRST, before this environment's own let: block is bound —
+	// §3.6.2 row 4 grants those names to the script's children (actions,
+	// embeddedFiles), and Variables is a sibling of Script, not a descendant.
+	// Phase 2 checks Variables against the pre-let table for exactly this
+	// reason (checkEnvironmentExpressions, exprcheck.go); resolving them here
+	// is how phase 3 matches it. See fmtres.ApplyEnvLet's doc comment.
+	resolvedVars, err := fmtres.ResolveVarsExpr(env.Variables, syms, s.msg.PathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	// Every resolution below (onEnter, Variables, then EmbeddedFiles) reuses
-	// this same syms.
+	// Both resolutions below (onEnter, then EmbeddedFiles) reuse this same syms.
 	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: let bindings: %w", err)
 	}
 	resolvedEnter, err := fmtres.ResolveActionExpr(env.OnEnter, syms, s.msg.PathMap)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
-	}
-	resolvedVars, err := fmtres.ResolveVarsExpr(env.Variables, syms, s.msg.PathMap)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
 	}
@@ -933,20 +941,26 @@ func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *proto
 		return resolvedAction, resolvedVars, nil
 	}
 
+	// EnvSymbols also folds in the enclosing step template's let-bound names
+	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
+	// comment. Without it, teardown fails the same way entry did: an onExit
+	// action referencing a step-template binding is an unknown symbol.
 	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Variables FIRST, before this environment's own let: block is bound —
+	// see [Session.resolveEnvEntry]'s identical comment and
+	// fmtres.ApplyEnvLet's doc comment for why the order is load-bearing.
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap)
+	if err != nil {
+		return nil, nil, err
+	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	// Both resolutions below (action, then vars) reuse this same syms.
 	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
 		return nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
 	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap)
-	if err != nil {
-		return nil, nil, err
-	}
-	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap)
 	if err != nil {
 		return nil, nil, err
 	}

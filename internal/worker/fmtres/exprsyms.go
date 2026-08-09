@@ -135,6 +135,8 @@ func TaskSymbols(msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMa
 //   - Job.Name, from msg.JobName.
 //   - Step.Name, from msg.StepName, but ONLY when env.StepEnvironment is
 //     true -- see below.
+//   - The ENCLOSING STEP TEMPLATE's let-bound names (msg.StepTemplateLet),
+//     again ONLY when env.StepEnvironment is true -- see below.
 //
 // It does NOT expose Task.Param.*/Task.RawParam.*/Task.File.*:
 // environments are session-scoped and entered once, not per task --
@@ -149,6 +151,43 @@ func TaskSymbols(msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMa
 // sets it from which of tmpl.JobEnvironments/stepTmpl.StepEnvironments the
 // entry came from), so this function trusts it directly rather than
 // guessing.
+//
+// FIX ROUND 2 (E4a whole-branch review, Critical 1): msg.StepTemplateLet is
+// evaluated and folded in here, for a step environment only. Template
+// Schemas section 3.6.2 row 1 makes a <StepTemplate>.let binding's names
+// available in stepEnvironments, hostRequirements, parameterSpace AND
+// script -- not only in the script -- and section 3.6's prose states the
+// same rule from the other side ("a let binding in a <StepTemplate>'s
+// stepEnvironments cannot shadow a binding from that step's let block").
+// Phase 2 already implements it: checkStepExpressions passes stepLet as
+// checkEnvironmentExpressions' outerLet, which folds it into baseSyms
+// BEFORE anything else and therefore behind variables, embedded files,
+// onEnter and onExit alike. Phase 3 did not, so a template phase 2 accepted
+// with zero errors failed every task in the step with unknown symbol
+// "<name>" at enterOne -- naming a symbol the submitter had been told was
+// valid -- and failed teardown the same way on the exit path.
+//
+// It is folded in HERE, inside the table builder, rather than exposed as a
+// second "apply" step the caller could forget, precisely because forgetting
+// it is the defect being fixed. That also mirrors phase 2 structurally:
+// checkEnvironmentExpressions treats outerLet as part of the table an
+// environment STARTS from (baseSyms := clone(outerLet); then symbolsFor's
+// own additions), not as a let: block the environment itself evaluates. The
+// environment's OWN let: block (section 3.6.2 row 4) remains a separate,
+// later step -- [ApplyEnvLet] -- because section 3.6.2 places the
+// environment's Variables BETWEEN the two, and phase 2's ordering there is
+// observable.
+//
+// JOB environments get NOTHING from this: they have no enclosing step, so
+// there is no step-template let block in scope, and sub-project E3's
+// section 2.2 ruling plus the
+// 7.3.1--step-name-in-job-environment-let.invalid.yaml fixture require the
+// negative half to hold. env.StepEnvironment is the same bit Step.Name
+// keys off, for the same reason.
+//
+// An error is returned when an embedded file's Name/Filename is invalid
+// (see [EmbeddedFileName]), when a PATH parameter's value cannot be mapped,
+// or when any step-template let: binding fails to parse or evaluate.
 func EnvSymbols(
 	msg *protocol.AssignMsg, env *protocol.AssignEnvironment, workDir, pathMapFile string, hasPathMap bool,
 ) (expr.MapSymbols, error) {
@@ -158,11 +197,17 @@ func EnvSymbols(
 	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
 	syms["Job.Name"] = expr.String(msg.JobName)
-	if env != nil {
-		if env.StepEnvironment {
-			syms["Step.Name"] = expr.String(msg.StepName)
-		}
-		if err := bindFileSymbols(syms, "Env.File", env.EmbeddedFiles, workDir); err != nil {
+	if env == nil {
+		return syms, nil
+	}
+	if env.StepEnvironment {
+		syms["Step.Name"] = expr.String(msg.StepName)
+	}
+	if err := bindFileSymbols(syms, "Env.File", env.EmbeddedFiles, workDir); err != nil {
+		return nil, err
+	}
+	if env.StepEnvironment {
+		if err := applyStepTemplateLet(msg.StepTemplateLet, syms, ExprEvalOptions(msg.PathMap)); err != nil {
 			return nil, err
 		}
 	}
@@ -559,21 +604,37 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // failure, rather than aborting, is the intended behavior.
 func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
 	opts := ExprEvalOptions(pathMap)
+	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts)
+	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, opts)
+	return errors.Join(tmplErr, scriptErr)
+}
 
+// applyStepTemplateLet evaluates a step template's let: block (lets) against
+// [stepTemplateLetScope]'s narrowed view of syms and merges the names it
+// newly bound back into syms, mutating it in place. It is the shared half of
+// [ApplyTaskLet] and [EnvSymbols]: Template Schemas section 3.6.2 row 1 makes
+// the SAME block's names visible to a step's script AND to its
+// stepEnvironments, and evaluating it from one function is what keeps those
+// two positions from drifting apart the way they did before the E4a
+// whole-branch review (see EnvSymbols' own doc comment).
+//
+// The merge is a set-difference, not a wholesale copy of the narrowed table:
+// the narrowed table also holds Job.Name/Step.Name/Param.*/RawParam.*, which
+// syms already has (they are where the narrowed view came from). This mirrors
+// checkStepExpressions' preLetKeys/stepLet computation (exprcheck.go) exactly.
+func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Option) error {
 	tmplScope := stepTemplateLetScope(syms)
 	preLetKeys := make(map[string]struct{}, len(tmplScope))
 	for k := range tmplScope {
 		preLetKeys[k] = struct{}{}
 	}
-	tmplErr := evalLetBindings("step template let", msg.StepTemplateLet, tmplScope, opts)
+	err := evalLetBindings("step template let", lets, tmplScope, opts)
 	for k, v := range tmplScope {
 		if _, existed := preLetKeys[k]; !existed {
 			syms[k] = v
 		}
 	}
-
-	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, opts)
-	return errors.Join(tmplErr, scriptErr)
+	return err
 }
 
 // ApplyEnvLet is ApplyTaskLet's environment counterpart: it evaluates env's
@@ -581,6 +642,21 @@ func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []proto
 // 3.6.2 row 4) over syms, mutating it in place. A nil env is a no-op
 // returning nil, matching EnvSymbols' own nil handling for the same
 // parameter.
+//
+// It does NOT evaluate the enclosing step template's block (section 3.6.2
+// row 1): [EnvSymbols] already folded those names into syms when it built
+// the table, so they are visible here -- and, per section 3.6, a binding in
+// this block that tries to rebind one of them is rejected by the shadow
+// check rather than silently overwriting it.
+//
+// CALL THIS AFTER RESOLVING env.Variables, not before. Section 3.6.2 row 4
+// grants an environment script's let: names to the script's own children --
+// actions and embeddedFiles -- and Variables is a sibling of Script on the
+// parent Environment, not a descendant of it, so a variable value may NOT
+// see them. Phase 2 encodes that by checking Variables against baseSyms
+// before cloning it into scriptSyms and binding the block
+// (checkEnvironmentExpressions, exprcheck.go); phase 3 encodes it by
+// ordering the two calls, since it mutates one table rather than cloning.
 //
 // Callers pass the result of EnvSymbols as syms. See [ApplyTaskLet] for
 // pathMap.
