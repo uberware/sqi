@@ -150,11 +150,31 @@ func jobParamTypes(declared string) (paramType, rawType expr.Type) {
 }
 
 // concreteJobParamValue converts a submitted job-parameter value into a Value
-// of type t. It falls back to Unresolved(t) if raw does not parse as t:
-// symbolsFor is not a validator, so a value that fails to parse here is
-// reported as still-unknown rather than causing symbolsFor to panic or lie
-// about what is bound. Validating submitted parameter values against their
-// declared type is bind.go's job, upstream of this call.
+// of type t. It returns Unresolved(t) in two distinct situations, which are
+// easy to conflate:
+//
+//  1. PARSE FAILURE, for a type this function does make concrete. INT and
+//     FLOAT go concrete when raw parses and fall back to Unresolved(t) when it
+//     does not: symbolsFor is not a validator, so a value that fails to parse
+//     here is reported as still-unknown rather than causing symbolsFor to
+//     panic or lie about what is bound. Validating submitted parameter values
+//     against their declared type is bind.go's job, upstream of this call.
+//     STRING and PATH always go concrete -- every string parses as either,
+//     PATH at a hardcoded flavor (see the CodePath note below).
+//
+//  2. BY CONSTRUCTION, for a type this function never makes concrete at all.
+//     CodeBool, CodeList and CodeRangeExpr have no case here and reach the
+//     default branch for EVERY input, valid or not; their symbols stay
+//     unresolved in phase 2 exactly as they were in phase 1. This is NOT a
+//     parse-failure fallback and no input can change it.
+//
+// The second situation matters for how E2's "one code path, two phases" claim
+// should be read: phase 2 differs from phase 1 only in this table, so for the
+// three declared types that are not in it, phase 2 differs from phase 1 not at
+// all. Nothing is broken by that today -- BOOL, LIST[*] and RANGE_EXPR are
+// sub-project F's job-parameter types and a template cannot declare one yet
+// (the EXPR extension that defines them is not StatusSupported) -- but F must
+// add their cases here, or its own parameters will silently never resolve.
 //
 // The CodeFloat case binds raw as the value's rendered form (expr.FloatText),
 // per section 1.3.4: submitting "3.500" to a FLOAT parameter must preserve
@@ -251,22 +271,28 @@ func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapS
 	}
 }
 
-// hostOnlyFunctions is the set of function names the specification restricts
-// to a host-context scope (SESSION and TASK) -- section "Host-Context
-// Function Availability" -- because they need runtime resources that do not
+// hostOnlyFunctions is the set of function names restricted to a host-context
+// scope (SESSION and TASK) because they need runtime resources that do not
 // exist at submission time. apply_path_mapping needs the session's
 // path-mapping rules, which are established only once a session is running;
 // internal/openjd/expr registers it FLAT, with no scope model of its own, so
 // this set is the only thing enforcing the restriction.
 //
-// The specification does NOT commit to a single such function:
-// FunctionLibrary.with_host_context() returns a library "with host-only
-// functions LIKE apply_path_mapping() enabled" (wiki line 515), and the
-// availability section itself says "Certain functions ... For example,
-// apply_path_mapping()". apply_path_mapping is the only entry today because it
-// is the only function that reads session state -- declaring the gate as a
-// SET rather than a single name comparison means a second entrant costs one
-// map entry, not a rewritten conditional.
+// The restriction itself is the SPECIFICATION's: the wiki's FunctionLibrary
+// entry for with_host_context() is a library "with host-only functions like
+// apply_path_mapping() enabled"
+// (third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:514).
+//
+// That "like" is the whole reason this is a SET rather than a name
+// comparison, and the specification is the only source needed for it. RFC
+// 0005's "Host-Context Function Availability" section
+// (third_party/openjd-specifications/rfcs/0005-expression-language.md:1022)
+// says the same thing at more length -- "Certain functions ... For example,
+// apply_path_mapping()" -- but that section exists ONLY in the RFC, which is
+// the proposal behind the specification and not the specification itself; do
+// not cite it as normative. apply_path_mapping is the only entry today
+// because it is the only function that reads session state, and a second
+// entrant costs one map entry rather than a rewritten conditional.
 var hostOnlyFunctions = map[string]struct{}{
 	"apply_path_mapping": {},
 }

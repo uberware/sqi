@@ -53,13 +53,16 @@ func (s Scope) String() string {
 // worker host, where session state exists.
 //
 // It gates the host-context-only functions. The specification does NOT commit
-// to a single such function: FunctionLibrary.with_host_context() enables
-// "host-only functions like apply_path_mapping()", and the Host-Context
-// Function Availability section says "Certain functions ... For example,
-// apply_path_mapping()". apply_path_mapping is the only one in sqi's registry
-// today because it is the only function that reads session state; the gate is
-// a set (hostOnlyFunctions, exprcheck.go) rather than a name comparison so a
-// second entrant costs one edit.
+// to a single such function: its FunctionLibrary.with_host_context() enables
+// "host-only functions like apply_path_mapping()" (wiki
+// 2026-02-Expression-Language.md:514). apply_path_mapping is the only one in
+// sqi's registry today because it is the only function that reads session
+// state; the gate is a set (hostOnlyFunctions, exprcheck.go) rather than a
+// name comparison so a second entrant costs one edit. (RFC 0005's
+// "Host-Context Function Availability" states the rule at more length, but the
+// RFC is the
+// proposal behind the specification, not the specification -- see
+// hostOnlyFunctions' own comment.)
 func (s Scope) IsHostContext() bool { return s != ScopeJob }
 
 // fixedSymbol is a symbol whose name and type are known from the specification

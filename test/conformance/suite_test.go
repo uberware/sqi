@@ -837,14 +837,21 @@ func TestConformance_C4ProtectedFixtures(t *testing.T) {
 //
 // Two categories, by what became reachable:
 //
-//   - 12 entries (the 7.3/7.3.1-numbered ones) are the scope model's own
-//     rules: a host-context-only function (apply_path_mapping) used outside
-//     @fmtstring[host], a submission-time reference (Job.Name, Step.Name,
-//     Session.*, Task.Param.*) used in a scope that does not carry it, a
-//     circular Job.Name self-reference in the name field, and a complex
-//     expression or Job.Name/Step.Name reference that requires the EXPR
-//     extension to be declared and appears without it. These are Tasks 6-9's
-//     direct contribution.
+//   - 12 entries are the 7.3/7.3.1-numbered ones. ELEVEN of them are the
+//     scope model's own rules: a host-context-only function
+//     (apply_path_mapping) used outside @fmtstring[host] in the JOB NAME
+//     field, a submission-time reference (Job.Name, Step.Name, Session.*,
+//     Task.Param.*) used in a scope that does not carry it, a circular
+//     Job.Name self-reference in the name field, and a complex expression or
+//     Job.Name/Step.Name reference that requires the EXPR extension to be
+//     declared and appears without it. Those eleven are Tasks 6-9's direct
+//     contribution. The TWELFTH,
+//     7.3--apply-path-mapping-in-timeout.invalid.yaml, is NOT: it is rejected
+//     by decodeAction's strict integer parse of "timeout" at parse time, and
+//     the scope model never sees it. Its entry below says so. Crediting it to
+//     the host-context gate would be wrong twice over — the gate does not fire,
+//     and the timeout position it would fire at is unreachable from any real
+//     template (exprcheck.go, above checkActionExpressions).
 //   - 40 entries (the 2.9-2.16-numbered ones) plus expr-extension-missing are
 //     section 2's job-parameter shape validation (BOOL/RANGE_EXPR default
 //     shape, LIST[*] length/item bounds/allowed-values/item-type) and the
@@ -861,8 +868,17 @@ func TestConformance_E2ProtectedFixtures(t *testing.T) {
 		// --- Scope model (Tasks 6-9): host-context gating and submission-time
 		// scope restrictions on Job.Name, Step.Name, Session.*, Task.Param.*,
 		// and the "requires the EXPR extension" gate. ---
-		"EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml":              "apply_path_mapping is host-context-only; the job name field is not a host context",
-		"EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml":               "apply_path_mapping is host-context-only; a plain @fmtstring timeout is not a host context",
+		"EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml": "apply_path_mapping is host-context-only; the job name field is not a host context",
+		// NOT the scope model: this fixture is rejected by decodeAction
+		// (parse.go), which decodes "timeout" with a strict integer parse, so
+		// openjd.Parse fails with "timeout must be an integer" before the walk
+		// runs at all. checkActionExpressions DOES carry a timeout position at
+		// TargetInt, but it is wired-and-unreachable -- see the long PLAIN
+		// STATEMENT comment above checkActionExpressions in exprcheck.go. It is
+		// protected here because it is one of E2's thirteen target fixtures and
+		// its passing state must not silently flip; the reason it passes is
+		// incidental to the scope model and is stated so it is not miscredited.
+		"EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml":               "rejected at parse time: timeout must be an integer (decodeAction), NOT by the host-context gate",
 		"EXPR/job_templates/7.3--complex-expr-in-env-action-requires-expr.invalid.yaml":    "a complex expression in an environment script action requires the EXPR extension to be declared",
 		"EXPR/job_templates/7.3--complex-expr-in-env-variables-requires-expr.invalid.yaml": "a complex expression in environment variables requires the EXPR extension to be declared",
 		"EXPR/job_templates/7.3--session-in-host-requirements.invalid.yaml":                "Session.WorkingDirectory is not available in host requirements (submission-time scope)",

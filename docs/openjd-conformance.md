@@ -115,13 +115,15 @@ suite directory (`conformance.RunCase`'s machinery), which additionally
 discounts only the EXPR extension's own registered-but-unsupported status-gate
 error before deciding pass/fail — see `runEXPRCase`'s own doc comment for why
 that discount exists and is temporary. `RunExprCase` and `exprcase.go` still
-exist in the tree — several `TestConformance_*ProtectedFixtures` tests
-(`B3`, `C1`, `C2`, `C3`, `C4`) still call `RunExprCase` directly, predating
-this change — but `TestConformance_Expressions` itself, the test that produces
-the headline EXPR score, no longer does. `RunExprCase` survives as unused,
-dead weight for the score itself, until sub-project H deletes it alongside
+exist in the tree, and **are still called**: five `TestConformance_*ProtectedFixtures`
+tests (`B3`, `C1`, `C2`, `C3`, `C4`) call `RunExprCase` directly, predating this
+change. **Deleting it today would break those five tests.** What changed is
+narrower: `TestConformance_Expressions` itself — the test that produces the
+headline EXPR score — no longer goes through it, so `RunExprCase` no longer
+contributes to the score. It goes when sub-project H deletes it alongside
 `exprcase.go`, `exprcase_test.go` and `baseline-expr.txt`, per
-`TestConformance_EXPRNotSupported`'s own checklist.
+`TestConformance_EXPRNotSupported`'s own checklist, which is also when those
+five tests are rewritten onto the real path.
 
 The paragraphs below this note describe the pre-E2 arrangement and are kept
 for history, not because they are still accurate — read them as "how EXPR
@@ -210,14 +212,29 @@ when its scope-aware evaluation can reject the two expressions for the rule they
 actually violate, both come off the list and the score goes back up. See that
 file's header, which records the whole sequence.
 
-**CORRECTION (sub-project E2):** this prediction has now happened. E2's scope
-model rejects both `apply_path_mapping(...)` calls for their real reason —
-`apply_path_mapping` is host-context-only, and neither a job name field nor a
-plain `@fmtstring` timeout is a host context — so both fixtures are off
-`baseline-expr.txt` and count toward the 175/209 pass score cited above. Both
-are asserted by name in `TestConformance_E2ProtectedFixtures`
-(`test/conformance/suite_test.go`), so a future regression that silently swaps
-them back to passing for the wrong reason (or fails them outright) is caught.
+**CORRECTION (sub-project E2):** this prediction was fulfilled for **one** of
+the two fixtures, not both. Both are off `baseline-expr.txt` and both count
+toward the 175/209 pass score cited above, but for different reasons, and only
+one is the scope model's doing:
+
+- `7.3--apply-path-mapping-in-job-name.invalid.yaml` — **the prediction, met.**
+  E2's scope model rejects the call for its real rule: `apply_path_mapping` is
+  host-context-only and the job name field is not a host context.
+- `7.3--apply-path-mapping-in-timeout.invalid.yaml` — **still incidental.** It
+  is rejected by `decodeAction` (`internal/openjd/parse.go`), which decodes
+  `timeout` with a strict integer parse, so `openjd.Parse` fails with
+  `openjd: timeout must be an integer` before validation — and therefore before
+  the scope model — runs at all. `checkActionExpressions` does carry a timeout
+  position, but it is wired-and-unreachable for any real template; see the
+  standing comment above that function in `internal/openjd/exprcheck.go`.
+  Making the rule actually fire there requires teaching `decodeAction` to
+  accept a format-string body for `timeout`, which changes every existing
+  template's timeout, base-spec included. That remains open.
+
+Both are asserted by name in `TestConformance_E2ProtectedFixtures`
+(`test/conformance/suite_test.go`), with each entry's "why" stating which of
+the two mechanisms applies, so a future regression that silently swaps them
+back to passing for the wrong reason (or fails them outright) is caught.
 
 The path is deleted the moment EXPR is supported for real: as of sub-project E2,
 EXPR is registered (status `"in-progress"`) so this suite can score EXPR fixtures

@@ -2533,12 +2533,18 @@ func validateTaskParam(tp TaskParamDefinition, base string, seen map[string]stru
 // a new check as of sub-project E2's Task 9; a range entry had no
 // format-string scope validation before this. Skipped when exprDeclared:
 // checkTemplateExpressions covers this position with the real evaluator
-// instead. RangeExpr (the whole-field alternative form) is deliberately NOT
-// checked here or in checkTemplateExpressions: its target type depends on the
-// parameter's declared type and, under EXPR, may be a list-valued expression
-// (section 1.3.11) rather than a plain string -- a position this task leaves
-// alone to avoid rejecting the expr1.3.11--*-range-expression.yaml fixtures,
-// which legitimately evaluate to list[float]/list[path]/list[string].
+// instead.
+//
+// RangeExpr (the whole-field alternative form) is checked too, but NOT here:
+// [validateTaskParamRangeAndChunks], this function's caller, covers it on the
+// base-spec path, and [checkParameterSpaceExpressions] (exprcheck.go) covers
+// it on the EXPR path. Both were added by Task 9's own fix round. The EXPR
+// side deliberately checks it with expr.TAny rather than a target derived from
+// the parameter's declared type, because under EXPR a RangeExpr may be a
+// list-valued expression (section 1.3.11) rather than a plain string -- the
+// expr1.3.11--*-range-expression.yaml fixtures legitimately evaluate to
+// list[float]/list[path]/list[string], and a fixed string target would reject
+// them. See those two sites for the full reasoning.
 func validateRangeListValues(tp TaskParamDefinition, base string, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 	for i, v := range tp.RangeList {
