@@ -2,22 +2,31 @@
 
 package fmtres_test
 
-// Tests for exprsyms.go — EXPR sub-project E4a, Task 3: the phase-3 symbol
-// table.
+// Tests for exprsyms.go — EXPR sub-project E4a, Task 3 (the phase-3 symbol
+// table) and Task 5 (re-evaluating let: bindings against it).
 //
 // Design spec §3's table is the contract for TestTaskSymbols_* and
 // TestEnvSymbols_*: every row present with the right TYPE (not just
 // presence — a Param.Count bound as string when the parameter is declared
 // INT is the defect this file exists to catch) and the right concrete
-// value. TestPhase2Phase3Agreement is the wave's own real deliverable: it
-// runs a real template's declared parameters through internal/openjd's
-// real phase-2 checker (openjd.SymbolsFor) and through this package's
-// phase-3 builder, and asserts the types agree — proving, rather than
-// assuming, that phase 3 is "the same walk with a different table."
+// value. TestPhase2Phase3Agreement is Task 3's real deliverable: it runs a
+// real template's declared parameters through internal/openjd's real
+// phase-2 checker (openjd.SymbolsFor) and through this package's phase-3
+// builder, and asserts the types agree — proving, rather than assuming,
+// that phase 3 is "the same walk with a different table."
+//
+// TestApplyTaskLet_* / TestApplyEnvLet_* are Task 5's tests for
+// ApplyTaskLet/ApplyEnvLet, and TestPhase2Phase3Agreement_LetBindings is
+// Task 5's own agreement test: the same claim TestPhase2Phase3Agreement
+// makes for the base symbol table, extended to a let: block's bound names,
+// whose types are the natural result of evaluating each binding rather than
+// a table row copied from a spec.
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -595,6 +604,14 @@ steps:
           chunks:
             defaultTaskCount: 2
     script:
+      let:
+        - s = Param.JStr
+        - n = Param.JInt + 1
+        - f = Param.JFloat
+        - p = Param.JPath
+        - flag = Param.JInt > 0
+        - chunk = Task.Param.TChunk
+        - lst = [Param.JInt, 1, 2]
       embeddedFiles:
         - name: Script
           filename: run.py
@@ -781,5 +798,362 @@ func TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile(t *testing.T) {
 	}
 	if extra := keyDiff(phase3, phase2); len(extra) > 0 {
 		t.Errorf("phase-3 exposes %v beyond phase-2, want none", extra)
+	}
+}
+
+// ── ApplyTaskLet / ApplyEnvLet — Task 5 ─────────────────────────────────────
+
+// TestApplyTaskLet_SequentialPropagation pins the core mechanism
+// checkLetBindings implements and ApplyTaskLet mirrors: bindings evaluate in
+// declaration order, each result inserted so a LATER binding sees it — both
+// within the step template's own block and, crucially, across the boundary
+// into the step script's block (section 3.6.2 row 1/2's ordering).
+func TestApplyTaskLet_SequentialPropagation(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		StepTemplateLet: []string{"x = 1", "y = x + 1"},
+		StepScriptLet:   []string{"z = y + 1"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v", err)
+	}
+
+	for name, want := range map[string]int64{"x": 1, "y": 2, "z": 3} {
+		v, ok := syms.Lookup(name)
+		if !ok {
+			t.Errorf("%s not bound", name)
+			continue
+		}
+		if !v.Type.Equal(expr.TInt) || v.AsInt() != want {
+			t.Errorf("%s = %+v, want concrete int %d", name, v, want)
+		}
+	}
+}
+
+// TestApplyTaskLet_HostOnlySymbol is the design spec's own headline example
+// (§1, "a <StepScript>.let binding over Session.WorkingDirectory produces a
+// path a command actually uses"): a host-only symbol phase 1/2 could only
+// ever bind as a placeholder is, at phase 3, a REAL concrete value, because
+// this function runs against TaskSymbols' table on the worker host itself.
+func TestApplyTaskLet_HostOnlySymbol(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		StepTemplateLet: []string{"wd = Session.WorkingDirectory"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work/session1", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v", err)
+	}
+
+	wd, ok := syms.Lookup("wd")
+	if !ok || !wd.Type.Equal(expr.TPath) {
+		t.Fatalf("wd = %+v, want a concrete path", wd)
+	}
+	want := wantPathText(t, "WD", expr.MapSymbols{"WD": expr.Path("/work/session1", expr.PathNative)})
+	if wd.String() != want {
+		t.Errorf("wd = %q, want %q (Session.WorkingDirectory's own value)", wd.String(), want)
+	}
+}
+
+// TestApplyTaskLet_ScriptShadowingTemplateRejected pins section 3.6's
+// shadowing rule at the specific boundary the wire format exists to keep
+// enforceable: the step SCRIPT's block may not rebind a name the step
+// TEMPLATE's block already bound. The template's original value must
+// survive untouched — the rejected script binding must not silently
+// overwrite it.
+func TestApplyTaskLet_ScriptShadowingTemplateRejected(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		StepTemplateLet: []string{"x = 1"},
+		StepScriptLet:   []string{"x = 2"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+		t.Fatal("ApplyTaskLet: want an error for the script shadowing the template's binding, got nil")
+	}
+
+	x, ok := syms.Lookup("x")
+	if !ok || !x.Type.Equal(expr.TInt) || x.AsInt() != 1 {
+		t.Errorf("x = %+v, want the TEMPLATE's binding (1) preserved, not overwritten by the rejected script binding", x)
+	}
+}
+
+// TestApplyTaskLet_WithinBlockShadowingRejected is the same rule's
+// same-block case: two bindings in ONE block sharing a name.
+func TestApplyTaskLet_WithinBlockShadowingRejected(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		StepTemplateLet: []string{"x = 1", "x = 2"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+		t.Fatal("ApplyTaskLet: want an error for a same-block shadow, got nil")
+	}
+	x, ok := syms.Lookup("x")
+	if !ok || x.AsInt() != 1 {
+		t.Errorf("x = %+v, want the FIRST binding (1) preserved", x)
+	}
+}
+
+// TestApplyTaskLet_FailureSurfacesWithoutHidingOthers is the brief's own
+// requirement: "a binding failure surfacing without taking down the whole
+// resolution silently". A binding that fails (here, an unknown symbol) must
+// (a) produce a non-nil error rather than being swallowed, (b) not be
+// inserted into syms, and (c) not prevent OTHER, independent bindings in the
+// same block from evaluating and being bound — mirroring checkLetBindings'
+// "evaluation continues past a failure" rule exactly.
+func TestApplyTaskLet_FailureSurfacesWithoutHidingOthers(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		StepTemplateLet: []string{"bad = NoSuchSymbol", "good = 1"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	err = fmtres.ApplyTaskLet(msg, syms, nil)
+	if err == nil {
+		t.Fatal("ApplyTaskLet: want an error for the unknown-symbol binding, got nil")
+	}
+
+	if _, ok := syms.Lookup("bad"); ok {
+		t.Error(`"bad" must not be bound after its own evaluation failed`)
+	}
+	good, ok := syms.Lookup("good")
+	if !ok || good.AsInt() != 1 {
+		t.Errorf(`good = %+v, want 1 -- one failed binding must not silently stop the rest of the block`, good)
+	}
+}
+
+// TestApplyTaskLet_CapEnforced pins the 50-binding cap: this task's brief
+// calls it out by name as "not optional", because the worker has no
+// validateLetElementCounts of its own to report an over-count — the
+// evaluator's own truncation IS the only bound on this path. See
+// TestApplyTaskLet_CapEnforced_MutationCheck, below, for the mutation-tested
+// proof that this assertion is not vacuous.
+func TestApplyTaskLet_CapEnforced(t *testing.T) {
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	msg := &protocol.AssignMsg{StepTemplateLet: makeLetSequence(51)}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v", err)
+	}
+
+	if _, ok := syms.Lookup("a49"); !ok {
+		t.Error(`"a49" (the 50th binding) should be bound`)
+	}
+	if _, ok := syms.Lookup("a50"); ok {
+		t.Error(`"a50" (the 51st binding) should NOT be bound -- the 50-binding cap was not enforced`)
+	}
+}
+
+// makeLetSequence builds n independent, non-referencing let bindings
+// "a0 = 0", "a1 = 1", ... "a<n-1> = <n-1>", used by the cap test above.
+func makeLetSequence(n int) []string {
+	lets := make([]string, n)
+	for i := range lets {
+		lets[i] = fmt.Sprintf("a%d = %d", i, i)
+	}
+	return lets
+}
+
+// TestApplyEnvLet_BasicAndNil covers ApplyEnvLet's own wiring: a real
+// environment binding is evaluated against EnvSymbols' table (proving it is
+// not simply an alias for ApplyTaskLet against the wrong field), and a nil
+// env is a safe no-op, matching EnvSymbols' own nil handling.
+func TestApplyEnvLet_BasicAndNil(t *testing.T) {
+	env := &protocol.AssignEnvironment{
+		Name: "Env1",
+		Let:  []string{"cfg = Env.File.Config"},
+		EmbeddedFiles: []protocol.EmbeddedFile{
+			{Name: "Config"},
+		},
+	}
+	msg := &protocol.AssignMsg{}
+	syms, err := fmtres.EnvSymbols(msg, env, "/work/session1", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	if err := fmtres.ApplyEnvLet(env, syms, nil); err != nil {
+		t.Fatalf("ApplyEnvLet: %v", err)
+	}
+	cfg, ok := syms.Lookup("cfg")
+	if !ok || !cfg.Type.Equal(expr.TPath) {
+		t.Fatalf("cfg = %+v, want a concrete path (Env.File.Config's own value)", cfg)
+	}
+	envFile, ok := syms.Lookup("Env.File.Config")
+	if !ok || cfg.String() != envFile.String() {
+		t.Errorf("cfg = %q, want it to equal Env.File.Config = %q", cfg.String(), envFile.String())
+	}
+
+	if err := fmtres.ApplyEnvLet(nil, expr.MapSymbols{}, nil); err != nil {
+		t.Errorf("ApplyEnvLet(nil, ...) = %v, want nil (a no-op)", err)
+	}
+}
+
+// TestApplyEnvLet_ShadowRejected is TestApplyTaskLet_WithinBlockShadowingRejected's
+// environment counterpart.
+func TestApplyEnvLet_ShadowRejected(t *testing.T) {
+	env := &protocol.AssignEnvironment{Let: []string{"x = 1", "x = 2"}}
+	syms, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	if err := fmtres.ApplyEnvLet(env, syms, nil); err == nil {
+		t.Fatal("ApplyEnvLet: want an error for a same-block shadow, got nil")
+	}
+	x, ok := syms.Lookup("x")
+	if !ok || x.AsInt() != 1 {
+		t.Errorf("x = %+v, want the FIRST binding (1) preserved", x)
+	}
+}
+
+// ── ApplyTaskLet/ApplyEnvLet cap: mutation check ────────────────────────────
+//
+// TestApplyTaskLet_CapEnforced_MutationCheck exists so the cap assertion
+// above is not merely "a test that happens to pass" — it independently
+// proves the SAME scenario would FAIL without the guard, by exercising
+// exactly what the guard bounds (the truncation itself) rather than
+// re-deriving it. This is not a substitute for the hands-on mutation the
+// brief requires (commenting out evalLetBindings' own truncation and
+// re-running go test) — that was done manually and is recorded in the task
+// report — but it keeps a permanent, automated version of the same
+// assertion in the suite: with 51 independent bindings, exactly 50 must be
+// bound, never 51.
+func TestApplyTaskLet_CapEnforced_MutationCheck(t *testing.T) {
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	msg := &protocol.AssignMsg{StepTemplateLet: makeLetSequence(51)}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v", err)
+	}
+
+	bound := 0
+	for i := range 51 {
+		if _, ok := syms.Lookup(fmt.Sprintf("a%d", i)); ok {
+			bound++
+		}
+	}
+	if bound != 50 {
+		t.Errorf("bound %d of 51 let bindings, want exactly 50 (the cap)", bound)
+	}
+}
+
+// ── Phase 2 / phase 3 agreement for let bindings — Task 5's real deliverable ─
+
+// letNameAndSrc is a minimal, test-only "name = expression" split, used only
+// to derive the two halves of one of exprAgreementYAML's OWN let: strings so
+// this test can replay it against the phase-2 table. It deliberately does
+// NOT reach into fmtres' unexported splitLetBinding (this is an external
+// _test package) and does not need to: the strings below are authored by
+// this test file, not user input, so a bare strings.Cut is enough.
+func letNameAndSrc(t *testing.T, raw string) (name, src string) {
+	t.Helper()
+	before, after, ok := strings.Cut(raw, "=")
+	if !ok {
+		t.Fatalf("malformed let binding in test fixture: %q", raw)
+	}
+	return strings.TrimSpace(before), strings.TrimSpace(after)
+}
+
+// TestPhase2Phase3Agreement_LetBindings is this task's own version of
+// TestPhase2Phase3Agreement's claim, extended to a let: block's bound
+// names: section 3.6.1 says "the type of the binding is the natural result
+// type of the expression", so there is no declared-type table to compare —
+// the type IS whatever expr.Eval decides, evaluated against each phase's own
+// symbol table. One binding per interesting result type: string, int
+// (arithmetic), float, path, bool (comparison), range_expr (a CHUNK[INT]
+// task parameter, exercising the SAME concreteness difference
+// TestPhase2Phase3Agreement's own constraintOf already handles — task
+// parameters are never concretized at phase 2), and list[int] (a literal,
+// included for completeness though it cannot itself disagree between phases).
+//
+// Phase 2's side cannot call checkLetBindings directly (unexported, and this
+// is an external _test package) — but checkLetBindings' own TYPING decision
+// is made entirely by expr.Parse + Expression.Eval(syms, expr.TAny, ...)
+// against the symbol table; its own contribution beyond that is bookkeeping
+// (declaration-order insertion, shadow rejection) that does not change the
+// TYPE a successful binding produces. So this test reproduces phase 2's
+// typing decision exactly, using the identical exported primitives
+// checkLetBindings itself calls, without re-implementing that bookkeeping —
+// exactly as constraintOf's own doc comment already establishes for the
+// base (non-let) symbol table this test extends.
+//
+// If any type disagrees, that is a finding about the phase-2/phase-3
+// one-code-path design, to report and stop on — not a mismatch to paper
+// over by adjusting this assertion.
+func TestPhase2Phase3Agreement_LetBindings(t *testing.T) {
+	tmpl, err := openjd.Parse([]byte(exprAgreementYAML), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	step := &tmpl.Steps[0]
+	if step.Script == nil || len(step.Script.Let) == 0 {
+		t.Fatal("exprAgreementYAML must declare a step script let: block for this test to exercise")
+	}
+
+	jobParams := map[string]string{
+		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+	}
+
+	// Phase 2: SymbolsFor's own (pre-let) table, then replay
+	// step.Script.Let over it via the exact primitives checkLetBindings
+	// itself uses -- see the doc comment above for why this is not a
+	// second, drifting implementation of the typing decision.
+	phase2 := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
+	phase2Let := make(map[string]expr.Value, len(step.Script.Let))
+	for _, raw := range step.Script.Let {
+		name, src := letNameAndSrc(t, raw)
+		e, perr := expr.Parse(src)
+		if perr != nil {
+			t.Fatalf("phase2 parse %q: %v", src, perr)
+		}
+		v, everr := e.Eval(phase2, expr.TAny)
+		if everr != nil {
+			t.Fatalf("phase2 eval %q: %v", src, everr)
+		}
+		phase2[name] = v
+		phase2Let[name] = v
+	}
+
+	// Phase 3: the SAME raw strings, shipped verbatim on the wire exactly
+	// as Task 2 designed (StepScriptLet carries step.Script.Let unchanged),
+	// evaluated via ApplyTaskLet against TaskSymbols' table.
+	msg := buildAgreementMsg(jobParams)
+	msg.StepScriptLet = step.Script.Let
+	phase3, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, phase3, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v", err)
+	}
+
+	if len(phase2Let) == 0 {
+		t.Fatal("no let bindings exercised -- test fixture is broken")
+	}
+	for name, p2v := range phase2Let {
+		p3v, ok := phase3[name]
+		if !ok {
+			t.Errorf("let %q: phase-3 table is missing it", name)
+			continue
+		}
+		p2c, p3c := constraintOf(p2v.Type), constraintOf(p3v.Type)
+		if !p2c.Equal(p3c) {
+			t.Errorf("let %q: phase2 type %s (constraint %s) disagrees with phase3 type %s (constraint %s)",
+				name, p2v.Type, p2c, p3v.Type, p3c)
+		}
 	}
 }

@@ -50,7 +50,9 @@ package fmtres
 // form the rule itself declares, not on a re-rendered value.
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
@@ -285,4 +287,206 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 		syms[k] = expr.Path(v, pathFlavor)
 	}
 	return nil
+}
+
+// ─── let bindings (EXPR sub-project E4a, Task 5) ────────────────────────────
+//
+// Section 2 of the design spec (docs/superpowers/specs/
+// 2026-08-09-expr-phase3-worker-design.md) explains why a let: block cannot
+// be pre-resolved server-side: a StepScript or EnvironmentScript binding may
+// reference Task.Param.*, Task.File.*, Env.File.* or Session.* -- none of
+// which exist until a session directory has been created on a specific
+// worker host. So Task 2 shipped the RAW binding strings on the wire
+// (AssignMsg.StepTemplateLet/StepScriptLet, AssignEnvironment.Let), and this
+// section re-evaluates them here, against the phase-3 tables TaskSymbols/
+// EnvSymbols already build -- the same "re-evaluate, don't transport a
+// value" shape phase 2 already uses for job/task parameters.
+//
+// The mechanism mirrors internal/openjd/exprcheck.go's checkLetBindings,
+// which is this function's phase-1/phase-2 counterpart and was read first,
+// as the brief for this task requires: bindings are evaluated in DECLARATION
+// ORDER, each successful result is inserted into syms so a LATER binding (in
+// the same block, or -- for the step-level pair -- the following block) can
+// reference it, a FAILED binding is not inserted (so a later reference to it
+// reports unknown-symbol rather than a second copy of the same fault), and
+// evaluation CONTINUES past a failure rather than aborting the rest of the
+// block. Section 3.6's shadowing rule -- "a let binding may not shadow a
+// previous binding in the same let block or any enclosing scope" -- is
+// enforced the identical way checkLetBindings enforces it: a name already
+// present as a KEY in syms, checked by lookup, not by a parallel name list,
+// so it equally catches a collision with a spec symbol (unreachable in
+// practice only because section 3.6.1's lowercase-first <UserIdentifier>
+// rule keeps the two namespaces disjoint, not because this code assumes it).
+//
+// Three deliberate differences from checkLetBindings, all because phase 3 is
+// an EXECUTION phase with no author to hand a JSON-pointer-keyed diagnostic
+// back to, unlike phase 1/2's synchronous validation request:
+//
+//  1. checkHostOnlyFunctions has no counterpart here. That check exists
+//     because a SUBMISSION-TIME scope (ScopeStepTemplate etc.) might not be a
+//     host context, and apply_path_mapping() needs session state that does
+//     not exist yet at that scope. Phase 3 runs ON the worker host, inside a
+//     real session, for every position this file touches -- it is ALWAYS a
+//     host context in the sense internal/openjd/scope.go's Scope.
+//     IsHostContext means, so there is no non-host-context phase-3 position
+//     for the restriction to apply to.
+//  2. Errors are collected and returned as ONE joined error (errors.Join),
+//     not a ValidationErrors slice keyed by JSON pointer. A worker task fails
+//     with a single error message, not a structured multi-error report meant
+//     for a template author's editor.
+//  3. [splitLetBinding] does not re-validate section 3.6.1's <UserIdentifier>
+//     character-class grammar the way internal/openjd's own parseLetBinding
+//     does (letbinding.go) -- see that function's own doc comment for why: it
+//     is a submission-time-only concern the server has already enforced by
+//     the time an assignment reaches the worker.
+//
+// The 50-binding cap (maxLetBindings, mirroring internal/openjd/validate.go's
+// constant of the same name) is enforced here exactly as checkLetBindings
+// enforces it, for the identical reason: sub-project E3's whole-branch review
+// found a 183 KB template body reaching 6.9 GB in 1.45s because the cap was
+// REPORTED (validateLetElementCounts) but never ENFORCED at the evaluator
+// that actually retains the bindings' values. The worker has no
+// validateLetElementCounts of its own to report the over-count at all -- an
+// over-long block simply never reaches a running task, because
+// checkLetBindings' own enforcement already rejects the template at
+// submission -- so this guard is defense in depth for a phase-3 evaluator
+// that should never legitimately see more than 50 bindings in a block, not
+// the primary bound. Truncating (not erroring) matches checkLetBindings:
+// evaluating the first 50 and silently dropping the rest is the same choice
+// phase 2 already makes.
+
+// maxLetBindings caps the number of bindings evalLetBindings will evaluate
+// from a single let: block -- see this section's own doc comment, above, for
+// why this mirrors (does not import; internal/openjd is not reachable from
+// the worker binary) internal/openjd/validate.go's constant of the same
+// name and value.
+const maxLetBindings = 50
+
+// splitLetBinding splits one raw "<name> = <expression>" binding into its
+// bound name and unparsed expression source. The split happens at the FIRST
+// "=" byte, matching internal/openjd's parseLetBinding (letbinding.go): a
+// legal <UserIdentifier> never contains "=", so the first occurrence in the
+// string always ends the name correctly, however many more "=" bytes the
+// expression itself goes on to contain (e.g. "x = a == b" must yield the
+// expression "a == b" intact, not "a ").
+//
+// This does NOT re-validate section 3.6.1's <UserIdentifier> character-class
+// grammar (lowercase-first start, alnum/underscore continuation, 1-512
+// length) the way parseLetBinding does -- see this section's own doc comment
+// for why: that grammar is a submission-time concern the server has already
+// enforced (checkLetBindings runs at both ValidateWithOptions and submit,
+// both upstream of the assignment this string arrived on) by the time this
+// function ever sees the string.
+func splitLetBinding(raw string) (name, exprSrc string, err error) {
+	before, after, found := strings.Cut(raw, "=")
+	if !found {
+		return "", "", fmt.Errorf("let binding %q: must be of the form \"name = expression\"", raw)
+	}
+	name = strings.TrimSpace(before)
+	exprSrc = strings.TrimSpace(after)
+	if name == "" {
+		return "", "", fmt.Errorf("let binding %q: missing name before \"=\"", raw)
+	}
+	if exprSrc == "" {
+		return "", "", fmt.Errorf("let binding %q: missing expression after \"=\"", raw)
+	}
+	return name, exprSrc, nil
+}
+
+// evalLetBindings evaluates one let: block's raw bindings against syms,
+// MUTATING it in place -- see this section's own doc comment for the full
+// mechanism this mirrors from checkLetBindings. label identifies the block
+// in a returned error ("step template let", "step script let",
+// "environment let"); each binding's position within the (possibly
+// truncated) block is included alongside it, so a block with more than one
+// failure names each one distinctly rather than repeating the same label.
+//
+// Every error encountered is collected rather than stopping the block, and
+// errors.Join'd into one returned error -- nil when every binding in the
+// (possibly truncated) block evaluated successfully.
+func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []expr.Option) error {
+	if len(lets) > maxLetBindings {
+		lets = lets[:maxLetBindings]
+	}
+
+	var errs []error
+	for i, raw := range lets {
+		name, src, err := splitLetBinding(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s[%d]: %w", label, i, err))
+			continue
+		}
+
+		if _, taken := syms[name]; taken {
+			errs = append(errs, fmt.Errorf(
+				"%s[%d]: let binding %q shadows a name already in scope", label, i, name,
+			))
+			continue
+		}
+
+		e, err := expr.Parse(src)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s[%d] (%s): %w", label, i, name, err))
+			continue
+		}
+		v, err := e.Eval(syms, expr.TAny, opts...)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s[%d] (%s): %w", label, i, name, err))
+			continue
+		}
+		syms[name] = v
+	}
+	return errors.Join(errs...)
+}
+
+// ApplyTaskLet evaluates a task's phase-3 let: bindings over syms -- the
+// step template's block (msg.StepTemplateLet) first, then the step script's
+// (msg.StepScriptLet), in that order, over the SAME table, mutating it in
+// place. This is Template Schemas section 3.6.2 row 1/2's ordering, and the
+// reason the two blocks travel as separate wire fields rather than being
+// concatenated: the script's block may not shadow a name the template's
+// block already bound, which is only enforceable if the two stay
+// distinguishable (protocol.go's own doc comment on StepTemplateLet/
+// StepScriptLet makes the same point).
+//
+// Callers pass the result of TaskSymbols as syms -- ApplyTaskLet is a
+// SEPARATE step from building the base table, not folded into TaskSymbols
+// itself. Two reasons: TaskSymbols has its own callers that want the base
+// job/task/session table alone, with no let: block involved (Task 3's own
+// tests, and TestPhase2Phase3Agreement's key-set comparison against
+// SymbolsFor, which likewise never touches let); and the LET evaluation
+// needs the metering options (below) that only a caller resolving pathMap
+// can supply, which TaskSymbols itself has no reason to require.
+//
+// pathMap is forwarded to ExprEvalOptions, exactly as every other phase-3
+// evaluator in this package requires -- see ResolveActionExpr's doc comment
+// for why this is a plain parameter rather than a variadic opts tail: taking
+// the raw ingredient closes off the possibility of a caller building an
+// options value, empty or otherwise, that skips metering.
+//
+// Returns a non-nil error if any binding in either block failed to evaluate
+// (errors.Join of every failure across both blocks) -- syms still holds
+// every binding that DID succeed, since a failed binding does not stop the
+// walk; see this section's own doc comment for why continuing past a
+// failure, rather than aborting, is the intended behavior.
+func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
+	opts := ExprEvalOptions(pathMap)
+	tmplErr := evalLetBindings("step template let", msg.StepTemplateLet, syms, opts)
+	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, opts)
+	return errors.Join(tmplErr, scriptErr)
+}
+
+// ApplyEnvLet is ApplyTaskLet's environment counterpart: it evaluates env's
+// own script let: block (AssignEnvironment.Let, Template Schemas section
+// 3.6.2 row 4) over syms, mutating it in place. A nil env is a no-op
+// returning nil, matching EnvSymbols' own nil handling for the same
+// parameter.
+//
+// Callers pass the result of EnvSymbols as syms. See [ApplyTaskLet] for
+// pathMap.
+func ApplyEnvLet(env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
+	if env == nil {
+		return nil
+	}
+	return evalLetBindings("environment let", env.Let, syms, ExprEvalOptions(pathMap))
 }
