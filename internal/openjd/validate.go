@@ -287,9 +287,15 @@ type ValidateOptions struct {
 	// to StatusSupported, at which point [exprExpressionWalkEnabled] returns
 	// true unconditionally, this field never changes an outcome, and H must
 	// DELETE it along with the conformance harness's use of it — the walk
-	// becomes unconditional again. See the walk's cost note above: H's
-	// checklist also owes the template-wide budget that makes an accepted EXPR
-	// template's walk bounded (deferred to sub-project E4).
+	// becomes unconditional again.
+	//
+	// H MUST NOT flip the status before sub-project E4's template-wide
+	// expression budget exists. This gate is currently the ONLY thing bounding
+	// the walk; after the flip the walk is unconditional, an accepted template
+	// walks TWICE (phase 1 here, phase 2 in submit.go's
+	// checkExpressionsAtSubmit), and there is no early rejection left to fall
+	// back on. See TestConformance_EXPRNotSupported's failure message, which
+	// carries H's checklist.
 	CheckEXPRExpressionsWhileUnsupported bool
 }
 

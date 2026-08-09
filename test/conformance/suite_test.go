@@ -169,7 +169,20 @@ func TestConformance_EXPRNotSupported(t *testing.T) {
 			"discounts zero errors, so it becomes dead weight, not a correctness\n" +
 			"requirement) and the \"EXPR: a temporary, second scoring path\" section\n" +
 			"of docs/openjd-conformance.md; then let TestConformance_Templates score\n" +
-			"EXPR/job_templates end to end via plain RunCase.")
+			"EXPR/job_templates end to end via plain RunCase.\n" +
+			"\n" +
+			"AND, BEFORE the flip, not after: land sub-project E4's template-wide\n" +
+			"expression budget. While EXPR is unsupported, ValidateWithOptions\n" +
+			"skips the expression walk entirely (openjd.ValidateOptions.\n" +
+			"CheckEXPRExpressionsWhileUnsupported), which is the only thing\n" +
+			"currently bounding it: the walk's budgets are PER POSITION, nothing\n" +
+			"caps the number of positions, and Task 10 makes an ACCEPTED template\n" +
+			"walk twice (phase 1 in ValidateWithOptions, phase 2 in\n" +
+			"checkExpressionsAtSubmit). Measured before the gate existed, an 84 KB\n" +
+			"template cost 11.3s of CPU; POST /api/v1/jobs takes a 4 MiB body,\n" +
+			"anonymously when auth is off. Flipping the status without a cumulative\n" +
+			"budget hands that cost straight back, and this time the template is\n" +
+			"ACCEPTED, so there is no early rejection to fall back on.")
 	}
 }
 
