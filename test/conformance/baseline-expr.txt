@@ -564,3 +564,86 @@ EXPR/job_templates/expr1.1.4--json-yaml-aliases.yaml
 # referencing it reports its own unknown-name error) -- section 3.6.2's
 # <EnvironmentScript>.let row correctly omits Step.Name for a JOB environment,
 # per section 7.3.1.
+#
+# 2026-08-08/09, sub-project E3 (Task 11): TestConformance_E3ProtectedFixtures
+# (suite_test.go) now pins, by exact name and exact discounted rejection
+# message, the 11 fixtures E3 cleared from this file across Tasks 2/4/8 (the
+# `comm -23` diff between this file at E3's base commit 80d69b1 and HEAD).
+# This note records, in one place, the disposition of every OTHER `let`-
+# related fixture in the 2023-09 EXPR suite -- not just the ones still listed
+# below -- so a future reader auditing "every let fixture" does not have to
+# reconstruct it from four tasks' worth of scattered notes. Three distinct
+# blockers, and they are not interchangeable:
+#
+#   - FEATURE_BUNDLE_1 (RFC 0004, a separate official extension sqi does not
+#     register -- see docs/openjd-conformance.md's "not applicable" list):
+#     the three fixtures listed below this note.
+#
+#   - LIST[INT] job parameters, sub-project F, unimplemented by
+#     internal/openjd's base parameter parsing (openjd.Parse itself fails
+#     with "openjd: default must be a string, number, or boolean" -- a
+#     PARSE-time rejection, before ValidateWithOptions or checkLetBindings
+#     ever runs): the five `3.6--let-comprehension-shadows*.invalid.yaml`
+#     fixtures below, plus (see the next paragraph) part of
+#     3.6--let-bindings.yaml's blockage.
+#
+#   - Confirmed empirically, not inferred from the filename, and NOT a clean
+#     single-cause case: 3.6--let-bindings.yaml declares BOTH `FEATURE_BUNDLE_1`
+#     and a `LIST[INT]` parameter (`Items`), so it is doubly blocked. LIST[INT]
+#     is the one that actually fires today -- openjd.Parse rejects the
+#     template before validateExtensions' FEATURE_BUNDLE_1 check ever runs --
+#     but FEATURE_BUNDLE_1 would block it independently even if F landed
+#     tomorrow, exactly as the E3 design spec's section 1.1 table records
+#     ("FEATURE_BUNDLE_1 and a LIST[INT] parameter (F)"). A summary that
+#     names only one of the two is not wrong so much as incomplete; this
+#     entry's own note below states both, in the order they actually fire.
+#
+# The five comprehension-shadows fixtures are deliberately NOT added as
+# active entries below: they are NOT baselined, because they already PASS --
+# same shape as the memory-limit and operation-limit notes higher up in this
+# file, a fixture correctly rejected for a reason that has nothing to do with
+# what it exists to test. Each declares a `LIST[INT]` job parameter and is
+# rejected at PARSE time (confirmed individually, all five: "openjd: default
+# must be a string, number, or boolean"), before `let:` or the comprehension-
+# variable-shadows-a-binding rule (design spec section 5.2) is ever reached.
+# E3 DOES implement that rule -- internal/openjd/exprcheck_let_test.go pins
+# it with hand-authored tests transcribing each of the five fixtures' intent
+# using INT/STRING/PATH parameters in place of the unsupported LIST[INT],
+# the same technique sub-project D used for apply_path_mapping's 31
+# expectations when no oracle could see them -- but the conformance score
+# structurally cannot see that landing, exactly as design spec section 5.3
+# predicted before this task ran: "E3 could implement none of §5.2 and the
+# score would not move." That prediction held. The five:
+#
+#   EXPR/job_templates/3.6--let-comprehension-shadows.invalid.yaml
+#   EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml
+#   EXPR/job_templates/3.6--let-comprehension-shadows-step-let.invalid.yaml
+#   EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml
+#   EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml
+#
+# (TestConformance_B3ProtectedFixtures already asserts these five pass, but
+# via conformance.RunExprCase -- the OLD expression-only scoring path, which
+# never runs openjd.Parse against the real template schema and so never sees
+# the LIST[INT] rejection at all; under that path they pass because comp.go's
+# real shadow check (section 1.3.7's rule, unchanged since sub-project B3)
+# rejects the bare expression. Two scoring paths, two different real
+# mechanisms, both correctly reject -- neither is the wrong-reason pass
+# described above; the wrong-reason pass is specific to THIS file's scoring
+# path, runEXPRCase, which IS the real template-validate path.)
+#
+# The three fixtures still listed below this note remain unaffected by this
+# task, confirmed unchanged by direct measurement of the same discounted
+# error list Task 8's note above already recorded:
+#
+#   EXPR/job_templates/3.6--let-bindings.yaml
+#       LIST[INT] (sub-project F) fires first, at PARSE time -- see the
+#       "doubly blocked" paragraph above. FEATURE_BUNDLE_1 would also block
+#       it, but never gets the chance to.
+#   EXPR/job_templates/3.6--let-host-context-symbols.yaml
+#       FEATURE_BUNDLE_1 alone: `/extensions/1: unsupported extension
+#       "FEATURE_BUNDLE_1"`, plus two unrelated `required` errors on
+#       /steps/1/script and /steps/2/script that have nothing to do with
+#       `let`.
+#   EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
+#       FEATURE_BUNDLE_1, plus one `required` error on /steps/1/script --
+#       also unrelated to `let`.

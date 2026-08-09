@@ -80,11 +80,34 @@ feature it gates are checked together.
 Two things, both **out of scope by design**, not bugs to fix:
 
 - **`EXPR`** (the OpenJD Expression Language extension) — new value types
-  (`BOOL`, `RANGE_EXPR`, `LIST[...]`), `let` on step templates, and the
-  `*_LIST` `userInterface.control` variants all belong to `EXPR` and are not
-  implemented. A template that declares `extensions: [EXPR]` is rejected with a
-  `422` at `/extensions/0` — unconditionally, the same as any other unregistered
-  extension name.
+  (`BOOL`, `RANGE_EXPR`, `LIST[...]`) and the `*_LIST` `userInterface.control`
+  variants belong to `EXPR` and are not implemented. A template that declares
+  `extensions: [EXPR]` is rejected with a `422` at `/extensions/0` —
+  unconditionally, the same as any other unregistered extension name,
+  regardless of anything else the template does.
+
+  **CORRECTION (sub-project E3, `80d69b1..ae1fb56`):** this bullet used to
+  also list `let` on step templates as unimplemented. That is no longer true.
+  `internal/openjd` models, parses, and validates `let:` at the three
+  locations it can reach today — `<StepTemplate>.let`, `<StepScript>.let`,
+  `<EnvironmentScript>.let` — enforcing section 3.6's own rules: duplicate-name
+  and shadow-enclosing rejection, the `<UserIdentifier> = <expr>` grammar,
+  self-reference rejection, the lowercase-first-letter name rule, and the 1-50
+  element-count bound. The fourth location, `<SimpleAction>.let`, is still
+  out of reach: `SimpleAction` itself is an unmodeled `FEATURE_BUNDLE_1`
+  element (see the not-applicable rows below). This changed **base-spec**
+  behavior too, not only EXPR's: a template carrying a `let:` block without
+  declaring `EXPR` used to be silently *accepted*, `let:` ignored outright; it
+  is now rejected with `"let" requires the EXPR extension to be declared` at
+  the block's own pointer — a real conformance gap closed, not a new
+  restriction invented. None of this makes `let` usable in production,
+  though: a template that DOES declare `EXPR` is still rejected outright at
+  `/extensions/0` before any of `let`'s validation runs, because `EXPR`'s own
+  status gate (`StatusInProgress`) rejects every `EXPR`-declaring template
+  unconditionally regardless of what else about it is correct. `let` is real,
+  tested code, reachable today only through the conformance suite's direct
+  calls to `openjd.Parse`/`openjd.ValidateWithOptions` — see
+  [below](#expr-a-temporary-second-scoring-path).
 - **Standalone `environment-2023-09` templates** — see [Spec version](#spec-version)
   above.
 
@@ -236,6 +259,61 @@ Both are asserted by name in `TestConformance_E2ProtectedFixtures`
 the two mechanisms applies, so a future regression that silently swaps them
 back to passing for the wrong reason (or fails them outright) is caught.
 
+**Sub-project E3 (`80d69b1..ae1fb56`) — `let` bindings.** `let` is now real at
+the three locations `internal/openjd/model.go` can reach (`<StepTemplate>.let`,
+`<StepScript>.let`, `<EnvironmentScript>.let`; the fourth, `<SimpleAction>.let`,
+needs `SimpleAction` itself, an unmodeled `FEATURE_BUNDLE_1` element). See the
+correction above under [What `sqi` deliberately does not
+implement](#what-sqi-deliberately-does-not-implement) for what that means for
+production behavior — nothing, yet, because `EXPR`'s own status gate still
+rejects every `EXPR`-declaring template first. `EXPR/job_templates` moved
+**175/209 (34 baselined) → 186/209 (23 baselined)** across four tasks, each
+confirmed individually and recorded in `baseline-expr.txt`'s own dated notes:
+
+- Task 2: `validateLetExtension` rejects any `let:` block on a template that
+  does not declare `EXPR` — three fixtures clear (the `*-requires-expr` set).
+- Task 4: `validateLetElementCounts` enforces section 3.6's "at least one,
+  at most 50" element-count bound — two fixtures clear.
+- Task 8: `checkLetBindings` (built by Tasks 6-7) is wired into all three real
+  `let:` locations for the first time, so its duplicate-name/shadow-enclosing
+  rejection, the `<UserIdentifier> = <expr>` grammar check, and
+  self-reference-as-unknown-symbol all run for real — six fixtures clear,
+  including `expr1.3.7--loop-var-shadows-binding.invalid.yaml`, whose
+  rejection (a comprehension loop variable shadowing a `let` name, section
+  1.3.7) was already implemented in `internal/openjd/expr/comp.go` since
+  sub-project B3 and needed no new evaluator code, only a symbol table that
+  finally contains `let` names for it to shadow.
+
+`TestConformance_E3ProtectedFixtures` (`test/conformance/suite_test.go`) pins
+all 11 by name — and, going further than `TestConformance_E2ProtectedFixtures`
+does, by the *exact* discounted validation-error text each one produces, not
+merely `res.Passed`. Asserting only pass/fail is exactly the gap that let E2
+credit a fixture to the scope model when the YAML decoder was doing the work
+instead; see that test's own doc comment for why `res.Reason` on
+`conformance.Result` cannot answer this by itself (it is blanked to `""` the
+moment a fixture passes) and how the test works around it by re-running the
+validation pipeline directly.
+
+Three `let` fixtures remain baselined, blocked on `FEATURE_BUNDLE_1` — a
+separate, unregistered RFC 0004 extension (see [Supported extensions and the
+vendor-prefix rule](#supported-extensions-and-the-vendor-prefix-rule)) —
+rather than on anything E3 left undone: `3.6--let-host-context-symbols.yaml`,
+`7.3.1--job-step-name-in-step-let.yaml`, and `3.6--let-bindings.yaml`, which
+is additionally — and more proximately, since it fires first — blocked by an
+unrelated `LIST[INT]` job parameter (sub-project F). Five more,
+`3.6--let-comprehension-shadows*.invalid.yaml`, already pass, but not for the
+rule they exist to test: each declares a `LIST[INT]` job parameter, which
+`internal/openjd`'s parameter parsing rejects at PARSE time, before `let:` or
+the comprehension-shadow rule is ever reached. E3 *does* implement that rule;
+the conformance score structurally cannot see it land (E3 could implement
+none of it and the score would not move), so
+`internal/openjd/exprcheck_let_test.go` pins it with hand-authored tests
+instead, transcribing each of the five fixtures' intent with an `INT`,
+`STRING`, or `PATH` parameter standing in for the unsupported `LIST[INT]` —
+the same technique sub-project D used for `apply_path_mapping`'s 31
+expectations when no oracle could see them either. See `baseline-expr.txt`'s
+own Task 11 note for the full, per-fixture accounting.
+
 The path is deleted the moment EXPR is supported for real: as of sub-project E2,
 EXPR is registered (status `"in-progress"`) so this suite can score EXPR fixtures
 through the real parse and validate path, but production still rejects an EXPR
@@ -331,11 +409,20 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **143 / 209 pass, 66 baselined** |
+| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **186 / 209 pass, 23 baselined** |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
+
+**CORRECTION:** the `EXPR/job_templates` row above went uncorrected through
+the whole of sub-project E2 — it still carried the pre-E2 figure (143/209
+pass, 66 baselined) that predates even the routing change onto `runEXPRCase`,
+while the actual score had already moved to 175/209 (34 baselined) with E2
+and then, across E3's four tasks, to today's 186/209 (23 baselined). It is now
+current as of sub-project E3 (`80d69b1..ae1fb56`); see [EXPR: a temporary,
+second scoring path](#expr-a-temporary-second-scoring-path) for the full
+accounting of both moves.
 
 768 fixtures collected in total: 460 live passes, 0 baselined failures, 308
 not applicable — **every live template-validation fixture passes.**

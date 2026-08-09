@@ -977,3 +977,137 @@ func TestConformance_E2ProtectedFixtures(t *testing.T) {
 		})
 	}
 }
+
+// e3ProtectedReason re-derives, directly and WITHOUT going through
+// conformance.Result, the exact discounted validation-error text runEXPRCase
+// would compute for path, given the fixture's own raw bytes.
+//
+// It exists because conformance.Result — and therefore runEXPRCase's own
+// return value — blanks Reason to "" the instant Passed is true (see
+// RunCase's and runEXPRCase's own doc comments). For an .invalid fixture
+// that is correctly rejected, Passed IS true, so a result pulled from the
+// results map below can never expose WHICH rule rejected it; that string is
+// UNOBSERVABLE through conformance.Result alone, full stop. This function
+// re-runs the identical Parse + ValidateWithOptions(...,
+// CheckEXPRExpressionsWhileUnsupported: true) + discountEXPRGateErrors
+// pipeline on the side, purely to read the error text back out before
+// anything blanks it.
+//
+// It requires the discounted error set to contain EXACTLY one entry and
+// returns that entry's Error() string; a fixture whose real defect now
+// produces zero, or more than one, simultaneous errors fails loudly here
+// instead of silently degrading to a substring match against an ambiguous
+// message. All eleven TestConformance_E3ProtectedFixtures entries satisfy
+// this today (confirmed individually by running each one), so every entry
+// gets an exact-match reason, not merely a "some error fired" check — this
+// docstring makes no claim beyond what was actually confirmed.
+func e3ProtectedReason(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(SuiteRoot, path))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+	tmpl, perr := openjd.Parse(data, openjd.FormatYAML)
+	if perr != nil {
+		t.Fatalf("%s: expected a single discounted validation error, got a parse failure instead: %v", path, perr)
+	}
+	errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+		EnforceLimits:                        true,
+		CheckEXPRExpressionsWhileUnsupported: true,
+	})
+	filtered := discountEXPRGateErrors(errs, tmpl.Extensions)
+	if len(filtered) != 1 {
+		t.Fatalf("%s: want exactly 1 discounted validation error, got %d: %v", path, len(filtered), filtered)
+	}
+	return filtered[0].Error()
+}
+
+// TestConformance_E3ProtectedFixtures asserts by NAME every EXPR fixture
+// sub-project E3 cleared: comparing baseline-expr.txt at E3's base commit
+// (80d69b1) against HEAD with `comm -23` between the two commits' baselined-
+// fixture sets — the same method E2's Task 12 used, at E3's smaller scale —
+// gives exactly 11 entries. (The reverse direction, `comm -13`, is empty: E3
+// only ever shrinks the EXPR baseline, it never adds an entry, so there is no
+// "corrected classification" set to exclude here the way E2 had one.)
+//
+// E2's ProtectedFixtures test (above) asserts only res.Passed, and the
+// whole-branch review of E2 named that as the exact gap that let a fixture
+// be credited to the scope model when the YAML decoder was rejecting it for
+// an unrelated reason: res.Passed alone cannot distinguish "rejected by the
+// rule this fixture exists to test" from "rejected by something else that
+// also happens to be true." This test goes further. For every entry — all
+// eleven are .invalid — it also calls e3ProtectedReason, which independently
+// re-runs the Parse + ValidateWithOptions + discountEXPRGateErrors pipeline
+// runEXPRCase uses and reads the raw discounted error text back out, then
+// asserts it against the map's value with EXACT equality, not a substring
+// match. That second call is not optional decoration: it is the only way
+// this test can name the mechanism at all, because runEXPRCase's own return
+// value — via conformance.Result — blanks Reason to "" the moment Passed is
+// true (see e3ProtectedReason's doc comment), which is always the case for a
+// correctly-rejected .invalid fixture. res.Reason from the results map below
+// is therefore never asserted against for content, only res.Passed is; this
+// docstring says so explicitly rather than letting the two checks blur
+// together and look like more coverage than they are.
+//
+// Both checks are pinned against the byte-for-byte, human-read error strings
+// already recorded in baseline-expr.txt's own Task 2/4/8 notes for these
+// eleven fixtures (each confirmed there "by running each fixture and reading
+// the resulting error, not inferred from the filename"): a wording change to
+// the rule that rejects a fixture, or a change in WHICH rule rejects it, both
+// fail this test, by design — the same design C4's per-entry exclusivity
+// proof used, scoped down to an exact-string check because these eleven
+// fixtures each produce exactly one discounted error rather than needing one
+// check per weakened mechanism.
+func TestConformance_E3ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// --- Tasks 1/2: `let` requires the EXPR extension to be declared. ---
+		"EXPR/job_templates/3.6--let-requires-expr.invalid.yaml":                     `/steps/0/let: "let" requires the EXPR extension to be declared`,
+		"EXPR/job_templates/3.6--let-in-job-environment-requires-expr.invalid.yaml":  `/jobEnvironments/0/script/let: "let" requires the EXPR extension to be declared`,
+		"EXPR/job_templates/3.6--let-in-step-environment-requires-expr.invalid.yaml": `/steps/0/stepEnvironments/0/script/let: "let" requires the EXPR extension to be declared`,
+
+		// --- Task 4: `let` block element-count bounds (section 3.6). ---
+		"EXPR/job_templates/3.6--let-empty-list.invalid.yaml": `/steps/0/let: must contain at least one binding when provided`,
+		"EXPR/job_templates/3.6--let-too-many.invalid.yaml":   `/steps/0/let: at most 50 let bindings are allowed (got 51)`,
+
+		// --- Task 8: checkLetBindings actually wired into the three real
+		// `let` positions, so its own rules (Tasks 1/6/7) run for real. ---
+		"EXPR/job_templates/3.6--let-duplicate-name.invalid.yaml":             `/steps/0/let/1: let binding "x" shadows a name already in scope; section 3.6 forbids shadowing an earlier binding in the same block or in any enclosing scope`,
+		"EXPR/job_templates/3.6--let-shadow-enclosing.invalid.yaml":           `/steps/0/script/let/0: let binding "x" shadows a name already in scope; section 3.6 forbids shadowing an earlier binding in the same block or in any enclosing scope`,
+		"EXPR/job_templates/3.6.1--let-self-reference.invalid.yaml":           `/steps/0/let/0: col 1: unknown symbol "x"`,
+		"EXPR/job_templates/3.6.1--let-missing-equals.invalid.yaml":           `/steps/0/let/0: let binding "x": must be of the form "name = expression"`,
+		"EXPR/job_templates/3.6.1--let-uppercase-name.invalid.yaml":           `/steps/0/let/0: name "Foo" must start with a lowercase letter or underscore`,
+		"EXPR/job_templates/expr1.3.7--loop-var-shadows-binding.invalid.yaml": `/steps/0/script/actions/onRun/args/1: col 8: the loop variable "x" shadows an existing binding`,
+	}
+
+	if len(protected) != 11 {
+		t.Fatalf("protected has %d entries, want 11 — update this count alongside the map", len(protected))
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = runEXPRCase(tc, data)
+	}
+
+	for path, wantReason := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected because: %s", path, wantReason)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (rejected because: %s): %s", path, wantReason, res.Reason)
+			}
+			if got := e3ProtectedReason(t, path); got != wantReason {
+				t.Fatalf("%s: rejection reason changed\n  got:  %s\n  want: %s", path, got, wantReason)
+			}
+		})
+	}
+}
