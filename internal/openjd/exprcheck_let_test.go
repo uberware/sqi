@@ -35,6 +35,9 @@ func TestCheckLetBindings_SequentialTypePropagation(t *testing.T) {
 		// "unresolved[T]" to T before comparing -- the same unwrap
 		// unwrapUnresolved performs inside the expr package, done here by
 		// hand since that helper is unexported.
+		if !v.IsUnresolved() {
+			t.Errorf("%q bound as %v, want an unresolved placeholder (Param.Count carries no concrete value in this test)", name, v.Type)
+		}
 		got := v.Type
 		if got.Code == expr.CodeUnresolved && len(got.Params) == 1 {
 			got = got.Params[0]
@@ -102,5 +105,39 @@ func TestCheckLetBindings_HostOnlyFunctionRejectedInNonHostScope(t *testing.T) {
 	}
 	if !strings.Contains(errs[0].Message, "host-context") {
 		t.Errorf("message %q is not the host-context rejection", errs[0].Message)
+	}
+}
+
+// TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit pins that
+// checkLetBindings' Eval call is metered by submissionLimits(), not by
+// expr.Eval's own much looser execution-time defaults (10,000,000
+// operations). Without that, an unmetered evaluation on the synchronous
+// POST /api/v1/jobs path is the same class of Critical E2's whole-branch
+// review already found once (~9 minutes of server CPU per request) --
+// nothing else in the repo can catch a dropped submissionLimits() here:
+// checkLetBindings has no caller yet, so neither the conformance suite nor
+// the oracle differential test ever reaches this code.
+//
+// The binding below costs ~10,953 operations (a 200-iteration comprehension,
+// each iteration building and upper-casing a 900,000-byte string) -- comfortably
+// over submissionOperationLimit (10,000) but a small fraction of expr.Eval's
+// 10,000,000-operation default, so this asserts specifically on the
+// SUBMISSION limit tripping, not merely on some error occurring: a generic
+// "contains an error" assertion would still pass at the default budget and
+// pin nothing about which limit fired.
+func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T) {
+	syms := expr.MapSymbols{}
+	errs := checkLetBindings(
+		[]string{"a = max([len(('y' * 900000).upper()) for i in range(200)])"},
+		"/steps/0/let", ScopeStepTemplate, syms,
+	)
+	if len(errs) != 1 {
+		t.Fatalf("checkLetBindings = %v, want exactly one error", errs)
+	}
+	if !strings.Contains(errs[0].Message, "limit of 10000") {
+		t.Errorf("message %q does not name the submission operation limit (10000)", errs[0].Message)
+	}
+	if _, ok := syms["a"]; ok {
+		t.Error("an over-budget binding was inserted into the table; it must not be")
 	}
 }

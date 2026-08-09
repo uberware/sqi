@@ -454,9 +454,10 @@ func checkLetBindings(
 
 // ─── submission-time limits ─────────────────────────────────────────────────
 
-// submissionOperationLimit and submissionMemoryLimit bound checkFormatString's
-// evaluations (section 1.3.9/1.3.10), tighter than expr.Eval's own
-// execution-time defaults (10,000,000 operations / 100,000,000 bytes).
+// submissionOperationLimit and submissionMemoryLimit bound every submission-time
+// evaluation (section 1.3.9/1.3.10) -- checkFormatString's, and checkLetBindings'
+// direct Eval call -- tighter than expr.Eval's own execution-time defaults
+// (10,000,000 operations / 100,000,000 bytes).
 //
 // Why tighter: checkTemplateExpressions runs at TEMPLATE VALIDATION time --
 // reachable synchronously from POST /api/v1/jobs the moment the EXPR
@@ -536,9 +537,10 @@ const (
 )
 
 // submissionLimits builds the expr.Option slice every checkTemplateExpressions
-// call site passes to checkFormatString. A function (not a package-level
-// slice) so each call gets its own slice header -- cheap, and avoids any
-// question of the underlying array being mutated by a caller.
+// call site passes to checkFormatString, and checkLetBindings hardcodes into
+// its own Eval call the same way. A function (not a package-level slice) so
+// each call gets its own slice header -- cheap, and avoids any question of the
+// underlying array being mutated by a caller.
 func submissionLimits() []expr.Option {
 	return []expr.Option{
 		expr.WithOperationLimit(submissionOperationLimit),
