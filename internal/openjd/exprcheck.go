@@ -419,6 +419,19 @@ func checkFormatString(
 //
 // Self-reference needs no check: "x = x + 1" fails because x is inserted only
 // after its own expression evaluates.
+//
+// Section 3.6 also forbids a binding that "shadows a previous binding in the
+// same let block or any enclosing scope". That reads as two rules but is
+// implemented as one: by the time a nested block's bindings are checked, the
+// enclosing scope's names are already present in syms -- exactly because of
+// the mutate-in-place mechanism above -- so "a name already present in syms
+// may not be bound" covers both cases through a single lookup. The check is
+// keyed off syms itself, not off some parallel list of names this call has
+// seen, so it equally rejects shadowing a spec-defined symbol (Param, Task,
+// Session, Env, RawParam) if one were ever present in syms under a name a
+// let binding could produce -- unreachable today only because 3.6.1's
+// lowercase-first <UserIdentifier> rule keeps those two namespaces disjoint,
+// not because this check assumes it.
 func checkLetBindings(
 	lets []string, base string, scope Scope, syms expr.MapSymbols,
 ) ValidationErrors {
@@ -429,6 +442,17 @@ func checkLetBindings(
 		name, src, err := parseLetBinding(raw)
 		if err != nil {
 			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
+			continue
+		}
+
+		if _, taken := syms[name]; taken {
+			errs = append(errs, ValidationError{
+				Pointer: ptr,
+				Message: fmt.Sprintf(
+					"let binding %q shadows a name already in scope; section 3.6 forbids shadowing "+
+						"an earlier binding in the same block or in any enclosing scope", name,
+				),
+			})
 			continue
 		}
 

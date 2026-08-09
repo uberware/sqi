@@ -141,3 +141,65 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 		t.Error("an over-budget binding was inserted into the table; it must not be")
 	}
 }
+
+func TestCheckLetBindings_RejectsDuplicateInSameBlock(t *testing.T) {
+	syms := expr.MapSymbols{}
+	errs := checkLetBindings([]string{"x = 1", "x = 2"}, "/steps/0/let", ScopeStepTemplate, syms)
+	if len(errs) != 1 || errs[0].Pointer != "/steps/0/let/1" {
+		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/let/1", errs)
+	}
+	if !strings.Contains(errs[0].Message, "shadow") {
+		t.Errorf("message %q does not say the binding shadows", errs[0].Message)
+	}
+	v, ok := syms["x"]
+	if !ok {
+		t.Fatal("x is not bound at all")
+	}
+	if got := v.AsInt(); got != 1 {
+		t.Errorf("x = %v, want the FIRST binding's value 1", got)
+	}
+}
+
+func TestCheckLetBindings_RejectsShadowingAnEnclosingBlock(t *testing.T) {
+	// The enclosing block's names are already in syms -- that is what makes
+	// "same block" and "any enclosing scope" one check rather than two.
+	syms := expr.MapSymbols{}
+	if errs := checkLetBindings([]string{"x = 1"}, "/steps/0/let", ScopeStepTemplate, syms); len(errs) != 0 {
+		t.Fatalf("outer block: %v", errs)
+	}
+	errs := checkLetBindings([]string{"x = 2"}, "/steps/0/script/let", ScopeStepScript, syms)
+	if len(errs) != 1 || errs[0].Pointer != "/steps/0/script/let/0" {
+		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/script/let/0", errs)
+	}
+}
+
+// TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry replaces the
+// task brief's original third test, which seeded syms with the name
+// "lower.Thing" to prove the check is keyed off the syms TABLE rather than
+// some parallel list of names checkLetBindings itself has bound. That input
+// is unreachable through the real grammar: "." is not a legal
+// <UserIdentifier> character (letbinding.go's isLetBindingNameCont), so
+// parseLetBinding rejects "lower.Thing = 1" for its name before the
+// shadowing check this task adds ever runs -- the test would still see a
+// non-empty errs slice, but for the wrong reason, and would keep "passing"
+// even if the shadowing check were deleted entirely.
+//
+// This restructures the same intent with a name the grammar actually admits:
+// syms is seeded directly (bypassing checkLetBindings, standing in for
+// whatever future mechanism -- a wider identifier rule, a scope model with
+// its own pre-bound names -- might one day place a non-let-derived entry in
+// the table) with a plain lowercase identifier, "thing", that a let binding
+// COULD legally produce. Binding over it still proves the check consults
+// syms itself rather than a self-maintained set of "names seen so far in
+// this call", since "thing" was never seen by this call until the lookup
+// that rejects it.
+func TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry(t *testing.T) {
+	syms := expr.MapSymbols{"thing": expr.Unresolved(expr.TString)}
+	errs := checkLetBindings([]string{"thing = 1"}, "/steps/0/let", ScopeStepTemplate, syms)
+	if len(errs) != 1 || errs[0].Pointer != "/steps/0/let/0" {
+		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/let/0", errs)
+	}
+	if !strings.Contains(errs[0].Message, "shadow") {
+		t.Errorf("message %q does not say the binding shadows", errs[0].Message)
+	}
+}
