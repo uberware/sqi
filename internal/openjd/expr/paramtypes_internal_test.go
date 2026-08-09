@@ -106,12 +106,27 @@ func TestValueFromText(t *testing.T) {
 			t.Errorf("ValueFromText(TPath, ..., PathWindows).pf = %v, want PathWindows", v.pf)
 		}
 	})
-	t.Run("bool, list, range_expr never made concrete here", func(t *testing.T) {
-		for _, ty := range []Type{TBool, ListOf(TInt), TRangeExpr} {
+	t.Run("bool and list never made concrete here", func(t *testing.T) {
+		for _, ty := range []Type{TBool, ListOf(TInt)} {
 			v := ValueFromText(ty, "anything", PathPOSIX)
 			if !v.IsUnresolved() {
 				t.Errorf("ValueFromText(%s, ...) = %+v, want Unresolved (by construction)", ty, v)
 			}
+		}
+	})
+	t.Run("range_expr parses", func(t *testing.T) {
+		v := ValueFromText(TRangeExpr, "1-10", PathPOSIX)
+		if v.IsUnresolved() {
+			t.Fatal("ValueFromText(TRangeExpr, \"1-10\", ...) is unresolved, want concrete")
+		}
+		if got := v.AsRangeExpr(); got != "1-10" {
+			t.Errorf("ValueFromText(TRangeExpr, \"1-10\", ...).AsRangeExpr() = %q, want %q", got, "1-10")
+		}
+	})
+	t.Run("range_expr parse failure falls back to unresolved", func(t *testing.T) {
+		v := ValueFromText(TRangeExpr, "not-a-range", PathPOSIX)
+		if !v.IsUnresolved() {
+			t.Errorf("ValueFromText(TRangeExpr, %q, ...) = %+v, want Unresolved", "not-a-range", v)
 		}
 	})
 }

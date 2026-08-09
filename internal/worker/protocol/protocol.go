@@ -42,11 +42,11 @@ import "time"
 //
 // "2" adds [AssignMsg.EXPR], [AssignMsg.StepTemplateLet],
 // [AssignMsg.StepScriptLet], [AssignMsg.ParameterTypes],
-// [AssignMsg.JobParameterTypes], [AssignEnvironment.Let], [AssignMsg.JobName]
-// and [AssignMsg.StepName] for EXPR phase-3 (worker-side) expression
-// evaluation.  All eight are omitempty and populated only for a template
-// that declares the EXPR extension, so a base-spec assignment's wire bytes
-// are unchanged by this bump.
+// [AssignMsg.JobParameterTypes], [AssignEnvironment.Let], [AssignMsg.JobName],
+// [AssignMsg.StepName] and [AssignEnvironment.StepEnvironment] for EXPR
+// phase-3 (worker-side) expression evaluation.  All nine are omitempty and
+// populated only for a template that declares the EXPR extension, so a
+// base-spec assignment's wire bytes are unchanged by this bump.
 const ProtocolVersion = "2"
 
 // ── Message type constants ────────────────────────────────────────────────────
@@ -463,6 +463,19 @@ type AssignEnvironment struct {
 	// as [AssignMsg.StepTemplateLet]. Present only when the owning
 	// AssignMsg's EXPR flag is true.
 	Let []string `json:"let,omitempty"`
+
+	// StepEnvironment reports whether this entry came from a StepTemplate's
+	// stepEnvironments (true) rather than the JobTemplate's jobEnvironments
+	// (false/absent). assign.go's convertEnvironment builds BOTH lists into
+	// this same []AssignEnvironment slice with no other distinguishing
+	// field, so a worker-side symbol-table builder has no other way to tell
+	// a step environment from a job one — and per Template Schemas §3.6.2,
+	// a step environment's script legitimately sees Step.Name while a job
+	// environment's does not (internal/openjd's ScopeStepEnvironment =
+	// ScopeJobEnvironment + Step.Name — scope.go). Present (true) only when
+	// the owning AssignMsg's EXPR flag is true and this is a step
+	// environment; omitted for a job environment or a base-spec assignment.
+	StepEnvironment bool `json:"step_environment,omitempty"`
 }
 
 // PathMapRule is one source→destination path mapping in the OpenJD

@@ -108,27 +108,22 @@ func TaskSymbols(msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMa
 //   - Session.WorkingDirectory, Session.PathMappingRulesFile (only when
 //     hasPathMap), Session.HasPathMappingRules.
 //   - Job.Name, from msg.JobName.
+//   - Step.Name, from msg.StepName, but ONLY when env.StepEnvironment is
+//     true -- see below.
 //
 // It does NOT expose Task.Param.*/Task.RawParam.*/Task.File.*:
 // environments are session-scoped and entered once, not per task --
 // matching [EnvScope]'s existing, pre-EXPR behavior.
 //
-// It also does NOT expose Step.Name, which is a DELIBERATE, conservative
-// gap distinct from the Task.* withholding above. Per section 3.6.2 (and
-// internal/openjd's own ScopeJobEnvironment/ScopeStepEnvironment split,
-// scope.go), a STEP environment's script legitimately grants Step.Name
-// while a JOB environment's does not. protocol.AssignEnvironment carries no
-// flag distinguishing the two: assign.go's convertEnvironment builds
-// tmpl.JobEnvironments and stepTmpl.StepEnvironments into the SAME
-// []AssignEnvironment slice with no marker, so this function cannot tell
-// which kind env is. Binding Step.Name unconditionally would grant it to a
-// job environment too, which section 3.6.2 forbids; withholding it
-// unconditionally is therefore the safe choice -- it under-grants for a
-// real step environment rather than over-granting for a job one. Recorded
-// here as a known gap for whichever task threads job/step environment
-// identity onto the wire (a candidate for E4b or later), not fixed in this
-// task, which only builds the table from what the assignment already
-// carries.
+// Step.Name is CONDITIONAL, unlike every other symbol here, because
+// section 3.6.2 (and internal/openjd's own ScopeJobEnvironment/
+// ScopeStepEnvironment split, scope.go) grants it to a STEP environment's
+// script but not a JOB environment's: ScopeStepEnvironment is exactly
+// ScopeJobEnvironment plus Step.Name. protocol.AssignEnvironment.
+// StepEnvironment is the bit that distinguishes them on the wire (assign.go
+// sets it from which of tmpl.JobEnvironments/stepTmpl.StepEnvironments the
+// entry came from), so this function trusts it directly rather than
+// guessing.
 func EnvSymbols(
 	msg *protocol.AssignMsg, env *protocol.AssignEnvironment, workDir, pathMapFile string, hasPathMap bool,
 ) (expr.MapSymbols, error) {
@@ -137,6 +132,9 @@ func EnvSymbols(
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
 	syms["Job.Name"] = expr.String(msg.JobName)
 	if env != nil {
+		if env.StepEnvironment {
+			syms["Step.Name"] = expr.String(msg.StepName)
+		}
 		if err := bindFileSymbols(syms, "Env.File", env.EmbeddedFiles, workDir); err != nil {
 			return nil, err
 		}

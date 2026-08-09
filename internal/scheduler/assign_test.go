@@ -313,6 +313,13 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 		t.Errorf("Environments[0].Let = %v, want %v", msg.Environments[0].Let, wantEnvLet)
 	}
 
+	// This environment came from the step's stepEnvironments, not the
+	// job's jobEnvironments, so StepEnvironment must be true -- the bit
+	// that lets the worker's EnvSymbols grant Step.Name here.
+	if !msg.Environments[0].StepEnvironment {
+		t.Error("Environments[0].StepEnvironment = false, want true for a step environment")
+	}
+
 	// Declared parameter types, not inferred from value text.
 	if got := msg.JobParameterTypes["Scene"]; got != "PATH" {
 		t.Errorf("JobParameterTypes[Scene] = %q, want PATH", got)
@@ -348,7 +355,7 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 
 // TestBuildAssignPayload_BaseSpecWireBytesUnchanged proves, rather than
 // assumes, that a base-spec template (no extensions: [EXPR]) produces an
-// assignment with none of the six new EXPR-phase-3 fields anywhere on the
+// assignment with none of the nine new EXPR-phase-3 fields anywhere on the
 // wire — the requirement that motivates marking every one of them omitempty.
 func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 	st := fake.New()
@@ -368,6 +375,7 @@ func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 		`"let"`,
 		`"job_name"`,
 		`"step_name"`,
+		`"step_environment"`,
 	}
 	s := string(data)
 	for _, key := range forbidden {

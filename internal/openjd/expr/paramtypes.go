@@ -87,8 +87,29 @@ func TaskParamType(declared string) Type {
 //     STRING and PATH always go concrete — every string parses as either.
 //
 //  2. BY CONSTRUCTION, for a type this function never makes concrete at
-//     all. Bool, list and range_expr have no case here and reach the
-//     default branch for EVERY input, valid or not.
+//     all. Bool and list have no case here and reach the default branch for
+//     EVERY input, valid or not — they stay unresolved regardless of phase.
+//     BOOL and LIST[*] are sub-project F's job/task-parameter types and a
+//     template cannot declare one yet (the EXPR extension that defines them
+//     is not StatusSupported). F MUST add its cases here when that lands,
+//     or its own parameters will silently never resolve past a placeholder
+//     in phase 3 — this is the one place that mapping lives now that
+//     phase 2 and phase 3 share it (see JobParamTypes' doc comment).
+//
+// range_expr (CodeRangeExpr) IS made concrete, via RangeExpr(raw) with the
+// same parse-failure-falls-back-to-Unresolved rule as INT/FLOAT.
+// CHUNK[INT] task parameters (declared today, not deferred to F) are the
+// producer: internal/openjd/expand.go stores a CHUNK[INT] task parameter's
+// value as a range-expression string like "1-5", and unlike a job
+// parameter's declared type (which internal/openjd's JobParamType enum
+// limits to STRING/PATH/INT/FLOAT — nothing can construct a RANGE_EXPR-
+// typed job parameter that passes validation), this case IS reachable in
+// production, from Task.Param.<chunked-name> in the worker's phase-3 table.
+// Phase 2 cannot observe this case: internal/openjd's bindTaskParamSymbols
+// binds every Task.Param./Task.RawParam. entry as Unresolved(t) directly
+// and never calls this function for task parameters at all (task
+// parameters are per-task, not per-template — see that function's own doc
+// comment) — verified by reading it, not assumed.
 //
 // pathFlavor selects the flavor for a CodePath result, so callers evaluating
 // in different contexts get a Path value that matches their own
@@ -122,6 +143,12 @@ func ValueFromText(t Type, raw string, pathFlavor PathFormat) Value {
 		return String(raw)
 	case CodePath:
 		return Path(raw, pathFlavor)
+	case CodeRangeExpr:
+		v, err := RangeExpr(raw)
+		if err != nil {
+			return Unresolved(t)
+		}
+		return v
 	default:
 		return Unresolved(t)
 	}

@@ -17,6 +17,7 @@ package fmtres_test
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -173,15 +174,38 @@ func TestTaskSymbols_ChunkIntTaskParam(t *testing.T) {
 		t.Fatal("Task.Param.Frames not bound")
 	}
 	// CHUNK[INT] is range_expr, not list[int] — a frame range need not be
-	// expanded. Since range_expr is one of the codes ValueFromText never
-	// makes concrete (by construction), it is Unresolved(range_expr): the
-	// TYPE is what section 3's table promises, even though this
-	// particular family has no literal value representation to carry.
-	if got.Type.Code != expr.CodeUnresolved {
-		t.Fatalf("Task.Param.Frames.Type = %s, want unresolved[range_expr]", got.Type)
+	// expanded. Unlike BOOL/LIST[*], CHUNK[INT] IS declarable today and
+	// phase 3 has the actual value (expand.go stores a chunked task
+	// parameter's value as a range-expression string), so it must go
+	// CONCRETE — the brief's contract is "every symbol concrete," and an
+	// Unresolved Task.Param.Frames here would mean a chunked render's
+	// frame range never reaches the command line on a real worker.
+	if got.IsUnresolved() || !got.Type.Equal(expr.TRangeExpr) {
+		t.Fatalf("Task.Param.Frames = %+v, want concrete range_expr", got)
 	}
-	if len(got.Type.Params) != 1 || !got.Type.Params[0].Equal(expr.TRangeExpr) {
-		t.Errorf("Task.Param.Frames.Type = %s, want unresolved[range_expr]", got.Type)
+	if got.AsRangeExpr() != "1-10" {
+		t.Errorf("Task.Param.Frames.AsRangeExpr() = %q, want %q", got.AsRangeExpr(), "1-10")
+	}
+}
+
+// TestTaskSymbols_ChunkIntTaskParam_InvalidRangeFallsBackToUnresolved pins
+// the parse-failure fallback for range_expr, matching INT/FLOAT's existing
+// rule in expr.ValueFromText.
+func TestTaskSymbols_ChunkIntTaskParam_InvalidRangeFallsBackToUnresolved(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		Parameters:     map[string]string{"Frames": "not-a-range"},
+		ParameterTypes: map[string]string{"Frames": "CHUNK[INT]"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	got, ok := syms.Lookup("Task.Param.Frames")
+	if !ok {
+		t.Fatal("Task.Param.Frames not bound")
+	}
+	if !got.IsUnresolved() {
+		t.Errorf("Task.Param.Frames = %+v, want Unresolved for an unparseable range", got)
 	}
 }
 
@@ -340,13 +364,14 @@ func TestEnvSymbols_ExposesParamAndEnvFile(t *testing.T) {
 	}
 }
 
-// TestEnvSymbols_ExcludesTaskAndStepSymbols is the negative that matters:
+// TestEnvSymbols_ExcludesTaskSymbols is the negative that matters:
 // environments are session-scoped and entered once, not per task, so
 // Task.Param.*/Task.RawParam.*/Task.File.* must not appear (matching
-// fmtres.EnvScope's existing, pre-EXPR behavior). Step.Name is withheld
-// too, but for a DIFFERENT and narrower reason — see exprsyms.go's doc
-// comment on EnvSymbols for why.
-func TestEnvSymbols_ExcludesTaskAndStepSymbols(t *testing.T) {
+// fmtres.EnvScope's existing, pre-EXPR behavior). This env is a JOB
+// environment (StepEnvironment: false, the zero value), so Step.Name must
+// also be absent — see TestEnvSymbols_StepEnvironmentGetsStepName for the
+// step-environment case, which must see it.
+func TestEnvSymbols_ExcludesTaskSymbols(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		Parameters:     map[string]string{"Frame": "1"},
 		ParameterTypes: map[string]string{"Frame": "INT"},
@@ -362,8 +387,26 @@ func TestEnvSymbols_ExcludesTaskAndStepSymbols(t *testing.T) {
 		"Task.Param.Frame", "Task.RawParam.Frame", "Task.File.Anything", "Step.Name",
 	} {
 		if _, ok := syms.Lookup(forbidden); ok {
-			t.Errorf("EnvSymbols bound %q; the environment-action scope must not expose it", forbidden)
+			t.Errorf("EnvSymbols bound %q; a job environment must not expose it", forbidden)
 		}
+	}
+}
+
+// TestEnvSymbols_StepEnvironmentGetsStepName is the positive counterpart:
+// a STEP environment (StepEnvironment: true) must see Step.Name, per
+// Template Schemas §3.6.2 (ScopeStepEnvironment = ScopeJobEnvironment +
+// Step.Name). protocol.AssignEnvironment.StepEnvironment is the wire bit
+// that makes this distinction possible at all.
+func TestEnvSymbols_StepEnvironmentGetsStepName(t *testing.T) {
+	msg := &protocol.AssignMsg{StepName: "Render"}
+	env := &protocol.AssignEnvironment{Name: "Env1", StepEnvironment: true}
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	sn, ok := syms.Lookup("Step.Name")
+	if !ok || !sn.Type.Equal(expr.TString) || sn.AsStr() != "Render" {
+		t.Errorf("Step.Name = %+v, want concrete string Render for a step environment", sn)
 	}
 }
 
@@ -421,9 +464,22 @@ steps:
           chunks:
             defaultTaskCount: 2
     script:
+      embeddedFiles:
+        - name: Script
+          filename: run.py
+          data: "print('hi')"
       actions:
         onRun:
           command: render
+    stepEnvironments:
+      - name: Env1
+        script:
+          embeddedFiles:
+            - name: Config
+              data: "cfg"
+          actions:
+            onEnter:
+              command: setup
 `
 
 // constraintOf unwraps an Unresolved type down to its constraint, so a
@@ -441,26 +497,58 @@ func constraintOf(t expr.Type) expr.Type {
 	return t
 }
 
-func TestPhase2Phase3Agreement(t *testing.T) {
-	tmpl, err := openjd.Parse([]byte(exprAgreementYAML), openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+// keyDiff returns the keys present in a but absent from b, sorted. Used both
+// directions: keyDiff(phase2, phase3) is a symbol phase 2 grants that the
+// worker never binds (the class of bug this whole strengthening exists to
+// catch — a hardcoded name list can only check symbols someone remembered
+// to list, never notice one that got dropped); keyDiff(phase3, phase2) is
+// the opposite mistake, a symbol the worker binds beyond what its scope
+// should grant.
+func keyDiff(a, b expr.MapSymbols) []string {
+	var missing []string
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			missing = append(missing, k)
+		}
 	}
-	if len(tmpl.Steps) != 1 {
-		t.Fatalf("want 1 step, got %d", len(tmpl.Steps))
+	slices.Sort(missing)
+	return missing
+}
+
+// assertKeysAndTypesAgree is shared by both arms of TestPhase2Phase3Agreement:
+// it requires phase2 and phase3 to define EXACTLY the same key set (not just
+// agree on the keys someone thought to list) and, for every key both define,
+// the same constraint type (constraintOf unwraps phase 2's Unresolved
+// placeholders — see that function's own doc comment for why that is not
+// itself a disagreement).
+func assertKeysAndTypesAgree(t *testing.T, label string, phase2, phase3 expr.MapSymbols) {
+	t.Helper()
+	if missing := keyDiff(phase2, phase3); len(missing) > 0 {
+		t.Errorf("%s: phase-2 exposes %v, phase-3 omits them", label, missing)
 	}
-	step := &tmpl.Steps[0]
-
-	jobParams := map[string]string{
-		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+	if extra := keyDiff(phase3, phase2); len(extra) > 0 {
+		t.Errorf("%s: phase-3 exposes %v, phase-2 does not", label, extra)
 	}
+	for k, p2 := range phase2 {
+		p3, ok := phase3[k]
+		if !ok {
+			continue // already reported by the key-set check above
+		}
+		p2c, p3c := constraintOf(p2.Type), constraintOf(p3.Type)
+		if !p2c.Equal(p3c) {
+			t.Errorf("%s: %s: phase2 type %s (constraint %s) disagrees with phase3 type %s (constraint %s)",
+				label, k, p2.Type, p2c, p3.Type, p3c)
+		}
+	}
+}
 
-	// ── Phase 2: internal/openjd's real symbol-table builder ──────────────
-	phase2Job := openjd.SymbolsFor(tmpl, nil, nil, openjd.ScopeJob, jobParams)
-	phase2Task := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
-
-	// ── Phase 3: this package's worker-side builder ────────────────────────
-	msg := &protocol.AssignMsg{
+// buildAgreementMsg builds the phase-3 AssignMsg exercised against
+// exprAgreementYAML's declared parameters and files, shared by every arm of
+// TestPhase2Phase3Agreement.
+func buildAgreementMsg(jobParams map[string]string) *protocol.AssignMsg {
+	return &protocol.AssignMsg{
+		JobName:       "AgreementJob",
+		StepName:      "S",
 		JobParameters: jobParams,
 		JobParameterTypes: map[string]string{
 			"JStr": "STRING", "JInt": "INT", "JFloat": "FLOAT", "JPath": "PATH",
@@ -471,35 +559,96 @@ func TestPhase2Phase3Agreement(t *testing.T) {
 		ParameterTypes: map[string]string{
 			"TStr": "STRING", "TInt": "INT", "TFloat": "FLOAT", "TPath": "PATH", "TChunk": "CHUNK[INT]",
 		},
+		EmbeddedFiles: []protocol.EmbeddedFile{{Name: "Script", Filename: "run.py"}},
 	}
-	phase3, err := fmtres.TaskSymbols(msg, "/work", "", false)
+}
+
+func TestPhase2Phase3Agreement(t *testing.T) {
+	tmpl, err := openjd.Parse([]byte(exprAgreementYAML), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(tmpl.Steps) != 1 {
+		t.Fatalf("want 1 step, got %d", len(tmpl.Steps))
+	}
+	step := &tmpl.Steps[0]
+	if len(step.StepEnvironments) != 1 {
+		t.Fatalf("want 1 step environment, got %d", len(step.StepEnvironments))
+	}
+	stepEnv := &step.StepEnvironments[0]
+
+	jobParams := map[string]string{
+		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+	}
+	const workDir = "/work"
+	const pathMapFile = "/work/path_mapping.json"
+
+	t.Run("TaskSymbols vs ScopeStepScript", func(t *testing.T) {
+		// hasPathMap=true on the phase-3 side so Session.PathMappingRulesFile
+		// is present on both sides for the key-set comparison —
+		// symbolsFor's scopeFixed binds it UNCONDITIONALLY (as a
+		// placeholder) regardless of whether any rules actually exist, so
+		// with hasPathMap=false this is the ONE deliberate, expected
+		// omission (mirroring addPathMappingKeys' absent-when-no-rules
+		// rule) — see TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile
+		// for that case pinned on its own, so it cannot be confused with a
+		// real regression here.
+		phase2 := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
+		phase3, err := fmtres.TaskSymbols(buildAgreementMsg(jobParams), workDir, pathMapFile, true)
+		if err != nil {
+			t.Fatalf("TaskSymbols: %v", err)
+		}
+		assertKeysAndTypesAgree(t, "ScopeStepScript", phase2, phase3)
+	})
+
+	t.Run("EnvSymbols vs ScopeStepEnvironment", func(t *testing.T) {
+		phase2 := openjd.SymbolsFor(tmpl, step, stepEnv, openjd.ScopeStepEnvironment, jobParams)
+		msg := buildAgreementMsg(jobParams)
+		env := &protocol.AssignEnvironment{
+			Name:            "Env1",
+			StepEnvironment: true,
+			EmbeddedFiles:   []protocol.EmbeddedFile{{Name: "Config"}},
+		}
+		phase3, err := fmtres.EnvSymbols(msg, env, workDir, pathMapFile, true)
+		if err != nil {
+			t.Fatalf("EnvSymbols: %v", err)
+		}
+		assertKeysAndTypesAgree(t, "ScopeStepEnvironment", phase2, phase3)
+	})
+}
+
+// TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile pins the ONE
+// deliberate key-set difference between phase 2 and phase 3 as its own
+// test, precisely so it cannot be mistaken for a real regression by the
+// key-set assertion above: symbolsFor's scopeFixed binds
+// Session.PathMappingRulesFile UNCONDITIONALLY as a placeholder (a
+// submission-time position has no way to know yet whether rules will
+// exist), while the worker's phase-3 table only binds it when hasPathMap is
+// actually true — mirroring addPathMappingKeys' existing (pre-EXPR) rule
+// that a reference with no rules present should fail as an unknown symbol
+// rather than resolve to an empty path.
+func TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile(t *testing.T) {
+	tmpl, err := openjd.Parse([]byte(exprAgreementYAML), openjd.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	step := &tmpl.Steps[0]
+	jobParams := map[string]string{
+		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+	}
+
+	phase2 := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
+	phase3, err := fmtres.TaskSymbols(buildAgreementMsg(jobParams), "/work", "", false)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
-	names := []string{
-		"Param.JStr", "Param.JInt", "Param.JFloat", "Param.JPath",
-		"RawParam.JStr", "RawParam.JInt", "RawParam.JFloat", "RawParam.JPath",
-		"Task.Param.TStr", "Task.Param.TInt", "Task.Param.TFloat", "Task.Param.TPath", "Task.Param.TChunk",
-		"Task.RawParam.TStr", "Task.RawParam.TInt", "Task.RawParam.TFloat", "Task.RawParam.TPath", "Task.RawParam.TChunk",
+	missing := keyDiff(phase2, phase3)
+	want := []string{"Session.PathMappingRulesFile"}
+	if !slices.Equal(missing, want) {
+		t.Errorf("phase-2 minus phase-3 (hasPathMap=false) = %v, want exactly %v", missing, want)
 	}
-	for _, name := range names {
-		var p2 expr.Value
-		var p2ok bool
-		if p2v, ok := phase2Job.Lookup(name); ok {
-			p2, p2ok = p2v, true
-		} else if p2v, ok := phase2Task.Lookup(name); ok {
-			p2, p2ok = p2v, true
-		}
-		p3, p3ok := phase3.Lookup(name)
-		if !p2ok || !p3ok {
-			t.Errorf("%s: phase2 present=%v phase3 present=%v, want both present", name, p2ok, p3ok)
-			continue
-		}
-		p2c, p3c := constraintOf(p2.Type), constraintOf(p3.Type)
-		if !p2c.Equal(p3c) {
-			t.Errorf("%s: phase2 type %s (constraint %s) disagrees with phase3 type %s (constraint %s)",
-				name, p2.Type, p2c, p3.Type, p3c)
-		}
+	if extra := keyDiff(phase3, phase2); len(extra) > 0 {
+		t.Errorf("phase-3 exposes %v beyond phase-2, want none", extra)
 	}
 }

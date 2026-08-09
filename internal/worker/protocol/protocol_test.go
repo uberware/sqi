@@ -61,8 +61,9 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 		StepName:          "S",
 		Environments: []protocol.AssignEnvironment{
 			{
-				Name: "Env1",
-				Let:  []string{"e = 1", "f = e + 1"},
+				Name:            "Env1",
+				Let:             []string{"e = 1", "f = e + 1"},
+				StepEnvironment: true,
 			},
 		},
 	}
@@ -123,10 +124,13 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 	if !slices.Equal(out.Environments[0].Let, wantEnvLet) {
 		t.Errorf("Environments[0].Let = %v, want %v", out.Environments[0].Let, wantEnvLet)
 	}
+	if !out.Environments[0].StepEnvironment {
+		t.Error("Environments[0].StepEnvironment = false, want true")
+	}
 }
 
 // TestAssignMsg_EXPRFieldsOmittedForBaseSpec asserts that a base-spec
-// assignment — one that sets none of the eight EXPR-phase-3 fields —
+// assignment — one that sets none of the nine EXPR-phase-3 fields —
 // produces no trace of them on the wire. The fields are omitempty
 // specifically so that a base-spec assignment's wire bytes do not grow; this
 // test asserts that property rather than assuming it.
@@ -155,7 +159,7 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// None of the eight new keys may appear anywhere on the wire, including
+	// None of the nine new keys may appear anywhere on the wire, including
 	// nested inside an environment object.
 	forbidden := []string{
 		`"expr"`,
@@ -166,6 +170,7 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 		`"let"`,
 		`"job_name"`,
 		`"step_name"`,
+		`"step_environment"`,
 	}
 	s := string(data)
 	for _, key := range forbidden {
@@ -191,7 +196,7 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 	if out.JobName != "" || out.StepName != "" {
 		t.Errorf("JobName/StepName = %q/%q, want empty/empty", out.JobName, out.StepName)
 	}
-	if len(out.Environments) != 1 || out.Environments[0].Let != nil {
-		t.Errorf("Environments = %+v, want Let nil", out.Environments)
+	if len(out.Environments) != 1 || out.Environments[0].Let != nil || out.Environments[0].StepEnvironment {
+		t.Errorf("Environments = %+v, want Let nil and StepEnvironment false", out.Environments)
 	}
 }

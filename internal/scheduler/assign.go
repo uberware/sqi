@@ -136,10 +136,10 @@ func buildAssignPayload(
 	envs := make([]protocol.AssignEnvironment, 0,
 		len(tmpl.JobEnvironments)+len(stepTmpl.StepEnvironments))
 	for _, e := range tmpl.JobEnvironments {
-		envs = append(envs, convertEnvironment(e, hasEXPR))
+		envs = append(envs, convertEnvironment(e, hasEXPR, false))
 	}
 	for _, e := range stepTmpl.StepEnvironments {
-		envs = append(envs, convertEnvironment(e, hasEXPR))
+		envs = append(envs, convertEnvironment(e, hasEXPR, true))
 	}
 	msg.Environments = envs
 
@@ -257,7 +257,7 @@ func convertEmbeddedFiles(files []openjd.EmbeddedFile) []protocol.EmbeddedFile {
 // representation, merging its script embedded files and actions. hasEXPR
 // gates copying the environment's let: block onto the wire — see
 // [protocol.AssignEnvironment.Let].
-func convertEnvironment(e openjd.Environment, hasEXPR bool) protocol.AssignEnvironment {
+func convertEnvironment(e openjd.Environment, hasEXPR, isStepEnvironment bool) protocol.AssignEnvironment {
 	ae := protocol.AssignEnvironment{
 		Name:      e.Name,
 		Variables: e.Variables,
@@ -270,6 +270,16 @@ func convertEnvironment(e openjd.Environment, hasEXPR bool) protocol.AssignEnvir
 			ae.Let = e.Script.Let
 		}
 	}
+	// StepEnvironment distinguishes a step-level environment from a
+	// job-level one -- see protocol.AssignEnvironment.StepEnvironment's doc
+	// comment for why the worker's phase-3 symbol-table builder needs this
+	// bit (Step.Name is legal in a step environment's script, per Template
+	// Schemas §3.6.2, but not in a job environment's). Gated on hasEXPR
+	// like every other EXPR-only field, so a base-spec assignment's wire
+	// bytes are unaffected -- the caller already computed isStepEnvironment
+	// for free (this function is called once from the job-environment loop
+	// with false, once from the step-environment loop with true).
+	ae.StepEnvironment = hasEXPR && isStepEnvironment
 	return ae
 }
 
