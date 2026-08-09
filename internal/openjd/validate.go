@@ -257,6 +257,60 @@ type ValidateOptions struct {
 	// parseIntRangeExpr) are NOT limit checks: they always apply, regardless of
 	// this flag.
 	EnforceLimits bool
+
+	// CheckEXPRExpressionsWhileUnsupported runs the EXPR extension's
+	// format-string expression walk ([checkTemplateExpressions]) even though
+	// the EXPR registry entry is not [StatusSupported].
+	//
+	// Default (false) is production's setting, and it is the SAFE one. While
+	// EXPR is StatusInProgress, [validateExtensions] rejects every
+	// EXPR-declaring template outright, so the walk's result cannot change the
+	// verdict — it can only burn CPU. And the walk is expensive: its
+	// operation and byte budgets are PER EXPRESSION POSITION with no
+	// template-wide cap and no bound on the number of positions, so a template
+	// of N expression positions costs N budgets. Measured before this gate
+	// existed, an 84 KB template of ~2,000 args entries took 11.3 s of CPU and
+	// returned exactly one error — the status-gate rejection it would have
+	// returned for free. Since POST /api/v1/jobs accepts a 4 MiB body and (with
+	// auth off, the default) accepts it anonymously, that is a cheap way to buy
+	// minutes of server CPU per request. Gating the walk on the registry status
+	// restores the pre-E2 cost: a template production always rejects is
+	// rejected without evaluating anything.
+	//
+	// Set to true ONLY by test/conformance's EXPR scoring path, which
+	// deliberately discounts the status-gate error so a fixture is judged on
+	// whatever OTHER errors sqi finds; without this field the conformance
+	// suite would stop exercising the checker entirely.
+	//
+	// TEMPORARY SHAPE. This field exists only for the window in which EXPR is
+	// registered but not yet supported. Sub-project H flips the registry entry
+	// to StatusSupported, at which point [exprExpressionWalkEnabled] returns
+	// true unconditionally, this field never changes an outcome, and H must
+	// DELETE it along with the conformance harness's use of it — the walk
+	// becomes unconditional again. See the walk's cost note above: H's
+	// checklist also owes the template-wide budget that makes an accepted EXPR
+	// template's walk bounded (deferred to sub-project E4).
+	CheckEXPRExpressionsWhileUnsupported bool
+}
+
+// exprExpressionWalkEnabled reports whether [checkTemplateExpressions] should
+// run at all, given the EXPR registry entry's status and the caller's opt-in.
+//
+// The walk runs when EXPR is [StatusSupported] — the post-sub-project-H steady
+// state, where an EXPR template is accepted and its expressions therefore
+// decide the verdict — or when the caller explicitly opted in via
+// [ValidateOptions.CheckEXPRExpressionsWhileUnsupported].
+//
+// This is NOT the extension status gate. That gate is [validateExtensions]',
+// it is unconditional, and it is untouched by this function: an EXPR template
+// is still rejected with the same error at the same pointer whether or not the
+// walk runs. This only decides whether sqi spends CPU computing errors that
+// cannot change that rejection.
+func exprExpressionWalkEnabled(optIn bool) bool {
+	if entry, ok := LookupExtension("EXPR"); ok && entry.Status == StatusSupported {
+		return true
+	}
+	return optIn
 }
 
 // ─── Validate ─────────────────────────────────────────────────────────────────
@@ -385,7 +439,16 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// an unresolved placeholder rather than a submitted value (Task 10 adds a
 	// phase-2 caller with concrete parameters). It no-ops for a template that
 	// does not declare EXPR -- see its own doc comment.
-	errs = append(errs, checkTemplateExpressions(t, nil)...)
+	//
+	// Gated on the EXPR registry entry's STATUS, not on the template's own
+	// declaration: while EXPR is StatusInProgress, validateExtensions (above)
+	// has already rejected this template unconditionally, so the walk cannot
+	// change the verdict and its per-position budgets are pure attack surface.
+	// See [ValidateOptions.CheckEXPRExpressionsWhileUnsupported] for the cost
+	// measurement and for why sub-project H deletes this gate.
+	if exprExpressionWalkEnabled(opts.CheckEXPRExpressionsWhileUnsupported) {
+		errs = append(errs, checkTemplateExpressions(t, nil)...)
+	}
 
 	// ── quantitative limits (gated) ───────────────────────────────────────
 	// Every check below MUST stay behind opts.EnforceLimits.

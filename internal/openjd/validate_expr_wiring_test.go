@@ -20,6 +20,23 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
+// validateEXPRWired validates an EXPR-declaring template with the expression
+// walk switched on.
+//
+// openjd.Validate alone would not exercise it: while the EXPR registry entry
+// is StatusInProgress, ValidateWithOptions skips checkTemplateExpressions
+// entirely (the template is already rejected by the status gate, and the walk
+// is expensive -- see ValidateOptions.CheckEXPRExpressionsWhileUnsupported).
+// The tests below are about the WIRING of that walk, so they opt in the same
+// way test/conformance does. Sub-project H makes the option a no-op and
+// deletes it; these calls then collapse back to openjd.Validate.
+func validateEXPRWired(tmpl *openjd.JobTemplate) openjd.ValidationErrors {
+	return openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+		EnforceLimits:                        true,
+		CheckEXPRExpressionsWhileUnsupported: true,
+	})
+}
+
 // TestValidate_HostRequirements_BaseSpec_OutOfScopeRejected pins the blast
 // radius explicitly: a base-spec template (no extensions declared at all)
 // referencing {{Session.WorkingDirectory}} in a host requirement's attribute
@@ -169,7 +186,8 @@ steps:
 
 // TestValidate_EXPR_HostRequirements_OutOfScopeRejected is the EXPR-template
 // counterpart of TestValidate_HostRequirements_BaseSpec_OutOfScopeRejected,
-// exercised end to end through openjd.Parse and openjd.Validate rather than
+// exercised end to end through openjd.Parse and ValidateWithOptions (via
+// validateEXPRWired, above) rather than
 // by constructing a *JobTemplate directly (as exprcheck_test.go's
 // TestCheckTemplateExpressions_HostRequirements does). It confirms
 // checkTemplateExpressions -- not validateFormatString -- is the path that
@@ -192,7 +210,7 @@ steps:
         onRun:
           command: echo
 `)
-	errs := openjd.Validate(tmpl)
+	errs := validateEXPRWired(tmpl)
 	if !containsMessage(errs, "Session") {
 		t.Fatalf("expected an out-of-scope error mentioning Session; got: %v", errs)
 	}
@@ -224,7 +242,7 @@ steps:
         - "-c"
         - "print(r'RESULT:{{ Param.X + 1 }}')"
 `)
-	errs := openjd.Validate(tmpl)
+	errs := validateEXPRWired(tmpl)
 	if containsMessage(errs, "not a valid dotted identifier") {
 		t.Fatalf("the base-spec dotted-identifier reader ran against an EXPR template; got: %v", errs)
 	}

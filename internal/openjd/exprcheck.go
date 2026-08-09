@@ -484,6 +484,18 @@ func submissionLimits() []expr.Option {
 // would reject as malformed but EXPR's grammar parses differently, wrong at
 // worst.
 //
+// The EXPR declaration is a necessary but NOT a sufficient condition for the
+// walk to happen: ValidateWithOptions additionally gates this call on the EXPR
+// registry entry's status (exprExpressionWalkEnabled), because while EXPR is
+// StatusInProgress the template has already been rejected by
+// validateExtensions and this walk -- whose operation and byte budgets are per
+// expression position, with no template-wide cap and no bound on the number of
+// positions -- would only burn CPU on a verdict it cannot change. Callers that
+// need the walk regardless (test/conformance's EXPR scoring) opt in via
+// ValidateOptions.CheckEXPRExpressionsWhileUnsupported. Calling this function
+// directly, as the unit tests in exprcheck_test.go do, bypasses that gate on
+// purpose: it tests the checker, not the decision to invoke it.
+//
 // params is nil for phase 1 (every job-parameter symbol unresolved, called
 // from ValidateWithOptions) and holds concrete values for phase 2 (called
 // from submit.go's checkExpressionsAtSubmit, sub-project E2's Task 10, once

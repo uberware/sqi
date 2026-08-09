@@ -237,7 +237,17 @@ func runEXPRCase(tc conformance.TestCase, data []byte) conformance.Result {
 	case err != nil:
 		res.Reason = fmt.Sprintf("parse rejected: %v", err)
 	default:
-		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+		// CheckEXPRExpressionsWhileUnsupported is the counterpart of the
+		// discount below: production skips the expression walk entirely while
+		// EXPR is StatusInProgress (the walk cannot change a verdict the status
+		// gate has already decided, and it is expensive), so the suite has to
+		// ask for it explicitly or it would score every EXPR fixture on the
+		// status-gate error alone -- which this wrapper then discounts, leaving
+		// nothing. Sub-project H deletes both when it flips the status.
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits:                        true,
+			CheckEXPRExpressionsWhileUnsupported: true,
+		})
 		errs = discountEXPRGateErrors(errs, tmpl.Extensions)
 		if len(errs) > 0 {
 			res.Reason = fmt.Sprintf("validation rejected: %v", errs)
