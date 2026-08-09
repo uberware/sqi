@@ -120,6 +120,17 @@ type Session struct {
 	// exposed to format strings as Session.HasPathMappingRules.
 	hasPathMap bool
 
+	// msg is the assignment that created this session (the first, and today
+	// the only, task ever dispatched into it -- Phase 1 defers session reuse
+	// across tasks, see this file's package comment). enterOne and
+	// resolveEnvAction (EXPR sub-project E4a, Task 6) read msg.EXPR to select
+	// between the pre-EXPR fmtres.EnvScope/ResolveAction path and the
+	// phase-3 fmtres.EnvSymbols/ResolveActionExpr path, and read msg.PathMap
+	// for the EXPR path's metering/path-mapping options. Never mutated after
+	// Create; safe to read without the mu lock for that reason, exactly like
+	// jobParams/pathMapFile/hasPathMap above.
+	msg *protocol.AssignMsg
+
 	// staticEnv is the merged, fully-resolved static environment from every
 	// environment's Variables, accumulated in enterOne. Each environment's
 	// values are resolved against that environment's OWN Env.File.* scope (the
@@ -267,7 +278,7 @@ func (s *Session) ExitEnvironments(ctx context.Context, logger *slog.Logger) err
 		// Resolve {{...}} format strings in the onExit action and the environment
 		// variable values against the environment-action scope.  Continue teardown
 		// of the remaining environments even if one fails to resolve.
-		resolvedExit, resolvedVars, err := s.resolveEnvAction(env.OnExit, env.Variables, env.EmbeddedFiles)
+		resolvedExit, resolvedVars, err := s.resolveEnvAction(env, env.OnExit, env.Variables)
 		if err != nil {
 			logger.WarnContext(
 				ctx, "session: environment exit action could not be resolved — continuing teardown",
@@ -632,6 +643,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		jobParams:      msg.JobParameters,
 		pathMapFile:    pathMapFile,
 		hasPathMap:     hasPathMap,
+		msg:            msg,
 		dynamicEnv:     make(map[string]string),
 		dynamicUnset:   make(map[string]bool),
 		redactedValues: make(map[string]bool),
@@ -754,26 +766,9 @@ func (s *Session) enterEnvironments(ctx context.Context, envs []protocol.AssignE
 // activeTasks (modified during concurrent task execution) and the enteredEnvs
 // clear in ExitEnvironments (called after Create returns).
 func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, logger *slog.Logger) error {
-	// Build the environment-action scope (Param.*, RawParam.*,
-	// Session.WorkingDirectory and Env.File.<name> for this environment's
-	// embedded files — NOT Task.Param.*).  The File paths are computed first so
-	// they are available before the onEnter action, the variable values, and the
-	// embedded-file data are resolved against the same scope.
-	scope, err := s.envScope(env.EmbeddedFiles)
+	resolvedEnter, resolvedVars, resolvedFiles, err := s.resolveEnvEntry(env)
 	if err != nil {
-		return fmt.Errorf("resolve environment: %w", err)
-	}
-
-	// Resolve {{...}} format strings in the onEnter action and the environment
-	// variable values.  A bad reference fails the environment cleanly before any
-	// side effects.
-	resolvedEnter, err := fmtres.ResolveAction(env.OnEnter, scope)
-	if err != nil {
-		return fmt.Errorf("resolve environment: %w", err)
-	}
-	resolvedVars, err := fmtres.ResolveVars(env.Variables, scope)
-	if err != nil {
-		return fmt.Errorf("resolve environment: %w", err)
+		return err
 	}
 
 	// Accumulate this environment's resolved static variables into the merged
@@ -785,14 +780,6 @@ func (s *Session) enterOne(ctx context.Context, env protocol.AssignEnvironment, 
 			s.staticEnv = make(map[string]string, len(resolvedVars))
 		}
 		maps.Copy(s.staticEnv, resolvedVars)
-	}
-
-	// Resolve {{...}} references inside each embedded file's data against the
-	// same environment scope before materializing it (so file data may reference
-	// Param.*, Session.*, or another Env.File.* path).
-	resolvedFiles, err := fmtres.ResolveEmbeddedFiles(env.EmbeddedFiles, scope)
-	if err != nil {
-		return fmt.Errorf("resolve embedded file data: %w", err)
 	}
 
 	// Write embedded files before OnEnter runs (environment files may be
@@ -839,23 +826,127 @@ func (s *Session) envScope(files []protocol.EmbeddedFile) (fmtstring.MapScope, e
 	return scope, nil
 }
 
+// resolveEnvEntry resolves everything enterOne needs for one environment
+// entry — the onEnter action, the variable values, and the embedded files'
+// own data — against ONE environment-action scope/table.
+//
+// s.msg.EXPR selects the resolution family (EXPR sub-project E4a, Task 6): a
+// base-spec assignment (EXPR false, the zero value) takes exactly the
+// fmtres.EnvScope/ResolveAction/ResolveVars/ResolveEmbeddedFiles path this
+// method has always taken, byte for byte — mirroring
+// [resolveAssignmentBaseSpec] in internal/worker/executor's identical split.
+// Only when EXPR is true does it build the phase-3 symbol table
+// (fmtres.EnvSymbols), evaluate env's own let: block into it EXACTLY ONCE
+// (fmtres.ApplyEnvLet — see that function's own doc comment: calling it a
+// second time over the same table makes every binding fail the shadow
+// check), and then resolve onEnter, Variables, and EmbeddedFiles against
+// that ONE table via ResolveActionExpr/ResolveVarsExpr/
+// ResolveEmbeddedFilesExpr.
+//
+// Returns the resolved action copy (nil when env.OnEnter is nil), the
+// resolved variable map, and the resolved embedded files, or an error
+// naming the offending reference/file.
+func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	if !s.msg.EXPR {
+		// Build the environment-action scope (Param.*, RawParam.*,
+		// Session.WorkingDirectory and Env.File.<name> for this environment's
+		// embedded files — NOT Task.Param.*).  The File paths are computed first
+		// so they are available before the onEnter action, the variable values,
+		// and the embedded-file data are resolved against the same scope.
+		scope, err := s.envScope(env.EmbeddedFiles)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+		}
+
+		// Resolve {{...}} format strings in the onEnter action and the
+		// environment variable values.  A bad reference fails the environment
+		// cleanly before any side effects.
+		resolvedEnter, err := fmtres.ResolveAction(env.OnEnter, scope)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+		}
+		resolvedVars, err := fmtres.ResolveVars(env.Variables, scope)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+		}
+
+		// Resolve {{...}} references inside each embedded file's data against
+		// the same environment scope before materializing it (so file data may
+		// reference Param.*, Session.*, or another Env.File.* path).
+		resolvedFiles, err := fmtres.ResolveEmbeddedFiles(env.EmbeddedFiles, scope)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
+		}
+		return resolvedEnter, resolvedVars, resolvedFiles, nil
+	}
+
+	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+	}
+	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
+	// Every resolution below (onEnter, Variables, then EmbeddedFiles) reuses
+	// this same syms.
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve environment: let bindings: %w", err)
+	}
+	resolvedEnter, err := fmtres.ResolveActionExpr(env.OnEnter, syms, s.msg.PathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+	}
+	resolvedVars, err := fmtres.ResolveVarsExpr(env.Variables, syms, s.msg.PathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+	}
+	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(env.EmbeddedFiles, syms, s.msg.PathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
+	}
+	return resolvedEnter, resolvedVars, resolvedFiles, nil
+}
+
 // resolveEnvAction resolves an environment's action (onEnter or onExit) and its
-// variable values against the environment-action format-string scope built from
-// the environment's embedded files (see [Session.envScope]).
+// variable values against the environment-action format-string scope/table
+// built from env — see [Session.resolveEnvEntry] for the EXPR-selection
+// rule this method shares. Unlike resolveEnvEntry it never resolves embedded
+// file data: its only caller, [Session.ExitEnvironments], does not
+// re-materialize files on exit, and needs the scope/table only so onExit and
+// Variables may reference an Env.File.* path.
 //
 // It returns the resolved action copy (nil when action is nil) and the resolved
 // variable map (nil when vars is nil), or an error naming the offending
 // reference when any value cannot be resolved.
-func (s *Session) resolveEnvAction(action *protocol.Action, vars map[string]string, files []protocol.EmbeddedFile) (*protocol.Action, map[string]string, error) {
-	scope, err := s.envScope(files)
+func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *protocol.Action, vars map[string]string) (*protocol.Action, map[string]string, error) {
+	if !s.msg.EXPR {
+		scope, err := s.envScope(env.EmbeddedFiles)
+		if err != nil {
+			return nil, nil, err
+		}
+		resolvedAction, err := fmtres.ResolveAction(action, scope)
+		if err != nil {
+			return nil, nil, err
+		}
+		resolvedVars, err := fmtres.ResolveVars(vars, scope)
+		if err != nil {
+			return nil, nil, err
+		}
+		return resolvedAction, resolvedVars, nil
+	}
+
+	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap)
 	if err != nil {
 		return nil, nil, err
 	}
-	resolvedAction, err := fmtres.ResolveAction(action, scope)
+	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
+	// Both resolutions below (action, then vars) reuse this same syms.
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
+		return nil, nil, fmt.Errorf("let bindings: %w", err)
+	}
+	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap)
 	if err != nil {
 		return nil, nil, err
 	}
-	resolvedVars, err := fmtres.ResolveVars(vars, scope)
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -371,7 +371,27 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 // It returns the resolved action copy, the resolved environment-variable map,
 // and the step embedded files with their data resolved, or a descriptive error
 // naming the offending reference.
+//
+// msg.EXPR selects the resolution family (EXPR sub-project E4a, Task 6): a
+// base-spec assignment (EXPR false, the zero value) takes exactly the
+// fmtstring.Resolve-backed path this function has always taken, byte for
+// byte -- see resolveAssignmentBaseSpec. Only when EXPR is true does this
+// function build the phase-3 symbol table (fmtres.TaskSymbols) and resolve
+// through the EXPR-aware evaluator (fmtres.ResolveActionExpr /
+// ResolveEmbeddedFilesExpr) -- see resolveAssignmentExpr.
 func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	if !msg.EXPR {
+		return resolveAssignmentBaseSpec(msg, sess)
+	}
+	return resolveAssignmentExpr(msg, sess)
+}
+
+// resolveAssignmentBaseSpec is resolveAssignment's pre-EXPR implementation,
+// UNCHANGED from before Task 6: plain "{{...}}" substitution via
+// fmtstring.Resolve (through fmtres.TaskScope/ResolveAction/
+// ResolveEmbeddedFiles). This is the code path every base-spec assignment
+// must keep taking byte for byte -- see resolveAssignment's own doc comment.
+func resolveAssignmentBaseSpec(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
 	workDir := sess.WorkDir
 	pathMapFile := sess.PathMappingRulesFile()
 	hasPathMap := sess.HasPathMappingRules()
@@ -398,6 +418,46 @@ func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protoco
 	// all-environments scope would both duplicate the work and risk resolving a
 	// same-named Env.File.* reference to a different file (last-wins across
 	// environments). The session is the single source of truth.
+	resolvedEnvVars := sess.StaticEnv()
+	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
+}
+
+// resolveAssignmentExpr is resolveAssignment's EXPR-aware implementation
+// (EXPR sub-project E4a, Task 6): it builds the phase-3 symbol table
+// (fmtres.TaskSymbols), evaluates the task's let: bindings into it EXACTLY
+// ONCE (fmtres.ApplyTaskLet -- see that function's own doc comment: calling
+// it a second time over the same table makes every binding fail the shadow
+// check), and then resolves OnRun and the step embedded files against that
+// ONE table via ResolveActionExpr/ResolveEmbeddedFilesExpr. This is the first
+// point in the whole EXPR program where an expression's value reaches a real
+// command line.
+func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	workDir := sess.WorkDir
+	pathMapFile := sess.PathMappingRulesFile()
+	hasPathMap := sess.HasPathMappingRules()
+
+	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("step embedded files: %w", err)
+	}
+	// Exactly one call over this table -- see fmtres.ApplyTaskLet's doc
+	// comment. Every resolution below (OnRun, then the embedded files) reuses
+	// this same syms.
+	if err := fmtres.ApplyTaskLet(msg, syms, msg.PathMap); err != nil {
+		return nil, nil, nil, fmt.Errorf("let bindings: %w", err)
+	}
+	resolvedRun, err := fmtres.ResolveActionExpr(msg.OnRun, syms, msg.PathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve command: %w", err)
+	}
+	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(msg.EmbeddedFiles, syms, msg.PathMap)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
+	}
+
+	// Reuse the static environment that session.Create already resolved at
+	// enter time -- see resolveAssignmentBaseSpec's identical comment; the
+	// same reasoning applies unchanged to the EXPR path.
 	resolvedEnvVars := sess.StaticEnv()
 	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
 }
