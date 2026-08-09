@@ -588,6 +588,71 @@ func TestResolveVarsExpr(t *testing.T) {
 	}
 }
 
+// ── Float carry: the ruling section 1.3.4/§6 required ──────────────────────
+
+// TestResolveActionExpr_FloatCarryPreservedInReprAndSubstitution pins the
+// ruling internal/openjd/expr/value.go's fs field comment explicitly
+// deferred: "[w]hether repr_* should show a value's carried text or
+// canonicalise it is underspecified: ... Parked for sub-project E4 to
+// settle, not fixed here." That was written during sub-project E2, because
+// nothing could observe the difference until a renderer that turns an
+// expression's VALUE back into command-line TEXT existed -- which is
+// exactly what E4a's fmtres package is. It exists now, so this test settles
+// it.
+//
+// THE RULING, recorded here so the next reader sees a decision rather than
+// an accident: KEEP the carried text, do not canonicalise. Section 1.3.4
+// exists so a submitted "3.500" survives to the command line; canonicalising
+// inside a rendering function (repr_py, or plain substitution's own
+// string-coercion) would discard exactly the text 1.3.4 preserves it for.
+// No current output is malformed by keeping it -- "3.500" is a valid float
+// literal in Python, in JSON, and on a PowerShell command line alike, so
+// there is no rendering target this ruling breaks.
+//
+// MECHANISM (already wired, not changed by this test): expr.ValueFromText's
+// CodeFloat case binds a FLOAT job parameter via expr.FloatText(f, raw)
+// (internal/openjd/expr/paramtypes.go), which sets Value's fs field.
+// Value.String() reads fs before formatFloat, and BOTH paths this test
+// exercises bottom out in it: plain substitution's lone-reference
+// coercion (coerceScalar's CodeString case, "return String(v.String())")
+// and repr_py's pyRepr default case ("int and float already spell
+// themselves the way Python does... return v.String()"). This test is the
+// first thing in the whole EXPR program to observe that end to end, through
+// a real rendered command line via fmtres.TaskSymbols/ResolveActionExpr,
+// rather than expr.Eval in isolation.
+func TestResolveActionExpr_FloatCarryPreservedInReprAndSubstitution(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		JobParameters:     map[string]string{"Scale": "3.500"},
+		JobParameterTypes: map[string]string{"Scale": "FLOAT"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+
+	t.Run("plain substitution", func(t *testing.T) {
+		action := &protocol.Action{Command: "{{ Param.Scale }}"}
+		out, err := fmtres.ResolveActionExpr(action, syms, nil)
+		if err != nil {
+			t.Fatalf("ResolveActionExpr: %v", err)
+		}
+		if out.Command != "3.500" {
+			t.Errorf("Command = %q, want %q (the carried text, not the canonical \"3.5\")", out.Command, "3.500")
+		}
+	})
+
+	t.Run("repr_py", func(t *testing.T) {
+		action := &protocol.Action{Command: "{{ repr_py(Param.Scale) }}"}
+		out, err := fmtres.ResolveActionExpr(action, syms, nil)
+		if err != nil {
+			t.Fatalf("ResolveActionExpr: %v", err)
+		}
+		if out.Command != "3.500" {
+			t.Errorf("Command = %q, want %q (the carried text, not the canonical \"3.5\")", out.Command, "3.500")
+		}
+	})
+}
+
 // ── nil action ───────────────────────────────────────────────────────────────
 
 func TestResolveActionExpr_Nil(t *testing.T) {
