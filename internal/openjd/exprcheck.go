@@ -401,6 +401,57 @@ func checkFormatString(
 	return errs
 }
 
+// checkLetBindings evaluates a let: block's bindings in declaration order,
+// inserting each one's value into syms so the next binding can reference it,
+// and returns one error per binding that fails.
+//
+// It MUTATES syms. That is the whole mechanism: section 3.6 says "Later
+// bindings can reference names from earlier bindings in the same let block",
+// and because E2's symbol table holds VALUES rather than types, inserting the
+// evaluated result gives section 3.6.1's "the type of the binding is the
+// natural result type of the expression" and phase-2 concreteness at once,
+// through the same code path E2 already uses for every other position.
+//
+// A failed binding is NOT inserted, so a later position reports an unknown name
+// rather than a second copy of the same fault. Evaluation continues to the next
+// binding either way -- one malformed line should not hide the rest of the
+// block.
+//
+// Self-reference needs no check: "x = x + 1" fails because x is inserted only
+// after its own expression evaluates.
+func checkLetBindings(
+	lets []string, base string, scope Scope, syms expr.MapSymbols,
+) ValidationErrors {
+	var errs ValidationErrors
+	for i, raw := range lets {
+		ptr := fmt.Sprintf("%s/%d", base, i)
+
+		name, src, err := parseLetBinding(raw)
+		if err != nil {
+			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
+			continue
+		}
+
+		e, err := expr.Parse(src)
+		if err != nil {
+			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
+			continue
+		}
+		if hostErrs := checkHostOnlyFunctions(e, scope, ptr); len(hostErrs) != 0 {
+			errs = append(errs, hostErrs...)
+			continue
+		}
+
+		v, err := e.Eval(syms, expr.TAny, submissionLimits()...)
+		if err != nil {
+			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
+			continue
+		}
+		syms[name] = v
+	}
+	return errs
+}
+
 // ─── submission-time limits ─────────────────────────────────────────────────
 
 // submissionOperationLimit and submissionMemoryLimit bound checkFormatString's
