@@ -177,8 +177,12 @@
 #
 #  (iv) A genuine scope-model gap, distinct from (iii): validateFormatString's
 #      allowed-prefix lists (jobScopeRefs, envScriptRefs, stepScriptRefs in
-#      validate.go) are flat and know nothing of "let:"-introduced names or of
-#      Step.Name's legality inside stepEnvironments variables.
+#      validate.go — Task 5's refactor, commit a2b12f8, later deleted all
+#      three literals in favor of scope.go's single declaration, derived per
+#      scope by derivedPrefixes/scopeFamilies; this note is a historical
+#      snapshot of the pre-refactor names, not a live reference) are flat and
+#      know nothing of "let:"-introduced names or of Step.Name's legality
+#      inside stepEnvironments variables.
 #      7.3.1--step-name-in-step-environment.yaml is rejected with
 #      `reference "Step.Name" is not available here; allowed: Param.,
 #      RawParam., Env.File., Session.` even though the fixture's own comment

@@ -102,10 +102,49 @@ silent misinterpretation at run time.
 
 ### EXPR: a temporary, second scoring path
 
-`EXPR` is still **not** in the registry, so the production behavior above is
-unchanged: a template declaring `extensions: [EXPR]` is still rejected with a
-`422` at `/extensions/0`, unconditionally, the same as any other unregistered
-extension name.
+**CORRECTION (sub-project E2, 2026-08-08):** this section's title and much of
+its body describe an arrangement E2 replaced. When written, `EXPR/job_templates`
+was scored through a genuinely separate path — `test/conformance/exprcase.go`'s
+`RunExprCase`, which parsed and evaluated a fixture's embedded `{{ ... }}`
+expressions directly and never touched `openjd.Parse` or
+`openjd.ValidateWithOptions` at all. That is no longer how scoring works.
+Sub-project E2's Task 2 moved `TestConformance_Expressions` onto `runEXPRCase`
+(`test/conformance/suite_test.go`), a thin wrapper around the **same real
+parse-and-validate path** `TestConformance_Templates` uses for every other
+suite directory (`conformance.RunCase`'s machinery), which additionally
+discounts only the EXPR extension's own registered-but-unsupported status-gate
+error before deciding pass/fail — see `runEXPRCase`'s own doc comment for why
+that discount exists and is temporary. `RunExprCase` and `exprcase.go` still
+exist in the tree — several `TestConformance_*ProtectedFixtures` tests
+(`B3`, `C1`, `C2`, `C3`, `C4`) still call `RunExprCase` directly, predating
+this change — but `TestConformance_Expressions` itself, the test that produces
+the headline EXPR score, no longer does. `RunExprCase` survives as unused,
+dead weight for the score itself, until sub-project H deletes it alongside
+`exprcase.go`, `exprcase_test.go` and `baseline-expr.txt`, per
+`TestConformance_EXPRNotSupported`'s own checklist.
+
+The paragraphs below this note describe the pre-E2 arrangement and are kept
+for history, not because they are still accurate — read them as "how EXPR
+scoring used to work," not as current behavior. Two concrete facts they get
+wrong today: `EXPR` **is** in the registry (`Status: StatusInProgress`, added
+by the commit immediately before E2 began), so the "not in the registry"
+claim in the next paragraph is stale; and the score they cite (143/209 pass,
+66 baselined) is likewise a pre-E2 snapshot. As of E2 (commit range
+`111b0b2..b989aa5`), `EXPR/job_templates` scores **175/209 pass, 34
+baselined** — see `test/conformance/baseline-expr.txt`'s own 2026-08-08 notes
+for the full accounting of what moved and why, and
+`TestConformance_E2ProtectedFixtures` for the 53 fixtures E2's routing and
+scope-model changes put at risk of a silent regression-plus-compensating-pass
+swap.
+
+`EXPR` was **not** in the registry when this paragraph was written, so the
+production behavior above was unchanged: a template declaring
+`extensions: [EXPR]` was rejected with a `422` at `/extensions/0`,
+unconditionally, the same as any other unregistered extension name. (As the
+correction above states, this is no longer true: `EXPR` is registered, status
+`StatusInProgress` — still rejected in production because it is not yet
+`StatusSupported`, but for a different, more specific reason than "unknown
+extension name.")
 
 What has changed is that `internal/openjd/expr` now exists as a self-contained
 reader and evaluator implementing the spec's real type system — nested types,
@@ -170,6 +209,15 @@ entries, not permanent ones: sub-project E is the layer with a scope model, and
 when its scope-aware evaluation can reject the two expressions for the rule they
 actually violate, both come off the list and the score goes back up. See that
 file's header, which records the whole sequence.
+
+**CORRECTION (sub-project E2):** this prediction has now happened. E2's scope
+model rejects both `apply_path_mapping(...)` calls for their real reason —
+`apply_path_mapping` is host-context-only, and neither a job name field nor a
+plain `@fmtstring` timeout is a host context — so both fixtures are off
+`baseline-expr.txt` and count toward the 175/209 pass score cited above. Both
+are asserted by name in `TestConformance_E2ProtectedFixtures`
+(`test/conformance/suite_test.go`), so a future regression that silently swaps
+them back to passing for the wrong reason (or fails them outright) is caught.
 
 The path is deleted the moment EXPR is supported for real: as of sub-project E2,
 EXPR is registered (status `"in-progress"`) so this suite can score EXPR fixtures

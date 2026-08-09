@@ -1032,12 +1032,30 @@
 //     coerced to list[float] | list[int]". An earlier revision of this
 //     comment recorded that as a known gap; it is closed
 //     (coerce.go's directUnionMember). Note the shape of the check, because
-//     the two are easy to conflate: coercible() still reports FALSE for a
-//     type the target already admits — "does a conversion apply" is a
-//     different question from "may this value pass" — so the carve-out lives
-//     in coerce(), and it compares whole types rather than type codes, since
+//     the two are easy to conflate: coercible() answers "does an implicit
+//     CONVERSION rule carry this TYPE to the target", which is a different
+//     question from "may this exact VALUE, of a type the target already
+//     names, pass through unchanged" — so for list (and every other
+//     non-null) type, the already-a-member carve-out lives in coerce() as
+//     directUnionMember, comparing whole types rather than type codes, since
 //     a code-only test cannot tell a list[int] from a list[string] inside a
-//     union.
+//     union; coercible() itself still has no such shortcut for them, and
+//     correctly reports FALSE for e.g. coercible(list[float], "list[float] |
+//     list[int]") — that pair has no conversion rule between them, direct
+//     membership is directUnionMember's question, not coercible()'s.
+//
+//     nulltype is the one exception, and by construction, not by extending
+//     this carve-out to it: coercible(nulltype, to) now reports TRUE
+//     whenever `to` admits null (bfa4cf3, coerce.go), because for null
+//     specifically "the target already admits it" and "coercible" collapse
+//     into the same question — there is no separate null-to-something
+//     conversion rule to ask about, only whether the target's union names
+//     null at all. coercible(nulltype, "string?") is true precisely because
+//     the target admits it; TestCoercible's "nulltype reaches a target that
+//     names null via optional sugar" and "...via a bare nulltype union
+//     member" rows pin this, alongside the negative boundary ("...does not
+//     reach a union that does not name null") proving the rule still checks
+//     target membership rather than admitting null everywhere.
 //
 //   - A hard, fixed bound (limits.go's maxElements and maxStringBytes, both
 //     10,000,000) applies to any list, string or range_expr this package

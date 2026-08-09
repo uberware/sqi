@@ -781,3 +781,160 @@ func TestConformance_C4ProtectedFixtures(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_E2ProtectedFixtures asserts by NAME that every EXPR fixture
+// sub-project E2 cleared still passes.
+//
+// E2 changed a path every EXPR template flows through: Task 2 moved
+// TestConformance_Expressions off the old expression-only conformance.RunExprCase
+// and onto runEXPRCase, a thin wrapper around the REAL parse-and-validate path
+// (conformance.RunCase's machinery: openjd.Parse + openjd.ValidateWithOptions)
+// that discounts only the EXPR extension's own registered-but-unsupported
+// status-gate error (see runEXPRCase's doc comment above). Tasks 3-9 then
+// built the scope model itself — a declared-scope symbol table, host-context
+// gating, format-string routing through the real expression checker, and
+// phase-2 re-checking with concrete parameters — reached for the first time
+// once routing made EXPR fixtures hit real validation instead of a synthetic
+// "unknown function" or "not a valid dotted identifier" rejection.
+//
+// Comparing baseline-expr.txt at 111b0b2 (E2's start) against HEAD gives the
+// fixture list below: every EXPR/job_templates fixture that was baselined
+// (failing) before E2 and is NOT baselined (i.e. genuinely passes) after —
+// derived with `comm -23` between the two commits' baselined-fixture sets, 53
+// entries. (The reverse direction — 23 fixtures that passed on the OLD
+// expression-only path but are now correctly baselined as failing — is not
+// this test's concern: those are corrected classifications, recorded in
+// baseline-expr.txt's own Task 2 and Task 9 notes, not something E2 "cleared."
+// 11 fixtures were baselined before and remain baselined after; those aren't
+// here either.)
+//
+// The aggregate score cannot see one of these 53 regressing while another
+// starts passing for an unrelated reason — same motivation as every other
+// ProtectedFixtures test in this file, at E2's larger scale.
+//
+// WHAT THIS TEST ACTUALLY GUARANTEES, and what it does not: it asserts
+// res.Passed, i.e. that the fixture is STILL rejected overall (all 53 are
+// ".invalid"). It cannot assert WHICH mechanism rejects it, because
+// conformance.Result blanks Reason on a pass — there is no reason string
+// available here to assert against a passing .invalid fixture. This test does
+// NOT attempt C4's per-entry exclusivity proof (weakening each named check in
+// isolation and confirming only that one fixture fails) — at 53 entries that
+// is not a "minor" per-entry verification the way it was for C4's four, and
+// this docstring says so up front rather than letting a later review correct
+// an overclaim, as happened to C3's first version. The "why" string on each
+// entry below names the rule the fixture's own filename and content describe,
+// not a proven-exclusive mechanism.
+//
+// Two categories, by what became reachable:
+//
+//   - 12 entries (the 7.3/7.3.1-numbered ones) are the scope model's own
+//     rules: a host-context-only function (apply_path_mapping) used outside
+//     @fmtstring[host], a submission-time reference (Job.Name, Step.Name,
+//     Session.*, Task.Param.*) used in a scope that does not carry it, a
+//     circular Job.Name self-reference in the name field, and a complex
+//     expression or Job.Name/Step.Name reference that requires the EXPR
+//     extension to be declared and appears without it. These are Tasks 6-9's
+//     direct contribution.
+//   - 40 entries (the 2.9-2.16-numbered ones) plus expr-extension-missing are
+//     section 2's job-parameter shape validation (BOOL/RANGE_EXPR default
+//     shape, LIST[*] length/item bounds/allowed-values/item-type) and the
+//     base "no EXPR extension declared" case. internal/openjd's schema
+//     validation already enforced these before E2 — what E2's Task 2 changed
+//     is that EXPR fixtures now reach that validation at all, instead of
+//     being scored by an expression-only reader that never ran a template's
+//     parameter schema. They are listed here because Task 2's routing change
+//     is exactly what put them at risk: reverting runEXPRCase to call
+//     conformance.RunExprCase instead of the real validate path would regress
+//     every one of them silently, the same swap this test exists to catch.
+func TestConformance_E2ProtectedFixtures(t *testing.T) {
+	protected := map[string]string{
+		// --- Scope model (Tasks 6-9): host-context gating and submission-time
+		// scope restrictions on Job.Name, Step.Name, Session.*, Task.Param.*,
+		// and the "requires the EXPR extension" gate. ---
+		"EXPR/job_templates/7.3--apply-path-mapping-in-job-name.invalid.yaml":              "apply_path_mapping is host-context-only; the job name field is not a host context",
+		"EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml":               "apply_path_mapping is host-context-only; a plain @fmtstring timeout is not a host context",
+		"EXPR/job_templates/7.3--complex-expr-in-env-action-requires-expr.invalid.yaml":    "a complex expression in an environment script action requires the EXPR extension to be declared",
+		"EXPR/job_templates/7.3--complex-expr-in-env-variables-requires-expr.invalid.yaml": "a complex expression in environment variables requires the EXPR extension to be declared",
+		"EXPR/job_templates/7.3--session-in-host-requirements.invalid.yaml":                "Session.WorkingDirectory is not available in host requirements (submission-time scope)",
+		"EXPR/job_templates/7.3--task-param-in-job-name.invalid.yaml":                      "Task.Param is not available in the job name field (submission-time scope)",
+		"EXPR/job_templates/7.3.1--job-name-in-job-name-field.invalid.yaml":                "Job.Name cannot reference itself from within the job name field",
+		"EXPR/job_templates/7.3.1--job-name-requires-expr.invalid.yaml":                    "Job.Name requires the EXPR extension to be declared",
+		"EXPR/job_templates/7.3.1--step-name-in-job-environment-let.invalid.yaml":          "Step.Name is not available in a job environment's let binding — a jobEnvironment has no enclosing Step",
+		"EXPR/job_templates/7.3.1--step-name-in-job-environment.invalid.yaml":              "Step.Name is not available in jobEnvironments (job-level, not step-level, scope)",
+		"EXPR/job_templates/7.3.1--step-name-in-job-name-field.invalid.yaml":               "Step.Name is not available in the job name field",
+		"EXPR/job_templates/7.3.1--step-name-requires-expr.invalid.yaml":                   "Step.Name requires the EXPR extension to be declared",
+		"EXPR/job_templates/expr-extension-missing.invalid.yaml":                           "\"{{ }}\" expression syntax requires the EXPR extension to be declared",
+
+		// --- Section 2 parameter-shape validation, reached for the first time
+		// once Task 2 routed EXPR fixtures through the real template path. ---
+		"EXPR/job_templates/2.9--bool-param-float-invalid.invalid.yaml":                 "BOOL parameter default is an out-of-range float",
+		"EXPR/job_templates/2.9--bool-param-int-invalid.invalid.yaml":                   "BOOL parameter default is an out-of-range int",
+		"EXPR/job_templates/2.9--bool-param-string-invalid.invalid.yaml":                "BOOL parameter default is an unrecognized string",
+		"EXPR/job_templates/2.10--range-expr-param-invalid-default.invalid.yaml":        "RANGE_EXPR parameter default does not parse as a range expression",
+		"EXPR/job_templates/2.11--list-string-item-not-in-allowed.invalid.yaml":         "LIST[STRING] item is not in item.allowedValues",
+		"EXPR/job_templates/2.11--list-string-item-too-long.invalid.yaml":               "LIST[STRING] item exceeds item.maxLength",
+		"EXPR/job_templates/2.11--list-string-item-too-short.invalid.yaml":              "LIST[STRING] item is below item.minLength",
+		"EXPR/job_templates/2.11--list-string-scalar-not-list.invalid.yaml":             "LIST[STRING] default is a scalar, not a list",
+		"EXPR/job_templates/2.11--list-string-too-long.invalid.yaml":                    "LIST[STRING] default exceeds the parameter's maxLength (list length)",
+		"EXPR/job_templates/2.11--list-string-too-short.invalid.yaml":                   "LIST[STRING] default is below the parameter's minLength (list length)",
+		"EXPR/job_templates/2.12--list-path-item-too-short.invalid.yaml":                "LIST[PATH] item is below item.minLength",
+		"EXPR/job_templates/2.12--list-path-scalar-not-list.invalid.yaml":               "LIST[PATH] default is a scalar, not a list",
+		"EXPR/job_templates/2.12--list-path-too-long.invalid.yaml":                      "LIST[PATH] default exceeds the parameter's maxLength (list length)",
+		"EXPR/job_templates/2.12--list-path-too-short.invalid.yaml":                     "LIST[PATH] default is below the parameter's minLength (list length)",
+		"EXPR/job_templates/2.12--list-path-wrong-item-type.invalid.yaml":               "LIST[PATH] item is not a path-shaped value",
+		"EXPR/job_templates/2.13--list-int-item-below-min.invalid.yaml":                 "LIST[INT] item is below item.minValue",
+		"EXPR/job_templates/2.13--list-int-item-not-in-allowed.invalid.yaml":            "LIST[INT] item is not in item.allowedValues",
+		"EXPR/job_templates/2.13--list-int-scalar-not-list.invalid.yaml":                "LIST[INT] default is a scalar, not a list",
+		"EXPR/job_templates/2.13--list-int-too-long.invalid.yaml":                       "LIST[INT] default exceeds the parameter's maxLength (list length)",
+		"EXPR/job_templates/2.13--list-int-too-short.invalid.yaml":                      "LIST[INT] default is below the parameter's minLength (list length)",
+		"EXPR/job_templates/2.13--list-int-wrong-item-type.invalid.yaml":                "LIST[INT] item is not an integer",
+		"EXPR/job_templates/2.14--list-float-item-below-min.invalid.yaml":               "LIST[FLOAT] item is below item.minValue",
+		"EXPR/job_templates/2.14--list-float-scalar-not-list.invalid.yaml":              "LIST[FLOAT] default is a scalar, not a list",
+		"EXPR/job_templates/2.14--list-float-too-long.invalid.yaml":                     "LIST[FLOAT] default exceeds the parameter's maxLength (list length)",
+		"EXPR/job_templates/2.14--list-float-too-short.invalid.yaml":                    "LIST[FLOAT] default is below the parameter's minLength (list length)",
+		"EXPR/job_templates/2.14--list-float-wrong-item-type.invalid.yaml":              "LIST[FLOAT] item is not a number",
+		"EXPR/job_templates/2.15--list-bool-scalar-not-list.invalid.yaml":               "LIST[BOOL] default is a scalar, not a list",
+		"EXPR/job_templates/2.15--list-bool-too-long.invalid.yaml":                      "LIST[BOOL] default exceeds the parameter's maxLength (list length)",
+		"EXPR/job_templates/2.15--list-bool-too-short.invalid.yaml":                     "LIST[BOOL] default is below the parameter's minLength (list length)",
+		"EXPR/job_templates/2.15--list-bool-wrong-item-type.invalid.yaml":               "LIST[BOOL] item is not a recognized boolean",
+		"EXPR/job_templates/2.16--list-list-int-inner-item-above-max.invalid.yaml":      "LIST[LIST[INT]] inner item is above item.maxValue",
+		"EXPR/job_templates/2.16--list-list-int-inner-item-below-min.invalid.yaml":      "LIST[LIST[INT]] inner item is below item.minValue",
+		"EXPR/job_templates/2.16--list-list-int-inner-item-not-in-allowed.invalid.yaml": "LIST[LIST[INT]] inner item is not in item.allowedValues",
+		"EXPR/job_templates/2.16--list-list-int-inner-too-long.invalid.yaml":            "LIST[LIST[INT]] inner list exceeds its length bound",
+		"EXPR/job_templates/2.16--list-list-int-inner-too-short.invalid.yaml":           "LIST[LIST[INT]] inner list is below its length bound",
+		"EXPR/job_templates/2.16--list-list-int-ragged-scalar-in-outer.invalid.yaml":    "LIST[LIST[INT]] outer list mixes a scalar with nested lists",
+		"EXPR/job_templates/2.16--list-list-int-scalar-not-list.invalid.yaml":           "LIST[LIST[INT]] default is a scalar, not a list",
+		"EXPR/job_templates/2.16--list-list-int-string-in-inner.invalid.yaml":           "LIST[LIST[INT]] inner list contains a string, not an int",
+		"EXPR/job_templates/2.16--list-list-int-too-long.invalid.yaml":                  "LIST[LIST[INT]] outer list exceeds the parameter's maxLength",
+		"EXPR/job_templates/2.16--list-list-int-too-short.invalid.yaml":                 "LIST[LIST[INT]] outer list is below the parameter's minLength",
+	}
+
+	results := make(map[string]conformance.Result)
+	for _, tc := range collectEXPRFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", tc.Path, err)
+		}
+		results[tc.Path] = runEXPRCase(tc, data)
+	}
+
+	if len(protected) != 53 {
+		t.Fatalf("protected has %d entries, want 53 — update this count alongside the map", len(protected))
+	}
+
+	for path, why := range protected {
+		t.Run(path, func(t *testing.T) {
+			res, ok := results[path]
+			if !ok {
+				t.Fatalf("%s produced no result — has the fixture been renamed or removed? "+
+					"It must be rejected because %s.", path, why)
+			}
+			if !res.Passed {
+				t.Fatalf("%s must pass (%s): %s", path, why, res.Reason)
+			}
+		})
+	}
+}

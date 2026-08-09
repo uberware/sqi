@@ -87,6 +87,19 @@ func TestCoercible(t *testing.T) {
 		{"list does not reach a scalar", "list[int]", "int", false},
 		{"nulltype does not reach a scalar", "nulltype", "int", false},
 
+		// nulltype is admitted by any target whose union names null — the
+		// §1.3.2 "args" shape list[T] | T | nulltype, and coerceUnresolved's
+		// route to it when narrowing a placeholder's constraint (bfa4cf3).
+		// Positive: a target that names null, either via "?" sugar or a bare
+		// nulltype union member, admits it.
+		{"nulltype reaches a target that names null via optional sugar", "nulltype", "string?", true},
+		{"nulltype reaches a union that names nulltype directly", "nulltype", "string | nulltype", true},
+		// Negative boundary: a union target that does NOT name null still
+		// rejects it, even though it is a multi-member union (not just the
+		// single-scalar case above) — proving the null rule looks at whether
+		// null is IN the target, not merely that the target is permissive.
+		{"nulltype does not reach a union that does not name null", "nulltype", "int | float", false},
+
 		// Unresolved is transparent on both sides: the constraint is what matters.
 		{"unresolved source uses its constraint", "unresolved[int]", "float", true},
 		{"unresolved target uses its constraint", "int", "unresolved[float]", true},

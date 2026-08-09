@@ -81,8 +81,13 @@ func TestScopeHostContext(t *testing.T) {
 	}
 }
 
-// TestScopeStepScriptExcludesEnvFile pins the rule stepScriptRefs' own comment
-// already states: an environment's attachments belong to the environment.
+// TestScopeStepScriptExcludesEnvFile pins the rule scopeFamilies' own
+// ScopeStepScript case already encodes structurally (Task 5's refactor
+// deleted the old stepScriptRefs literal, whose comment used to state this
+// in words: "Env.File is NOT among them -- an environment's attachments
+// belong to the environment"; scope.go now expresses it only by which
+// symbolFamily entries each scope's case appends): an environment's
+// attachments belong to the environment, not to a step's script.
 func TestScopeStepScriptExcludesEnvFile(t *testing.T) {
 	for _, f := range scopeFamilies(ScopeStepScript) {
 		if f.Prefix == "Env.File." {
