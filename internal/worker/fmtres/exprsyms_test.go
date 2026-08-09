@@ -160,6 +160,107 @@ func TestTaskSymbols_TaskParamTypes(t *testing.T) {
 	}
 }
 
+// ── PATH parameters: mapping rules applied at bind time (FIX ROUND 1, Task 4
+//    review) ─────────────────────────────────────────────────────────────
+
+// TestTaskSymbols_JobPathParamIsMappedAtBindTime pins section 1.2.2's rule
+// that Param.<name> for a PATH-declared job parameter carries the value
+// with path mapping rules ALREADY APPLIED, while RawParam.<name> carries
+// "the original unmapped value". Earlier revisions of TaskSymbols bound
+// BOTH from identical, unmapped raw text -- silently wrong on every
+// platform, since Param./Task.Param. were the only way most templates would
+// ever reach a path-mapped value (apply_path_mapping() being the sole
+// explicit alternative).
+func TestTaskSymbols_JobPathParamIsMappedAtBindTime(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		JobParameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
+		JobParameterTypes: map[string]string{"Scene": "PATH"},
+		PathMap: []protocol.PathMapRule{
+			{SourcePathFormat: "POSIX", SourcePath: "/mnt/shared", DestinationPath: "/local/cache"},
+		},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+
+	param, ok := syms.Lookup("Param.Scene")
+	if !ok || !param.Type.Equal(expr.TPath) {
+		t.Fatalf("Param.Scene = %+v, want path", param)
+	}
+	if param.String() != "/local/cache/project/shot.ma" {
+		t.Errorf("Param.Scene = %q, want the MAPPED value %q", param.String(), "/local/cache/project/shot.ma")
+	}
+
+	// RawParam degrades to string for a job PATH parameter (section 1.2.2),
+	// but must still carry the UNMAPPED original text, not the mapped one.
+	raw, ok := syms.Lookup("RawParam.Scene")
+	if !ok || !raw.Type.Equal(expr.TString) {
+		t.Fatalf("RawParam.Scene = %+v, want string", raw)
+	}
+	if raw.AsStr() != "/mnt/shared/project/shot.ma" {
+		t.Errorf("RawParam.Scene = %q, want the ORIGINAL unmapped text %q",
+			raw.AsStr(), "/mnt/shared/project/shot.ma")
+	}
+}
+
+// TestTaskSymbols_TaskPathParamIsMappedAtBindTime is the task-parameter
+// counterpart. Unlike the job-parameter pair, Task.RawParam shares
+// Task.Param's TYPE (path, not string -- TestTaskSymbols_TaskParamTypes
+// above), so this is the one place the two symbols can hold the SAME type
+// while differing in exactly one respect: whether mapping was applied.
+func TestTaskSymbols_TaskPathParamIsMappedAtBindTime(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		Parameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
+		ParameterTypes: map[string]string{"Scene": "PATH"},
+		PathMap: []protocol.PathMapRule{
+			{SourcePathFormat: "POSIX", SourcePath: "/mnt/shared", DestinationPath: "/local/cache"},
+		},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+
+	param, ok := syms.Lookup("Task.Param.Scene")
+	if !ok || !param.Type.Equal(expr.TPath) {
+		t.Fatalf("Task.Param.Scene = %+v, want path", param)
+	}
+	if param.String() != "/local/cache/project/shot.ma" {
+		t.Errorf("Task.Param.Scene = %q, want the MAPPED value %q",
+			param.String(), "/local/cache/project/shot.ma")
+	}
+
+	raw, ok := syms.Lookup("Task.RawParam.Scene")
+	if !ok || !raw.Type.Equal(expr.TPath) {
+		t.Fatalf("Task.RawParam.Scene = %+v, want path (same type as Task.Param, section 1.2.2)", raw)
+	}
+	if raw.String() != "/mnt/shared/project/shot.ma" {
+		t.Errorf("Task.RawParam.Scene = %q, want the ORIGINAL unmapped text %q",
+			raw.String(), "/mnt/shared/project/shot.ma")
+	}
+}
+
+// TestTaskSymbols_PathParamNoRulesPassesThrough confirms the common case --
+// most tasks reference no named storage location -- is unaffected: with no
+// PathMap entries, Param.<name> still binds to a concrete path built from
+// the raw text, exactly as before this fix round (apply_path_mapping's own
+// documented passthrough contract, now also true at bind time).
+func TestTaskSymbols_PathParamNoRulesPassesThrough(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		JobParameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
+		JobParameterTypes: map[string]string{"Scene": "PATH"},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	param, ok := syms.Lookup("Param.Scene")
+	if !ok || param.String() != "/mnt/shared/project/shot.ma" {
+		t.Errorf("Param.Scene = %+v, want unmapped passthrough %q", param, "/mnt/shared/project/shot.ma")
+	}
+}
+
 func TestTaskSymbols_ChunkIntTaskParam(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		Parameters:     map[string]string{"Frames": "1-10"},

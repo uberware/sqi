@@ -31,8 +31,27 @@ package fmtres
 // declared type -- see expr.ValueFromText -- falls back to it), which is the
 // one thing that distinguishes phase 3 from phases 1 and 2: "the same walk
 // with a different table," now with every placeholder replaced by a value.
+//
+// FIX ROUND 1 (Task 4 review): Param.<name>/Task.Param.<name> for a PATH-
+// declared parameter are now bound with the assignment's PathMap rules
+// ALREADY APPLIED, via [mapPathParamValue] (expres.go) -- section 1.2.2:
+// "Param.<name> ... path mapping rules already applied", RawParam carrying
+// "the original unmapped value". Earlier revisions of this file bound BOTH
+// from identical, unmapped raw text, which is silently wrong on every
+// platform (path mapping never applied to a PATH parameter reached through
+// Param./Task.Param. at all, apply_path_mapping() being the only way to
+// invoke it) and additionally wrong in a Windows-specific way had mapping
+// been bolted on at the TEMPLATE level instead of here: matching a rule
+// against an already-host-flavor-rendered string (a PathNative Value's
+// stringified form) rather than the untouched submitted text would make a
+// POSIX-sourced rule silently fail to match on a Windows worker. Binding the
+// mapped value from raw, submitted text -- before any flavor-specific
+// rendering happens -- avoids that: SourceFormat matching happens on the
+// form the rule itself declares, not on a re-rendered value.
 
 import (
+	"fmt"
+
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -85,8 +104,12 @@ const pathFlavor = expr.PathNative
 // invalid -- see [EmbeddedFileName].
 func TaskSymbols(msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool) (expr.MapSymbols, error) {
 	syms := expr.MapSymbols{}
-	bindJobParamSymbols(msg, syms)
-	bindTaskParamSymbols(msg, syms)
+	if err := bindJobParamSymbols(msg, syms); err != nil {
+		return nil, err
+	}
+	if err := bindTaskParamSymbols(msg, syms); err != nil {
+		return nil, err
+	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
 	syms["Job.Name"] = expr.String(msg.JobName)
 	syms["Step.Name"] = expr.String(msg.StepName)
@@ -128,7 +151,9 @@ func EnvSymbols(
 	msg *protocol.AssignMsg, env *protocol.AssignEnvironment, workDir, pathMapFile string, hasPathMap bool,
 ) (expr.MapSymbols, error) {
 	syms := expr.MapSymbols{}
-	bindJobParamSymbols(msg, syms)
+	if err := bindJobParamSymbols(msg, syms); err != nil {
+		return nil, err
+	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
 	syms["Job.Name"] = expr.String(msg.JobName)
 	if env != nil {
@@ -153,29 +178,81 @@ func EnvSymbols(
 // key set in production (buildJobParameterTypes/buildJobParameters,
 // internal/scheduler/assign.go, both walk the same parameterDefinitions/
 // bound-values source).
-func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) {
+//
+// Param.<name> goes through [paramValueForBinding], which applies
+// msg.PathMap for a PATH-declared parameter (section 1.2.2: "path mapping
+// rules already applied"); RawParam.<name> is always built straight from
+// the untouched raw text ("the original unmapped value"), never mapped --
+// even where rawType is itself CodePath, which cannot happen for a JOB
+// parameter (expr.JobParamTypes degrades RawParam to string for every PATH-
+// family declared type) but IS reachable for a TASK parameter, see
+// bindTaskParamSymbols below.
+//
+// An error is returned only when mapping a PATH parameter's value fails --
+// see [mapPathParamValue]; ordinary INT/FLOAT/STRING parsing failures still
+// fall back to expr.Unresolved exactly as before, unchanged.
+func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
 	for name, raw := range msg.JobParameters {
 		paramType, rawType := expr.JobParamTypes(msg.JobParameterTypes[name])
-		syms["Param."+name] = expr.ValueFromText(paramType, raw, pathFlavor)
+		v, err := paramValueForBinding(paramType, raw, msg.PathMap)
+		if err != nil {
+			return fmt.Errorf("job parameter %q: %w", name, err)
+		}
+		syms["Param."+name] = v
 		syms["RawParam."+name] = expr.ValueFromText(rawType, raw, pathFlavor)
 	}
+	return nil
 }
 
 // bindTaskParamSymbols binds Task.Param.<name> and Task.RawParam.<name> for
 // every entry in msg.Parameters, typed from msg.ParameterTypes[name] via
-// expr.TaskParamType. Unlike job parameters, sqi's assignment carries only
-// ONE value per task-parameter name (no separate raw-vs-path-mapped
-// variant), so Task.Param and Task.RawParam are bound from the identical
-// raw text -- mirroring exactly how internal/openjd's phase-2
-// bindJobParamSymbols already treats Param/RawParam (both built from the
-// same params[name] entry); this is not a new simplification introduced
-// here.
-func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) {
+// expr.TaskParamType.
+//
+// Unlike job parameters, sqi's assignment carries only ONE value per
+// task-parameter name (no separate raw-vs-path-mapped wire variant), so
+// before this fix round Task.Param and Task.RawParam were bound from
+// IDENTICAL raw text. That was always wrong for a PATH-declared task
+// parameter -- section 1.2.2 gives Task.RawParam the SAME type as
+// Task.Param (unlike the job-parameter pair, which degrades to string) but
+// still distinguishes them by whether mapping was applied -- and is fixed
+// the same way as bindJobParamSymbols: Task.Param.<name> goes through
+// [paramValueForBinding] (mapped when t is TPath), Task.RawParam.<name>
+// stays built straight from raw (unmapped), even when both share the exact
+// same declared TYPE.
+func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
 	for name, raw := range msg.Parameters {
 		t := expr.TaskParamType(msg.ParameterTypes[name])
-		syms["Task.Param."+name] = expr.ValueFromText(t, raw, pathFlavor)
+		v, err := paramValueForBinding(t, raw, msg.PathMap)
+		if err != nil {
+			return fmt.Errorf("task parameter %q: %w", name, err)
+		}
+		syms["Task.Param."+name] = v
 		syms["Task.RawParam."+name] = expr.ValueFromText(t, raw, pathFlavor)
 	}
+	return nil
+}
+
+// paramValueForBinding builds the CONCRETE value a Param.<name> or
+// Task.Param.<name> symbol binds to: expr.ValueFromText for every declared
+// type except a bare PATH, which instead runs the assignment's real
+// path-mapping rules over raw via [mapPathParamValue] -- section 1.2.2's
+// "path mapping rules already applied" requirement for Param/Task.Param,
+// which RawParam/Task.RawParam (bound separately, from the SAME raw text,
+// by each caller above) deliberately does not get.
+//
+// t.Equal(expr.TPath) rather than t.Code == expr.CodePath is deliberate:
+// LIST[PATH] job parameters stay expr.Unresolved regardless (sqi's template
+// model cannot declare a concrete list value yet -- expr.ValueFromText's own
+// list-of-anything case; see exprsyms_test.go's
+// TestTaskSymbols_JobParamTypes), so there is no concrete LIST[PATH] value
+// for path mapping to ever run against today. Equal, not Code alone, so a
+// bare path[T]-shaped union or unresolved wrapper (neither reachable here in
+// practice) does not accidentally match a scalar-only branch.
+func paramValueForBinding(t expr.Type, raw string, pathMap []protocol.PathMapRule) (expr.Value, error) {
+	if t.Equal(expr.TPath) {
+		return mapPathParamValue(raw, pathMap)
+	}
+	return expr.ValueFromText(t, raw, pathFlavor), nil
 }
 
 // bindSessionSymbols binds the three fixed Session.* symbols shared by

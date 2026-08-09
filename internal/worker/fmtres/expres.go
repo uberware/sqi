@@ -211,6 +211,40 @@ func convertPathMapSourceFormat(s string) expr.PathMapSourceFormat {
 	}
 }
 
+// mapPathParamValue is exprsyms.go's [paramValueForBinding] helper for a
+// PATH-declared Param.<name>/Task.Param.<name>: it runs raw -- the
+// UNTOUCHED submitted parameter text, never a value already rendered in
+// some path flavor -- through the assignment's real path-mapping rules and
+// returns the mapped, concrete path.Value section 1.2.2 requires
+// Param.<name> to carry.
+//
+// This calls THROUGH the registered apply_path_mapping function
+// (expr.Eval), not this package's own unexported mapPath, per
+// pathmapping.go's own doc comment: "What makes 'the result is a path in
+// dst' true is the WRAPPER, pathMappingFuncs' apply_path_mapping ...
+// Callers wanting a path value must do the same rather than assume it."
+// Reusing the wrapper is also what keeps this from becoming a second,
+// independent implementation of the engine sub-project D already built --
+// exactly the "two formulas that happen to agree today" defect class this
+// codebase's own conventions call out repeatedly.
+//
+// raw is bound as a plain string SYMBOL rather than interpolated into the
+// expression source, so arbitrary path text -- quotes, backslashes,
+// non-ASCII -- can never be misparsed as expression syntax. ExprEvalOptions
+// is reused for the options (metering, expr.PathNative, the converted
+// rules), the SAME options every other phase-3 evaluation in this package
+// gets -- this is exactly the "one place all four settings are assembled"
+// ExprEvalOptions' own doc comment already claims, now also true for
+// symbol construction, not just rendering.
+func mapPathParamValue(raw string, pathMap []protocol.PathMapRule) (expr.Value, error) {
+	syms := expr.MapSymbols{"src": expr.String(raw)}
+	v, err := expr.Eval("apply_path_mapping(src)", syms, expr.TPath, ExprEvalOptions(pathMap)...)
+	if err != nil {
+		return expr.Value{}, fmt.Errorf("mapping %q: %w", raw, err)
+	}
+	return v, nil
+}
+
 // errUnresolvedValue reports that a phase-3 evaluation produced a
 // still-unresolved placeholder instead of a concrete value.
 //
@@ -377,17 +411,28 @@ func resolveArgLoneRef(body string, syms expr.MapSymbols, opts []expr.Option) ([
 // arguments). All other fields (TimeoutSeconds, Cancelation) are copied
 // unchanged. A nil action returns (nil, nil).
 //
-// syms is the phase-3 symbol table (TaskSymbols or EnvSymbols); opts should
-// come from ExprEvalOptions so every evaluation is metered, uses the
-// worker's native path flavor, and sees the session's real path-mapping
-// rules. ResolveActionExpr returns a descriptive error -- naming the
-// offending field -- if any reference is malformed, evaluates to an error,
-// or names a symbol syms does not provide. The input action is never
-// mutated.
-func ResolveActionExpr(action *protocol.Action, syms expr.MapSymbols, opts ...expr.Option) (*protocol.Action, error) {
+// syms is the phase-3 symbol table (TaskSymbols or EnvSymbols); pathMap is
+// the assignment's own PathMap field, forwarded to ExprEvalOptions to build
+// this call's options -- there is deliberately NO way to call this function
+// without metering, the worker's native path flavor, and the session's real
+// path-mapping rules all applying: FIX ROUND 1 (Task 4 review) replaced a
+// variadic opts ...expr.Option parameter with this one, because a variadic
+// tail compiles fine when the caller passes NOTHING, silently handing every
+// evaluation expr.Eval's own unconfigured defaults (10x the operations, 5x
+// the memory this package's own named limits choose) with no compiler error,
+// no lint, and no test failure to catch it. Taking the raw ingredient
+// (pathMap) rather than a pre-built []expr.Option closes that gap
+// completely, not merely narrows it: there is no longer an options value a
+// caller could construct, empty or otherwise, that skips metering.
+//
+// ResolveActionExpr returns a descriptive error -- naming the offending
+// field -- if any reference is malformed, evaluates to an error, or names a
+// symbol syms does not provide. The input action is never mutated.
+func ResolveActionExpr(action *protocol.Action, syms expr.MapSymbols, pathMap []protocol.PathMapRule) (*protocol.Action, error) {
 	if action == nil {
 		return nil, nil
 	}
+	opts := ExprEvalOptions(pathMap)
 
 	cmd, err := resolveFormatStringExpr(action.Command, syms, opts)
 	if err != nil {
@@ -419,14 +464,15 @@ func ResolveActionExpr(action *protocol.Action, syms expr.MapSymbols, opts ...ex
 // rule). All other fields (Name, Filename, Runnable, EndOfLine) are copied
 // unchanged. A nil slice returns (nil, nil).
 //
-// See [ResolveActionExpr] for syms/opts. ResolveEmbeddedFilesExpr returns a
-// descriptive error -- naming the offending file -- when a file's data is
+// See [ResolveActionExpr] for syms/pathMap. ResolveEmbeddedFilesExpr returns
+// a descriptive error -- naming the offending file -- when a file's data is
 // malformed, evaluates to an error, or names a symbol syms does not
 // provide. The input slice and its elements are never mutated.
-func ResolveEmbeddedFilesExpr(files []protocol.EmbeddedFile, syms expr.MapSymbols, opts ...expr.Option) ([]protocol.EmbeddedFile, error) {
+func ResolveEmbeddedFilesExpr(files []protocol.EmbeddedFile, syms expr.MapSymbols, pathMap []protocol.PathMapRule) ([]protocol.EmbeddedFile, error) {
 	if files == nil {
 		return nil, nil
 	}
+	opts := ExprEvalOptions(pathMap)
 	out := make([]protocol.EmbeddedFile, len(files))
 	for i, f := range files {
 		data, err := resolveFormatStringExpr(f.Data, syms, opts)
@@ -443,14 +489,15 @@ func ResolveEmbeddedFilesExpr(files []protocol.EmbeddedFile, syms expr.MapSymbol
 // of vars with every value resolved via resolveFormatStringExpr. Keys are
 // copied unchanged. A nil map returns (nil, nil).
 //
-// See [ResolveActionExpr] for syms/opts. ResolveVarsExpr returns a
+// See [ResolveActionExpr] for syms/pathMap. ResolveVarsExpr returns a
 // descriptive error -- naming the offending variable key -- if any value is
 // malformed, evaluates to an error, or names a symbol syms does not
 // provide. The input map is never mutated.
-func ResolveVarsExpr(vars map[string]string, syms expr.MapSymbols, opts ...expr.Option) (map[string]string, error) {
+func ResolveVarsExpr(vars map[string]string, syms expr.MapSymbols, pathMap []protocol.PathMapRule) (map[string]string, error) {
 	if vars == nil {
 		return nil, nil
 	}
+	opts := ExprEvalOptions(pathMap)
 	out := make(map[string]string, len(vars))
 	for k, v := range vars {
 		r, err := resolveFormatStringExpr(v, syms, opts)
