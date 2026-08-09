@@ -36,7 +36,7 @@ const (
 
 // exprGateHostileTemplate builds an EXPR-declaring template with n action
 // argument positions, each holding an expression that is cheap to parse and
-// very expensive to evaluate (it materialises two 400 KB strings), plus one
+// very expensive to evaluate (it materializes two 400 KB strings), plus one
 // host-requirement value holding a reference that is out of scope at ScopeJob
 // and that the walk -- and only the walk -- reports for an EXPR template.
 //
@@ -62,7 +62,7 @@ steps:
         command: echo
         args:
 `)
-	for i := 0; i < n; i++ {
+	for range n {
 		b.WriteString(`        - "{{ len(('a' * 400000).upper()) }}"` + "\n")
 	}
 	return b.String()
@@ -139,7 +139,7 @@ func TestValidate_EXPRWalkSkippedWhileExtensionUnsupported(t *testing.T) {
 			"(test/conformance depends on it); got: %v", walked)
 	}
 
-	// Each walked position materialises at least one 400 KB string, so the
+	// Each walked position materializes at least one 400 KB string, so the
 	// walked path must allocate at least ~40 MB for 100 positions. The gated
 	// path only re-reads an already-parsed template. A 32x floor on the ratio
 	// leaves an enormous margin either way while still failing loudly if the

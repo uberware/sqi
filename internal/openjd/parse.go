@@ -140,7 +140,7 @@ var knownTopLevelFields = map[string]struct{}{
 // through on a template that does not even declare the extension -- silently
 // accepted for the whole window in which EXPR is registered but
 // StatusInProgress, where before EXPR was registered at all the same key was
-// an error. A registry entry is a scoring and gating device, not a licence to
+// an error. A registry entry is a scoring and gating device, not a license to
 // carry the name as a top-level field.
 func unknownTopLevelFields(raw map[string]any) []string {
 	var out []string
