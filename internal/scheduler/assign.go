@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,6 +113,18 @@ func buildAssignPayload(
 		msg.Isolation = spec
 	}
 
+	// ── Expression evaluation (EXPR extension) ──────────────────────────────
+	// internal/openjd's validateLetExtension rejects any let: block unless
+	// the template declares EXPR, so a template that reaches here without
+	// EXPR cannot have a populated Let anywhere in it; the hasEXPR gate in
+	// populateEXPRFields is nonetheless what keeps ParameterTypes and
+	// JobParameterTypes (which base-spec templates *do* populate, since
+	// typed parameterDefinitions are base-spec, not EXPR-only) off the wire
+	// for a base-spec assignment. A template without EXPR declared must
+	// produce byte-for-byte the same assignment shape it produced before
+	// this section existed — see [protocol.AssignMsg.EXPR].
+	hasEXPR := populateEXPRFields(&msg, tmpl, stepTmpl)
+
 	// ── OnRun action and step-level embedded files ─────────────────────────
 	if stepTmpl.Script != nil {
 		onRun := stepTmpl.Script.Actions.OnRun
@@ -123,10 +136,10 @@ func buildAssignPayload(
 	envs := make([]protocol.AssignEnvironment, 0,
 		len(tmpl.JobEnvironments)+len(stepTmpl.StepEnvironments))
 	for _, e := range tmpl.JobEnvironments {
-		envs = append(envs, convertEnvironment(e))
+		envs = append(envs, convertEnvironment(e, hasEXPR))
 	}
 	for _, e := range stepTmpl.StepEnvironments {
-		envs = append(envs, convertEnvironment(e))
+		envs = append(envs, convertEnvironment(e, hasEXPR))
 	}
 	msg.Environments = envs
 
@@ -241,8 +254,10 @@ func convertEmbeddedFiles(files []openjd.EmbeddedFile) []protocol.EmbeddedFile {
 }
 
 // convertEnvironment converts an [openjd.Environment] to the protocol
-// representation, merging its script embedded files and actions.
-func convertEnvironment(e openjd.Environment) protocol.AssignEnvironment {
+// representation, merging its script embedded files and actions. hasEXPR
+// gates copying the environment's let: block onto the wire — see
+// [protocol.AssignEnvironment.Let].
+func convertEnvironment(e openjd.Environment, hasEXPR bool) protocol.AssignEnvironment {
 	ae := protocol.AssignEnvironment{
 		Name:      e.Name,
 		Variables: e.Variables,
@@ -251,8 +266,70 @@ func convertEnvironment(e openjd.Environment) protocol.AssignEnvironment {
 		ae.OnEnter = convertAction(e.Script.Actions.OnEnter)
 		ae.OnExit = convertAction(e.Script.Actions.OnExit)
 		ae.EmbeddedFiles = convertEmbeddedFiles(e.Script.EmbeddedFiles)
+		if hasEXPR {
+			ae.Let = e.Script.Let
+		}
 	}
 	return ae
+}
+
+// populateEXPRFields sets msg's EXPR flag and, only when the template
+// declares the EXPR extension, its step-level let blocks and declared
+// parameter-type maps. Returns hasEXPR so the caller can gate the
+// EXPR-only environment let blocks it assembles afterward without
+// re-deriving the same flag.
+func populateEXPRFields(msg *protocol.AssignMsg, tmpl *openjd.JobTemplate, stepTmpl *openjd.StepTemplate) bool {
+	hasEXPR := declaresEXPR(tmpl)
+	msg.EXPR = hasEXPR
+	if !hasEXPR {
+		return false
+	}
+	msg.StepTemplateLet = stepTmpl.Let
+	if stepTmpl.Script != nil {
+		msg.StepScriptLet = stepTmpl.Script.Let
+	}
+	msg.ParameterTypes = buildParameterTypes(stepTmpl)
+	msg.JobParameterTypes = buildJobParameterTypes(tmpl)
+	return true
+}
+
+// declaresEXPR reports whether tmpl declares the EXPR extension
+// (extensions: [EXPR]). Mirrors internal/openjd's own gate for the identical
+// question — exprcheck.go's checkTemplateExpressions tests
+// tmpl.hasExtension("EXPR"), which is unexported and therefore not callable
+// from this package; JobTemplate.Extensions is exported, so the check is
+// duplicated here rather than exported solely for this one caller.
+func declaresEXPR(tmpl *openjd.JobTemplate) bool {
+	return slices.Contains(tmpl.Extensions, "EXPR")
+}
+
+// buildJobParameterTypes returns the declared OpenJD type of each job
+// parameter from tmpl's parameterDefinitions, keyed by parameter name. See
+// [protocol.AssignMsg.JobParameterTypes].
+func buildJobParameterTypes(tmpl *openjd.JobTemplate) map[string]string {
+	if len(tmpl.ParameterDefinitions) == 0 {
+		return nil
+	}
+	types := make(map[string]string, len(tmpl.ParameterDefinitions))
+	for _, p := range tmpl.ParameterDefinitions {
+		types[p.Name] = string(p.Type)
+	}
+	return types
+}
+
+// buildParameterTypes returns the declared OpenJD type of each task
+// parameter from the step's taskParameterDefinitions, keyed by parameter
+// name. See [protocol.AssignMsg.ParameterTypes].
+func buildParameterTypes(stepTmpl *openjd.StepTemplate) map[string]string {
+	if stepTmpl.ParameterSpace == nil || len(stepTmpl.ParameterSpace.TaskParameterDefinitions) == 0 {
+		return nil
+	}
+	defs := stepTmpl.ParameterSpace.TaskParameterDefinitions
+	types := make(map[string]string, len(defs))
+	for _, p := range defs {
+		types[p.Name] = string(p.Type)
+	}
+	return types
 }
 
 // buildPathMap builds the ordered list of OpenJD path-mapping rules from all

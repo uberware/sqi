@@ -10,6 +10,8 @@ package scheduler
 
 import (
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,6 +234,140 @@ func TestBuildAssignPayload_StepNotFound(t *testing.T) {
 	_, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err == nil {
 		t.Fatal("expected error for step not found in template, got nil")
+	}
+}
+
+// ── EXPR extension: flag, let blocks, and declared parameter types ─────────────
+
+// exprJobYAML declares the EXPR extension and exercises all three additions
+// this test file is here to cover: a job-level and task-level parameter of
+// each declared type, a step-template let block, a distinct step-script let
+// block that references the step-template's binding, and a step-environment
+// let block.
+const exprJobYAML = `
+specificationVersion: jobtemplate-2023-09
+name: ExprJob
+extensions: [EXPR]
+parameterDefinitions:
+  - name: Scene
+    type: PATH
+  - name: Count
+    type: INT
+    default: "3"
+steps:
+  - name: S
+    let:
+      - a = 1
+      - b = a + 1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-10"
+        - name: Note
+          type: STRING
+    script:
+      let:
+        - c = b + 1
+      actions:
+        onRun:
+          command: render
+          args: ["--frame", "{{Task.Param.Frame}}"]
+    stepEnvironments:
+      - name: StepEnv
+        script:
+          let:
+            - d = 1
+          actions:
+            onEnter:
+              command: setup
+`
+
+func TestBuildAssignPayload_EXPRFields(t *testing.T) {
+	msg := buildAssignForTemplate(t, exprJobYAML, map[string]string{"Scene": "/projects/shot.ma", "Count": "3"})
+
+	if !msg.EXPR {
+		t.Error("EXPR = false, want true for a template declaring extensions: [EXPR]")
+	}
+
+	// The step-template and step-script let blocks are ordered and distinct.
+	wantStepTemplateLet := []string{"a = 1", "b = a + 1"}
+	if !slices.Equal(msg.StepTemplateLet, wantStepTemplateLet) {
+		t.Errorf("StepTemplateLet = %v, want %v", msg.StepTemplateLet, wantStepTemplateLet)
+	}
+	wantStepScriptLet := []string{"c = b + 1"}
+	if !slices.Equal(msg.StepScriptLet, wantStepScriptLet) {
+		t.Errorf("StepScriptLet = %v, want %v", msg.StepScriptLet, wantStepScriptLet)
+	}
+	if slices.Contains(msg.StepTemplateLet, "c = b + 1") {
+		t.Error("step-script binding leaked into StepTemplateLet")
+	}
+
+	// The step environment's own let block travels with it, not merged into
+	// the step-level blocks.
+	if len(msg.Environments) != 1 {
+		t.Fatalf("Environments = %+v, want 1 entry", msg.Environments)
+	}
+	wantEnvLet := []string{"d = 1"}
+	if !slices.Equal(msg.Environments[0].Let, wantEnvLet) {
+		t.Errorf("Environments[0].Let = %v, want %v", msg.Environments[0].Let, wantEnvLet)
+	}
+
+	// Declared parameter types, not inferred from value text.
+	if got := msg.JobParameterTypes["Scene"]; got != "PATH" {
+		t.Errorf("JobParameterTypes[Scene] = %q, want PATH", got)
+	}
+	if got := msg.JobParameterTypes["Count"]; got != "INT" {
+		t.Errorf("JobParameterTypes[Count] = %q, want INT", got)
+	}
+	if got := msg.ParameterTypes["Frame"]; got != "INT" {
+		t.Errorf("ParameterTypes[Frame] = %q, want INT", got)
+	}
+	if got := msg.ParameterTypes["Note"]; got != "STRING" {
+		t.Errorf("ParameterTypes[Note] = %q, want STRING", got)
+	}
+}
+
+// TestBuildAssignPayload_BaseSpecWireBytesUnchanged proves, rather than
+// assumes, that a base-spec template (no extensions: [EXPR]) produces an
+// assignment with none of the six new EXPR-phase-3 fields anywhere on the
+// wire — the requirement that motivates marking every one of them omitempty.
+func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
+	st := fake.New()
+	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	forbidden := []string{
+		`"expr"`,
+		`"step_template_let"`,
+		`"step_script_let"`,
+		`"parameter_types"`,
+		`"job_parameter_types"`,
+		`"let"`,
+	}
+	s := string(data)
+	for _, key := range forbidden {
+		if strings.Contains(s, key) {
+			t.Errorf("base-spec assignment unexpectedly contains %s: %s", key, s)
+		}
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.EXPR {
+		t.Error("EXPR = true for a base-spec template")
+	}
+	if msg.StepTemplateLet != nil || msg.StepScriptLet != nil {
+		t.Errorf("StepTemplateLet/StepScriptLet = %v/%v, want nil/nil", msg.StepTemplateLet, msg.StepScriptLet)
+	}
+	if msg.ParameterTypes != nil || msg.JobParameterTypes != nil {
+		t.Errorf("ParameterTypes/JobParameterTypes = %v/%v, want nil/nil", msg.ParameterTypes, msg.JobParameterTypes)
 	}
 }
 

@@ -15,11 +15,16 @@
 //
 // # Versioning
 //
-// Every message carries a [Version] field set to [ProtocolVersion].  The
-// server and worker both validate this field and reject messages with
-// unsupported versions, logging a warning so operators know to upgrade.
-// This simple major-version gate is sufficient for Phase 1; a more
-// nuanced compatibility matrix can be added when a breaking change is required.
+// Every message carries a [Version] field set to [ProtocolVersion].  As of
+// [ProtocolVersion] "2", the worker's lease loop rejects an [AssignMsg] whose
+// Version does not match this worker's ProtocolVersion instead of decoding it
+// anyway and silently ignoring fields it does not recognize (see
+// internal/worker/lease.decodeAssignment).  This is a receiver-side check on
+// the worker only: nothing yet enforces Version on the messages the server
+// receives (RegisterMsg, HeartbeatMsg, TaskStatusMsg, LogChunkMsg), so a
+// version mismatch on those channels still decodes silently.  This simple
+// major-version gate is sufficient for Phase 1; a more nuanced compatibility
+// matrix can be added when a breaking change is required.
 //
 // # Encoding
 //
@@ -34,7 +39,14 @@ import "time"
 // ProtocolVersion is the current wire-protocol version.  Increment this when a
 // breaking change is made to any message type — workers and servers agree on
 // a single version at a time.
-const ProtocolVersion = "1"
+//
+// "2" adds [AssignMsg.EXPR], [AssignMsg.StepTemplateLet],
+// [AssignMsg.StepScriptLet], [AssignMsg.ParameterTypes],
+// [AssignMsg.JobParameterTypes], and [AssignEnvironment.Let] for EXPR phase-3
+// (worker-side) expression evaluation.  All six are omitempty and populated
+// only for a template that declares the EXPR extension, so a base-spec
+// assignment's wire bytes are unchanged by this bump.
+const ProtocolVersion = "2"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -272,6 +284,55 @@ type AssignMsg struct {
 	// Needed by the worker to resolve {{Param.Name}} format strings.
 	JobParameters map[string]string `json:"job_parameters,omitempty"`
 
+	// ParameterTypes declares the OpenJD type each entry in Parameters was
+	// declared with in the step's taskParameterDefinitions ("STRING", "PATH",
+	// "INT", "FLOAT", or sqi's "CHUNK[INT]"), keyed by parameter name. Phase-3
+	// expression evaluation needs a parameter's declared type to render
+	// Task.Param.<name> correctly — Param.Count + 1 must add, not concatenate
+	// — and that type must never be inferred from the value text, since "1"
+	// is a valid STRING parameter and inference would silently change an
+	// expression's meaning. Present only when EXPR is true; omitted (nil) for
+	// a base-spec assignment, so its wire bytes are unchanged by this field.
+	ParameterTypes map[string]string `json:"parameter_types,omitempty"`
+
+	// JobParameterTypes is JobParameters' counterpart: the declared OpenJD
+	// type of each job parameter from the template's parameterDefinitions,
+	// keyed by parameter name. Same population rule and reason as
+	// ParameterTypes.
+	JobParameterTypes map[string]string `json:"job_parameter_types,omitempty"`
+
+	// ── Expression evaluation (EXPR extension) ────────────────────────────
+
+	// EXPR reports whether the job template that produced this task declares
+	// the EXPR extension (extensions: [EXPR]). The worker has no template of
+	// its own to inspect, so this flag is what it must use to choose between
+	// the existing plain-substitution fmtstring.Resolve path and an
+	// EXPR-aware evaluator: a template that does not declare EXPR must take
+	// exactly the code path it took before this field existed, byte for
+	// byte. False (the zero value) is omitted, so a base-spec assignment's
+	// wire bytes are unchanged.
+	EXPR bool `json:"expr,omitempty"`
+
+	// StepTemplateLet holds the step template's own let: block (Template
+	// Schemas §3.6), as the raw, unparsed "name = expression" strings in
+	// declaration order. It governs OnRun and the step's embedded files.
+	// Bindings are shipped as raw source and re-evaluated on the worker
+	// rather than sent pre-resolved: a let block anywhere in this protocol
+	// may reference Task.Param.*, Task.File.*, or Session.*, none of which
+	// have a concrete value until a specific task is running on a specific
+	// host, so no server-side value could be sent even if this field carried
+	// one. Present only when EXPR is true.
+	StepTemplateLet []string `json:"step_template_let,omitempty"`
+
+	// StepScriptLet holds the step *script's* let: block. Template Schemas
+	// §3.6 forbids a script's let from shadowing a name the step template
+	// already bound — a rule that only means anything if the two blocks stay
+	// distinguishable on the wire, so this travels as a field separate from
+	// StepTemplateLet rather than the two being concatenated. Step-template
+	// bindings are evaluated first and are visible when this block is
+	// re-evaluated. Present only when EXPR is true.
+	StepScriptLet []string `json:"step_script_let,omitempty"`
+
 	// ── Execution specification ───────────────────────────────────────────
 
 	// OnRun is the action the worker executes for each task.  It carries the
@@ -370,6 +431,14 @@ type AssignEnvironment struct {
 	Variables map[string]string `json:"variables,omitempty"`
 	// EmbeddedFiles are files materialized before the onEnter action.
 	EmbeddedFiles []EmbeddedFile `json:"embedded_files,omitempty"`
+
+	// Let holds this environment's script let: block (Template Schemas
+	// §3.6), as raw "name = expression" strings in declaration order. It
+	// governs this environment's onEnter/onExit actions, variables, and
+	// embedded files, and is re-evaluated on the worker for the same reason
+	// as [AssignMsg.StepTemplateLet]. Present only when the owning
+	// AssignMsg's EXPR flag is true.
+	Let []string `json:"let,omitempty"`
 }
 
 // PathMapRule is one source→destination path mapping in the OpenJD
