@@ -359,21 +359,29 @@ func TestResolveActionExpr_OverBudgetRejectedByOperationLimit(t *testing.T) {
 // ExprEvalOptions is what threads the assignment's PathMap field
 // (fmtres.ConvertPathMapRules) into the evaluation via expr.WithPathMapping.
 func TestResolveActionExpr_ApplyPathMapping(t *testing.T) {
-	msg := &protocol.AssignMsg{
-		Parameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
-		ParameterTypes: map[string]string{"Scene": "PATH"},
-	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
-	if err != nil {
-		t.Fatalf("TaskSymbols: %v", err)
-	}
-
 	pathMap := []protocol.PathMapRule{
 		{
 			SourcePathFormat: "POSIX",
 			SourcePath:       "/mnt/shared",
 			DestinationPath:  "/local/cache",
 		},
+	}
+	// FIX ROUND 2 (item C): msg carries the SAME PathMap that is passed to
+	// ResolveActionExpr, so this exercises the real configuration Task 6
+	// produces (both TaskSymbols and the resolver read msg.PathMap) rather
+	// than the unreachable-in-production state of "symbols built without
+	// the rules, rules passed only to the resolver." Under that real
+	// configuration, Task.Param.Scene already binds MAPPED (FIX ROUND 1,
+	// item 1), so this explicit apply_path_mapping() call is a no-op on an
+	// already-mapped value -- it still must not double-map or corrupt it.
+	msg := &protocol.AssignMsg{
+		Parameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
+		ParameterTypes: map[string]string{"Scene": "PATH"},
+		PathMap:        pathMap,
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
 	}
 
 	action := &protocol.Action{Command: "{{ apply_path_mapping(Task.Param.Scene) }}"}

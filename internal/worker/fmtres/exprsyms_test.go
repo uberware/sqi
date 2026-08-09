@@ -188,8 +188,16 @@ func TestTaskSymbols_JobPathParamIsMappedAtBindTime(t *testing.T) {
 	if !ok || !param.Type.Equal(expr.TPath) {
 		t.Fatalf("Param.Scene = %+v, want path", param)
 	}
-	if param.String() != "/local/cache/project/shot.ma" {
-		t.Errorf("Param.Scene = %q, want the MAPPED value %q", param.String(), "/local/cache/project/shot.ma")
+	// FIX ROUND 2 (item B): built through the SAME machinery
+	// mapPathParamValue (expres.go) uses -- expr.Eval("apply_path_mapping(src)")
+	// under expr.PathNative EXPLICITLY -- rather than a hardcoded
+	// POSIX-separator literal, which only agreed with production by
+	// coincidence on a POSIX host. See expres_test.go's wantPathText.
+	wantParam := wantPathText(t, "apply_path_mapping(src)",
+		expr.MapSymbols{"src": expr.String("/mnt/shared/project/shot.ma")},
+		expr.WithPathMapping(fmtres.ConvertPathMapRules(msg.PathMap)))
+	if param.String() != wantParam {
+		t.Errorf("Param.Scene = %q, want the MAPPED value %q", param.String(), wantParam)
 	}
 
 	// RawParam degrades to string for a job PATH parameter (section 1.2.2),
@@ -226,18 +234,26 @@ func TestTaskSymbols_TaskPathParamIsMappedAtBindTime(t *testing.T) {
 	if !ok || !param.Type.Equal(expr.TPath) {
 		t.Fatalf("Task.Param.Scene = %+v, want path", param)
 	}
-	if param.String() != "/local/cache/project/shot.ma" {
-		t.Errorf("Task.Param.Scene = %q, want the MAPPED value %q",
-			param.String(), "/local/cache/project/shot.ma")
+	// FIX ROUND 2 (item B): built through the SAME machinery
+	// mapPathParamValue (expres.go) uses, rather than a hardcoded
+	// POSIX-separator literal -- see the JobPathParam test above.
+	wantParam := wantPathText(t, "apply_path_mapping(src)",
+		expr.MapSymbols{"src": expr.String("/mnt/shared/project/shot.ma")},
+		expr.WithPathMapping(fmtres.ConvertPathMapRules(msg.PathMap)))
+	if param.String() != wantParam {
+		t.Errorf("Task.Param.Scene = %q, want the MAPPED value %q", param.String(), wantParam)
 	}
 
 	raw, ok := syms.Lookup("Task.RawParam.Scene")
 	if !ok || !raw.Type.Equal(expr.TPath) {
 		t.Fatalf("Task.RawParam.Scene = %+v, want path (same type as Task.Param, section 1.2.2)", raw)
 	}
-	if raw.String() != "/mnt/shared/project/shot.ma" {
-		t.Errorf("Task.RawParam.Scene = %q, want the ORIGINAL unmapped text %q",
-			raw.String(), "/mnt/shared/project/shot.ma")
+	// raw is UNMAPPED but still a concrete path Value, so its own rendering
+	// is equally flavor-sensitive -- built the same way, with no mapping
+	// rules, rather than the original text hardcoded.
+	wantRaw := wantPathText(t, "RAW", expr.MapSymbols{"RAW": expr.Path("/mnt/shared/project/shot.ma", expr.PathNative)})
+	if raw.String() != wantRaw {
+		t.Errorf("Task.RawParam.Scene = %q, want the ORIGINAL unmapped text %q", raw.String(), wantRaw)
 	}
 }
 
@@ -256,8 +272,13 @@ func TestTaskSymbols_PathParamNoRulesPassesThrough(t *testing.T) {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	param, ok := syms.Lookup("Param.Scene")
-	if !ok || param.String() != "/mnt/shared/project/shot.ma" {
-		t.Errorf("Param.Scene = %+v, want unmapped passthrough %q", param, "/mnt/shared/project/shot.ma")
+	// FIX ROUND 2 (item B): built through the SAME machinery
+	// mapPathParamValue calls with no rules, rather than the original raw
+	// text hardcoded -- see the JobPathParam test above.
+	wantParam := wantPathText(t, "apply_path_mapping(src)",
+		expr.MapSymbols{"src": expr.String("/mnt/shared/project/shot.ma")})
+	if !ok || param.String() != wantParam {
+		t.Errorf("Param.Scene = %+v, want unmapped passthrough %q", param, wantParam)
 	}
 }
 
@@ -389,7 +410,14 @@ func TestTaskSymbols_TaskFile(t *testing.T) {
 	if !ok || !f.Type.Equal(expr.TPath) {
 		t.Fatalf("Task.File.Script = %+v, want path", f)
 	}
-	want := filepath.Join("/work/session1", "run.py")
+	// FIX ROUND 2 (item B): AddFileVars' own on-disk-path computation
+	// (filepath.Join) is genuinely host-OS-driven and not this package's
+	// concern; what IS this package's concern -- and what must be built the
+	// same way bindFileSymbols builds it -- is the re-render of that string
+	// as an expr path VALUE under expr.PathNative, not a hardcoded
+	// POSIX-separator literal. See expres_test.go's wantPathText.
+	want := wantPathText(t, "F",
+		expr.MapSymbols{"F": expr.Path(filepath.Join("/work/session1", "run.py"), expr.PathNative)})
 	if f.String() != want {
 		t.Errorf("Task.File.Script = %q, want %q (fmtres.AddFileVars' own computation)", f.String(), want)
 	}
@@ -449,7 +477,9 @@ func TestEnvSymbols_ExposesParamAndEnvFile(t *testing.T) {
 	if !ok || !f.Type.Equal(expr.TPath) {
 		t.Fatalf("Env.File.Config = %+v, want path", f)
 	}
-	want := filepath.Join("/work", "Config")
+	// FIX ROUND 2 (item B): see TestTaskSymbols_TaskFile's identical fix,
+	// above -- built via wantPathText rather than a hardcoded literal.
+	want := wantPathText(t, "F", expr.MapSymbols{"F": expr.Path(filepath.Join("/work", "Config"), expr.PathNative)})
 	if f.String() != want {
 		t.Errorf("Env.File.Config = %q, want %q", f.String(), want)
 	}

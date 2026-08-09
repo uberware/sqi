@@ -161,11 +161,27 @@ var TargetArgItem = expr.UnionOf(expr.OptionalOf(expr.TString), expr.ListOf(expr
 // "a requirement for the wiring... wherever the options are assembled" --
 // this function is that place, so a later caller (Task 6) cannot wire the
 // resolvers in this file while forgetting it.
+//
+// ExprEvalOptions itself is a thin wrapper over exprEvalOptionsFor with
+// pathFlavor (this package's fixed choice, exprsyms.go); exprEvalOptionsFor
+// takes the flavor as a parameter purely so a white-box test
+// (expres_internal_test.go) can force a flavor other than whatever this
+// host's runtime.GOOS-driven pathFlavor.resolve() happens to produce, and
+// so prove expr.WithPathFormat is genuinely wired rather than merely
+// present in source with no observable effect -- see that test's own doc
+// comment for why a POSIX-only CI host cannot otherwise distinguish the
+// option being set from the option having been deleted.
 func ExprEvalOptions(pathMap []protocol.PathMapRule) []expr.Option {
+	return exprEvalOptionsFor(pathMap, pathFlavor)
+}
+
+// exprEvalOptionsFor is ExprEvalOptions' flavor-parameterized implementation
+// -- see that function's doc comment for why the split exists.
+func exprEvalOptionsFor(pathMap []protocol.PathMapRule, flavor expr.PathFormat) []expr.Option {
 	return []expr.Option{
 		expr.WithOperationLimit(workerOperationLimit),
 		expr.WithMemoryLimit(workerMemoryLimit),
-		expr.WithPathFormat(pathFlavor),
+		expr.WithPathFormat(flavor),
 		expr.WithPathMapping(ConvertPathMapRules(pathMap)),
 	}
 }
