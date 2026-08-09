@@ -224,6 +224,16 @@ type EnvironmentScript struct {
 	// EmbeddedFilesSet records whether the key was present, so a declared but
 	// empty list is distinguishable from an omitted one.
 	EmbeddedFilesSet bool
+	// Let holds the raw <LetBinding> strings of this element's let: block
+	// (Template Schemas 3.6). The "name = expression" text is parsed during
+	// validation, not here, so a malformed binding reports as a
+	// ValidationError with a JSON pointer rather than a decode error without
+	// one.
+	Let []string
+	// LetSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one -- 3.6 constrains a
+	// DEFINED let: block to at least one element.
+	LetSet bool
 	// Actions holds the onEnter and onExit lifecycle hooks.
 	Actions EnvironmentActions
 }
@@ -260,6 +270,16 @@ type StepTemplate struct {
 	// DependenciesSet records whether the key was present, so a declared but
 	// empty list is distinguishable from an omitted one.
 	DependenciesSet bool
+	// Let holds the raw <LetBinding> strings of this element's let: block
+	// (Template Schemas 3.6). The "name = expression" text is parsed during
+	// validation, not here, so a malformed binding reports as a
+	// ValidationError with a JSON pointer rather than a decode error without
+	// one.
+	Let []string
+	// LetSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one -- 3.6 constrains a
+	// DEFINED let: block to at least one element.
+	LetSet bool
 }
 
 // StepScript is the executable definition attached to a [StepTemplate].
@@ -269,6 +289,16 @@ type StepScript struct {
 	// EmbeddedFilesSet records whether the key was present, so a declared but
 	// empty list is distinguishable from an omitted one.
 	EmbeddedFilesSet bool
+	// Let holds the raw <LetBinding> strings of this element's let: block
+	// (Template Schemas 3.6). The "name = expression" text is parsed during
+	// validation, not here, so a malformed binding reports as a
+	// ValidationError with a JSON pointer rather than a decode error without
+	// one.
+	Let []string
+	// LetSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one -- 3.6 constrains a
+	// DEFINED let: block to at least one element.
+	LetSet bool
 	// Actions holds the task lifecycle hooks.
 	Actions StepActions
 }

@@ -407,6 +407,18 @@ func decodeEnvironmentScript(raw map[string]any) (EnvironmentScript, error) {
 		s.EmbeddedFiles = files
 	}
 
+	if v, ok := raw["let"]; ok {
+		s.LetSet = true
+		if v == nil {
+			v = []any{}
+		}
+		lets, err := strictStringSlice(v, "let")
+		if err != nil {
+			return s, err
+		}
+		s.Let = lets
+	}
+
 	// actions (required)
 	if a, ok := raw["actions"]; ok && a != nil {
 		am, err := toMap(a, "environment.script.actions")
@@ -452,6 +464,24 @@ func decodeEnvironmentActions(raw map[string]any) (EnvironmentActions, error) {
 
 // ─── step template decoder ───────────────────────────────────────────────────
 
+// decodeStepTemplateScript decodes a step's optional script: key, returning
+// (nil, nil) when the key is absent or null.
+func decodeStepTemplateScript(raw map[string]any) (*StepScript, error) {
+	v, ok := raw["script"]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	m, err := toMap(v, "step.script")
+	if err != nil {
+		return nil, err
+	}
+	script, err := decodeStepScript(m)
+	if err != nil {
+		return nil, err
+	}
+	return &script, nil
+}
+
 func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	s := StepTemplate{
 		Name:        getString(raw, "name"),
@@ -459,17 +489,11 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	}
 
 	// script
-	if v, ok := raw["script"]; ok && v != nil {
-		m, err := toMap(v, "step.script")
-		if err != nil {
-			return s, err
-		}
-		script, err := decodeStepScript(m)
-		if err != nil {
-			return s, err
-		}
-		s.Script = &script
+	script, err := decodeStepTemplateScript(raw)
+	if err != nil {
+		return s, err
 	}
+	s.Script = script
 
 	// stepEnvironments
 	envs, envsSet, err := decodeStepEnvironmentList(raw)
@@ -513,7 +537,35 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	}
 	s.Dependencies = deps
 
+	// let
+	lets, letSet, err := decodeStepLet(raw)
+	s.LetSet = letSet
+	if err != nil {
+		return s, err
+	}
+	s.Let = lets
+
 	return s, nil
+}
+
+// decodeStepLet returns a step's let: block, following the same
+// (value, present, error) shape as [decodeStepDependencyList] and
+// [decodeStepEnvironmentList]: absent yields (nil, false, nil), present-but-
+// empty yields (nil, true, nil), so a declared but empty list is
+// distinguishable from an omitted one.
+func decodeStepLet(raw map[string]any) (lets []string, set bool, err error) {
+	v, ok := raw["let"]
+	if !ok {
+		return nil, false, nil
+	}
+	if v == nil {
+		return nil, true, nil
+	}
+	lets, err = strictStringSlice(v, "let")
+	if err != nil {
+		return nil, true, err
+	}
+	return lets, true, nil
 }
 
 func decodeStepEnvironmentList(raw map[string]any) ([]Environment, bool, error) {
@@ -571,6 +623,18 @@ func decodeStepScript(raw map[string]any) (StepScript, error) {
 			return s, err
 		}
 		s.EmbeddedFiles = files
+	}
+
+	if v, ok := raw["let"]; ok {
+		s.LetSet = true
+		if v == nil {
+			v = []any{}
+		}
+		lets, err := strictStringSlice(v, "let")
+		if err != nil {
+			return s, err
+		}
+		s.Let = lets
 	}
 
 	// actions (required)
