@@ -316,12 +316,20 @@ type AssignMsg struct {
 	// StepTemplateLet holds the step template's own let: block (Template
 	// Schemas §3.6), as the raw, unparsed "name = expression" strings in
 	// declaration order. It governs OnRun and the step's embedded files.
-	// Bindings are shipped as raw source and re-evaluated on the worker
-	// rather than sent pre-resolved: a let block anywhere in this protocol
-	// may reference Task.Param.*, Task.File.*, or Session.*, none of which
-	// have a concrete value until a specific task is running on a specific
-	// host, so no server-side value could be sent even if this field carried
-	// one. Present only when EXPR is true.
+	// Bindings are shipped as raw source and re-evaluated on the worker, but
+	// NOT for the reason the other two let fields carry: a step template's
+	// block is the one scope that COULD be resolved server-side.
+	// internal/openjd/scope.go's ScopeStepTemplate exposes only Param.,
+	// RawParam., Job.Name and Step.Name — no Task.* and no Session.* — and
+	// checkLetBindings enforces that at submission, so every name this block
+	// can reference is already concrete by phase 2.
+	//
+	// It ships raw anyway for two reasons. Its bindings are the table
+	// StepScriptLet is evaluated against, so sending values here and source
+	// there would split one ordered evaluation across two machines; and
+	// re-evaluating every block the same way on the host is what keeps phase
+	// 3 "the same walk with a different table" rather than a second
+	// mechanism. Present only when EXPR is true.
 	StepTemplateLet []string `json:"step_template_let,omitempty"`
 
 	// StepScriptLet holds the step *script's* let: block. Template Schemas
