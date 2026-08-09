@@ -127,10 +127,10 @@ The paragraphs below this note describe the pre-E2 arrangement and are kept
 for history, not because they are still accurate — read them as "how EXPR
 scoring used to work," not as current behavior. Two concrete facts they get
 wrong today: `EXPR` **is** in the registry (`Status: StatusInProgress`, added
-by the commit immediately before E2 began), so the "not in the registry"
+by E2's own Task 1, `111b0b2`), so the "not in the registry"
 claim in the next paragraph is stale; and the score they cite (143/209 pass,
 66 baselined) is likewise a pre-E2 snapshot. As of E2 (commit range
-`111b0b2..b989aa5`), `EXPR/job_templates` scores **175/209 pass, 34
+`0519aee..1966cb5`), `EXPR/job_templates` scores **175/209 pass, 34
 baselined** — see `test/conformance/baseline-expr.txt`'s own 2026-08-08 notes
 for the full accounting of what moved and why, and
 `TestConformance_E2ProtectedFixtures` for the 53 fixtures E2's routing and
