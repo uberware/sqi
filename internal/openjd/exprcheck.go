@@ -762,14 +762,43 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	// do not exist yet while its host is being selected or its
 	// task-parameter space is being defined, so step is deliberately NOT
 	// passed to symbolsFor here -- ScopeJob's symbol families never include
-	// them anyway (scope.go's scopeFamilies), and ScopeJob's FIXED symbols
-	// (scopeFixed) are nil, so a bare Job.Name or Step.Name STAYS ILLEGAL at
-	// this position. Section 3.6.2 row 1 changes only the TABLE, not the
-	// scope: jobSyms gains the step's let-bound names (stepLet, merged in
-	// below) while keeping ScopeJob's own fixed/family set exactly as
-	// symbolsFor(..., ScopeJob, ...) built it -- scope and symbol table are
-	// separate things, and conflating them here was the mistake this
-	// function existed to avoid before let: made it worth restating.
+	// them anyway (scope.go's scopeFamilies).
+	//
+	// What section 3.6.2 row 1 settles, and all it settles: it changes the
+	// TABLE, not the scope. jobSyms gains the step's let-bound names (stepLet,
+	// merged in below) while keeping ScopeJob's own fixed/family set exactly
+	// as symbolsFor(..., ScopeJob, ...) built it, so a let name bound by the
+	// step template IS visible here and a task-level symbol is not. Scope and
+	// symbol table are separate things, and conflating them here was the
+	// mistake this function existed to avoid before let: made it worth
+	// restating.
+	//
+	// KNOWN GAP, pre-existing since sub-project E2, NOT settled by the above.
+	// ScopeJob's fixed symbols (scopeFixed) are nil, so a bare Job.Name or
+	// Step.Name is currently rejected at both positions -- and per section
+	// 7.3.1 that is WRONG. 7.3.1's symbol table says Step.Name is "Available
+	// within the Step Template scope: stepEnvironments, hostRequirements,
+	// parameterSpace, and script", and Job.Name is "Available in every Format
+	// String in the Job Template, except the name field of the Job Template
+	// itself". Both of these positions are inside that grant. Reproduced at
+	// HEAD, all three verbatim:
+	//
+	//	/steps/0/hostRequirements/attributes/0/anyOf/0: col 1: unknown symbol "Step.Name"
+	//	/steps/0/hostRequirements/attributes/0/anyOf/0: col 1: unknown symbol "Job.Name"
+	//	/steps/0/parameterSpace/taskParameterDefinitions/0/range/0: col 1: unknown symbol "Step.Name"
+	//
+	// Section 3.6.2 does NOT authorize that rejection and must not be cited
+	// for it: 3.6.2 governs where LET NAMES are visible and is silent on the
+	// fixed symbols. An earlier revision of this comment read the two as one
+	// rule and certified "a bare Job.Name or Step.Name STAYS ILLEGAL at this
+	// position" as correct; it is not, and the true statement about 3.6.2 did
+	// not make it so.
+	//
+	// Deliberately NOT fixed here. Correcting it means either splitting
+	// scopeFixed(ScopeJob) or introducing a distinct scope for these two
+	// positions, which can move conformance scoring and deserves its own
+	// analysis -- see docs/openjd-conformance.md. No fixture covers it today,
+	// which is why it survived E2 and E3 unnoticed.
 	jobSyms := symbolsFor(tmpl, nil, nil, ScopeJob, params)
 	maps.Copy(jobSyms, stepLet)
 

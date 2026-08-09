@@ -287,6 +287,12 @@ func validateLetExtension(t *JobTemplate) ValidationErrors {
 
 // maxLetBindings caps the number of bindings in a single let: block.
 // Template Schemas 3.6: "Maximum number of items: 50".
+//
+// Two places read it, and they do different jobs:
+// [validateLetElementCounts] REPORTS an over-count as a validation error, and
+// checkLetBindings (exprcheck.go) ENFORCES it by refusing to evaluate past the
+// cap. Reporting is not guarding -- ValidateWithOptions does not short-circuit
+// on the report -- so both are required.
 const maxLetBindings = 50
 
 // validateLetElementCounts enforces Template Schemas 3.6's element-count
@@ -304,6 +310,26 @@ const maxLetBindings = 50
 // true for both, so this reuses [requireNonEmptyIfSet], the same
 // set/omitted-vs-empty helper every other optional-list-with-a-minimum field
 // in this file uses.
+//
+// A base-spec "let: []" therefore produces TWO errors at the same pointer --
+// [validateLetExtension]'s `"let" requires the EXPR extension` and this
+// function's `must contain at least one binding when provided` -- and that is
+// intended, not a missing short-circuit: both statements are independently
+// true, and a template that fixed only the one it was shown would come back
+// still invalid for the other.
+//
+// DELIBERATE ASYMMETRY, do not harmonise: the structurally identical
+// [maxJobParameterDefinitions] cap runs inside [validateLimits], behind
+// opts.EnforceLimits, while this one runs unconditionally. The specification
+// itself does not draw that line -- sections 3.6 and 2 both list the min- and
+// max-item bounds together under "Constraints" -- so the difference is sqi's,
+// and it is load-bearing. [maxLetBindings] is not only reported here, it is
+// ENFORCED by checkLetBindings (exprcheck.go), which stops evaluating a block
+// at the cap; that is the only bound on a construct whose per-binding cost
+// ACCUMULATES in a symbol table no per-evaluation budget measures. Moving this
+// check behind EnforceLimits would leave an operator who disables limits with
+// the over-count neither reported nor -- were the guard ever re-derived from
+// this check rather than from the constant -- bounded.
 func validateLetElementCounts(t *JobTemplate) ValidationErrors {
 	var errs ValidationErrors
 	walkLetPositions(t, func(p letPosition) {
