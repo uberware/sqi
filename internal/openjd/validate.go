@@ -318,7 +318,7 @@ const maxLetBindings = 50
 // true, and a template that fixed only the one it was shown would come back
 // still invalid for the other.
 //
-// DELIBERATE ASYMMETRY, do not harmonise: the structurally identical
+// DELIBERATE ASYMMETRY, do not harmonize: the structurally identical
 // [maxJobParameterDefinitions] cap runs inside [validateLimits], behind
 // opts.EnforceLimits, while this one runs unconditionally. The specification
 // itself does not draw that line -- sections 3.6 and 2 both list the min- and

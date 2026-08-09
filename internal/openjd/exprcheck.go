@@ -474,7 +474,7 @@ func checkFormatString(
 // [checkFormatString]'s identically-named tail is: it is how a caller supplies
 // section 1.3.9/1.3.10 limits, and all three walk call sites pass
 // submissionLimits(). checkLetBindings used to hardcode submissionLimits()
-// internally, which was behaviourally identical but a trap for sub-project E4,
+// internally, which was behaviorally identical but a trap for sub-project E4,
 // which owns the specification's CONFIGURABLE limits: threading an
 // operator-supplied budget through checkTemplateExpressions reaches every
 // format-string position via checkFormatString and would have silently missed

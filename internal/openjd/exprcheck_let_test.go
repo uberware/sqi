@@ -158,7 +158,7 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 // than the leaf.
 //
 // It exists because checkLetBindings now takes its limits from the caller. The
-// leaf test above proves the leaf honours what it is given; only this one
+// leaf test above proves the leaf honors what it is given; only this one
 // proves the walk gives it the tight budget at each site. Nothing else in the
 // repo can: no conformance fixture or oracle case is expensive enough to
 // distinguish submissionLimits from expr.Eval's defaults, so a call site that
