@@ -77,7 +77,10 @@ feature it gates are checked together.
 
 ## What `sqi` deliberately does not implement
 
-Two things, both **out of scope by design**, not bugs to fix:
+Three things. The first and last are **out of scope by design**, not bugs to
+fix. The middle one is a **known defect** that is merely not fixed *here* —
+it is listed alongside them so a reader auditing this section against the spec
+does not mistake it for intended behavior:
 
 - **`EXPR`** (the OpenJD Expression Language extension) — new value types
   (`BOOL`, `RANGE_EXPR`, `LIST[...]`) and the `*_LIST` `userInterface.control`
@@ -86,7 +89,7 @@ Two things, both **out of scope by design**, not bugs to fix:
   unconditionally, the same as any other unregistered extension name,
   regardless of anything else the template does.
 
-  **CORRECTION (sub-project E3, `80d69b1..ae1fb56`):** this bullet used to
+  **CORRECTION (sub-project E3, `80d69b1..3e2f87c`):** this bullet used to
   also list `let` on step templates as unimplemented. That is no longer true.
   `internal/openjd` models, parses, and validates `let:` at the three
   locations it can reach today — `<StepTemplate>.let`, `<StepScript>.let`,
@@ -108,6 +111,31 @@ Two things, both **out of scope by design**, not bugs to fix:
   tested code, reachable today only through the conformance suite's direct
   calls to `openjd.Parse`/`openjd.ValidateWithOptions` — see
   [below](#expr-a-temporary-second-scoring-path).
+- **`Job.Name` / `Step.Name` in `hostRequirements` and `parameterSpace`** — a
+  **known gap against section 7.3.1**, present since sub-project E2 and *not*
+  closed by E3. `checkStepExpressions` evaluates both of those positions at
+  `ScopeJob`, whose fixed-symbol set (`scopeFixed`, `internal/openjd/scope.go`)
+  is empty, so a bare `Job.Name` or `Step.Name` there is rejected as an unknown
+  symbol. Reproduced at `3e2f87c`, all three verbatim:
+
+  ```
+  /steps/0/hostRequirements/attributes/0/anyOf/0: col 1: unknown symbol "Step.Name"
+  /steps/0/hostRequirements/attributes/0/anyOf/0: col 1: unknown symbol "Job.Name"
+  /steps/0/parameterSpace/taskParameterDefinitions/0/range/0: col 1: unknown symbol "Step.Name"
+  ```
+
+  Section 7.3.1's symbol table grants both: `Step.Name` is "Available within
+  the Step Template scope: `stepEnvironments`, `hostRequirements`,
+  `parameterSpace`, and `script`", and `Job.Name` is "Available in every Format
+  String in the Job Template, except the `name` field of the Job Template
+  itself". Section **3.6.2 does not authorize the rejection** and must not be
+  cited for it — 3.6.2 governs where *`let` names* are visible and is silent on
+  the fixed symbols. A comment in `exprcheck.go` did cite it that way until this
+  fix wave retracted it. **No fixture covers this**, which is why it survived
+  both E2 and E3 unnoticed and why it does not show in the scores below.
+  Closing it means splitting `scopeFixed(ScopeJob)` or adding a distinct scope
+  for these two positions — a change that can move conformance scoring, so it
+  belongs to sub-project E4 or a dedicated follow-up, not to a closing fix wave.
 - **Standalone `environment-2023-09` templates** — see [Spec version](#spec-version)
   above.
 
@@ -259,7 +287,7 @@ Both are asserted by name in `TestConformance_E2ProtectedFixtures`
 the two mechanisms applies, so a future regression that silently swaps them
 back to passing for the wrong reason (or fails them outright) is caught.
 
-**Sub-project E3 (`80d69b1..ae1fb56`) — `let` bindings.** `let` is now real at
+**Sub-project E3 (`80d69b1..3e2f87c`) — `let` bindings.** `let` is now real at
 the three locations `internal/openjd/model.go` can reach (`<StepTemplate>.let`,
 `<StepScript>.let`, `<EnvironmentScript>.let`; the fourth, `<SimpleAction>.let`,
 needs `SimpleAction` itself, an unmodeled `FEATURE_BUNDLE_1` element). See the
@@ -267,8 +295,12 @@ correction above under [What `sqi` deliberately does not
 implement](#what-sqi-deliberately-does-not-implement) for what that means for
 production behavior — nothing, yet, because `EXPR`'s own status gate still
 rejects every `EXPR`-declaring template first. `EXPR/job_templates` moved
-**175/209 (34 baselined) → 186/209 (23 baselined)** across four tasks, each
-confirmed individually and recorded in `baseline-expr.txt`'s own dated notes:
+**175/209 (34 baselined) → 186/209 (23 baselined)** across three tasks (+3,
++2, +6), each confirmed individually and recorded in `baseline-expr.txt`'s own
+dated notes. `baseline-expr.txt` carries *four* E3-dated notes, one more than
+the number of tasks that moved the score: Task 11's note clears nothing, it
+surveys the disposition of every remaining `let` fixture. Do not read the note
+count as a score-moving-task count:
 
 - Task 2: `validateLetExtension` rejects any `let:` block on a template that
   does not declare `EXPR` — three fixtures clear (the `*-requires-expr` set).
@@ -419,8 +451,9 @@ measured results, not assertions:
 the whole of sub-project E2 — it still carried the pre-E2 figure (143/209
 pass, 66 baselined) that predates even the routing change onto `runEXPRCase`,
 while the actual score had already moved to 175/209 (34 baselined) with E2
-and then, across E3's four tasks, to today's 186/209 (23 baselined). It is now
-current as of sub-project E3 (`80d69b1..ae1fb56`); see [EXPR: a temporary,
+and then, across the three E3 tasks that moved it, to today's 186/209 (23
+baselined). It is now
+current as of sub-project E3 (`80d69b1..3e2f87c`); see [EXPR: a temporary,
 second scoring path](#expr-a-temporary-second-scoring-path) for the full
 accounting of both moves.
 
