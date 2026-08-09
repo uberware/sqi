@@ -195,9 +195,10 @@ steps:
 // Grants: Param.*, RawParam.*, Job.Name, Session.*, Env.File.* (this
 // environment's own embedded files).
 // Withholds: Step.Name (this is the row's own reason, per the wiki note: a
-// job environment has no enclosing step) and Task.Param.* (a sibling step
-// declares task parameter F, but no task exists from a job environment's
-// point of view either).
+// job environment has no enclosing step) and Task.Param.*, Task.RawParam.*,
+// Task.File.* (a sibling step declares task parameter F and an embedded
+// file "f", but no task exists from a job environment's point of view
+// either).
 func TestLetScope_EnvironmentScriptLet_JobEnvironment(t *testing.T) {
 	const tmplFmt = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -226,6 +227,10 @@ steps:
       type: INT
       range: "1-3"
   script:
+    embeddedFiles:
+    - name: f
+      type: TEXT
+      data: "step file"
     actions:
       onRun:
         command: echo
@@ -239,6 +244,8 @@ steps:
 		{name: "grant/Env.File.f", binding: "Env.File.f"},
 		{name: "withhold/Step.Name", binding: "Step.Name", wantErr: true},
 		{name: "withhold/Task.Param.F", binding: "Task.Param.F", wantErr: true},
+		{name: "withhold/Task.RawParam.F", binding: "Task.RawParam.F", wantErr: true},
+		{name: "withhold/Task.File.f", binding: "Task.File.f", wantErr: true},
 	})
 }
 
@@ -267,9 +274,11 @@ steps:
 // this test pins.
 //
 // Grants: everything the job-environment row grants, plus Step.Name.
-// Withholds: Task.Param.* -- a sibling task parameter (F) exists on the
-// enclosing step, but this scope's family list still does not include it (a
-// step environment's script does not run per-task).
+// Withholds: Task.Param.*, Task.RawParam.* -- a sibling task parameter (F)
+// exists on the enclosing step -- and Task.File.* -- the enclosing step's
+// own script declares an embedded file "f" -- but this scope's family list
+// still does not include any of the three (a step environment's script does
+// not run per-task).
 func TestLetScope_EnvironmentScriptLet_StepEnvironment(t *testing.T) {
 	const tmplFmt = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -298,6 +307,10 @@ steps:
         onEnter:
           command: echo
   script:
+    embeddedFiles:
+    - name: f
+      type: TEXT
+      data: "step file"
     actions:
       onRun:
         command: echo
@@ -311,6 +324,8 @@ steps:
 		{name: "grant/Env.File.f", binding: "Env.File.f"},
 		{name: "grant/Step.Name", binding: "Step.Name"},
 		{name: "withhold/Task.Param.F", binding: "Task.Param.F", wantErr: true},
+		{name: "withhold/Task.RawParam.F", binding: "Task.RawParam.F", wantErr: true},
+		{name: "withhold/Task.File.f", binding: "Task.File.f", wantErr: true},
 	})
 }
 
