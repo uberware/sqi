@@ -326,6 +326,24 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 	if got := msg.ParameterTypes["Note"]; got != "STRING" {
 		t.Errorf("ParameterTypes[Note] = %q, want STRING", got)
 	}
+
+	// The job's and step's own declared names — distinct from TaskName,
+	// which decorates the step name with task-parameter values (see
+	// buildTaskName): this step declares task parameters, so TaskName and
+	// StepName must differ.
+	// buildFixture sets store.Job.Name to "TestJob" regardless of the
+	// template's own "name" field — JobName carries the STORE record's
+	// name, which is what submission persisted, not the raw template text.
+	if msg.JobName != "TestJob" {
+		t.Errorf("JobName = %q, want TestJob", msg.JobName)
+	}
+	if msg.StepName != "S" {
+		t.Errorf("StepName = %q, want S", msg.StepName)
+	}
+	if msg.TaskName == msg.StepName {
+		t.Errorf("TaskName (%q) unexpectedly equals bare StepName (%q); this step has task "+
+			"parameters so TaskName should be decorated", msg.TaskName, msg.StepName)
+	}
 }
 
 // TestBuildAssignPayload_BaseSpecWireBytesUnchanged proves, rather than
@@ -348,6 +366,8 @@ func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 		`"parameter_types"`,
 		`"job_parameter_types"`,
 		`"let"`,
+		`"job_name"`,
+		`"step_name"`,
 	}
 	s := string(data)
 	for _, key := range forbidden {
@@ -368,6 +388,9 @@ func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
 	}
 	if msg.ParameterTypes != nil || msg.JobParameterTypes != nil {
 		t.Errorf("ParameterTypes/JobParameterTypes = %v/%v, want nil/nil", msg.ParameterTypes, msg.JobParameterTypes)
+	}
+	if msg.JobName != "" || msg.StepName != "" {
+		t.Errorf("JobName/StepName = %q/%q, want empty/empty", msg.JobName, msg.StepName)
 	}
 }
 

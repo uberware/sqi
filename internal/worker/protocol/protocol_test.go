@@ -38,12 +38,12 @@ func TestAssignMsg_PathDeliveriesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAssignMsg_EXPRFieldsRoundTrip asserts that a message carrying all three
+// TestAssignMsg_EXPRFieldsRoundTrip asserts that a message carrying all
 // EXPR-phase-3 additions (the EXPR flag, the two distinct ordered step-level
-// let blocks, an environment's let block, and the two parameter-type maps)
-// survives json.Marshal -> json.Unmarshal with declaration order preserved
-// and the step-template and step-script let blocks still distinguishable
-// from one another.
+// let blocks, an environment's let block, the two parameter-type maps, and
+// the job's/step's own declared names) survives json.Marshal ->
+// json.Unmarshal with declaration order preserved and the step-template and
+// step-script let blocks still distinguishable from one another.
 func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 	in := protocol.AssignMsg{
 		EXPR: true,
@@ -57,6 +57,8 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 		},
 		ParameterTypes:    map[string]string{"Frame": "INT"},
 		JobParameterTypes: map[string]string{"Scene": "PATH"},
+		JobName:           "ExprJob",
+		StepName:          "S",
 		Environments: []protocol.AssignEnvironment{
 			{
 				Name: "Env1",
@@ -107,6 +109,12 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 	if got := out.JobParameterTypes["Scene"]; got != "PATH" {
 		t.Errorf("JobParameterTypes[Scene] = %q, want PATH", got)
 	}
+	if out.JobName != "ExprJob" {
+		t.Errorf("JobName = %q, want ExprJob", out.JobName)
+	}
+	if out.StepName != "S" {
+		t.Errorf("StepName = %q, want S", out.StepName)
+	}
 
 	if len(out.Environments) != 1 {
 		t.Fatalf("Environments = %+v, want 1 entry", out.Environments)
@@ -118,10 +126,10 @@ func TestAssignMsg_EXPRFieldsRoundTrip(t *testing.T) {
 }
 
 // TestAssignMsg_EXPRFieldsOmittedForBaseSpec asserts that a base-spec
-// assignment — one that sets none of the six EXPR-phase-3 fields — produces
-// no trace of them on the wire. The fields are omitempty specifically so
-// that a base-spec assignment's wire bytes do not grow; this test asserts
-// that property rather than assuming it.
+// assignment — one that sets none of the eight EXPR-phase-3 fields —
+// produces no trace of them on the wire. The fields are omitempty
+// specifically so that a base-spec assignment's wire bytes do not grow; this
+// test asserts that property rather than assuming it.
 func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 	in := protocol.AssignMsg{
 		Version:  protocol.ProtocolVersion,
@@ -147,7 +155,7 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// None of the six new keys may appear anywhere on the wire, including
+	// None of the eight new keys may appear anywhere on the wire, including
 	// nested inside an environment object.
 	forbidden := []string{
 		`"expr"`,
@@ -156,6 +164,8 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 		`"parameter_types"`,
 		`"job_parameter_types"`,
 		`"let"`,
+		`"job_name"`,
+		`"step_name"`,
 	}
 	s := string(data)
 	for _, key := range forbidden {
@@ -177,6 +187,9 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 	}
 	if out.ParameterTypes != nil || out.JobParameterTypes != nil {
 		t.Errorf("ParameterTypes/JobParameterTypes = %v/%v, want nil/nil", out.ParameterTypes, out.JobParameterTypes)
+	}
+	if out.JobName != "" || out.StepName != "" {
+		t.Errorf("JobName/StepName = %q/%q, want empty/empty", out.JobName, out.StepName)
 	}
 	if len(out.Environments) != 1 || out.Environments[0].Let != nil {
 		t.Errorf("Environments = %+v, want Let nil", out.Environments)

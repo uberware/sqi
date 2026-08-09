@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package expr
+
+import (
+	"strconv"
+	"strings"
+)
+
+// JobParamTypes maps a declared OpenJD job-parameter type ("STRING", "PATH",
+// "INT", "FLOAT", "LIST[PATH]", ...) to the expression types of Param.<name>
+// and RawParam.<name>, per section 1.2.2's job-parameter table.
+//
+// PATH and LIST[PATH] are the two rows where the raw form differs from the
+// resolved form, because the raw value may be a path for another operating
+// system that cannot be parsed locally: Param.<name> is a path (or list of
+// paths), RawParam.<name> stays a string (or list of strings). Every other
+// declared type binds Param and RawParam to the SAME type — section 1.2.2
+// itself: "This is the same as RawParam.<ParamName> for all parameter types
+// except PATH" — so an INT job parameter's RawParam.<name> is int, not
+// string. Do not special-case RawParam to string uniformly; that would
+// contradict the specification for every non-PATH type.
+//
+// An unrecognized spelling floors to "any" rather than leaving the name
+// unbound — an unbound name would make a valid template fail as "unknown
+// symbol", which is worse than typing it loosely.
+//
+// This is the single, shared definition of the mapping. internal/openjd's
+// phase-1/phase-2 symbol-table builder (exprcheck.go's jobParamTypes) and
+// the worker's phase-3 builder (internal/worker/fmtres/exprsyms.go) both
+// call this function rather than each keeping their own copy.
+// internal/openjd itself cannot be imported by the worker binary — it pulls
+// in internal/store, which the worker must never depend on — so the mapping
+// lives here, in the one package both sides already import
+// (internal/openjd/expr imports only internal/openjd/intrange). A second,
+// independently maintained copy of this table is exactly the drift EXPR
+// sub-project E4a's design spec section 3.1 warns a worker-side symbol
+// table must not introduce.
+func JobParamTypes(declared string) (paramType, rawType Type) {
+	switch declared {
+	case "PATH":
+		return TPath, TString
+	case "LIST[PATH]":
+		return ListOf(TPath), ListOf(TString)
+	}
+	t, err := ParseType(strings.ToLower(declared))
+	if err != nil {
+		return TAny, TAny
+	}
+	return t, t
+}
+
+// TaskParamType maps a declared OpenJD task-parameter type per section
+// 1.2.2's task table. CHUNK[INT] is range_expr, NOT list[int], so that a
+// frame range need not be expanded. Task.Param.<name> and
+// Task.RawParam.<name> share this same type for every declared task-
+// parameter type, including PATH — section 1.2.2's task table describes
+// Task.Param as "the value ... with relevant path mapping rules applied"
+// and Task.RawParam as "the value ... as it was defined, with no path
+// mapping rules applied", a VALUE difference, not a type difference; both
+// remain path.
+//
+// An unrecognized spelling floors to "any", for the same reason
+// JobParamTypes does. See that function's doc comment for why this mapping
+// is shared rather than duplicated per caller.
+func TaskParamType(declared string) Type {
+	if declared == "CHUNK[INT]" {
+		return TRangeExpr
+	}
+	t, err := ParseType(strings.ToLower(declared))
+	if err != nil {
+		return TAny
+	}
+	return t
+}
+
+// ValueFromText converts a parameter's submitted raw text into a concrete
+// Value of type t. It returns Unresolved(t) in two distinct situations,
+// which are easy to conflate:
+//
+//  1. PARSE FAILURE, for a type this function does make concrete. INT and
+//     FLOAT go concrete when raw parses and fall back to Unresolved(t) when
+//     it does not: this function is not a validator, so a value that fails
+//     to parse here is reported as still-unknown rather than causing a
+//     panic or a lie about what was bound. Validating a submitted value
+//     against its declared type happens upstream, before this is called.
+//     STRING and PATH always go concrete — every string parses as either.
+//
+//  2. BY CONSTRUCTION, for a type this function never makes concrete at
+//     all. Bool, list and range_expr have no case here and reach the
+//     default branch for EVERY input, valid or not.
+//
+// pathFlavor selects the flavor for a CodePath result, so callers evaluating
+// in different contexts get a Path value that matches their own
+// evaluation's flavor rather than a fixed one: internal/openjd hardcodes
+// PathPOSIX here for submission-time job-parameter binding (a known,
+// pre-existing gap — nothing server-side sets a PathFormat other than the
+// default), while the worker's phase-3 table (a genuine host context) uses
+// PathNative.
+//
+// The CodeFloat case binds raw as the value's rendered form (FloatText),
+// per section 1.3.4: submitting "3.500" to a FLOAT parameter must preserve
+// that exact text, not the canonical "3.5" strconv.ParseFloat's companion
+// FormatFloat would produce. Callers that store submitted parameters as
+// plain strings (both internal/openjd and the worker do) already have the
+// original text in raw — no separate capture is needed.
+func ValueFromText(t Type, raw string, pathFlavor PathFormat) Value {
+	switch t.Code {
+	case CodeInt:
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return Unresolved(t)
+		}
+		return Int(n)
+	case CodeFloat:
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return Unresolved(t)
+		}
+		return FloatText(f, raw)
+	case CodeString:
+		return String(raw)
+	case CodePath:
+		return Path(raw, pathFlavor)
+	default:
+		return Unresolved(t)
+	}
+}

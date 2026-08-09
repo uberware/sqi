@@ -123,7 +123,7 @@ func buildAssignPayload(
 	// for a base-spec assignment. A template without EXPR declared must
 	// produce byte-for-byte the same assignment shape it produced before
 	// this section existed — see [protocol.AssignMsg.EXPR].
-	hasEXPR := populateEXPRFields(&msg, tmpl, stepTmpl)
+	hasEXPR := populateEXPRFields(&msg, tmpl, stepTmpl, job.Name, step.Name)
 
 	// ── OnRun action and step-level embedded files ─────────────────────────
 	if stepTmpl.Script != nil {
@@ -274,11 +274,16 @@ func convertEnvironment(e openjd.Environment, hasEXPR bool) protocol.AssignEnvir
 }
 
 // populateEXPRFields sets msg's EXPR flag and, only when the template
-// declares the EXPR extension, its step-level let blocks and declared
-// parameter-type maps. Returns hasEXPR so the caller can gate the
-// EXPR-only environment let blocks it assembles afterward without
-// re-deriving the same flag.
-func populateEXPRFields(msg *protocol.AssignMsg, tmpl *openjd.JobTemplate, stepTmpl *openjd.StepTemplate) bool {
+// declares the EXPR extension, its step-level let blocks, declared
+// parameter-type maps, and the job's/step's own declared names (jobName,
+// stepName — store.Job.Name and store.Step.Name at the caller, threaded
+// through rather than re-derived here since buildAssignPayload already has
+// both records). Returns hasEXPR so the caller can gate the EXPR-only
+// environment let blocks it assembles afterward without re-deriving the same
+// flag.
+func populateEXPRFields(
+	msg *protocol.AssignMsg, tmpl *openjd.JobTemplate, stepTmpl *openjd.StepTemplate, jobName, stepName string,
+) bool {
 	hasEXPR := declaresEXPR(tmpl)
 	msg.EXPR = hasEXPR
 	if !hasEXPR {
@@ -290,6 +295,8 @@ func populateEXPRFields(msg *protocol.AssignMsg, tmpl *openjd.JobTemplate, stepT
 	}
 	msg.ParameterTypes = buildParameterTypes(stepTmpl)
 	msg.JobParameterTypes = buildJobParameterTypes(tmpl)
+	msg.JobName = jobName
+	msg.StepName = stepName
 	return true
 }
 

@@ -7,7 +7,6 @@ import (
 	"maps"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
@@ -103,6 +102,25 @@ func symbolsFor(
 	return syms
 }
 
+// SymbolsFor is the exported counterpart of symbolsFor, for the one caller
+// outside this package that needs to drive the SAME phase-1/phase-2
+// symbol-table construction this package uses internally:
+// internal/worker/fmtres's phase-3 "agreement" test (EXPR sub-project E4a),
+// which proves the worker's own phase-3 table types a template's declared
+// parameters identically to this package's phase-2 table -- the design
+// spec's own claim that phases 1-3 are "the same walk with a different
+// table" gets its sharpest test here, and that test needs the REAL
+// phase-2 table, not a hand-reconstructed approximation of it.
+//
+// This is a direct, unwrapped call -- see symbolsFor's own doc comment for
+// the full contract (what step/env/params being nil means, and the scope
+// gating).
+func SymbolsFor(
+	tmpl *JobTemplate, step *StepTemplate, env *Environment, scope Scope, params map[string]string,
+) expr.MapSymbols {
+	return symbolsFor(tmpl, step, env, scope, params)
+}
+
 // bindJobParamSymbols binds Param.<name> and RawParam.<name> for every job
 // parameter tmpl declares. Where params supplies a value for that name, the
 // symbol is bound to the concrete value (phase 2) rather than a placeholder
@@ -129,92 +147,43 @@ func bindJobParamSymbols(tmpl *JobTemplate, params map[string]string, syms expr.
 // jobParamTypes maps a declared job-parameter type to the expression types of
 // Param.<name> and RawParam.<name>, per section 1.2.2's job-parameter table.
 //
-// Copied from test/conformance/exprcase.go's jobParamTypes: PATH and
-// LIST[PATH] are the two rows where the raw form differs from the resolved
-// form, because the raw value may be a path for another operating system that
-// cannot be parsed locally. An unrecognized spelling floors to "any" rather
-// than leaving the name unbound -- an unbound name would make a valid
-// template fail as "unknown symbol", which is worse than typing it loosely.
+// This is a thin wrapper over expr.JobParamTypes, the shared definition of
+// the mapping -- see that function's doc comment for the full rationale
+// (including why RawParam is NOT uniformly string) and for why the mapping
+// lives in internal/openjd/expr rather than here: EXPR sub-project E4a's
+// worker-side phase-3 symbol table (internal/worker/fmtres/exprsyms.go)
+// needs the identical mapping and cannot import this package (internal/
+// openjd pulls in internal/store, which the worker binary must never depend
+// on), so a single copy in the one package both sides already share is what
+// keeps phase 2 and phase 3 from typing the same declared parameter two
+// different ways.
+//
+// (test/conformance/exprcase.go keeps its OWN separate copy, deliberately --
+// see symbolsFor's doc comment for why that third copy is not folded in
+// here too.)
 func jobParamTypes(declared string) (paramType, rawType expr.Type) {
-	switch declared {
-	case "PATH":
-		return expr.TPath, expr.TString
-	case "LIST[PATH]":
-		return expr.ListOf(expr.TPath), expr.ListOf(expr.TString)
-	}
-	t, err := expr.ParseType(strings.ToLower(declared))
-	if err != nil {
-		return expr.TAny, expr.TAny
-	}
-	return t, t
+	return expr.JobParamTypes(declared)
 }
 
 // concreteJobParamValue converts a submitted job-parameter value into a Value
-// of type t. It returns Unresolved(t) in two distinct situations, which are
-// easy to conflate:
+// of type t. Thin wrapper over expr.ValueFromText -- see that function's doc
+// comment for the two distinct situations where it returns Unresolved(t)
+// (parse failure vs. by-construction) and for the section 1.3.4 float-text
+// rationale. Symbolic drift between this package's phase 2 and the worker's
+// phase 3 is exactly what sharing the one definition in internal/openjd/expr
+// prevents; see jobParamTypes' doc comment just above for the fuller
+// argument.
 //
-//  1. PARSE FAILURE, for a type this function does make concrete. INT and
-//     FLOAT go concrete when raw parses and fall back to Unresolved(t) when it
-//     does not: symbolsFor is not a validator, so a value that fails to parse
-//     here is reported as still-unknown rather than causing symbolsFor to
-//     panic or lie about what is bound. Validating submitted parameter values
-//     against their declared type is bind.go's job, upstream of this call.
-//     STRING and PATH always go concrete -- every string parses as either,
-//     PATH at a hardcoded flavor (see the CodePath note below).
-//
-//  2. BY CONSTRUCTION, for a type this function never makes concrete at all.
-//     CodeBool, CodeList and CodeRangeExpr have no case here and reach the
-//     default branch for EVERY input, valid or not; their symbols stay
-//     unresolved in phase 2 exactly as they were in phase 1. This is NOT a
-//     parse-failure fallback and no input can change it.
-//
-// The second situation matters for how E2's "one code path, two phases" claim
-// should be read: phase 2 differs from phase 1 only in this table, so for the
-// three declared types that are not in it, phase 2 differs from phase 1 not at
-// all. Nothing is broken by that today -- BOOL, LIST[*] and RANGE_EXPR are
-// sub-project F's job-parameter types and a template cannot declare one yet
-// (the EXPR extension that defines them is not StatusSupported) -- but F must
-// add their cases here, or its own parameters will silently never resolve.
-//
-// The CodeFloat case binds raw as the value's rendered form (expr.FloatText),
-// per section 1.3.4: submitting "3.500" to a FLOAT parameter must preserve
-// that exact text, not the canonical "3.5" strconv.ParseFloat's companion
-// FormatFloat would produce. sqi stores submitted parameters as
-// map[string]string, so raw already IS the original submitted text -- no
-// separate capture is needed. Only the binding is done here; substituting the
-// carried text back into rendered template output is sub-project E4's, since
-// section 1.3.4 is observable only through substitution and this package's
-// phase 2 does not move it.
-//
-// The CodePath case hardcodes PathPOSIX rather than taking a PathFormat from
-// the caller. That is harmless today -- nothing calls symbolsFor yet -- but a
-// future caller that also sets expr.WithPathFormat(expr.PathWindows) for the
-// same evaluation would get a mismatched flavor for a concrete Param.<path>
-// value: this Value and the evaluator's own path literals would disagree.
-// Left as a known gap rather than fixed now, since symbolsFor has no
-// PathFormat input to thread through yet and inventing one without a caller
-// to drive it would be speculative.
+// PathPOSIX is hardcoded here rather than threading a PathFormat from the
+// caller. That is harmless today -- nothing calls symbolsFor with a non-
+// default path format yet -- but a future caller that also sets
+// expr.WithPathFormat(expr.PathWindows) for the same evaluation would get a
+// mismatched flavor for a concrete Param.<path> value: this Value and the
+// evaluator's own path literals would disagree. Left as a known gap rather
+// than fixed now, since symbolsFor has no PathFormat input to thread through
+// yet and inventing one without a caller to drive it would be speculative.
 func concreteJobParamValue(t expr.Type, raw string) expr.Value {
-	switch t.Code {
-	case expr.CodeInt:
-		n, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return expr.Unresolved(t)
-		}
-		return expr.Int(n)
-	case expr.CodeFloat:
-		f, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return expr.Unresolved(t)
-		}
-		return expr.FloatText(f, raw)
-	case expr.CodeString:
-		return expr.String(raw)
-	case expr.CodePath:
-		return expr.Path(raw, expr.PathPOSIX)
-	default:
-		return expr.Unresolved(t)
-	}
+	return expr.ValueFromText(t, raw, expr.PathPOSIX)
 }
 
 // bindTaskParamSymbols binds Task.Param.<name> and Task.RawParam.<name> for
@@ -236,19 +205,10 @@ func bindTaskParamSymbols(step *StepTemplate, syms expr.MapSymbols) {
 }
 
 // taskParamType maps a declared task-parameter type per section 1.2.2's task
-// table. Copied from test/conformance/exprcase.go's taskParamType:
-// CHUNK[INT] is range_expr, NOT list[int], so that a frame range need not be
-// expanded. An unrecognized spelling floors to "any", for the same reason
-// jobParamTypes does.
+// table. Thin wrapper over expr.TaskParamType -- see jobParamTypes' doc
+// comment just above for why the mapping lives there rather than here.
 func taskParamType(declared TaskParamType) expr.Type {
-	if declared == TaskParamTypeChunkInt {
-		return expr.TRangeExpr
-	}
-	t, err := expr.ParseType(strings.ToLower(string(declared)))
-	if err != nil {
-		return expr.TAny
-	}
-	return t
+	return expr.TaskParamType(string(declared))
 }
 
 // bindEmbeddedFileSymbols binds prefix+<name> as an unresolved path for every

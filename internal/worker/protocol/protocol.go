@@ -42,10 +42,11 @@ import "time"
 //
 // "2" adds [AssignMsg.EXPR], [AssignMsg.StepTemplateLet],
 // [AssignMsg.StepScriptLet], [AssignMsg.ParameterTypes],
-// [AssignMsg.JobParameterTypes], and [AssignEnvironment.Let] for EXPR phase-3
-// (worker-side) expression evaluation.  All six are omitempty and populated
-// only for a template that declares the EXPR extension, so a base-spec
-// assignment's wire bytes are unchanged by this bump.
+// [AssignMsg.JobParameterTypes], [AssignEnvironment.Let], [AssignMsg.JobName]
+// and [AssignMsg.StepName] for EXPR phase-3 (worker-side) expression
+// evaluation.  All eight are omitempty and populated only for a template
+// that declares the EXPR extension, so a base-spec assignment's wire bytes
+// are unchanged by this bump.
 const ProtocolVersion = "2"
 
 // ── Message type constants ────────────────────────────────────────────────────
@@ -248,6 +249,21 @@ type AssignMsg struct {
 
 	// TaskName is the human-readable task name derived from the OpenJD template.
 	TaskName string `json:"task_name"`
+
+	// JobName and StepName are the job's and step's own declared names — the
+	// template's job "name" field and the matching StepTemplate's "name",
+	// verbatim. Neither is derivable from another field on this message:
+	// JobID/StepID are opaque IDs, and TaskName is the (possibly
+	// parameter-decorated, see buildTaskName) per-task display name, which
+	// equals the bare step name only when the step declares no task
+	// parameters. Phase-3 EXPR evaluation needs the real Job.Name/Step.Name
+	// symbols (section 1.2.2), so this pair exists specifically to carry
+	// them. Present only when EXPR is true, like the other phase-3 fields —
+	// a base-spec assignment has no format-string position that can
+	// reference either symbol, so populating them unconditionally would grow
+	// its wire bytes for no reason.
+	JobName  string `json:"job_name,omitempty"`
+	StepName string `json:"step_name,omitempty"`
 
 	// WorkerID is the ID of the worker this assignment targets.
 	WorkerID string `json:"worker_id"`
