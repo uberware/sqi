@@ -420,6 +420,43 @@ func checkFormatString(
 // Self-reference needs no check: "x = x + 1" fails because x is inserted only
 // after its own expression evaluates.
 //
+// # The maxLetBindings guard
+//
+// Evaluation STOPS after [maxLetBindings] bindings. That is a
+// resource-exhaustion guard, not a diagnostic: [validateLetElementCounts] has
+// already REPORTED the over-count (it runs unconditionally, before the walk,
+// and is not gated by EnforceLimits -- see its comment), so a second error
+// here would only duplicate it at a different pointer.
+//
+// The guard has to live here rather than as a short-circuit in
+// ValidateWithOptions, because this function is the only place the cost is
+// actually incurred and it has more than one caller: phase 2
+// (checkExpressionsAtSubmit, submit.go) reaches checkTemplateExpressions
+// WITHOUT going through validateLetElementCounts, and every unit test calls
+// this leaf directly. A guard at the leaf bounds all of them; a short-circuit
+// upstream would bound exactly one.
+//
+// let is the first construct in this checker that RETAINS values across
+// evaluations. Every other position goes through checkFormatString, which
+// discards each result -- which is why a per-Eval budget (submissionLimits,
+// below) was sufficient there. Here, syms[name] = v accumulates one live value
+// per binding in a table no per-Eval limit measures: each binding may
+// legitimately allocate just under submissionMemoryLimit and KEEP it, so N
+// bindings cost N budgets of live memory with nothing counting the sum.
+// Measured through the real Parse + ValidateWithOptions path before this
+// guard existed: 2,000 bindings of `a<i> = "x" * 900000` -- a 57 KB template
+// body -- allocated 1,725 MB in 335 ms and still returned the same 2 errors,
+// because sqi had already declared the block invalid and then evaluated every
+// binding anyway. At the 4 MiB request-body cap (internal/api/jobs.go) that
+// extrapolates to ~190,000 bindings and an out-of-memory kill. A
+// template-wide OPERATION budget (sub-project E4) would not catch it: the
+// construction spends almost no operations.
+//
+// Truncating rather than abandoning the whole walk is also the friendlier
+// answer: a template with 51 bindings still gets every OTHER expression error
+// in the template reported in the same pass, alongside the count error, so
+// one over-long let: block does not hide the rest of the template's faults.
+//
 // Section 3.6 also forbids a binding that "shadows a previous binding in the
 // same let block or any enclosing scope". That reads as two rules but is
 // implemented as one: by the time a nested block's bindings are checked, the
@@ -435,6 +472,10 @@ func checkFormatString(
 func checkLetBindings(
 	lets []string, base string, scope Scope, syms expr.MapSymbols,
 ) ValidationErrors {
+	if len(lets) > maxLetBindings {
+		lets = lets[:maxLetBindings]
+	}
+
 	var errs ValidationErrors
 	for i, raw := range lets {
 		ptr := fmt.Sprintf("%s/%d", base, i)

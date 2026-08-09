@@ -3,6 +3,8 @@
 package openjd
 
 import (
+	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -860,5 +862,72 @@ steps:
 	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
 		t.Errorf("checkTemplateExpressions = %v, want no errors (Step0's let binding must not "+
 			"leak into Step1's comprehension check); got: %v", errs, errs)
+	}
+}
+
+// TestCheckLetBindings_StopsAtMaxLetBindings pins the resource-exhaustion
+// guard in checkLetBindings: a let: block longer than maxLetBindings is
+// evaluated only up to the cap, never in full.
+//
+// The guard is load-bearing and nothing else in the repo covers it.
+// validateLetElementCounts REPORTS an over-count, but reporting is not
+// guarding: ValidateWithOptions does not short-circuit on it, so before this
+// guard existed sqi told the caller the block was invalid and then evaluated
+// every binding anyway. let is the only construct in this checker that RETAINS
+// a value per binding (syms[name] = v), so the per-Eval budget in
+// submissionLimits -- which counts one evaluation's live bytes and never sees
+// the table it is handed -- bounds each binding but not their sum. Measured
+// through the real Parse + ValidateWithOptions path with the guard removed:
+// 2,000 bindings of `a<i> = "x" * 900000`, a 57 KB template body, allocated
+// 1,725 MB in 335 ms and still returned the same 2 errors. At the 4 MiB
+// request-body cap (internal/api/jobs.go) that is ~190,000 bindings and an
+// out-of-memory kill.
+//
+// The assertions are on the PROPERTY -- how many bindings were evaluated --
+// not on wall clock, which flakes on shared CI. The symbol table is the direct
+// witness: checkLetBindings mutates it, one entry per SUCCESSFULLY evaluated
+// binding, so len(syms) is exactly the number of evaluations that happened.
+// The allocation ceiling below is corroborating evidence for the cost claim,
+// with an order of magnitude of slack over the ~43 MB the capped run needs.
+func TestCheckLetBindings_StopsAtMaxLetBindings(t *testing.T) {
+	const over = 400 // 8x the cap, so a missing guard is unmistakable
+	if over <= maxLetBindings {
+		t.Fatalf("test is vacuous: %d bindings does not exceed the cap of %d", over, maxLetBindings)
+	}
+	lets := make([]string, over)
+	for i := range lets {
+		// Each binding retains ~900 KB, just under submissionMemoryLimit --
+		// individually legal, collectively unbounded without the guard.
+		lets[i] = fmt.Sprintf("a%d = 'x' * 900000", i)
+	}
+
+	syms := expr.MapSymbols{}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	errs := checkLetBindings(lets, "/steps/0/let", ScopeStepTemplate, syms)
+	runtime.ReadMemStats(&after)
+
+	if len(errs) != 0 {
+		t.Fatalf("checkLetBindings = %v, want no errors (every binding below the cap is legal)", errs)
+	}
+	if len(syms) != maxLetBindings {
+		t.Errorf("evaluated %d bindings, want exactly maxLetBindings (%d): the guard did not stop the walk",
+			len(syms), maxLetBindings)
+	}
+	if _, ok := syms[fmt.Sprintf("a%d", maxLetBindings)]; ok {
+		t.Errorf("binding a%d is past the cap and must not have been evaluated", maxLetBindings)
+	}
+	if _, ok := syms[fmt.Sprintf("a%d", over-1)]; ok {
+		t.Errorf("binding a%d is past the cap and must not have been evaluated", over-1)
+	}
+	if _, ok := syms[fmt.Sprintf("a%d", maxLetBindings-1)]; !ok {
+		t.Errorf("binding a%d is the last one below the cap and must have been evaluated", maxLetBindings-1)
+	}
+
+	const allocCeiling = 400 << 20 // 400 MB; the capped run needs ~43 MB, the uncapped ~345 MB
+	if got := after.TotalAlloc - before.TotalAlloc; got > allocCeiling {
+		t.Errorf("allocated %d MB, want under %d MB: the guard did not bound the block's cost",
+			got>>20, allocCeiling>>20)
 	}
 }
