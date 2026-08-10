@@ -594,6 +594,198 @@ func submissionLimits() []expr.Option {
 	}
 }
 
+// ─── template-wide budget ───────────────────────────────────────────────────
+
+// maxTemplateExprPositions and maxTemplateExprRetainedBytes are the two
+// dimensions of the per-CALL budget checkTemplateExpressions enforces across
+// its own walk -- design spec §3, §3.1 ("EXPR E4c -- The template-wide
+// cumulative budget"). Both are cumulative across the WHOLE walk, not
+// per-position: submissionOperationLimit/submissionMemoryLimit (above) bound
+// what ONE expression may cost; these two bound what the ENTIRE template may
+// cost, closing the gap three separate sub-projects (E2, E3, E4b) each found
+// independently and each fixed only locally -- see the design spec's §1.1
+// table.
+//
+// A THIRD dimension, operations, is deliberately NOT tracked here. With a
+// position cap of maxTemplateExprPositions and the existing per-position
+// operation cap (submissionOperationLimit, above), the cumulative operation
+// ceiling is bounded at maxTemplateExprPositions * submissionOperationLimit
+// BY CONSTRUCTION -- no operation counter needs to cross into
+// internal/openjd/expr, which this task deliberately leaves unchanged (it is
+// shared by all three evaluation phases; see design spec §3). State this
+// plainly rather than implying a precise operation accounting that does not
+// exist: the derived ceiling is only as tight as maxTemplateExprPositions is
+// chosen, and it is an upper BOUND, not a measurement -- nothing here counts
+// a single operation.
+const (
+	// maxTemplateExprPositions caps the number of format-string/let-binding
+	// positions ONE call to checkTemplateExpressions may check -- one unit
+	// per checkFormatString call and one per let: binding actually attempted
+	// (letPositions, below, mirrors checkLetBindings' own maxLetBindings
+	// truncation so the count charged here matches the work actually done,
+	// not the possibly-larger count the template declared).
+	//
+	// 2,000 is chosen the way maxSteps was (validate.go, "WHAT THIS DOES
+	// BOUND"): well above a realistic legitimate template's position count
+	// -- a 100-step template (maxSteps) with a handful of let bindings, a
+	// few environment variables, a command, a few args and one range
+	// position per step lands in the low hundreds to low thousands -- while
+	// far below what a SINGLE step's task-parameter range positions can
+	// reach by construction at the existing per-field caps
+	// (maxTaskParameterDefinitions x maxTaskParamValues = 16,384, EXPR
+	// sub-project E4b's own finding, design spec §1.1). That construction
+	// sits within every structural cap Task 1/2 of this sub-project added
+	// (parameterSpaceOverCaps, maxSteps) -- neither rejects it -- and is
+	// exactly what this cap exists to stop, in the low thousands rather
+	// than after evaluating all 16,384 positions.
+	maxTemplateExprPositions int64 = 2_000
+
+	// maxTemplateExprRetainedBytes caps the cumulative section 1.3.9 size
+	// (expr.SizeOf) of every value EVERY let: block in the template adds to
+	// the symbol table it lands in -- summed across the WHOLE call, not
+	// reset per block or per step. Every other position discards its result
+	// (checkFormatString); let is the only construct that RETAINS one (see
+	// checkLetBindings' own doc comment), so only let bindings contribute to
+	// this counter -- see checkStepExpressions/checkEnvironmentExpressions
+	// for where each of the three let: positions (step template, step
+	// script, environment script) is charged.
+	//
+	// 10,000,000 (10 MB) is chosen to MATCH workerLetRetainedLimit
+	// (internal/worker/fmtres/exprsyms.go), not by coincidence: design spec
+	// §4 ("The asymmetry this wave should also close") requires the server
+	// and the worker to agree that retained let bytes are bounded, and using
+	// the identical figure is what makes that agreement legible rather than
+	// two independently-tuned numbers that happen to land in the same
+	// ballpark. It also SUBSUMES the server's own pre-existing gap:
+	// checkLetBindings' 50-binding cap (maxLetBindings) bounds one BLOCK's
+	// count but nothing bounded the BYTES those 50 could retain (up to
+	// ~50 MB per block, design spec §4) -- and because this counter is
+	// cumulative rather than reset per table, a SINGLE block that alone
+	// retains more than 10 MB trips it exactly as a dedicated per-table
+	// bound would, while many blocks that are each individually compliant
+	// but cumulatively large also trip it, which a per-table-only bound (the
+	// worker's own shape) would not catch. See this task's report for the
+	// construction that proves the second half of that claim.
+	maxTemplateExprRetainedBytes int64 = 10_000_000
+)
+
+// templateBudget is one phase's allowance against maxTemplateExprPositions
+// and maxTemplateExprRetainedBytes. checkTemplateExpressions allocates a
+// FRESH templateBudget at the top of every call -- see that function -- so
+// phase 1 (ValidateWithOptions, params == nil) and phase 2
+// (checkExpressionsAtSubmit, boundParams concrete) each get their own
+// allowance, per design spec §3.1: they are separate calls with separate
+// symbol tables, and a budget shared across them would make phase 2's
+// verdict depend on what phase 1 already spent, with no way for the
+// submitter to see why.
+//
+// Once either dimension trips, err is set exactly once and every further
+// charge call becomes a cheap no-op that returns false -- callers gate
+// further work on ok() or on a charge call's own return value so the walk
+// stops doing real work (parsing, evaluating) once the budget is spent, not
+// merely stops reporting once it is spent.
+type templateBudget struct {
+	positions int64
+	retained  int64
+	err       *ValidationError
+}
+
+func newTemplateBudget() *templateBudget { return &templateBudget{} }
+
+// ok reports whether the budget has not yet been exhausted.
+func (b *templateBudget) ok() bool { return b.err == nil }
+
+// chargePositions charges n additional walk positions, naming ptr as the
+// position that exhausted the budget if this call is the one that does. It
+// returns whether the caller may still do the work those positions
+// represent -- false either because this call itself tripped the budget or
+// because an earlier call (either dimension) already had.
+func (b *templateBudget) chargePositions(n int64, ptr string) bool {
+	if b.err != nil {
+		return false
+	}
+	b.positions += n
+	if b.positions > maxTemplateExprPositions {
+		b.err = &ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf(
+				"template-wide expression budget exceeded: at most %d expression positions may be "+
+					"checked in one validation pass (reached %d at %s)",
+				maxTemplateExprPositions, b.positions, ptr,
+			),
+		}
+		return false
+	}
+	return true
+}
+
+// chargeRetainedBytes charges n additional retained bytes -- the net size a
+// let: block's successful bindings just added to the table they landed in --
+// naming ptr as the position that exhausted the budget if this call is the
+// one that does. n <= 0 (an empty or fully-failed block) is a no-op that
+// still reports the budget's current state, matching chargePositions' own
+// contract.
+func (b *templateBudget) chargeRetainedBytes(n int64, ptr string) bool {
+	if b.err != nil {
+		return false
+	}
+	if n <= 0 {
+		return true
+	}
+	b.retained += n
+	if b.retained > maxTemplateExprRetainedBytes {
+		b.err = &ValidationError{
+			Pointer: ptr,
+			Message: fmt.Sprintf(
+				"template-wide expression budget exceeded: let bindings may retain at most %d bytes "+
+					"across the whole template (reached %d at %s)",
+				maxTemplateExprRetainedBytes, b.retained, ptr,
+			),
+		}
+		return false
+	}
+	return true
+}
+
+// errs returns the ONE ValidationError recording why the budget tripped, or
+// nil if it never did. checkTemplateExpressions appends this to the errors
+// the walk itself collected before the budget stopped it.
+func (b *templateBudget) errs() ValidationErrors {
+	if b.err == nil {
+		return nil
+	}
+	return ValidationErrors{*b.err}
+}
+
+// letPositions is the number of bindings ONE let: block actually costs the
+// budget: min(n, maxLetBindings), mirroring checkLetBindings' own truncation
+// (validate.go) so the count charged here matches the work checkLetBindings
+// actually does, not the (possibly larger) count the template declared.
+func letPositions(n int) int64 {
+	if n > maxLetBindings {
+		return int64(maxLetBindings)
+	}
+	return int64(n)
+}
+
+// templateExprRetainedBytes is the section 1.3.9 size of every value a
+// symbol table currently holds live, summed -- internal/worker/fmtres's
+// tableRetainedBytes (EXPR sub-project E4a), copied here rather than shared:
+// internal/openjd cannot depend on internal/worker (see jobParamTypes' doc
+// comment, above, for the established reason internal/openjd/expr's mapping
+// helpers live where they do rather than here) and internal/worker cannot
+// depend on internal/openjd (it pulls in internal/store, which the worker
+// binary must never depend on), so the one package both already share
+// (internal/openjd/expr, via the exported expr.SizeOf) is the only thing
+// this technique can be built on twice rather than shared once.
+func templateExprRetainedBytes(syms expr.MapSymbols) int64 {
+	var total int64
+	for _, v := range syms {
+		total += expr.SizeOf(v)
+	}
+	return total
+}
+
 // ─── template walk ─────────────────────────────────────────────────────────
 
 // checkTemplateExpressions walks tmpl and checks every format-string-bearing
@@ -667,22 +859,35 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string) Valid
 		return nil
 	}
 
+	// b is this CALL's budget -- fresh every time, which is what gives phase
+	// 1 and phase 2 their own separate allowance (design spec §3.1; see
+	// templateBudget's own doc comment). Nothing else needs to change at
+	// either call site (ValidateWithOptions, checkExpressionsAtSubmit) for
+	// that to hold: both already call this function fresh, once per phase.
+	b := newTemplateBudget()
 	var errs ValidationErrors
 
-	errs = append(errs, checkFormatString(
-		tmpl.Name, "/name", ScopeJob, symbolsFor(tmpl, nil, nil, ScopeJob, params), TargetString,
-		submissionLimits()...,
-	)...)
-
-	errs = append(errs, checkEnvironmentExpressions(
-		tmpl, nil, tmpl.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment, params, nil,
-	)...)
-
-	for i, s := range tmpl.Steps {
-		errs = append(errs, checkStepExpressions(tmpl, s, i, params)...)
+	if b.chargePositions(1, "/name") {
+		errs = append(errs, checkFormatString(
+			tmpl.Name, "/name", ScopeJob, symbolsFor(tmpl, nil, nil, ScopeJob, params), TargetString,
+			submissionLimits()...,
+		)...)
 	}
 
-	return errs
+	if b.ok() {
+		errs = append(errs, checkEnvironmentExpressions(
+			b, tmpl, nil, tmpl.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment, params, nil,
+		)...)
+	}
+
+	for i, s := range tmpl.Steps {
+		if !b.ok() {
+			break
+		}
+		errs = append(errs, checkStepExpressions(b, tmpl, s, i, params)...)
+	}
+
+	return append(errs, b.errs()...)
 }
 
 // checkStepExpressions checks the format-string positions of one step: its
@@ -700,14 +905,23 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string) Valid
 // the whole table instead of just the diff would silently make a bare
 // Step.Name legal in a host requirement or task-parameter range, which
 // section 3.6.2 forbids -- see jobSyms' own comment below.
-func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map[string]string) ValidationErrors {
+func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, idx int, params map[string]string) ValidationErrors {
 	var errs ValidationErrors
 	base := fmt.Sprintf("/steps/%d", idx)
 
+	// stepLetSymbols runs unconditionally, regardless of b -- it is bounded
+	// on its own (maxLetBindings bindings, each under submissionMemoryLimit,
+	// via checkLetBindings), so it is never itself the expensive part of a
+	// step. b is charged with the position/byte cost AFTER it runs: stepLet
+	// is already exactly the diff stepLetSymbols computed (its own doc
+	// comment), so templateExprRetainedBytes(stepLet) is the net bytes this
+	// block added with no before/after subtraction needed.
 	stepLet, letErrs := stepLetSymbols(tmpl, &s, params, base)
 	errs = append(errs, letErrs...)
+	b.chargePositions(letPositions(len(s.Let)), base+"/let")
+	b.chargeRetainedBytes(templateExprRetainedBytes(stepLet), base+"/let")
 
-	if s.Script != nil {
+	if s.Script != nil && b.ok() {
 		// syms starts as a CLONE of stepLet, not stepLet itself: the step
 		// script's own let: block (section 3.6.2 row 2) is evaluated over
 		// this table next, and checkLetBindings MUTATES the table it is
@@ -716,18 +930,34 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 		// parameterSpace below, which section 3.6.2 does not grant them.
 		syms := maps.Clone(stepLet)
 		maps.Copy(syms, symbolsFor(tmpl, &s, nil, ScopeStepScript, params))
+		// Unlike stepLet above, syms has no ready-made diff: it starts as a
+		// clone carrying stepLet's names plus symbolsFor's own (Job.Name,
+		// Param.*, ...), and checkLetBindings can only ADD keys (the shadow
+		// check rejects rebinding one already present) -- so the before/after
+		// delta of the WHOLE table's retained bytes is exactly this block's
+		// own net contribution, with the baseline canceling out.
+		before := templateExprRetainedBytes(syms)
 		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms, submissionLimits()...)...)
-		errs = append(errs, checkScriptRefExpressions(
-			s.Script.EmbeddedFiles, ScopeStepScript, syms, base+"/script",
-		)...)
-		errs = append(errs, checkActionExpressions(
-			s.Script.Actions.OnRun, base+"/script/actions/onRun", ScopeStepScript, syms,
-		)...)
+		b.chargePositions(letPositions(len(s.Script.Let)), base+"/script/let")
+		b.chargeRetainedBytes(templateExprRetainedBytes(syms)-before, base+"/script/let")
+
+		if b.ok() {
+			errs = append(errs, checkScriptRefExpressions(
+				b, s.Script.EmbeddedFiles, ScopeStepScript, syms, base+"/script",
+			)...)
+		}
+		if b.ok() {
+			errs = append(errs, checkActionExpressions(
+				b, s.Script.Actions.OnRun, base+"/script/actions/onRun", ScopeStepScript, syms,
+			)...)
+		}
 	}
 
-	errs = append(errs, checkEnvironmentExpressions(
-		tmpl, &s, s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment, params, stepLet,
-	)...)
+	if b.ok() {
+		errs = append(errs, checkEnvironmentExpressions(
+			b, tmpl, &s, s.StepEnvironments, base+"/stepEnvironments", ScopeStepEnvironment, params, stepLet,
+		)...)
+	}
 
 	// Host requirements and the task-parameter range both sit at ScopeJob: a
 	// step's own task-level symbols (Task.Param./Task.RawParam./Task.File.)
@@ -773,11 +1003,11 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	// which is why it survived E2 and E3 unnoticed.
 	jobSyms := rangeScopeSymbols(tmpl, stepLet, params)
 
-	if s.ParameterSpace != nil {
-		errs = append(errs, checkParameterSpaceExpressions(*s.ParameterSpace, base+"/parameterSpace", jobSyms)...)
+	if b.ok() && s.ParameterSpace != nil {
+		errs = append(errs, checkParameterSpaceExpressions(b, *s.ParameterSpace, base+"/parameterSpace", jobSyms)...)
 	}
-	if s.HostRequirements != nil {
-		errs = append(errs, checkHostRequirementExpressions(*s.HostRequirements, base+"/hostRequirements", jobSyms)...)
+	if b.ok() && s.HostRequirements != nil {
+		errs = append(errs, checkHostRequirementExpressions(b, *s.HostRequirements, base+"/hostRequirements", jobSyms)...)
 	}
 
 	return errs
@@ -869,11 +1099,14 @@ func rangeScopeSymbols(tmpl *JobTemplate, stepLet expr.MapSymbols, params map[st
 // why the environment's own let is bound into scriptSyms below but never
 // into baseSyms, which the variables loop above it has already consulted.
 func checkEnvironmentExpressions(
-	tmpl *JobTemplate, step *StepTemplate, envs []Environment, base string, scope Scope,
+	b *templateBudget, tmpl *JobTemplate, step *StepTemplate, envs []Environment, base string, scope Scope,
 	params map[string]string, outerLet expr.MapSymbols,
 ) ValidationErrors {
 	var errs ValidationErrors
 	for i, e := range envs {
+		if !b.ok() {
+			break
+		}
 		ptr := fmt.Sprintf("%s/%d", base, i)
 
 		var envScriptFiles []EmbeddedFile
@@ -904,8 +1137,12 @@ func checkEnvironmentExpressions(
 		// EnvironmentScript.let is bound: see the function doc for why
 		// Variables must not see it.
 		for _, k := range slices.Sorted(maps.Keys(e.Variables)) {
+			varPtr := ptr + "/variables/" + k
+			if !b.chargePositions(1, varPtr) {
+				break
+			}
 			errs = append(errs, checkFormatString(
-				e.Variables[k], ptr+"/variables/"+k, scope, baseSyms, TargetString, submissionLimits()...,
+				e.Variables[k], varPtr, scope, baseSyms, TargetString, submissionLimits()...,
 			)...)
 		}
 
@@ -928,21 +1165,30 @@ func checkEnvironmentExpressions(
 		// by mutation before either keeping or removing it, the same way
 		// this note was produced.
 		scriptSyms := maps.Clone(baseSyms)
-		if e.Script != nil {
+		if e.Script != nil && b.ok() {
+			// Before/after delta, exactly as checkStepExpressions' own script
+			// let does and for the same reason: scriptSyms has no ready-made
+			// diff, and checkLetBindings can only ADD keys, so the baseline
+			// cancels out of the subtraction.
+			before := templateExprRetainedBytes(scriptSyms)
 			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms, submissionLimits()...)...)
+			b.chargePositions(letPositions(len(e.Script.Let)), ptr+"/script/let")
+			b.chargeRetainedBytes(templateExprRetainedBytes(scriptSyms)-before, ptr+"/script/let")
 		}
 
-		errs = append(errs, checkScriptRefExpressions(envScriptFiles, scope, scriptSyms, ptr+"/script")...)
+		if b.ok() {
+			errs = append(errs, checkScriptRefExpressions(b, envScriptFiles, scope, scriptSyms, ptr+"/script")...)
+		}
 
 		if e.Script != nil {
-			if e.Script.Actions.OnEnter != nil {
+			if b.ok() && e.Script.Actions.OnEnter != nil {
 				errs = append(errs, checkActionExpressions(
-					*e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, scriptSyms,
+					b, *e.Script.Actions.OnEnter, ptr+"/script/actions/onEnter", scope, scriptSyms,
 				)...)
 			}
-			if e.Script.Actions.OnExit != nil {
+			if b.ok() && e.Script.Actions.OnExit != nil {
 				errs = append(errs, checkActionExpressions(
-					*e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, scriptSyms,
+					b, *e.Script.Actions.OnExit, ptr+"/script/actions/onExit", scope, scriptSyms,
 				)...)
 			}
 		}
@@ -957,12 +1203,16 @@ func checkEnvironmentExpressions(
 // symbol table -- see that function's doc comment for why the two positions
 // cannot share one symbol table once let: is in the picture.
 func checkScriptRefExpressions(
-	files []EmbeddedFile, scope Scope, syms expr.MapSymbols, scriptBase string,
+	b *templateBudget, files []EmbeddedFile, scope Scope, syms expr.MapSymbols, scriptBase string,
 ) ValidationErrors {
 	var errs ValidationErrors
 	for i, f := range files {
+		ptr := fmt.Sprintf("%s/embeddedFiles/%d/data", scriptBase, i)
+		if !b.chargePositions(1, ptr) {
+			break
+		}
 		errs = append(errs, checkFormatString(
-			f.Data, fmt.Sprintf("%s/embeddedFiles/%d/data", scriptBase, i), scope, syms, TargetString,
+			f.Data, ptr, scope, syms, TargetString,
 			submissionLimits()...,
 		)...)
 	}
@@ -1004,20 +1254,33 @@ func checkScriptRefExpressions(
 // wired for the day that decoder changes without a second pass over the
 // walk; until then, reading this comment is the only way to know it does
 // nothing.
-func checkActionExpressions(a Action, ptr string, scope Scope, syms expr.MapSymbols) ValidationErrors {
+func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
-	errs = append(errs, checkFormatString(
-		a.Command, ptr+"/command", scope, syms, TargetString, submissionLimits()...,
-	)...)
-	for i, arg := range a.Args {
+	cmdPtr := ptr + "/command"
+	if b.chargePositions(1, cmdPtr) {
 		errs = append(errs, checkFormatString(
-			arg, fmt.Sprintf("%s/args/%d", ptr, i), scope, syms, TargetArgItem, submissionLimits()...,
+			a.Command, cmdPtr, scope, syms, TargetString, submissionLimits()...,
 		)...)
 	}
-	if a.TimeoutSet {
+	for i, arg := range a.Args {
+		if !b.ok() {
+			break
+		}
+		argPtr := fmt.Sprintf("%s/args/%d", ptr, i)
+		if !b.chargePositions(1, argPtr) {
+			break
+		}
 		errs = append(errs, checkFormatString(
-			strconv.Itoa(a.TimeoutSeconds), ptr+"/timeout", scope, syms, TargetInt, submissionLimits()...,
+			arg, argPtr, scope, syms, TargetArgItem, submissionLimits()...,
 		)...)
+	}
+	if a.TimeoutSet && b.ok() {
+		timeoutPtr := ptr + "/timeout"
+		if b.chargePositions(1, timeoutPtr) {
+			errs = append(errs, checkFormatString(
+				strconv.Itoa(a.TimeoutSeconds), timeoutPtr, scope, syms, TargetInt, submissionLimits()...,
+			)...)
+		}
 	}
 	return errs
 }
@@ -1028,33 +1291,71 @@ func checkActionExpressions(a Action, ptr string, scope Scope, syms expr.MapSymb
 // NO format-string scope validation at all before sub-project E2's Task 9;
 // validate.go's validateHostRequirements gained the parallel base-spec check
 // in the same commit.
-func checkHostRequirementExpressions(hr HostRequirements, base string, syms expr.MapSymbols) ValidationErrors {
+func checkHostRequirementExpressions(b *templateBudget, hr HostRequirements, base string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range hr.Amounts {
-		amtPtr := fmt.Sprintf("%s/amounts/%d", base, i)
-		if a.Min != nil {
-			errs = append(errs, checkFormatString(
-				*a.Min, amtPtr+"/min", ScopeJob, syms, TargetString, submissionLimits()...,
-			)...)
+		if !b.ok() {
+			break
 		}
-		if a.Max != nil {
+		errs = append(errs, checkHostRequirementAmount(b, a, fmt.Sprintf("%s/amounts/%d", base, i), syms)...)
+	}
+	for i, a := range hr.Attributes {
+		if !b.ok() {
+			break
+		}
+		errs = append(errs, checkHostRequirementAttribute(b, a, fmt.Sprintf("%s/attributes/%d", base, i), syms)...)
+	}
+	return errs
+}
+
+// checkHostRequirementAmount checks one amount's min/max, extracted from
+// checkHostRequirementExpressions to keep that function's cyclomatic
+// complexity within the repo's lint budget (see CLAUDE.md's "Lint is
+// strict" convention).
+func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr string, syms expr.MapSymbols) ValidationErrors {
+	var errs ValidationErrors
+	if a.Min != nil {
+		minPtr := amtPtr + "/min"
+		if b.chargePositions(1, minPtr) {
 			errs = append(errs, checkFormatString(
-				*a.Max, amtPtr+"/max", ScopeJob, syms, TargetString, submissionLimits()...,
+				*a.Min, minPtr, ScopeJob, syms, TargetString, submissionLimits()...,
 			)...)
 		}
 	}
-	for i, a := range hr.Attributes {
-		attrPtr := fmt.Sprintf("%s/attributes/%d", base, i)
-		for k, v := range a.AnyOf {
+	if a.Max != nil && b.ok() {
+		maxPtr := amtPtr + "/max"
+		if b.chargePositions(1, maxPtr) {
 			errs = append(errs, checkFormatString(
-				v, fmt.Sprintf("%s/anyOf/%d", attrPtr, k), ScopeJob, syms, TargetString,
-				submissionLimits()...,
+				*a.Max, maxPtr, ScopeJob, syms, TargetString, submissionLimits()...,
 			)...)
 		}
-		for k, v := range a.AllOf {
+	}
+	return errs
+}
+
+// checkHostRequirementAttribute checks one attribute's anyOf/allOf entries --
+// extracted for the same reason as checkHostRequirementAmount, above.
+func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, attrPtr string, syms expr.MapSymbols) ValidationErrors {
+	var errs ValidationErrors
+	for k, v := range a.AnyOf {
+		if !b.ok() {
+			break
+		}
+		p := fmt.Sprintf("%s/anyOf/%d", attrPtr, k)
+		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				v, fmt.Sprintf("%s/allOf/%d", attrPtr, k), ScopeJob, syms, TargetString,
-				submissionLimits()...,
+				v, p, ScopeJob, syms, TargetString, submissionLimits()...,
+			)...)
+		}
+	}
+	for k, v := range a.AllOf {
+		if !b.ok() {
+			break
+		}
+		p := fmt.Sprintf("%s/allOf/%d", attrPtr, k)
+		if b.chargePositions(1, p) {
+			errs = append(errs, checkFormatString(
+				v, p, ScopeJob, syms, TargetString, submissionLimits()...,
 			)...)
 		}
 	}
@@ -1097,22 +1398,32 @@ func checkHostRequirementExpressions(hr HostRequirements, base string, syms expr
 // Neither target change weakens scope checking: an out-of-scope symbol fails
 // at evaluation's symbol lookup, before target coercion ever runs, exactly as
 // it did when the target was expr.TAny.
-func checkParameterSpaceExpressions(ps StepParameterSpace, base string, syms expr.MapSymbols) ValidationErrors {
+func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, base string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	for i, tp := range ps.TaskParameterDefinitions {
+		if !b.ok() {
+			break
+		}
 		ptr := fmt.Sprintf("%s/taskParameterDefinitions/%d", base, i)
 		elemType := rangeExprElemType(tp.Type)
 		for j, v := range tp.RangeList {
+			p := fmt.Sprintf("%s/range/%d", ptr, j)
+			if !b.chargePositions(1, p) {
+				break
+			}
 			errs = append(errs, checkFormatString(
-				v, fmt.Sprintf("%s/range/%d", ptr, j), ScopeJob, syms, elemType,
+				v, p, ScopeJob, syms, elemType,
 				submissionLimits()...,
 			)...)
 		}
-		if tp.RangeExpr != nil {
-			errs = append(errs, checkFormatString(
-				*tp.RangeExpr, ptr+"/range", ScopeJob, syms, rangeExprFieldType(tp.Type),
-				submissionLimits()...,
-			)...)
+		if tp.RangeExpr != nil && b.ok() {
+			p := ptr + "/range"
+			if b.chargePositions(1, p) {
+				errs = append(errs, checkFormatString(
+					*tp.RangeExpr, p, ScopeJob, syms, rangeExprFieldType(tp.Type),
+					submissionLimits()...,
+				)...)
+			}
 		}
 	}
 	return errs
